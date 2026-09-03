@@ -31,8 +31,12 @@ import java.util.List;
  * <p>1 番目の規則を落とすと、行末の空白を削ったソースと削っていないソースで
  * 文字定数の長さが変わってしまう。実務のソースは行末が削られていることが多いため、
  * ここは意識して実装する必要がある。
+ *
+ * <h2>行内注釈</h2>
+ * <p>{@code *>} 以降は行の終わりまで注釈である。<b>文字定数の中の {@code *>} は注釈ではない</b>ため、
+ * 引用符を追いながら切る。{@code MOVE '*>' TO X} を注釈として落とすと、黙って別のソースになる。
  */
-public final class FixedFormatReader {
+public final class FixedFormatReader implements SourceReader {
 
     private final boolean debuggingMode;
 
@@ -79,6 +83,7 @@ public final class FixedFormatReader {
     }
 
     /** 物理行の並びを 1 本の正規化済みソースへまとめる。 */
+    @Override
     public NormalizedSource normalize(String fileName, String source) {
         return normalize(split(fileName, source));
     }
@@ -123,19 +128,21 @@ public final class FixedFormatReader {
 
     /** 通常の行を、区切りの空白を挟んで連結する。 */
     private char appendNormal(NormalizedSource.Builder out, SourceLine line) {
-        String content = line.content();
-        char openQuote = openQuoteAtEnd(content, (char) 0);
+        // 行内注釈は本文の一部ではない。定数の中の *> は注釈ではないので、
+        // 引用符を追いながら切る
+        String content = SourceText.stripInlineComment(line.content(), (char) 0);
+        char openQuote = SourceText.openQuoteAtEnd(content, (char) 0);
         if (openQuote != 0) {
             // 定数が閉じていないので 72 桁まで定数の一部として扱う
             content = line.contentPaddedToMargin();
         } else {
-            content = stripTrailing(content);
+            content = SourceText.stripTrailing(content);
         }
         if (content.isBlank() && openQuote == 0) {
             return 0;
         }
         out.appendSeparator();
-        int leading = countLeadingSpaces(content);
+        int leading = SourceText.countLeadingSpaces(content);
         out.append(content.substring(leading), line.fileName(), line.lineNumber(),
                 line.columnOf(leading));
         return openQuote;
@@ -149,7 +156,7 @@ public final class FixedFormatReader {
      */
     private char appendContinuation(NormalizedSource.Builder out, SourceLine line, char openQuote) {
         String content = line.content();
-        int first = countLeadingSpaces(content);
+        int first = SourceText.countLeadingSpaces(content);
         if (first >= content.length()) {
             throw new SourceFormatException(line.fileName() + ":" + line.lineNumber()
                     + ": a continuation line has no content in area B");
@@ -166,62 +173,17 @@ public final class FixedFormatReader {
             start = first + 1;
         }
 
-        String rest = content.substring(start);
-        char resulting = openQuoteAtEnd(rest, openQuote);
+        String rest = SourceText.stripInlineComment(content.substring(start), openQuote);
+        char resulting = SourceText.openQuoteAtEnd(rest, openQuote);
         if (resulting != 0) {
             // まだ閉じていないので、この行も 72 桁まで定数の一部になる
             rest = line.contentPaddedToMargin().substring(start);
         } else {
-            rest = stripTrailing(rest);
+            rest = SourceText.stripTrailing(rest);
         }
         // 継続では区切りの空白を入れない。語も定数も直接つながる
         out.append(rest, line.fileName(), line.lineNumber(), line.columnOf(start));
         return resulting;
     }
 
-    /**
-     * 行の末尾の時点で開いたままの引用符を返す。閉じていれば 0。
-     *
-     * <p>定数の中の引用符 2 個は 1 個の引用符を表すため、定数は閉じない。
-     */
-    static char openQuoteAtEnd(String content, char initialQuote) {
-        char quote = initialQuote;
-        int i = 0;
-        while (i < content.length()) {
-            char c = content.charAt(i);
-            if (quote == 0) {
-                if (c == '\'' || c == '"') {
-                    quote = c;
-                }
-                i++;
-            } else if (c == quote) {
-                if (i + 1 < content.length() && content.charAt(i + 1) == quote) {
-                    // 引用符 2 個は定数の中の引用符 1 個を表す
-                    i += 2;
-                } else {
-                    quote = 0;
-                    i++;
-                }
-            } else {
-                i++;
-            }
-        }
-        return quote;
-    }
-
-    private static int countLeadingSpaces(String s) {
-        int i = 0;
-        while (i < s.length() && s.charAt(i) == ' ') {
-            i++;
-        }
-        return i;
-    }
-
-    private static String stripTrailing(String s) {
-        int end = s.length();
-        while (end > 0 && s.charAt(end - 1) == ' ') {
-            end--;
-        }
-        return s.substring(0, end);
-    }
 }

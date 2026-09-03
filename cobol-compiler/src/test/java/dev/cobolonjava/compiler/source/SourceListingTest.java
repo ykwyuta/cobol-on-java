@@ -148,4 +148,21 @@ class SourceListingTest {
         assertEquals("", SourceListing.render(
                 FixedFormatReader.standard().normalize(FILE, ""), FILE));
     }
+    @Test
+    @DisplayName("COPY ... SUPPRESS の行はリストに出ない (FR-090, FR-094)")
+    void suppressedCopybooksDoNotAppearInTheListing() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("SHOWN", source("01 SHOWN-REC."))
+                .put("HIDDEN", source("01 HIDDEN-REC."));
+
+        String rendered = Preprocessor.with(resolver).listing(FILE, source(
+                "COPY SHOWN.",
+                "COPY HIDDEN SUPPRESS.",
+                "MOVE A TO B."));
+
+        List<String> out = rendered.lines().toList();
+        assertEquals(2, out.size(), rendered);
+        assertEquals("    1 C SHOWN:1              01 SHOWN-REC.", out.get(0));
+        assertEquals("    2   MAIN.cbl:3           MOVE A TO B.", out.get(1));
+    }
 }

@@ -150,4 +150,19 @@ class FixedFormatReaderTest {
         int index = source.text().indexOf("FIELD");
         assertEquals(new Origin(FILE, 2, 16), source.originOf(index));
     }
+
+    @Test
+    @DisplayName("行内注釈 *> 以降は本文でない (FR-002)")
+    void everythingAfterTheInlineCommentIndicatorIsDropped() {
+        assertEquals("MOVE A TO B.", normalize(
+                line(' ', "    MOVE A TO B.  *> why"),
+                line(' ', "    *> a whole line")));
+    }
+
+    @Test
+    @DisplayName("文字定数の中の *> は注釈ではない (FR-002)")
+    void aCommentIndicatorInsideALiteralIsNotAComment() {
+        // 落としてしまうと、黙って別のソースになる
+        assertEquals("MOVE '*>' TO B.", normalize(line(' ', "    MOVE '*>' TO B.")));
+    }
 }

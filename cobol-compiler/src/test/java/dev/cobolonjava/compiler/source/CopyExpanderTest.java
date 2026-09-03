@@ -200,4 +200,36 @@ class CopyExpanderTest {
         assertEquals(FILE, origin.fileName());
         assertEquals(1, origin.line());
     }
+    @Test
+    @DisplayName("SUPPRESS は展開結果を変えない (FR-090)")
+    void suppressDoesNotChangeTheExpansion() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("CUSTREC", source("01 CUST-REC."));
+        assertEquals("01 CUST-REC.", expand(resolver, "COPY CUSTREC SUPPRESS.").text());
+        assertEquals("01 CUST-REC.", expand(resolver, "COPY CUSTREC SUPPRESS PRINTING.").text());
+    }
+
+    @Test
+    @DisplayName("SUPPRESS は REPLACING と併せて書ける (FR-090)")
+    void suppressMayPrecedeReplacing() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("CUSTREC", source("01 OLD-REC."));
+        assertEquals("01 NEW-REC.", expand(resolver,
+                "COPY CUSTREC SUPPRESS REPLACING ==OLD-REC== BY ==NEW-REC==.").text());
+    }
+
+    @Test
+    @DisplayName("SUPPRESS はリストから落とすコピー句を示す (FR-090, FR-094)")
+    void suppressNamesTheCopybooksToLeaveOutOfTheListing() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("OUTER", source("01 OUTER-REC.", "COPY INNER."))
+                .put("INNER", source("05 INNER-ID PIC 9(5)."));
+
+        CopyExpander expander = new CopyExpander(resolver);
+        expander.expand(FixedFormatReader.standard()
+                .normalize(FILE, source("COPY OUTER SUPPRESS.")));
+
+        // 入れ子のコピー句も一緒に抑止される
+        assertEquals(java.util.Set.of("OUTER", "INNER"), expander.suppressedFiles());
+    }
 }

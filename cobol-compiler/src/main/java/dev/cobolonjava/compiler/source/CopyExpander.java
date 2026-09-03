@@ -3,9 +3,11 @@ package dev.cobolonjava.compiler.source;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * {@code COPY} 文の展開と {@code REPLACING} の適用 (要件 FR-090)。
@@ -25,6 +27,11 @@ import java.util.Optional;
  * <p>コピー句の中の {@code COPY} も展開する。循環を検出できるよう、展開中のコピー句名を
  * 積んでおき、同じ名前が再び現れたら誤りとする。深さにも上限を設ける。
  * 循環を検出せずに展開すると、記憶域が尽きるまで止まらない。
+ *
+ * <h2>SUPPRESS はリストにだけ効く</h2>
+ * <p>{@code COPY ... SUPPRESS} は<b>展開結果を変えない</b>。変わるのはリスト出力だけで、
+ * そのコピー句から来た行が印字されなくなる。展開したファイル名を集めておき、
+ * {@link #suppressedFiles()} で渡す。入れ子のコピー句も一緒に抑止される。
  */
 public final class CopyExpander {
 
@@ -32,9 +39,10 @@ public final class CopyExpander {
     private static final int MAX_DEPTH = 50;
 
     private final CopyBookResolver resolver;
-    private final FixedFormatReader reader;
+    private final SourceReader reader;
+    private final Set<String> suppressedFiles = new LinkedHashSet<>();
 
-    public CopyExpander(CopyBookResolver resolver, FixedFormatReader reader) {
+    public CopyExpander(CopyBookResolver resolver, SourceReader reader) {
         this.resolver = resolver;
         this.reader = reader;
     }
@@ -45,11 +53,19 @@ public final class CopyExpander {
 
     /** 正規化済みソースの中の {@code COPY} をすべて展開する。 */
     public NormalizedSource expand(NormalizedSource source) {
-        List<TextWord> expanded = expand(PreprocessorLexer.lex(source), new ArrayDeque<>());
+        List<TextWord> expanded = expand(PreprocessorLexer.lex(source), new ArrayDeque<>(), false);
         return PreprocessorLexer.emit(expanded);
     }
 
-    private List<TextWord> expand(List<TextWord> words, Deque<String> stack) {
+    /**
+     * 直前の展開で {@code SUPPRESS} が指定されたコピー句のファイル名。
+     * リスト出力 ({@link SourceListing}) から除くために用いる。
+     */
+    public Set<String> suppressedFiles() {
+        return Set.copyOf(suppressedFiles);
+    }
+
+    private List<TextWord> expand(List<TextWord> words, Deque<String> stack, boolean suppressed) {
         List<TextWord> out = new ArrayList<>();
         int i = 0;
         while (i < words.size()) {
@@ -59,13 +75,14 @@ public final class CopyExpander {
                 continue;
             }
             CopyStatement statement = parseCopy(words, i);
-            out.addAll(expandCopyBook(statement, stack));
+            out.addAll(expandCopyBook(statement, stack, suppressed));
             i = statement.endIndex() + 1;
         }
         return out;
     }
 
-    private List<TextWord> expandCopyBook(CopyStatement statement, Deque<String> stack) {
+    private List<TextWord> expandCopyBook(CopyStatement statement, Deque<String> stack,
+                                          boolean suppressedByCaller) {
         String name = statement.textName().toUpperCase(Locale.ROOT);
         if (stack.contains(name)) {
             throw new SourceFormatException(statement.origin()
@@ -87,9 +104,15 @@ public final class CopyExpander {
         List<TextWord> body = PreprocessorLexer.lex(
                 reader.normalize(book.get().fileName(), book.get().text()));
 
+        // 入れ子のコピー句も一緒に抑止される
+        boolean suppressed = suppressedByCaller || statement.suppress();
+        if (suppressed) {
+            suppressedFiles.add(book.get().fileName());
+        }
+
         stack.push(name);
         try {
-            body = expand(body, stack);
+            body = expand(body, stack, suppressed);
         } finally {
             stack.pop();
         }
@@ -124,6 +147,15 @@ public final class CopyExpander {
             libraryName = unquote(words.get(i++));
         }
 
+        boolean suppress = false;
+        if (i < words.size() && words.get(i).isWord("SUPPRESS")) {
+            suppress = true;
+            i++;
+            if (i < words.size() && words.get(i).isWord("PRINTING")) {
+                i++;
+            }
+        }
+
         List<TextReplacement> replacements = new ArrayList<>();
         if (i < words.size() && words.get(i).isWord("REPLACING")) {
             i++;
@@ -144,7 +176,7 @@ public final class CopyExpander {
         if (i >= words.size() || !words.get(i).isSeparator('.')) {
             throw new SourceFormatException(origin + ": COPY must be terminated by a period");
         }
-        return new CopyStatement(textName, libraryName, replacements, i, origin);
+        return new CopyStatement(textName, libraryName, suppress, replacements, i, origin);
     }
 
     private static String unquote(TextWord word) {
@@ -155,7 +187,7 @@ public final class CopyExpander {
         return text;
     }
 
-    private record CopyStatement(String textName, String libraryName,
+    private record CopyStatement(String textName, String libraryName, boolean suppress,
                                  List<TextReplacement> replacements, int endIndex, Origin origin) {
     }
 }

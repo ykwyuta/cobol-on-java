@@ -12,7 +12,7 @@ import java.util.Optional;
  *
  * <h2>処理の順序</h2>
  * <ol>
- *   <li>固定形式のカラム分解と継続行の連結 ({@link FixedFormatReader})</li>
+ *   <li>参照形式の読み取りと継続行の連結 ({@link SourceReader})</li>
  *   <li>{@code COPY} の展開と {@code REPLACING} の適用 ({@link CopyExpander})</li>
  *   <li>{@code REPLACE} の適用 ({@link ReplaceProcessor})</li>
  *   <li>コンパイラ指示文の処理 ({@link DirectiveProcessor})</li>
@@ -29,17 +29,17 @@ import java.util.Optional;
 public final class Preprocessor {
 
     private final CopyBookResolver resolver;
-    private final FixedFormatReader reader;
+    private final SourceReader reader;
     private final Map<String, String> parameters;
 
-    public Preprocessor(CopyBookResolver resolver, FixedFormatReader reader,
+    public Preprocessor(CopyBookResolver resolver, SourceReader reader,
                         Map<String, String> parameters) {
         this.resolver = resolver;
         this.reader = reader;
         this.parameters = Map.copyOf(parameters);
     }
 
-    public Preprocessor(CopyBookResolver resolver, FixedFormatReader reader) {
+    public Preprocessor(CopyBookResolver resolver, SourceReader reader) {
         this(resolver, reader, Map.of());
     }
 
@@ -56,9 +56,14 @@ public final class Preprocessor {
         return new Preprocessor((name, library) -> Optional.empty(), FixedFormatReader.standard());
     }
 
-    /** 既定の読み取り器を用いる構成。 */
+    /** 既定の読み取り器 (固定形式) を用いる構成。 */
     public static Preprocessor with(CopyBookResolver resolver) {
         return new Preprocessor(resolver, FixedFormatReader.standard());
+    }
+
+    /** 読み取り器を指定する構成。自由形式のソースを読むときに用いる。 */
+    public static Preprocessor with(CopyBookResolver resolver, SourceReader reader) {
+        return new Preprocessor(resolver, reader);
     }
 
     /**
@@ -72,6 +77,24 @@ public final class Preprocessor {
         NormalizedSource expanded = new CopyExpander(resolver, reader).expand(normalized);
         NormalizedSource replaced = ReplaceProcessor.apply(expanded);
         return DirectiveProcessor.apply(replaced, parameters);
+    }
+
+    /**
+     * 展開後ソースのリストを組み立てる (要件 FR-094)。
+     *
+     * <p>{@code COPY ... SUPPRESS} が指定されたコピー句の行は落とす。抑止はリストにだけ
+     * 効くものであり、展開結果は {@link #process} と同じである。
+     *
+     * @param fileName 主ソースのファイル名
+     * @param source   固定形式または自由形式のソース
+     */
+    public String listing(String fileName, String source) {
+        NormalizedSource normalized = reader.normalize(fileName, source);
+        CopyExpander expander = new CopyExpander(resolver, reader);
+        NormalizedSource expanded = expander.expand(normalized);
+        NormalizedSource result =
+                DirectiveProcessor.apply(ReplaceProcessor.apply(expanded), parameters);
+        return SourceListing.render(result, fileName, expander.suppressedFiles());
     }
 
     /**

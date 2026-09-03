@@ -3,6 +3,7 @@ package dev.cobolonjava.compiler.source;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 展開後ソースのリスト出力 (要件 FR-094, FR-182)。
@@ -12,6 +13,8 @@ import java.util.Objects;
  *
  * <p>{@code COPY} で展開された行にはコピー句のファイル名が出る。移行作業では
  * 「展開後に何が入っているか」を確認する必要があり、その道具になる。
+ * {@code COPY ... SUPPRESS} が指定されたコピー句の行は、リストからだけ落ちる
+ * (展開結果は変わらない)。
  *
  * <h2>折り返しの位置は出自の変わり目である</h2>
  * <p>正規化後のテキストには行の区切りが残っていないため、<b>文字の出自 (ファイルと行) が
@@ -68,11 +71,27 @@ public final class SourceListing {
      * @param primaryFile 主ソースのファイル名。これ以外のファイルから来た行に印を付ける
      */
     public static String render(NormalizedSource source, String primaryFile) {
+        return render(source, primaryFile, Set.of());
+    }
+
+    /**
+     * リストを文字列として組み立て、{@code COPY ... SUPPRESS} で指定されたコピー句を除く。
+     *
+     * @param suppressedFiles 印字しないファイル名 ({@link CopyExpander#suppressedFiles()})
+     */
+    public static String render(NormalizedSource source, String primaryFile,
+                                Set<String> suppressedFiles) {
         StringBuilder out = new StringBuilder();
+        int number = 0;
         for (ListingLine line : lines(source)) {
+            if (suppressedFiles.contains(line.origin().fileName())) {
+                continue;
+            }
+            // 抑止した行を飛ばしたぶんだけ番号を詰める。番号は「リストの何行目か」である
+            number++;
             boolean copied = !Objects.equals(line.origin().fileName(), primaryFile);
             out.append(String.format("%5d %c %-20s %s%n",
-                    line.number(),
+                    number,
                     copied ? COPIED_MARKER : ' ',
                     line.origin().fileName() + ":" + line.origin().line(),
                     line.text()));
