@@ -1,6 +1,12 @@
 package dev.cobolonjava.runtime.verb;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.decimal.CobolRounding;
+import dev.cobolonjava.runtime.decimal.Decimal;
+import dev.cobolonjava.runtime.item.NumericItem;
+import dev.cobolonjava.runtime.picture.NumericEditor;
+import dev.cobolonjava.runtime.picture.Picture;
+import dev.cobolonjava.runtime.storage.DataView;
 import java.util.Arrays;
 
 /**
@@ -31,5 +37,32 @@ public final class Move {
             System.arraycopy(source, 0, out, 0, n);
         }
         return out;
+    }
+
+    /**
+     * 数値転記。小数点で位置を合わせ、収まらない上位桁は切り捨て、足りない桁は 0 で埋める。
+     *
+     * <p>{@code MOVE} には {@code ROUNDED} がないため、小数部は常に切り捨てられる。
+     * 上位桁のあふれも黙って切り捨てられる。これは算術文で {@code ON SIZE ERROR} を
+     * 指定しない場合と同じ挙動である。
+     */
+    public static void numeric(Decimal source, NumericItem target, DataView view) {
+        target.store(view, source.rescale(target.picture().scale(), CobolRounding.TRUNCATION));
+    }
+
+    /**
+     * 数字編集項目への転記。編集結果のバイト列を書き込む。
+     *
+     * @throws IllegalArgumentException 受取項目が数字編集項目でない場合
+     */
+    public static void toNumericEdited(Decimal source, Picture target, DataView view,
+                                       CodePage codePage) {
+        byte[] edited = NumericEditor.edit(source, target, codePage);
+        if (edited.length != view.length()) {
+            throw new IllegalArgumentException(
+                    "view length " + view.length() + " does not match the edited picture size "
+                            + edited.length);
+        }
+        view.setBytes(edited);
     }
 }

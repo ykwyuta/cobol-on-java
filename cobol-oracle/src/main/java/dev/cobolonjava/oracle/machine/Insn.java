@@ -128,6 +128,31 @@ public final class Insn {
         };
     }
 
+    /**
+     * {@code IPM R1} — プログラムマスクと条件コードを汎用レジスタへ取り出す。
+     *
+     * <p>比較命令の結果は条件コードにしか残らず、そのままでは記憶域から読み出せない。
+     * この命令でレジスタへ移し、{@link #st} で記憶域へ格納することで採取できるようになる。
+     *
+     * <p>格納されたワードの先頭バイトのビット 2〜3 が条件コードである
+     * (すなわち先頭バイトの値は {@code 条件コード << 4})。
+     */
+    public static byte[] ipm(int r1) {
+        checkRegister(r1);
+        return new byte[] {(byte) 0xB2, 0x22, 0x00, (byte) (r1 << 4)};
+    }
+
+    /** {@code ST R1,D2} — 汎用レジスタの下位 4 バイトを記憶域へ格納する。 */
+    public static byte[] st(int r1, int addr) {
+        checkRegister(r1);
+        checkAddress(addr);
+        return new byte[] {
+                0x50,
+                (byte) (r1 << 4),
+                (byte) ((addr >>> 8) & 0x0F), (byte) (addr & 0xFF)
+        };
+    }
+
     /** {@code LPSWE D2} — 16 バイトの PSW をロードする。テストの終了に用いる。 */
     public static byte[] lpswe(int addr) {
         checkAddress(addr);
@@ -170,6 +195,12 @@ public final class Insn {
         if (addr < 0 || addr > MAX_ADDRESS) {
             throw new IllegalArgumentException(String.format(
                     "address 0x%X is out of range for base-0 addressing (0..0x%X)", addr, MAX_ADDRESS));
+        }
+    }
+
+    private static void checkRegister(int r) {
+        if (r < 0 || r > 15) {
+            throw new IllegalArgumentException("register must be 0..15: " + r);
         }
     }
 

@@ -45,11 +45,23 @@ class InsnTest {
     }
 
     @Test
+    @DisplayName("条件コードの採取に使う IPM / ST の組み立て")
+    void conditionCodeCapture() {
+        // IPM は RRE 形式。命令コード 2 バイト + 00 + R1 を上位ニブルに置く 1 バイト
+        assertEquals("B2220010", hex(Insn.ipm(1)));
+        assertEquals("B22200F0", hex(Insn.ipm(15)));
+        // ST は RX-a 形式。命令コード + R1X2 + B2D2
+        assertEquals("50100500", hex(Insn.st(1, 0x500)));
+    }
+
+    @Test
     @DisplayName("ベースレジスタ 0 の制約と長さの範囲は検査される")
     void validation() {
         assertThrows(IllegalArgumentException.class, () -> Insn.ap(0x1000, 3, 0x400, 3));
         assertThrows(IllegalArgumentException.class, () -> Insn.ap(0x400, 17, 0x400, 3));
         assertThrows(IllegalArgumentException.class, () -> Insn.ap(0x400, 0, 0x400, 3));
         assertThrows(IllegalArgumentException.class, () -> Insn.srp(0x400, 2, -1, 10));
+        assertThrows(IllegalArgumentException.class, () -> Insn.ipm(16));
+        assertThrows(IllegalArgumentException.class, () -> Insn.st(1, 0x1000));
     }
 }

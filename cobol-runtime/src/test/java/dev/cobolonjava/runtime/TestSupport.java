@@ -25,6 +25,11 @@ public final class TestSupport {
         assertEquals(expectedHex.replace(" ", "").toUpperCase(), hex(actual));
     }
 
+    /** 期待値を 16 進文字列で表明する。失敗時の説明を添える。 */
+    public static void assertHex(String expectedHex, byte[] actual, String message) {
+        assertEquals(expectedHex.replace(" ", "").toUpperCase(), hex(actual), message);
+    }
+
     public static String hex(byte[] bytes) {
         StringBuilder sb = new StringBuilder(bytes.length * 2);
         for (byte b : bytes) {
