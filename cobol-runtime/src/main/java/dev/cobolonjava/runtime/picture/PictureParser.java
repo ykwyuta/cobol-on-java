@@ -54,6 +54,7 @@ public final class PictureParser {
         boolean anyAlpha = false;
         boolean anyAlnum = false;
         boolean anyEditing = false;
+        boolean anyInsertion = false;
         boolean anyNine = false;
         boolean leadingP = false;
         boolean sawStoredDigit = false;
@@ -100,11 +101,15 @@ public final class PictureParser {
                     cells.add(new Cell(Kind.INSERT, sym.charAt(0), 1));
                     size++;
                     anyEditing = true;
+                    if (!sym.equals(",")) {
+                        anyInsertion = true;
+                    }
                 }
                 case "B" -> {
                     cells.add(new Cell(Kind.INSERT, ' ', 1));
                     size++;
                     anyEditing = true;
+                    anyInsertion = true;
                 }
                 case "CR", "DB" -> {
                     cells.add(new Cell(sym.equals("CR") ? Kind.CR : Kind.DB, sym.charAt(0), 2));
@@ -187,11 +192,21 @@ public final class PictureParser {
         }
         int scale = lastStoredSlot < 0 ? 0 : lastStoredSlot + 1 - pointIndex;
 
+        // COBOL の分類規則:
+        //   英字項目       — A だけからなる
+        //   英数字編集項目 — A または X を 1 個以上含み、かつ B / 0 / / を 1 個以上含む
+        //   英数字項目     — A または X を含み、挿入文字を含まない
+        //   数字編集項目   — 数字位置と編集記号を含む
+        //   数字項目       — 9 S V P だけからなる
         Category category;
-        if (anyAlnum || (anyAlpha && anyNine)) {
-            category = anyEditing ? Category.ALPHANUMERIC_EDITED : Category.ALPHANUMERIC;
-        } else if (anyAlpha) {
-            category = Category.ALPHABETIC;
+        if (anyAlnum || anyAlpha) {
+            if (anyInsertion) {
+                category = Category.ALPHANUMERIC_EDITED;
+            } else if (anyAlpha && !anyAlnum && !anyNine) {
+                category = Category.ALPHABETIC;
+            } else {
+                category = Category.ALPHANUMERIC;
+            }
         } else if (anyEditing) {
             category = Category.NUMERIC_EDITED;
         } else {

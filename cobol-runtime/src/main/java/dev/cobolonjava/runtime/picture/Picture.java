@@ -123,6 +123,20 @@ public final class Picture {
         return category == Category.NUMERIC_EDITED;
     }
 
+    /**
+     * 英字・英数字の文字位置の数。{@code A} と {@code X} の個数である。
+     * 挿入文字 ({@code B} {@code 0} {@code /}) は含まない。
+     */
+    public int characterPositions() {
+        int n = 0;
+        for (Cell c : cells) {
+            if (c.kind() == Kind.ALPHA || c.kind() == Kind.ALNUM) {
+                n++;
+            }
+        }
+        return n;
+    }
+
     /** {@code SIGN IS} 句による符号位置の指定を反映した新しい PICTURE を返す。 */
     public Picture withSignPosition(SignPosition newSignPosition) {
         if (!signPosition.isSigned() && newSignPosition.isSigned()) {

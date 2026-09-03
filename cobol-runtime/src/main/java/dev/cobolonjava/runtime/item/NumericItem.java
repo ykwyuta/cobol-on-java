@@ -35,6 +35,11 @@ public final class NumericItem {
         if (!picture.isNumeric()) {
             throw new IllegalArgumentException("not a numeric picture: " + picture);
         }
+        if (usage.isFloatingPoint()) {
+            // 浮動小数点項目は PICTURE を持たない。FloatingItem を使うこと
+            throw new IllegalArgumentException(
+                    "floating-point usage " + usage + " has no PICTURE; use FloatingItem instead");
+        }
         this.picture = picture;
         this.usage = usage;
         this.signPosition = signPosition;
@@ -85,6 +90,8 @@ public final class NumericItem {
             case DISPLAY -> ZonedDecimal.byteLength(picture.digits(), signPosition);
             case COMP_3 -> PackedDecimal.byteLength(picture.digits());
             case COMP, COMP_5 -> BinaryDecimal.byteLength(picture.digits());
+            case COMP_1, COMP_2 -> throw new IllegalStateException(
+                    "floating-point usage is rejected by the constructor");
         };
     }
 
@@ -105,6 +112,8 @@ public final class NumericItem {
                     truncMode.resolve(undefinedBehavior));
             case COMP_5 -> BinaryDecimal.encode(value, picture.digits(), picture.scale(),
                     TruncMode.BIN);
+            case COMP_1, COMP_2 -> throw new IllegalStateException(
+                    "floating-point usage is rejected by the constructor");
         };
     }
 
@@ -118,6 +127,8 @@ public final class NumericItem {
             case DISPLAY -> ZonedDecimal.decode(bytes, picture.scale(), signPosition, codePage, numProcMode);
             case COMP_3 -> PackedDecimal.decode(bytes, picture.scale(), numProcMode);
             case COMP, COMP_5 -> BinaryDecimal.decode(bytes, picture.scale());
+            case COMP_1, COMP_2 -> throw new IllegalStateException(
+                    "floating-point usage is rejected by the constructor");
         };
     }
 

@@ -72,6 +72,10 @@ class NumericItemTest {
     @DisplayName("すべての USAGE で符号化と復号が往復する")
     void roundTripAcrossUsages() {
         for (Usage usage : Usage.values()) {
+            if (usage.isFloatingPoint()) {
+                // 浮動小数点項目は PICTURE を持たないため NumericItem の対象外
+                continue;
+            }
             NumericItem item = NumericItem.of("S9(3)V99", usage);
             for (String v : new String[] {"0", "1.23", "-1.23", "999.99", "-999.99"}) {
                 Decimal original = Decimal.parse(v);
