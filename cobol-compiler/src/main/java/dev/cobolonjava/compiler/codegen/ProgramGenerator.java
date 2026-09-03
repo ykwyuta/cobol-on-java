@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.codegen;
 
 import dev.cobolonjava.compiler.parser.Diagnostic;
+import dev.cobolonjava.compiler.semantic.Condition;
 import dev.cobolonjava.compiler.semantic.DataCategory;
 import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
@@ -31,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
@@ -178,17 +180,138 @@ public final class ProgramGenerator {
      * 誤りが見つかったらクラスファイルは作らない。
      */
     private List<Runnable> planRun(ProcedureBuilder.Result procedure) {
+        return planStatements(procedure.statements());
+    }
+
+    private List<Runnable> planStatements(List<Statement> statements) {
         List<Runnable> body = new ArrayList<>();
-        for (Statement statement : procedure.statements()) {
+        for (Statement statement : statements) {
             if (statement instanceof Statement.Move move) {
                 planMove(move, body);
             } else if (statement instanceof Statement.Arithmetic arithmetic) {
                 planArithmetic(arithmetic, body);
+            } else if (statement instanceof Statement.If branch) {
+                planIf(branch, body);
+            } else if (statement instanceof Statement.Continue) {
+                // 何もしない文である
+                continue;
             } else {
                 report(statement.origin(), "statement is not supported by the generator yet");
             }
         }
         return body;
+    }
+
+    // ---- 制御構造 ----
+
+    private void planIf(Statement.If statement, List<Runnable> body) {
+        List<Runnable> onTrue = planStatements(statement.onTrue());
+        List<Runnable> onFalse = planStatements(statement.onFalse());
+        body.add(() -> {
+            Label otherwise = new Label();
+            Label end = new Label();
+            // 条件が成り立てば下へ抜け、成り立たなければ ELSE へ飛ぶ
+            emitCondition(statement.condition(), otherwise, false);
+            onTrue.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(otherwise);
+            onFalse.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
+    }
+
+    /**
+     * 条件を評価し、{@code jumpWhenTrue} の向きに一致したら {@code target} へ飛ぶ。
+     * 一致しなければ下へ抜ける。
+     *
+     * <p>真のときに飛ぶ形と偽のときに飛ぶ形の両方を持つのは、<b>{@code AND} と
+     * {@code OR} の短絡</b>のためである。片方だけだと、どちらかで余計な分岐が要る。
+     */
+    private void emitCondition(Condition condition, Label target, boolean jumpWhenTrue) {
+        if (condition instanceof Condition.Not not) {
+            emitCondition(not.inner(), target, !jumpWhenTrue);
+            return;
+        }
+        if (condition instanceof Condition.And and) {
+            if (jumpWhenTrue) {
+                // 左が偽なら全体も偽。飛ばずに下へ抜ける
+                Label skip = new Label();
+                emitCondition(and.left(), skip, false);
+                emitCondition(and.right(), target, true);
+                run.visitLabel(skip);
+            } else {
+                emitCondition(and.left(), target, false);
+                emitCondition(and.right(), target, false);
+            }
+            return;
+        }
+        if (condition instanceof Condition.Or or) {
+            if (jumpWhenTrue) {
+                emitCondition(or.left(), target, true);
+                emitCondition(or.right(), target, true);
+            } else {
+                // 左が真なら全体も真。飛ばずに下へ抜ける
+                Label skip = new Label();
+                emitCondition(or.left(), skip, true);
+                emitCondition(or.right(), target, false);
+                run.visitLabel(skip);
+            }
+            return;
+        }
+        emitRelation((Condition.Relation) condition, target, jumpWhenTrue);
+    }
+
+    private void emitRelation(Condition.Relation relation, Label target, boolean jumpWhenTrue) {
+        Runnable left;
+        Runnable right;
+        if (relation.numeric()) {
+            left = planSourceDecimal(relation.left(), relation.origin());
+            right = planSourceDecimal(relation.right(), relation.origin());
+        } else {
+            int length = comparisonLength(relation);
+            left = planSourceBytes(relation.left(), relation.origin(), length);
+            right = planSourceBytes(relation.right(), relation.origin(), length);
+        }
+        if (left == null || right == null) {
+            return;
+        }
+        left.run();
+        right.run();
+        if (relation.numeric()) {
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareNumeric",
+                    "(" + DECIMAL + DECIMAL + ")I", false);
+        } else {
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
+                    "([B[B" + CODE_PAGE + ")I", false);
+        }
+        Condition.Comparison comparison =
+                jumpWhenTrue ? relation.comparison() : relation.comparison().negate();
+        run.visitJumpInsn(branchOpcode(comparison), target);
+    }
+
+    /** 図形定数を広げる長さ。相手の項目の長さに合わせる。 */
+    private static int comparisonLength(Condition.Relation relation) {
+        int length = lengthOf(relation.left());
+        return length > 0 ? length : lengthOf(relation.right());
+    }
+
+    private static int lengthOf(Operand operand) {
+        if (operand instanceof Operand.Reference reference) {
+            return reference.reference().constantLength().orElse(0);
+        }
+        return 0;
+    }
+
+    private static int branchOpcode(Condition.Comparison comparison) {
+        return switch (comparison) {
+            case EQUAL -> Opcodes.IFEQ;
+            case NOT_EQUAL -> Opcodes.IFNE;
+            case LESS -> Opcodes.IFLT;
+            case LESS_OR_EQUAL -> Opcodes.IFLE;
+            case GREATER -> Opcodes.IFGT;
+            case GREATER_OR_EQUAL -> Opcodes.IFGE;
+        };
     }
 
     private void emitRun(List<Runnable> body) {

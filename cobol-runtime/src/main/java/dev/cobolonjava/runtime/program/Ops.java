@@ -11,6 +11,7 @@ import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import dev.cobolonjava.runtime.verb.Arithmetic;
+import dev.cobolonjava.runtime.verb.Compare;
 import dev.cobolonjava.runtime.verb.Move;
 
 /**
@@ -52,6 +53,18 @@ public final class Ops {
     public static Decimal readNumeric(NumericItem source, Storage storage, int offset) {
         DataView view = storage.view(offset, source.byteLength());
         return source.load(view);
+    }
+
+    // ---- 比較 ----
+
+    /** 数値比較。内部表現と桁数の違いに影響されない。 */
+    public static int compareNumeric(Decimal left, Decimal right) {
+        return Compare.numeric(left, right);
+    }
+
+    /** 英数字比較。短いほうは空白で埋めて比べる。 */
+    public static int compareAlphanumeric(byte[] left, byte[] right, CodePage codePage) {
+        return Compare.alphanumeric(left, right, codePage);
     }
 
     // ---- 算術 ----

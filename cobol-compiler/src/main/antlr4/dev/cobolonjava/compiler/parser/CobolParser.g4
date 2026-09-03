@@ -14,6 +14,10 @@ tokens {
     // 区切り文字
     PERIOD, COMMA, SEMICOLON, LPAREN, RPAREN, COLON,
 
+    // 関係演算子の記号形。COBOL 語として書けない綴りなので、
+    // SourceTokenSource が綴りから直接この種別へ写す
+    EQUAL_SIGN, GREATER_SIGN, LESS_SIGN, GREATER_EQUAL_SIGN, LESS_EQUAL_SIGN, NOT_EQUAL_SIGN,
+
     // 島 (不透明トークン)
     PICTURE_STRING, EXEC_BLOCK,
 
@@ -30,6 +34,8 @@ tokens {
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
+    IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
+    AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
@@ -298,6 +304,8 @@ sentence
 
 statement
     : moveStatement
+    | ifStatement
+    | continueStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -311,6 +319,78 @@ moveStatement
 moveSource
     : identifier
     | literal
+    ;
+
+// ---- 条件 ----
+
+condition
+    : orCondition
+    ;
+
+orCondition
+    : andCondition (OR andCondition)*
+    ;
+
+andCondition
+    : notCondition (AND notCondition)*
+    ;
+
+notCondition
+    : NOT? simpleCondition
+    ;
+
+// 条件名は「名前だけ」で書かれる。関係条件と符号条件を先に試す
+simpleCondition
+    : LPAREN condition RPAREN
+    | relationCondition
+    | signCondition
+    | conditionNameCondition
+    ;
+
+relationCondition
+    : arithmeticOperand relationalOperator arithmeticOperand
+    ;
+
+signCondition
+    : arithmeticOperand IS? NOT? (POSITIVE | NEGATIVE | ZERO)
+    ;
+
+conditionNameCondition
+    : identifier
+    ;
+
+relationalOperator
+    : IS? NOT? relationalOperatorBody
+    ;
+
+relationalOperatorBody
+    : GREATER THAN? OR EQUAL TO?
+    | LESS THAN? OR EQUAL TO?
+    | GREATER THAN?
+    | LESS THAN?
+    | EQUAL TO?
+    | GREATER_EQUAL_SIGN
+    | LESS_EQUAL_SIGN
+    | NOT_EQUAL_SIGN
+    | GREATER_SIGN
+    | LESS_SIGN
+    | EQUAL_SIGN
+    ;
+
+// ---- 制御構造 ----
+
+// END-IF がなければ、本体は終止符または ELSE まで続く
+ifStatement
+    : IF condition THEN? ifBranch (ELSE ifBranch)? END_IF?
+    ;
+
+ifBranch
+    : NEXT SENTENCE
+    | statement+
+    ;
+
+continueStatement
+    : CONTINUE
     ;
 
 // ---- 算術文 ----

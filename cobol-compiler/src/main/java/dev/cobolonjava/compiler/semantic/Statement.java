@@ -83,4 +83,23 @@ public sealed interface Statement {
         public record Target(DataReference reference, boolean rounded) {
         }
     }
+
+    /**
+     * {@code IF} 文。
+     *
+     * @param onTrue  条件が成り立つときの文。{@code NEXT SENTENCE} は空の並びになる
+     * @param onFalse {@code ELSE} の文。なければ空
+     */
+    record If(Condition condition, List<Statement> onTrue, List<Statement> onFalse, Origin origin)
+            implements Statement {
+
+        public If {
+            onTrue = List.copyOf(onTrue);
+            onFalse = List.copyOf(onFalse);
+        }
+    }
+
+    /** {@code CONTINUE}。何もしない。 */
+    record Continue(Origin origin) implements Statement {
+    }
 }

@@ -48,10 +48,26 @@ public final class SourceTokenSource implements TokenSource {
      */
     private static final Set<String> NOT_RESERVED_WORDS = Set.of(
             "PERIOD", "COMMA", "SEMICOLON", "LPAREN", "RPAREN", "COLON",
+            "EQUAL_SIGN", "GREATER_SIGN", "LESS_SIGN",
+            "GREATER_EQUAL_SIGN", "LESS_EQUAL_SIGN", "NOT_EQUAL_SIGN",
             "PICTURE_STRING", "EXEC_BLOCK",
             "IDENTIFIER", "LITERAL", "NUMBER");
 
     private static final Map<String, Integer> RESERVED_WORDS = reservedWords(CobolParser.VOCABULARY);
+
+    /**
+     * 関係演算子の記号形。
+     *
+     * <p>{@code =} や {@code >=} は COBOL 語として書けない綴りなので、
+     * 語彙から名前で引くことができない。ここで綴りから直接種別へ写す。
+     */
+    private static final Map<String, Integer> OPERATOR_SYMBOLS = Map.of(
+            "=", CobolParser.EQUAL_SIGN,
+            ">", CobolParser.GREATER_SIGN,
+            "<", CobolParser.LESS_SIGN,
+            ">=", CobolParser.GREATER_EQUAL_SIGN,
+            "<=", CobolParser.LESS_EQUAL_SIGN,
+            "<>", CobolParser.NOT_EQUAL_SIGN);
 
     private final List<SourceToken> tokens;
     private final Pair<TokenSource, CharStream> stream = new Pair<>(this, null);
@@ -113,6 +129,10 @@ public final class SourceTokenSource implements TokenSource {
     }
 
     private static int wordType(String text) {
+        Integer symbol = OPERATOR_SYMBOLS.get(text);
+        if (symbol != null) {
+            return symbol;
+        }
         Integer reserved = RESERVED_WORDS.get(text.toUpperCase(Locale.ROOT).replace('-', '_'));
         if (reserved != null) {
             return reserved;

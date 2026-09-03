@@ -20,10 +20,12 @@ import org.antlr.v4.runtime.ParserRuleContext;
 public final class ProcedureBuilder {
 
     private final ReferenceResolver resolver;
+    private final DataLayout layout;
     private final List<Diagnostic> diagnostics;
 
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics) {
         this.resolver = new ReferenceResolver(layout, diagnostics);
+        this.layout = layout;
         this.diagnostics = diagnostics;
     }
 
@@ -100,6 +102,12 @@ public final class ProcedureBuilder {
         if (context.moveStatement() != null) {
             return moveOf(context.moveStatement());
         }
+        if (context.ifStatement() != null) {
+            return ifOf(context.ifStatement());
+        }
+        if (context.continueStatement() != null) {
+            return new Statement.Continue(ReferenceResolver.originOf(context));
+        }
         if (context.addStatement() != null) {
             return addOf(context.addStatement());
         }
@@ -114,6 +122,220 @@ public final class ProcedureBuilder {
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;
+    }
+
+    // ---- 制御構造 ----
+
+    private Statement ifOf(CobolParser.IfStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        Condition condition = conditionOf(context.condition());
+        if (condition == null) {
+            return null;
+        }
+        List<Statement> onTrue = branchOf(context.ifBranch(0));
+        List<Statement> onFalse = context.ifBranch().size() > 1
+                ? branchOf(context.ifBranch(1))
+                : List.of();
+        return new Statement.If(condition, onTrue, onFalse, origin);
+    }
+
+    /** {@code NEXT SENTENCE} は「この文の残りを飛ばす」ことであり、いまは空の並びとする。 */
+    private List<Statement> branchOf(CobolParser.IfBranchContext context) {
+        List<Statement> statements = new ArrayList<>();
+        for (CobolParser.StatementContext statement : context.statement()) {
+            Statement built = statementOf(statement);
+            if (built != null) {
+                statements.add(built);
+            }
+        }
+        return statements;
+    }
+
+    // ---- 条件 ----
+
+    private Condition conditionOf(CobolParser.ConditionContext context) {
+        return orOf(context.orCondition());
+    }
+
+    private Condition orOf(CobolParser.OrConditionContext context) {
+        Condition result = null;
+        for (CobolParser.AndConditionContext operand : context.andCondition()) {
+            Condition next = andOf(operand);
+            if (next == null) {
+                return null;
+            }
+            result = result == null ? next : new Condition.Or(result, next);
+        }
+        return result;
+    }
+
+    private Condition andOf(CobolParser.AndConditionContext context) {
+        Condition result = null;
+        for (CobolParser.NotConditionContext operand : context.notCondition()) {
+            Condition next = notOf(operand);
+            if (next == null) {
+                return null;
+            }
+            result = result == null ? next : new Condition.And(result, next);
+        }
+        return result;
+    }
+
+    private Condition notOf(CobolParser.NotConditionContext context) {
+        Condition inner = simpleOf(context.simpleCondition());
+        if (inner == null) {
+            return null;
+        }
+        return context.NOT() == null ? inner : new Condition.Not(inner);
+    }
+
+    private Condition simpleOf(CobolParser.SimpleConditionContext context) {
+        if (context.condition() != null) {
+            return conditionOf(context.condition());
+        }
+        if (context.relationCondition() != null) {
+            return relationOf(context.relationCondition());
+        }
+        if (context.signCondition() != null) {
+            return signOf(context.signCondition());
+        }
+        return conditionNameOf(context.conditionNameCondition());
+    }
+
+    private Condition relationOf(CobolParser.RelationConditionContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        Operand left = operandOf(context.arithmeticOperand(0), origin);
+        Operand right = operandOf(context.arithmeticOperand(1), origin);
+        if (left == null || right == null) {
+            return null;
+        }
+        Condition.Comparison comparison = comparisonOf(context.relationalOperator());
+        if (comparison == null) {
+            report(origin, "unknown relational operator: "
+                    + context.relationalOperator().getText());
+            return null;
+        }
+        return relation(left, comparison, right, origin);
+    }
+
+    /**
+     * 関係条件を組み立てる。<b>両辺が数値なら代数的な比較</b>、そうでなければ
+     * コードページの照合順序による比較になる。
+     */
+    private Condition relation(Operand left, Condition.Comparison comparison, Operand right,
+                               Origin origin) {
+        boolean numeric = isNumeric(left, true) && isNumeric(right, true);
+        return new Condition.Relation(left, comparison, right, numeric, origin);
+    }
+
+    /** 被演算子が数値として扱われるか。定数は受取側に合わせるので、既定の見方を渡す。 */
+    private static boolean isNumeric(Operand operand, boolean literalDefault) {
+        if (operand instanceof Operand.Reference reference) {
+            return DataCategory.of(reference.reference()).isNumeric();
+        }
+        LiteralValue value = ((Operand.Literal) operand).value();
+        return DataCategory.of(value, literalDefault).isNumeric();
+    }
+
+    private static Condition.Comparison comparisonOf(
+            CobolParser.RelationalOperatorContext context) {
+        Condition.Comparison comparison = bodyOf(context.relationalOperatorBody());
+        if (comparison == null) {
+            return null;
+        }
+        return context.NOT() == null ? comparison : comparison.negate();
+    }
+
+    private static Condition.Comparison bodyOf(
+            CobolParser.RelationalOperatorBodyContext context) {
+        boolean orEqual = context.OR() != null;
+        if (context.GREATER() != null || context.GREATER_SIGN() != null) {
+            return orEqual ? Condition.Comparison.GREATER_OR_EQUAL : Condition.Comparison.GREATER;
+        }
+        if (context.LESS() != null || context.LESS_SIGN() != null) {
+            return orEqual ? Condition.Comparison.LESS_OR_EQUAL : Condition.Comparison.LESS;
+        }
+        if (context.GREATER_EQUAL_SIGN() != null) {
+            return Condition.Comparison.GREATER_OR_EQUAL;
+        }
+        if (context.LESS_EQUAL_SIGN() != null) {
+            return Condition.Comparison.LESS_OR_EQUAL;
+        }
+        if (context.NOT_EQUAL_SIGN() != null) {
+            return Condition.Comparison.NOT_EQUAL;
+        }
+        if (context.EQUAL() != null || context.EQUAL_SIGN() != null) {
+            return Condition.Comparison.EQUAL;
+        }
+        return null;
+    }
+
+    /** 符号条件はゼロとの比較へ展開する。 */
+    private Condition signOf(CobolParser.SignConditionContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        Operand operand = operandOf(context.arithmeticOperand(), origin);
+        if (operand == null) {
+            return null;
+        }
+        if (!isNumeric(operand, true)) {
+            report(origin, "a sign condition requires a numeric operand");
+            return null;
+        }
+        Condition.Comparison comparison;
+        if (context.POSITIVE() != null) {
+            comparison = Condition.Comparison.GREATER;
+        } else if (context.NEGATIVE() != null) {
+            comparison = Condition.Comparison.LESS;
+        } else {
+            comparison = Condition.Comparison.EQUAL;
+        }
+        if (context.NOT() != null) {
+            comparison = comparison.negate();
+        }
+        Operand zero = new Operand.Literal(
+                new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO));
+        return new Condition.Relation(operand, comparison, zero, true, origin);
+    }
+
+    /**
+     * 条件名 (88 レベル) は、親の項目と値を比べる関係条件へ展開する。
+     * 値が複数あれば選言、{@code THRU} の範囲なら 2 つの比較の連言になる。
+     */
+    private Condition conditionNameOf(CobolParser.ConditionNameConditionContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String name = context.identifier().qualifiedDataName().dataName(0).getText()
+                .toUpperCase(Locale.ROOT);
+        for (DataItem item : layout.all()) {
+            for (DataItem.ConditionName conditionName : item.conditionNames()) {
+                if (name.equals(conditionName.name())) {
+                    return conditionNameCondition(item, conditionName, origin);
+                }
+            }
+        }
+        report(origin, "undefined condition-name: " + name);
+        return null;
+    }
+
+    private Condition conditionNameCondition(DataItem item, DataItem.ConditionName conditionName,
+                                             Origin origin) {
+        Operand subject = new Operand.Reference(
+                new DataReference(item, List.of(), null, origin));
+        Condition result = null;
+        for (DataItem.ValueRange range : conditionName.values()) {
+            Condition test;
+            if (range.to() == null) {
+                test = relation(subject, Condition.Comparison.EQUAL,
+                        new Operand.Literal(range.from()), origin);
+            } else {
+                test = new Condition.And(
+                        relation(subject, Condition.Comparison.GREATER_OR_EQUAL,
+                                new Operand.Literal(range.from()), origin),
+                        relation(subject, Condition.Comparison.LESS_OR_EQUAL,
+                                new Operand.Literal(range.to()), origin));
+            }
+            result = result == null ? test : new Condition.Or(result, test);
+        }
+        return result;
     }
 
     // ---- 算術文 ----
