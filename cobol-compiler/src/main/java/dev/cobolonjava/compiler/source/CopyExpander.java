@@ -94,57 +94,12 @@ public final class CopyExpander {
             stack.pop();
         }
 
-        List<TextWord> replaced = applyReplacements(body, statement.replacements());
+        List<TextWord> replaced = TextReplacements.apply(body, statement.replacements());
         if (!replaced.isEmpty()) {
             // 展開結果の先頭は、直前の語と続けて読まれないよう空白で区切る
             replaced.set(0, replaced.get(0).withPrecededBySpace(true));
         }
         return replaced;
-    }
-
-    /**
-     * 置換を適用する。各位置で置換の指定を書かれた順に試し、最初に一致したものを使う。
-     */
-    static List<TextWord> applyReplacements(List<TextWord> body, List<Replacement> replacements) {
-        if (replacements.isEmpty()) {
-            return body;
-        }
-        List<TextWord> out = new ArrayList<>();
-        int i = 0;
-        while (i < body.size()) {
-            Replacement matched = null;
-            for (Replacement replacement : replacements) {
-                if (matchesAt(body, i, replacement.from())) {
-                    matched = replacement;
-                    break;
-                }
-            }
-            if (matched == null) {
-                out.add(body.get(i));
-                i++;
-                continue;
-            }
-            List<TextWord> to = matched.to();
-            for (int k = 0; k < to.size(); k++) {
-                TextWord word = to.get(k);
-                // 差し込む列の先頭は、置き換えられた語の空白の扱いを引き継ぐ
-                out.add(k == 0 ? word.withPrecededBySpace(body.get(i).precededBySpace()) : word);
-            }
-            i += matched.from().size();
-        }
-        return out;
-    }
-
-    private static boolean matchesAt(List<TextWord> body, int at, List<TextWord> pattern) {
-        if (pattern.isEmpty() || at + pattern.size() > body.size()) {
-            return false;
-        }
-        for (int k = 0; k < pattern.size(); k++) {
-            if (!body.get(at + k).matches(pattern.get(k))) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /** {@code COPY} 文を解析する。 */
@@ -169,20 +124,20 @@ public final class CopyExpander {
             libraryName = unquote(words.get(i++));
         }
 
-        List<Replacement> replacements = new ArrayList<>();
+        List<TextReplacement> replacements = new ArrayList<>();
         if (i < words.size() && words.get(i).isWord("REPLACING")) {
             i++;
             while (i < words.size() && !words.get(i).isSeparator('.')) {
-                Operand from = readOperand(words, i, origin);
+                TextReplacements.Operand from = TextReplacements.readOperand(words, i, origin);
                 i = from.endIndex() + 1;
                 if (i >= words.size() || !words.get(i).isWord("BY")) {
                     throw new SourceFormatException(
                             origin + ": REPLACING requires BY after an operand");
                 }
                 i++;
-                Operand to = readOperand(words, i, origin);
+                TextReplacements.Operand to = TextReplacements.readOperand(words, i, origin);
                 i = to.endIndex() + 1;
-                replacements.add(new Replacement(from.words(), to.words()));
+                replacements.add(new TextReplacement(from.words(), to.words()));
             }
         }
 
@@ -190,26 +145,6 @@ public final class CopyExpander {
             throw new SourceFormatException(origin + ": COPY must be terminated by a period");
         }
         return new CopyStatement(textName, libraryName, replacements, i, origin);
-    }
-
-    /** 置換の被演算子を読む。擬似テキストは語の列、それ以外は 1 語である。 */
-    private static Operand readOperand(List<TextWord> words, int start, Origin origin) {
-        if (start >= words.size()) {
-            throw new SourceFormatException(origin + ": REPLACING is missing an operand");
-        }
-        if (words.get(start).kind() != TextWordKind.PSEUDO_DELIMITER) {
-            return new Operand(List.of(words.get(start)), start);
-        }
-        List<TextWord> collected = new ArrayList<>();
-        int i = start + 1;
-        while (i < words.size() && words.get(i).kind() != TextWordKind.PSEUDO_DELIMITER) {
-            collected.add(words.get(i));
-            i++;
-        }
-        if (i >= words.size()) {
-            throw new SourceFormatException(origin + ": pseudo-text is not terminated by ==");
-        }
-        return new Operand(collected, i);
     }
 
     private static String unquote(TextWord word) {
@@ -220,14 +155,7 @@ public final class CopyExpander {
         return text;
     }
 
-    /** 置換の 1 組。 */
-    record Replacement(List<TextWord> from, List<TextWord> to) {
-    }
-
-    private record Operand(List<TextWord> words, int endIndex) {
-    }
-
     private record CopyStatement(String textName, String libraryName,
-                                 List<Replacement> replacements, int endIndex, Origin origin) {
+                                 List<TextReplacement> replacements, int endIndex, Origin origin) {
     }
 }
