@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.source;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -14,21 +15,40 @@ import java.util.Optional;
  *   <li>固定形式のカラム分解と継続行の連結 ({@link FixedFormatReader})</li>
  *   <li>{@code COPY} の展開と {@code REPLACING} の適用 ({@link CopyExpander})</li>
  *   <li>{@code REPLACE} の適用 ({@link ReplaceProcessor})</li>
+ *   <li>コンパイラ指示文の処理 ({@link DirectiveProcessor})</li>
  *   <li>「島」の切り出しとトークン化 ({@link Tokenizer})</li>
  * </ol>
  *
  * <p>この順序は COBOL が定めるものである。{@code COPY} をすべて処理してから
  * {@code REPLACE} を適用するため、<b>{@code REPLACE} はコピー句から展開された語にも効く</b>。
  * 順序を逆にすると、コピー句の中身が置換の対象から漏れる。
+ *
+ * <p>コンパイラ指示文を最後に置くのは、<b>コピー句の中の {@code >>IF} を処理し、
+ * かつ主ソースの {@code >>DEFINE} をそこへ届ける</b>ためである (暫定判断 P-020)。
  */
 public final class Preprocessor {
 
     private final CopyBookResolver resolver;
     private final FixedFormatReader reader;
+    private final Map<String, String> parameters;
 
-    public Preprocessor(CopyBookResolver resolver, FixedFormatReader reader) {
+    public Preprocessor(CopyBookResolver resolver, FixedFormatReader reader,
+                        Map<String, String> parameters) {
         this.resolver = resolver;
         this.reader = reader;
+        this.parameters = Map.copyOf(parameters);
+    }
+
+    public Preprocessor(CopyBookResolver resolver, FixedFormatReader reader) {
+        this(resolver, reader, Map.of());
+    }
+
+    /**
+     * {@code >>DEFINE 名 AS PARAMETER} に供給する値を差し替えた構成を返す。
+     * 翻訳時オプションから与えられる。
+     */
+    public Preprocessor withParameters(Map<String, String> values) {
+        return new Preprocessor(resolver, reader, values);
     }
 
     /** コピー句を持たない構成。{@code COPY} が現れたら誤りになる。 */
@@ -50,7 +70,8 @@ public final class Preprocessor {
     public NormalizedSource process(String fileName, String source) {
         NormalizedSource normalized = reader.normalize(fileName, source);
         NormalizedSource expanded = new CopyExpander(resolver, reader).expand(normalized);
-        return ReplaceProcessor.apply(expanded);
+        NormalizedSource replaced = ReplaceProcessor.apply(expanded);
+        return DirectiveProcessor.apply(replaced, parameters);
     }
 
     /**
