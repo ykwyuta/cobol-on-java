@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>dev.cobolonjava</groupId>
+    <artifactId>cobol-on-java</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>cobol-compiler</artifactId>
+  <name>cobol-compiler</name>
+  <description>
+    COBOL コンパイラ。プリプロセッサ、構文解析、意味解析、コード生成を担う。
+    依存の向きは cobol-compiler から cobol-runtime への一方向のみである (要件 ARC-4)。
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-runtime</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
