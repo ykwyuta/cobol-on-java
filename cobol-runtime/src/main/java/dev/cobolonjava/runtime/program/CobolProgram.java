@@ -21,10 +21,18 @@ public interface CobolProgram {
      */
     void run(Storage storage, ProgramContext context);
 
-    /** 初期イメージから記憶域を作って実行する。 */
+    /**
+     * 初期イメージから記憶域を作って実行する。
+     *
+     * <p>{@code STOP RUN} と {@code GOBACK} はここで受け止める。
+     */
     default Storage runFresh(ProgramContext context) {
         Storage storage = Storage.wrap(initialStorage());
-        run(storage, context);
+        try {
+            run(storage, context);
+        } catch (ProgramStop stop) {
+            // 実行が終わっただけであり、誤りではない
+        }
         return storage;
     }
 

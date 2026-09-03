@@ -137,6 +137,10 @@ public sealed interface Statement {
         }
     }
 
+    /** {@code STOP RUN} と {@code GOBACK}。実行を終える。 */
+    record Stop(Origin origin) implements Statement {
+    }
+
     /** {@code CONTINUE}。何もしない。 */
     record Continue(Origin origin) implements Statement {
     }

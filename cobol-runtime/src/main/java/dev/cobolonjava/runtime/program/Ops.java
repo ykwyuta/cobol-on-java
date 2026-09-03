@@ -65,6 +65,17 @@ public final class Ops {
         return value.toBigDecimal().intValue();
     }
 
+    /**
+     * {@code STOP RUN} と {@code GOBACK}。実行を終える。
+     *
+     * <p>段落は別々のメソッドとして生成されるため、単に戻るだけでは呼び出し元へ
+     * 制御が返ってしまう。<b>例外で一気に抜ける</b>ことで、どこから呼ばれていても
+     * プログラムの実行そのものが終わる。
+     */
+    public static void stopRun() {
+        throw new ProgramStop();
+    }
+
     // ---- 表示 ----
 
     /**

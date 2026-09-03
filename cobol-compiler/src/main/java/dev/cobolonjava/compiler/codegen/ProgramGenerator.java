@@ -227,6 +227,9 @@ public final class ProgramGenerator {
                 planPerform(perform, body);
             } else if (statement instanceof Statement.Display display) {
                 planDisplay(display, body);
+            } else if (statement instanceof Statement.Stop) {
+                body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "stopRun", "()V",
+                        false));
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;

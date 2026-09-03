@@ -38,6 +38,8 @@ tokens {
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
     PERFORM, END_PERFORM, UNTIL, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING,
+    EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
+    STOP, RUN, GOBACK,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
 
     // データ部
@@ -308,6 +310,8 @@ sentence
 statement
     : moveStatement
     | ifStatement
+    | evaluateStatement
+    | stopStatement
     | displayStatement
     | performStatement
     | continueStatement
@@ -396,6 +400,41 @@ ifBranch
 
 continueStatement
     : CONTINUE
+    ;
+
+stopStatement
+    : STOP RUN
+    | GOBACK
+    ;
+
+// EVALUATE は「主語と目的語を突き合わせる」書き方である。
+// 突き合わせ方は主語が TRUE / FALSE かどうかで変わる
+evaluateStatement
+    : EVALUATE evaluateSubject (ALSO evaluateSubject)*
+      evaluateBranch+
+      (WHEN OTHER statement*)?
+      END_EVALUATE?
+    ;
+
+// 同じ本体に複数の WHEN を並べられる
+evaluateBranch
+    : (WHEN evaluateObject (ALSO evaluateObject)*)+ statement*
+    ;
+
+evaluateSubject
+    : TRUE
+    | FALSE
+    | arithmeticOperand
+    ;
+
+// 範囲は THRU で見分ける。残りは条件を先に試し、当たらなければ値とする
+evaluateObject
+    : ANY
+    | NOT? arithmeticOperand (THRU | THROUGH) arithmeticOperand
+    | TRUE
+    | FALSE
+    | condition
+    | NOT? arithmeticOperand
     ;
 
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける

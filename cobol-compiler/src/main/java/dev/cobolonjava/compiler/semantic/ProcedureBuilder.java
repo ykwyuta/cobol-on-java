@@ -157,6 +157,12 @@ public final class ProcedureBuilder {
         if (context.performStatement() != null) {
             return performOf(context.performStatement());
         }
+        if (context.evaluateStatement() != null) {
+            return evaluateOf(context.evaluateStatement());
+        }
+        if (context.stopStatement() != null) {
+            return new Statement.Stop(ReferenceResolver.originOf(context));
+        }
         if (context.displayStatement() != null) {
             return displayOf(context.displayStatement());
         }
@@ -251,6 +257,178 @@ public final class ProcedureBuilder {
             }
         }
         return new Statement.Perform(target, through, times, until, testAfter, body, origin);
+    }
+
+    /**
+     * {@code EVALUATE} を {@code IF} の連なりへ展開する。
+     *
+     * <p>{@code EVALUATE} は「主語と目的語を突き合わせ、最初に当たった枝を通る」ものであり、
+     * <b>{@code IF} … {@code ELSE IF} … {@code ELSE} と同じ意味である</b>。
+     * 別の形として持つと、コード生成が同じ分岐を 2 度書くことになる。
+     */
+    private Statement evaluateOf(CobolParser.EvaluateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<CobolParser.EvaluateSubjectContext> subjects = context.evaluateSubject();
+
+        List<Condition> conditions = new ArrayList<>();
+        List<List<Statement>> bodies = new ArrayList<>();
+        for (CobolParser.EvaluateBranchContext branch : context.evaluateBranch()) {
+            Condition condition = branchCondition(branch, subjects, origin);
+            if (condition == null) {
+                return null;
+            }
+            conditions.add(condition);
+            bodies.add(listOf(branch.statement()));
+        }
+
+        // WHEN OTHER の文は、いちばん外側の ELSE になる
+        List<Statement> otherwise = context.OTHER() == null
+                ? List.of()
+                : listOf(context.statement());
+
+        Statement result = null;
+        for (int i = conditions.size() - 1; i >= 0; i--) {
+            List<Statement> elseBranch = result == null ? otherwise : List.of(result);
+            result = new Statement.If(conditions.get(i), bodies.get(i), elseBranch, origin);
+        }
+        return result;
+    }
+
+    /** 1 つの枝の条件。同じ本体に並べた複数の {@code WHEN} は選言になる。 */
+    private Condition branchCondition(CobolParser.EvaluateBranchContext branch,
+                                      List<CobolParser.EvaluateSubjectContext> subjects,
+                                      Origin origin) {
+        List<CobolParser.EvaluateObjectContext> objects = branch.evaluateObject();
+        if (objects.size() % subjects.size() != 0) {
+            report(origin, "the number of WHEN objects does not match the number of subjects");
+            return null;
+        }
+        Condition result = null;
+        for (int start = 0; start < objects.size(); start += subjects.size()) {
+            Condition alternative = null;
+            for (int i = 0; i < subjects.size(); i++) {
+                Condition test = objectCondition(subjects.get(i), objects.get(start + i), origin);
+                if (test == null) {
+                    return null;
+                }
+                if (test == ALWAYS_TRUE) {
+                    // ANY はその位置を問わないという指定である
+                    continue;
+                }
+                alternative = alternative == null ? test : new Condition.And(alternative, test);
+            }
+            if (alternative == null) {
+                alternative = alwaysTrue(origin);
+            }
+            result = result == null ? alternative : new Condition.Or(result, alternative);
+        }
+        return result;
+    }
+
+    /**
+     * {@code ANY} を表す印。同一性で見分ける。
+     * 万一漏れても<b>つねに成り立つ条件として振る舞う</b>ようにしてある。
+     */
+    private static final Condition ALWAYS_TRUE = alwaysTrue(null);
+
+    /** つねに成り立つ条件。{@code 0 = 0} で表す。 */
+    private static Condition alwaysTrue(Origin origin) {
+        Operand zero = new Operand.Literal(
+                new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO));
+        return new Condition.Relation(zero, Condition.Comparison.EQUAL, zero, true, origin);
+    }
+
+    /**
+     * 主語 1 個と目的語 1 個の突き合わせ。
+     *
+     * <p>主語が {@code TRUE} / {@code FALSE} なら目的語は条件そのもの、
+     * そうでなければ<b>主語と目的語の値を比べる</b>。
+     */
+    private Condition objectCondition(CobolParser.EvaluateSubjectContext subject,
+                                      CobolParser.EvaluateObjectContext object, Origin origin) {
+        if (object.ANY() != null) {
+            return ALWAYS_TRUE;
+        }
+        boolean truthMode = subject.TRUE() != null || subject.FALSE() != null;
+        if (truthMode) {
+            Condition condition = truthObject(object, origin);
+            if (condition == null) {
+                return null;
+            }
+            // EVALUATE FALSE は、当たる枝の条件が成り立たないことを問う
+            return subject.FALSE() == null ? condition : new Condition.Not(condition);
+        }
+        return valueObject(subject.arithmeticOperand(), object, origin);
+    }
+
+    /** {@code EVALUATE TRUE} の目的語。条件として読む。 */
+    private Condition truthObject(CobolParser.EvaluateObjectContext object, Origin origin) {
+        if (object.TRUE() != null) {
+            return alwaysTrue(origin);
+        }
+        if (object.FALSE() != null) {
+            return new Condition.Not(alwaysTrue(origin));
+        }
+        if (object.condition() != null) {
+            return conditionOf(object.condition());
+        }
+        report(origin, "EVALUATE TRUE requires a condition in its WHEN");
+        return null;
+    }
+
+    /** 値を比べる目的語。{@code THRU} なら範囲になる。 */
+    private Condition valueObject(CobolParser.ArithmeticOperandContext subject,
+                                  CobolParser.EvaluateObjectContext object, Origin origin) {
+        Operand left = operandOf(subject, origin);
+        List<Operand> values = valuesOf(object, origin);
+        if (left == null || values == null || values.contains(null)) {
+            return null;
+        }
+        Condition test = values.size() == 1
+                ? relation(left, Condition.Comparison.EQUAL, values.get(0), origin)
+                : new Condition.And(
+                        relation(left, Condition.Comparison.GREATER_OR_EQUAL, values.get(0), origin),
+                        relation(left, Condition.Comparison.LESS_OR_EQUAL, values.get(1), origin));
+        return object.NOT() == null ? test : new Condition.Not(test);
+    }
+
+    /**
+     * 目的語から比べる値を取り出す。
+     *
+     * <p>主語が {@code TRUE} でない場合、名前だけの目的語は<b>条件名ではなく値</b>である。
+     * 文法だけでは見分けられないため、ここで読み替える。
+     */
+    private List<Operand> valuesOf(CobolParser.EvaluateObjectContext object, Origin origin) {
+        if (!object.arithmeticOperand().isEmpty()) {
+            List<Operand> values = new ArrayList<>();
+            for (CobolParser.ArithmeticOperandContext value : object.arithmeticOperand()) {
+                values.add(operandOf(value, origin));
+            }
+            return values;
+        }
+        CobolParser.IdentifierContext name = soleNameOf(object.condition());
+        if (name != null) {
+            DataReference reference = resolver.resolve(name);
+            return reference == null ? null : List.of(new Operand.Reference(reference));
+        }
+        report(origin, "a WHEN object must be a value when the subject is not TRUE or FALSE");
+        return null;
+    }
+
+    /** 条件が「名前だけ」であれば、その名前を返す。 */
+    private static CobolParser.IdentifierContext soleNameOf(
+            CobolParser.ConditionContext condition) {
+        if (condition == null || condition.orCondition().andCondition().size() != 1) {
+            return null;
+        }
+        CobolParser.AndConditionContext and = condition.orCondition().andCondition(0);
+        if (and.notCondition().size() != 1 || and.notCondition(0).NOT() != null) {
+            return null;
+        }
+        CobolParser.SimpleConditionContext simple = and.notCondition(0).simpleCondition();
+        return simple.conditionNameCondition() == null
+                ? null
+                : simple.conditionNameCondition().identifier();
     }
 
     // ---- 条件 ----
