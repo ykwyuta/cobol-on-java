@@ -12,6 +12,7 @@ import dev.cobolonjava.compiler.semantic.Statement;
 import dev.cobolonjava.compiler.source.Origin;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.data.SignPosition;
+import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.item.NumericItem;
@@ -181,6 +182,8 @@ public final class ProgramGenerator {
         for (Statement statement : procedure.statements()) {
             if (statement instanceof Statement.Move move) {
                 planMove(move, body);
+            } else if (statement instanceof Statement.Arithmetic arithmetic) {
+                planArithmetic(arithmetic, body);
             } else {
                 report(statement.origin(), "statement is not supported by the generator yet");
             }
@@ -277,6 +280,103 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveNumericEdited",
                     "(" + DECIMAL + PICTURE + "L" + STORAGE + ";I" + CODE_PAGE + ")V", false);
         });
+    }
+
+    // ---- 算術文 ----
+
+    /**
+     * 算術文を組み立てる。
+     *
+     * <p>受取項目ごとに計算をまるごと出す。<b>除算の商の桁数は受取項目に合わせる</b>ため、
+     * 受取項目が複数あれば計算そのものが変わりうるからである。
+     */
+    private void planArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
+        for (Statement.Arithmetic.Target target : statement.targets()) {
+            OptionalInt offset = target.reference().absoluteOffset();
+            if (offset.isEmpty()) {
+                report(statement.origin(), "a subscript that is not a constant is not supported yet");
+                return;
+            }
+            DataItem item = target.reference().item();
+            String field = numericItemConstant(item, statement.origin());
+            if (field == null || item.picture() == null) {
+                return;
+            }
+            int scale = item.picture().scale();
+            String rounding = target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION";
+
+            List<Runnable> value = new ArrayList<>();
+            if (statement.accumulate() != null) {
+                // 受取項目の現在値から始める
+                String source = field;
+                value.add(() -> {
+                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, source, NUMERIC_ITEM);
+                    run.visitVarInsn(Opcodes.ALOAD, 1);
+                    push(offset.getAsInt());
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
+                            "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
+                });
+            }
+            if (!planFold(statement, value, scale, rounding)) {
+                return;
+            }
+            if (statement.accumulate() != null) {
+                value.add(() -> emitOperator(statement.accumulate(), scale, rounding));
+            }
+
+            body.add(() -> {
+                value.forEach(Runnable::run);
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+                run.visitVarInsn(Opcodes.ALOAD, 1);
+                push(offset.getAsInt());
+                loadRounding(rounding);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
+                        "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
+                                + Type.getDescriptor(CobolRounding.class) + ")V", false);
+            });
+        }
+    }
+
+    /** 被演算子を左から畳む命令を積む。 */
+    private boolean planFold(Statement.Arithmetic statement, List<Runnable> value, int scale,
+                             String rounding) {
+        boolean first = true;
+        for (Operand operand : statement.operands()) {
+            Runnable push = planSourceDecimal(operand, statement.origin());
+            if (push == null) {
+                return false;
+            }
+            value.add(push);
+            if (!first) {
+                value.add(() -> emitOperator(statement.fold(), scale, rounding));
+            }
+            first = false;
+        }
+        return true;
+    }
+
+    private void emitOperator(Statement.Arithmetic.Operator operator, int scale, String rounding) {
+        if (operator == Statement.Arithmetic.Operator.DIVIDE) {
+            push(scale);
+            loadRounding(rounding);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "divide",
+                    "(" + DECIMAL + DECIMAL + "I" + Type.getDescriptor(CobolRounding.class) + ")"
+                            + DECIMAL, false);
+            return;
+        }
+        String name = switch (operator) {
+            case ADD -> "add";
+            case SUBTRACT -> "subtract";
+            case MULTIPLY -> "multiply";
+            case DIVIDE -> throw new IllegalStateException("handled above");
+        };
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name,
+                "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+    }
+
+    private void loadRounding(String name) {
+        run.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CobolRounding.class), name,
+                Type.getDescriptor(CobolRounding.class));
     }
 
     // ---- 送出側 ----

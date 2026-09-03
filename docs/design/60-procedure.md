@@ -79,16 +79,38 @@ PICTURE 文字列の切り出しは空白と区切りの句読点 (`.` `,` `;`) 
 書けない組み合わせ (英字項目を数値へ、数字編集項目を数値へ、小数を持つ数値を英数字へ) は
 翻訳時に誤りとする。通してしまうと<b>実行時に見当違いの値になる</b>。
 
+## 算術文は 1 つの形に落とす
+
+`ADD` / `SUBTRACT` / `MULTIPLY` / `DIVIDE` の 4 つは、書き方こそ違うが
+どれも「被演算子を左から畳んだ値を、受取項目へ入れるか、受取項目に対して演算する」形に落ちる。
+文ごとの違いは<b>畳み方と、受取項目を巻き込むかどうか</b>だけである。
+
+| 書き方 | 意味 | 畳む演算 | 受取項目を巻き込む演算 |
+| --- | --- | --- | --- |
+| `ADD A B TO C` | `C = C + (A + B)` | `ADD` | `ADD` |
+| `ADD A B GIVING C` | `C = A + B` | `ADD` | なし |
+| `SUBTRACT A B FROM C` | `C = C - (A + B)` | `ADD` | `SUBTRACT` |
+| `SUBTRACT A FROM B GIVING C` | `C = B - A` | `SUBTRACT` | なし |
+| `MULTIPLY A BY B` | `B = B * A` | `MULTIPLY` | `MULTIPLY` |
+| `DIVIDE A INTO B` | `B = B / A` | `DIVIDE` | `DIVIDE` |
+| `DIVIDE A BY B GIVING C` | `C = A / B` | `DIVIDE` | なし |
+
+`SUBTRACT ... FROM` だけは<b>畳む演算と受取項目に対する演算が違う</b> — 引く側を
+まず足し合わせ、その和を受取項目から引く。表を作らずに書くと、ここを取り違える。
+
+`GIVING` の有無で `TO` / `FROM` / `BY` / `INTO` のあとの役割が変わる。文法では区別せず、
+意味解析で振り分けている。
+
 ## いま組み立てられる文
 
-`MOVE` だけである (`CORRESPONDING` の指定は読むが、対応付けは未実装)。
-送り出しは一意名または定数、受け取りは一意名を複数書ける。
+`MOVE` と算術文 4 つである (`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
+`ON SIZE ERROR` と `COMPUTE` は未実装で、書くと構文誤りになる (暫定判断 P-028)。
 
 ## 次の増分
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `ADD` / `SUBTRACT` / `MULTIPLY` / `DIVIDE` / `COMPUTE`。ランタイムに動詞が揃っている。
-2. `IF` / `EVALUATE` / `PERFORM` の制御構造。
+1. `IF` / `EVALUATE` / `PERFORM` の制御構造。`ON SIZE ERROR` もここで繋ぐ。
+2. `COMPUTE`。中間結果の桁数の規則を決めてから。
 3. `MOVE CORRESPONDING` の対応付け。
 4. 88 レベルの条件名を条件として使えるようにする。

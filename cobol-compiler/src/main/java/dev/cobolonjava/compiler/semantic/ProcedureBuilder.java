@@ -6,6 +6,7 @@ import dev.cobolonjava.compiler.source.Origin;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import org.antlr.v4.runtime.ParserRuleContext;
 
 /**
  * 手続き部の構文木から文の並びを作る (要件 FR-060)。
@@ -99,8 +100,171 @@ public final class ProcedureBuilder {
         if (context.moveStatement() != null) {
             return moveOf(context.moveStatement());
         }
+        if (context.addStatement() != null) {
+            return addOf(context.addStatement());
+        }
+        if (context.subtractStatement() != null) {
+            return subtractOf(context.subtractStatement());
+        }
+        if (context.multiplyStatement() != null) {
+            return multiplyOf(context.multiplyStatement());
+        }
+        if (context.divideStatement() != null) {
+            return divideOf(context.divideStatement());
+        }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;
+    }
+
+    // ---- 算術文 ----
+
+    /**
+     * {@code ADD}。{@code GIVING} があれば {@code TO} のあとも被演算子になり、
+     * なければ受取項目になる。
+     */
+    private Statement addOf(CobolParser.AddStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Operand> operands = operandsOf(context.arithmeticOperand(), origin);
+        if (context.GIVING() == null) {
+            if (context.roundedOperand().isEmpty()) {
+                report(origin, "ADD without GIVING requires TO");
+                return null;
+            }
+            return arithmetic(Statement.Arithmetic.Operator.ADD, operands,
+                    Statement.Arithmetic.Operator.ADD, targetsOf(context.roundedOperand(), origin),
+                    origin);
+        }
+        operands.addAll(operandsOf(context.roundedOperand(), origin));
+        return arithmetic(Statement.Arithmetic.Operator.ADD, operands, null,
+                targetsOf(context.roundedTarget()), origin);
+    }
+
+    /**
+     * {@code SUBTRACT}。{@code GIVING} がなければ引かれる側が受取項目になり、
+     * あれば <b>引かれる側を先頭に置いて左から引く</b>。
+     */
+    private Statement subtractOf(CobolParser.SubtractStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Operand> subtrahends = operandsOf(context.arithmeticOperand(), origin);
+        if (context.GIVING() == null) {
+            // 引く側をまず足し合わせ、その和を受取項目から引く
+            return arithmetic(Statement.Arithmetic.Operator.ADD, subtrahends,
+                    Statement.Arithmetic.Operator.SUBTRACT,
+                    targetsOf(context.roundedOperand(), origin), origin);
+        }
+        List<Operand> operands = operandsOf(context.roundedOperand(), origin);
+        operands.addAll(subtrahends);
+        return arithmetic(Statement.Arithmetic.Operator.SUBTRACT, operands, null,
+                targetsOf(context.roundedTarget()), origin);
+    }
+
+    private Statement multiplyOf(CobolParser.MultiplyStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Operand> multiplier = operandsOf(List.of(context.arithmeticOperand()), origin);
+        if (context.GIVING() == null) {
+            return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, multiplier,
+                    Statement.Arithmetic.Operator.MULTIPLY,
+                    targetsOf(context.roundedOperand(), origin), origin);
+        }
+        List<Operand> operands = new ArrayList<>(multiplier);
+        operands.addAll(operandsOf(context.roundedOperand(), origin));
+        return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, operands, null,
+                targetsOf(context.roundedTarget()), origin);
+    }
+
+    /**
+     * {@code DIVIDE}。{@code INTO} と {@code BY} で割る側と割られる側が入れ替わる。
+     */
+    private Statement divideOf(CobolParser.DivideStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Operand> first = operandsOf(List.of(context.arithmeticOperand()), origin);
+        boolean into = context.INTO() != null;
+        if (context.GIVING() == null) {
+            if (!into) {
+                report(origin, "DIVIDE ... BY requires GIVING");
+                return null;
+            }
+            return arithmetic(Statement.Arithmetic.Operator.DIVIDE, first,
+                    Statement.Arithmetic.Operator.DIVIDE,
+                    targetsOf(context.roundedOperand(), origin), origin);
+        }
+        List<Operand> second = operandsOf(context.roundedOperand(), origin);
+        List<Operand> operands = new ArrayList<>();
+        // INTO は「割られる側があとに書かれる」ので、畳む順に入れ替える
+        operands.addAll(into ? second : first);
+        operands.addAll(into ? first : second);
+        return arithmetic(Statement.Arithmetic.Operator.DIVIDE, operands, null,
+                targetsOf(context.roundedTarget()), origin);
+    }
+
+    private Statement arithmetic(Statement.Arithmetic.Operator fold, List<Operand> operands,
+                                 Statement.Arithmetic.Operator accumulate,
+                                 List<Statement.Arithmetic.Target> targets, Origin origin) {
+        if (operands.contains(null) || targets.contains(null) || targets.isEmpty()) {
+            // 解決できなかった参照は報告済みである
+            return null;
+        }
+        for (Statement.Arithmetic.Target target : targets) {
+            if (!DataCategory.of(target.reference()).isNumeric()) {
+                report(origin, "an arithmetic statement requires a numeric receiver: "
+                        + describe(target.reference()));
+                return null;
+            }
+        }
+        return new Statement.Arithmetic(fold, operands, accumulate, targets, origin);
+    }
+
+    private List<Operand> operandsOf(List<? extends ParserRuleContext> contexts, Origin origin) {
+        List<Operand> operands = new ArrayList<>();
+        for (ParserRuleContext context : contexts) {
+            CobolParser.ArithmeticOperandContext operand =
+                    context instanceof CobolParser.RoundedOperandContext rounded
+                            ? rounded.arithmeticOperand()
+                            : (CobolParser.ArithmeticOperandContext) context;
+            operands.add(operandOf(operand, origin));
+        }
+        return operands;
+    }
+
+    private Operand operandOf(CobolParser.ArithmeticOperandContext context, Origin origin) {
+        if (context.literal() != null) {
+            try {
+                return new Operand.Literal(LiteralValue.of(context.literal()));
+            } catch (RuntimeException e) {
+                report(origin, "invalid literal: " + context.literal().getText());
+                return null;
+            }
+        }
+        DataReference reference = resolver.resolve(context.identifier());
+        return reference == null ? null : new Operand.Reference(reference);
+    }
+
+    /** {@code GIVING} がない形で受取項目になる被演算子。 */
+    private List<Statement.Arithmetic.Target> targetsOf(
+            List<CobolParser.RoundedOperandContext> contexts, Origin origin) {
+        List<Statement.Arithmetic.Target> targets = new ArrayList<>();
+        for (CobolParser.RoundedOperandContext context : contexts) {
+            if (context.arithmeticOperand().identifier() == null) {
+                report(origin, "a literal cannot receive the result of an arithmetic statement");
+                targets.add(null);
+                continue;
+            }
+            DataReference reference = resolver.resolve(context.arithmeticOperand().identifier());
+            targets.add(reference == null ? null
+                    : new Statement.Arithmetic.Target(reference, context.ROUNDED() != null));
+        }
+        return targets;
+    }
+
+    private List<Statement.Arithmetic.Target> targetsOf(
+            List<CobolParser.RoundedTargetContext> contexts) {
+        List<Statement.Arithmetic.Target> targets = new ArrayList<>();
+        for (CobolParser.RoundedTargetContext context : contexts) {
+            DataReference reference = resolver.resolve(context.identifier());
+            targets.add(reference == null ? null
+                    : new Statement.Arithmetic.Target(reference, context.ROUNDED() != null));
+        }
+        return targets;
     }
 
     private Statement moveOf(CobolParser.MoveStatementContext context) {

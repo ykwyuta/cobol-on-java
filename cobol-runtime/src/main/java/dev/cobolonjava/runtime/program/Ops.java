@@ -4,11 +4,13 @@ import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.data.NumProcMode;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.data.ZonedDecimal;
+import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
+import dev.cobolonjava.runtime.verb.Arithmetic;
 import dev.cobolonjava.runtime.verb.Move;
 
 /**
@@ -50,6 +52,37 @@ public final class Ops {
     public static Decimal readNumeric(NumericItem source, Storage storage, int offset) {
         DataView view = storage.view(offset, source.byteLength());
         return source.load(view);
+    }
+
+    // ---- 算術 ----
+
+    public static Decimal add(Decimal left, Decimal right) {
+        return left.add(right);
+    }
+
+    public static Decimal subtract(Decimal left, Decimal right) {
+        return left.subtract(right);
+    }
+
+    public static Decimal multiply(Decimal left, Decimal right) {
+        return left.multiply(right);
+    }
+
+    /**
+     * 除算。
+     *
+     * <p>商の桁数は<b>受取項目の小数部に合わせる</b>。除算だけは結果の桁数が
+     * 被演算子から決まらないため、受取側を見て決めるほかない。
+     */
+    public static Decimal divide(Decimal dividend, Decimal divisor, int scale,
+                                 CobolRounding rounding) {
+        return Arithmetic.divide(dividend, divisor, scale, rounding);
+    }
+
+    /** 算術文の結果を受取項目へ格納する。上位桁は黙って切り捨てられる。 */
+    public static void store(Decimal value, NumericItem target, Storage storage, int offset,
+                             CobolRounding rounding) {
+        Arithmetic.store(target, storage.view(offset, target.byteLength()), value, rounding);
     }
 
     /**

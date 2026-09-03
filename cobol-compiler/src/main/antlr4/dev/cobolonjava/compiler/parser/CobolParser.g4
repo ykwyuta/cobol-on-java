@@ -29,6 +29,7 @@ tokens {
 
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
+    ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
@@ -297,6 +298,10 @@ sentence
 
 statement
     : moveStatement
+    | addStatement
+    | subtractStatement
+    | multiplyStatement
+    | divideStatement
     ;
 
 moveStatement
@@ -306,4 +311,40 @@ moveStatement
 moveSource
     : identifier
     | literal
+    ;
+
+// ---- 算術文 ----
+//
+// GIVING の有無で被演算子の役割が変わる。TO / FROM のあとに並ぶものは、
+// GIVING があれば被演算子、なければ受取項目である。文法では区別せず、
+// 意味解析で振り分ける
+
+addStatement
+    : ADD arithmeticOperand+ (TO roundedOperand+)? (GIVING roundedTarget+)?
+    ;
+
+subtractStatement
+    : SUBTRACT arithmeticOperand+ FROM roundedOperand+ (GIVING roundedTarget+)?
+    ;
+
+multiplyStatement
+    : MULTIPLY arithmeticOperand BY roundedOperand+ (GIVING roundedTarget+)?
+    ;
+
+divideStatement
+    : DIVIDE arithmeticOperand (INTO | BY) roundedOperand+ (GIVING roundedTarget+)?
+    ;
+
+arithmeticOperand
+    : identifier
+    | literal
+    ;
+
+// GIVING がなければ受取項目になるため、ROUNDED を書ける
+roundedOperand
+    : arithmeticOperand ROUNDED?
+    ;
+
+roundedTarget
+    : identifier ROUNDED?
     ;
