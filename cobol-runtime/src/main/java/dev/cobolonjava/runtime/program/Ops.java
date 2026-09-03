@@ -15,6 +15,9 @@ import dev.cobolonjava.runtime.verb.Compare;
 import dev.cobolonjava.runtime.verb.Inspect;
 import dev.cobolonjava.runtime.verb.InspectScan;
 import dev.cobolonjava.runtime.verb.Region;
+import dev.cobolonjava.runtime.verb.StringVerb;
+import dev.cobolonjava.runtime.verb.UnstringVerb;
+import java.util.List;
 import dev.cobolonjava.runtime.verb.Move;
 
 /**
@@ -98,6 +101,60 @@ public final class Ops {
      */
     public static byte[] displayForm(Decimal value, NumericItem shape) {
         return shape.encode(value);
+    }
+
+    // ---- STRING / UNSTRING ----
+
+    /**
+     * {@code STRING}。つないだ結果を受取項目へ書き、実行結果を返す。
+     *
+     * <p><b>受取項目の残りは埋めない</b>。書いた分だけが変わる。
+     */
+    public static StringVerb.Result string(Storage storage, int offset, int length, int pointer,
+                                           StringVerb.Source... sources) {
+        StringVerb.Result result = StringVerb.string(read(storage, offset, length), pointer,
+                List.of(sources));
+        storage.view(offset, length).setBytes(result.target());
+        return result;
+    }
+
+    /** {@code UNSTRING}。転記は結果から取り出して行う。 */
+    public static UnstringVerb.Result unstring(Storage storage, int offset, int length,
+                                               int pointer, UnstringVerb.Delimiter[] delimiters,
+                                               UnstringVerb.Field[] fields, CodePage codePage) {
+        return UnstringVerb.unstring(read(storage, offset, length), pointer,
+                List.of(delimiters), List.of(fields), codePage);
+    }
+
+    /** {@code UNSTRING} の受取項目 1 個。転記が行われなかった項目は変えない。 */
+    public static void storeUnstringField(UnstringVerb.Result result, int index, Storage storage,
+                                          int offset, int length) {
+        if (index < result.fields().size()) {
+            storage.view(offset, length).setBytes(result.fields().get(index));
+        }
+    }
+
+    /** {@code DELIMITER IN} の受取項目。 */
+    public static void storeUnstringDelimiter(UnstringVerb.Result result, int index,
+                                              Storage storage, int offset, int length,
+                                              boolean justifiedRight, CodePage codePage) {
+        if (index < result.delimiters().size()) {
+            moveAlphanumeric(result.delimiters().get(index), storage, offset, length,
+                    justifiedRight, codePage);
+        }
+    }
+
+    /** {@code COUNT IN} の受取項目。 */
+    public static void storeUnstringCount(UnstringVerb.Result result, int index,
+                                          NumericItem counter, Storage storage, int offset) {
+        if (index < result.counts().size()) {
+            storeInteger(result.counts().get(index), counter, storage, offset);
+        }
+    }
+
+    /** 整数を数値項目へ入れる。{@code POINTER} や {@code TALLYING} が使う。 */
+    public static void storeInteger(int value, NumericItem target, Storage storage, int offset) {
+        store(Decimal.of(value, 0), target, storage, offset, CobolRounding.TRUNCATION);
     }
 
     // ---- INSPECT ----

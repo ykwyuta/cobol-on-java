@@ -27,6 +27,8 @@ import dev.cobolonjava.runtime.program.ProgramSupport;
 import dev.cobolonjava.runtime.storage.Storage;
 import dev.cobolonjava.runtime.verb.InspectScan;
 import dev.cobolonjava.runtime.verb.Region;
+import dev.cobolonjava.runtime.verb.StringVerb;
+import dev.cobolonjava.runtime.verb.UnstringVerb;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -231,6 +233,10 @@ public final class ProgramGenerator {
                 planPerform(perform, body);
             } else if (statement instanceof Statement.Display display) {
                 planDisplay(display, body);
+            } else if (statement instanceof Statement.StringStatement text) {
+                planString(text, body);
+            } else if (statement instanceof Statement.Unstring unstring) {
+                planUnstring(unstring, body);
             } else if (statement instanceof Statement.Inspect inspect) {
                 planInspect(inspect, body);
             } else if (statement instanceof Statement.Stop) {
@@ -331,6 +337,308 @@ public final class ProgramGenerator {
         }).name();
     }
 
+    // ---- STRING / UNSTRING ----
+
+    /**
+     * {@code STRING} を組み立てる。
+     *
+     * <p>結果は<b>あふれたかどうか</b>と<b>次に書く位置</b>を持つ。どちらも実行してみないと
+     * 分からないため、結果を局所変数へ取ってから使う。
+     */
+    private void planString(Statement.StringStatement statement, List<Runnable> body) {
+        Runnable offset = planOffset(statement.target(), statement.origin());
+        OptionalInt length = lengthOf(statement.target(), statement.origin());
+        if (offset == null || length.isEmpty()) {
+            return;
+        }
+        Runnable pointer = planPointerValue(statement.pointer(), statement.origin());
+        if (pointer == null) {
+            return;
+        }
+
+        List<Runnable> sources = new ArrayList<>();
+        for (Statement.StringStatement.StringSource source : statement.sources()) {
+            for (Operand value : source.values()) {
+                Runnable planned = planStringSource(value, source.delimiter(), statement.origin());
+                if (planned == null) {
+                    return;
+                }
+                sources.add(planned);
+            }
+        }
+
+        int result = nextLocal++;
+        Runnable storePointer = planStoreResultInt(statement.pointer(), result,
+                Type.getInternalName(StringVerb.Result.class), "pointer", statement.origin());
+        if (storePointer == null) {
+            return;
+        }
+        List<Runnable> onOverflow = planStatements(overflowOf(statement.overflow(), true));
+        List<Runnable> otherwise = planStatements(overflowOf(statement.overflow(), false));
+
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            offset.run();
+            push(length.getAsInt());
+            pointer.run();
+            emitArray(sources, Type.getInternalName(StringVerb.Source.class));
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "string",
+                    "(L" + STORAGE + ";III[" + Type.getDescriptor(StringVerb.Source.class) + ")"
+                            + Type.getDescriptor(StringVerb.Result.class), false);
+            run.visitVarInsn(Opcodes.ASTORE, result);
+            storePointer.run();
+            emitOverflowBranch(statement.overflow(), result,
+                    Type.getInternalName(StringVerb.Result.class), onOverflow, otherwise);
+        });
+    }
+
+    private Runnable planStringSource(Operand value, Operand delimiter, Origin origin) {
+        Runnable bytes = planInspectBytes(value, origin);
+        if (bytes == null) {
+            return null;
+        }
+        if (delimiter == null) {
+            return () -> {
+                bytes.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        Type.getInternalName(StringVerb.Source.class), "bySize",
+                        "([B)" + Type.getDescriptor(StringVerb.Source.class), false);
+            };
+        }
+        Runnable delimiterBytes = planInspectBytes(delimiter, origin);
+        if (delimiterBytes == null) {
+            return null;
+        }
+        return () -> {
+            bytes.run();
+            delimiterBytes.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    Type.getInternalName(StringVerb.Source.class), "delimitedBy",
+                    "([B[B)" + Type.getDescriptor(StringVerb.Source.class), false);
+        };
+    }
+
+    private void planUnstring(Statement.Unstring statement, List<Runnable> body) {
+        Runnable offset = planOffset(statement.source(), statement.origin());
+        OptionalInt length = lengthOf(statement.source(), statement.origin());
+        if (offset == null || length.isEmpty()) {
+            return;
+        }
+        Runnable pointer = planPointerValue(statement.pointer(), statement.origin());
+        if (pointer == null) {
+            return;
+        }
+
+        List<Runnable> delimiters = new ArrayList<>();
+        for (Statement.Unstring.UnstringDelimiter delimiter : statement.delimiters()) {
+            Runnable bytes = planInspectBytes(delimiter.value(), statement.origin());
+            if (bytes == null) {
+                return;
+            }
+            String factory = delimiter.all() ? "all" : "of";
+            delimiters.add(() -> {
+                bytes.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        Type.getInternalName(UnstringVerb.Delimiter.class), factory,
+                        "([B)" + Type.getDescriptor(UnstringVerb.Delimiter.class), false);
+            });
+        }
+
+        List<Runnable> fields = new ArrayList<>();
+        for (Statement.Unstring.UnstringTarget target : statement.targets()) {
+            OptionalInt fieldLength = lengthOf(target.field(), statement.origin());
+            if (fieldLength.isEmpty()) {
+                return;
+            }
+            int size = fieldLength.getAsInt();
+            fields.add(() -> {
+                push(size);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        Type.getInternalName(UnstringVerb.Field.class), "of",
+                        "(I)" + Type.getDescriptor(UnstringVerb.Field.class), false);
+            });
+        }
+
+        int result = nextLocal++;
+        List<Runnable> stores = new ArrayList<>();
+        for (int i = 0; i < statement.targets().size(); i++) {
+            Runnable store = planUnstringTarget(statement.targets().get(i), i, result,
+                    statement.origin());
+            if (store == null) {
+                return;
+            }
+            stores.add(store);
+        }
+        String resultType = Type.getInternalName(UnstringVerb.Result.class);
+        Runnable storePointer = planStoreResultInt(statement.pointer(), result, resultType,
+                "pointer", statement.origin());
+        Runnable storeTallying = planStoreResultInt(statement.tallying(), result, resultType,
+                "tallying", statement.origin());
+        if (storePointer == null || storeTallying == null) {
+            return;
+        }
+        List<Runnable> onOverflow = planStatements(overflowOf(statement.overflow(), true));
+        List<Runnable> otherwise = planStatements(overflowOf(statement.overflow(), false));
+
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            offset.run();
+            push(length.getAsInt());
+            pointer.run();
+            emitArray(delimiters, Type.getInternalName(UnstringVerb.Delimiter.class));
+            emitArray(fields, Type.getInternalName(UnstringVerb.Field.class));
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "unstring",
+                    "(L" + STORAGE + ";III[" + Type.getDescriptor(UnstringVerb.Delimiter.class)
+                            + "[" + Type.getDescriptor(UnstringVerb.Field.class) + CODE_PAGE + ")"
+                            + Type.getDescriptor(UnstringVerb.Result.class), false);
+            run.visitVarInsn(Opcodes.ASTORE, result);
+            stores.forEach(Runnable::run);
+            storePointer.run();
+            storeTallying.run();
+            emitOverflowBranch(statement.overflow(), result, resultType, onOverflow, otherwise);
+        });
+    }
+
+    private Runnable planUnstringTarget(Statement.Unstring.UnstringTarget target, int index,
+                                        int result, Origin origin) {
+        Runnable fieldOffset = planOffset(target.field(), origin);
+        OptionalInt fieldLength = lengthOf(target.field(), origin);
+        if (fieldOffset == null || fieldLength.isEmpty()) {
+            return null;
+        }
+        String resultType = Type.getInternalName(UnstringVerb.Result.class);
+
+        Runnable delimiter = null;
+        if (target.delimiter() != null) {
+            Runnable at = planOffset(target.delimiter(), origin);
+            OptionalInt size = lengthOf(target.delimiter(), origin);
+            if (at == null || size.isEmpty()) {
+                return null;
+            }
+            boolean justified = target.delimiter().item().justified();
+            delimiter = () -> {
+                run.visitVarInsn(Opcodes.ALOAD, result);
+                push(index);
+                run.visitVarInsn(Opcodes.ALOAD, 1);
+                at.run();
+                push(size.getAsInt());
+                run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringDelimiter",
+                        "(L" + resultType + ";IL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+            };
+        }
+
+        Runnable count = null;
+        if (target.count() != null) {
+            Runnable at = planOffset(target.count(), origin);
+            String field = numericItemConstant(target.count().item(), origin);
+            if (at == null || field == null) {
+                return null;
+            }
+            count = () -> {
+                run.visitVarInsn(Opcodes.ALOAD, result);
+                push(index);
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+                run.visitVarInsn(Opcodes.ALOAD, 1);
+                at.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringCount",
+                        "(L" + resultType + ";I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+            };
+        }
+
+        Runnable writeDelimiter = delimiter;
+        Runnable writeCount = count;
+        return () -> {
+            run.visitVarInsn(Opcodes.ALOAD, result);
+            push(index);
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            fieldOffset.run();
+            push(fieldLength.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringField",
+                    "(L" + resultType + ";IL" + STORAGE + ";II)V", false);
+            if (writeDelimiter != null) {
+                writeDelimiter.run();
+            }
+            if (writeCount != null) {
+                writeCount.run();
+            }
+        };
+    }
+
+    /** {@code WITH POINTER} の現在値。指定がなければ 1 から書き始める。 */
+    private Runnable planPointerValue(DataReference pointer, Origin origin) {
+        if (pointer == null) {
+            return () -> push(1);
+        }
+        Runnable value = planSourceDecimal(new Operand.Reference(pointer), origin);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+        };
+    }
+
+    /** 実行結果の整数を項目へ書き戻す命令。書き戻す先がなければ何もしない。 */
+    private Runnable planStoreResultInt(DataReference target, int result, String resultType,
+                                        String accessor, Origin origin) {
+        if (target == null) {
+            return () -> { };
+        }
+        Runnable offset = planOffset(target, origin);
+        String field = numericItemConstant(target.item(), origin);
+        if (offset == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitVarInsn(Opcodes.ALOAD, result);
+            run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, resultType, accessor, "()I", false);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            offset.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
+                    "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+        };
+    }
+
+    private static List<Statement> overflowOf(Statement.Overflow overflow, boolean onOverflow) {
+        if (overflow == null) {
+            return List.of();
+        }
+        return onOverflow ? overflow.onOverflow() : overflow.otherwise();
+    }
+
+    private void emitOverflowBranch(Statement.Overflow overflow, int result, String resultType,
+                                    List<Runnable> onOverflow, List<Runnable> otherwise) {
+        if (overflow == null) {
+            return;
+        }
+        Label noOverflow = new Label();
+        Label end = new Label();
+        run.visitVarInsn(Opcodes.ALOAD, result);
+        run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, resultType, "overflow", "()Z", false);
+        run.visitJumpInsn(Opcodes.IFEQ, noOverflow);
+        onOverflow.forEach(Runnable::run);
+        run.visitJumpInsn(Opcodes.GOTO, end);
+        run.visitLabel(noOverflow);
+        otherwise.forEach(Runnable::run);
+        run.visitLabel(end);
+    }
+
+    private void emitArray(List<Runnable> elements, String type) {
+        push(elements.size());
+        run.visitTypeInsn(Opcodes.ANEWARRAY, type);
+        for (int i = 0; i < elements.size(); i++) {
+            run.visitInsn(Opcodes.DUP);
+            push(i);
+            elements.get(i).run();
+            run.visitInsn(Opcodes.AASTORE);
+        }
+    }
+
     // ---- INSPECT ----
 
     /**
@@ -413,14 +721,7 @@ public final class ProgramGenerator {
     }
 
     private void emitClauseArray(List<Runnable> clauses) {
-        push(clauses.size());
-        run.visitTypeInsn(Opcodes.ANEWARRAY, Type.getInternalName(InspectScan.Clause.class));
-        for (int i = 0; i < clauses.size(); i++) {
-            run.visitInsn(Opcodes.DUP);
-            push(i);
-            clauses.get(i).run();
-            run.visitInsn(Opcodes.AASTORE);
-        }
+        emitArray(clauses, Type.getInternalName(InspectScan.Clause.class));
     }
 
     /** 句 1 個を組み立てる命令。 */

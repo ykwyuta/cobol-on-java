@@ -163,6 +163,12 @@ public final class ProcedureBuilder {
         if (context.stopStatement() != null) {
             return new Statement.Stop(ReferenceResolver.originOf(context));
         }
+        if (context.stringStatement() != null) {
+            return stringOf(context.stringStatement());
+        }
+        if (context.unstringStatement() != null) {
+            return unstringOf(context.unstringStatement());
+        }
         if (context.inspectStatement() != null) {
             return inspectOf(context.inspectStatement());
         }
@@ -200,6 +206,127 @@ public final class ProcedureBuilder {
             return null;
         }
         return new Statement.Display(operands, context.ADVANCING() == null, origin);
+    }
+
+    // ---- STRING / UNSTRING ----
+
+    private Statement stringOf(CobolParser.StringStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<CobolParser.IdentifierContext> identifiers = context.identifier();
+        DataReference target = resolver.resolve(identifiers.get(0));
+        DataReference pointer = context.POINTER() == null
+                ? null
+                : resolver.resolve(identifiers.get(1));
+        if (target == null || (context.POINTER() != null && pointer == null)) {
+            return null;
+        }
+        if (pointer != null && !DataCategory.of(pointer).isNumeric()) {
+            report(origin, "WITH POINTER requires a numeric item: " + describe(pointer));
+            return null;
+        }
+
+        List<Statement.StringStatement.StringSource> sources = new ArrayList<>();
+        for (CobolParser.StringSourceContext source : context.stringSource()) {
+            List<CobolParser.ArithmeticOperandContext> operands = source.arithmeticOperand();
+            // DELIMITED BY SIZE でなければ、最後の被演算子が区切りである
+            int valueCount = source.SIZE() != null ? operands.size() : operands.size() - 1;
+            List<Operand> values = new ArrayList<>();
+            for (int i = 0; i < valueCount; i++) {
+                values.add(operandOf(operands.get(i), origin));
+            }
+            Operand delimiter = source.SIZE() != null
+                    ? null
+                    : operandOf(operands.get(operands.size() - 1), origin);
+            if (values.contains(null) || (source.SIZE() == null && delimiter == null)) {
+                return null;
+            }
+            sources.add(new Statement.StringStatement.StringSource(values, delimiter));
+        }
+        return new Statement.StringStatement(sources, target, pointer,
+                overflowOf(context.overflowPhrases()), origin);
+    }
+
+    private Statement unstringOf(CobolParser.UnstringStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        DataReference source = resolver.resolve(context.identifier(0));
+        if (source == null) {
+            return null;
+        }
+
+        List<Statement.Unstring.UnstringDelimiter> delimiters = new ArrayList<>();
+        for (CobolParser.UnstringDelimiterContext delimiter : context.unstringDelimiter()) {
+            Operand value = operandOf(delimiter.arithmeticOperand(), origin);
+            if (value == null) {
+                return null;
+            }
+            delimiters.add(new Statement.Unstring.UnstringDelimiter(value,
+                    delimiter.ALL() != null));
+        }
+
+        List<Statement.Unstring.UnstringTarget> targets = new ArrayList<>();
+        for (CobolParser.UnstringTargetContext target : context.unstringTarget()) {
+            List<CobolParser.IdentifierContext> parts = target.identifier();
+            int next = 1;
+            DataReference field = resolver.resolve(parts.get(0));
+            DataReference delimiterInto = target.DELIMITER() == null
+                    ? null
+                    : resolver.resolve(parts.get(next++));
+            DataReference countInto = target.COUNT() == null
+                    ? null
+                    : resolver.resolve(parts.get(next));
+            if (field == null
+                    || (target.DELIMITER() != null && delimiterInto == null)
+                    || (target.COUNT() != null && countInto == null)) {
+                return null;
+            }
+            if (countInto != null && !DataCategory.of(countInto).isNumeric()) {
+                report(origin, "COUNT IN requires a numeric item: " + describe(countInto));
+                return null;
+            }
+            targets.add(new Statement.Unstring.UnstringTarget(field, delimiterInto, countInto));
+        }
+
+        // 送出項目のあとに並ぶ識別子のうち、POINTER と TALLYING は末尾に来る
+        int extra = context.identifier().size() - 1;
+        DataReference pointer = null;
+        DataReference tallying = null;
+        if (context.TALLYING() != null) {
+            tallying = resolver.resolve(context.identifier(extra));
+            extra--;
+            if (tallying == null) {
+                return null;
+            }
+        }
+        if (context.POINTER() != null) {
+            pointer = resolver.resolve(context.identifier(extra));
+            if (pointer == null) {
+                return null;
+            }
+        }
+        for (DataReference counter : new DataReference[] {pointer, tallying}) {
+            if (counter != null && !DataCategory.of(counter).isNumeric()) {
+                report(origin, "POINTER and TALLYING require a numeric item: "
+                        + describe(counter));
+                return null;
+            }
+        }
+        return new Statement.Unstring(source, delimiters, targets, pointer, tallying,
+                overflowOf(context.overflowPhrases()), origin);
+    }
+
+    /** {@code ON OVERFLOW} の文。どちらも書かれていなければ {@code null} を返す。 */
+    private Statement.Overflow overflowOf(CobolParser.OverflowPhrasesContext phrases) {
+        if (phrases == null
+                || (phrases.onOverflowPhrase() == null && phrases.notOnOverflowPhrase() == null)) {
+            return null;
+        }
+        List<Statement> onOverflow = phrases.onOverflowPhrase() == null
+                ? List.of()
+                : listOf(phrases.onOverflowPhrase().statement());
+        List<Statement> otherwise = phrases.notOnOverflowPhrase() == null
+                ? List.of()
+                : listOf(phrases.notOnOverflowPhrase().statement());
+        return new Statement.Overflow(onOverflow, otherwise);
     }
 
     // ---- INSPECT ----

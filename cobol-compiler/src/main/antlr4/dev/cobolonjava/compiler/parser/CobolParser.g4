@@ -41,6 +41,8 @@ tokens {
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
+    STRING, UNSTRING, DELIMITED, DELIMITER, COUNT, OVERFLOW, INTO,
+    END_STRING, END_UNSTRING,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
 
     // データ部
@@ -314,6 +316,8 @@ statement
     | evaluateStatement
     | stopStatement
     | inspectStatement
+    | stringStatement
+    | unstringStatement
     | displayStatement
     | performStatement
     | continueStatement
@@ -407,6 +411,47 @@ continueStatement
 stopStatement
     : STOP RUN
     | GOBACK
+    ;
+
+// STRING は送出項目をつなげて 1 つの受取項目へ書く。
+// 受取項目の残りは埋めない。書いた分だけが変わる
+stringStatement
+    : STRING stringSource+ INTO identifier (WITH? POINTER identifier)?
+      overflowPhrases END_STRING?
+    ;
+
+stringSource
+    : arithmeticOperand+ DELIMITED BY? (SIZE | arithmeticOperand)
+    ;
+
+// UNSTRING は送出項目を区切って複数の受取項目へ配る
+unstringStatement
+    : UNSTRING identifier (DELIMITED BY? unstringDelimiter (OR unstringDelimiter)*)?
+      INTO unstringTarget+
+      (WITH? POINTER identifier)?
+      (TALLYING IN? identifier)?
+      overflowPhrases END_UNSTRING?
+    ;
+
+unstringDelimiter
+    : ALL? arithmeticOperand
+    ;
+
+unstringTarget
+    : identifier (DELIMITER IN? identifier)? (COUNT IN? identifier)?
+    ;
+
+// ON OVERFLOW / NOT ON OVERFLOW は片方だけでも両方でも書ける
+overflowPhrases
+    : onOverflowPhrase? notOnOverflowPhrase?
+    ;
+
+onOverflowPhrase
+    : ON? OVERFLOW statement+
+    ;
+
+notOnOverflowPhrase
+    : NOT ON? OVERFLOW statement+
     ;
 
 // INSPECT は 1 度の走査で、書かれた順に句を試す。

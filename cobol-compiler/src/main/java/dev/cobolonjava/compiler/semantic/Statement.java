@@ -186,6 +186,84 @@ public sealed interface Statement {
         }
     }
 
+    /**
+     * {@code STRING} 文。
+     *
+     * <p>送出項目をつなげて 1 つの受取項目へ書く。<b>受取項目の残りは埋めない</b> —
+     * 書いた分だけが変わる。{@code MOVE} が残りを空白で埋めるのとは違う。
+     *
+     * @param pointer  {@code WITH POINTER} の項目。指定がなければ {@code null}
+     * @param overflow {@code ON OVERFLOW} の指定。なければ {@code null}
+     */
+    record StringStatement(List<StringSource> sources, DataReference target, DataReference pointer,
+                           Overflow overflow, Origin origin) implements Statement {
+
+        public StringStatement {
+            sources = List.copyOf(sources);
+        }
+
+        /**
+         * 送出する並び 1 組。
+         *
+         * @param delimiter {@code DELIMITED BY} の区切り。{@code SIZE} なら {@code null}
+         */
+        public record StringSource(List<Operand> values, Operand delimiter) {
+
+            public StringSource {
+                values = List.copyOf(values);
+            }
+        }
+    }
+
+    /**
+     * {@code UNSTRING} 文。
+     *
+     * @param delimiters 区切りの並び。空なら受取項目の長さぶんを順に取る
+     * @param pointer    {@code WITH POINTER} の項目。指定がなければ {@code null}
+     * @param tallying   {@code TALLYING IN} の項目。指定がなければ {@code null}
+     */
+    record Unstring(DataReference source, List<UnstringDelimiter> delimiters,
+                    List<UnstringTarget> targets, DataReference pointer, DataReference tallying,
+                    Overflow overflow, Origin origin) implements Statement {
+
+        public Unstring {
+            delimiters = List.copyOf(delimiters);
+            targets = List.copyOf(targets);
+        }
+
+        /**
+         * 区切り 1 個。
+         *
+         * @param all {@code ALL} 指定。連続する区切りを 1 個として扱う
+         */
+        public record UnstringDelimiter(Operand value, boolean all) {
+        }
+
+        /**
+         * 受取項目 1 個。
+         *
+         * @param delimiter {@code DELIMITER IN} の項目。指定がなければ {@code null}
+         * @param count     {@code COUNT IN} の項目。指定がなければ {@code null}
+         */
+        public record UnstringTarget(DataReference field, DataReference delimiter,
+                                     DataReference count) {
+        }
+    }
+
+    /**
+     * {@code ON OVERFLOW} と {@code NOT ON OVERFLOW} の文。
+     *
+     * @param onOverflow あふれたときの文
+     * @param otherwise  あふれなかったときの文
+     */
+    record Overflow(List<Statement> onOverflow, List<Statement> otherwise) {
+
+        public Overflow {
+            onOverflow = List.copyOf(onOverflow);
+            otherwise = List.copyOf(otherwise);
+        }
+    }
+
     /** {@code STOP RUN} と {@code GOBACK}。実行を終える。 */
     record Stop(Origin origin) implements Statement {
     }

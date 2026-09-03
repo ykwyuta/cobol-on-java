@@ -155,11 +155,24 @@ ISO-8859-1 は 0〜255 をそのまま 1 バイトへ写すので、<b>任意の
 cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free] ソース...
 ```
 
+## STRING と UNSTRING は結果を局所変数へ取る
+
+どちらも<b>あふれたかどうか</b>と<b>次に書く位置</b>を実行してみないと決められない。
+結果の対象を局所変数へ取り、そこから `POINTER` や `TALLYING` の項目へ書き戻し、
+`ON OVERFLOW` の分岐を出す。
+
+`ON OVERFLOW` の分岐そのものは `ON SIZE ERROR` と同じ形である。分岐の仕組みを
+`IF` で作ってあるので、条件の出どころが変わるだけで済んでいる。
+
+`STRING` は<b>受取項目の残りを埋めない</b>。書いた分だけが変わる。`MOVE` が残りを
+空白で埋めるのとは違うため、生成コードも書き戻す範囲を変えている。
+
 ## いま生成できる範囲
 
 `MOVE` の 3 種類 (英数字・数値・数字編集)、算術文 4 つ (`GIVING` と `ROUNDED` を含む)、
-`IF`、`EVALUATE`、`PERFORM`、`DISPLAY`、`INSPECT`、`STOP RUN` / `GOBACK`、`CONTINUE`、
-算術文の `ON SIZE ERROR`。定数・図形定数・`ALL` の送出。
+`IF`、`EVALUATE`、`PERFORM`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、
+`STOP RUN` / `GOBACK`、`CONTINUE`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`。
+定数・図形定数・`ALL` の送出。
 添字は定数でもデータ項目でもよく、多次元の表も扱える。部分参照の開始位置も同じ。
 
 部分参照の<b>長さ</b>にデータ項目を書いた形は、まだ生成できない (暫定判断 P-027)。
@@ -168,6 +181,6 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 ## 次の増分
 
 1. `PERFORM VARYING` と `GO TO` (暫定判断 P-029)。
-2. `STRING` / `UNSTRING` — ランタイムに動詞が揃っている。
+2. `COMPUTE` (暫定判断 P-028)。
 3. `SSRANGE` 指定時の添字の範囲検査 (暫定判断 P-027)。
 3. `DISPLAY` と実行の入口 (プログラムを起動する側)。
