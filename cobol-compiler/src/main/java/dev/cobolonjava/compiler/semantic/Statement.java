@@ -124,6 +124,19 @@ public sealed interface Statement {
         }
     }
 
+    /**
+     * {@code DISPLAY} 文。
+     *
+     * @param operands  並べて出す被演算子
+     * @param advancing 行を改めるかどうか。{@code WITH NO ADVANCING} では改めない
+     */
+    record Display(List<Operand> operands, boolean advancing, Origin origin) implements Statement {
+
+        public Display {
+            operands = List.copyOf(operands);
+        }
+    }
+
     /** {@code CONTINUE}。何もしない。 */
     record Continue(Origin origin) implements Statement {
     }

@@ -37,6 +37,7 @@ tokens {
     SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
     PERFORM, END_PERFORM, UNTIL, WITH, TEST, BEFORE, AFTER,
+    UPON, NO, ADVANCING,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
 
     // データ部
@@ -307,6 +308,7 @@ sentence
 statement
     : moveStatement
     | ifStatement
+    | displayStatement
     | performStatement
     | continueStatement
     | addStatement
@@ -394,6 +396,11 @@ ifBranch
 
 continueStatement
     : CONTINUE
+    ;
+
+// DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
+displayStatement
+    : DISPLAY arithmeticOperand+ (UPON IDENTIFIER)? (WITH? NO ADVANCING)?
     ;
 
 // 段落を呼ぶ形と、その場に本体を書く形の 2 つがある。

@@ -157,6 +157,9 @@ public final class ProcedureBuilder {
         if (context.performStatement() != null) {
             return performOf(context.performStatement());
         }
+        if (context.displayStatement() != null) {
+            return displayOf(context.displayStatement());
+        }
         if (context.continueStatement() != null) {
             return new Statement.Continue(ReferenceResolver.originOf(context));
         }
@@ -174,6 +177,20 @@ public final class ProcedureBuilder {
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;
+    }
+
+    private Statement displayOf(CobolParser.DisplayStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Operand> operands = operandsOf(context.arithmeticOperand(), origin);
+        if (operands.contains(null)) {
+            return null;
+        }
+        if (context.UPON() != null) {
+            // 出力先の指定は環境部の SPECIAL-NAMES と結び付く。まだ扱えない
+            report(origin, "DISPLAY ... UPON is not supported yet");
+            return null;
+        }
+        return new Statement.Display(operands, context.ADVANCING() == null, origin);
     }
 
     // ---- 制御構造 ----

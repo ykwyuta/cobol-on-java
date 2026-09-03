@@ -119,7 +119,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 ## いま組み立てられる文
 
-`MOVE`、算術文 4 つ、`IF`、`PERFORM`、`CONTINUE` である
+`MOVE`、算術文 4 つ、`IF`、`PERFORM`、`DISPLAY`、`CONTINUE` である
 (`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
 `COMPUTE` は未実装で、書くと構文誤りになる (暫定判断 P-028)。

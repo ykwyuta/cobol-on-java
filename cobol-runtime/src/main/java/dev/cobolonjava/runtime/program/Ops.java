@@ -65,6 +65,27 @@ public final class Ops {
         return value.toBigDecimal().intValue();
     }
 
+    // ---- 表示 ----
+
+    /**
+     * {@code DISPLAY} の 1 項目。
+     *
+     * @param advancing 行を改めるかどうか
+     */
+    public static void display(byte[] bytes, ProgramContext context, boolean advancing) {
+        context.display(bytes, advancing);
+    }
+
+    /**
+     * 数値を表示の形へ直す。
+     *
+     * <p>{@code COMP} や {@code COMP-3} の項目をそのまま出しても読めない。
+     * 同じ桁数・同じ小数部の {@code DISPLAY} 項目として符号化し直す。
+     */
+    public static byte[] displayForm(Decimal value, NumericItem shape) {
+        return shape.encode(value);
+    }
+
     // ---- 比較 ----
 
     /** 数値比較。内部表現と桁数の違いに影響されない。 */

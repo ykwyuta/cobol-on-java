@@ -14,13 +14,22 @@ public interface CobolProgram {
     /** 作業場所の初期イメージ。{@code VALUE} 句から翻訳時に決まる。 */
     byte[] initialStorage();
 
-    /** 手続き部を実行する。 */
-    void run(Storage storage);
+    /**
+     * 手続き部を実行する。
+     *
+     * @param context {@code DISPLAY} の行き先など、外へ触れるための入口
+     */
+    void run(Storage storage, ProgramContext context);
 
     /** 初期イメージから記憶域を作って実行する。 */
-    default Storage runFresh() {
+    default Storage runFresh(ProgramContext context) {
         Storage storage = Storage.wrap(initialStorage());
-        run(storage);
+        run(storage, context);
         return storage;
+    }
+
+    /** 出力を端末へ出して実行する。 */
+    default Storage runFresh() {
+        return runFresh(ProgramContext.standard());
     }
 }

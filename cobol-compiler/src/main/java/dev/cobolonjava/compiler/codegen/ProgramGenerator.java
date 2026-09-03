@@ -22,6 +22,7 @@ import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.picture.PictureParser;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.Ops;
+import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramSupport;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.nio.charset.StandardCharsets;
@@ -73,8 +74,13 @@ public final class ProgramGenerator {
     /** 静的初期化子で作る定数。綴りから field 名を引く。 */
     private final Map<String, Constant> constants = new LinkedHashMap<>();
 
-    /** 局所変数の 0 番は {@code this}、1 番は記憶域である。 */
-    private static final int FIRST_FREE_LOCAL = 2;
+    /** 局所変数の 0 番は {@code this}、1 番は記憶域、2 番は実行時の入口である。 */
+    private static final int FIRST_FREE_LOCAL = 3;
+
+    /** 段落のメソッドと {@code run} の署名。 */
+    private static final String RUN_DESCRIPTOR =
+            "(L" + Type.getInternalName(Storage.class) + ";"
+                    + Type.getDescriptor(ProgramContext.class) + ")V";
 
     private ClassWriter writer;
     private String internal;
@@ -145,6 +151,7 @@ public final class ProgramGenerator {
             return new Result(className, null, List.copyOf(diagnostics));
         }
         emitRun(paragraphs.size());
+        emitMain();
         for (int i = 0; i < paragraphs.size(); i++) {
             emitParagraph(i, paragraphs.get(i));
         }
@@ -218,6 +225,8 @@ public final class ProgramGenerator {
                 planIf(branch, body);
             } else if (statement instanceof Statement.Perform perform) {
                 planPerform(perform, body);
+            } else if (statement instanceof Statement.Display display) {
+                planDisplay(display, body);
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
@@ -226,6 +235,91 @@ public final class ProgramGenerator {
             }
         }
         return body;
+    }
+
+    /**
+     * {@code DISPLAY} を組み立てる。
+     *
+     * <p>被演算子は並べて出し、行を改めるのは<b>最後の 1 個だけ</b>である。
+     * 途中で改めると、1 つの {@code DISPLAY} が複数行になってしまう。
+     */
+    private void planDisplay(Statement.Display statement, List<Runnable> body) {
+        List<Runnable> parts = new ArrayList<>();
+        for (Operand operand : statement.operands()) {
+            Runnable bytes = planDisplayBytes(operand, statement.origin());
+            if (bytes == null) {
+                return;
+            }
+            parts.add(bytes);
+        }
+        body.add(() -> {
+            for (int i = 0; i < parts.size(); i++) {
+                parts.get(i).run();
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                boolean last = i == parts.size() - 1;
+                run.visitInsn(last && statement.advancing() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "display",
+                        "([B" + Type.getDescriptor(ProgramContext.class) + "Z)V", false);
+            }
+        });
+    }
+
+    /**
+     * {@code DISPLAY} が出すバイト列。
+     *
+     * <p>{@code COMP} や {@code COMP-3} の項目をそのまま出しても読めないため、
+     * 同じ桁数・同じ小数部の {@code DISPLAY} 項目として符号化し直す。
+     */
+    private Runnable planDisplayBytes(Operand operand, Origin origin) {
+        if (operand instanceof Operand.Reference reference
+                && needsDisplayConversion(reference.reference())) {
+            Runnable value = planSourceDecimal(operand, origin);
+            DataItem item = reference.reference().item();
+            String shape = displayShapeConstant(item, origin);
+            if (value == null || shape == null) {
+                return null;
+            }
+            return () -> {
+                value.run();
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, shape, NUMERIC_ITEM);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "displayForm",
+                        "(" + DECIMAL + NUMERIC_ITEM + ")[B", false);
+            };
+        }
+        int length = operand instanceof Operand.Reference reference
+                ? reference.reference().constantLength().orElse(0)
+                : 0;
+        return planSourceBytes(operand, origin, length);
+    }
+
+    /** 記憶域の形のままでは読めない項目かどうか。 */
+    private static boolean needsDisplayConversion(DataReference reference) {
+        if (reference.refMod() != null || !DataCategory.of(reference).isNumeric()) {
+            return false;
+        }
+        Usage usage = reference.item().usage();
+        return usage != null && usage != Usage.DISPLAY;
+    }
+
+    /** 同じ桁数・同じ小数部の {@code DISPLAY} 項目。表示の形へ直すために使う。 */
+    private String displayShapeConstant(DataItem item, Origin origin) {
+        if (item.picture() == null) {
+            report(origin, "DISPLAY of a floating-point item is not supported yet");
+            return null;
+        }
+        String key = "S:" + item.picture().source();
+        return constants.computeIfAbsent(key, k -> {
+            String name = "S" + constants.size();
+            return new Constant(name, NUMERIC_ITEM, () -> {
+                clinit.visitLdcInsn(item.picture().source());
+                clinit.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(Usage.class),
+                        Usage.DISPLAY.name(), Type.getDescriptor(Usage.class));
+                clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        Type.getInternalName(NumericItem.class), "of",
+                        "(Ljava/lang/String;" + Type.getDescriptor(Usage.class) + ")"
+                                + NUMERIC_ITEM, false);
+            });
+        }).name();
     }
 
     // ---- 制御構造 ----
@@ -434,7 +528,7 @@ public final class ProgramGenerator {
 
     /** {@code run} は段落を書かれた順に呼ぶ。素直に流れる実行がこれにあたる。 */
     private void emitRun(int paragraphCount) {
-        run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", "(L" + STORAGE + ";)V", null, null);
+        run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", RUN_DESCRIPTOR, null, null);
         run.visitCode();
         for (int i = 0; i < paragraphCount; i++) {
             callParagraph(i);
@@ -444,9 +538,27 @@ public final class ProgramGenerator {
         run.visitEnd();
     }
 
+    /**
+     * {@code main} を出す。生成したクラスをそのまま {@code java} で起動できるようにする。
+     */
+    private void emitMain() {
+        MethodVisitor main = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "main", "([Ljava/lang/String;)V", null, null);
+        main.visitCode();
+        main.visitTypeInsn(Opcodes.NEW, internal);
+        main.visitInsn(Opcodes.DUP);
+        main.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "<init>", "()V", false);
+        main.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(CobolProgram.class),
+                "runFresh", "()L" + Type.getInternalName(Storage.class) + ";", true);
+        main.visitInsn(Opcodes.POP);
+        main.visitInsn(Opcodes.RETURN);
+        main.visitMaxs(0, 0);
+        main.visitEnd();
+    }
+
     private void emitParagraph(int index, List<Runnable> body) {
         run = writer.visitMethod(Opcodes.ACC_PRIVATE, paragraphMethod(index),
-                "(L" + STORAGE + ";)V", null, null);
+                RUN_DESCRIPTOR, null, null);
         run.visitCode();
         body.forEach(Runnable::run);
         run.visitInsn(Opcodes.RETURN);
@@ -457,8 +569,9 @@ public final class ProgramGenerator {
     private void callParagraph(int index) {
         run.visitVarInsn(Opcodes.ALOAD, 0);
         run.visitVarInsn(Opcodes.ALOAD, 1);
+        run.visitVarInsn(Opcodes.ALOAD, 2);
         run.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, paragraphMethod(index),
-                "(L" + STORAGE + ";)V", false);
+                RUN_DESCRIPTOR, false);
     }
 
     private static String paragraphMethod(int index) {
