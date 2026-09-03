@@ -106,19 +106,48 @@ public final class ProcedureBuilder {
     private Statement moveOf(CobolParser.MoveStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
         Operand source = operandOf(context.moveSource(), origin);
-        List<DataReference> targets = new ArrayList<>();
+        List<Statement.Move.Target> targets = new ArrayList<>();
         for (CobolParser.IdentifierContext target : context.identifier()) {
             DataReference reference = resolver.resolve(target);
-            if (reference != null) {
-                targets.add(reference);
+            if (reference == null || source == null) {
+                continue;
+            }
+            Statement.Move.Target checked = checkMove(source, reference, origin);
+            if (checked != null) {
+                targets.add(checked);
             }
         }
         if (source == null || targets.size() != context.identifier().size()) {
-            // 解決できなかった参照は誤りとして報告済みである。文は組み立てない
+            // 解決できなかった参照と書けない組み合わせは報告済みである。文は組み立てない
             return null;
         }
         boolean corresponding = context.CORRESPONDING() != null || context.CORR() != null;
         return new Statement.Move(source, targets, corresponding, origin);
+    }
+
+    /** 分類の組み合わせを検査し、転記の種類を決める。 */
+    private Statement.Move.Target checkMove(Operand source, DataReference target, Origin origin) {
+        DataCategory receiver = DataCategory.of(target);
+        DataCategory sender = categoryOf(source, receiver);
+        if (!MoveRules.isAllowed(sender, receiver)) {
+            report(origin, "MOVE to " + describe(target) + " is not allowed: "
+                    + MoveRules.reason(sender, receiver));
+            return null;
+        }
+        return new Statement.Move.Target(target, MoveRules.kindOf(sender, receiver));
+    }
+
+    /** 送出側の分類。図形定数 {@code ZERO} は受取側に合わせて数値にも文字にもなる。 */
+    private static DataCategory categoryOf(Operand source, DataCategory receiver) {
+        if (source instanceof Operand.Reference reference) {
+            return DataCategory.of(reference.reference());
+        }
+        boolean numericReceiver = receiver.isNumeric() || receiver == DataCategory.NUMERIC_EDITED;
+        return DataCategory.of(((Operand.Literal) source).value(), numericReceiver);
+    }
+
+    private static String describe(DataReference reference) {
+        return reference.item().name() == null ? "FILLER" : reference.item().name();
     }
 
     private Operand operandOf(CobolParser.MoveSourceContext context, Origin origin) {

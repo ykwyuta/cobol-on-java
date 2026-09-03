@@ -67,7 +67,7 @@ class ProcedureBuilderTest {
         Operand.Reference source = assertInstanceOf(Operand.Reference.class, move.source());
         assertEquals("WS-A", source.reference().item().name());
         assertEquals(1, move.targets().size());
-        assertEquals("WS-B", move.targets().get(0).item().name());
+        assertEquals("WS-B", move.targets().get(0).reference().item().name());
         assertFalse(move.corresponding());
     }
 
@@ -78,7 +78,7 @@ class ProcedureBuilderTest {
                 List.of("01 WS-A PIC X.", "01 WS-B PIC X.", "01 WS-C PIC X."),
                 "MOVE WS-A TO WS-B WS-C."));
         assertEquals(List.of("WS-B", "WS-C"),
-                move.targets().stream().map(t -> t.item().name()).toList());
+                move.targets().stream().map(t -> t.reference().item().name()).toList());
     }
 
     @Test
@@ -148,7 +148,7 @@ class ProcedureBuilderTest {
 
         Operand.Reference source = assertInstanceOf(Operand.Reference.class, move.source());
         assertEquals("WS-IN", source.reference().item().parent().name());
-        assertEquals("WS-OUT", move.targets().get(0).item().parent().name());
+        assertEquals("WS-OUT", move.targets().get(0).reference().item().parent().name());
     }
 
     @Test
@@ -207,7 +207,7 @@ class ProcedureBuilderTest {
         Operand.Reference source = assertInstanceOf(Operand.Reference.class, move.source());
         // WS-Y は 1 回分の中で 2 バイト目から。2 回目は 6 バイト進む
         assertEquals(OptionalInt.of(8), source.reference().constantOffset());
-        assertEquals(OptionalInt.of(0), move.targets().get(0).constantOffset());
+        assertEquals(OptionalInt.of(0), move.targets().get(0).reference().constantOffset());
     }
 
     @Test
@@ -237,7 +237,7 @@ class ProcedureBuilderTest {
                 "   05 WS-T OCCURS 3 TIMES PIC X(2).");
 
         Statement.Move move = firstMove(buildOk(storage, "MOVE SPACES TO WS-T (WS-I)."));
-        DataReference target = move.targets().get(0);
+        DataReference target = move.targets().get(0).reference();
         assertInstanceOf(DataReference.Subscript.Variable.class, target.subscripts().get(0));
         assertEquals(OptionalInt.empty(), target.constantOffset(), "実行時に決まる");
     }
@@ -303,6 +303,92 @@ class ProcedureBuilderTest {
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("requires 1 subscript"),
                 result.diagnostics().toString());
+    }
+
+    // ---- 分類の組み合わせ ----
+
+    private static final List<String> CATEGORIES = List.of(
+            "01 WS-ALPHA  PIC A(3).",
+            "01 WS-TEXT   PIC X(3).",
+            "01 WS-INT    PIC 9(3).",
+            "01 WS-DEC    PIC 9(3)V99.",
+            "01 WS-EDIT   PIC ZZ9.99.",
+            "01 WS-GROUP.",
+            "   05 WS-G1 PIC X(2).");
+
+    private static MoveRules.Kind kindOf(String statement) {
+        return firstMove(buildOk(CATEGORIES, statement)).targets().get(0).kind();
+    }
+
+    private static String rejectionOf(String statement) {
+        ProcedureBuilder.Result result = build(CATEGORIES, statement);
+        assertFalse(result.succeeded(), () -> "expected a diagnostic for " + statement);
+        return result.diagnostics().get(0).message();
+    }
+
+    @Test
+    @DisplayName("受取側の分類が転記の種類を決める (FR-060)")
+    void theReceivingCategoryDecidesTheKindOfMove() {
+        assertEquals(MoveRules.Kind.ALPHANUMERIC, kindOf("MOVE WS-TEXT TO WS-ALPHA."));
+        assertEquals(MoveRules.Kind.NUMERIC, kindOf("MOVE WS-DEC TO WS-INT."));
+        assertEquals(MoveRules.Kind.NUMERIC_EDITED, kindOf("MOVE WS-DEC TO WS-EDIT."));
+    }
+
+    @Test
+    @DisplayName("集団項目への転記は無変換の英数字転記になる (FR-020, FR-060)")
+    void movingToAGroupIsAlwaysAnAlphanumericMove() {
+        assertEquals(MoveRules.Kind.ALPHANUMERIC, kindOf("MOVE WS-DEC TO WS-GROUP."));
+        assertEquals(MoveRules.Kind.ALPHANUMERIC, kindOf("MOVE WS-GROUP TO WS-EDIT."));
+    }
+
+    @Test
+    @DisplayName("部分参照を書いた項目は英数字になる (FR-026, FR-060)")
+    void aReferenceModifiedItemIsAlphanumeric() {
+        // 数字項目の一部を切り出しても、それは数値ではなくバイトの並びである
+        assertEquals(MoveRules.Kind.ALPHANUMERIC, kindOf("MOVE WS-TEXT TO WS-INT (1:2)."));
+    }
+
+    @Test
+    @DisplayName("英字項目を数値へ移す指定は誤りとする (FR-060)")
+    void anAlphabeticItemHasNoNumericValue() {
+        assertTrue(rejectionOf("MOVE WS-ALPHA TO WS-INT.").contains("no numeric value"),
+                rejectionOf("MOVE WS-ALPHA TO WS-INT."));
+    }
+
+    @Test
+    @DisplayName("数字編集項目を数値へ戻す指定は誤りとする (FR-060)")
+    void aNumericEditedItemCannotBeMovedBackToANumericItem() {
+        assertTrue(rejectionOf("MOVE WS-EDIT TO WS-INT.").contains("numeric-edited"),
+                rejectionOf("MOVE WS-EDIT TO WS-INT."));
+    }
+
+    @Test
+    @DisplayName("小数を持つ数値を英数字へ移す指定は誤りとする (FR-060)")
+    void aNonIntegerCannotBeMovedToAnAlphanumericItem() {
+        // 小数点の位置がバイト列から失われる
+        assertTrue(rejectionOf("MOVE WS-DEC TO WS-TEXT.").contains("non-integer"),
+                rejectionOf("MOVE WS-DEC TO WS-TEXT."));
+    }
+
+    @Test
+    @DisplayName("整数と英数字は互いに移せる (FR-060)")
+    void integersAndAlphanumericItemsMoveBothWays() {
+        assertEquals(MoveRules.Kind.ALPHANUMERIC, kindOf("MOVE WS-INT TO WS-TEXT."));
+        assertEquals(MoveRules.Kind.NUMERIC, kindOf("MOVE WS-TEXT TO WS-INT."));
+    }
+
+    @Test
+    @DisplayName("ZERO は受取側に合わせて数値にも文字にもなる (FR-060)")
+    void zeroFollowsItsReceiver() {
+        assertEquals(MoveRules.Kind.NUMERIC, kindOf("MOVE ZERO TO WS-INT."));
+        assertEquals(MoveRules.Kind.ALPHANUMERIC, kindOf("MOVE ZERO TO WS-TEXT."));
+    }
+
+    @Test
+    @DisplayName("SPACES を数値へ移す指定は誤りとする (FR-060)")
+    void spacesHaveNoNumericValue() {
+        assertTrue(rejectionOf("MOVE SPACES TO WS-INT.").contains("not allowed"),
+                rejectionOf("MOVE SPACES TO WS-INT."));
     }
 
     @Test
