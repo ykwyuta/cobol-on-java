@@ -138,6 +138,91 @@ public final class Insn {
         };
     }
 
+    // --- HFP (IBM 16 進浮動小数点) 命令。いずれも RX 形式 ---
+    private static final int OP_STE = 0x70;
+    private static final int OP_LE = 0x78;
+    private static final int OP_AE = 0x7A;
+    private static final int OP_SE = 0x7B;
+    private static final int OP_ME = 0x7C;
+    private static final int OP_DE = 0x7D;
+    private static final int OP_STD = 0x60;
+    private static final int OP_LD = 0x68;
+    private static final int OP_AD = 0x6A;
+    private static final int OP_SD = 0x6B;
+    private static final int OP_MD = 0x6C;
+    private static final int OP_DD = 0x6D;
+
+    /** {@code LE R1,D2} — 短形式 HFP をロードする。 */
+    public static byte[] le(int r1, int addr) {
+        return rx(OP_LE, r1, addr);
+    }
+
+    /** {@code STE R1,D2} — 短形式 HFP を格納する。 */
+    public static byte[] ste(int r1, int addr) {
+        return rx(OP_STE, r1, addr);
+    }
+
+    /** {@code AE R1,D2} — 短形式 HFP の加算 (正規化)。 */
+    public static byte[] ae(int r1, int addr) {
+        return rx(OP_AE, r1, addr);
+    }
+
+    /** {@code SE R1,D2} — 短形式 HFP の減算 (正規化)。 */
+    public static byte[] se(int r1, int addr) {
+        return rx(OP_SE, r1, addr);
+    }
+
+    /** {@code ME R1,D2} — 短形式 HFP の乗算。 */
+    public static byte[] me(int r1, int addr) {
+        return rx(OP_ME, r1, addr);
+    }
+
+    /** {@code DE R1,D2} — 短形式 HFP の除算。 */
+    public static byte[] de(int r1, int addr) {
+        return rx(OP_DE, r1, addr);
+    }
+
+    /** {@code LD R1,D2} — 長形式 HFP をロードする。 */
+    public static byte[] ld(int r1, int addr) {
+        return rx(OP_LD, r1, addr);
+    }
+
+    /** {@code STD R1,D2} — 長形式 HFP を格納する。 */
+    public static byte[] std(int r1, int addr) {
+        return rx(OP_STD, r1, addr);
+    }
+
+    /** {@code AD R1,D2} — 長形式 HFP の加算 (正規化)。 */
+    public static byte[] ad(int r1, int addr) {
+        return rx(OP_AD, r1, addr);
+    }
+
+    /** {@code SD R1,D2} — 長形式 HFP の減算 (正規化)。 */
+    public static byte[] sd(int r1, int addr) {
+        return rx(OP_SD, r1, addr);
+    }
+
+    /** {@code MD R1,D2} — 長形式 HFP の乗算。 */
+    public static byte[] md(int r1, int addr) {
+        return rx(OP_MD, r1, addr);
+    }
+
+    /** {@code DD R1,D2} — 長形式 HFP の除算。 */
+    public static byte[] dd(int r1, int addr) {
+        return rx(OP_DD, r1, addr);
+    }
+
+    /** RX 形式: 命令コード / R1 と指標レジスタ / B2D2。指標レジスタは 0 を用いる。 */
+    private static byte[] rx(int opcode, int r1, int addr) {
+        checkRegister(r1);
+        checkAddress(addr);
+        return new byte[] {
+                (byte) opcode,
+                (byte) (r1 << 4),
+                (byte) ((addr >>> 8) & 0x0F), (byte) (addr & 0xFF)
+        };
+    }
+
     /** {@code LA R1,D2} — アドレスを汎用レジスタへロードする。 */
     public static byte[] la(int r1, int addr) {
         checkRegister(r1);
