@@ -3,6 +3,7 @@ package dev.cobolonjava.oracle.machine;
 import static dev.cobolonjava.oracle.OracleSupport.hex;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.picture.Picture;
@@ -61,10 +62,27 @@ class EditMaskTest {
     }
 
     @Test
-    @DisplayName("平の ED では表現できない PICTURE は明示的に拒否する")
+    @DisplayName("浮動挿入では先頭の 1 個がメッセージ文字になる。記号は EDMK の結果に応じて後から書く")
+    void floatingInsertion() {
+        // $$$,$$9.99 -> 充填(40) 予備(40) 20 20 ,(6B) 20 21 20 .(4B) 20 20
+        // 先頭の $ は数字を消費しないため桁選択子にはならない
+        assertEquals("40402020 6B202120 4B2020".replace(" ", ""), mask("$$$,$$9.99"));
+        assertEquals("404020202120", mask("----9"));
+
+        Picture p = PictureParser.parse("$$$,$$9.99");
+        assertTrue(EditMask.usesFloatingInsertion(p));
+        assertEquals(p.digits(),
+                EditMask.digitPositions(EditMask.forPicture(p, CodePages.IBM_1047)));
+        assertEquals('$', EditMask.floatingCharacter(p, false));
+        assertEquals('-', EditMask.floatingCharacter(PictureParser.parse("---9"), true));
+        assertEquals(' ', EditMask.floatingCharacter(PictureParser.parse("---9"), false),
+                "- の浮動挿入は正のとき空白になる");
+        assertEquals('+', EditMask.floatingCharacter(PictureParser.parse("+++9"), false));
+    }
+
+    @Test
+    @DisplayName("ED / EDMK では表現できない PICTURE は明示的に拒否する")
     void unsupportedPictures() {
-        // 浮動挿入
-        assertThrows(UnsupportedOperationException.class, () -> mask("$$$,$$9.99"));
         // 固定符号
         assertThrows(UnsupportedOperationException.class, () -> mask("+9(4)"));
         // 常に表示する桁がない (全桁抑制)。COBOL 固有の「値がゼロなら項目全体を抑制」の

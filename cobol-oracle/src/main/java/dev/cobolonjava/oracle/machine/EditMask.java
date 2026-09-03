@@ -111,10 +111,9 @@ public final class EditMask {
         }
         List<Cell> cells = picture.cells();
         for (Cell c : cells) {
-            if (c.kind() == Kind.FLOAT || c.kind() == Kind.SIGN) {
+            if (c.kind() == Kind.SIGN) {
                 throw new UnsupportedOperationException(
-                        "floating insertion and fixed sign cannot be expressed by a plain ED mask: "
-                                + picture.source());
+                        "a fixed sign cannot be expressed by an ED mask: " + picture.source());
             }
         }
 
@@ -133,12 +132,23 @@ public final class EditMask {
         }
 
         byte fill = fillCharacter(cells, codePage);
+        int firstFloat = indexOfFirstFloat(cells);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(fill);
         for (int i = 0; i < cells.size(); i++) {
             Cell c = cells.get(i);
             switch (c.kind()) {
                 case SUPPRESS -> out.write(i == significanceStarter ? SIGNIFICANCE_STARTER : DIGIT_SELECTOR);
+                case FLOAT -> {
+                    if (i == firstFloat) {
+                        // 浮動挿入の先頭位置は記号のための予備であり、数字を消費しない。
+                        // マスク上はメッセージ文字 (充填文字と同じ値) にしておき、
+                        // EDMK が返した位置に応じて後から記号を書き込む。
+                        out.write(fill);
+                    } else {
+                        out.write(i == significanceStarter ? SIGNIFICANCE_STARTER : DIGIT_SELECTOR);
+                    }
+                }
                 case DIGIT -> out.write(DIGIT_SELECTOR);
                 case INSERT -> out.write(codePage.ch(c.literal()));
                 case DECIMAL_POINT -> out.write(codePage.ch('.'));
@@ -202,13 +212,70 @@ public final class EditMask {
         return -1;
     }
 
+    /**
+     * 抑制の対象になりうる最後のセル。有意性開始子はここに置く。
+     *
+     * <p>浮動挿入では、先頭の 1 個は記号のための予備で数字を消費しないため対象から外す。
+     */
     private static int lastSuppressibleBefore(List<Cell> cells, int limit) {
+        int firstFloat = indexOfFirstFloat(cells);
         int last = -1;
         for (int i = 0; i < limit; i++) {
-            if (cells.get(i).kind() == Kind.SUPPRESS) {
+            Kind k = cells.get(i).kind();
+            if (k == Kind.SUPPRESS || (k == Kind.FLOAT && i != firstFloat)) {
                 last = i;
             }
         }
         return last;
+    }
+
+    private static int indexOfFirstFloat(List<Cell> cells) {
+        for (int i = 0; i < cells.size(); i++) {
+            if (cells.get(i).kind() == Kind.FLOAT) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** この PICTURE が浮動挿入を使うかどうか。使う場合は {@code EDMK} が必要になる。 */
+    public static boolean usesFloatingInsertion(Picture picture) {
+        return indexOfFirstFloat(picture.cells()) >= 0;
+    }
+
+    /**
+     * 有意な数字が 1 つも見つからなかった場合に備えて、{@code EDMK} の前に汎用レジスタへ
+     * 入れておくアドレスのオフセット。
+     *
+     * <p>{@code EDMK} は有意な数字が見つかったときだけレジスタを更新する。値がゼロの場合は
+     * 更新されないため、あらかじめ「最初に表示される数字の位置」を入れておく必要がある。
+     * それは有意性開始子の 1 つ後ろである。
+     */
+    public static int significanceStarterSuccessorOffset(Picture picture, int sourceDigitNibbles) {
+        List<Cell> cells = picture.cells();
+        int firstAlwaysPrint = indexOfFirstAlwaysPrinting(cells);
+        int significanceStarter = lastSuppressibleBefore(cells, firstAlwaysPrint);
+        int extra = sourceDigitNibbles - picture.digits();
+        // マスク上の位置は「充填文字 1 バイト + 桁合わせの追加分 + セル番号」
+        return 1 + extra + significanceStarter + 1;
+    }
+
+    /**
+     * 浮動挿入で書き込む記号。
+     *
+     * <p>{@code $} は常に通貨記号、{@code +} は符号に応じて {@code +} か {@code -}、
+     * {@code -} は負のときだけ {@code -} で正のときは空白になる。
+     */
+    public static char floatingCharacter(Picture picture, boolean negative) {
+        int firstFloat = indexOfFirstFloat(picture.cells());
+        if (firstFloat < 0) {
+            throw new IllegalArgumentException("picture has no floating insertion: " + picture.source());
+        }
+        char symbol = picture.cells().get(firstFloat).literal();
+        return switch (symbol) {
+            case '+' -> negative ? '-' : '+';
+            case '-' -> negative ? '-' : ' ';
+            default -> symbol;
+        };
     }
 }

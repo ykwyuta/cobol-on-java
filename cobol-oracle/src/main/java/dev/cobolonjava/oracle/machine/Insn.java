@@ -128,6 +128,42 @@ public final class Insn {
         };
     }
 
+    /** {@code LA R1,D2} — アドレスを汎用レジスタへロードする。 */
+    public static byte[] la(int r1, int addr) {
+        checkRegister(r1);
+        checkAddress(addr);
+        return new byte[] {
+                0x41,
+                (byte) (r1 << 4),
+                (byte) ((addr >>> 8) & 0x0F), (byte) (addr & 0xFF)
+        };
+    }
+
+    /**
+     * {@code BCTR R1,0} — 汎用レジスタから 1 を引く。第 2 オペランドが 0 なので分岐はしない。
+     *
+     * <p>{@code EDMK} が返した「最初の有効数字の位置」の 1 つ手前へアドレスを動かすために使う。
+     * 浮動挿入の記号はそこへ置かれる。
+     */
+    public static byte[] bctr(int r1) {
+        checkRegister(r1);
+        return new byte[] {0x06, (byte) (r1 << 4)};
+    }
+
+    /** {@code MVI D1(B1),I2} — 即値 1 バイトを記憶域へ格納する。 */
+    public static byte[] mvi(int baseRegister, int displacement, byte value) {
+        checkRegister(baseRegister);
+        if (displacement < 0 || displacement > 0xFFF) {
+            throw new IllegalArgumentException("displacement must be 0..4095: " + displacement);
+        }
+        return new byte[] {
+                (byte) 0x92,
+                value,
+                (byte) ((baseRegister << 4) | ((displacement >>> 8) & 0x0F)),
+                (byte) (displacement & 0xFF)
+        };
+    }
+
     /**
      * {@code IPM R1} — プログラムマスクと条件コードを汎用レジスタへ取り出す。
      *
