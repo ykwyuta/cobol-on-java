@@ -12,6 +12,7 @@ import java.util.Optional;
  *
  * <h2>処理の順序</h2>
  * <ol>
+ *   <li>プロセス文 {@code CBL} / {@code PROCESS} の読み取り ({@link ProcessStatement})</li>
  *   <li>参照形式の読み取りと継続行の連結 ({@link SourceReader})</li>
  *   <li>{@code COPY} の展開と {@code REPLACING} の適用 ({@link CopyExpander})</li>
  *   <li>{@code REPLACE} の適用 ({@link ReplaceProcessor})</li>
@@ -73,10 +74,30 @@ public final class Preprocessor {
      * @param source   固定形式のソース
      */
     public NormalizedSource process(String fileName, String source) {
-        NormalizedSource normalized = reader.normalize(fileName, source);
-        NormalizedSource expanded = new CopyExpander(resolver, reader).expand(normalized);
+        ProcessStatement.Scan scan = ProcessStatement.scan(source);
+        SourceReader effective = readerFor(scan.options());
+        NormalizedSource normalized = effective.normalize(fileName, scan.source());
+        NormalizedSource expanded = new CopyExpander(resolver, effective).expand(normalized);
         NormalizedSource replaced = ReplaceProcessor.apply(expanded);
         return DirectiveProcessor.apply(replaced, parameters);
+    }
+
+    /** ソースに書かれたプロセス文のオプションを読む (要件 FR-093)。 */
+    public CompilerOptions optionsOf(String source) {
+        return ProcessStatement.scan(source).options();
+    }
+
+    /**
+     * 実際に用いる読み取り器。プロセス文の {@code SOURCEFORMAT} が指定されていれば
+     * それに従い、指定がなければ構成された読み取り器を用いる。
+     *
+     * <p>指定が構成と同じ形式であれば、構成された読み取り器をそのまま使う。
+     * デバッグ行の扱いなど、形式以外の設定を落とさないためである。
+     */
+    private SourceReader readerFor(CompilerOptions options) {
+        return options.sourceFormat()
+                .map(format -> format == reader.format() ? reader : format.reader())
+                .orElse(reader);
     }
 
     /**
@@ -89,8 +110,10 @@ public final class Preprocessor {
      * @param source   固定形式または自由形式のソース
      */
     public String listing(String fileName, String source) {
-        NormalizedSource normalized = reader.normalize(fileName, source);
-        CopyExpander expander = new CopyExpander(resolver, reader);
+        ProcessStatement.Scan scan = ProcessStatement.scan(source);
+        SourceReader effective = readerFor(scan.options());
+        NormalizedSource normalized = effective.normalize(fileName, scan.source());
+        CopyExpander expander = new CopyExpander(resolver, effective);
         NormalizedSource expanded = expander.expand(normalized);
         NormalizedSource result =
                 DirectiveProcessor.apply(ReplaceProcessor.apply(expanded), parameters);

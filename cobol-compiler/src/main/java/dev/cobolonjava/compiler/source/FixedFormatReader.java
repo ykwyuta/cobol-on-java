@@ -47,6 +47,11 @@ public final class FixedFormatReader implements SourceReader {
         this.debuggingMode = debuggingMode;
     }
 
+    @Override
+    public SourceFormat format() {
+        return SourceFormat.FIXED;
+    }
+
     /** デバッグ行を無効にした読み取り器。 */
     public static FixedFormatReader standard() {
         return new FixedFormatReader(false);

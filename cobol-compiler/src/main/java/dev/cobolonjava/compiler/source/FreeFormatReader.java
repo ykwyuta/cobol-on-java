@@ -28,6 +28,11 @@ public final class FreeFormatReader implements SourceReader {
     private FreeFormatReader() {
     }
 
+    @Override
+    public SourceFormat format() {
+        return SourceFormat.FREE;
+    }
+
     /** 自由形式の読み取り器。 */
     public static FreeFormatReader standard() {
         return new FreeFormatReader();

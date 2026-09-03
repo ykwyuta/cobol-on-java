@@ -15,4 +15,7 @@ public interface SourceReader {
      * @param source   ソースの全文
      */
     NormalizedSource normalize(String fileName, String source);
+
+    /** この読み取り器が読む参照形式。 */
+    SourceFormat format();
 }
