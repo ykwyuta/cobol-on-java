@@ -35,6 +35,7 @@ tokens {
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
+    PERFORM, END_PERFORM, UNTIL, WITH, TEST, BEFORE, AFTER,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
 
     // データ部
@@ -305,6 +306,7 @@ sentence
 statement
     : moveStatement
     | ifStatement
+    | performStatement
     | continueStatement
     | addStatement
     | subtractStatement
@@ -391,6 +393,22 @@ ifBranch
 
 continueStatement
     : CONTINUE
+    ;
+
+// 段落を呼ぶ形と、その場に本体を書く形の 2 つがある。
+// PERFORM のあとが段落名か、繰り返しの指定かで分かれる
+performStatement
+    : PERFORM procedureReference performPhrase?
+    | PERFORM performPhrase? statement* END_PERFORM
+    ;
+
+procedureReference
+    : paragraphName ((THRU | THROUGH) paragraphName)?
+    ;
+
+performPhrase
+    : arithmeticOperand TIMES
+    | (WITH? TEST (BEFORE | AFTER))? UNTIL condition
     ;
 
 // ---- 算術文 ----

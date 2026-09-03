@@ -69,7 +69,56 @@ public final class ProcedureBuilder {
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs);
             }
         }
+        builder.checkPerformTargets(paragraphs);
         return new Result(List.copyOf(paragraphs), List.copyOf(diagnostics));
+    }
+
+    /**
+     * {@code PERFORM} が呼ぶ段落が実在するか確かめる。
+     *
+     * <p>段落はあとから書かれることもあるため、すべての段落を組み立てたあとに見る。
+     */
+    private void checkPerformTargets(List<Paragraph> paragraphs) {
+        List<String> names = new ArrayList<>();
+        for (Paragraph paragraph : paragraphs) {
+            names.add(paragraph.name());
+        }
+        for (Paragraph paragraph : paragraphs) {
+            for (Statement statement : paragraph.statements()) {
+                checkPerformTargets(statement, names);
+            }
+        }
+    }
+
+    private void checkPerformTargets(Statement statement, List<String> names) {
+        if (statement instanceof Statement.If branch) {
+            branch.onTrue().forEach(s -> checkPerformTargets(s, names));
+            branch.onFalse().forEach(s -> checkPerformTargets(s, names));
+            return;
+        }
+        if (!(statement instanceof Statement.Perform perform)) {
+            return;
+        }
+        perform.body().forEach(s -> checkPerformTargets(s, names));
+        if (!perform.callsParagraph()) {
+            return;
+        }
+        int from = names.indexOf(perform.target());
+        if (from < 0) {
+            report(perform.origin(), "undefined paragraph: " + perform.target());
+            return;
+        }
+        if (perform.through() == null) {
+            return;
+        }
+        int to = names.indexOf(perform.through());
+        if (to < 0) {
+            report(perform.origin(), "undefined paragraph: " + perform.through());
+        } else if (to < from) {
+            // 逆順に書かれた THRU は、書いた人の意図と実行される範囲が食い違う
+            report(perform.origin(), "PERFORM THRU names paragraphs in reverse order: "
+                    + perform.target() + " comes after " + perform.through());
+        }
     }
 
     private void addBody(CobolParser.ProcedureBodyContext body, List<Paragraph> paragraphs) {
@@ -104,6 +153,9 @@ public final class ProcedureBuilder {
         }
         if (context.ifStatement() != null) {
             return ifOf(context.ifStatement());
+        }
+        if (context.performStatement() != null) {
+            return performOf(context.performStatement());
         }
         if (context.continueStatement() != null) {
             return new Statement.Continue(ReferenceResolver.originOf(context));
@@ -149,6 +201,46 @@ public final class ProcedureBuilder {
             }
         }
         return statements;
+    }
+
+    private Statement performOf(CobolParser.PerformStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String target = null;
+        String through = null;
+        if (context.procedureReference() != null) {
+            List<CobolParser.ParagraphNameContext> names =
+                    context.procedureReference().paragraphName();
+            target = names.get(0).getText().toUpperCase(Locale.ROOT);
+            through = names.size() > 1 ? names.get(1).getText().toUpperCase(Locale.ROOT) : null;
+        }
+
+        Operand times = null;
+        Condition until = null;
+        boolean testAfter = false;
+        CobolParser.PerformPhraseContext phrase = context.performPhrase();
+        if (phrase != null) {
+            if (phrase.TIMES() != null) {
+                times = operandOf(phrase.arithmeticOperand(), origin);
+                if (times == null) {
+                    return null;
+                }
+            } else {
+                until = conditionOf(phrase.condition());
+                if (until == null) {
+                    return null;
+                }
+                testAfter = phrase.AFTER() != null;
+            }
+        }
+
+        List<Statement> body = new ArrayList<>();
+        for (CobolParser.StatementContext statement : context.statement()) {
+            Statement built = statementOf(statement);
+            if (built != null) {
+                body.add(built);
+            }
+        }
+        return new Statement.Perform(target, through, times, until, testAfter, body, origin);
     }
 
     // ---- 条件 ----

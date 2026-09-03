@@ -73,8 +73,13 @@ public final class ProgramGenerator {
     /** 静的初期化子で作る定数。綴りから field 名を引く。 */
     private final Map<String, Constant> constants = new LinkedHashMap<>();
 
+    /** 局所変数の 0 番は {@code this}、1 番は記憶域である。 */
+    private static final int FIRST_FREE_LOCAL = 2;
+
     private ClassWriter writer;
     private String internal;
+    private List<String> paragraphNames = new ArrayList<>();
+    private int nextLocal = FIRST_FREE_LOCAL;
     private MethodVisitor run;
     private MethodVisitor clinit;
     private byte[] initialStorageBytes;
@@ -135,11 +140,14 @@ public final class ProgramGenerator {
 
         emitConstructor(writer, internal);
         emitInitialStorage(image.storage());
-        List<Runnable> body = planRun(procedure);
+        List<List<Runnable>> paragraphs = planParagraphs(procedure);
         if (!diagnostics.isEmpty()) {
             return new Result(className, null, List.copyOf(diagnostics));
         }
-        emitRun(body);
+        emitRun(paragraphs.size());
+        for (int i = 0; i < paragraphs.size(); i++) {
+            emitParagraph(i, paragraphs.get(i));
+        }
         emitStaticInitializer();
         writer.visitEnd();
         return new Result(className, writer.toByteArray(), List.of());
@@ -179,8 +187,24 @@ public final class ProgramGenerator {
      * 文の並びを、あとで書き出す命令の並びへ変えつつ、必要な定数を登録する。
      * 誤りが見つかったらクラスファイルは作らない。
      */
-    private List<Runnable> planRun(ProcedureBuilder.Result procedure) {
-        return planStatements(procedure.statements());
+    /**
+     * 段落ごとに命令の並びを作る。
+     *
+     * <p>段落を別のメソッドにするのは {@code PERFORM} のためである。素直に流れるときは
+     * 上から順に呼び、{@code PERFORM P} は P のメソッドだけを呼ぶ。
+     * <b>{@code PERFORM} は次の段落へ流れ込まない</b>という規則が、これで自然に出る。
+     */
+    private List<List<Runnable>> planParagraphs(ProcedureBuilder.Result procedure) {
+        paragraphNames = new ArrayList<>();
+        for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
+            paragraphNames.add(paragraph.name());
+        }
+        List<List<Runnable>> planned = new ArrayList<>();
+        for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
+            nextLocal = FIRST_FREE_LOCAL;
+            planned.add(planStatements(paragraph.statements()));
+        }
+        return planned;
     }
 
     private List<Runnable> planStatements(List<Statement> statements) {
@@ -192,6 +216,8 @@ public final class ProgramGenerator {
                 planArithmetic(arithmetic, body);
             } else if (statement instanceof Statement.If branch) {
                 planIf(branch, body);
+            } else if (statement instanceof Statement.Perform perform) {
+                planPerform(perform, body);
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
@@ -216,6 +242,98 @@ public final class ProgramGenerator {
             run.visitJumpInsn(Opcodes.GOTO, end);
             run.visitLabel(otherwise);
             onFalse.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
+    }
+
+    /**
+     * {@code PERFORM} を組み立てる。
+     *
+     * <p>繰り返しの指定と、繰り返す中身は<b>独立に決まる</b>。中身は段落の呼び出しか
+     * その場に書いた文か、指定は 1 回・回数・条件のいずれか。組み合わせて出す。
+     */
+    private void planPerform(Statement.Perform statement, List<Runnable> body) {
+        Runnable once = planPerformBody(statement);
+        if (once == null) {
+            return;
+        }
+        if (statement.times() != null) {
+            planTimes(statement, once, body);
+            return;
+        }
+        if (statement.until() != null) {
+            planUntil(statement, once, body);
+            return;
+        }
+        body.add(once);
+    }
+
+    /** 繰り返す中身を 1 回分。 */
+    private Runnable planPerformBody(Statement.Perform statement) {
+        if (!statement.callsParagraph()) {
+            List<Runnable> inline = planStatements(statement.body());
+            return () -> inline.forEach(Runnable::run);
+        }
+        int from = paragraphNames.indexOf(statement.target());
+        int to = statement.through() == null
+                ? from
+                : paragraphNames.indexOf(statement.through());
+        if (from < 0 || to < 0) {
+            report(statement.origin(), "undefined paragraph: " + statement.target());
+            return null;
+        }
+        // THRU は範囲の段落を順に呼ぶ
+        return () -> {
+            for (int i = from; i <= to; i++) {
+                callParagraph(i);
+            }
+        };
+    }
+
+    private void planTimes(Statement.Perform statement, Runnable once, List<Runnable> body) {
+        Runnable count = planSourceDecimal(statement.times(), statement.origin());
+        if (count == null) {
+            return;
+        }
+        int counter = nextLocal++;
+        int limit = nextLocal++;
+        body.add(() -> {
+            count.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            run.visitVarInsn(Opcodes.ISTORE, limit);
+            run.visitInsn(Opcodes.ICONST_0);
+            run.visitVarInsn(Opcodes.ISTORE, counter);
+
+            Label test = new Label();
+            Label end = new Label();
+            run.visitLabel(test);
+            run.visitVarInsn(Opcodes.ILOAD, counter);
+            run.visitVarInsn(Opcodes.ILOAD, limit);
+            run.visitJumpInsn(Opcodes.IF_ICMPGE, end);
+            once.run();
+            run.visitIincInsn(counter, 1);
+            run.visitJumpInsn(Opcodes.GOTO, test);
+            run.visitLabel(end);
+        });
+    }
+
+    /**
+     * {@code UNTIL} の繰り返し。<b>条件は「やめる条件」である</b>。
+     * {@code WITH TEST AFTER} なら中身を 1 度実行してから条件を見る。
+     */
+    private void planUntil(Statement.Perform statement, Runnable once, List<Runnable> body) {
+        body.add(() -> {
+            Label top = new Label();
+            Label end = new Label();
+            run.visitLabel(top);
+            if (!statement.testAfter()) {
+                emitCondition(statement.until(), end, true);
+            }
+            once.run();
+            if (statement.testAfter()) {
+                emitCondition(statement.until(), end, true);
+            }
+            run.visitJumpInsn(Opcodes.GOTO, top);
             run.visitLabel(end);
         });
     }
@@ -314,16 +432,37 @@ public final class ProgramGenerator {
         };
     }
 
-    private void emitRun(List<Runnable> body) {
-        run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run",
-                "(L" + STORAGE + ";)V", null, null);
+    /** {@code run} は段落を書かれた順に呼ぶ。素直に流れる実行がこれにあたる。 */
+    private void emitRun(int paragraphCount) {
+        run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", "(L" + STORAGE + ";)V", null, null);
         run.visitCode();
-        for (Runnable instruction : body) {
-            instruction.run();
+        for (int i = 0; i < paragraphCount; i++) {
+            callParagraph(i);
         }
         run.visitInsn(Opcodes.RETURN);
         run.visitMaxs(0, 0);
         run.visitEnd();
+    }
+
+    private void emitParagraph(int index, List<Runnable> body) {
+        run = writer.visitMethod(Opcodes.ACC_PRIVATE, paragraphMethod(index),
+                "(L" + STORAGE + ";)V", null, null);
+        run.visitCode();
+        body.forEach(Runnable::run);
+        run.visitInsn(Opcodes.RETURN);
+        run.visitMaxs(0, 0);
+        run.visitEnd();
+    }
+
+    private void callParagraph(int index) {
+        run.visitVarInsn(Opcodes.ALOAD, 0);
+        run.visitVarInsn(Opcodes.ALOAD, 1);
+        run.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, paragraphMethod(index),
+                "(L" + STORAGE + ";)V", false);
+    }
+
+    private static String paragraphMethod(int index) {
+        return "paragraph$" + index;
     }
 
     private void planMove(Statement.Move move, List<Runnable> body) {

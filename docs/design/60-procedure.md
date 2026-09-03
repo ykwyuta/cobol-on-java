@@ -119,7 +119,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 ## いま組み立てられる文
 
-`MOVE`、算術文 4 つ、`IF`、`CONTINUE` である
+`MOVE`、算術文 4 つ、`IF`、`PERFORM`、`CONTINUE` である
 (`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
 `ON SIZE ERROR` と `COMPUTE` は未実装で、書くと構文誤りになる (暫定判断 P-028)。
 
@@ -127,7 +127,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `PERFORM` と `EVALUATE`。`ON SIZE ERROR` もここで繋ぐ。
+1. `EVALUATE` と `ON SIZE ERROR`。
 2. `COMPUTE`。中間結果の桁数の規則を決めてから。
 3. `MOVE CORRESPONDING` の対応付け。
 4. 88 レベルの条件名を条件として使えるようにする。

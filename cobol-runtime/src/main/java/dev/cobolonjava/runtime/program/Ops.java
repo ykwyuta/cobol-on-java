@@ -55,6 +55,16 @@ public final class Ops {
         return source.load(view);
     }
 
+    /**
+     * 繰り返しの回数として読む。
+     *
+     * <p>小数部は切り捨てる。{@code PERFORM n TIMES} の {@code n} は整数項目であることを
+     * 規格が求めているため、切り捨てが起きるのは規格外のソースだけである。
+     */
+    public static int toInt(Decimal value) {
+        return value.toBigDecimal().intValue();
+    }
+
     // ---- 比較 ----
 
     /** 数値比較。内部表現と桁数の違いに影響されない。 */

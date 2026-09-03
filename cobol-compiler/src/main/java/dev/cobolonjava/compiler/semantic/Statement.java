@@ -102,4 +102,30 @@ public sealed interface Statement {
     /** {@code CONTINUE}。何もしない。 */
     record Continue(Origin origin) implements Statement {
     }
+
+    /**
+     * {@code PERFORM} 文。
+     *
+     * <p>繰り返しの指定と、繰り返す中身の 2 つからなる。中身は<b>段落を呼ぶか、
+     * その場に書いた文か</b>のどちらかで、両方ということはない。
+     *
+     * @param target    呼ぶ段落の名前。その場に書く形では {@code null}
+     * @param through   {@code THRU} で指定した最後の段落。なければ {@code null}
+     * @param times     {@code TIMES} の回数。指定がなければ {@code null}
+     * @param until     {@code UNTIL} の条件。指定がなければ {@code null}
+     * @param testAfter {@code WITH TEST AFTER} 指定。中身を 1 度実行してから条件を見る
+     * @param body      その場に書いた文。段落を呼ぶ形では空
+     */
+    record Perform(String target, String through, Operand times, Condition until,
+                   boolean testAfter, List<Statement> body, Origin origin) implements Statement {
+
+        public Perform {
+            body = List.copyOf(body);
+        }
+
+        /** 段落を呼ぶ形かどうか。 */
+        public boolean callsParagraph() {
+            return target != null;
+        }
+    }
 }
