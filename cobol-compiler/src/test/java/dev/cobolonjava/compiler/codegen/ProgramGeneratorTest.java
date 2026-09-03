@@ -177,12 +177,11 @@ class ProgramGeneratorTest {
     }
 
     @Test
-    @DisplayName("実行時に決まる添字はまだ生成できないと報告する (P-027)")
-    void aVariableSubscriptIsReportedAsUnsupported() {
+    @DisplayName("部分参照の長さがデータ項目ならまだ生成できないと報告する (P-027)")
+    void aVariableReferenceModificationLengthIsReportedAsUnsupported() {
         CobolCompiler.Result result = compile(
-                List.of("01 WS-I PIC 9(3) COMP VALUE 1.",
-                        "01 WS-T.", "   05 WS-E OCCURS 3 TIMES PIC X."),
-                "MOVE 'A' TO WS-E (WS-I).");
+                List.of("01 WS-I PIC 9(3) COMP VALUE 1.", "01 WS-A PIC X(5)."),
+                "MOVE 'A' TO WS-A (1:WS-I).");
 
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("not a constant"),

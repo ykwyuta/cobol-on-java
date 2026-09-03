@@ -471,23 +471,22 @@ public final class ProgramGenerator {
             return;
         }
         for (Statement.Move.Target target : move.targets()) {
-            OptionalInt offset = target.reference().absoluteOffset();
-            OptionalInt length = target.reference().constantLength();
-            if (offset.isEmpty() || length.isEmpty()) {
-                report(move.origin(), "a subscript that is not a constant is not supported yet");
+            Runnable offset = planOffset(target.reference(), move.origin());
+            OptionalInt length = lengthOf(target.reference(), move.origin());
+            if (offset == null || length.isEmpty()) {
                 return;
             }
             switch (target.kind()) {
-                case ALPHANUMERIC -> planAlphanumericMove(move, target, offset.getAsInt(),
+                case ALPHANUMERIC -> planAlphanumericMove(move, target, offset,
                         length.getAsInt(), body);
-                case NUMERIC -> planNumericMove(move, target, offset.getAsInt(), body);
-                case NUMERIC_EDITED -> planEditedMove(move, target, offset.getAsInt(), body);
+                case NUMERIC -> planNumericMove(move, target, offset, body);
+                case NUMERIC_EDITED -> planEditedMove(move, target, offset, body);
             }
         }
     }
 
     private void planAlphanumericMove(Statement.Move move, Statement.Move.Target target,
-                                      int offset, int length, List<Runnable> body) {
+                                      Runnable offset, int length, List<Runnable> body) {
         Runnable source = planSourceBytes(move.source(), move.origin(), length);
         if (source == null) {
             return;
@@ -496,7 +495,7 @@ public final class ProgramGenerator {
         body.add(() -> {
             source.run();
             run.visitVarInsn(Opcodes.ALOAD, 1);
-            push(offset);
+            offset.run();
             push(length);
             run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             loadCodePage();
@@ -506,7 +505,7 @@ public final class ProgramGenerator {
     }
 
     private void planNumericMove(Statement.Move move, Statement.Move.Target target,
-                                 int offset, List<Runnable> body) {
+                                 Runnable offset, List<Runnable> body) {
         Runnable source = planSourceDecimal(move.source(), move.origin());
         if (source == null) {
             return;
@@ -520,14 +519,14 @@ public final class ProgramGenerator {
             source.run();
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             run.visitVarInsn(Opcodes.ALOAD, 1);
-            push(offset);
+            offset.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveNumeric",
                     "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
         });
     }
 
     private void planEditedMove(Statement.Move move, Statement.Move.Target target,
-                                int offset, List<Runnable> body) {
+                                Runnable offset, List<Runnable> body) {
         Runnable source = planSourceDecimal(move.source(), move.origin());
         if (source == null) {
             return;
@@ -537,7 +536,7 @@ public final class ProgramGenerator {
             source.run();
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, PICTURE);
             run.visitVarInsn(Opcodes.ALOAD, 1);
-            push(offset);
+            offset.run();
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveNumericEdited",
                     "(" + DECIMAL + PICTURE + "L" + STORAGE + ";I" + CODE_PAGE + ")V", false);
@@ -558,9 +557,8 @@ public final class ProgramGenerator {
             return;
         }
         for (Statement.Arithmetic.Target target : statement.targets()) {
-            OptionalInt offset = target.reference().absoluteOffset();
-            if (offset.isEmpty()) {
-                report(statement.origin(), "a subscript that is not a constant is not supported yet");
+            Runnable offset = planOffset(target.reference(), statement.origin());
+            if (offset == null) {
                 return;
             }
             DataItem item = target.reference().item();
@@ -578,7 +576,7 @@ public final class ProgramGenerator {
                 value.add(() -> {
                     run.visitFieldInsn(Opcodes.GETSTATIC, internal, source, NUMERIC_ITEM);
                     run.visitVarInsn(Opcodes.ALOAD, 1);
-                    push(offset.getAsInt());
+                    offset.run();
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
                             "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
                 });
@@ -594,7 +592,7 @@ public final class ProgramGenerator {
                 value.forEach(Runnable::run);
                 run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
                 run.visitVarInsn(Opcodes.ALOAD, 1);
-                push(offset.getAsInt());
+                offset.run();
                 loadRounding(rounding);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
                         "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
@@ -644,9 +642,8 @@ public final class ProgramGenerator {
 
     private Runnable planCheckedTarget(Statement.Arithmetic statement,
                                        Statement.Arithmetic.Target target, int flag) {
-        OptionalInt offset = target.reference().absoluteOffset();
-        if (offset.isEmpty()) {
-            report(statement.origin(), "a subscript that is not a constant is not supported yet");
+        Runnable offset = planOffset(target.reference(), statement.origin());
+        if (offset == null) {
             return null;
         }
         DataItem item = target.reference().item();
@@ -701,7 +698,7 @@ public final class ProgramGenerator {
             if (statement.accumulate() != null) {
                 run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
                 run.visitVarInsn(Opcodes.ALOAD, 1);
-                push(offset.getAsInt());
+                offset.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
                         "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
                 run.visitVarInsn(Opcodes.ALOAD, folded);
@@ -711,7 +708,7 @@ public final class ProgramGenerator {
             }
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             run.visitVarInsn(Opcodes.ALOAD, 1);
-            push(offset.getAsInt());
+            offset.run();
             loadRounding(rounding);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
                     "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
@@ -773,6 +770,101 @@ public final class ProgramGenerator {
                 Type.getDescriptor(CobolRounding.class));
     }
 
+    // ---- 位置と長さ ----
+
+    /**
+     * 参照の位置を {@code int} として積む命令。
+     *
+     * <p>添字がすべて定数なら定数を積むだけである。データ項目で書いた添字が混ざれば、
+     * <b>定数の分をまとめてから、変数の分を実行時に足す</b>。
+     *
+     * <pre>
+     * 位置 = 項目の変位 + Σ (添字 - 1) x その表の 1 回分の長さ
+     * </pre>
+     */
+    private Runnable planOffset(DataReference reference, Origin origin) {
+        OptionalInt constant = reference.absoluteOffset();
+        if (constant.isPresent()) {
+            int value = constant.getAsInt();
+            return () -> push(value);
+        }
+
+        List<DataItem> tables = DataReference.tableChain(reference.item());
+        int fixed = reference.item().record().base() + reference.item().offset();
+        List<Runnable> variable = new ArrayList<>();
+        for (int i = 0; i < tables.size(); i++) {
+            DataReference.Subscript subscript = reference.subscripts().get(i);
+            int unit = tables.get(i).length();
+            if (subscript instanceof DataReference.Subscript.Constant value) {
+                fixed += (value.value() - 1) * unit;
+                continue;
+            }
+            DataReference inner = ((DataReference.Subscript.Variable) subscript).reference();
+            Runnable push = planSourceDecimal(new Operand.Reference(inner), origin);
+            if (push == null) {
+                return null;
+            }
+            variable.add(() -> {
+                push.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+                run.visitInsn(Opcodes.ICONST_1);
+                run.visitInsn(Opcodes.ISUB);
+                push(unit);
+                run.visitInsn(Opcodes.IMUL);
+                run.visitInsn(Opcodes.IADD);
+            });
+        }
+        if (reference.refMod() != null) {
+            Runnable leftmost = planRefModLeftmost(reference, origin);
+            if (leftmost == null) {
+                return null;
+            }
+            if (reference.refMod().leftmost() instanceof DataReference.Subscript.Constant value) {
+                fixed += value.value() - 1;
+            } else {
+                variable.add(leftmost);
+            }
+        }
+        int base = fixed;
+        return () -> {
+            push(base);
+            variable.forEach(Runnable::run);
+        };
+    }
+
+    /** 部分参照の開始位置を、すでに積まれた位置へ足す命令。 */
+    private Runnable planRefModLeftmost(DataReference reference, Origin origin) {
+        if (reference.refMod().leftmost() instanceof DataReference.Subscript.Constant) {
+            return () -> { };
+        }
+        DataReference inner = ((DataReference.Subscript.Variable)
+                reference.refMod().leftmost()).reference();
+        Runnable push = planSourceDecimal(new Operand.Reference(inner), origin);
+        if (push == null) {
+            return null;
+        }
+        return () -> {
+            push.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            run.visitInsn(Opcodes.ICONST_1);
+            run.visitInsn(Opcodes.ISUB);
+            run.visitInsn(Opcodes.IADD);
+        };
+    }
+
+    /**
+     * 参照の長さ。<b>長さは翻訳時に決まっていなければならない</b>。
+     * 部分参照の長さにデータ項目を書いた場合は、まだ生成できない (暫定判断 P-027)。
+     */
+    private OptionalInt lengthOf(DataReference reference, Origin origin) {
+        OptionalInt length = reference.constantLength();
+        if (length.isEmpty()) {
+            report(origin, "a reference modification whose length is not a constant"
+                    + " is not supported yet");
+        }
+        return length;
+    }
+
     // ---- 送出側 ----
 
     /** 送出側をバイト列として積む命令。 */
@@ -783,15 +875,14 @@ public final class ProgramGenerator {
             return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
         }
         DataReference reference = ((Operand.Reference) source).reference();
-        OptionalInt offset = reference.absoluteOffset();
-        OptionalInt length = reference.constantLength();
-        if (offset.isEmpty() || length.isEmpty()) {
-            report(origin, "a subscript that is not a constant is not supported yet");
+        Runnable offset = planOffset(reference, origin);
+        OptionalInt length = lengthOf(reference, origin);
+        if (offset == null || length.isEmpty()) {
             return null;
         }
         return () -> {
             run.visitVarInsn(Opcodes.ALOAD, 1);
-            push(offset.getAsInt());
+            offset.run();
             push(length.getAsInt());
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
                     "(L" + STORAGE + ";II)[B", false);
@@ -809,17 +900,16 @@ public final class ProgramGenerator {
             return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, DECIMAL);
         }
         DataReference reference = ((Operand.Reference) source).reference();
-        OptionalInt offset = reference.absoluteOffset();
-        OptionalInt length = reference.constantLength();
-        if (offset.isEmpty() || length.isEmpty()) {
-            report(origin, "a subscript that is not a constant is not supported yet");
+        Runnable offset = planOffset(reference, origin);
+        OptionalInt length = lengthOf(reference, origin);
+        if (offset == null || length.isEmpty()) {
             return null;
         }
         if (!DataCategory.of(reference).isNumeric()) {
             // 英数字項目から数値項目への転記。送出側は符号なしの整数として読む
             return () -> {
                 run.visitVarInsn(Opcodes.ALOAD, 1);
-                push(offset.getAsInt());
+                offset.run();
                 push(length.getAsInt());
                 loadCodePage();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readAsInteger",
@@ -833,7 +923,7 @@ public final class ProgramGenerator {
         return () -> {
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             run.visitVarInsn(Opcodes.ALOAD, 1);
-            push(offset.getAsInt());
+            offset.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
                     "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
         };
