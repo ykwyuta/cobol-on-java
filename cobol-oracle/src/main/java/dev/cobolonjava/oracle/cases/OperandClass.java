@@ -50,15 +50,37 @@ public enum OperandClass {
      * @param byteLength 項目のバイト長。数字ニブルの数は {@code 2 * byteLength - 1} になる
      */
     public byte[] bytes(int byteLength) {
+        return bytes(byteLength, byteLength * 2 - 1);
+    }
+
+    /**
+     * 値の有効桁数を制限してパック10進のバイト列を作る。上位の桁はゼロで埋める。
+     *
+     * <p>{@code MP} と {@code DP} は「第 1 オペランドの上位に第 2 オペランドの長さぶんの
+     * ゼロがなければならない」という制約を持つ。この制約を満たす値を作るために用いる。
+     *
+     * @param byteLength        項目のバイト長
+     * @param significantDigits 値が占めてよい下位の桁数
+     */
+    public byte[] bytes(int byteLength, int significantDigits) {
         int digits = byteLength * 2 - 1;
-        String s = switch (value) {
-            case ZERO -> "0".repeat(digits);
-            case ONE -> "0".repeat(digits - 1) + "1";
-            case MAX -> "9".repeat(digits);
-            case MAX_MINUS_ONE -> digits == 1 ? "8" : "9".repeat(digits - 1) + "8";
-            case MIXED -> mixed(digits);
+        if (significantDigits < 1 || significantDigits > digits) {
+            throw new IllegalArgumentException(
+                    "significantDigits must be 1.." + digits + ": " + significantDigits);
+        }
+        String body = switch (value) {
+            case ZERO -> "0".repeat(significantDigits);
+            case ONE -> "0".repeat(significantDigits - 1) + "1";
+            case MAX -> "9".repeat(significantDigits);
+            case MAX_MINUS_ONE -> significantDigits == 1 ? "8" : "9".repeat(significantDigits - 1) + "8";
+            case MIXED -> mixed(significantDigits);
         };
-        return pack(s, signNibble);
+        return pack("0".repeat(digits - significantDigits) + body, signNibble);
+    }
+
+    /** 値がゼロになる分類かどうか。ゼロ除算を避けたい場合の判定に用いる。 */
+    public boolean isZero() {
+        return value == Value.ZERO;
     }
 
     /** {@code 1234512345...} のように桁ごとに異なる数字を並べる。 */
