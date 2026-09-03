@@ -86,8 +86,9 @@ PICTURE 文字列の切り出しは空白と区切りの句読点 (`.` `,` `;`) 
 
 ## 次の増分
 
-1. ランタイムの `Move` を呼ぶコードの生成 (ASM)。転記の種類は決まっている。
-2. `ADD` / `SUBTRACT` / `MULTIPLY` / `DIVIDE` / `COMPUTE`。ランタイムに動詞が揃っている。
-3. `IF` / `EVALUATE` / `PERFORM` の制御構造。
-4. `MOVE CORRESPONDING` の対応付け。
-5. 88 レベルの条件名を条件として使えるようにする。
+コード生成は[設計 70](70-codegen.md) へ続く。
+
+1. `ADD` / `SUBTRACT` / `MULTIPLY` / `DIVIDE` / `COMPUTE`。ランタイムに動詞が揃っている。
+2. `IF` / `EVALUATE` / `PERFORM` の制御構造。
+3. `MOVE CORRESPONDING` の対応付け。
+4. 88 レベルの条件名を条件として使えるようにする。

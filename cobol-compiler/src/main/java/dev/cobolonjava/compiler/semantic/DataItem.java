@@ -39,6 +39,7 @@ public final class DataItem {
 
     private int offset;
     private int length;
+    private int base;
 
     DataItem(int level, String name, Origin origin) {
         this.level = level;
@@ -128,6 +129,23 @@ public final class DataItem {
         return offset;
     }
 
+    /**
+     * この項目が属する 01 レベルが、プログラムの記憶域上のどこから始まるか。
+     * 01 レベルと独立項目以外では 0 である。
+     */
+    public int base() {
+        return base;
+    }
+
+    /** この項目が属する 01 レベル (または独立項目)。 */
+    public DataItem record() {
+        DataItem current = this;
+        while (current.parent() != null) {
+            current = current.parent();
+        }
+        return current;
+    }
+
     /** 1 回分のバイト長。{@code OCCURS} は含まない。 */
     public int length() {
         return length;
@@ -193,6 +211,10 @@ public final class DataItem {
 
     void setLength(int value) {
         this.length = value;
+    }
+
+    void setBase(int value) {
+        this.base = value;
     }
 
     @Override

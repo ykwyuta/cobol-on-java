@@ -14,9 +14,16 @@ import java.util.Locale;
 public final class DataLayout {
 
     private final List<DataItem> records;
+    private final int totalLength;
 
-    DataLayout(List<DataItem> records) {
+    DataLayout(List<DataItem> records, int totalLength) {
         this.records = List.copyOf(records);
+        this.totalLength = totalLength;
+    }
+
+    /** プログラムの記憶域の全体の長さ。 */
+    public int totalLength() {
+        return totalLength;
     }
 
     /** 01 レベルと独立項目の並び。 */

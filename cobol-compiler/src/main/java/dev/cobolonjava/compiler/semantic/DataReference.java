@@ -88,6 +88,14 @@ public record DataReference(DataItem item, List<Subscript> subscripts, RefMod re
         return OptionalInt.of(offset);
     }
 
+    /** プログラムの記憶域の先頭からのバイト位置。変数が混ざれば空を返す。 */
+    public OptionalInt absoluteOffset() {
+        OptionalInt relative = constantOffset();
+        return relative.isEmpty()
+                ? relative
+                : OptionalInt.of(item.record().base() + relative.getAsInt());
+    }
+
     /** 参照する長さ。部分参照があればその長さになる。変数が混ざれば空を返す。 */
     public OptionalInt constantLength() {
         if (refMod == null) {

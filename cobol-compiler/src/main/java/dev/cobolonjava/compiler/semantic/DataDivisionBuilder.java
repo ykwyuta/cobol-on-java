@@ -49,6 +49,7 @@ public final class DataDivisionBuilder {
     private final Deque<DataItem> open = new ArrayDeque<>();
     /** 直前に作った項目。条件名 (88) はここへ付く。 */
     private DataItem previous;
+    private int totalLength;
 
     private DataDivisionBuilder() {
     }
@@ -73,7 +74,8 @@ public final class DataDivisionBuilder {
             builder.addProgramUnit(unit);
         }
         builder.layoutRecords();
-        return new Result(new DataLayout(builder.records), List.copyOf(builder.diagnostics));
+        return new Result(new DataLayout(builder.records, builder.totalLength),
+                List.copyOf(builder.diagnostics));
     }
 
     private void addProgramUnit(CobolParser.ProgramUnitContext unit) {
@@ -274,9 +276,34 @@ public final class DataDivisionBuilder {
     // ---- 割り付け ----
 
     private void layoutRecords() {
+        int base = 0;
         for (DataItem record : records) {
             layout(record, 0);
+            if (record.redefinesName() != null) {
+                // 01 レベルの REDEFINES は記憶域を進めない。重ねる先と同じ位置から始まる
+                DataItem target = redefinedRecord(record);
+                record.setBase(target == null ? base : target.base());
+                continue;
+            }
+            record.setBase(base);
+            base += record.totalLength();
         }
+        totalLength = base;
+    }
+
+    /** 01 レベルの {@code REDEFINES} が指す、先行するレコード。 */
+    private DataItem redefinedRecord(DataItem record) {
+        for (DataItem previous : records) {
+            if (previous == record) {
+                break;
+            }
+            if (record.redefinesName().equals(previous.name())) {
+                return previous;
+            }
+        }
+        report(record.origin(), "REDEFINES names an item that does not precede it: "
+                + record.redefinesName());
+        return null;
     }
 
     /**

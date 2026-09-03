@@ -53,8 +53,12 @@ public final class InitialImage {
     public record RecordImage(DataItem item, byte[] bytes) {
     }
 
-    /** 組み立ての結果。 */
-    public record Result(List<RecordImage> records, List<Diagnostic> diagnostics) {
+    /**
+     * 組み立ての結果。
+     *
+     * @param storage プログラムの記憶域の全体。各 01 レベルをその位置へ並べたもの
+     */
+    public record Result(List<RecordImage> records, byte[] storage, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
             return diagnostics.isEmpty();
@@ -84,10 +88,16 @@ public final class InitialImage {
     public static Result build(DataLayout layout, CodePage codePage, char quoteCharacter) {
         InitialImage builder = new InitialImage(codePage, quoteCharacter, codePage.space());
         List<RecordImage> images = new ArrayList<>();
+        byte[] storage = new byte[layout.totalLength()];
+        Arrays.fill(storage, codePage.space());
         for (DataItem record : layout.records()) {
-            images.add(new RecordImage(record, builder.repeat(builder.imageOf(record), record)));
+            byte[] image = builder.repeat(builder.imageOf(record), record);
+            images.add(new RecordImage(record, image));
+            // 01 レベルの REDEFINES は同じ位置に重なる。書いた順に上書きされる
+            System.arraycopy(image, 0, storage, record.base(),
+                    Math.min(image.length, storage.length - record.base()));
         }
-        return new Result(List.copyOf(images), List.copyOf(builder.diagnostics));
+        return new Result(List.copyOf(images), storage, List.copyOf(builder.diagnostics));
     }
 
     /** 項目 1 回分のイメージ。 */
