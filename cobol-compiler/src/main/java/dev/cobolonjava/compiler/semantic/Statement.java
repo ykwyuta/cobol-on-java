@@ -63,11 +63,36 @@ public sealed interface Statement {
      * @param targets    受取項目
      */
     record Arithmetic(Operator fold, List<Operand> operands, Operator accumulate,
-                      List<Target> targets, Origin origin) implements Statement {
+                      List<Target> targets, SizeError sizeError, Origin origin)
+            implements Statement {
 
         public Arithmetic {
             operands = List.copyOf(operands);
             targets = List.copyOf(targets);
+        }
+
+        /**
+         * {@code ON SIZE ERROR} の指定があるかどうか。
+         *
+         * <p>指定の有無で<b>桁があふれたときに受取項目に何が残るか</b>が変わる。
+         * 指定があれば受取項目は変わらず、なければ上位桁を切り捨てた値が入る。
+         */
+        public boolean isChecked() {
+            return sizeError != null;
+        }
+
+        /**
+         * {@code ON SIZE ERROR} と {@code NOT ON SIZE ERROR} の文。
+         *
+         * @param onError   桁あふれか 0 除算が起きたときの文
+         * @param otherwise どちらも起きなかったときの文
+         */
+        public record SizeError(List<Statement> onError, List<Statement> otherwise) {
+
+            public SizeError {
+                onError = List.copyOf(onError);
+                otherwise = List.copyOf(otherwise);
+            }
         }
 
         /** 演算の種類。 */

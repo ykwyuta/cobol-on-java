@@ -193,14 +193,7 @@ public final class ProcedureBuilder {
 
     /** {@code NEXT SENTENCE} は「この文の残りを飛ばす」ことであり、いまは空の並びとする。 */
     private List<Statement> branchOf(CobolParser.IfBranchContext context) {
-        List<Statement> statements = new ArrayList<>();
-        for (CobolParser.StatementContext statement : context.statement()) {
-            Statement built = statementOf(statement);
-            if (built != null) {
-                statements.add(built);
-            }
-        }
-        return statements;
+        return listOf(context.statement());
     }
 
     private Statement performOf(CobolParser.PerformStatementContext context) {
@@ -446,11 +439,11 @@ public final class ProcedureBuilder {
             }
             return arithmetic(Statement.Arithmetic.Operator.ADD, operands,
                     Statement.Arithmetic.Operator.ADD, targetsOf(context.roundedOperand(), origin),
-                    origin);
+                    context.sizeErrorPhrases(), origin);
         }
         operands.addAll(operandsOf(context.roundedOperand(), origin));
         return arithmetic(Statement.Arithmetic.Operator.ADD, operands, null,
-                targetsOf(context.roundedTarget()), origin);
+                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -464,12 +457,12 @@ public final class ProcedureBuilder {
             // 引く側をまず足し合わせ、その和を受取項目から引く
             return arithmetic(Statement.Arithmetic.Operator.ADD, subtrahends,
                     Statement.Arithmetic.Operator.SUBTRACT,
-                    targetsOf(context.roundedOperand(), origin), origin);
+                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
         }
         List<Operand> operands = operandsOf(context.roundedOperand(), origin);
         operands.addAll(subtrahends);
         return arithmetic(Statement.Arithmetic.Operator.SUBTRACT, operands, null,
-                targetsOf(context.roundedTarget()), origin);
+                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
     }
 
     private Statement multiplyOf(CobolParser.MultiplyStatementContext context) {
@@ -478,12 +471,12 @@ public final class ProcedureBuilder {
         if (context.GIVING() == null) {
             return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, multiplier,
                     Statement.Arithmetic.Operator.MULTIPLY,
-                    targetsOf(context.roundedOperand(), origin), origin);
+                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
         }
         List<Operand> operands = new ArrayList<>(multiplier);
         operands.addAll(operandsOf(context.roundedOperand(), origin));
         return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, operands, null,
-                targetsOf(context.roundedTarget()), origin);
+                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -500,7 +493,7 @@ public final class ProcedureBuilder {
             }
             return arithmetic(Statement.Arithmetic.Operator.DIVIDE, first,
                     Statement.Arithmetic.Operator.DIVIDE,
-                    targetsOf(context.roundedOperand(), origin), origin);
+                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
         }
         List<Operand> second = operandsOf(context.roundedOperand(), origin);
         List<Operand> operands = new ArrayList<>();
@@ -508,12 +501,13 @@ public final class ProcedureBuilder {
         operands.addAll(into ? second : first);
         operands.addAll(into ? first : second);
         return arithmetic(Statement.Arithmetic.Operator.DIVIDE, operands, null,
-                targetsOf(context.roundedTarget()), origin);
+                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
     }
 
     private Statement arithmetic(Statement.Arithmetic.Operator fold, List<Operand> operands,
                                  Statement.Arithmetic.Operator accumulate,
-                                 List<Statement.Arithmetic.Target> targets, Origin origin) {
+                                 List<Statement.Arithmetic.Target> targets,
+                                 CobolParser.SizeErrorPhrasesContext phrases, Origin origin) {
         if (operands.contains(null) || targets.contains(null) || targets.isEmpty()) {
             // 解決できなかった参照は報告済みである
             return null;
@@ -525,7 +519,38 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
-        return new Statement.Arithmetic(fold, operands, accumulate, targets, origin);
+        return new Statement.Arithmetic(fold, operands, accumulate, targets,
+                sizeErrorOf(phrases), origin);
+    }
+
+    /**
+     * {@code ON SIZE ERROR} と {@code NOT ON SIZE ERROR} の文。
+     * どちらも書かれていなければ {@code null} を返し、検査そのものを行わない。
+     */
+    private Statement.Arithmetic.SizeError sizeErrorOf(
+            CobolParser.SizeErrorPhrasesContext phrases) {
+        if (phrases == null
+                || (phrases.onSizeErrorPhrase() == null && phrases.notOnSizeErrorPhrase() == null)) {
+            return null;
+        }
+        List<Statement> onError = phrases.onSizeErrorPhrase() == null
+                ? List.of()
+                : listOf(phrases.onSizeErrorPhrase().statement());
+        List<Statement> otherwise = phrases.notOnSizeErrorPhrase() == null
+                ? List.of()
+                : listOf(phrases.notOnSizeErrorPhrase().statement());
+        return new Statement.Arithmetic.SizeError(onError, otherwise);
+    }
+
+    private List<Statement> listOf(List<CobolParser.StatementContext> contexts) {
+        List<Statement> statements = new ArrayList<>();
+        for (CobolParser.StatementContext context : contexts) {
+            Statement built = statementOf(context);
+            if (built != null) {
+                statements.add(built);
+            }
+        }
+        return statements;
     }
 
     private List<Operand> operandsOf(List<? extends ParserRuleContext> contexts, Origin origin) {

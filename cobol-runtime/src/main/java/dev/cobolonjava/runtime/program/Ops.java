@@ -102,6 +102,23 @@ public final class Ops {
         return Arithmetic.divide(dividend, divisor, scale, rounding);
     }
 
+    /** 除数が 0 かどうか。{@code ON SIZE ERROR} つきの除算で、割る前に見る。 */
+    public static boolean isZero(Decimal value) {
+        return value.isZero();
+    }
+
+    /**
+     * {@code ON SIZE ERROR} つきの格納。
+     *
+     * <p>桁に収まらなければ<b>受取項目を変えず</b>に {@code true} を返す。
+     * 指定がないときとの違いは、あふれたときに受取項目へ何が残るかである。
+     */
+    public static boolean storeChecked(Decimal value, NumericItem target, Storage storage,
+                                       int offset, CobolRounding rounding) {
+        return Arithmetic.storeChecked(target, storage.view(offset, target.byteLength()),
+                value, rounding);
+    }
+
     /** 算術文の結果を受取項目へ格納する。上位桁は黙って切り捨てられる。 */
     public static void store(Decimal value, NumericItem target, Storage storage, int offset,
                              CobolRounding rounding) {

@@ -553,6 +553,10 @@ public final class ProgramGenerator {
      * 受取項目が複数あれば計算そのものが変わりうるからである。
      */
     private void planArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
+        if (statement.isChecked()) {
+            planCheckedArithmetic(statement, body);
+            return;
+        }
         for (Statement.Arithmetic.Target target : statement.targets()) {
             OptionalInt offset = target.reference().absoluteOffset();
             if (offset.isEmpty()) {
@@ -597,6 +601,134 @@ public final class ProgramGenerator {
                                 + Type.getDescriptor(CobolRounding.class) + ")V", false);
             });
         }
+    }
+
+    /**
+     * {@code ON SIZE ERROR} つきの算術文。
+     *
+     * <p>指定がないときとの違いは<b>桁があふれたときに受取項目に何が残るか</b>である。
+     * 指定があれば受取項目は変わらず、なければ上位桁を切り捨てた値が入る。
+     *
+     * <p>0 除算も条件を立てる。<b>割る前に除数を調べる</b>ため、被演算子はいったん
+     * 局所変数へ取る。計算の途中で飛ぶと、作用対象のスタックが揃わなくなるためである。
+     */
+    private void planCheckedArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
+        int flag = nextLocal++;
+        List<Runnable> perTarget = new ArrayList<>();
+        for (Statement.Arithmetic.Target target : statement.targets()) {
+            Runnable planned = planCheckedTarget(statement, target, flag);
+            if (planned == null) {
+                return;
+            }
+            perTarget.add(planned);
+        }
+        List<Runnable> onError = planStatements(statement.sizeError().onError());
+        List<Runnable> otherwise = planStatements(statement.sizeError().otherwise());
+
+        body.add(() -> {
+            run.visitInsn(Opcodes.ICONST_0);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+            perTarget.forEach(Runnable::run);
+
+            Label noError = new Label();
+            Label end = new Label();
+            run.visitVarInsn(Opcodes.ILOAD, flag);
+            run.visitJumpInsn(Opcodes.IFEQ, noError);
+            onError.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(noError);
+            otherwise.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
+    }
+
+    private Runnable planCheckedTarget(Statement.Arithmetic statement,
+                                       Statement.Arithmetic.Target target, int flag) {
+        OptionalInt offset = target.reference().absoluteOffset();
+        if (offset.isEmpty()) {
+            report(statement.origin(), "a subscript that is not a constant is not supported yet");
+            return null;
+        }
+        DataItem item = target.reference().item();
+        String field = numericItemConstant(item, statement.origin());
+        if (field == null || item.picture() == null) {
+            return null;
+        }
+        int scale = item.picture().scale();
+        String rounding = target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION";
+
+        // 被演算子を先に局所変数へ取る。除数を調べてから割るためである
+        List<Integer> slots = new ArrayList<>();
+        List<Runnable> loads = new ArrayList<>();
+        for (Operand operand : statement.operands()) {
+            Runnable push = planSourceDecimal(operand, statement.origin());
+            if (push == null) {
+                return null;
+            }
+            int slot = nextLocal++;
+            slots.add(slot);
+            loads.add(() -> {
+                push.run();
+                run.visitVarInsn(Opcodes.ASTORE, slot);
+            });
+        }
+        int folded = nextLocal++;
+        boolean foldDivides = statement.fold() == Statement.Arithmetic.Operator.DIVIDE;
+        boolean accumulateDivides =
+                statement.accumulate() == Statement.Arithmetic.Operator.DIVIDE;
+
+        return () -> {
+            Label failed = new Label();
+            Label done = new Label();
+            loads.forEach(Runnable::run);
+            if (foldDivides) {
+                // 2 個目以降が除数になる
+                for (int i = 1; i < slots.size(); i++) {
+                    emitZeroCheck(slots.get(i), failed);
+                }
+            }
+            for (int i = 0; i < slots.size(); i++) {
+                run.visitVarInsn(Opcodes.ALOAD, slots.get(i));
+                if (i > 0) {
+                    emitOperator(statement.fold(), scale, rounding);
+                }
+            }
+            run.visitVarInsn(Opcodes.ASTORE, folded);
+            if (accumulateDivides) {
+                emitZeroCheck(folded, failed);
+            }
+
+            if (statement.accumulate() != null) {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+                run.visitVarInsn(Opcodes.ALOAD, 1);
+                push(offset.getAsInt());
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
+                        "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
+                run.visitVarInsn(Opcodes.ALOAD, folded);
+                emitOperator(statement.accumulate(), scale, rounding);
+            } else {
+                run.visitVarInsn(Opcodes.ALOAD, folded);
+            }
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            push(offset.getAsInt());
+            loadRounding(rounding);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
+                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
+                            + Type.getDescriptor(CobolRounding.class) + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFEQ, done);
+            run.visitLabel(failed);
+            run.visitInsn(Opcodes.ICONST_1);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+            run.visitLabel(done);
+        };
+    }
+
+    /** 除数が 0 なら {@code failed} へ飛ぶ。 */
+    private void emitZeroCheck(int slot, Label failed) {
+        run.visitVarInsn(Opcodes.ALOAD, slot);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "isZero", "(" + DECIMAL + ")Z", false);
+        run.visitJumpInsn(Opcodes.IFNE, failed);
     }
 
     /** 被演算子を左から畳む命令を積む。 */

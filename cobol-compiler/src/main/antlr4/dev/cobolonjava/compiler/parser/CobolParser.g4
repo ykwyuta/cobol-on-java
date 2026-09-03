@@ -34,6 +34,7 @@ tokens {
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
+    SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
     PERFORM, END_PERFORM, UNTIL, WITH, TEST, BEFORE, AFTER,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
@@ -419,18 +420,35 @@ performPhrase
 
 addStatement
     : ADD arithmeticOperand+ (TO roundedOperand+)? (GIVING roundedTarget+)?
+      sizeErrorPhrases END_ADD?
     ;
 
 subtractStatement
     : SUBTRACT arithmeticOperand+ FROM roundedOperand+ (GIVING roundedTarget+)?
+      sizeErrorPhrases END_SUBTRACT?
     ;
 
 multiplyStatement
     : MULTIPLY arithmeticOperand BY roundedOperand+ (GIVING roundedTarget+)?
+      sizeErrorPhrases END_MULTIPLY?
     ;
 
 divideStatement
     : DIVIDE arithmeticOperand (INTO | BY) roundedOperand+ (GIVING roundedTarget+)?
+      sizeErrorPhrases END_DIVIDE?
+    ;
+
+// ON SIZE ERROR / NOT ON SIZE ERROR は片方だけでも両方でも書ける
+sizeErrorPhrases
+    : onSizeErrorPhrase? notOnSizeErrorPhrase?
+    ;
+
+onSizeErrorPhrase
+    : ON? SIZE ERROR statement+
+    ;
+
+notOnSizeErrorPhrase
+    : NOT ON? SIZE ERROR statement+
     ;
 
 arithmeticOperand
