@@ -198,8 +198,14 @@ occursIndexedClause
     : INDEXED BY? IDENTIFIER+
     ;
 
+// 88 レベルの条件名は値を並べたり範囲で書いたりできる。
+// 通常のデータ項目の VALUE 句はその 1 個の場合にあたる
 valueClause
-    : (VALUE | VALUES) (IS | ARE)? literal
+    : (VALUE | VALUES) (IS | ARE)? valueRange (COMMA? valueRange)*
+    ;
+
+valueRange
+    : literal ((THRU | THROUGH) literal)?
     ;
 
 justifiedClause

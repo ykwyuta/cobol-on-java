@@ -13,6 +13,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: cobol-oracle (V2 期待値の採取)](docs/design/20-oracle.md)
 - [設計: cobol-compiler のプリプロセッサ (P0-b)](docs/design/30-compiler-preprocessor.md)
 - [設計: cobol-compiler の構文解析 (P0-b)](docs/design/40-parser.md)
+- [設計: データ部の記憶域割り付け (P0-b)](docs/design/50-data-layout.md)
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
 
 ## 主要な技術方針
@@ -64,7 +65,7 @@ Hercules が見つからない場合、V2 テストは失敗ではなくスキ�
 ## 現在のステータス
 
 要件定義フェーズ完了 (要件定義書 第 15 章に決定事項)。
-P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。テスト 391 件。
+P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。テスト 408 件。
 うち 33 件は Hercules 上での実行と突き合わせる**検証レベル V2** であり、残りは V1。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい
 (詳細は[設計 20](docs/design/20-oracle.md))。
