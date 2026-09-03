@@ -104,7 +104,8 @@ COBOL は `REDEFINES` の中に `VALUE` を書くことを禁じている。重�
 
 ## 次の増分
 
-1. 名前の修飾 (`OF` / `IN`) と添字。いまは `findAll` が候補をすべて返すだけである。
-2. `FILE SECTION` と `FD` 項目 (ファイル入出力の前提)。
-3. 66 レベルの `RENAMES`。
-4. `SYNCHRONIZED` による境界調整。いまは句を読み飛ばしている。
+名前の修飾と添字は[設計 60](60-procedure.md) へ続く。
+
+1. `FILE SECTION` と `FD` 項目 (ファイル入出力の前提)。
+2. 66 レベルの `RENAMES`。
+3. `SYNCHRONIZED` による境界調整。いまは句を読み飛ばしている。

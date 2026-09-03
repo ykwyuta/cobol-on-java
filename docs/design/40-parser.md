@@ -63,7 +63,7 @@ ANTLR の字句解析器を使わないのは、<b>使えないから</b>であ�
 | 見出し部 | `IDENTIFICATION` / `ID`、`PROGRAM-ID` (`COMMON` / `INITIAL` / `RECURSIVE`)、`END PROGRAM` |
 | 環境部 | 見出しのみ |
 | データ部 | `WORKING-STORAGE` / `LOCAL-STORAGE` / `LINKAGE` の各節とデータ記述項 |
-| 手続き部 | 見出しのみ |
+| 手続き部 | 段落、文、`MOVE`、一意名 (修飾・添字・部分参照) |
 
 データ記述項の句は `REDEFINES`、`RENAMES`、`PICTURE`、`USAGE`、`SIGN`、`OCCURS`、
 `VALUE`、`JUSTIFIED`、`BLANK WHEN ZERO`、`SYNCHRONIZED`、`GLOBAL`、`EXTERNAL`。
@@ -71,9 +71,8 @@ ANTLR の字句解析器を使わないのは、<b>使えないから</b>であ�
 
 ## 次の増分
 
-データ部の割り付けは[設計 50](50-data-layout.md) へ続く。
+データ部の割り付けは[設計 50](50-data-layout.md)、手続き部は[設計 60](60-procedure.md) へ続く。
 
-1. 手続き部の文。まず `MOVE`、`ADD` などランタイムに動詞が揃っているものから。
-2. 環境部の `SELECT` 句 (ファイル入出力の前提)。
-3. 66 レベルの `RENAMES`。
-4. 入れ子プログラム。
+1. 環境部の `SELECT` 句 (ファイル入出力の前提)。
+2. 66 レベルの `RENAMES`。
+3. 入れ子プログラム。

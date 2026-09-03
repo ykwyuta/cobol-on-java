@@ -31,8 +31,11 @@ import java.util.List;
  */
 public final class Tokenizer {
 
-    /** それ自体が 1 個のトークンになり、つねに区切り文字である文字。 */
-    private static final String ALWAYS_SEPARATOR = "()";
+    /**
+     * それ自体が 1 個のトークンになり、つねに区切り文字である文字。
+     * コロンは部分参照 {@code WS-A(3:2)} を書くためのものである。
+     */
+    private static final String ALWAYS_SEPARATOR = "():";
 
     /** 直後に空白が続くときだけ区切り文字になる文字。 */
     private static final String CONDITIONAL_SEPARATOR = ".,;";

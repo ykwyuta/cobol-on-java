@@ -30,6 +30,7 @@ public final class DataItem {
     private boolean justified;
     private boolean blankWhenZero;
     private int occurs = 1;
+    private boolean table;
     private String redefinesName;
     private LiteralValue initialValue;
     private DataItem parent;
@@ -89,6 +90,15 @@ public final class DataItem {
     /** 反復の回数。{@code OCCURS} がなければ 1。 */
     public int occurs() {
         return occurs;
+    }
+
+    /**
+     * {@code OCCURS} 句を持つかどうか。
+     *
+     * <p>回数が 1 でも添字は要る。したがって {@link #occurs()} が 1 かどうかでは判別できない。
+     */
+    public boolean isTable() {
+        return table;
     }
 
     /** {@code REDEFINES} で重ねる先の名前。重ねていなければ {@code null}。 */
@@ -157,6 +167,7 @@ public final class DataItem {
 
     void setOccurs(int value) {
         this.occurs = value;
+        this.table = true;
     }
 
     void setRedefinesName(String value) {

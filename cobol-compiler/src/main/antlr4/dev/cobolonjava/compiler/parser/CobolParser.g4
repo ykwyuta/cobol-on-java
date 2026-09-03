@@ -12,7 +12,7 @@ parser grammar CobolParser;
 
 tokens {
     // 区切り文字
-    PERIOD, COMMA, SEMICOLON, LPAREN, RPAREN,
+    PERIOD, COMMA, SEMICOLON, LPAREN, RPAREN, COLON,
 
     // 島 (不透明トークン)
     PICTURE_STRING, EXEC_BLOCK,
@@ -24,8 +24,11 @@ tokens {
     IDENTIFICATION, ID, DIVISION, PROGRAM_ID, PROGRAM,
     COMMON, INITIAL, RECURSIVE, IS, END,
 
-    // 環境部・手続き部 (中身は次の増分)
-    ENVIRONMENT, PROCEDURE,
+    // 環境部 (中身は次の増分)
+    ENVIRONMENT,
+
+    // 手続き部
+    PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
@@ -185,13 +188,13 @@ signClause
 
 occursClause
     : OCCURS NUMBER (TO NUMBER)? TIMES?
-      (DEPENDING ON? dataName)?
+      (DEPENDING ON? qualifiedDataName)?
       occursKeyClause*
       occursIndexedClause?
     ;
 
 occursKeyClause
-    : (ASCENDING | DESCENDING) KEY? IS? dataName+
+    : (ASCENDING | DESCENDING) KEY? IS? qualifiedDataName+
     ;
 
 occursIndexedClause
@@ -244,8 +247,63 @@ figurativeConstant
     | ALL LITERAL
     ;
 
-// ---- 手続き部 (中身は次の増分) ----
+// ---- 一意名 ----
+
+// 同じ名前を複数の場所に置けるため、OF / IN で所属を絞る。
+// 添字と部分参照はどちらも括弧で書くので、中身のコロンで見分ける
+identifier
+    : qualifiedDataName subscripts? referenceModifier?
+    ;
+
+qualifiedDataName
+    : dataName ((OF | IN) dataName)*
+    ;
+
+subscripts
+    : LPAREN subscript (COMMA? subscript)* RPAREN
+    ;
+
+referenceModifier
+    : LPAREN subscript COLON subscript? RPAREN
+    ;
+
+subscript
+    : NUMBER
+    | qualifiedDataName
+    ;
+
+// ---- 手続き部 ----
 
 procedureDivision
-    : PROCEDURE DIVISION PERIOD
+    : PROCEDURE DIVISION PERIOD procedureBody
+    ;
+
+// 段落名を持たない文が先に来ることがある
+procedureBody
+    : sentence* paragraph*
+    ;
+
+paragraph
+    : paragraphName PERIOD sentence*
+    ;
+
+paragraphName
+    : IDENTIFIER
+    ;
+
+sentence
+    : statement+ PERIOD
+    ;
+
+statement
+    : moveStatement
+    ;
+
+moveStatement
+    : MOVE (CORRESPONDING | CORR)? moveSource TO identifier (COMMA? identifier)*
+    ;
+
+moveSource
+    : identifier
+    | literal
     ;

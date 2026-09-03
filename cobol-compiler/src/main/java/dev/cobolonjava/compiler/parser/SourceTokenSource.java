@@ -47,7 +47,7 @@ public final class SourceTokenSource implements TokenSource {
      * 数字定数になってしまう。
      */
     private static final Set<String> NOT_RESERVED_WORDS = Set.of(
-            "PERIOD", "COMMA", "SEMICOLON", "LPAREN", "RPAREN",
+            "PERIOD", "COMMA", "SEMICOLON", "LPAREN", "RPAREN", "COLON",
             "PICTURE_STRING", "EXEC_BLOCK",
             "IDENTIFIER", "LITERAL", "NUMBER");
 
@@ -107,6 +107,7 @@ public final class SourceTokenSource implements TokenSource {
             case ';' -> CobolParser.SEMICOLON;
             case '(' -> CobolParser.LPAREN;
             case ')' -> CobolParser.RPAREN;
+            case ':' -> CobolParser.COLON;
             default -> throw new IllegalStateException("unexpected separator: " + token);
         };
     }
