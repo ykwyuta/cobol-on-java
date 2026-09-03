@@ -1,5 +1,6 @@
 package dev.cobolonjava.compiler.source;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -13,6 +14,7 @@ import java.util.Optional;
  *   <li>固定形式のカラム分解と継続行の連結 ({@link FixedFormatReader})</li>
  *   <li>{@code COPY} の展開と {@code REPLACING} の適用 ({@link CopyExpander})</li>
  *   <li>{@code REPLACE} の適用 ({@link ReplaceProcessor})</li>
+ *   <li>「島」の切り出しとトークン化 ({@link Tokenizer})</li>
  * </ol>
  *
  * <p>この順序は COBOL が定めるものである。{@code COPY} をすべて処理してから
@@ -49,5 +51,15 @@ public final class Preprocessor {
         NormalizedSource normalized = reader.normalize(fileName, source);
         NormalizedSource expanded = new CopyExpander(resolver, reader).expand(normalized);
         return ReplaceProcessor.apply(expanded);
+    }
+
+    /**
+     * ソースを構文解析器へ渡すトークン列にする。処理系の前段としてはこちらが入口である。
+     *
+     * @param fileName 診断で示すファイル名
+     * @param source   固定形式のソース
+     */
+    public List<SourceToken> tokenize(String fileName, String source) {
+        return Tokenizer.tokenize(process(fileName, source));
     }
 }
