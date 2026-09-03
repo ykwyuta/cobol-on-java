@@ -147,8 +147,8 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 ## いま組み立てられる文
 
-`MOVE`、算術文 4 つ、`IF`、`EVALUATE`、`PERFORM`、`DISPLAY`、`STOP RUN` / `GOBACK`、
-`CONTINUE` である
+`MOVE`、算術文 4 つ、`IF`、`EVALUATE`、`PERFORM`、`DISPLAY`、`INSPECT`、
+`STOP RUN` / `GOBACK`、`CONTINUE` である
 (`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
 `COMPUTE` は未実装で、書くと構文誤りになる (暫定判断 P-028)。
@@ -159,5 +159,5 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 1. `COMPUTE`。中間結果の桁数の規則を決めてから。
 2. `MOVE CORRESPONDING` の対応付け。
-3. `STRING` / `UNSTRING` / `INSPECT` — ランタイムに動詞が揃っている。
+3. `STRING` / `UNSTRING` — ランタイムに動詞が揃っている。
 4. `CALL` による副プログラムの呼び出し。

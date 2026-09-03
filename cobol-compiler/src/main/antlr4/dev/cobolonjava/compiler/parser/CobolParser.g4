@@ -40,6 +40,7 @@ tokens {
     UPON, NO, ADVANCING,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
+    INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
 
     // データ部
@@ -312,6 +313,7 @@ statement
     | ifStatement
     | evaluateStatement
     | stopStatement
+    | inspectStatement
     | displayStatement
     | performStatement
     | continueStatement
@@ -405,6 +407,47 @@ continueStatement
 stopStatement
     : STOP RUN
     | GOBACK
+    ;
+
+// INSPECT は 1 度の走査で、書かれた順に句を試す。
+// TALLYING と REPLACING は同じ文に並べられる
+inspectStatement
+    : INSPECT identifier (tallyingPhrase replacingPhrase? | replacingPhrase | convertingPhrase)
+    ;
+
+tallyingPhrase
+    : TALLYING tallyingCounter+
+    ;
+
+tallyingCounter
+    : identifier FOR tallyingSpec+
+    ;
+
+tallyingSpec
+    : CHARACTERS inspectRegion*
+    | (ALL | LEADING) inspectOperand inspectRegion*
+    ;
+
+replacingPhrase
+    : REPLACING replacingSpec+
+    ;
+
+replacingSpec
+    : CHARACTERS BY inspectOperand inspectRegion*
+    | (ALL | LEADING | FIRST) inspectOperand BY inspectOperand inspectRegion*
+    ;
+
+convertingPhrase
+    : CONVERTING inspectOperand TO inspectOperand inspectRegion*
+    ;
+
+inspectRegion
+    : (BEFORE | AFTER) INITIAL? inspectOperand
+    ;
+
+inspectOperand
+    : identifier
+    | literal
     ;
 
 // EVALUATE は「主語と目的語を突き合わせる」書き方である。

@@ -163,6 +163,9 @@ public final class ProcedureBuilder {
         if (context.stopStatement() != null) {
             return new Statement.Stop(ReferenceResolver.originOf(context));
         }
+        if (context.inspectStatement() != null) {
+            return inspectOf(context.inspectStatement());
+        }
         if (context.displayStatement() != null) {
             return displayOf(context.displayStatement());
         }
@@ -197,6 +200,140 @@ public final class ProcedureBuilder {
             return null;
         }
         return new Statement.Display(operands, context.ADVANCING() == null, origin);
+    }
+
+    // ---- INSPECT ----
+
+    private Statement inspectOf(CobolParser.InspectStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        DataReference target = resolver.resolve(context.identifier());
+        if (target == null) {
+            return null;
+        }
+
+        List<Statement.Inspect.InspectClause> clauses = new ArrayList<>();
+        if (context.tallyingPhrase() != null) {
+            for (CobolParser.TallyingCounterContext counter
+                    : context.tallyingPhrase().tallyingCounter()) {
+                DataReference into = resolver.resolve(counter.identifier());
+                if (into == null) {
+                    return null;
+                }
+                if (!DataCategory.of(into).isNumeric()) {
+                    report(origin, "TALLYING requires a numeric counter: " + describe(into));
+                    return null;
+                }
+                for (CobolParser.TallyingSpecContext spec : counter.tallyingSpec()) {
+                    Statement.Inspect.InspectClause clause = tallyingSpecOf(spec, into, origin);
+                    if (clause == null) {
+                        return null;
+                    }
+                    clauses.add(clause);
+                }
+            }
+        }
+        if (context.replacingPhrase() != null) {
+            for (CobolParser.ReplacingSpecContext spec : context.replacingPhrase().replacingSpec()) {
+                Statement.Inspect.InspectClause clause = replacingSpecOf(spec, origin);
+                if (clause == null) {
+                    return null;
+                }
+                clauses.add(clause);
+            }
+        }
+
+        Statement.Inspect.Converting converting = null;
+        if (context.convertingPhrase() != null) {
+            CobolParser.ConvertingPhraseContext phrase = context.convertingPhrase();
+            Operand from = inspectOperandOf(phrase.inspectOperand(0), origin);
+            Operand to = inspectOperandOf(phrase.inspectOperand(1), origin);
+            Statement.Inspect.RegionSpec region = regionOf(phrase.inspectRegion(), origin);
+            if (from == null || to == null || region == null) {
+                return null;
+            }
+            converting = new Statement.Inspect.Converting(from, to, region);
+        }
+        return new Statement.Inspect(target, clauses, converting, origin);
+    }
+
+    private Statement.Inspect.InspectClause tallyingSpecOf(CobolParser.TallyingSpecContext context,
+                                                           DataReference counter, Origin origin) {
+        Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
+        if (region == null) {
+            return null;
+        }
+        if (context.CHARACTERS() != null) {
+            return new Statement.Inspect.InspectClause(
+                    Statement.Inspect.Kind.CHARACTERS, null, null, counter, region);
+        }
+        Operand pattern = inspectOperandOf(context.inspectOperand(), origin);
+        if (pattern == null) {
+            return null;
+        }
+        Statement.Inspect.Kind kind = context.ALL() != null
+                ? Statement.Inspect.Kind.ALL
+                : Statement.Inspect.Kind.LEADING;
+        return new Statement.Inspect.InspectClause(kind, pattern, null, counter, region);
+    }
+
+    private Statement.Inspect.InspectClause replacingSpecOf(
+            CobolParser.ReplacingSpecContext context, Origin origin) {
+        Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
+        if (region == null) {
+            return null;
+        }
+        List<CobolParser.InspectOperandContext> operands = context.inspectOperand();
+        if (context.CHARACTERS() != null) {
+            Operand to = inspectOperandOf(operands.get(0), origin);
+            return to == null ? null : new Statement.Inspect.InspectClause(
+                    Statement.Inspect.Kind.CHARACTERS, null, to, null, region);
+        }
+        Operand pattern = inspectOperandOf(operands.get(0), origin);
+        Operand to = inspectOperandOf(operands.get(1), origin);
+        if (pattern == null || to == null) {
+            return null;
+        }
+        Statement.Inspect.Kind kind;
+        if (context.ALL() != null) {
+            kind = Statement.Inspect.Kind.ALL;
+        } else if (context.LEADING() != null) {
+            kind = Statement.Inspect.Kind.LEADING;
+        } else {
+            kind = Statement.Inspect.Kind.FIRST;
+        }
+        return new Statement.Inspect.InspectClause(kind, pattern, to, null, region);
+    }
+
+    /** {@code BEFORE} / {@code AFTER} の指定。書かれていなければ項目の全体になる。 */
+    private Statement.Inspect.RegionSpec regionOf(List<CobolParser.InspectRegionContext> contexts,
+                                                  Origin origin) {
+        Operand after = null;
+        Operand before = null;
+        for (CobolParser.InspectRegionContext context : contexts) {
+            Operand operand = inspectOperandOf(context.inspectOperand(), origin);
+            if (operand == null) {
+                return null;
+            }
+            if (context.AFTER() != null) {
+                after = operand;
+            } else {
+                before = operand;
+            }
+        }
+        return new Statement.Inspect.RegionSpec(after, before);
+    }
+
+    private Operand inspectOperandOf(CobolParser.InspectOperandContext context, Origin origin) {
+        if (context.literal() != null) {
+            try {
+                return new Operand.Literal(LiteralValue.of(context.literal()));
+            } catch (RuntimeException e) {
+                report(origin, "invalid literal: " + context.literal().getText());
+                return null;
+            }
+        }
+        DataReference reference = resolver.resolve(context.identifier());
+        return reference == null ? null : new Operand.Reference(reference);
     }
 
     // ---- 制御構造 ----

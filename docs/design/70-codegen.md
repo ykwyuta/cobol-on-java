@@ -158,7 +158,7 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 ## いま生成できる範囲
 
 `MOVE` の 3 種類 (英数字・数値・数字編集)、算術文 4 つ (`GIVING` と `ROUNDED` を含む)、
-`IF`、`EVALUATE`、`PERFORM`、`DISPLAY`、`STOP RUN` / `GOBACK`、`CONTINUE`、
+`IF`、`EVALUATE`、`PERFORM`、`DISPLAY`、`INSPECT`、`STOP RUN` / `GOBACK`、`CONTINUE`、
 算術文の `ON SIZE ERROR`。定数・図形定数・`ALL` の送出。
 添字は定数でもデータ項目でもよく、多次元の表も扱える。部分参照の開始位置も同じ。
 
@@ -168,6 +168,6 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 ## 次の増分
 
 1. `PERFORM VARYING` と `GO TO` (暫定判断 P-029)。
-2. `STRING` / `UNSTRING` / `INSPECT` — ランタイムに動詞が揃っている。
+2. `STRING` / `UNSTRING` — ランタイムに動詞が揃っている。
 3. `SSRANGE` 指定時の添字の範囲検査 (暫定判断 P-027)。
 3. `DISPLAY` と実行の入口 (プログラムを起動する側)。

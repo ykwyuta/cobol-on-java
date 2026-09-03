@@ -137,6 +137,55 @@ public sealed interface Statement {
         }
     }
 
+    /**
+     * {@code INSPECT} 文。
+     *
+     * <p>句は<b>書かれた順のまま</b>持つ。単一の走査で位置ごとに順に試されるため、
+     * 並べ替えると結果が変わる。
+     *
+     * @param target     検査する項目
+     * @param clauses    数える句と置き換える句。書かれた順に並ぶ
+     * @param converting {@code CONVERTING} の指定。なければ {@code null}
+     */
+    record Inspect(DataReference target, List<InspectClause> clauses, Converting converting,
+                   Origin origin) implements Statement {
+
+        public Inspect {
+            clauses = List.copyOf(clauses);
+        }
+
+        /**
+         * 句 1 個。
+         *
+         * @param kind    種別
+         * @param pattern 照合する並び。{@code CHARACTERS} では {@code null}
+         * @param to      置き換える並び。数えるだけの句では {@code null}
+         * @param counter 数を足し込む項目。置き換えるだけの句では {@code null}
+         * @param region  検査する範囲
+         */
+        public record InspectClause(Kind kind, Operand pattern, Operand to,
+                                    DataReference counter, RegionSpec region) {
+        }
+
+        /** 句の種別。ランタイムの {@code InspectScan.Kind} に対応する。 */
+        public enum Kind {
+            CHARACTERS, ALL, LEADING, FIRST
+        }
+
+        /**
+         * {@code BEFORE INITIAL} / {@code AFTER INITIAL} が定める範囲。
+         *
+         * @param after  この並びの直後から。指定がなければ {@code null}
+         * @param before この並びの直前まで。指定がなければ {@code null}
+         */
+        public record RegionSpec(Operand after, Operand before) {
+        }
+
+        /** {@code CONVERTING 並び TO 並び}。 */
+        public record Converting(Operand from, Operand to, RegionSpec region) {
+        }
+    }
+
     /** {@code STOP RUN} と {@code GOBACK}。実行を終える。 */
     record Stop(Origin origin) implements Statement {
     }

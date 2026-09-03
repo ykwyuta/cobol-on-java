@@ -12,6 +12,9 @@ import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import dev.cobolonjava.runtime.verb.Arithmetic;
 import dev.cobolonjava.runtime.verb.Compare;
+import dev.cobolonjava.runtime.verb.Inspect;
+import dev.cobolonjava.runtime.verb.InspectScan;
+import dev.cobolonjava.runtime.verb.Region;
 import dev.cobolonjava.runtime.verb.Move;
 
 /**
@@ -95,6 +98,46 @@ public final class Ops {
      */
     public static byte[] displayForm(Decimal value, NumericItem shape) {
         return shape.encode(value);
+    }
+
+    // ---- INSPECT ----
+
+    /** 検査する範囲。指定のない側は {@code null} を渡す。 */
+    public static Region region(byte[] after, byte[] before) {
+        if (after == null && before == null) {
+            return Region.whole();
+        }
+        if (before == null) {
+            return Region.after(after);
+        }
+        return after == null ? Region.before(before) : Region.between(after, before);
+    }
+
+    /** 数える走査。返るのは句ごとの計数である。 */
+    public static int[] tally(Storage storage, int offset, int length,
+                              InspectScan.Clause... clauses) {
+        return InspectScan.tally(read(storage, offset, length), clauses);
+    }
+
+    /** 置き換える走査。 */
+    public static void replace(Storage storage, int offset, int length,
+                               InspectScan.Clause... clauses) {
+        storage.view(offset, length)
+                .setBytes(InspectScan.replace(read(storage, offset, length), clauses));
+    }
+
+    /** {@code CONVERTING}。1 バイトずつの読み替えである。 */
+    public static void convert(Storage storage, int offset, int length, byte[] from, byte[] to,
+                               Region region) {
+        storage.view(offset, length)
+                .setBytes(Inspect.convert(read(storage, offset, length), from, to, region));
+    }
+
+    /** 数えた結果を計数の項目へ足し込む。 */
+    public static void addTally(int count, NumericItem counter, Storage storage, int offset) {
+        Decimal current = readNumeric(counter, storage, offset);
+        store(current.add(Decimal.of(count, 0)), counter, storage, offset,
+                CobolRounding.TRUNCATION);
     }
 
     // ---- 比較 ----

@@ -25,6 +25,8 @@ import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramSupport;
 import dev.cobolonjava.runtime.storage.Storage;
+import dev.cobolonjava.runtime.verb.InspectScan;
+import dev.cobolonjava.runtime.verb.Region;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -66,6 +68,8 @@ public final class ProgramGenerator {
     private static final String NUMERIC_ITEM = Type.getDescriptor(NumericItem.class);
     private static final String PICTURE = Type.getDescriptor(Picture.class);
     private static final String DECIMAL = Type.getDescriptor(Decimal.class);
+    private static final String CLAUSE = Type.getDescriptor(InspectScan.Clause.class);
+    private static final String REGION = Type.getDescriptor(Region.class);
 
     private final String className;
     private final CodePage codePage;
@@ -227,6 +231,8 @@ public final class ProgramGenerator {
                 planPerform(perform, body);
             } else if (statement instanceof Statement.Display display) {
                 planDisplay(display, body);
+            } else if (statement instanceof Statement.Inspect inspect) {
+                planInspect(inspect, body);
             } else if (statement instanceof Statement.Stop) {
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "stopRun", "()V",
                         false));
@@ -323,6 +329,213 @@ public final class ProgramGenerator {
                                 + NUMERIC_ITEM, false);
             });
         }).name();
+    }
+
+    // ---- INSPECT ----
+
+    /**
+     * {@code INSPECT} を組み立てる。
+     *
+     * <p>句は<b>書かれた順のまま</b>配列にしてランタイムへ渡す。単一の走査で位置ごとに
+     * 順に試されるため、並べ替えると結果が変わる。
+     *
+     * <p>ただし {@code TALLYING} と {@code REPLACING} を同じ文に書いた場合、
+     * COBOL は<b>2 つの文を書いたのと同じ</b>に扱う。したがって走査も別々に行う。
+     * ひとつの走査にまとめると、数える句が位置を取ってしまい置き換えが起きない。
+     */
+    private void planInspect(Statement.Inspect statement, List<Runnable> body) {
+        Runnable offset = planOffset(statement.target(), statement.origin());
+        OptionalInt length = lengthOf(statement.target(), statement.origin());
+        if (offset == null || length.isEmpty()) {
+            return;
+        }
+        int size = length.getAsInt();
+
+        if (statement.converting() != null) {
+            planConverting(statement, offset, size, body);
+            return;
+        }
+
+        List<Statement.Inspect.InspectClause> tallying = statement.clauses().stream()
+                .filter(c -> c.counter() != null).toList();
+        List<Statement.Inspect.InspectClause> replacing = statement.clauses().stream()
+                .filter(c -> c.to() != null).toList();
+
+        List<Runnable> tallyClauses = planInspectClauses(tallying, statement.origin());
+        List<Runnable> replaceClauses = planInspectClauses(replacing, statement.origin());
+        if (tallyClauses == null || replaceClauses == null) {
+            return;
+        }
+
+        List<Runnable> counters = new ArrayList<>();
+        int array = tallying.isEmpty() ? -1 : nextLocal++;
+        for (int i = 0; i < tallying.size(); i++) {
+            Runnable add = planTallyAdd(tallying.get(i), i, array, statement.origin());
+            if (add == null) {
+                return;
+            }
+            counters.add(add);
+        }
+
+        body.add(() -> {
+            if (!tallyClauses.isEmpty()) {
+                run.visitVarInsn(Opcodes.ALOAD, 1);
+                offset.run();
+                push(size);
+                emitClauseArray(tallyClauses);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tally",
+                        "(L" + STORAGE + ";II[" + CLAUSE + ")[I", false);
+                run.visitVarInsn(Opcodes.ASTORE, array);
+                counters.forEach(Runnable::run);
+            }
+            if (!replaceClauses.isEmpty()) {
+                run.visitVarInsn(Opcodes.ALOAD, 1);
+                offset.run();
+                push(size);
+                emitClauseArray(replaceClauses);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replace",
+                        "(L" + STORAGE + ";II[" + CLAUSE + ")V", false);
+            }
+        });
+    }
+
+    private List<Runnable> planInspectClauses(List<Statement.Inspect.InspectClause> clauses,
+                                              Origin origin) {
+        List<Runnable> planned = new ArrayList<>();
+        for (Statement.Inspect.InspectClause clause : clauses) {
+            Runnable one = planInspectClause(clause, origin);
+            if (one == null) {
+                return null;
+            }
+            planned.add(one);
+        }
+        return planned;
+    }
+
+    private void emitClauseArray(List<Runnable> clauses) {
+        push(clauses.size());
+        run.visitTypeInsn(Opcodes.ANEWARRAY, Type.getInternalName(InspectScan.Clause.class));
+        for (int i = 0; i < clauses.size(); i++) {
+            run.visitInsn(Opcodes.DUP);
+            push(i);
+            clauses.get(i).run();
+            run.visitInsn(Opcodes.AASTORE);
+        }
+    }
+
+    /** 句 1 個を組み立てる命令。 */
+    private Runnable planInspectClause(Statement.Inspect.InspectClause clause, Origin origin) {
+        Runnable region = planRegion(clause.region(), origin);
+        if (region == null) {
+            return null;
+        }
+        Runnable pattern = clause.pattern() == null ? null : planInspectBytes(clause.pattern(), origin);
+        Runnable to = clause.to() == null ? null : planInspectBytes(clause.to(), origin);
+        if ((clause.pattern() != null && pattern == null) || (clause.to() != null && to == null)) {
+            return null;
+        }
+
+        String name = factoryOf(clause);
+        String descriptor = descriptorOf(clause);
+        return () -> {
+            if (pattern != null) {
+                pattern.run();
+            }
+            if (to != null) {
+                to.run();
+            }
+            region.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    Type.getInternalName(InspectScan.Clause.class), name, descriptor, false);
+        };
+    }
+
+    private static String factoryOf(Statement.Inspect.InspectClause clause) {
+        boolean replacing = clause.to() != null;
+        return switch (clause.kind()) {
+            case CHARACTERS -> replacing ? "replaceCharacters" : "characters";
+            case ALL -> replacing ? "replaceAll" : "all";
+            case LEADING -> replacing ? "replaceLeading" : "leading";
+            case FIRST -> "replaceFirst";
+        };
+    }
+
+    private static String descriptorOf(Statement.Inspect.InspectClause clause) {
+        int arrays = (clause.pattern() == null ? 0 : 1) + (clause.to() == null ? 0 : 1);
+        return "(" + "[B".repeat(arrays) + REGION + ")" + CLAUSE;
+    }
+
+    private Runnable planRegion(Statement.Inspect.RegionSpec region, Origin origin) {
+        Runnable after = region.after() == null ? null : planInspectBytes(region.after(), origin);
+        Runnable before = region.before() == null ? null : planInspectBytes(region.before(), origin);
+        if ((region.after() != null && after == null) || (region.before() != null && before == null)) {
+            return null;
+        }
+        return () -> {
+            if (after == null) {
+                run.visitInsn(Opcodes.ACONST_NULL);
+            } else {
+                after.run();
+            }
+            if (before == null) {
+                run.visitInsn(Opcodes.ACONST_NULL);
+            } else {
+                before.run();
+            }
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "region", "([B[B)" + REGION, false);
+        };
+    }
+
+    /** 照合や置き換えに使う並び。定数はそのままの長さで用いる。 */
+    private Runnable planInspectBytes(Operand operand, Origin origin) {
+        if (operand instanceof Operand.Literal literal) {
+            byte[] bytes = literalBytes(literal.value(), 1);
+            String field = bytesConstant(bytes);
+            return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+        }
+        DataReference reference = ((Operand.Reference) operand).reference();
+        return planSourceBytes(operand, origin,
+                reference.constantLength().orElse(0));
+    }
+
+    private Runnable planTallyAdd(Statement.Inspect.InspectClause clause, int index, int array,
+                                  Origin origin) {
+        Runnable offset = planOffset(clause.counter(), origin);
+        String field = numericItemConstant(clause.counter().item(), origin);
+        if (offset == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitVarInsn(Opcodes.ALOAD, array);
+            push(index);
+            run.visitInsn(Opcodes.IALOAD);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            offset.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "addTally",
+                    "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+        };
+    }
+
+    private void planConverting(Statement.Inspect statement, Runnable offset, int size,
+                                List<Runnable> body) {
+        Statement.Inspect.Converting converting = statement.converting();
+        Runnable from = planInspectBytes(converting.from(), statement.origin());
+        Runnable to = planInspectBytes(converting.to(), statement.origin());
+        Runnable region = planRegion(converting.region(), statement.origin());
+        if (from == null || to == null || region == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            offset.run();
+            push(size);
+            from.run();
+            to.run();
+            region.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "convert",
+                    "(L" + STORAGE + ";II[B[B" + REGION + ")V", false);
+        });
     }
 
     // ---- 制御構造 ----
