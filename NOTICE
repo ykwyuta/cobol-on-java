@@ -1,0 +1,15 @@
+cobol-on-java
+Copyright 2026 Yuta Yukawa
+
+This product includes software developed as an independent, clean-room
+implementation based solely on publicly available specifications and on
+externally observable behavior.
+
+IBM, z/OS, z/Architecture, CICS, Db2, IMS, MVS, and Enterprise COBOL are
+trademarks or registered trademarks of International Business Machines
+Corporation. This project is not affiliated with, endorsed by, or sponsored
+by International Business Machines Corporation.
+
+This project uses the Hercules System/370, ESA/390 and z/Architecture
+emulator solely as an external behavioral oracle during testing. No Hercules
+source code is incorporated into or copied by this product.
