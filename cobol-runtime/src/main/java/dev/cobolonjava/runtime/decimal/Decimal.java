@@ -121,8 +121,12 @@ public final class Decimal {
         return fromBigDecimal(toBigDecimal().subtract(other.toBigDecimal()));
     }
 
+    /**
+     * 乗算。積がゼロの場合も符号は代数の規則で決まるため、負のゼロが生じうる。
+     * これはホストの {@code MP} 命令の実測に基づく (provisional.md P-001)。
+     */
     public Decimal multiply(Decimal other) {
-        return fromBigDecimal(toBigDecimal().multiply(other.toBigDecimal()));
+        return withAlgebraicSign(toBigDecimal().multiply(other.toBigDecimal()), sign * other.sign);
     }
 
     /**
@@ -135,7 +139,7 @@ public final class Decimal {
             throw new DecimalDivideException("division by zero");
         }
         BigDecimal q = toBigDecimal().divide(divisor.toBigDecimal(), resultScale, rounding.javaMode());
-        return fromBigDecimal(q);
+        return withAlgebraicSign(q, sign * divisor.sign);
     }
 
     /** {@code DIVIDE ... REMAINDER} の剰余。商を切り捨てたうえでの残りを返す。 */
@@ -144,7 +148,8 @@ public final class Decimal {
             throw new DecimalDivideException("division by zero");
         }
         BigDecimal q = toBigDecimal().divide(divisor.toBigDecimal(), quotientScale, CobolRounding.TRUNCATION.javaMode());
-        return fromBigDecimal(toBigDecimal().subtract(q.multiply(divisor.toBigDecimal())));
+        // 剰余の符号は被除数に従う。ホストの DP 命令の実測に基づく (provisional.md P-001)
+        return withAlgebraicSign(toBigDecimal().subtract(q.multiply(divisor.toBigDecimal())), sign);
     }
 
     /**
@@ -219,11 +224,24 @@ public final class Decimal {
         return intPart.compareTo(BigInteger.TEN.pow(integerDigits)) < 0;
     }
 
+    /**
+     * 加減算の結果を作る。<b>結果がゼロの場合の符号は常に正</b>とする。
+     *
+     * <p>これはホストの {@code AP} / {@code SP} 命令の実測に基づく。オペランドが
+     * 両方とも負のゼロであっても結果は正のゼロになる (provisional.md P-001)。
+     */
     private static Decimal fromBigDecimal(BigDecimal bd) {
-        // 演算結果がゼロの場合の符号は正とする。
-        // これはホストの 10 進演算命令の観測挙動に基づく暫定の規則であり、
-        // Hercules による検証待ちである (provisional.md の P-001)。
         int sign = bd.signum() < 0 ? -1 : 1;
+        return new Decimal(bd.unscaledValue().abs(), bd.scale(), sign);
+    }
+
+    /**
+     * 乗除算の結果を作る。<b>結果がゼロの場合も符号は代数の規則で決まる</b>ため、
+     * 負のゼロが生じうる。ホストの {@code MP} / {@code DP} 命令の実測に基づく
+     * (provisional.md P-001)。
+     */
+    private static Decimal withAlgebraicSign(BigDecimal bd, int algebraicSign) {
+        int sign = bd.signum() == 0 ? algebraicSign : (bd.signum() < 0 ? -1 : 1);
         return new Decimal(bd.unscaledValue().abs(), bd.scale(), sign);
     }
 

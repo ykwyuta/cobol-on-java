@@ -11,8 +11,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *   <li>{@code V2} — Hercules 上での実行により期待値を採取・照合したもの</li>
  *   <li>{@code V1} — 公開仕様書の記述に基づく期待値。実行による裏取りがない</li>
  * </ul>
- * 現時点ではすべてのテストが {@code V1} である。V2 への引き上げは、
- * 要件 4.4 節の採取パイプライン ({@code cobol-oracle} モジュール) の実装後に行う。
+ * <b>本モジュール (cobol-runtime) のテストはすべて {@code V1} である。</b>
+ * V2 の検証は {@code cobol-oracle} モジュールにあり、Hercules 上で実行した
+ * z/Architecture 命令の結果とバイト列で突き合わせている。
  */
 public final class TestSupport {
 

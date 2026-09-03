@@ -21,6 +21,7 @@
 
   <modules>
     <module>cobol-runtime</module>
+    <module>cobol-oracle</module>
   </modules>
 
   <properties>
