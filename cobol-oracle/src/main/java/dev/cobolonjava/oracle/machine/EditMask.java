@@ -63,6 +63,49 @@ public final class EditMask {
      *         持ち、参照実装も {@code ED} 単独では実現していないと考えられる。
      */
     public static byte[] forPicture(Picture picture, CodePage codePage) {
+        return forPicture(picture, codePage, picture.digits());
+    }
+
+    /**
+     * ソースの数字ニブル数が PICTURE の桁数より多い場合に対応したマスクを生成する。
+     *
+     * <p>パック10進項目の数字ニブル数は {@code 2 x バイト長 - 1} であり、PICTURE の桁数が
+     * <b>偶数のときは 1 個多くなる</b> (先頭の未使用ニブル)。{@code ED} はマスクの桁位置の数と
+     * ソースの数字ニブル数が一致していないと正しく動かないため、余分なぶんだけ
+     * <b>充填文字の直後に桁選択子を追加する</b>。
+     *
+     * <p>追加した桁位置は常に 0 を読み、有意性が立っていないので充填文字を出す。
+     * したがって編集項目の内容は {@link #editedFieldOffset} 以降になる。
+     *
+     * @param sourceDigitNibbles ソースのパック10進項目が持つ数字ニブルの数
+     */
+    public static byte[] forPicture(Picture picture, CodePage codePage, int sourceDigitNibbles) {
+        int extra = sourceDigitNibbles - picture.digits();
+        if (extra < 0) {
+            throw new IllegalArgumentException(
+                    "source has fewer digit nibbles (" + sourceDigitNibbles
+                            + ") than the picture requires (" + picture.digits() + ")");
+        }
+        byte[] base = buildMask(picture, codePage);
+        if (extra == 0) {
+            return base;
+        }
+        byte[] out = new byte[base.length + extra];
+        out[0] = base[0];
+        java.util.Arrays.fill(out, 1, 1 + extra, DIGIT_SELECTOR);
+        System.arraycopy(base, 1, out, 1 + extra, base.length - 1);
+        return out;
+    }
+
+    /**
+     * 編集項目の内容がマスクの結果のどこから始まるか。
+     * 先頭の充填文字と、桁合わせのために追加した桁選択子のぶんだけ後ろになる。
+     */
+    public static int editedFieldOffset(Picture picture, int sourceDigitNibbles) {
+        return 1 + (sourceDigitNibbles - picture.digits());
+    }
+
+    private static byte[] buildMask(Picture picture, CodePage codePage) {
         if (picture.category() != Picture.Category.NUMERIC_EDITED) {
             throw new IllegalArgumentException("not a numeric-edited picture: " + picture);
         }
@@ -121,6 +164,11 @@ public final class EditMask {
      */
     public static int editedFieldLength(byte[] mask) {
         return mask.length - 1;
+    }
+
+    /** ソースの数字ニブル数を考慮した編集項目のバイト長。 */
+    public static int editedFieldLength(byte[] mask, Picture picture, int sourceDigitNibbles) {
+        return mask.length - editedFieldOffset(picture, sourceDigitNibbles);
     }
 
     /** マスクが要求する数字の桁数。ソースのパック10進項目の数字ニブル数と一致していなければならない。 */
