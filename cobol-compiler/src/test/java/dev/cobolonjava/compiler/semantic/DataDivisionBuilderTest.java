@@ -232,7 +232,7 @@ class DataDivisionBuilderTest {
         assertEquals(3, flag.conditionNames().size());
         assertEquals("WS-YES", flag.conditionNames().get(0).name());
         assertEquals(2, flag.conditionNames().get(1).values().size());
-        assertEquals("'9'", flag.conditionNames().get(2).values().get(0).to());
+        assertEquals(new LiteralValue.Text("9"), flag.conditionNames().get(2).values().get(0).to());
         assertEquals(1, item(layout, "WS-AFTER").offset(), "条件名は記憶域を占めない");
     }
 

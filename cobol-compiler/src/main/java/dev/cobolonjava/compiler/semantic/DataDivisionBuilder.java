@@ -153,8 +153,8 @@ public final class DataDivisionBuilder {
                 continue;
             }
             for (CobolParser.ValueRangeContext range : clause.valueClause().valueRange()) {
-                values.add(new DataItem.ValueRange(range.literal(0).getText(),
-                        range.literal().size() > 1 ? range.literal(1).getText() : null));
+                values.add(new DataItem.ValueRange(literalOf(range.literal(0), origin),
+                        range.literal().size() > 1 ? literalOf(range.literal(1), origin) : null));
             }
         }
         if (values.isEmpty()) {
@@ -189,9 +189,32 @@ public final class DataDivisionBuilder {
                 item.setJustified(true);
             } else if (clause.blankWhenZeroClause() != null) {
                 item.setBlankWhenZero(true);
+            } else if (clause.valueClause() != null) {
+                applyValue(item, clause.valueClause(), origin);
             }
-            // VALUE / SYNCHRONIZED / GLOBAL / EXTERNAL は割り付けに効かない。
-            // VALUE の初期値は次の増分で扱う
+            // SYNCHRONIZED / GLOBAL / EXTERNAL は割り付けに効かない
+        }
+    }
+
+    private void applyValue(DataItem item, CobolParser.ValueClauseContext clause, Origin origin) {
+        List<CobolParser.ValueRangeContext> ranges = clause.valueRange();
+        if (ranges.size() > 1 || ranges.get(0).literal().size() > 1) {
+            // 値の並びと THRU の範囲は 88 レベルの条件名だけのものである
+            report(origin, "a data item takes a single VALUE, not a list or a range");
+            return;
+        }
+        LiteralValue value = literalOf(ranges.get(0).literal(0), origin);
+        if (value != null) {
+            item.setInitialValue(value);
+        }
+    }
+
+    private LiteralValue literalOf(CobolParser.LiteralContext context, Origin origin) {
+        try {
+            return LiteralValue.of(context);
+        } catch (RuntimeException e) {
+            report(origin, "invalid literal: " + context.getText());
+            return null;
         }
     }
 

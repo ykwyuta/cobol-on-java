@@ -31,6 +31,7 @@ public final class DataItem {
     private boolean blankWhenZero;
     private int occurs = 1;
     private String redefinesName;
+    private LiteralValue initialValue;
     private DataItem parent;
     private final List<DataItem> children = new ArrayList<>();
     private final List<ConditionName> conditionNames = new ArrayList<>();
@@ -49,7 +50,7 @@ public final class DataItem {
     }
 
     /** 条件名の値。{@code THRU} で範囲を書ける。範囲でなければ {@code to} は {@code null}。 */
-    public record ValueRange(String from, String to) {
+    public record ValueRange(LiteralValue from, LiteralValue to) {
     }
 
     public int level() {
@@ -93,6 +94,11 @@ public final class DataItem {
     /** {@code REDEFINES} で重ねる先の名前。重ねていなければ {@code null}。 */
     public String redefinesName() {
         return redefinesName;
+    }
+
+    /** {@code VALUE} 句の初期値。指定がなければ {@code null}。 */
+    public LiteralValue initialValue() {
+        return initialValue;
     }
 
     public DataItem parent() {
@@ -155,6 +161,10 @@ public final class DataItem {
 
     void setRedefinesName(String value) {
         this.redefinesName = value;
+    }
+
+    void setInitialValue(LiteralValue value) {
+        this.initialValue = value;
     }
 
     void addChild(DataItem child) {
