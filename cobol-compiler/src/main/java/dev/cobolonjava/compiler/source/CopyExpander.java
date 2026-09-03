@@ -1,0 +1,233 @@
+package dev.cobolonjava.compiler.source;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+
+/**
+ * {@code COPY} 文の展開と {@code REPLACING} の適用 (要件 FR-090)。
+ *
+ * <h2>照合は語単位である</h2>
+ * <p>{@code REPLACING} の照合は文字列ではなく<b>語の列</b>に対して行われる。
+ * 語と語の間の空白の数は照合に影響しない。擬似テキスト {@code ==...==} は
+ * 語の列を書くための記法であり、任意の語の並びを指定できる。
+ *
+ * <h2>置換で差し込む語の出自は COPY を書いた側になる</h2>
+ * <p>置換で差し込まれる語は、コピー句ではなく <b>{@code COPY} 文を書いた行</b>から来ている。
+ * したがってその位置をそのまま保つ。診断が「置換をどこで指定したか」を指せるようにするためである。
+ * 一方、置換されなかった語はコピー句の位置を保つ。同じ展開結果の中に 2 つのファイルの位置が
+ * 混在するが、それが実際の出自である。
+ *
+ * <h2>入れ子の COPY</h2>
+ * <p>コピー句の中の {@code COPY} も展開する。循環を検出できるよう、展開中のコピー句名を
+ * 積んでおき、同じ名前が再び現れたら誤りとする。深さにも上限を設ける。
+ * 循環を検出せずに展開すると、記憶域が尽きるまで止まらない。
+ */
+public final class CopyExpander {
+
+    /** 入れ子の深さの上限。循環でなくても異常に深い展開は誤りとみなす。 */
+    private static final int MAX_DEPTH = 50;
+
+    private final CopyBookResolver resolver;
+    private final FixedFormatReader reader;
+
+    public CopyExpander(CopyBookResolver resolver, FixedFormatReader reader) {
+        this.resolver = resolver;
+        this.reader = reader;
+    }
+
+    public CopyExpander(CopyBookResolver resolver) {
+        this(resolver, FixedFormatReader.standard());
+    }
+
+    /** 正規化済みソースの中の {@code COPY} をすべて展開する。 */
+    public NormalizedSource expand(NormalizedSource source) {
+        List<TextWord> expanded = expand(PreprocessorLexer.lex(source), new ArrayDeque<>());
+        return PreprocessorLexer.emit(expanded);
+    }
+
+    private List<TextWord> expand(List<TextWord> words, Deque<String> stack) {
+        List<TextWord> out = new ArrayList<>();
+        int i = 0;
+        while (i < words.size()) {
+            if (!words.get(i).isWord("COPY")) {
+                out.add(words.get(i));
+                i++;
+                continue;
+            }
+            CopyStatement statement = parseCopy(words, i);
+            out.addAll(expandCopyBook(statement, stack));
+            i = statement.endIndex() + 1;
+        }
+        return out;
+    }
+
+    private List<TextWord> expandCopyBook(CopyStatement statement, Deque<String> stack) {
+        String name = statement.textName().toUpperCase(Locale.ROOT);
+        if (stack.contains(name)) {
+            throw new SourceFormatException(statement.origin()
+                    + ": COPY " + statement.textName() + " is recursive: "
+                    + String.join(" then ", stack) + " then " + name);
+        }
+        if (stack.size() >= MAX_DEPTH) {
+            throw new SourceFormatException(statement.origin()
+                    + ": COPY nesting exceeds " + MAX_DEPTH + " levels");
+        }
+
+        Optional<CopyBook> book = resolver.resolve(statement.textName(), statement.libraryName());
+        if (book.isEmpty()) {
+            throw new SourceFormatException(statement.origin()
+                    + ": copybook not found: " + statement.textName()
+                    + (statement.libraryName() == null ? "" : " in " + statement.libraryName()));
+        }
+
+        List<TextWord> body = PreprocessorLexer.lex(
+                reader.normalize(book.get().fileName(), book.get().text()));
+
+        stack.push(name);
+        try {
+            body = expand(body, stack);
+        } finally {
+            stack.pop();
+        }
+
+        List<TextWord> replaced = applyReplacements(body, statement.replacements());
+        if (!replaced.isEmpty()) {
+            // 展開結果の先頭は、直前の語と続けて読まれないよう空白で区切る
+            replaced.set(0, replaced.get(0).withPrecededBySpace(true));
+        }
+        return replaced;
+    }
+
+    /**
+     * 置換を適用する。各位置で置換の指定を書かれた順に試し、最初に一致したものを使う。
+     */
+    static List<TextWord> applyReplacements(List<TextWord> body, List<Replacement> replacements) {
+        if (replacements.isEmpty()) {
+            return body;
+        }
+        List<TextWord> out = new ArrayList<>();
+        int i = 0;
+        while (i < body.size()) {
+            Replacement matched = null;
+            for (Replacement replacement : replacements) {
+                if (matchesAt(body, i, replacement.from())) {
+                    matched = replacement;
+                    break;
+                }
+            }
+            if (matched == null) {
+                out.add(body.get(i));
+                i++;
+                continue;
+            }
+            List<TextWord> to = matched.to();
+            for (int k = 0; k < to.size(); k++) {
+                TextWord word = to.get(k);
+                // 差し込む列の先頭は、置き換えられた語の空白の扱いを引き継ぐ
+                out.add(k == 0 ? word.withPrecededBySpace(body.get(i).precededBySpace()) : word);
+            }
+            i += matched.from().size();
+        }
+        return out;
+    }
+
+    private static boolean matchesAt(List<TextWord> body, int at, List<TextWord> pattern) {
+        if (pattern.isEmpty() || at + pattern.size() > body.size()) {
+            return false;
+        }
+        for (int k = 0; k < pattern.size(); k++) {
+            if (!body.get(at + k).matches(pattern.get(k))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code COPY} 文を解析する。 */
+    private CopyStatement parseCopy(List<TextWord> words, int start) {
+        Origin origin = words.get(start).origin();
+        int i = start + 1;
+        if (i >= words.size()) {
+            throw new SourceFormatException(origin + ": COPY requires a text-name");
+        }
+        TextWord nameWord = words.get(i++);
+        if (nameWord.kind() != TextWordKind.WORD && nameWord.kind() != TextWordKind.LITERAL) {
+            throw new SourceFormatException(origin + ": COPY requires a text-name");
+        }
+        String textName = unquote(nameWord);
+
+        String libraryName = null;
+        if (i < words.size() && (words.get(i).isWord("OF") || words.get(i).isWord("IN"))) {
+            i++;
+            if (i >= words.size()) {
+                throw new SourceFormatException(origin + ": COPY OF/IN requires a library-name");
+            }
+            libraryName = unquote(words.get(i++));
+        }
+
+        List<Replacement> replacements = new ArrayList<>();
+        if (i < words.size() && words.get(i).isWord("REPLACING")) {
+            i++;
+            while (i < words.size() && !words.get(i).isSeparator('.')) {
+                Operand from = readOperand(words, i, origin);
+                i = from.endIndex() + 1;
+                if (i >= words.size() || !words.get(i).isWord("BY")) {
+                    throw new SourceFormatException(
+                            origin + ": REPLACING requires BY after an operand");
+                }
+                i++;
+                Operand to = readOperand(words, i, origin);
+                i = to.endIndex() + 1;
+                replacements.add(new Replacement(from.words(), to.words()));
+            }
+        }
+
+        if (i >= words.size() || !words.get(i).isSeparator('.')) {
+            throw new SourceFormatException(origin + ": COPY must be terminated by a period");
+        }
+        return new CopyStatement(textName, libraryName, replacements, i, origin);
+    }
+
+    /** 置換の被演算子を読む。擬似テキストは語の列、それ以外は 1 語である。 */
+    private static Operand readOperand(List<TextWord> words, int start, Origin origin) {
+        if (start >= words.size()) {
+            throw new SourceFormatException(origin + ": REPLACING is missing an operand");
+        }
+        if (words.get(start).kind() != TextWordKind.PSEUDO_DELIMITER) {
+            return new Operand(List.of(words.get(start)), start);
+        }
+        List<TextWord> collected = new ArrayList<>();
+        int i = start + 1;
+        while (i < words.size() && words.get(i).kind() != TextWordKind.PSEUDO_DELIMITER) {
+            collected.add(words.get(i));
+            i++;
+        }
+        if (i >= words.size()) {
+            throw new SourceFormatException(origin + ": pseudo-text is not terminated by ==");
+        }
+        return new Operand(collected, i);
+    }
+
+    private static String unquote(TextWord word) {
+        String text = word.text();
+        if (word.kind() == TextWordKind.LITERAL && text.length() >= 2) {
+            return text.substring(1, text.length() - 1);
+        }
+        return text;
+    }
+
+    /** 置換の 1 組。 */
+    record Replacement(List<TextWord> from, List<TextWord> to) {
+    }
+
+    private record Operand(List<TextWord> words, int endIndex) {
+    }
+
+    private record CopyStatement(String textName, String libraryName,
+                                 List<Replacement> replacements, int endIndex, Origin origin) {
+    }
+}

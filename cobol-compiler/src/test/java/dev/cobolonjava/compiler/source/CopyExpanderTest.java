@@ -1,0 +1,203 @@
+package dev.cobolonjava.compiler.source;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+@Tag("V1")
+class CopyExpanderTest {
+
+    private static final String FILE = "MAIN.cbl";
+
+    /** 一連番号領域を空白にし、標識と本文を置いた 1 行を作る。 */
+    private static String line(String content) {
+        return "       " + content;
+    }
+
+    private static String source(String... contents) {
+        StringBuilder sb = new StringBuilder();
+        for (String content : contents) {
+            sb.append(line(content)).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static NormalizedSource expand(MapCopyBookResolver resolver, String... contents) {
+        NormalizedSource normalized =
+                FixedFormatReader.standard().normalize(FILE, source(contents));
+        return new CopyExpander(resolver).expand(normalized);
+    }
+
+    @Test
+    @DisplayName("COPY はコピー句の内容で置き換えられる (FR-090)")
+    void copyIsReplacedByTheCopybook() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("CUSTREC", source("01 CUST-REC.", "   05 CUST-ID PIC 9(5)."));
+
+        assertEquals("MOVE A TO B. 01 CUST-REC. 05 CUST-ID PIC 9(5). MOVE C TO D.",
+                expand(resolver, "MOVE A TO B.", "COPY CUSTREC.", "MOVE C TO D.").text());
+    }
+
+    @Test
+    @DisplayName("PICTURE の括弧の前後に空白が入らない (FR-090)")
+    void parenthesesKeepTheirSpacing() {
+        // 語の間の空白の有無を保たないと PIC 9(5) が PIC 9 ( 5 ) になってしまう
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("05 F PIC S9(7)V99 COMP-3."));
+        assertEquals("05 F PIC S9(7)V99 COMP-3.", expand(resolver, "COPY REC.").text());
+    }
+
+    @Test
+    @DisplayName("OF / IN でライブラリを指定できる (FR-090)")
+    void libraryQualification() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("PROD", "REC", source("01 PROD-REC."))
+                .put("TEST", "REC", source("01 TEST-REC."));
+
+        assertEquals("01 PROD-REC.", expand(resolver, "COPY REC OF PROD.").text());
+        assertEquals("01 TEST-REC.", expand(resolver, "COPY REC IN TEST.").text());
+    }
+
+    @Test
+    @DisplayName("REPLACING は語単位で置き換える (FR-090)")
+    void replacingOperatesOnWords() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("01 PREFIX-REC.", "   05 PREFIX-ID PIC 9(5)."));
+
+        // PREFIX-REC と PREFIX-ID は別の語である。片方だけを指定してももう片方は残る
+        assertEquals("01 CUST-REC. 05 PREFIX-ID PIC 9(5).",
+                expand(resolver, "COPY REC REPLACING PREFIX-REC BY CUST-REC.").text());
+    }
+
+    @Test
+    @DisplayName("擬似テキストは語の並びを指定する (FR-090)")
+    void pseudoTextMatchesASequenceOfWords() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("01 WS-REC.", "   05 WS-ID PIC 9(5)."));
+
+        // == と == の間に書いた語の並びが照合の単位になる
+        assertEquals("01 CUST-REC. 05 CUST-ID PIC 9(5).",
+                expand(resolver,
+                        "COPY REC REPLACING ==WS-REC== BY ==CUST-REC==",
+                        "   ==WS-ID== BY ==CUST-ID==.").text());
+    }
+
+    @Test
+    @DisplayName("擬似テキストは複数の語にわたって置き換えられる (FR-090)")
+    void pseudoTextCanSpanSeveralWords() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("05 F PIC X(10) VALUE SPACE."));
+
+        assertEquals("05 F PIC X(10) VALUE ZERO.",
+                expand(resolver, "COPY REC REPLACING ==VALUE SPACE== BY ==VALUE ZERO==.").text());
+    }
+
+    @Test
+    @DisplayName("置換の照合は大文字と小文字を区別しない (FR-090)")
+    void replacingIsCaseInsensitiveForWords() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("01 ws-rec."));
+
+        assertEquals("01 CUST-REC.",
+                expand(resolver, "COPY REC REPLACING ==WS-REC== BY ==CUST-REC==.").text());
+    }
+
+    @Test
+    @DisplayName("置換は書かれた順に試され、最初に一致したものが使われる (FR-090)")
+    void replacementsAreTriedInOrder() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("01 A B."));
+
+        // ==A B== のほうが先に書かれているので、こちらが優先される
+        assertEquals("01 X.",
+                expand(resolver, "COPY REC REPLACING ==A B== BY ==X== ==A== BY ==Y==.").text());
+        // 順序を入れ替えると結果が変わる
+        assertEquals("01 Y B.",
+                expand(resolver, "COPY REC REPLACING ==A== BY ==Y== ==A B== BY ==X==.").text());
+    }
+
+    @Test
+    @DisplayName("コピー句の中の COPY も展開される (FR-090)")
+    void nestedCopyIsExpanded() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("OUTER", source("01 OUTER-REC.", "COPY INNER."))
+                .put("INNER", source("05 INNER-ID PIC 9(3)."));
+
+        assertEquals("01 OUTER-REC. 05 INNER-ID PIC 9(3).",
+                expand(resolver, "COPY OUTER.").text());
+    }
+
+    @Test
+    @DisplayName("循環する COPY は誤りとして検出する (FR-090)")
+    void recursiveCopyIsDetected() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("A", source("COPY B."))
+                .put("B", source("COPY A."));
+
+        SourceFormatException e = assertThrows(SourceFormatException.class,
+                () -> expand(resolver, "COPY A."));
+        assertTrue(e.getMessage().contains("recursive"), e.getMessage());
+    }
+
+    @Test
+    @DisplayName("見つからないコピー句は誤りとして検出する (FR-090)")
+    void missingCopybookIsReported() {
+        SourceFormatException e = assertThrows(SourceFormatException.class,
+                () -> expand(new MapCopyBookResolver(), "COPY NOSUCH."));
+        assertTrue(e.getMessage().contains("NOSUCH"), e.getMessage());
+        assertTrue(e.getMessage().contains("MAIN.cbl:1"), e.getMessage());
+    }
+
+    @Test
+    @DisplayName("終止符のない COPY は誤りとして検出する (FR-090)")
+    void copyMustBeTerminatedByAPeriod() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("REC", source("01 R."));
+        SourceFormatException e = assertThrows(SourceFormatException.class,
+                () -> expand(resolver, "COPY REC"));
+        assertTrue(e.getMessage().contains("period"), e.getMessage());
+    }
+
+    @Test
+    @DisplayName("閉じていない擬似テキストは誤りとして検出する (FR-090)")
+    void unterminatedPseudoTextIsReported() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("REC", source("01 R."));
+        SourceFormatException e = assertThrows(SourceFormatException.class,
+                () -> expand(resolver, "COPY REC REPLACING ==A== BY ==B."));
+        assertTrue(e.getMessage().contains("pseudo-text"), e.getMessage());
+    }
+
+    @Test
+    @DisplayName("展開後の語はコピー句のファイルと行を指す (FR-094)")
+    void expandedWordsPointAtTheCopybook() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("CUSTREC", source("01 CUST-REC.", "   05 CUST-ID PIC 9(5)."));
+
+        NormalizedSource result = expand(resolver, "MOVE A TO B.", "COPY CUSTREC.");
+        int index = result.text().indexOf("CUST-ID");
+        Origin origin = result.originOf(index);
+
+        assertEquals("CUSTREC", origin.fileName(), "コピー句のファイル名を指す");
+        assertEquals(2, origin.line(), "コピー句の 2 行目を指す");
+    }
+
+    @Test
+    @DisplayName("置換で差し込まれた語は COPY を書いた側のファイルと行を指す (FR-094)")
+    void replacementWordsPointAtTheCopyStatement() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("01 WS-REC."));
+
+        NormalizedSource result =
+                expand(resolver, "COPY REC REPLACING ==WS-REC== BY ==CUST-REC==.");
+        int index = result.text().indexOf("CUST-REC");
+        Origin origin = result.originOf(index);
+
+        // 差し込まれた語はコピー句ではなく COPY 文に書かれている。
+        // 同じ展開結果の中に 2 つのファイルの位置が混在するが、それが実際の出自である
+        assertEquals(FILE, origin.fileName());
+        assertEquals(1, origin.line());
+    }
+}
