@@ -36,6 +36,9 @@ public final class HerculesCase {
     /** データ領域の先頭。 */
     private static final int DATA_ORIGIN = 0x400;
 
+    /** Hercules の {@code r} コマンドが 1 回に書き換えられるバイト数の上限。 */
+    private static final int MAX_BYTES_PER_STORE = 32;
+
     /** プログラム割込みが起きたことを示す、待機 PSW の命令アドレス。 */
     public static final int PROGRAM_CHECK_MARKER = 0xDEAD;
 
@@ -120,10 +123,7 @@ public final class HerculesCase {
                 .append("   # good PSW: 命令アドレス 0 の待機状態\n");
 
         for (var e : data.entrySet()) {
-            if (e.getValue().length > 0) {
-                sb.append("r ").append(hexAddr(e.getKey())).append('=').append(hex(e.getValue()))
-                        .append('\n');
-            }
+            appendStore(sb, e.getKey(), e.getValue());
         }
 
         sb.append("runtest 1\n");
@@ -134,6 +134,23 @@ public final class HerculesCase {
         }
         sb.append("*Done\n");
         return sb.toString();
+    }
+
+    /**
+     * 記憶域への書き込みを出力する。
+     *
+     * <p><b>Hercules の {@code r} コマンドは 1 回に 32 バイトまでしか書き換えられない。</b>
+     * 超えると {@code HHC02205E} で拒否され、<b>記憶域は初期値のまま残る</b>。
+     * それに気付かないまま実行すると、ゼロで埋まった領域を「実機の結果」として
+     * 採取してしまう。したがって必ず 32 バイトごとに分割する。
+     */
+    private static void appendStore(StringBuilder sb, int address, byte[] bytes) {
+        for (int offset = 0; offset < bytes.length; offset += MAX_BYTES_PER_STORE) {
+            int length = Math.min(MAX_BYTES_PER_STORE, bytes.length - offset);
+            byte[] chunk = java.util.Arrays.copyOfRange(bytes, offset, offset + length);
+            sb.append("r ").append(hexAddr(address + offset)).append('=').append(hex(chunk))
+                    .append('\n');
+        }
     }
 
     private void checkDataFits() {

@@ -26,6 +26,9 @@ public final class HerculesRunner {
     /** Hercules 自身の実行時間の上限 (秒)。テストが停止しない場合の保険。 */
     private static final long PROCESS_TIMEOUT_SECONDS = 60;
 
+    /** 重大度 E / S の Hercules メッセージ。正常な実行では現れない。 */
+    private static final Pattern CONSOLE_ERROR = Pattern.compile("HHC[0-9]{5}[ES] ");
+
     private static final Pattern WAIT_PSW = Pattern.compile(
             "disabled wait state\\s+([0-9A-Fa-f]+)\\s+([0-9A-Fa-f]+)");
 
@@ -151,6 +154,14 @@ public final class HerculesRunner {
         }
 
         String log = Files.readString(logFile, StandardCharsets.UTF_8);
+        List<String> errors = consoleErrors(log);
+        if (!errors.isEmpty()) {
+            // スクリプトが拒否されても Hercules は実行を続け、記憶域は初期値のまま残る。
+            // それに気付かずに採取すると、ゼロで埋まった領域を「実機の結果」として
+            // 信じてしまう。オラクルとして致命的なので、ここで必ず止める。
+            throw new IOException("Hercules がコマンドを拒否した (case " + testCase.name() + "):\n"
+                    + String.join("\n", errors));
+        }
         return new HerculesResult(log, StorageDump.parse(log), parseWaitPswAddress(log));
     }
 
@@ -158,6 +169,22 @@ public final class HerculesRunner {
      * 停止時の待機 PSW の命令アドレスを取り出す。
      * z/Arch の PSW は 16 バイトで、後半 8 バイトが命令アドレスである。
      */
+    /**
+     * コンソール出力に現れた重大度 E (エラー) または S (重大) のメッセージを集める。
+     *
+     * <p>正常な実行ではこれらは 1 行も現れない。現れたということはスクリプトのどこかが
+     * 受理されなかったということであり、そのまま採取を続けると誤った期待値を得る。
+     */
+    static List<String> consoleErrors(String log) {
+        List<String> errors = new java.util.ArrayList<>();
+        for (String line : log.split("\\R")) {
+            if (CONSOLE_ERROR.matcher(line).find()) {
+                errors.add(line.trim());
+            }
+        }
+        return errors;
+    }
+
     static long parseWaitPswAddress(String log) {
         Matcher m = WAIT_PSW.matcher(log);
         long address = -1;

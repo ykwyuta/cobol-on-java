@@ -28,6 +28,7 @@ public final class Insn {
 
     // --- SS-a 形式 (1 つの長さ) の命令コード ---
     private static final int OP_MVC = 0xD2;
+    private static final int OP_TR = 0xDC;
     private static final int OP_CLC = 0xD5;
     private static final int OP_ED = 0xDE;
     private static final int OP_EDMK = 0xDF;
@@ -86,6 +87,15 @@ public final class Insn {
     /** {@code MVC D1(L),D2} — 文字転記。 */
     public static byte[] mvc(int addr1, int len, int addr2) {
         return ssa(OP_MVC, addr1, len, addr2);
+    }
+
+    /**
+     * {@code TR D1(L),D2} — 変換。第 1 オペランドの各バイトを、その値を添字として
+     * 第 2 オペランドの 256 バイト表から引いた値で置き換える。
+     * COBOL の {@code INSPECT ... CONVERTING} がこの命令に対応する。
+     */
+    public static byte[] tr(int addr1, int len, int tableAddr) {
+        return ssa(OP_TR, addr1, len, tableAddr);
     }
 
     /** {@code CLC D1(L),D2} — 論理比較。 */
