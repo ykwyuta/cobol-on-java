@@ -110,6 +110,18 @@ public final class ProcessStatement {
     }
 
     /**
+     * オプションの並びを読む。処理系の起動時に与えられた指定も同じ綴りで書ける
+     * ようにするため、外から呼べる形にしてある (要件 FR-093)。
+     *
+     * @param text {@code SSRANGE,ARITH(EXTEND)} のような並び
+     */
+    public static CompilerOptions parse(String text) {
+        Map<String, String> options = new LinkedHashMap<>();
+        parseOptions(text, options);
+        return new CompilerOptions(options);
+    }
+
+    /**
      * オプションの並びを読む。区切りは読点か空白、値は括弧の中に書く。
      * 括弧の中の読点は区切りではない ({@code XREF(SHORT,FULL)} のような指定があるため)。
      */

@@ -209,6 +209,47 @@ public final class Ops {
         return Compare.alphanumeric(left, right, codePage);
     }
 
+    // ---- SSRANGE の検査 ----
+
+    /**
+     * 添字が {@code 1..occurs} に収まっているか検査する (要件 FR-024)。
+     *
+     * <p>値をそのまま返すのは、位置の計算の<b>途中に挟める</b>ようにするためである。
+     * 検査のために計算を組み替えると、指定がないときの命令列まで変わってしまう。
+     *
+     * @param name 診断に出す項目の名前
+     * @return 渡された添字
+     */
+    public static int checkSubscript(int value, int occurs, String name) {
+        if (value < 1 || value > occurs) {
+            throw new RangeCheckException("subscript " + value + " is outside 1.." + occurs
+                    + " for " + name);
+        }
+        return value;
+    }
+
+    /**
+     * 部分参照が項目の中に収まっているか検査する (要件 FR-026)。
+     *
+     * @param leftmost 開始位置 (1 起点)
+     * @param length   長さ
+     * @param size     項目の長さ
+     * @param name     診断に出す項目の名前
+     * @return 渡された開始位置
+     */
+    public static int checkRefMod(int leftmost, int length, int size, String name) {
+        if (leftmost < 1 || leftmost > size) {
+            throw new RangeCheckException("reference modification starts at " + leftmost
+                    + " which is outside 1.." + size + " for " + name);
+        }
+        if (length < 1 || leftmost + length - 1 > size) {
+            throw new RangeCheckException("reference modification of length " + length
+                    + " at " + leftmost + " runs past the end of " + name
+                    + " (" + size + " bytes)");
+        }
+        return leftmost;
+    }
+
     // ---- 算術 ----
 
     public static Decimal add(Decimal left, Decimal right) {

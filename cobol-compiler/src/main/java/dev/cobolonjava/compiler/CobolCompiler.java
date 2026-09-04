@@ -8,6 +8,7 @@ import dev.cobolonjava.compiler.semantic.DataDivisionBuilder;
 import dev.cobolonjava.compiler.semantic.DataLayout;
 import dev.cobolonjava.compiler.semantic.InitialImage;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
+import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
 import java.util.ArrayList;
@@ -25,9 +26,25 @@ import java.util.Locale;
 public final class CobolCompiler {
 
     private final Preprocessor preprocessor;
+    private final CompilerOptions options;
 
     public CobolCompiler(Preprocessor preprocessor) {
+        this(preprocessor, CompilerOptions.NONE);
+    }
+
+    public CobolCompiler(Preprocessor preprocessor, CompilerOptions options) {
         this.preprocessor = preprocessor;
+        this.options = options;
+    }
+
+    /**
+     * 起動時に与える翻訳時オプションを差し替えた構成を返す (要件 FR-093)。
+     *
+     * <p>ソースの {@code CBL} / {@code PROCESS} に書かれた指定のほうが<b>あとに重なる</b>。
+     * ソースに書いた指定が起動時の指定を上書きするのが参照実装の規則である。
+     */
+    public CobolCompiler withOptions(CompilerOptions values) {
+        return new CobolCompiler(preprocessor, values);
     }
 
     /** コピー句を持たない構成。 */
@@ -58,6 +75,7 @@ public final class CobolCompiler {
 
     /** ソースを翻訳する。 */
     public Result compile(String fileName, String source) {
+        CompilerOptions effective = options.merge(preprocessor.optionsOf(source));
         CobolParsing.Result parsed = CobolParsing.parse(preprocessor, fileName, source);
         if (!parsed.succeeded()) {
             return failed(null, parsed.diagnostics());
@@ -77,8 +95,8 @@ public final class CobolCompiler {
             return failed(data.layout(), diagnostics);
         }
 
-        ProgramGenerator.Result generated =
-                ProgramGenerator.generate(programNameOf(parsed.tree()), procedure, image);
+        ProgramGenerator.Result generated = ProgramGenerator.generate(
+                programNameOf(parsed.tree()), procedure, image, effective);
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
         }

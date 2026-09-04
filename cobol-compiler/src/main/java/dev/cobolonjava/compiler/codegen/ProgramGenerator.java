@@ -12,6 +12,7 @@ import dev.cobolonjava.compiler.semantic.LiteralValue;
 import dev.cobolonjava.compiler.semantic.Operand;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
 import dev.cobolonjava.compiler.semantic.Statement;
+import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.Origin;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.data.SignPosition;
@@ -78,6 +79,8 @@ public final class ProgramGenerator {
 
     private final String className;
     private final CodePage codePage;
+    /** {@code SSRANGE} が効いているか。効いていれば添字と部分参照の位置を実行時に検査する。 */
+    private final boolean rangeChecks;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
     /** 静的初期化子で作る定数。綴りから field 名を引く。 */
@@ -111,9 +114,10 @@ public final class ProgramGenerator {
     private MethodVisitor clinit;
     private byte[] initialStorageBytes;
 
-    private ProgramGenerator(String className, CodePage codePage) {
+    private ProgramGenerator(String className, CodePage codePage, CompilerOptions options) {
         this.className = className;
         this.codePage = codePage;
+        this.rangeChecks = options.subscriptRangeChecks();
     }
 
     private record Constant(String name, String descriptor, Runnable emit) {
@@ -136,13 +140,21 @@ public final class ProgramGenerator {
     /** プログラムを生成する。 */
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image) {
-        return generate(programName, procedure, image, CodePages.DEFAULT);
+        return generate(programName, procedure, image, CodePages.DEFAULT, CompilerOptions.NONE);
     }
 
-    /** コードページを指定してプログラムを生成する。 */
+    /** 翻訳時オプションを指定してプログラムを生成する。 */
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
-                                  InitialImage.Result image, CodePage codePage) {
-        return new ProgramGenerator(classNameOf(programName), codePage).emit(procedure, image);
+                                  InitialImage.Result image, CompilerOptions options) {
+        return generate(programName, procedure, image, CodePages.DEFAULT, options);
+    }
+
+    /** コードページと翻訳時オプションを指定してプログラムを生成する。 */
+    public static Result generate(String programName, ProcedureBuilder.Result procedure,
+                                  InitialImage.Result image, CodePage codePage,
+                                  CompilerOptions options) {
+        return new ProgramGenerator(classNameOf(programName), codePage, options)
+                .emit(procedure, image);
     }
 
     /** COBOL のプログラム名を Java のクラス名にする。ハイフンは下線に読み替える。 */
@@ -1892,9 +1904,11 @@ public final class ProgramGenerator {
             if (push == null) {
                 return null;
             }
+            DataItem table = tables.get(i);
             variable.add(() -> {
                 push.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+                emitSubscriptCheck(table);
                 run.visitInsn(Opcodes.ICONST_1);
                 run.visitInsn(Opcodes.ISUB);
                 push(unit);
@@ -1920,6 +1934,44 @@ public final class ProgramGenerator {
         };
     }
 
+    /**
+     * 添字の範囲検査を積む ({@code SSRANGE} 指定時のみ)。
+     *
+     * <p>検査は<b>積まれた値をそのまま返す</b>形にしてある。位置の計算の途中に挟むだけで
+     * 済み、指定がないときの命令列がまったく変わらない。
+     */
+    private void emitSubscriptCheck(DataItem table) {
+        if (!rangeChecks) {
+            return;
+        }
+        push(table.occurs());
+        run.visitLdcInsn(describe(table));
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "checkSubscript",
+                "(IILjava/lang/String;)I", false);
+    }
+
+    /** 部分参照の範囲検査を積む ({@code SSRANGE} 指定時のみ)。 */
+    private void emitRefModCheck(DataReference reference, Origin origin) {
+        if (!rangeChecks) {
+            return;
+        }
+        OptionalInt length = reference.constantLength();
+        if (length.isEmpty()) {
+            // 長さが定数でない形はそもそも生成できない (暫定判断 P-027)
+            return;
+        }
+        push(length.getAsInt());
+        push(reference.item().length());
+        run.visitLdcInsn(describe(reference.item()));
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "checkRefMod",
+                "(IIILjava/lang/String;)I", false);
+    }
+
+    /** 診断に出す項目の名前。無名項目は {@code FILLER} である。 */
+    private static String describe(DataItem item) {
+        return item.name() == null ? "FILLER" : item.name();
+    }
+
     /** 部分参照の開始位置を、すでに積まれた位置へ足す命令。 */
     private Runnable planRefModLeftmost(DataReference reference, Origin origin) {
         if (reference.refMod().leftmost() instanceof DataReference.Subscript.Constant) {
@@ -1934,6 +1986,7 @@ public final class ProgramGenerator {
         return () -> {
             push.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            emitRefModCheck(reference, origin);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitInsn(Opcodes.ISUB);
             run.visitInsn(Opcodes.IADD);
