@@ -32,6 +32,8 @@ tokens {
     // 環境部
     ENVIRONMENT, CONFIGURATION, SOURCE_COMPUTER, OBJECT_COMPUTER, SPECIAL_NAMES,
     CURRENCY, DECIMAL_POINT,
+    INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
+    ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
 
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
@@ -46,6 +48,8 @@ tokens {
     NUMERIC_EDITED,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
     UP, DOWN, SEARCH, END_SEARCH, AT,
+    OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
+    END_READ, END_WRITE, INVALID, FD, RECORD,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -118,7 +122,29 @@ endProgramStatement
 // ---- 環境部 (中身は次の増分) ----
 
 environmentDivision
-    : ENVIRONMENT DIVISION PERIOD configurationSection?
+    : ENVIRONMENT DIVISION PERIOD configurationSection? inputOutputSection?
+    ;
+
+// ---- 入出力節 ----
+
+inputOutputSection
+    : INPUT_OUTPUT SECTION PERIOD fileControlParagraph?
+    ;
+
+fileControlParagraph
+    : FILE_CONTROL PERIOD selectEntry*
+    ;
+
+// ASSIGN に書くのは DD 名であり、ファイルの場所そのものではない
+selectEntry
+    : SELECT OPTIONAL? IDENTIFIER ASSIGN TO? (IDENTIFIER | LITERAL) selectClause* PERIOD
+    ;
+
+selectClause
+    : ORGANIZATION IS? LINE? SEQUENTIAL
+    | ACCESS MODE? IS? SEQUENTIAL
+    | FILE STATUS IS? identifier
+    | RECORDING MODE? IS? IDENTIFIER
     ;
 
 configurationSection
@@ -158,9 +184,26 @@ dataDivision
     ;
 
 dataDivisionSection
-    : workingStorageSection
+    : fileSection
+    | workingStorageSection
     | localStorageSection
     | linkageSection
+    ;
+
+// FD のレコード記述項は、その FD のレコード領域を表す
+fileSection
+    : FILE SECTION PERIOD fileDescriptionEntry*
+    ;
+
+fileDescriptionEntry
+    : FD IDENTIFIER fileDescriptionClause* PERIOD dataDescriptionEntry*
+    ;
+
+fileDescriptionClause
+    : BLOCK CONTAINS? NUMBER (TO NUMBER)? (RECORDS | CHARACTER)?
+    | RECORD CONTAINS? NUMBER (TO NUMBER)? CHARACTER?
+    | LABEL RECORD (IS | ARE)? (STANDARD | OMITTED)
+    | RECORDING MODE? IS? IDENTIFIER
     ;
 
 workingStorageSection
@@ -372,6 +415,10 @@ statement
     | setStatement
     | acceptStatement
     | searchStatement
+    | openStatement
+    | closeStatement
+    | readStatement
+    | writeStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -580,6 +627,33 @@ evaluateObject
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
 displayStatement
     : DISPLAY arithmeticOperand+ (UPON IDENTIFIER)? (WITH? NO ADVANCING)?
+    ;
+
+// ---- 入出力文 ----
+
+openStatement
+    : OPEN openPhrase+
+    ;
+
+openPhrase
+    : (INPUT | OUTPUT | I_O | EXTEND) IDENTIFIER+
+    ;
+
+closeStatement
+    : CLOSE IDENTIFIER+
+    ;
+
+// AT END はファイルの終わりに来たときだけ通る
+readStatement
+    : READ IDENTIFIER RECORD? (INTO identifier)? atEndPhrase? notAtEndPhrase? END_READ?
+    ;
+
+notAtEndPhrase
+    : NOT AT? END statement+
+    ;
+
+writeStatement
+    : WRITE IDENTIFIER (FROM identifier)? END_WRITE?
     ;
 
 // SEARCH は表を順に見る。SEARCH ALL は 2 分探索であり、条件の形が限られる

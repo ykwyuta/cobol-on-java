@@ -6,8 +6,10 @@ import dev.cobolonjava.compiler.parser.CobolParsing;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.semantic.DataDivisionBuilder;
 import dev.cobolonjava.compiler.semantic.DataLayout;
+import dev.cobolonjava.compiler.semantic.FileDescription;
 import dev.cobolonjava.compiler.semantic.InitialImage;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
+import dev.cobolonjava.compiler.semantic.ReferenceResolver;
 import dev.cobolonjava.compiler.semantic.SpecialNames;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
@@ -94,11 +96,20 @@ public final class CobolCompiler {
             return failed(data.layout(), data.diagnostics());
         }
 
+        // SELECT と FD は離れて書かれる。両方を読み終えてから突き合わせる
+        List<Diagnostic> fileDiagnostics = new ArrayList<>();
+        FileDescription.Result declared = FileDescription.build(parsed.tree(),
+                FileDescription.select(parsed.tree(), fileDiagnostics), data.fileRecords(),
+                new ReferenceResolver(data.layout(), fileDiagnostics), fileDiagnostics);
+        if (!declared.succeeded()) {
+            return failed(data.layout(), declared.diagnostics());
+        }
+
         List<Diagnostic> diagnostics = new ArrayList<>();
         InitialImage.Result image = InitialImage.build(data.layout());
         diagnostics.addAll(image.diagnostics());
-        ProcedureBuilder.Result procedure =
-                ProcedureBuilder.build(parsed.tree(), data.layout(), specialNames);
+        ProcedureBuilder.Result procedure = ProcedureBuilder.build(parsed.tree(), data.layout(),
+                specialNames, declared.files());
         diagnostics.addAll(procedure.diagnostics());
         if (!diagnostics.isEmpty()) {
             return failed(data.layout(), diagnostics);

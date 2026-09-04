@@ -41,6 +41,7 @@ public final class DataItem {
     private int length;
     private int base;
     private DataSection section = DataSection.WORKING_STORAGE;
+    private String fileName;
     private final List<String> indexNames = new ArrayList<>();
     private final List<SearchKey> searchKeys = new ArrayList<>();
     private boolean index;
@@ -188,6 +189,20 @@ public final class DataItem {
         return section;
     }
 
+    /**
+     * この項目が属する {@code FD} のファイル名。{@code FILE SECTION} 以外では {@code null}。
+     *
+     * <p>{@code WRITE} に書くのは<b>レコード名</b>であってファイル名ではない。どのファイルへ
+     * 書くのかは、レコードがどの {@code FD} の下にあるかで決まる。
+     */
+    public String fileName() {
+        return record().fileNameOfRecord();
+    }
+
+    private String fileNameOfRecord() {
+        return fileName;
+    }
+
     /** この項目が属する 01 レベル (または独立項目)。 */
     public DataItem record() {
         DataItem current = this;
@@ -278,6 +293,10 @@ public final class DataItem {
 
     void setSection(DataSection value) {
         this.section = value;
+    }
+
+    void setFileName(String value) {
+        this.fileName = value;
     }
 
     void setBase(int value) {

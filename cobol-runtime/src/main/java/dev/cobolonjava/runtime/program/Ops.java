@@ -6,6 +6,9 @@ import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.data.ZonedDecimal;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
+import dev.cobolonjava.runtime.file.FileStatus;
+import dev.cobolonjava.runtime.file.OpenMode;
+import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -222,6 +225,84 @@ public final class Ops {
     /** 英数字比較。短いほうは空白で埋めて比べる。 */
     public static int compareAlphanumeric(byte[] left, byte[] right, CodePage codePage) {
         return Compare.alphanumeric(left, right, codePage);
+    }
+
+    // ---- ファイル入出力 ----
+
+    /**
+     * {@code OPEN} (要件 FR-102)。
+     *
+     * @return ファイル状態コードのバイト列。2 バイトである
+     */
+    public static byte[] open(ProgramContext context, String name, String ddName, int mode,
+                              int format, int recordLength) {
+        return status(context, context.file(name, ddName, RecordFormat.values()[format],
+                recordLength).open(OpenMode.values()[mode]));
+    }
+
+    /**
+     * {@code READ} (要件 FR-102)。読んだレコードは記憶域へ直に書き込む。
+     *
+     * @return ファイル状態コード
+     */
+    public static byte[] read(ProgramContext context, String name, String ddName,
+                              Storage storage, int offset, int length) {
+        byte[] record = new byte[length];
+        String status = context.file(name, ddName).read(record);
+        if (FileStatus.succeeded(status)) {
+            // 読めなかったときにレコード領域を触らないのは、前の内容が残る規則のためである
+            storage.view(offset, length).setBytes(record);
+        }
+        return status(context, status);
+    }
+
+    /** {@code WRITE} (要件 FR-102)。 */
+    public static byte[] write(ProgramContext context, String name, String ddName,
+                               Storage storage, int offset, int length) {
+        return status(context, context.file(name, ddName)
+                .write(read(storage, offset, length)));
+    }
+
+    /** {@code CLOSE} (要件 FR-102)。 */
+    public static byte[] close(ProgramContext context, String name, String ddName) {
+        return status(context, context.file(name, ddName).close());
+    }
+
+    /**
+     * ファイル状態コードをバイト列にする。
+     *
+     * <p>{@code FILE STATUS} の項目は<b>2 文字の英数字</b>である。数値ではない。
+     * 拡張コードに数字でないものがあるためである。
+     */
+    private static byte[] status(ProgramContext context, String status) {
+        return context.codePage().encode(status);
+    }
+
+    /**
+     * ファイル状態コードが成功を表すか (要件 FR-103)。
+     *
+     * <p>先頭が {@code 0} なら成功か軽微な注意である。{@code 1} で始まれば
+     * ファイルの終わりであり、それ以外は誤りである。
+     */
+    public static boolean fileSucceeded(byte[] status, CodePage codePage) {
+        return FileStatus.succeeded(codePage.decode(status));
+    }
+
+    /** ファイルの終わりかどうか。{@code AT END} の分岐に使う。 */
+    public static boolean fileAtEnd(byte[] status, CodePage codePage) {
+        return FileStatus.AT_END.equals(codePage.decode(status));
+    }
+
+    /**
+     * {@code FILE STATUS} を書いていないファイルで異常が起きたときの扱い (要件 FR-104)。
+     *
+     * <p>黙って続けると、<b>読めていないデータで処理が進む</b>。異常終了させる。
+     */
+    public static void checkFile(byte[] status, CodePage codePage, String name) {
+        String text = codePage.decode(status);
+        if (!FileStatus.succeeded(text) && !FileStatus.AT_END.equals(text)) {
+            throw new FileOperationException(name, text);
+        }
     }
 
     // ---- ACCEPT ----

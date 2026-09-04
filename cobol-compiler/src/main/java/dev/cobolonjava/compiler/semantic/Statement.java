@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.semantic;
 
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.file.OpenMode;
 import java.util.List;
 
 /**
@@ -495,6 +496,63 @@ public sealed interface Statement {
         public Initialize {
             replacing = List.copyOf(replacing);
         }
+    }
+
+    /**
+     * {@code OPEN} 文 (要件 FR-102)。
+     *
+     * <p>1 つの {@code OPEN} で開き方の違う複数のファイルを開ける。
+     * 開き方はファイルごとに決まるので、対にして持つ。
+     */
+    record Open(List<Opened> files, Origin origin) implements Statement {
+
+        public Open {
+            files = List.copyOf(files);
+        }
+
+        /** 開くファイル 1 個と、その開き方。 */
+        public record Opened(FileDescription file, OpenMode mode) {
+        }
+    }
+
+    /** {@code CLOSE} 文 (要件 FR-102)。 */
+    record Close(List<FileDescription> files, Origin origin) implements Statement {
+
+        public Close {
+            files = List.copyOf(files);
+        }
+    }
+
+    /**
+     * {@code READ} 文 (要件 FR-102, FR-103)。
+     *
+     * <p>{@code INTO} は<b>読んだあとの転記</b>である。読めなかったときは転記も起きない。
+     * したがってレコード領域への読み込みと転記は分けて持ち、成功したときだけ転記を出す。
+     *
+     * @param into     {@code INTO} の転記。指定がなければ {@code null}
+     * @param atEnd    {@code AT END} の文。指定がなければ空
+     * @param notAtEnd {@code NOT AT END} の文。指定がなければ空
+     */
+    record Read(FileDescription file, Move into, List<Statement> atEnd, List<Statement> notAtEnd,
+                Origin origin) implements Statement {
+
+        public Read {
+            atEnd = List.copyOf(atEnd);
+            notAtEnd = List.copyOf(notAtEnd);
+        }
+    }
+
+    /**
+     * {@code WRITE} 文 (要件 FR-102)。
+     *
+     * <p>書くのに指定するのは<b>レコード名</b>であってファイル名ではない。どのファイルへ
+     * 書くのかは、そのレコードがどの {@code FD} の下にあるかで決まる。
+     *
+     * @param record 書き出すレコード記述
+     * @param from   {@code FROM} の転記。指定がなければ {@code null}
+     */
+    record Write(FileDescription file, DataItem record, Move from, Origin origin)
+            implements Statement {
     }
 
     /**

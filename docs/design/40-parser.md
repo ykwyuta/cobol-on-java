@@ -61,8 +61,8 @@ ANTLR の字句解析器を使わないのは、<b>使えないから</b>であ�
 | 部 | 範囲 |
 | --- | --- |
 | 見出し部 | `IDENTIFICATION` / `ID`、`PROGRAM-ID` (`COMMON` / `INITIAL` / `RECURSIVE`)、`END PROGRAM` |
-| 環境部 | `CONFIGURATION SECTION` (`SOURCE-COMPUTER`、`OBJECT-COMPUTER`、`SPECIAL-NAMES`) |
-| データ部 | `WORKING-STORAGE` / `LOCAL-STORAGE` / `LINKAGE` の各節とデータ記述項 |
+| 環境部 | `CONFIGURATION SECTION` (`SOURCE-COMPUTER`、`OBJECT-COMPUTER`、`SPECIAL-NAMES`)、`INPUT-OUTPUT SECTION` (`FILE-CONTROL` の `SELECT`) |
+| データ部 | `FILE` / `WORKING-STORAGE` / `LOCAL-STORAGE` / `LINKAGE` の各節とデータ記述項 |
 | 手続き部 | 段落、文、`MOVE`、一意名 (修飾・添字・部分参照) |
 
 データ記述項の句は `REDEFINES`、`RENAMES`、`PICTURE`、`USAGE`、`SIGN`、`OCCURS`、
@@ -90,6 +90,6 @@ ANTLR の字句解析器を使わないのは、<b>使えないから</b>であ�
 
 データ部の割り付けは[設計 50](50-data-layout.md)、手続き部は[設計 60](60-procedure.md) へ続く。
 
-1. 環境部の `INPUT-OUTPUT SECTION` と `SELECT` 句 (ファイル入出力の前提)。
-2. 66 レベルの `RENAMES`。
-3. 入れ子プログラム。
+1. 66 レベルの `RENAMES`。
+2. 入れ子プログラム。
+3. `I-O-CONTROL` 段落と `DECLARATIVES`。

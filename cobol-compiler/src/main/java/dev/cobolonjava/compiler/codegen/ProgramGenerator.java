@@ -7,6 +7,7 @@ import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
 import dev.cobolonjava.compiler.semantic.DataSection;
 import dev.cobolonjava.compiler.semantic.Expression;
+import dev.cobolonjava.compiler.semantic.FileDescription;
 import dev.cobolonjava.compiler.semantic.IntermediateDigits;
 import dev.cobolonjava.compiler.semantic.InitialImage;
 import dev.cobolonjava.compiler.semantic.InitializeImage;
@@ -102,6 +103,9 @@ public final class ProgramGenerator {
      * 局所変数の 0 番は {@code this}、1 番は記憶域、2 番は実行時の入口、3 番は引数の並びである。
      */
     private static final int FIRST_FREE_LOCAL = 4;
+    /** {@code FILE STATUS} の項目の長さ。2 文字の英数字である。 */
+    private static final int FILE_STATUS_LENGTH = 2;
+    private static final String CONTEXT = Type.getDescriptor(ProgramContext.class);
 
     /** 記憶域・文脈・引数。手続き部を実行するメソッドはどれもこの 3 つを持ち回る。 */
     private static final String FRAME =
@@ -313,6 +317,14 @@ public final class ProgramGenerator {
                 planCall(call, body);
             } else if (statement instanceof Statement.Cancel cancel) {
                 planCancel(cancel, body);
+            } else if (statement instanceof Statement.Open open) {
+                planOpen(open, body);
+            } else if (statement instanceof Statement.Close close) {
+                planClose(close, body);
+            } else if (statement instanceof Statement.Read read) {
+                planRead(read, body);
+            } else if (statement instanceof Statement.Write write) {
+                planWrite(write, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
             } else if (statement instanceof Statement.Continue) {
@@ -1019,6 +1031,179 @@ public final class ProgramGenerator {
                         "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
             });
         }
+    }
+
+    // ---- ファイル入出力 ----
+
+    /**
+     * {@code OPEN} を組み立てる (要件 FR-102)。
+     *
+     * <p>ファイルごとに 1 回ずつ呼ぶ。1 つの文にいくつ並べても、それぞれが独立に
+     * 開かれ、独立に状態コードを返す。
+     */
+    private void planOpen(Statement.Open statement, List<Runnable> body) {
+        for (Statement.Open.Opened opened : statement.files()) {
+            FileDescription file = opened.file();
+            Runnable status = planFileStatus(file, statement.origin());
+            if (status == null) {
+                return;
+            }
+            int mode = opened.mode().ordinal();
+            int format = file.format().ordinal();
+            int length = file.recordLength();
+            body.add(() -> {
+                emitFileName(file);
+                push(mode);
+                push(format);
+                push(length);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "open",
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;III)[B", false);
+                status.run();
+            });
+        }
+    }
+
+    /** {@code CLOSE} を組み立てる (要件 FR-102)。 */
+    private void planClose(Statement.Close statement, List<Runnable> body) {
+        for (FileDescription file : statement.files()) {
+            Runnable status = planFileStatus(file, statement.origin());
+            if (status == null) {
+                return;
+            }
+            body.add(() -> {
+                emitFileName(file);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "close",
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
+                status.run();
+            });
+        }
+    }
+
+    /**
+     * {@code READ} を組み立てる (要件 FR-102, FR-103)。
+     *
+     * <p>状態コードで 3 つに分かれる。読めたなら {@code INTO} の転記と
+     * {@code NOT AT END}、終わりなら {@code AT END}、それ以外の誤りなら<b>どちらも
+     * 通らない</b>。誤りのときにレコード領域の中身は決まっておらず、読めたことにして
+     * 先へ進めるわけにはいかない。
+     */
+    private void planRead(Statement.Read statement, List<Runnable> body) {
+        FileDescription file = statement.file();
+        Runnable status = planFileStatus(file, statement.origin());
+        Runnable area = planAddress(areaOf(file, statement.origin()), statement.origin());
+        if (status == null || area == null) {
+            return;
+        }
+        List<Runnable> into = statement.into() == null
+                ? List.of()
+                : planStatements(List.of(statement.into()));
+        List<Runnable> atEnd = planStatements(statement.atEnd());
+        List<Runnable> notAtEnd = planStatements(statement.notAtEnd());
+        int slot = nextLocal++;
+        int length = file.recordLength();
+        body.add(() -> {
+            emitFileName(file);
+            area.run();
+            push(length);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";II)[B",
+                    false);
+            run.visitVarInsn(Opcodes.ASTORE, slot);
+            run.visitVarInsn(Opcodes.ALOAD, slot);
+            status.run();
+
+            Label ended = new Label();
+            Label end = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, slot);
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileAtEnd",
+                    "([B" + CODE_PAGE + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFNE, ended);
+            run.visitVarInsn(Opcodes.ALOAD, slot);
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileSucceeded",
+                    "([B" + CODE_PAGE + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFEQ, end);
+            into.forEach(Runnable::run);
+            notAtEnd.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(ended);
+            atEnd.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
+    }
+
+    /**
+     * {@code WRITE} を組み立てる (要件 FR-102)。
+     *
+     * <p>{@code FROM} はレコード記述への転記に展開されている。転記が先で、
+     * 書き出しがあとである。
+     */
+    private void planWrite(Statement.Write statement, List<Runnable> body) {
+        FileDescription file = statement.file();
+        Runnable status = planFileStatus(file, statement.origin());
+        Runnable area = planAddress(
+                new DataReference(statement.record(), List.of(), null, statement.origin()),
+                statement.origin());
+        if (status == null || area == null) {
+            return;
+        }
+        if (statement.from() != null) {
+            planMove(statement.from(), body);
+        }
+        int length = statement.record().totalLength();
+        body.add(() -> {
+            emitFileName(file);
+            area.run();
+            push(length);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "write",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";II)[B",
+                    false);
+            status.run();
+        });
+    }
+
+    /** 実行時の入口とファイル名・DD 名を積む。どの入出力にも要る前置きである。 */
+    private void emitFileName(FileDescription file) {
+        run.visitVarInsn(Opcodes.ALOAD, 2);
+        run.visitLdcInsn(file.name());
+        run.visitLdcInsn(file.ddName());
+    }
+
+    /** レコード領域の先頭への参照。 */
+    private static DataReference areaOf(FileDescription file, Origin origin) {
+        return new DataReference(file.area(), List.of(), null, origin);
+    }
+
+    /**
+     * 状態コードの始末 (要件 FR-103, FR-104)。
+     *
+     * <p>積まれているバイト列を消費する。{@code FILE STATUS} が書かれていればそこへ入れ、
+     * 書かれていなければ<b>異常なら止める</b>。黙って続けると、読めていないデータで
+     * 処理が進んでしまう。
+     */
+    private Runnable planFileStatus(FileDescription file, Origin origin) {
+        if (file.status() == null) {
+            String name = file.name();
+            return () -> {
+                loadCodePage();
+                run.visitLdcInsn(name);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "checkFile",
+                        "([B" + CODE_PAGE + "Ljava/lang/String;)V", false);
+            };
+        }
+        Runnable address = planAddress(file.status(), origin);
+        if (address == null) {
+            return null;
+        }
+        return () -> {
+            address.run();
+            push(FILE_STATUS_LENGTH);
+            run.visitInsn(Opcodes.ICONST_0);
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
+                    "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+        };
     }
 
     // ---- CALL ----

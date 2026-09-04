@@ -45,6 +45,15 @@ public final class SequentialDataSet {
         return new SequentialDataSet(path, DataSetAttributes.read(path));
     }
 
+    /**
+     * 属性をサイドカーから読んで開く用意をする。サイドカーがなければ宣言に拠る。
+     *
+     * @param declared プログラムが {@code SELECT} と {@code FD} に書いた様式
+     */
+    public static SequentialDataSet at(Path path, DataSetAttributes declared) {
+        return new SequentialDataSet(path, DataSetAttributes.read(path, declared));
+    }
+
     public DataSetAttributes attributes() {
         return attributes;
     }

@@ -9,6 +9,10 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.time.Clock;
+import dev.cobolonjava.runtime.file.DataSetAttributes;
+import dev.cobolonjava.runtime.file.DataSetCatalog;
+import dev.cobolonjava.runtime.file.RecordFormat;
+import dev.cobolonjava.runtime.file.SequentialDataSet;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -46,10 +50,15 @@ public final class ProgramContext {
     private final Supplier<String> input;
     /** 特殊レジスタの置き場。実行の全体で 1 つである。 */
     private final Storage registers;
+    /** DD 名から実際のファイルを探す目録。 */
+    private final DataSetCatalog catalog;
+    /** 開いているファイル。ファイル名から引く。 */
+    private final Map<String, SequentialDataSet> files;
 
     private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
-                           Supplier<String> input, Storage registers) {
+                           Supplier<String> input, Storage registers,
+                           DataSetCatalog catalog, Map<String, SequentialDataSet> files) {
         this.codePage = codePage;
         this.out = out;
         this.error = error;
@@ -58,6 +67,47 @@ public final class ProgramContext {
         this.clock = clock;
         this.input = input;
         this.registers = registers;
+        this.catalog = catalog;
+        this.files = files;
+    }
+
+    /**
+     * ファイルを引く。開いていなければ新しく用意する (要件 FR-102)。
+     *
+     * <p>入れ物はプログラムの側ではなくここが持つ。<b>閉じずに終わったファイルを
+     * 実行の終わりに片付けられる</b>ようにするためである。
+     *
+     * @param name   {@code FD} に書かれたファイル名
+     * @param ddName {@code ASSIGN TO} に書かれた DD 名
+     */
+    public SequentialDataSet file(String name, String ddName) {
+        return files.computeIfAbsent(name, k -> SequentialDataSet.at(catalog.resolve(ddName)));
+    }
+
+    /**
+     * ファイルを引く。開いていなければ、宣言された様式で新しく用意する (要件 FR-102, FR-110)。
+     *
+     * <p>{@code OPEN OUTPUT} で作るファイルにはサイドカーがない。そのとき<b>レコードの
+     * 切れ目を決められるのはプログラムの宣言だけ</b>である。サイドカーがあればそちらが勝つ。
+     *
+     * @param format       {@code ORGANIZATION} と {@code RECORDING MODE} から決まる様式
+     * @param recordLength {@code FD} 配下のレコード記述から決まる長さ
+     */
+    public SequentialDataSet file(String name, String ddName, RecordFormat format,
+                                  int recordLength) {
+        return files.computeIfAbsent(name, k -> SequentialDataSet.at(catalog.resolve(ddName),
+                new DataSetAttributes(format, recordLength, codePage)));
+    }
+
+    /** DD 名から実際のファイルを探す目録。 */
+    public DataSetCatalog catalog() {
+        return catalog;
+    }
+
+    /** 目録を差し替えた構成を返す。 */
+    public ProgramContext withCatalog(DataSetCatalog value) {
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
+                registers, value, files);
     }
 
     /**
@@ -90,14 +140,16 @@ public final class ProgramContext {
     public static ProgramContext standard() {
         return new ProgramContext(CodePages.DEFAULT, System.out, System.err,
                 Charset.defaultCharset(), new HashMap<>(), Clock.systemDefaultZone(),
-                ProgramContext::readStandardInput, Storage.allocate(SpecialRegisterArea.SIZE));
+                ProgramContext::readStandardInput, Storage.allocate(SpecialRegisterArea.SIZE),
+                DataSetCatalog.standard(), new HashMap<>());
     }
 
     /** 出力を捕まえる構成。試験で使う。 */
     public static ProgramContext capturing(ByteArrayOutputStream sink) {
         return new ProgramContext(CodePages.DEFAULT, sink, sink, StandardCharsets.UTF_8,
                 new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput,
-                Storage.allocate(SpecialRegisterArea.SIZE));
+                Storage.allocate(SpecialRegisterArea.SIZE), DataSetCatalog.standard(),
+                new HashMap<>());
     }
 
     /**
@@ -107,7 +159,7 @@ public final class ProgramContext {
      */
     public ProgramContext withCodePage(CodePage value) {
         return new ProgramContext(value, out, error, outputCharset, loaded, clock, input,
-                registers);
+                registers, catalog, files);
     }
 
     /**
@@ -117,13 +169,13 @@ public final class ProgramContext {
      */
     public ProgramContext withClock(Clock value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, value, input,
-                registers);
+                registers, catalog, files);
     }
 
     /** {@code ACCEPT} が読む行の出どころを差し替えた構成を返す。 */
     public ProgramContext withInput(Supplier<String> value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, value,
-                registers);
+                registers, catalog, files);
     }
 
     /** 日付と時刻の特殊レジスタが見る時計。 */

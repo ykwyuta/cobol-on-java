@@ -48,6 +48,8 @@ public final class DataDivisionBuilder {
 
     private final List<Diagnostic> diagnostics = new ArrayList<>();
     private DataSection currentSection = DataSection.WORKING_STORAGE;
+    /** いま読んでいる {@code FD} のファイル名。ファイル節の外では {@code null}。 */
+    private String currentFile;
     private final SpecialNames specialNames;
 
     private DataDivisionBuilder(SpecialNames specialNames) {
@@ -56,6 +58,8 @@ public final class DataDivisionBuilder {
     /** 指標名から、その実体の項目を引く。 */
     private final Map<String, DataItem> indexes = new LinkedHashMap<>();
     private final List<DataItem> records = new ArrayList<>();
+    /** {@code FD} ごとのレコード記述。書かれた順に並ぶ。 */
+    private final Map<String, List<DataItem>> fileRecords = new LinkedHashMap<>();
     /** 開いている群項目。いちばん上が現在の親である。 */
     private final Deque<DataItem> open = new ArrayDeque<>();
     /** 直前に作った項目。条件名 (88) はここへ付く。 */
@@ -68,7 +72,8 @@ public final class DataDivisionBuilder {
      * @param layout      記憶域の割り付け
      * @param diagnostics 見つかった誤り。空なら成功
      */
-    public record Result(DataLayout layout, List<Diagnostic> diagnostics) {
+    public record Result(DataLayout layout, Map<String, List<DataItem>> fileRecords,
+                         List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
             return diagnostics.isEmpty();
@@ -95,7 +100,8 @@ public final class DataDivisionBuilder {
         builder.addIndexItems();
         builder.layoutRecords();
         return new Result(new DataLayout(builder.records, builder.indexes,
-                specialRegisters(), builder.totalLength), List.copyOf(builder.diagnostics));
+                specialRegisters(), builder.totalLength),
+                Map.copyOf(builder.fileRecords), List.copyOf(builder.diagnostics));
     }
 
     private void addProgramUnit(CobolParser.ProgramUnitContext unit) {
@@ -103,11 +109,50 @@ public final class DataDivisionBuilder {
             return;
         }
         for (CobolParser.DataDivisionSectionContext section : unit.dataDivision().dataDivisionSection()) {
+            if (section.fileSection() != null) {
+                addFileSection(section.fileSection());
+                continue;
+            }
             currentSection = sectionOf(section);
             for (CobolParser.DataDescriptionEntryContext entry : entriesOf(section)) {
                 addEntry(entry);
             }
         }
+        currentSection = DataSection.WORKING_STORAGE;
+        currentFile = null;
+    }
+
+    /**
+     * ファイル節を読む (要件 FR-100)。
+     *
+     * <p>{@code FD} の下に書かれた 01 レベルは、その {@code FD} の<b>レコード領域</b>である。
+     * 名前で引ける普通の項目であることは作業場所の項目と変わらないので、同じ道で作る。
+     * 違うのは、どのファイルのものかを覚えておくところだけである。
+     */
+    private void addFileSection(CobolParser.FileSectionContext section) {
+        currentSection = DataSection.FILE;
+        for (CobolParser.FileDescriptionEntryContext fd : section.fileDescriptionEntry()) {
+            currentFile = fd.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+            Origin origin = originOf(fd);
+            if (fileRecords.containsKey(currentFile)) {
+                report(origin, "duplicate FD for " + currentFile);
+                continue;
+            }
+            List<DataItem> area = new ArrayList<>();
+            for (CobolParser.DataDescriptionEntryContext entry : fd.dataDescriptionEntry()) {
+                int before = records.size();
+                addEntry(entry);
+                for (int i = before; i < records.size(); i++) {
+                    area.add(records.get(i));
+                }
+            }
+            if (area.isEmpty()) {
+                report(origin, "FD " + currentFile + " has no record description");
+                continue;
+            }
+            fileRecords.put(currentFile, area);
+        }
+        currentFile = null;
         currentSection = DataSection.WORKING_STORAGE;
     }
 
@@ -159,6 +204,7 @@ public final class DataDivisionBuilder {
         if (level == 1 || level == INDEPENDENT_LEVEL) {
             open.clear();
             item.setSection(currentSection);
+            item.setFileName(currentFile);
             records.add(item);
         } else {
             while (!open.isEmpty() && open.peek().level() >= level) {
@@ -383,9 +429,23 @@ public final class DataDivisionBuilder {
      */
     private void layoutRecords() {
         int base = 0;
+        Map<String, Integer> fileBases = new LinkedHashMap<>();
         for (DataItem record : records) {
             layout(record, 0);
             if (record.section() == DataSection.LINKAGE) {
+                continue;
+            }
+            if (record.section() == DataSection.FILE) {
+                // 同じ FD のレコード記述は重なる。どれも 1 つのバッファの別の切り方である
+                Integer at = fileBases.get(record.fileName());
+                if (at == null) {
+                    fileBases.put(record.fileName(), base);
+                    record.setBase(base);
+                    base += record.totalLength();
+                } else {
+                    record.setBase(at);
+                    base = Math.max(base, at + record.totalLength());
+                }
                 continue;
             }
             if (record.redefinesName() != null) {

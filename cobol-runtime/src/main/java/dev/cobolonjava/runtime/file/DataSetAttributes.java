@@ -52,11 +52,23 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
      * 移行の途中でサイドカーを持たないファイルを扱えるようにするためである。
      */
     public static DataSetAttributes read(Path data) {
+        return read(data, standard());
+    }
+
+    /**
+     * サイドカーを読む。なければ与えられた既定を返す。
+     *
+     * <p>既定に使うのは<b>プログラムが宣言した様式</b>である。{@code OPEN OUTPUT} で新しく
+     * 作るファイルにはサイドカーがなく、そのときに拠れるのは宣言だけである。逆にサイドカーが
+     * あればそちらが勝つ。そこに置かれているバイト列を実際に切り分けたのはその属性であり、
+     * 宣言と食い違っていてもバイト列の事実は変わらないためである。
+     */
+    public static DataSetAttributes read(Path data, DataSetAttributes fallback) {
         Path sidecar = sidecarOf(data);
         if (!Files.isReadable(sidecar)) {
-            return standard();
+            return fallback;
         }
-        DataSetAttributes attributes = standard();
+        DataSetAttributes attributes = fallback;
         try {
             for (String line : Files.readAllLines(sidecar, StandardCharsets.UTF_8)) {
                 attributes = apply(attributes, line);

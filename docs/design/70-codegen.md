@@ -276,6 +276,7 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
 `GO TO`、`DISPLAY`、`ACCEPT`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、`SET`、
 `SEARCH` / `SEARCH ALL`、`CALL` / `CANCEL`、
+`OPEN` / `READ` / `WRITE` / `CLOSE` (`INTO` / `FROM` / `AT END` / `NOT AT END`)、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。
@@ -292,8 +293,9 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 1 つの組 (`planAddress`) として積む。<b>記憶域が項目ごとに違いうる</b>ためである。
 
 ```
-作業場所:  ALOAD 1                    ; 変位
-連絡節:    引数[k].storage()          ; 引数[k].offset() + 変位
+作業場所:      ALOAD 1                     ; 変位
+連絡節:        引数[k].storage()           ; 引数[k].offset() + 変位
+特殊レジスタ:  実行時の入口.registers()    ; 決まった変位
 ```
 
 連絡節の項目は記憶域を持たない (要件 FR-027)。実体は呼ぶ側にあり、`run` の 3 番目の
@@ -302,6 +304,26 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 
 組にしてあるので、この違いを知っているのは `planAddress` だけである。`MOVE` も算術文も
 `INSPECT` も、連絡節を扱うために変わったところはない。
+
+## 入出力は状態コードを積んで始末する
+
+`OPEN` / `READ` / `WRITE` / `CLOSE` の生成コードは、ランタイムを呼んで<b>2 バイトの
+状態コード</b>を積む。そのあとの始末は 2 つに分かれる。
+
+- `FILE STATUS` が書かれていれば、その項目へ転記する
+- 書かれていなければ `Ops.checkFile` を呼ぶ。異常なら止まる (要件 FR-104)
+
+`READ` だけは状態コードを局所変数へ取る。始末に 1 度、`AT END` かどうかの判定に 1 度、
+成功したかどうかの判定にもう 1 度使うためである。分岐は 3 方向になる。
+
+```
+fileAtEnd ?  → AT END の文
+fileSucceeded ? → INTO の転記 → NOT AT END の文
+それ以外        → どちらも通らない
+```
+
+誤りのときにレコード領域の中身は決まっていない。読めたことにして先へ進めるわけには
+いかない。
 
 ## CALL はクラスローダを持ち回る
 
@@ -401,3 +423,4 @@ COBOL のプログラム名から Java のクラス名を作る規則は<b>ラ�
 1. 反復を実行時のループとして出す形 (暫定判断 P-033)。
 2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
 3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
+4. `REWRITE` と可変長レコード ([設計 80](80-file-io.md) の第 2 段)。

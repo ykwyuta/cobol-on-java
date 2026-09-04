@@ -3,9 +3,11 @@ package dev.cobolonjava.compiler.semantic;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.file.OpenMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.antlr.v4.runtime.ParserRuleContext;
 
 /**
@@ -23,13 +25,15 @@ public final class ProcedureBuilder {
     private final DataLayout layout;
     private final List<Diagnostic> diagnostics;
     private final SpecialNames specialNames;
+    private final Map<String, FileDescription> files;
 
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
-                             SpecialNames specialNames) {
+                             SpecialNames specialNames, Map<String, FileDescription> files) {
         this.resolver = new ReferenceResolver(layout, diagnostics);
         this.layout = layout;
         this.diagnostics = diagnostics;
         this.specialNames = specialNames;
+        this.files = files;
     }
 
     /**
@@ -75,8 +79,14 @@ public final class ProcedureBuilder {
     /** 環境部の指定を踏まえて手続き部から文の並びを作る。 */
     public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout,
                                SpecialNames specialNames) {
+        return build(tree, layout, specialNames, Map.of());
+    }
+
+    /** ファイルの宣言も踏まえて手続き部から文の並びを作る。 */
+    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout,
+                               SpecialNames specialNames, Map<String, FileDescription> files) {
         List<Diagnostic> diagnostics = new ArrayList<>();
-        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames);
+        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files);
         List<Paragraph> paragraphs = new ArrayList<>();
         List<DataItem> parameters = new ArrayList<>();
         for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
@@ -211,6 +221,18 @@ public final class ProcedureBuilder {
         if (statement instanceof Statement.Unstring unstring) {
             return overflowStatements(unstring.overflow());
         }
+        if (statement instanceof Statement.Read read) {
+            return List.of(read.atEnd(), read.notAtEnd());
+        }
+        if (statement instanceof Statement.Search search) {
+            List<List<Statement>> nested = new ArrayList<>();
+            nested.add(search.atEnd());
+            search.whens().forEach(when -> nested.add(when.statements()));
+            return List.copyOf(nested);
+        }
+        if (statement instanceof Statement.SearchAll searchAll) {
+            return List.of(searchAll.atEnd(), searchAll.whenStatements());
+        }
         return List.of();
     }
 
@@ -322,6 +344,18 @@ public final class ProcedureBuilder {
         }
         if (context.cancelStatement() != null) {
             return cancelOf(context.cancelStatement());
+        }
+        if (context.openStatement() != null) {
+            return openOf(context.openStatement());
+        }
+        if (context.closeStatement() != null) {
+            return closeOf(context.closeStatement());
+        }
+        if (context.readStatement() != null) {
+            return readOf(context.readStatement());
+        }
+        if (context.writeStatement() != null) {
+            return writeOf(context.writeStatement());
         }
         if (context.exitStatement() != null) {
             // EXIT は何もしない。CONTINUE と同じ扱いでよい
@@ -2097,6 +2131,155 @@ public final class ProcedureBuilder {
         }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
+    }
+
+    // ---- 入出力文 ----
+
+    /**
+     * {@code OPEN} を組み立てる (要件 FR-102)。
+     *
+     * <p>1 つの文で開き方の違うファイルを並べられる。{@code OPEN INPUT A OUTPUT B} は
+     * 2 つの独立した開き方であり、まとめて 1 つの状態にはならない。
+     */
+    private Statement openOf(CobolParser.OpenStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement.Open.Opened> opened = new ArrayList<>();
+        for (CobolParser.OpenPhraseContext phrase : context.openPhrase()) {
+            OpenMode mode = modeOf(phrase);
+            for (org.antlr.v4.runtime.tree.TerminalNode name : phrase.IDENTIFIER()) {
+                FileDescription file = fileOf(name.getText(), origin);
+                if (file == null) {
+                    return null;
+                }
+                opened.add(new Statement.Open.Opened(file, mode));
+            }
+        }
+        return new Statement.Open(opened, origin);
+    }
+
+    private static OpenMode modeOf(CobolParser.OpenPhraseContext phrase) {
+        if (phrase.INPUT() != null) {
+            return OpenMode.INPUT;
+        }
+        if (phrase.OUTPUT() != null) {
+            return OpenMode.OUTPUT;
+        }
+        return phrase.I_O() != null ? OpenMode.IO : OpenMode.EXTEND;
+    }
+
+    private Statement closeOf(CobolParser.CloseStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<FileDescription> closed = new ArrayList<>();
+        for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
+            FileDescription file = fileOf(name.getText(), origin);
+            if (file == null) {
+                return null;
+            }
+            closed.add(file);
+        }
+        return new Statement.Close(closed, origin);
+    }
+
+    /**
+     * {@code READ} を組み立てる (要件 FR-102, FR-103)。
+     *
+     * <p>{@code INTO} はレコード領域からの転記に展開する。読み込みそのものは領域までで、
+     * そこから先は普通の {@code MOVE} と変わらない。
+     */
+    private Statement readOf(CobolParser.ReadStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        FileDescription file = fileOf(context.IDENTIFIER().getText(), origin);
+        if (file == null) {
+            return null;
+        }
+        Statement.Move into = null;
+        if (context.identifier() != null) {
+            into = areaMove(file, context.identifier(), origin);
+            if (into == null) {
+                return null;
+            }
+        }
+        List<Statement> atEnd = context.atEndPhrase() == null
+                ? List.of()
+                : listOf(context.atEndPhrase().statement());
+        List<Statement> notAtEnd = context.notAtEndPhrase() == null
+                ? List.of()
+                : listOf(context.notAtEndPhrase().statement());
+        if (atEnd.contains(null) || notAtEnd.contains(null)) {
+            return null;
+        }
+        return new Statement.Read(file, into, atEnd, notAtEnd, origin);
+    }
+
+    /**
+     * {@code WRITE} を組み立てる (要件 FR-102)。
+     *
+     * <p>書くのに指定するのは<b>レコード名</b>である。どのファイルへ書くのかは、
+     * そのレコードがどの {@code FD} の下にあるかで決まる。
+     */
+    private Statement writeOf(CobolParser.WriteStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String name = context.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        DataItem record = null;
+        FileDescription file = null;
+        for (FileDescription candidate : files.values()) {
+            for (DataItem one : candidate.records()) {
+                if (name.equals(one.name())) {
+                    record = one;
+                    file = candidate;
+                }
+            }
+        }
+        if (record == null) {
+            report(origin, "WRITE names an item that is not a record of any FD: " + name);
+            return null;
+        }
+        Statement.Move from = null;
+        if (context.identifier() != null) {
+            from = recordMove(record, context.identifier(), origin);
+            if (from == null) {
+                return null;
+            }
+        }
+        return new Statement.Write(file, record, from, origin);
+    }
+
+    /** {@code READ ... INTO} の転記。送り出すのはレコード領域そのものである。 */
+    private Statement.Move areaMove(FileDescription file, CobolParser.IdentifierContext target,
+                                    Origin origin) {
+        DataReference source = new DataReference(file.area(), List.of(), null, origin);
+        DataReference into = resolver.resolve(target);
+        if (into == null) {
+            return null;
+        }
+        Statement.Move.Target checked =
+                checkMove(new Operand.Reference(source), into, origin);
+        return checked == null
+                ? null
+                : new Statement.Move(new Operand.Reference(source), List.of(checked), false, origin);
+    }
+
+    /** {@code WRITE ... FROM} の転記。受け取るのはレコード記述そのものである。 */
+    private Statement.Move recordMove(DataItem record, CobolParser.IdentifierContext source,
+                                      Origin origin) {
+        DataReference from = resolver.resolve(source);
+        if (from == null) {
+            return null;
+        }
+        DataReference into = new DataReference(record, List.of(), null, origin);
+        Statement.Move.Target checked = checkMove(new Operand.Reference(from), into, origin);
+        return checked == null
+                ? null
+                : new Statement.Move(new Operand.Reference(from), List.of(checked), false, origin);
+    }
+
+    /** ファイル名を引く。 */
+    private FileDescription fileOf(String name, Origin origin) {
+        FileDescription file = files.get(name.toUpperCase(Locale.ROOT));
+        if (file == null) {
+            report(origin, "file is not declared in the FILE-CONTROL paragraph: " + name);
+        }
+        return file;
     }
 
     private void report(Origin origin, String message) {
