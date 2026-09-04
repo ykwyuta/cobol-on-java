@@ -196,8 +196,10 @@ public sealed interface Statement {
      *
      * @param operands  並べて出す被演算子
      * @param advancing 行を改めるかどうか。{@code WITH NO ADVANCING} では改めない
+     * @param upon      {@code UPON} で指定した行き先。指定がなければ標準出力
      */
-    record Display(List<Operand> operands, boolean advancing, Origin origin) implements Statement {
+    record Display(List<Operand> operands, boolean advancing, SpecialNames.FunctionName upon,
+                   Origin origin) implements Statement {
 
         public Display {
             operands = List.copyOf(operands);
@@ -460,6 +462,7 @@ public sealed interface Statement {
      *
      * @param source   受け取る値の出どころ
      * @param register 特殊レジスタの形式。端末からの入力では {@code null}
+     * @param from     {@code FROM} で指定した呼び名の機能名。指定がなければ {@code null}
      * @param kind     受け取る項目への詰め方
      */
     record Accept(DataReference target, Source source, String register, MoveRules.Kind kind,

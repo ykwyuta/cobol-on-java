@@ -210,19 +210,29 @@ COBOL では<b>英数字編集項目</b>である。英字項目は `A` だけ�
 
 ---
 
-## P-010 通貨記号が $ 固定で CURRENCY SIGN 句に未対応
+## P-010 DECIMAL-POINT IS COMMA と複数の通貨記号が未対応
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 |
-| 場所 | `PictureParser.DEFAULT_CURRENCY` |
+| 状態 | 一部解決 (`CURRENCY SIGN` を実装)。小数点の入れ替えは未解決 |
+| 場所 | `SpecialNames` / `PictureParser` |
 | 関連要件 | FR-054 |
 
-**暫定の扱い**: `PictureParser.parse(String, char)` で通貨記号を差し替えられる形にはしてあるが、
-`SPECIAL-NAMES` の `CURRENCY SIGN` 句および `DECIMAL-POINT IS COMMA` を解釈して
-ここへ渡す経路がまだない。複数の通貨記号 (Enterprise COBOL の `CURRENCY SIGN ... PICTURE SYMBOL`) も未対応。
+**解決した部分**: `SPECIAL-NAMES` の `CURRENCY SIGN IS` を解釈し、PICTURE の解析まで通した。
+翻訳時に決まる文字なので、生成コードが `<clinit>` で PICTURE を組み立てるときにも渡している。
+<b>コンパイラとランタイムで別の記号を使うと、実行時に PICTURE が解析できない</b>。
 
-**解消条件**: P0-b で `SPECIAL-NAMES` を解析し、PICTURE の解析時に渡す。
+**まだ未実装**:
+
+- `DECIMAL-POINT IS COMMA`。書けば誤りとして報告する
+- 複数の通貨記号 (`CURRENCY SIGN ... PICTURE SYMBOL`)
+
+**なぜ小数点が後回しか**: 小数点の入れ替えは PICTURE だけでなく<b>数字定数の綴りにも効く</b>。
+`1,5` が 1.5 になる。読点は「直後に空白が続くとき」だけ区切り文字とする規則 (決定事項 D-18) と
+噛み合わせる必要があり、字句の切り出しまで遡る。
+
+**解消条件**: 翻訳時オプションと同じ経路で小数点の指定を `Tokenizer` へ届け、
+数字定数の綴りを切り替える。
 
 ---
 
@@ -889,28 +899,31 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 
 ---
 
-## P-034 ACCEPT の呼び名と、環境部の SPECIAL-NAMES が未対応
+## P-034 環境部のうち構文解析できるのは CONFIGURATION SECTION だけである
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 |
-| 場所 | `ProcedureBuilder.acceptOf` |
-| 関連要件 | FR-054, FR-060, FR-135 |
+| 状態 | 一部解決 (`SPECIAL-NAMES` の呼び名と通貨記号を実装) |
+| 場所 | `CobolParser.g4` の `environmentDivision` |
+| 関連要件 | FR-054, FR-135 |
 
-**暫定の扱い**: `ACCEPT 項目 FROM 呼び名` は<b>誤りとして報告する</b>。
-日付と時刻の特殊レジスタ、および `FROM` を書かない形 (端末からの 1 行) は実装してある。
+**解決した部分**: `CONFIGURATION SECTION` を構文解析し、`SPECIAL-NAMES` の
+<b>機能名と呼び名の結び付け</b>と<b>通貨記号</b>を意味解析へ渡した。
+`ACCEPT 項目 FROM 呼び名` と `DISPLAY ... UPON 呼び名` が書けるようになった。
 
-**なぜ後回しか**: 呼び名は環境部の `SPECIAL-NAMES` で機能名と結び付けるものである。
-環境部そのものがまだ構文解析の対象になっていない。
+読み取る側の呼び名を `DISPLAY` に書いた場合と、その逆は誤りとして報告する。
+機能名の綴りには別名があるので (`SYSOUT` / `SYSLIST` / `SYSPRINT` など)、まとめて 1 つへ寄せている。
 
-**ほかに `SPECIAL-NAMES` を待っているもの**:
+`SOURCE-COMPUTER` と `OBJECT-COMPUTER` は段落ごと読み飛ばす。翻訳の結果に効かないためである。
 
-- 通貨記号の差し替えと `DECIMAL-POINT IS COMMA` (暫定判断 P-010)
-- `DISPLAY ... UPON 呼び名` による出力先の指定
-- `SYSIN` / `SYSOUT` / `SYSPRINT` の結び付け (要件 FR-135)
+**まだ未実装**:
 
-**解消条件**: 環境部の `CONFIGURATION SECTION` を構文解析し、`SPECIAL-NAMES` の対応表を
-意味解析へ渡す。待っているものをまとめて片付ける。
+- `INPUT-OUTPUT SECTION` と `FILE-CONTROL` (`SELECT` 句)。ファイル入出力そのものが未着手である
+- `ALPHABET`、`CLASS`、`SYMBOLIC CHARACTERS` の各句。書けば構文誤りになる
+- `SYSPUNCH` などの機能名。知らない綴りは誤りとして報告する
+
+**解消条件**: ファイル入出力に着手する時点で `INPUT-OUTPUT SECTION` を足す。
+`ALPHABET` は照合順序の実装と合わせて足す。
 
 ---
 

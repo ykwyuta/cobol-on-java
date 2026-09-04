@@ -51,7 +51,17 @@ public final class NumericItem {
 
     /** 既定 (TRUNC(STD)、NUMPROC(NOPFD)、安全側、IBM-1047) の項目を作る。 */
     public static NumericItem of(String pictureString, Usage usage) {
-        Picture p = PictureParser.parse(pictureString);
+        return of(pictureString, usage, PictureParser.DEFAULT_CURRENCY);
+    }
+
+    /**
+     * 通貨記号を指定して項目を作る (要件 FR-054)。
+     *
+     * <p>{@code CURRENCY SIGN IS} で差し替えられていると、PICTURE の解釈が変わる。
+     * 生成コードは翻訳時の指定をここへ渡す。
+     */
+    public static NumericItem of(String pictureString, Usage usage, char currency) {
+        Picture p = PictureParser.parse(pictureString, currency);
         return new NumericItem(p, usage, p.signPosition(), TruncMode.STD, NumProcMode.NOPFD,
                 UndefinedBehavior.SAFE, CodePages.DEFAULT);
     }

@@ -36,6 +36,7 @@ public final class ProgramContext {
 
     private final CodePage codePage;
     private final OutputStream out;
+    private final OutputStream error;
     private final Charset outputCharset;
     /** 呼び出しをまたいで残る副プログラム。名前から引く。 */
     private final Map<String, Loaded> loaded;
@@ -44,10 +45,12 @@ public final class ProgramContext {
     /** {@code ACCEPT} が読む行の出どころ。 */
     private final Supplier<String> input;
 
-    private ProgramContext(CodePage codePage, OutputStream out, Charset outputCharset,
-                           Map<String, Loaded> loaded, Clock clock, Supplier<String> input) {
+    private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
+                           Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
+                           Supplier<String> input) {
         this.codePage = codePage;
         this.out = out;
+        this.error = error;
         this.outputCharset = outputCharset;
         this.loaded = loaded;
         this.clock = clock;
@@ -64,13 +67,14 @@ public final class ProgramContext {
 
     /** 端末へ書く既定の構成。 */
     public static ProgramContext standard() {
-        return new ProgramContext(CodePages.DEFAULT, System.out, Charset.defaultCharset(),
-                new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput);
+        return new ProgramContext(CodePages.DEFAULT, System.out, System.err,
+                Charset.defaultCharset(), new HashMap<>(), Clock.systemDefaultZone(),
+                ProgramContext::readStandardInput);
     }
 
     /** 出力を捕まえる構成。試験で使う。 */
     public static ProgramContext capturing(ByteArrayOutputStream sink) {
-        return new ProgramContext(CodePages.DEFAULT, sink, StandardCharsets.UTF_8,
+        return new ProgramContext(CodePages.DEFAULT, sink, sink, StandardCharsets.UTF_8,
                 new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput);
     }
 
@@ -80,7 +84,7 @@ public final class ProgramContext {
      * <p>読み込んだ副プログラムは<b>引き継ぐ</b>。同じ実行の続きだからである。
      */
     public ProgramContext withCodePage(CodePage value) {
-        return new ProgramContext(value, out, outputCharset, loaded, clock, input);
+        return new ProgramContext(value, out, error, outputCharset, loaded, clock, input);
     }
 
     /**
@@ -89,12 +93,12 @@ public final class ProgramContext {
      * <p>実行のたびに変わる値は、そのままでは試験に書けない。日付と時刻を固定するために要る。
      */
     public ProgramContext withClock(Clock value) {
-        return new ProgramContext(codePage, out, outputCharset, loaded, value, input);
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, value, input);
     }
 
     /** {@code ACCEPT} が読む行の出どころを差し替えた構成を返す。 */
     public ProgramContext withInput(Supplier<String> value) {
-        return new ProgramContext(codePage, out, outputCharset, loaded, clock, value);
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, value);
     }
 
     /** 日付と時刻の特殊レジスタが見る時計。 */
@@ -169,16 +173,30 @@ public final class ProgramContext {
      * @param advancing 行を改めるかどうか。{@code WITH NO ADVANCING} では改めない
      */
     public void display(byte[] bytes, boolean advancing) {
-        write(codePage.decode(bytes));
-        if (advancing) {
-            write(System.lineSeparator());
-        }
+        display(bytes, advancing, false);
+    }
+
+    /**
+     * 行き先を指定した {@code DISPLAY} の出力 (要件 FR-135)。
+     *
+     * <p>{@code UPON} に書いた呼び名が指す機能名で分かれる。標準エラー出力へ出すのは
+     * <b>捕まえる先が違う</b>ためであり、標準出力と混ざらない。
+     *
+     * @param toError 標準エラー出力へ出すかどうか
+     */
+    public void display(byte[] bytes, boolean advancing, boolean toError) {
+        String text = codePage.decode(bytes) + (advancing ? System.lineSeparator() : "");
+        write(text, toError ? error : out);
     }
 
     private void write(String text) {
+        write(text, out);
+    }
+
+    private void write(String text, OutputStream sink) {
         try {
-            out.write(text.getBytes(outputCharset));
-            out.flush();
+            sink.write(text.getBytes(outputCharset));
+            sink.flush();
         } catch (IOException e) {
             throw new UncheckedIOException("cannot write program output", e);
         }

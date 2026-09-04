@@ -99,6 +99,11 @@ public final class Ops {
      *
      * @param advancing 行を改めるかどうか
      */
+    public static void display(byte[] bytes, ProgramContext context, boolean advancing,
+                               boolean toError) {
+        context.display(bytes, advancing, toError);
+    }
+
     public static void display(byte[] bytes, ProgramContext context, boolean advancing) {
         context.display(bytes, advancing);
     }

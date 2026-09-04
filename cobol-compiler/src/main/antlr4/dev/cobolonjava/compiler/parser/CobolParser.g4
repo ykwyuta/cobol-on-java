@@ -29,8 +29,9 @@ tokens {
     IDENTIFICATION, ID, DIVISION, PROGRAM_ID, PROGRAM,
     COMMON, INITIAL, RECURSIVE, IS, END,
 
-    // 環境部 (中身は次の増分)
-    ENVIRONMENT,
+    // 環境部
+    ENVIRONMENT, CONFIGURATION, SOURCE_COMPUTER, OBJECT_COMPUTER, SPECIAL_NAMES,
+    CURRENCY, DECIMAL_POINT,
 
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
@@ -117,7 +118,37 @@ endProgramStatement
 // ---- 環境部 (中身は次の増分) ----
 
 environmentDivision
-    : ENVIRONMENT DIVISION PERIOD
+    : ENVIRONMENT DIVISION PERIOD configurationSection?
+    ;
+
+configurationSection
+    : CONFIGURATION SECTION PERIOD configurationParagraph*
+    ;
+
+configurationParagraph
+    : sourceComputerParagraph
+    | objectComputerParagraph
+    | specialNamesParagraph
+    ;
+
+// 翻訳する機械と動かす機械の指定は、翻訳の結果に効かない。段落ごと読み飛ばす
+sourceComputerParagraph
+    : SOURCE_COMPUTER PERIOD ~PERIOD* PERIOD
+    ;
+
+objectComputerParagraph
+    : OBJECT_COMPUTER PERIOD ~PERIOD* PERIOD
+    ;
+
+// SPECIAL-NAMES は段落の最後にピリオドが 1 つ来る。句の区切りは要らない
+specialNamesParagraph
+    : SPECIAL_NAMES PERIOD specialNamesEntry* PERIOD?
+    ;
+
+specialNamesEntry
+    : CURRENCY SIGN? IS? literal
+    | DECIMAL_POINT IS? IDENTIFIER
+    | IDENTIFIER IS IDENTIFIER
     ;
 
 // ---- データ部 ----

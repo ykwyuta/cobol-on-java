@@ -14,6 +14,7 @@ import dev.cobolonjava.compiler.semantic.LiteralValue;
 import dev.cobolonjava.compiler.semantic.MoveRules;
 import dev.cobolonjava.compiler.semantic.Operand;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
+import dev.cobolonjava.compiler.semantic.SpecialNames;
 import dev.cobolonjava.compiler.semantic.Statement;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.Origin;
@@ -87,6 +88,9 @@ public final class ProgramGenerator {
     private final CodePage codePage;
     /** {@code SSRANGE} が効いているか。効いていれば添字と部分参照の位置を実行時に検査する。 */
     private final boolean rangeChecks;
+    private final SpecialNames specialNames;
+    /** PICTURE の通貨記号。{@code CURRENCY SIGN IS} で差し替えられる。 */
+    private char currency = SpecialNames.DEFAULT_CURRENCY;
     /** {@code PROCEDURE DIVISION USING} に並べた 01 レベル。連絡節の位置決めに使う。 */
     private List<DataItem> parameters = List.of();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
@@ -122,10 +126,12 @@ public final class ProgramGenerator {
     private MethodVisitor clinit;
     private byte[] initialStorageBytes;
 
-    private ProgramGenerator(String className, CodePage codePage, CompilerOptions options) {
+    private ProgramGenerator(String className, CodePage codePage, CompilerOptions options,
+                             SpecialNames specialNames) {
         this.className = className;
         this.codePage = codePage;
         this.rangeChecks = options.subscriptRangeChecks();
+        this.specialNames = specialNames;
     }
 
     private record Constant(String name, String descriptor, Runnable emit) {
@@ -148,20 +154,28 @@ public final class ProgramGenerator {
     /** プログラムを生成する。 */
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image) {
-        return generate(programName, procedure, image, CodePages.DEFAULT, CompilerOptions.NONE);
+        return generate(programName, procedure, image, CompilerOptions.NONE,
+                SpecialNames.standard());
     }
 
     /** 翻訳時オプションを指定してプログラムを生成する。 */
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image, CompilerOptions options) {
-        return generate(programName, procedure, image, CodePages.DEFAULT, options);
+        return generate(programName, procedure, image, options, SpecialNames.standard());
     }
 
-    /** コードページと翻訳時オプションを指定してプログラムを生成する。 */
+    /** 翻訳時オプションと環境部の指定を与えてプログラムを生成する。 */
+    public static Result generate(String programName, ProcedureBuilder.Result procedure,
+                                  InitialImage.Result image, CompilerOptions options,
+                                  SpecialNames specialNames) {
+        return generate(programName, procedure, image, CodePages.DEFAULT, options, specialNames);
+    }
+
+    /** コードページまで指定してプログラムを生成する。 */
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image, CodePage codePage,
-                                  CompilerOptions options) {
-        return new ProgramGenerator(classNameOf(programName), codePage, options)
+                                  CompilerOptions options, SpecialNames specialNames) {
+        return new ProgramGenerator(classNameOf(programName), codePage, options, specialNames)
                 .emit(procedure, image);
     }
 
@@ -174,6 +188,7 @@ public final class ProgramGenerator {
 
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
         parameters = procedure.parameters();
+        currency = specialNames.currency();
         writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         internal = className.replace('.', '/');
         writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER,
@@ -325,14 +340,16 @@ public final class ProgramGenerator {
             }
             parts.add(bytes);
         }
+        boolean toError = statement.upon() == SpecialNames.FunctionName.SYSERR;
         body.add(() -> {
             for (int i = 0; i < parts.size(); i++) {
                 parts.get(i).run();
                 run.visitVarInsn(Opcodes.ALOAD, 2);
                 boolean last = i == parts.size() - 1;
                 run.visitInsn(last && statement.advancing() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                run.visitInsn(toError ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "display",
-                        "([B" + Type.getDescriptor(ProgramContext.class) + "Z)V", false);
+                        "([B" + Type.getDescriptor(ProgramContext.class) + "ZZ)V", false);
             }
         });
     }
@@ -2842,9 +2859,11 @@ public final class ProgramGenerator {
                 clinit.visitLdcInsn(item.picture().source());
                 clinit.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(Usage.class),
                         usage.name(), Type.getDescriptor(Usage.class));
+                // 通貨記号は翻訳時に決まる。PICTURE の解釈がこれに依る
+                clinit.visitLdcInsn((int) currency);
                 clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
                         Type.getInternalName(NumericItem.class), "of",
-                        "(Ljava/lang/String;" + Type.getDescriptor(Usage.class) + ")"
+                        "(Ljava/lang/String;" + Type.getDescriptor(Usage.class) + "C)"
                                 + NUMERIC_ITEM, false);
                 if (item.signPosition() != SignPosition.UNSIGNED) {
                     clinit.visitFieldInsn(Opcodes.GETSTATIC,
@@ -2865,9 +2884,10 @@ public final class ProgramGenerator {
             String name = "P" + constants.size();
             return new Constant(name, PICTURE, () -> {
                 clinit.visitLdcInsn(picture.source());
+                clinit.visitLdcInsn((int) currency);
                 clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
                         Type.getInternalName(PictureParser.class), "parse",
-                        "(Ljava/lang/String;)" + PICTURE, false);
+                        "(Ljava/lang/String;C)" + PICTURE, false);
             });
         }).name();
     }

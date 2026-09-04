@@ -61,7 +61,7 @@ ANTLR の字句解析器を使わないのは、<b>使えないから</b>であ�
 | 部 | 範囲 |
 | --- | --- |
 | 見出し部 | `IDENTIFICATION` / `ID`、`PROGRAM-ID` (`COMMON` / `INITIAL` / `RECURSIVE`)、`END PROGRAM` |
-| 環境部 | 見出しのみ |
+| 環境部 | `CONFIGURATION SECTION` (`SOURCE-COMPUTER`、`OBJECT-COMPUTER`、`SPECIAL-NAMES`) |
 | データ部 | `WORKING-STORAGE` / `LOCAL-STORAGE` / `LINKAGE` の各節とデータ記述項 |
 | 手続き部 | 段落、文、`MOVE`、一意名 (修飾・添字・部分参照) |
 
@@ -69,10 +69,27 @@ ANTLR の字句解析器を使わないのは、<b>使えないから</b>であ�
 `VALUE`、`JUSTIFIED`、`BLANK WHEN ZERO`、`SYNCHRONIZED`、`GLOBAL`、`EXTERNAL`。
 `VALUE` は 88 レベルのために値の並びと `THRU` の範囲も受け付ける。
 
+### 効かない段落は丸ごと読み飛ばす
+
+`SOURCE-COMPUTER` と `OBJECT-COMPUTER` は翻訳する機械と動かす機械の指定であり、
+<b>翻訳の結果に効かない</b>。中身の綴りも処理系ごとに違う。したがって
+`~PERIOD* PERIOD` で段落ごと読み飛ばす。
+
+書式を細かく写しても、そこから得られるものがない。読み飛ばすと決めておけば、
+知らない書き方で構文誤りになることもない。
+
+## SPECIAL-NAMES はデータ部より前に読む
+
+`SPECIAL-NAMES` で決まるのは処理系の外側との結び付けである (要件 FR-054, FR-135)。
+通貨記号は PICTURE の解釈に、呼び名は `ACCEPT` と `DISPLAY` の行き先に効く。
+
+<b>データ部より前に読まなければならない</b>。PICTURE の解釈が通貨記号に依るためである。
+したがって翻訳の段は 環境部 → データ部 → 手続き部 の順になる。
+
 ## 次の増分
 
 データ部の割り付けは[設計 50](50-data-layout.md)、手続き部は[設計 60](60-procedure.md) へ続く。
 
-1. 環境部の `SELECT` 句 (ファイル入出力の前提)。
+1. 環境部の `INPUT-OUTPUT SECTION` と `SELECT` 句 (ファイル入出力の前提)。
 2. 66 レベルの `RENAMES`。
 3. 入れ子プログラム。

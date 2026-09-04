@@ -47,6 +47,11 @@ public final class DataDivisionBuilder {
 
     private final List<Diagnostic> diagnostics = new ArrayList<>();
     private DataSection currentSection = DataSection.WORKING_STORAGE;
+    private final SpecialNames specialNames;
+
+    private DataDivisionBuilder(SpecialNames specialNames) {
+        this.specialNames = specialNames;
+    }
     /** 指標名から、その実体の項目を引く。 */
     private final Map<String, DataItem> indexes = new LinkedHashMap<>();
     private final List<DataItem> records = new ArrayList<>();
@@ -55,9 +60,6 @@ public final class DataDivisionBuilder {
     /** 直前に作った項目。条件名 (88) はここへ付く。 */
     private DataItem previous;
     private int totalLength;
-
-    private DataDivisionBuilder() {
-    }
 
     /**
      * 割り付けの結果。
@@ -74,7 +76,18 @@ public final class DataDivisionBuilder {
 
     /** 構文木のデータ部から割り付けを作る。 */
     public static Result build(CobolParser.CompilationUnitContext tree) {
-        DataDivisionBuilder builder = new DataDivisionBuilder();
+        return build(tree, SpecialNames.standard());
+    }
+
+    /**
+     * 環境部の指定を踏まえてデータ部から割り付けを作る。
+     *
+     * <p>{@code SPECIAL-NAMES} を先に読まなければならない。<b>PICTURE の解釈が通貨記号に
+     * 依る</b>ためである。
+     */
+    public static Result build(CobolParser.CompilationUnitContext tree,
+                               SpecialNames specialNames) {
+        DataDivisionBuilder builder = new DataDivisionBuilder(specialNames);
         for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
             builder.addProgramUnit(unit);
         }
@@ -240,7 +253,8 @@ public final class DataDivisionBuilder {
 
     private void applyPicture(DataItem item, CobolParser.PictureClauseContext clause, Origin origin) {
         try {
-            item.setPicture(PictureParser.parse(clause.PICTURE_STRING().getText()));
+            item.setPicture(PictureParser.parse(clause.PICTURE_STRING().getText(),
+                    specialNames.currency()));
         } catch (RuntimeException e) {
             report(origin, "invalid PICTURE character-string: " + e.getMessage());
         }

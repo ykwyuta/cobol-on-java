@@ -153,12 +153,13 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("UPON の出力先指定はまだ扱えないと報告する (FR-060)")
-    void displayUponIsReportedAsUnsupported() {
+    @DisplayName("宣言していない呼び名を書いたら誤りとして報告する (FR-135)")
+    void anUndeclaredMnemonicIsReported() {
+        // 呼び名は環境部の SPECIAL-NAMES で機能名と結び付ける
         CobolCompiler.Result result = compile(
                 List.of("01 WS-A PIC X."), "DISPLAY 'X' UPON SYSERR.");
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("UPON"),
+        assertTrue(result.diagnostics().get(0).message().contains("undefined mnemonic name"),
                 result.diagnostics().toString());
     }
 }

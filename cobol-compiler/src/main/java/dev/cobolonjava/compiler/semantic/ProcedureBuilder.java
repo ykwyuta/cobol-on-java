@@ -22,11 +22,14 @@ public final class ProcedureBuilder {
     private final ReferenceResolver resolver;
     private final DataLayout layout;
     private final List<Diagnostic> diagnostics;
+    private final SpecialNames specialNames;
 
-    private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics) {
+    private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
+                             SpecialNames specialNames) {
         this.resolver = new ReferenceResolver(layout, diagnostics);
         this.layout = layout;
         this.diagnostics = diagnostics;
+        this.specialNames = specialNames;
     }
 
     /**
@@ -66,8 +69,14 @@ public final class ProcedureBuilder {
 
     /** 構文木の手続き部から文の並びを作る。 */
     public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout) {
+        return build(tree, layout, SpecialNames.standard());
+    }
+
+    /** 環境部の指定を踏まえて手続き部から文の並びを作る。 */
+    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout,
+                               SpecialNames specialNames) {
         List<Diagnostic> diagnostics = new ArrayList<>();
-        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics);
+        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames);
         List<Paragraph> paragraphs = new ArrayList<>();
         List<DataItem> parameters = new ArrayList<>();
         for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
@@ -328,12 +337,34 @@ public final class ProcedureBuilder {
         if (operands.contains(null)) {
             return null;
         }
+        SpecialNames.FunctionName upon = null;
         if (context.UPON() != null) {
-            // 出力先の指定は環境部の SPECIAL-NAMES と結び付く。まだ扱えない
-            report(origin, "DISPLAY ... UPON is not supported yet");
+            upon = outputOf(context.IDENTIFIER().getText(), origin);
+            if (upon == null) {
+                return null;
+            }
+        }
+        return new Statement.Display(operands, context.ADVANCING() == null, upon, origin);
+    }
+
+    /**
+     * {@code DISPLAY ... UPON 呼び名} の行き先 (要件 FR-135)。
+     *
+     * <p>呼び名は環境部の {@code SPECIAL-NAMES} で機能名と結び付ける。読み取る側の機能名を
+     * 書いていれば誤りである。
+     */
+    private SpecialNames.FunctionName outputOf(String mnemonic, Origin origin) {
+        SpecialNames.FunctionName function = specialNames.mnemonic(mnemonic);
+        if (function == null) {
+            report(origin, "undefined mnemonic name: " + mnemonic
+                    + "; declare it in SPECIAL-NAMES");
             return null;
         }
-        return new Statement.Display(operands, context.ADVANCING() == null, origin);
+        if (function == SpecialNames.FunctionName.SYSIN) {
+            report(origin, "DISPLAY UPON requires an output device: " + mnemonic);
+            return null;
+        }
+        return function;
     }
 
     // ---- STRING / UNSTRING ----
@@ -814,12 +845,22 @@ public final class ProcedureBuilder {
         CobolParser.AcceptSourceContext from = context.acceptSource();
         if (from != null) {
             if (from.identifier() != null) {
-                // 呼び名は環境部の SPECIAL-NAMES と結び付く。まだ扱えない
-                report(origin, "ACCEPT ... FROM a mnemonic name is not supported yet");
-                return null;
+                String mnemonic = from.identifier().getText();
+                SpecialNames.FunctionName function = specialNames.mnemonic(mnemonic);
+                if (function == null) {
+                    report(origin, "undefined mnemonic name: " + mnemonic
+                            + "; declare it in SPECIAL-NAMES");
+                    return null;
+                }
+                if (!function.isInput()) {
+                    report(origin, "ACCEPT FROM requires an input device: " + mnemonic);
+                    return null;
+                }
+                // 端末も標準入力も、読むのは 1 行である
+            } else {
+                source = Statement.Accept.Source.REGISTER;
+                register = registerOf(from);
             }
-            source = Statement.Accept.Source.REGISTER;
-            register = registerOf(from);
         }
 
         DataCategory receiver = DataCategory.of(target);

@@ -8,6 +8,7 @@ import dev.cobolonjava.compiler.semantic.DataDivisionBuilder;
 import dev.cobolonjava.compiler.semantic.DataLayout;
 import dev.cobolonjava.compiler.semantic.InitialImage;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
+import dev.cobolonjava.compiler.semantic.SpecialNames;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
@@ -81,7 +82,14 @@ public final class CobolCompiler {
             return failed(null, parsed.diagnostics());
         }
 
-        DataDivisionBuilder.Result data = DataDivisionBuilder.build(parsed.tree());
+        // 環境部を先に読む。PICTURE の解釈が通貨記号に依るためである
+        SpecialNames.Result environment = SpecialNames.build(parsed.tree());
+        if (!environment.succeeded()) {
+            return failed(null, environment.diagnostics());
+        }
+        SpecialNames specialNames = environment.specialNames();
+
+        DataDivisionBuilder.Result data = DataDivisionBuilder.build(parsed.tree(), specialNames);
         if (!data.succeeded()) {
             return failed(data.layout(), data.diagnostics());
         }
@@ -89,14 +97,15 @@ public final class CobolCompiler {
         List<Diagnostic> diagnostics = new ArrayList<>();
         InitialImage.Result image = InitialImage.build(data.layout());
         diagnostics.addAll(image.diagnostics());
-        ProcedureBuilder.Result procedure = ProcedureBuilder.build(parsed.tree(), data.layout());
+        ProcedureBuilder.Result procedure =
+                ProcedureBuilder.build(parsed.tree(), data.layout(), specialNames);
         diagnostics.addAll(procedure.diagnostics());
         if (!diagnostics.isEmpty()) {
             return failed(data.layout(), diagnostics);
         }
 
         ProgramGenerator.Result generated = ProgramGenerator.generate(
-                programNameOf(parsed.tree()), procedure, image, effective);
+                programNameOf(parsed.tree()), procedure, image, effective, specialNames);
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
         }
