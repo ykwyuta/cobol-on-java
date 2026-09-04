@@ -338,6 +338,6 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
+1. `FILE SECTION` と入出力文 (`OPEN` / `READ` / `WRITE` / `CLOSE`)。
 2. 反復を実行時のループとして出す形 (暫定判断 P-033)。
 3. `DECIMAL-POINT IS COMMA` (暫定判断 P-010)。字句の切り出しまで遡る。

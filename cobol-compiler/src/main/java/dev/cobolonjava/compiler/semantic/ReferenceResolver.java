@@ -88,10 +88,15 @@ public final class ReferenceResolver {
             }
         }
         if (found.isEmpty() && qualifiers.isEmpty()) {
-            // 指標名はデータ項目ではないので、名前で項目を探す道では見つからない
+            // 指標名と特殊レジスタはデータ項目ではないので、名前で項目を探す道では見つからない。
+            // 探すのは最後である。同じ名前をデータ部に書いていれば、そちらが勝つ
             DataItem index = layout.findIndex(target);
             if (index != null) {
                 return index;
+            }
+            DataItem register = layout.findRegister(target);
+            if (register != null) {
+                return register;
             }
         }
         if (found.isEmpty()) {

@@ -1876,8 +1876,9 @@ public final class ProgramGenerator {
         main.visitInsn(Opcodes.DUP);
         main.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "<init>", "()V", false);
         main.visitMethodInsn(Opcodes.INVOKEINTERFACE, Type.getInternalName(CobolProgram.class),
-                "runFresh", "()L" + Type.getInternalName(Storage.class) + ";", true);
-        main.visitInsn(Opcodes.POP);
+                "runMain", "()I", true);
+        // RETURN-CODE がプロセスの終了コードになる (要件 FR-084)
+        main.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "exit", "(I)V", false);
         main.visitInsn(Opcodes.RETURN);
         main.visitMaxs(0, 0);
         main.visitEnd();
@@ -2585,6 +2586,16 @@ public final class ProgramGenerator {
             return null;
         }
         DataItem record = reference.item().record();
+        if (record.section() == DataSection.SPECIAL_REGISTER) {
+            // 実行の全体で 1 つの置き場を指す。呼ぶ側と呼ばれる側が同じものを見る
+            return () -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                run.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                        Type.getInternalName(ProgramContext.class), "registers",
+                        "()L" + STORAGE + ";", false);
+                offset.run();
+            };
+        }
         if (record.section() != DataSection.LINKAGE) {
             return () -> {
                 run.visitVarInsn(Opcodes.ALOAD, 1);

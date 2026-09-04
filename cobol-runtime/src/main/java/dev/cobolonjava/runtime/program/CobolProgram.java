@@ -56,4 +56,15 @@ public interface CobolProgram {
     default Storage runFresh() {
         return runFresh(ProgramContext.standard());
     }
+
+    /**
+     * 主プログラムとして実行し、{@code RETURN-CODE} を返す (要件 FR-084)。
+     *
+     * <p>生成クラスの {@code main} がこれを呼び、返った値をプロセスの終了コードにする。
+     */
+    default int runMain() {
+        ProgramContext context = ProgramContext.standard();
+        runFresh(context);
+        return context.returnCode();
+    }
 }

@@ -16,11 +16,14 @@ public final class DataLayout {
 
     private final List<DataItem> records;
     private final Map<String, DataItem> indexes;
+    private final Map<String, DataItem> registers;
     private final int totalLength;
 
-    DataLayout(List<DataItem> records, Map<String, DataItem> indexes, int totalLength) {
+    DataLayout(List<DataItem> records, Map<String, DataItem> indexes,
+               Map<String, DataItem> registers, int totalLength) {
         this.records = List.copyOf(records);
         this.indexes = Map.copyOf(indexes);
+        this.registers = Map.copyOf(registers);
         this.totalLength = totalLength;
     }
 
@@ -44,6 +47,18 @@ public final class DataLayout {
      */
     public DataItem findIndex(String name) {
         return indexes.get(name.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * 特殊レジスタを引く (要件 FR-084)。
+     *
+     * <p>データ部には書かれないが、名前で読み書きできる。データ項目と同じ名前が
+     * 書かれていればそちらが勝つので、探す順は<b>データ項目が先</b>である。
+     *
+     * @return 見つからなければ {@code null}
+     */
+    public DataItem findRegister(String name) {
+        return registers.get(name.toUpperCase(Locale.ROOT));
     }
 
     /** すべての項目を、書かれた順に並べたもの。 */

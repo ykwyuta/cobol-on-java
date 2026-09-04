@@ -44,10 +44,12 @@ public final class ProgramContext {
     private final Clock clock;
     /** {@code ACCEPT} が読む行の出どころ。 */
     private final Supplier<String> input;
+    /** 特殊レジスタの置き場。実行の全体で 1 つである。 */
+    private final Storage registers;
 
     private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
-                           Supplier<String> input) {
+                           Supplier<String> input, Storage registers) {
         this.codePage = codePage;
         this.out = out;
         this.error = error;
@@ -55,6 +57,25 @@ public final class ProgramContext {
         this.loaded = loaded;
         this.clock = clock;
         this.input = input;
+        this.registers = registers;
+    }
+
+    /**
+     * 特殊レジスタの置き場 (要件 FR-084)。
+     *
+     * <p>{@code RETURN-CODE} は実行の全体で 1 つであり、呼ぶ側と呼ばれる側が同じものを見る。
+     * 生成コードは<b>プログラム自身の記憶域ではなくこちら</b>を読み書きする。
+     * 写し取る仕組みが要らないのはこのためである。
+     */
+    public Storage registers() {
+        return registers;
+    }
+
+    /** {@code STOP RUN} のあとにプロセスの終了コードとなる値 (要件 FR-084)。 */
+    public int returnCode() {
+        byte[] bytes = registers.array();
+        int offset = SpecialRegisterArea.RETURN_CODE_OFFSET;
+        return (short) (((bytes[offset] & 0xFF) << 8) | (bytes[offset + 1] & 0xFF));
     }
 
     /**
@@ -69,13 +90,14 @@ public final class ProgramContext {
     public static ProgramContext standard() {
         return new ProgramContext(CodePages.DEFAULT, System.out, System.err,
                 Charset.defaultCharset(), new HashMap<>(), Clock.systemDefaultZone(),
-                ProgramContext::readStandardInput);
+                ProgramContext::readStandardInput, Storage.allocate(SpecialRegisterArea.SIZE));
     }
 
     /** 出力を捕まえる構成。試験で使う。 */
     public static ProgramContext capturing(ByteArrayOutputStream sink) {
         return new ProgramContext(CodePages.DEFAULT, sink, sink, StandardCharsets.UTF_8,
-                new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput);
+                new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput,
+                Storage.allocate(SpecialRegisterArea.SIZE));
     }
 
     /**
@@ -84,7 +106,8 @@ public final class ProgramContext {
      * <p>読み込んだ副プログラムは<b>引き継ぐ</b>。同じ実行の続きだからである。
      */
     public ProgramContext withCodePage(CodePage value) {
-        return new ProgramContext(value, out, error, outputCharset, loaded, clock, input);
+        return new ProgramContext(value, out, error, outputCharset, loaded, clock, input,
+                registers);
     }
 
     /**
@@ -93,12 +116,14 @@ public final class ProgramContext {
      * <p>実行のたびに変わる値は、そのままでは試験に書けない。日付と時刻を固定するために要る。
      */
     public ProgramContext withClock(Clock value) {
-        return new ProgramContext(codePage, out, error, outputCharset, loaded, value, input);
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, value, input,
+                registers);
     }
 
     /** {@code ACCEPT} が読む行の出どころを差し替えた構成を返す。 */
     public ProgramContext withInput(Supplier<String> value) {
-        return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, value);
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, value,
+                registers);
     }
 
     /** 日付と時刻の特殊レジスタが見る時計。 */

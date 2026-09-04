@@ -16,5 +16,13 @@ public enum DataSection {
     LOCAL_STORAGE,
 
     /** {@code LINKAGE SECTION}。記憶域を持たず、渡された領域への窓である。 */
-    LINKAGE
+    LINKAGE,
+
+    /**
+     * 特殊レジスタ。データ部には書かれない。
+     *
+     * <p>{@code RETURN-CODE} は<b>実行の全体で 1 つ</b>であり、呼ぶ側と呼ばれる側が同じものを
+     * 見る。したがってプログラムごとの記憶域には置けない。実行時の入口が持つ置き場を指す。
+     */
+    SPECIAL_REGISTER
 }

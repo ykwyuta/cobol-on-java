@@ -9,6 +9,7 @@ import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.picture.PictureParser;
+import dev.cobolonjava.runtime.program.SpecialRegisterArea;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -93,8 +94,8 @@ public final class DataDivisionBuilder {
         }
         builder.addIndexItems();
         builder.layoutRecords();
-        return new Result(new DataLayout(builder.records, builder.indexes, builder.totalLength),
-                List.copyOf(builder.diagnostics));
+        return new Result(new DataLayout(builder.records, builder.indexes,
+                specialRegisters(), builder.totalLength), List.copyOf(builder.diagnostics));
     }
 
     private void addProgramUnit(CobolParser.ProgramUnitContext unit) {
@@ -347,6 +348,22 @@ public final class DataDivisionBuilder {
                 records.add(item);
             }
         }
+    }
+
+    /**
+     * 特殊レジスタの項目 (要件 FR-084)。
+     *
+     * <p>データ部には書かれないが、名前で読み書きできる。実行の全体で 1 つなので、
+     * プログラムごとの記憶域ではなく<b>実行時の入口が持つ置き場</b>を指す。
+     */
+    private static Map<String, DataItem> specialRegisters() {
+        DataItem returnCode = new DataItem(INDEPENDENT_LEVEL, "RETURN-CODE", null);
+        returnCode.setPicture(PictureParser.parse(SpecialRegisterArea.RETURN_CODE_PICTURE));
+        returnCode.setUsage(Usage.COMP);
+        returnCode.setSection(DataSection.SPECIAL_REGISTER);
+        returnCode.setOffset(SpecialRegisterArea.RETURN_CODE_OFFSET);
+        returnCode.setLength(returnCode.picture().size());
+        return Map.of("RETURN-CODE", returnCode);
     }
 
     private static void collectTables(DataItem item, List<DataItem> tables) {
