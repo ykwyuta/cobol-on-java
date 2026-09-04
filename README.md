@@ -16,6 +16,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: データ部の記憶域割り付け (P0-b)](docs/design/50-data-layout.md)
 - [設計: 手続き部と一意名の解決 (P0-b)](docs/design/60-procedure.md)
 - [設計: コード生成 (P0-b)](docs/design/70-codegen.md)
+- [設計: ファイル入出力](docs/design/80-file-io.md)
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
 
 ## 主要な技術方針
@@ -39,7 +40,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 
 | モジュール | 責務 | 状態 |
 | --- | --- | --- |
-| `cobol-runtime` | データ表現・10 進演算・編集移送・文字コード変換の意味論 | P0-a 第 1 増分 実装済 |
+| `cobol-runtime` | データ表現・10 進演算・編集移送・文字コード変換・データセットの意味論 | P0-a 第 1 増分 実装済。順編成の読み書きを追加 |
 | `cobol-oracle` | Hercules 用テストの生成と期待値の採取 | 第 1 増分 実装済 |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。`MOVE`・算術文 (`CORRESPONDING` を含む)・`COMPUTE`・`IF`・`EVALUATE`・`PERFORM` (`VARYING` を含む)・`GO TO`・`CALL`・`INITIALIZE`・`SEARCH` / `SEARCH ALL`・`ACCEPT`・`DISPLAY`・`INSPECT`・`STRING`・`UNSTRING` を含むプログラムが、ソースからクラスファイルまで通って動く |
 
@@ -100,7 +101,7 @@ Hercules が見つからない場合、V2 テストは失敗ではなくスキ�
 ## 現在のステータス
 
 要件定義フェーズ完了 (要件定義書 第 15 章に決定事項)。
-P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。テスト 808 件。
+P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。テスト 827 件。
 うち 33 件は Hercules 上での実行と突き合わせる**検証レベル V2** であり、残りは V1。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい
 (詳細は[設計 20](docs/design/20-oracle.md))。
