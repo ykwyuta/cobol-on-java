@@ -331,8 +331,15 @@ public sealed interface Statement {
         }
     }
 
-    /** {@code STOP RUN} と {@code GOBACK}。実行を終える。 */
-    record Stop(Origin origin) implements Statement {
+    /**
+     * {@code STOP RUN} と {@code GOBACK}。
+     *
+     * <p>違いは<b>どこまで抜けるか</b>である。{@code STOP RUN} は実行そのものを終える。
+     * {@code GOBACK} は呼んだ側へ 1 つ戻るだけであり、主プログラムでのみ実行の終わりになる。
+     *
+     * @param wholeRun {@code STOP RUN} かどうか。{@code GOBACK} では {@code false}
+     */
+    record Stop(boolean wholeRun, Origin origin) implements Statement {
     }
 
     /**
@@ -350,6 +357,37 @@ public sealed interface Statement {
 
     /** {@code CONTINUE} と {@code EXIT}。どちらも何もしない。 */
     record Continue(Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code CALL} 文 (要件 FR-080, FR-081)。
+     *
+     * @param target    呼び先。文字定数なら静的、データ項目なら実行時に名前が決まる
+     * @param arguments 渡す引数。{@code USING} に並べた順
+     * @param exception {@code ON EXCEPTION} の指定。なければ {@code null}
+     */
+    record Call(Operand target, List<Argument> arguments, Overflow exception, Origin origin)
+            implements Statement {
+
+        public Call {
+            arguments = List.copyOf(arguments);
+        }
+
+        /**
+         * 引数 1 個。
+         *
+         * @param byContent 写しを渡すかどうか。{@code false} なら領域そのものを渡す
+         */
+        public record Argument(Operand value, boolean byContent) {
+        }
+    }
+
+    /** {@code CANCEL} 文。次に呼ばれたときの作業場所を初期状態へ戻す (要件 FR-083)。 */
+    record Cancel(List<Operand> targets, Origin origin) implements Statement {
+
+        public Cancel {
+            targets = List.copyOf(targets);
+        }
     }
 
     /**

@@ -190,6 +190,9 @@ public final class ProcedureBuilder {
         if (statement instanceof Statement.DivideRemainder divide) {
             return sizeErrorStatements(divide.sizeError());
         }
+        if (statement instanceof Statement.Call call) {
+            return overflowStatements(call.exception());
+        }
         if (statement instanceof Statement.Compute compute) {
             return sizeErrorStatements(compute.sizeError());
         }
@@ -255,7 +258,8 @@ public final class ProcedureBuilder {
             return evaluateOf(context.evaluateStatement());
         }
         if (context.stopStatement() != null) {
-            return new Statement.Stop(ReferenceResolver.originOf(context));
+            return new Statement.Stop(context.stopStatement().RUN() != null,
+                    ReferenceResolver.originOf(context));
         }
         if (context.stringStatement() != null) {
             return stringOf(context.stringStatement());
@@ -291,6 +295,12 @@ public final class ProcedureBuilder {
             CobolParser.GoToStatementContext goTo = context.goToStatement();
             return new Statement.GoTo(goTo.paragraphName().getText().toUpperCase(Locale.ROOT),
                     ReferenceResolver.originOf(goTo));
+        }
+        if (context.callStatement() != null) {
+            return callOf(context.callStatement());
+        }
+        if (context.cancelStatement() != null) {
+            return cancelOf(context.cancelStatement());
         }
         if (context.exitStatement() != null) {
             // EXIT は何もしない。CONTINUE と同じ扱いでよい
@@ -587,6 +597,108 @@ public final class ProcedureBuilder {
     /** {@code NEXT SENTENCE} は「この文の残りを飛ばす」ことであり、いまは空の並びとする。 */
     private List<Statement> branchOf(CobolParser.IfBranchContext context) {
         return listOf(context.statement());
+    }
+
+    /**
+     * {@code CALL}。
+     *
+     * <p>{@code BY REFERENCE} と {@code BY CONTENT} は<b>次の指定が現れるまで</b>
+     * 後ろの引数すべてに効く。引数ごとに書き直す必要はない、という参照実装の規則である。
+     */
+    private Statement callOf(CobolParser.CallStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        Operand target = callTargetOf(context.callTarget(), origin);
+        if (target == null) {
+            return null;
+        }
+
+        boolean byContent = false;
+        List<Statement.Call.Argument> arguments = new ArrayList<>();
+        for (CobolParser.CallArgumentContext argument : context.callArgument()) {
+            if (argument.VALUE() != null) {
+                report(origin, "CALL ... BY VALUE is not supported yet");
+                return null;
+            }
+            if (argument.REFERENCE() != null) {
+                byContent = false;
+                continue;
+            }
+            if (argument.CONTENT() != null) {
+                byContent = true;
+                continue;
+            }
+            Operand value = argumentOf(argument, origin);
+            if (value == null) {
+                return null;
+            }
+            // 定数は渡す先の領域を持たない。写しを渡すほかない
+            boolean copied = byContent || value instanceof Operand.Literal;
+            arguments.add(new Statement.Call.Argument(value, copied));
+        }
+
+        Statement.Overflow exception = exceptionOf(context.callExceptionPhrases());
+        return new Statement.Call(target, arguments, exception, origin);
+    }
+
+    private Operand argumentOf(CobolParser.CallArgumentContext context, Origin origin) {
+        if (context.literal() != null) {
+            try {
+                return new Operand.Literal(LiteralValue.of(context.literal()));
+            } catch (RuntimeException e) {
+                report(origin, "invalid literal: " + context.literal().getText());
+                return null;
+            }
+        }
+        DataReference reference = resolver.resolve(context.identifier());
+        return reference == null ? null : new Operand.Reference(reference);
+    }
+
+    private Statement cancelOf(CobolParser.CancelStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Operand> targets = new ArrayList<>();
+        for (CobolParser.CallTargetContext target : context.callTarget()) {
+            Operand resolved = callTargetOf(target, origin);
+            if (resolved == null) {
+                return null;
+            }
+            targets.add(resolved);
+        }
+        return new Statement.Cancel(targets, origin);
+    }
+
+    /** 呼び先の名前。文字定数か、実行時に名前が決まるデータ項目である。 */
+    private Operand callTargetOf(CobolParser.CallTargetContext context, Origin origin) {
+        if (context.literal() != null) {
+            try {
+                LiteralValue value = LiteralValue.of(context.literal());
+                if (!(value instanceof LiteralValue.Text)) {
+                    report(origin, "a program name must be an alphanumeric literal");
+                    return null;
+                }
+                return new Operand.Literal(value);
+            } catch (RuntimeException e) {
+                report(origin, "invalid literal: " + context.literal().getText());
+                return null;
+            }
+        }
+        DataReference reference = resolver.resolve(context.identifier());
+        return reference == null ? null : new Operand.Reference(reference);
+    }
+
+    /** {@code ON EXCEPTION} と {@code NOT ON EXCEPTION} の文。 */
+    private Statement.Overflow exceptionOf(CobolParser.CallExceptionPhrasesContext phrases) {
+        if (phrases == null
+                || (phrases.onExceptionPhrase() == null
+                        && phrases.notOnExceptionPhrase() == null)) {
+            return null;
+        }
+        List<Statement> onException = phrases.onExceptionPhrase() == null
+                ? List.of()
+                : listOf(phrases.onExceptionPhrase().statement());
+        List<Statement> otherwise = phrases.notOnExceptionPhrase() == null
+                ? List.of()
+                : listOf(phrases.notOnExceptionPhrase().statement());
+        return new Statement.Overflow(onException, otherwise);
     }
 
     private Statement performOf(CobolParser.PerformStatementContext context) {

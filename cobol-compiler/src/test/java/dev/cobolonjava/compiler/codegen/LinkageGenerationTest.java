@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@code LINKAGE SECTION} と {@code PROCEDURE DIVISION USING} (要件 FR-070)。
+ * {@code LINKAGE SECTION} と {@code PROCEDURE DIVISION USING} (要件 FR-027)。
  *
  * <p>連絡節の項目は<b>記憶域を持たない</b>。実体は呼ぶ側にあり、書き換えは呼ぶ側から
  * 即座に見える。ここではその「呼ぶ側」を Java から与えて確かめる。
@@ -81,7 +81,7 @@ class LinkageGenerationTest {
             "    ADD 1 TO LK-N.");
 
     @Test
-    @DisplayName("連絡節への書き込みは呼ぶ側の記憶域に届く (FR-070)")
+    @DisplayName("連絡節への書き込みは呼ぶ側の記憶域に届く (FR-027)")
     void writingToLinkageReachesTheCallersStorage() {
         Storage caller = callerStorage("--ABC010--");
         CobolProgram program = load(compile(ONE_ARGUMENT));
@@ -90,7 +90,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("渡す位置が変われば書き換わる場所も変わる (FR-070)")
+    @DisplayName("渡す位置が変われば書き換わる場所も変わる (FR-027)")
     void theArgumentOffsetDecidesWhereTheWriteLands() {
         Storage caller = callerStorage("ABC010----");
         CobolProgram program = load(compile(ONE_ARGUMENT));
@@ -99,7 +99,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("連絡節の項目は作業場所を占めない (FR-070)")
+    @DisplayName("連絡節の項目は作業場所を占めない (FR-027)")
     void linkageItemsTakeNoWorkingStorage() {
         CobolProgram program = load(compile(List.of(
                 "IDENTIFICATION DIVISION.",
@@ -118,7 +118,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("作業場所と連絡節を同じ文で扱える (FR-070)")
+    @DisplayName("作業場所と連絡節を同じ文で扱える (FR-027)")
     void workingStorageAndLinkageMixInOneStatement() {
         Storage caller = callerStorage("--000--");
         CobolProgram program = load(compile(List.of(
@@ -137,7 +137,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("引数は USING に並べた順に対応する (FR-070)")
+    @DisplayName("引数は USING に並べた順に対応する (FR-027)")
     void argumentsFollowTheOrderOfTheUsingList() {
         Storage caller = callerStorage("aaabbb");
         CobolProgram program = load(compile(List.of(
@@ -156,7 +156,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("同じ領域を 2 つの引数に渡せる (FR-070)")
+    @DisplayName("同じ領域を 2 つの引数に渡せる (FR-081)")
     void twoArgumentsMayShareOneArea() {
         // 参照渡しであるから、一方への書き込みは他方から見える。写し取っていれば見えない
         Storage caller = callerStorage("---");
@@ -185,7 +185,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("連絡節の表も添字で引ける (FR-024, FR-070)")
+    @DisplayName("連絡節の表も添字で引ける (FR-024, FR-027)")
     void aTableInLinkageIsSubscripted() {
         Storage caller = callerStorage("--aaabbbccc--");
         CobolProgram program = load(compile(List.of(
@@ -206,7 +206,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("連絡節に VALUE を書いたら誤りとして報告する (FR-070)")
+    @DisplayName("連絡節に VALUE を書いたら誤りとして報告する (FR-027)")
     void aValueClauseInLinkageIsReported() {
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",
@@ -224,7 +224,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("USING に作業場所の項目を並べたら誤りとして報告する (FR-070)")
+    @DisplayName("USING に作業場所の項目を並べたら誤りとして報告する (FR-027)")
     void aWorkingStorageParameterIsReported() {
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",
@@ -242,7 +242,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("USING に並べていない連絡節を使ったら誤りとして報告する (FR-070)")
+    @DisplayName("USING に並べていない連絡節を使ったら誤りとして報告する (FR-027)")
     void anUnboundLinkageItemIsReported() {
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",
@@ -262,7 +262,7 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("BY VALUE はまだ書けないと報告する (FR-070)")
+    @DisplayName("BY VALUE はまだ書けないと報告する (FR-027)")
     void byValueIsReportedAsUnsupported() {
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",

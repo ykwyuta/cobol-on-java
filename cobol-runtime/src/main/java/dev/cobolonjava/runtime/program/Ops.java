@@ -82,6 +82,16 @@ public final class Ops {
         throw new ProgramStop();
     }
 
+    /**
+     * {@code GOBACK} と手続き部の終わり。<b>呼んだ側へ戻る</b> (要件 FR-080)。
+     *
+     * <p>{@link #stopRun()} との違いはどこまで抜けるかである。副プログラムから投げれば
+     * 呼んだ側が受け止めて続きを実行し、主プログラムなら実行の終わりになる。
+     */
+    public static void programReturn() {
+        throw new ProgramReturn();
+    }
+
     // ---- 表示 ----
 
     /**
@@ -207,6 +217,76 @@ public final class Ops {
     /** 英数字比較。短いほうは空白で埋めて比べる。 */
     public static int compareAlphanumeric(byte[] left, byte[] right, CodePage codePage) {
         return Compare.alphanumeric(left, right, codePage);
+    }
+
+    // ---- 副プログラムの呼び出し ----
+
+    /**
+     * {@code CALL} (要件 FR-080, FR-081)。
+     *
+     * <p>呼び先は名前ごとに 1 つだけ作って持ち続ける。COBOL では<b>副プログラムの
+     * 作業場所は呼び出しをまたいで残る</b>ためである。
+     *
+     * <p>{@code GOBACK} と手続き部の終わりはここで受け止める。{@code STOP RUN} は
+     * 受け止めない。<b>どこまで抜けるかが違う</b>のがこの 2 つの違いである。
+     *
+     * @param loader 呼ぶ側のクラスを読み込んだもの。生成クラスは同じところにある
+     * @throws ProgramNotFoundException 呼び先が見つからない場合
+     */
+    public static void call(ProgramContext context, String name, ClassLoader loader,
+                            DataView[] arguments) {
+        ProgramContext.Loaded target = context.resolve(name, loader);
+        try {
+            target.program().run(target.storage(), context, arguments);
+        } catch (ProgramReturn returned) {
+            // 呼ばれた側が戻っただけである
+        }
+    }
+
+    /** 動的な {@code CALL}。呼び先の名前をデータ項目から読む。 */
+    public static void call(ProgramContext context, byte[] name, ClassLoader loader,
+                            DataView[] arguments) {
+        call(context, context.codePage().decode(name).trim(), loader, arguments);
+    }
+
+    /**
+     * {@code CANCEL} (要件 FR-083)。
+     *
+     * <p>読み込んだ副プログラムを忘れる。次に呼ばれたときは<b>作業場所が初期状態から</b>
+     * 始まる。呼んでいないプログラムを取り消しても誤りではない。
+     */
+    public static void cancel(ProgramContext context, String name) {
+        context.forget(name);
+    }
+
+    /** 動的な {@code CANCEL}。取り消す名前をデータ項目から読む。 */
+    public static void cancel(ProgramContext context, byte[] name) {
+        cancel(context, context.codePage().decode(name).trim());
+    }
+
+    /**
+     * {@code BY CONTENT} の引数。
+     *
+     * <p>写しを渡す。呼ばれた側が書き換えても<b>呼ぶ側には届かない</b>。
+     * これが {@code BY REFERENCE} との違いである。
+     */
+    public static DataView byContent(Storage storage, int offset, int length) {
+        return Storage.copyOf(read(storage, offset, length)).whole();
+    }
+
+    /** 翻訳時に決まったバイト列を {@code BY CONTENT} で渡す。 */
+    public static DataView byContent(byte[] bytes) {
+        return Storage.copyOf(bytes).whole();
+    }
+
+    /** {@code BY REFERENCE} の引数。呼ぶ側の領域をそのまま渡す。 */
+    public static DataView byReference(Storage storage, int offset, int length) {
+        return storage.view(offset, length);
+    }
+
+    /** 引数の並びを作る。 */
+    public static DataView[] arguments(DataView... views) {
+        return views;
     }
 
     // ---- SSRANGE の検査 ----

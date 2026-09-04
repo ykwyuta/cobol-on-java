@@ -28,6 +28,7 @@ import dev.cobolonjava.runtime.picture.PictureParser;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
+import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.program.ProgramSupport;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
@@ -164,15 +165,9 @@ public final class ProgramGenerator {
 
     /** COBOL のプログラム名を Java のクラス名にする。ハイフンは下線に読み替える。 */
     public static String classNameOf(String programName) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < programName.length(); i++) {
-            char c = programName.charAt(i);
-            sb.append(Character.isJavaIdentifierPart(c) ? c : '_');
-        }
-        if (sb.isEmpty() || !Character.isJavaIdentifierStart(sb.charAt(0))) {
-            sb.insert(0, '_');
-        }
-        return "cobol.generated." + sb;
+        // 規則はランタイムに置いてある。CALL で名前から探すのはそちらであり、
+        // 両者がずれれば呼び先が見つからない
+        return ProgramSupport.classNameOf(programName);
     }
 
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
@@ -285,9 +280,14 @@ public final class ProgramGenerator {
                 planUnstring(unstring, body);
             } else if (statement instanceof Statement.Inspect inspect) {
                 planInspect(inspect, body);
-            } else if (statement instanceof Statement.Stop) {
-                body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "stopRun", "()V",
-                        false));
+            } else if (statement instanceof Statement.Stop stop) {
+                // STOP RUN は実行そのものを終え、GOBACK は呼んだ側へ戻る
+                String name = stop.wholeRun() ? "stopRun" : "programReturn";
+                body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name, "()V", false));
+            } else if (statement instanceof Statement.Call call) {
+                planCall(call, body);
+            } else if (statement instanceof Statement.Cancel cancel) {
+                planCancel(cancel, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
             } else if (statement instanceof Statement.Continue) {
@@ -668,6 +668,184 @@ public final class ProgramGenerator {
         run.visitLabel(noOverflow);
         otherwise.forEach(Runnable::run);
         run.visitLabel(end);
+    }
+
+    // ---- CALL ----
+
+    /**
+     * {@code CALL} を組み立てる (要件 FR-080, FR-081)。
+     *
+     * <p>やることは<b>引数の並びを作って渡す</b>だけである。呼び先を探すのも、作業場所を
+     * 呼び出しをまたいで持ち続けるのも、{@code GOBACK} を受け止めるのもランタイムの仕事である
+     * (方針 ARC-7)。
+     *
+     * <p>呼び先を探すクラスローダは<b>呼ぶ側のもの</b>を渡す。生成クラスは同じところに
+     * 置かれるためであり、これがないと試験のように独自のローダで読み込んだ場合に見つからない。
+     */
+    private void planCall(Statement.Call statement, List<Runnable> body) {
+        Runnable target = planCallTarget(statement.target(), statement.origin());
+        if (target == null) {
+            return;
+        }
+        List<Runnable> arguments = new ArrayList<>();
+        for (Statement.Call.Argument argument : statement.arguments()) {
+            Runnable planned = planCallArgument(argument, statement.origin());
+            if (planned == null) {
+                return;
+            }
+            arguments.add(planned);
+        }
+        String descriptor = "(" + Type.getDescriptor(ProgramContext.class)
+                + (statement.target() instanceof Operand.Literal
+                        ? "Ljava/lang/String;" : "[B")
+                + "Ljava/lang/ClassLoader;[" + Type.getDescriptor(DataView.class) + ")V";
+
+        Runnable invoke = () -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            target.run();
+            emitClassLoader();
+            emitArray(arguments, DATA_VIEW);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "call", descriptor, false);
+        };
+
+        if (statement.exception() == null) {
+            body.add(invoke);
+            return;
+        }
+        planCheckedCall(statement, invoke, body);
+    }
+
+    /**
+     * {@code ON EXCEPTION} つきの {@code CALL}。
+     *
+     * <p>呼び先が見つからないことを条件として受け止める。ランタイムが投げる
+     * {@code ProgramNotFoundException} を旗へ読み替える。{@code COMPUTE} の 0 除算と同じ形である。
+     */
+    private void planCheckedCall(Statement.Call statement, Runnable invoke, List<Runnable> body) {
+        int flag = nextLocal++;
+        List<Runnable> onException = planStatements(statement.exception().onOverflow());
+        List<Runnable> otherwise = planStatements(statement.exception().otherwise());
+
+        body.add(() -> {
+            run.visitInsn(Opcodes.ICONST_0);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+
+            Label start = new Label();
+            Label caught = new Label();
+            Label handler = new Label();
+            Label called = new Label();
+            run.visitTryCatchBlock(start, caught, handler,
+                    Type.getInternalName(ProgramNotFoundException.class));
+            run.visitLabel(start);
+            invoke.run();
+            run.visitLabel(caught);
+            run.visitJumpInsn(Opcodes.GOTO, called);
+            run.visitLabel(handler);
+            run.visitInsn(Opcodes.POP);
+            run.visitInsn(Opcodes.ICONST_1);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+            run.visitLabel(called);
+
+            Label noException = new Label();
+            Label end = new Label();
+            run.visitVarInsn(Opcodes.ILOAD, flag);
+            run.visitJumpInsn(Opcodes.IFEQ, noException);
+            onException.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(noException);
+            otherwise.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
+    }
+
+    /**
+     * 呼び先の名前を積む。
+     *
+     * <p>文字定数なら<b>翻訳時に文字列として決まる</b>。データ項目ならバイト列を積み、
+     * 名前へ直すのはランタイムに任せる。実行時のコードページを知っているのはそちらである。
+     */
+    private Runnable planCallTarget(Operand target, Origin origin) {
+        if (target instanceof Operand.Literal literal) {
+            if (!(literal.value() instanceof LiteralValue.Text text)) {
+                report(origin, "a program name must be an alphanumeric literal");
+                return null;
+            }
+            String name = text.text().trim();
+            return () -> run.visitLdcInsn(name);
+        }
+        DataReference reference = ((Operand.Reference) target).reference();
+        OptionalInt length = lengthOf(reference, origin);
+        Runnable address = planAddress(reference, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        return () -> {
+            address.run();
+            push(length.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
+                    "(L" + STORAGE + ";II)[B", false);
+        };
+    }
+
+    /**
+     * 引数 1 個を積む。
+     *
+     * <p>{@code BY REFERENCE} は<b>呼ぶ側の領域そのもの</b>を渡す。{@code BY CONTENT} は
+     * 写しを渡す。この違いが、呼ばれた側の書き換えが呼ぶ側に届くかどうかを決める。
+     */
+    private Runnable planCallArgument(Statement.Call.Argument argument, Origin origin) {
+        if (argument.value() instanceof Operand.Literal literal) {
+            if (literal.value() instanceof LiteralValue.Figure
+                    || literal.value() instanceof LiteralValue.Repeated) {
+                // 図形定数は「項目いっぱいまで埋める」ものであり、渡す先の長さが決まらない
+                report(origin, "a figurative constant cannot be passed as a CALL argument");
+                return null;
+            }
+            byte[] bytes = literalBytes(literal.value(), 0);
+            String field = bytesConstant(bytes);
+            return () -> {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "byContent",
+                        "([B)" + Type.getDescriptor(DataView.class), false);
+            };
+        }
+        DataReference reference = ((Operand.Reference) argument.value()).reference();
+        OptionalInt length = lengthOf(reference, origin);
+        Runnable address = planAddress(reference, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        String name = argument.byContent() ? "byContent" : "byReference";
+        return () -> {
+            address.run();
+            push(length.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name,
+                    "(L" + STORAGE + ";II)" + Type.getDescriptor(DataView.class), false);
+        };
+    }
+
+    /** {@code CANCEL}。次に呼ばれたときの作業場所を初期状態へ戻す。 */
+    private void planCancel(Statement.Cancel statement, List<Runnable> body) {
+        for (Operand target : statement.targets()) {
+            Runnable name = planCallTarget(target, statement.origin());
+            if (name == null) {
+                return;
+            }
+            String descriptor = "(" + Type.getDescriptor(ProgramContext.class)
+                    + (target instanceof Operand.Literal ? "Ljava/lang/String;" : "[B") + ")V";
+            body.add(() -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                name.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "cancel", descriptor, false);
+            });
+        }
+    }
+
+    /** 呼ぶ側のクラスを読み込んだクラスローダを積む。 */
+    private void emitClassLoader() {
+        run.visitLdcInsn(Type.getObjectType(internal));
+        run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getClassLoader",
+                "()Ljava/lang/ClassLoader;", false);
     }
 
     private void emitArray(List<Runnable> elements, String type) {
@@ -1264,8 +1442,8 @@ public final class ProgramGenerator {
      * 置くのと同じであり、そこへ来なければ戻らない。
      *
      * <p>範囲の外へ出たまま手続き部の最後まで流れきったときは、{@code PERFORM} へ
-     * 戻るのではなく<b>暗黙の {@code STOP RUN}</b> になる。手続き部の終わりに達したのだから、
-     * 待っている {@code PERFORM} があってもそこで実行は終わる。
+     * 戻るのではなく<b>暗黙の {@code GOBACK}</b> になる。手続き部の終わりに達したのだから、
+     * 待っている {@code PERFORM} があってもそこで実行は終わり、呼んだ側へ戻る。
      */
     private void emitPerformMethod(int paragraphCount) {
         MethodVisitor perform = writer.visitMethod(Opcodes.ACC_PRIVATE, "performRange",
@@ -1311,7 +1489,7 @@ public final class ProgramGenerator {
         perform.visitJumpInsn(Opcodes.GOTO, top);
 
         perform.visitLabel(offEnd);
-        perform.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "stopRun", "()V", false);
+        perform.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "programReturn", "()V", false);
 
         perform.visitLabel(end);
         perform.visitInsn(Opcodes.RETURN);

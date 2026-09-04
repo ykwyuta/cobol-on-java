@@ -39,7 +39,8 @@ tokens {
     COMPUTE, END_COMPUTE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
-    UPON, NO, ADVANCING, USING, REFERENCE,
+    UPON, NO, ADVANCING, USING, REFERENCE, CONTENT,
+    CALL, END_CALL, CANCEL, EXCEPTION,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -330,6 +331,8 @@ statement
     | continueStatement
     | goToStatement
     | exitStatement
+    | callStatement
+    | cancelStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -538,6 +541,40 @@ evaluateObject
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
 displayStatement
     : DISPLAY arithmeticOperand+ (UPON IDENTIFIER)? (WITH? NO ADVANCING)?
+    ;
+
+// 呼び先は文字定数か、実行時に名前が決まるデータ項目である
+callStatement
+    : CALL callTarget (USING callArgument+)? callExceptionPhrases END_CALL?
+    ;
+
+callTarget
+    : literal
+    | identifier
+    ;
+
+// BY REFERENCE / BY CONTENT は、次の指定が現れるまで後ろの引数すべてに効く
+callArgument
+    : BY? (REFERENCE | CONTENT | VALUE)
+    | identifier
+    | literal
+    ;
+
+callExceptionPhrases
+    : onExceptionPhrase? notOnExceptionPhrase?
+    ;
+
+onExceptionPhrase
+    : ON? (EXCEPTION | OVERFLOW) statement+
+    ;
+
+notOnExceptionPhrase
+    : NOT ON? EXCEPTION statement+
+    ;
+
+// CANCEL は次に呼ばれたときの作業場所を初期状態へ戻す
+cancelStatement
+    : CANCEL callTarget+
     ;
 
 // GO TO は段落の途中から別の段落へ飛ぶ。PERFORM と違い、戻ってこない

@@ -38,13 +38,15 @@ public interface CobolProgram {
     /**
      * 初期イメージから記憶域を作って実行する。
      *
-     * <p>{@code STOP RUN} と {@code GOBACK} はここで受け止める。
+     * <p>{@code STOP RUN} と {@code GOBACK} はどちらもここで受け止める。
+     * 主プログラムでは<b>どちらも実行の終わり</b>だからである。副プログラムとして
+     * 呼ばれたときだけ 2 つの違いが表に出る ({@link Ops#call})。
      */
     default Storage runFresh(ProgramContext context, DataView... arguments) {
         Storage storage = Storage.wrap(initialStorage());
         try {
             run(storage, context, arguments);
-        } catch (ProgramStop stop) {
+        } catch (ProgramStop | ProgramReturn end) {
             // 実行が終わっただけであり、誤りではない
         }
         return storage;

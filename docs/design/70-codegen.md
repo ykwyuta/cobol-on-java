@@ -274,8 +274,9 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `MOVE` / `ADD` / `SUBTRACT` の `CORRESPONDING`、
 `COMPUTE` (加減乗除・括弧・単項符号)、
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
-`GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、
-`STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`。
+`GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、`CALL` / `CANCEL`、
+`STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
+`CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。
 添字は定数でもデータ項目でもよく、多次元の表も扱える。部分参照の開始位置も同じ。
 
@@ -294,12 +295,27 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 連絡節:    引数[k].storage()          ; 引数[k].offset() + 変位
 ```
 
-連絡節の項目は記憶域を持たない (要件 FR-070)。実体は呼ぶ側にあり、`run` の 3 番目の
+連絡節の項目は記憶域を持たない (要件 FR-027)。実体は呼ぶ側にあり、`run` の 3 番目の
 引数として渡される `DataView[]` の要素が指す。どの要素かは
 `PROCEDURE DIVISION USING` に並べた順で決まる。
 
 組にしてあるので、この違いを知っているのは `planAddress` だけである。`MOVE` も算術文も
 `INSPECT` も、連絡節を扱うために変わったところはない。
+
+## CALL はクラスローダを持ち回る
+
+`CALL` の生成コードは、呼び先の名前・引数の並び・<b>呼ぶ側のクラスローダ</b>を渡して
+`Ops.call` を呼ぶだけである。
+
+クラスローダを渡すのは、生成クラスが呼ぶ側と同じところに置かれるためである。渡さないと、
+試験のように独自のローダで読み込んだ場合に呼び先が見つからない。
+
+COBOL のプログラム名から Java のクラス名を作る規則は<b>ランタイムに置いてある</b>
+(`ProgramSupport.classNameOf`)。名前を付けるのはコンパイラだが、`CALL` で名前から探すのは
+ランタイムであり、両者がずれれば呼び先が見つからないためである。
+
+引数は `BY REFERENCE` なら呼ぶ側の領域そのもの、`BY CONTENT` なら写しを渡す。
+どちらも `DataView` 1 個であり、呼ばれた側から見れば区別はない。
 
 ## SSRANGE の検査は値をそのまま返す
 
@@ -339,6 +355,6 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 
 ## 次の増分
 
-1. `CALL` による副プログラムの呼び出し (連絡節の呼ぶ側)。
-2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
-3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
+1. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
+2. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
+3. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
