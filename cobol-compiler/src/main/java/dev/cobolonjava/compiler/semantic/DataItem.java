@@ -42,6 +42,7 @@ public final class DataItem {
     private int base;
     private DataSection section = DataSection.WORKING_STORAGE;
     private final List<String> indexNames = new ArrayList<>();
+    private final List<SearchKey> searchKeys = new ArrayList<>();
     private boolean index;
 
     DataItem(int level, String name, Origin origin) {
@@ -56,6 +57,18 @@ public final class DataItem {
 
     /** 条件名の値。{@code THRU} で範囲を書ける。範囲でなければ {@code to} は {@code null}。 */
     public record ValueRange(LiteralValue from, LiteralValue to) {
+    }
+
+    /**
+     * {@code OCCURS ... ASCENDING / DESCENDING KEY} で書かれた探索の鍵。
+     *
+     * <p>{@code SEARCH ALL} の 2 分探索は<b>探す向きを知らなければ書けない</b>。
+     * 昇順なら鍵が小さいときに後ろ半分を、降順なら前半分を見る。
+     *
+     * @param ascending 昇順かどうか
+     * @param name      鍵になる項目の名前
+     */
+    public record SearchKey(boolean ascending, String name) {
     }
 
     public int level() {
@@ -128,6 +141,11 @@ public final class DataItem {
      */
     public List<String> indexNames() {
         return Collections.unmodifiableList(indexNames);
+    }
+
+    /** {@code OCCURS ... KEY} で書かれた探索の鍵。書かれた順に並ぶ。 */
+    public List<SearchKey> searchKeys() {
+        return Collections.unmodifiableList(searchKeys);
     }
 
     /**
@@ -248,6 +266,10 @@ public final class DataItem {
 
     void addIndexName(String value) {
         indexNames.add(value);
+    }
+
+    void addSearchKey(SearchKey value) {
+        searchKeys.add(value);
     }
 
     void markIndex() {

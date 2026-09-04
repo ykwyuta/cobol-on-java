@@ -620,11 +620,6 @@ public final class ProcedureBuilder {
      */
     private Statement searchOf(CobolParser.SearchStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        if (context.ALL() != null) {
-            // 2 分探索は ASCENDING / DESCENDING KEY を割り付けまで通す必要がある
-            report(origin, "SEARCH ALL is not supported yet");
-            return null;
-        }
         CobolParser.IdentifierContext tableName = context.identifier(0);
         DataItem table = resolver.resolveName(tableName.qualifiedDataName(), origin);
         if (table == null) {
@@ -649,6 +644,9 @@ public final class ProcedureBuilder {
         }
 
         DataReference index = indexReference(table.indexNames().get(0), origin);
+        if (context.ALL() != null) {
+            return searchAllOf(context, table, index, origin);
+        }
         DataReference varying = null;
         if (context.VARYING() != null) {
             DataReference given = resolver.resolve(context.identifier(1));
@@ -677,6 +675,115 @@ public final class ProcedureBuilder {
             whens.add(new Statement.Search.When(condition, listOf(when.statement())));
         }
         return new Statement.Search(index, varying, table.occurs(), atEnd, whens, origin);
+    }
+
+    /**
+     * {@code SEARCH ALL} (要件 FR-066)。
+     *
+     * <p>2 分探索は<b>大きいか小さいかで半分を捨てる</b>仕組みである。したがって
+     * 書ける条件は鍵と値の等号だけであり、表に {@code ASCENDING} / {@code DESCENDING KEY} が
+     * 書かれていなければ向きが決まらない。
+     *
+     * <p>鍵は<b>書かれた順に、先頭から欠かさず</b>照合しなければならない。2 番目の鍵だけを
+     * 指定しても、1 番目で並んでいる表は絞り込めない。
+     */
+    private Statement searchAllOf(CobolParser.SearchStatementContext context, DataItem table,
+                                  DataReference index, Origin origin) {
+        if (table.searchKeys().isEmpty()) {
+            report(origin, "SEARCH ALL requires ASCENDING or DESCENDING KEY on " + table.name());
+            return null;
+        }
+        if (context.searchWhen().size() != 1) {
+            report(origin, "SEARCH ALL takes a single WHEN");
+            return null;
+        }
+        CobolParser.SearchWhenContext when = context.searchWhen().get(0);
+        Condition condition = conditionOf(when.condition());
+        if (condition == null) {
+            return null;
+        }
+
+        List<Condition> parts = new ArrayList<>();
+        if (!flattenConjunction(condition, parts)) {
+            report(origin, "SEARCH ALL takes equality tests joined by AND");
+            return null;
+        }
+        if (parts.size() > table.searchKeys().size()) {
+            report(origin, "SEARCH ALL tests more keys than " + table.name() + " declares");
+            return null;
+        }
+
+        List<Statement.SearchAll.KeyTest> keys = new ArrayList<>();
+        for (int i = 0; i < parts.size(); i++) {
+            DataItem.SearchKey declared = table.searchKeys().get(i);
+            Condition.Relation test = keyTestOf(parts.get(i), declared.name(), index, origin);
+            if (test == null) {
+                return null;
+            }
+            keys.add(new Statement.SearchAll.KeyTest(declared.ascending(), test));
+        }
+
+        List<Statement> atEnd = context.atEndPhrase() == null
+                ? List.of()
+                : listOf(context.atEndPhrase().statement());
+        return new Statement.SearchAll(index, table.occurs(), keys, atEnd,
+                listOf(when.statement()), origin);
+    }
+
+    /** 条件を {@code AND} でつないだ等号の並びへ開く。ほかの形が混ざれば偽を返す。 */
+    private static boolean flattenConjunction(Condition condition, List<Condition> parts) {
+        if (condition instanceof Condition.And and) {
+            return flattenConjunction(and.left(), parts) && flattenConjunction(and.right(), parts);
+        }
+        if (condition instanceof Condition.Relation relation
+                && relation.comparison() == Condition.Comparison.EQUAL) {
+            parts.add(relation);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 等号の片側が、期待した鍵かどうかを見る。
+     *
+     * <p>鍵は左右どちらに書いてもよい。3 方向の比較のために<b>鍵を左へ揃える</b>。
+     */
+    private Condition.Relation keyTestOf(Condition part, String keyName, DataReference index,
+                                        Origin origin) {
+        Condition.Relation relation = (Condition.Relation) part;
+        Condition.Relation ordered = null;
+        if (namesItem(relation.left(), keyName)) {
+            ordered = relation;
+        } else if (namesItem(relation.right(), keyName)) {
+            ordered = new Condition.Relation(relation.right(), Condition.Comparison.EQUAL,
+                    relation.left(), relation.numeric(), relation.origin());
+        }
+        if (ordered == null) {
+            report(origin, "SEARCH ALL must test the keys in the order they are declared;"
+                    + " expected " + keyName);
+            return null;
+        }
+        // 探索が動かすのはこの指標である。別の添字で引いていたら絞り込みにならない
+        if (!subscriptedBy(ordered.left(), index)) {
+            report(origin, "SEARCH ALL requires the key to be subscripted by the search index: "
+                    + keyName);
+            return null;
+        }
+        return ordered;
+    }
+
+    private static boolean namesItem(Operand operand, String name) {
+        return operand instanceof Operand.Reference reference
+                && name.equals(reference.reference().item().name());
+    }
+
+    /** 参照の添字が、探索の指標そのものかどうか。 */
+    private static boolean subscriptedBy(Operand operand, DataReference index) {
+        List<DataReference.Subscript> subscripts =
+                ((Operand.Reference) operand).reference().subscripts();
+        return subscripts.size() == 1
+                && subscripts.get(0) instanceof DataReference.Subscript.Variable variable
+                && variable.reference().item() == index.item();
     }
 
     private DataReference indexReference(String name, Origin origin) {

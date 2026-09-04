@@ -288,6 +288,8 @@ public final class ProgramGenerator {
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name, "()V", false));
             } else if (statement instanceof Statement.Search search) {
                 planSearch(search, body);
+            } else if (statement instanceof Statement.SearchAll searchAll) {
+                planSearchAll(searchAll, body);
             } else if (statement instanceof Statement.Accept accept) {
                 planAccept(accept, body);
             } else if (statement instanceof Statement.Initialize initialize) {
@@ -758,6 +760,131 @@ public final class ProgramGenerator {
             }
             run.visitLabel(done);
         });
+    }
+
+    /**
+     * {@code SEARCH ALL} を組み立てる (要件 FR-066)。
+     *
+     * <p>2 分探索である。<b>指標は使う側が用意しなくてよい</b>。探索そのものが範囲を
+     * 狭めながら指標を決める。
+     *
+     * <pre>
+     * 下 = 1 ; 上 = 回数
+     * 先頭:   下 &gt; 上 ならば 終わり へ
+     *         指標 = (下 + 上) / 2
+     *         鍵1 を比べる。小さければ 手前 へ、大きければ 奥 へ
+     *         鍵2 を比べる。… (すべて等しければ落ちる)
+     *         当たりの文 ; 出口 へ
+     * 手前:   上 = 指標 - 1 ; 先頭 へ
+     * 奥:     下 = 指標 + 1 ; 先頭 へ
+     * 終わり: AT END の文
+     * 出口:
+     * </pre>
+     *
+     * <p>「手前」と「奥」のどちらへ行くかは<b>鍵の向きで入れ替わる</b>。昇順なら鍵が
+     * 小さいときに奥を、降順なら手前を見る。捨てる半分が逆になる。
+     */
+    private void planSearchAll(Statement.SearchAll statement, List<Runnable> body) {
+        Runnable store = planStoreIndex(statement.index(), statement.origin());
+        if (store == null) {
+            return;
+        }
+        List<Runnable> comparisons = new ArrayList<>();
+        for (Statement.SearchAll.KeyTest key : statement.keys()) {
+            Runnable comparison = planComparison(key.test());
+            if (comparison == null) {
+                return;
+            }
+            comparisons.add(comparison);
+        }
+        List<Runnable> atEnd = planStatements(statement.atEnd());
+        List<Runnable> matched = planStatements(statement.whenStatements());
+
+        int low = nextLocal++;
+        int high = nextLocal++;
+        int compared = nextLocal++;
+        body.add(() -> {
+            Label top = new Label();
+            Label lower = new Label();
+            Label upper = new Label();
+            Label exhausted = new Label();
+            Label done = new Label();
+
+            run.visitInsn(Opcodes.ICONST_1);
+            run.visitVarInsn(Opcodes.ISTORE, low);
+            push(statement.occurs());
+            run.visitVarInsn(Opcodes.ISTORE, high);
+
+            run.visitLabel(top);
+            run.visitVarInsn(Opcodes.ILOAD, low);
+            run.visitVarInsn(Opcodes.ILOAD, high);
+            run.visitJumpInsn(Opcodes.IF_ICMPGT, exhausted);
+            // 指標を真ん中へ置く。鍵の添字がこれを読む
+            run.visitVarInsn(Opcodes.ILOAD, low);
+            run.visitVarInsn(Opcodes.ILOAD, high);
+            run.visitInsn(Opcodes.IADD);
+            run.visitInsn(Opcodes.ICONST_2);
+            run.visitInsn(Opcodes.IDIV);
+            store.run();
+
+            for (int i = 0; i < comparisons.size(); i++) {
+                boolean ascending = statement.keys().get(i).ascending();
+                // 比較の値は局所変数へ取る。飛び先ごとに作用対象の深さが変わらないようにする
+                comparisons.get(i).run();
+                run.visitVarInsn(Opcodes.ISTORE, compared);
+                run.visitVarInsn(Opcodes.ILOAD, compared);
+                run.visitJumpInsn(Opcodes.IFLT, ascending ? upper : lower);
+                run.visitVarInsn(Opcodes.ILOAD, compared);
+                run.visitJumpInsn(Opcodes.IFGT, ascending ? lower : upper);
+            }
+            matched.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, done);
+
+            // 前半分を捨てる
+            run.visitLabel(upper);
+            emitHalf(low, high, true);
+            run.visitJumpInsn(Opcodes.GOTO, top);
+            // 後ろ半分を捨てる
+            run.visitLabel(lower);
+            emitHalf(low, high, false);
+            run.visitJumpInsn(Opcodes.GOTO, top);
+
+            run.visitLabel(exhausted);
+            atEnd.forEach(Runnable::run);
+            run.visitLabel(done);
+        });
+    }
+
+    /** 範囲を半分に狭める。{@code toUpper} なら真ん中の次から、そうでなければ手前まで。 */
+    private void emitHalf(int low, int high, boolean toUpper) {
+        run.visitVarInsn(Opcodes.ILOAD, low);
+        run.visitVarInsn(Opcodes.ILOAD, high);
+        run.visitInsn(Opcodes.IADD);
+        run.visitInsn(Opcodes.ICONST_2);
+        run.visitInsn(Opcodes.IDIV);
+        run.visitInsn(Opcodes.ICONST_1);
+        if (toUpper) {
+            run.visitInsn(Opcodes.IADD);
+            run.visitVarInsn(Opcodes.ISTORE, low);
+        } else {
+            run.visitInsn(Opcodes.ISUB);
+            run.visitVarInsn(Opcodes.ISTORE, high);
+        }
+    }
+
+    /** 積んである {@code int} を指標へ書き込む命令。 */
+    private Runnable planStoreIndex(DataReference index, Origin origin) {
+        Runnable address = planAddress(index, origin);
+        String field = numericItemConstant(index.item(), origin);
+        if (address == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
+                    "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+        };
     }
 
     /** 指標を 1 進める命令。 */
@@ -1535,6 +1662,24 @@ public final class ProgramGenerator {
     }
 
     private void emitRelation(Condition.Relation relation, Label target, boolean jumpWhenTrue) {
+        Runnable comparison = planComparison(relation);
+        if (comparison == null) {
+            return;
+        }
+        comparison.run();
+        Condition.Comparison test =
+                jumpWhenTrue ? relation.comparison() : relation.comparison().negate();
+        run.visitJumpInsn(branchOpcode(test), target);
+    }
+
+    /**
+     * 関係の<b>3 方向の比較</b>を {@code int} として積む命令。
+     *
+     * <p>負なら左が小さく、0 なら等しく、正なら左が大きい。{@code IF} は符号だけを見て
+     * 分岐するが、{@code SEARCH ALL} の 2 分探索は<b>3 つの向きを区別する</b>ため
+     * 値そのものを使う。
+     */
+    private Runnable planComparison(Condition.Relation relation) {
         Runnable left;
         Runnable right;
         if (relation.numeric()) {
@@ -1546,21 +1691,20 @@ public final class ProgramGenerator {
             right = planSourceBytes(relation.right(), relation.origin(), length);
         }
         if (left == null || right == null) {
-            return;
+            return null;
         }
-        left.run();
-        right.run();
-        if (relation.numeric()) {
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareNumeric",
-                    "(" + DECIMAL + DECIMAL + ")I", false);
-        } else {
-            loadCodePage();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
-                    "([B[B" + CODE_PAGE + ")I", false);
-        }
-        Condition.Comparison comparison =
-                jumpWhenTrue ? relation.comparison() : relation.comparison().negate();
-        run.visitJumpInsn(branchOpcode(comparison), target);
+        return () -> {
+            left.run();
+            right.run();
+            if (relation.numeric()) {
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareNumeric",
+                        "(" + DECIMAL + DECIMAL + ")I", false);
+            } else {
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
+                        "([B[B" + CODE_PAGE + ")I", false);
+            }
+        };
     }
 
     /** 図形定数を広げる長さ。相手の項目の長さに合わせる。 */

@@ -289,6 +289,13 @@ public final class DataDivisionBuilder {
         } catch (NumberFormatException e) {
             report(origin, "OCCURS requires an integer: " + text);
         }
+        for (CobolParser.OccursKeyClauseContext key : clause.occursKeyClause()) {
+            boolean ascending = key.ASCENDING() != null;
+            for (CobolParser.QualifiedDataNameContext name : key.qualifiedDataName()) {
+                item.addSearchKey(new DataItem.SearchKey(ascending,
+                        name.dataName(0).getText().toUpperCase(Locale.ROOT)));
+            }
+        }
         if (clause.occursIndexedClause() != null) {
             for (var name : clause.occursIndexedClause().IDENTIFIER()) {
                 item.addIndexName(name.getText().toUpperCase(Locale.ROOT));

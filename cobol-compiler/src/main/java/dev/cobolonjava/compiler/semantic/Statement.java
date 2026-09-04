@@ -420,6 +420,39 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code SEARCH ALL} 文。2 分探索である (要件 FR-066)。
+     *
+     * <p>逐次の {@code SEARCH} と違い、<b>指標は使う側が用意しなくてよい</b>。
+     * 探索そのものが範囲を狭めながら指標を決める。当たれば指標はその位置を指し、
+     * 当たらなければ値は決まらない。
+     *
+     * <p>書ける条件は<b>鍵と値の等号だけ</b>である。任意の条件を書けないのは、
+     * 2 分探索が「大きいか小さいか」で半分を捨てる仕組みだからである。
+     *
+     * @param keys  鍵ごとの照合。表に書かれた順に並ぶ
+     * @param whenStatements 当たったときの文
+     */
+    record SearchAll(DataReference index, int occurs, List<KeyTest> keys,
+                     List<Statement> atEnd, List<Statement> whenStatements, Origin origin)
+            implements Statement {
+
+        public SearchAll {
+            keys = List.copyOf(keys);
+            atEnd = List.copyOf(atEnd);
+            whenStatements = List.copyOf(whenStatements);
+        }
+
+        /**
+         * 鍵 1 個の照合。
+         *
+         * @param ascending 昇順かどうか。半分を捨てる向きが決まる
+         * @param test      鍵と値の等号。3 方向の比較にはこの両辺を使う
+         */
+        public record KeyTest(boolean ascending, Condition.Relation test) {
+        }
+    }
+
+    /**
      * {@code ACCEPT} 文 (要件 FR-060、テスト時の固定は FR-204)。
      *
      * <p>送出側は<b>符号なし整数の表示形式のバイト列</b>である。日付と時刻の特殊レジスタも、

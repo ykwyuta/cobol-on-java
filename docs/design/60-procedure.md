@@ -195,9 +195,20 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 `VARYING` に<b>その表の指標名</b>を書いたなら、それが進める指標になる。ほかの項目を書いたなら、
 指標と一緒に進む。同じ語で 2 つの意味があるので、意味解析で見分けている。
 
-`SEARCH ALL` (2 分探索) は文法は受け付けるが、まだ生成できないと報告する。探す向きを
-知らなければ書けず、`OCCURS ... ASCENDING KEY` を割り付けまで通す必要がある
-(暫定判断 P-036)。
+### SEARCH ALL は向きを知らなければ書けない
+
+`SEARCH ALL` は 2 分探索であり、逐次の `SEARCH` とは別物である。<b>指標を用意しなくてよい</b> —
+探索そのものが範囲を狭めながら指標を決める。
+
+`OCCURS ... ASCENDING KEY` / `DESCENDING KEY` が要るのは、<b>捨てる半分が逆になる</b>ためである。
+昇順なら鍵が小さいときに奥半分を、降順なら手前半分を見る。
+
+書ける条件は<b>鍵と値の等号だけ</b>である。大きいか小さいかで半分を捨てる仕組みだからであり、
+任意の条件は書けない。鍵は書かれた順に、先頭から欠かさず照合しなければならない。
+2 番目の鍵だけを指定しても、1 番目で並んでいる表は絞り込めない。
+
+探索の指標以外で鍵を引いていないかも見ている。絞り込みにならない書き方を黙って通すと、
+<b>当たらないことに気付けない</b>。
 
 ## ACCEPT の送出側はどれも符号なし整数の表示形式
 
@@ -292,7 +303,8 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 `MOVE`、算術文 4 つ (`DIVIDE ... REMAINDER` を含む)、`COMPUTE`、`IF`、`EVALUATE`、
 `PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`GO TO`、`DISPLAY`、`INSPECT`、
-`STRING`、`UNSTRING`、`INITIALIZE`、`SET`、`SEARCH`、`ACCEPT`、`CALL` / `CANCEL`、
+`STRING`、`UNSTRING`、`INITIALIZE`、`SET`、`SEARCH` / `SEARCH ALL`、`ACCEPT`、
+`CALL` / `CANCEL`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である。
 `MOVE` / `ADD` / `SUBTRACT` には `CORRESPONDING` を書ける。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
@@ -315,6 +327,6 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `SEARCH ALL` と `OCCURS ... ASCENDING KEY` (暫定判断 P-036)。
-2. `SPECIAL-NAMES` (呼び名、`CURRENCY SIGN`、`DECIMAL-POINT IS COMMA`)。
-3. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
+1. `SPECIAL-NAMES` (呼び名、`CURRENCY SIGN`、`DECIMAL-POINT IS COMMA`)。
+2. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
+3. 反復を実行時のループとして出す形 (暫定判断 P-033)。
