@@ -38,28 +38,13 @@ public final class JclReader {
         this.diagnostics = diagnostics;
     }
 
-    /**
-     * 読み取りの結果。
-     *
-     * @param cards 継続をつないだ文の並び
-     * @param data  埋め込みデータ。DD カードの行番号で引く
-     */
-    public record Result(List<JclCard> cards, java.util.Map<Integer, byte[]> data) {
-
-        public Result {
-            cards = List.copyOf(cards);
-            data = java.util.Map.copyOf(data);
-        }
-    }
-
     /** JCL の本文をカードへ切る。 */
-    public static Result read(String text, List<JobDiagnostic> diagnostics) {
+    public static List<JclCard> read(String text, List<JobDiagnostic> diagnostics) {
         return new JclReader(text.split("\n", -1), diagnostics).read();
     }
 
-    private Result read() {
+    private List<JclCard> read() {
         List<JclCard> cards = new ArrayList<>();
-        java.util.Map<Integer, byte[]> data = new java.util.LinkedHashMap<>();
         while (at < lines.length) {
             int number = at + 1;
             String card = card(lines[at]);
@@ -83,15 +68,16 @@ public final class JclReader {
             if (built == null) {
                 continue;
             }
-            cards.add(built);
             if (built.operation().equals("DD")) {
                 byte[] inline = inlineOf(built);
                 if (inline != null) {
-                    data.put(built.line(), inline);
+                    built = new JclCard(built.name(), built.operation(), built.operands(),
+                            inline, built.line());
                 }
             }
+            cards.add(built);
         }
-        return new Result(cards, data);
+        return cards;
     }
 
     /**

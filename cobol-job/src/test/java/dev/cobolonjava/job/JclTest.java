@@ -254,19 +254,17 @@ class JclTest {
     @Test
     @DisplayName("未対応の JCL 構文は読み飛ばさない (FR-131)")
     void unsupportedConstructsAreReported() {
-        assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)", "//MYPROC   PROC")
-                .contains("PROC is not supported yet"));
-        assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)", "//         INCLUDE MEMBER=X")
-                .contains("INCLUDE is not supported yet"));
         assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)",
                 "//         IF (RC = 0) THEN").contains("IF is not supported yet"));
+        assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)",
+                "//         JCLLIB ORDER=(MY.PROCLIB)").contains("JCLLIB is not supported yet"));
     }
 
     @Test
-    @DisplayName("目録手続きの呼び出しは未対応である (FR-131)")
-    void catalogedProceduresAreNotSupported() {
+    @DisplayName("ない手続きを呼べば誤りである (FR-131)")
+    void aMissingProcedureIsAnError() {
         assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)", "//STEP1    EXEC MYPROC")
-                .contains("a procedure name is not supported yet"));
+                .contains("no such procedure or member: MYPROC"));
     }
 
     @Test

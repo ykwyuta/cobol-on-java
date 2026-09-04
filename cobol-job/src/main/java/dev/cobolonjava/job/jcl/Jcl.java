@@ -12,7 +12,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 /**
  * JCL フロントエンド (要件 FR-131)。
@@ -56,7 +55,16 @@ public final class Jcl {
 
     /** JCL を読む。データセット名は基点のディレクトリの下に置かれているものとする。 */
     public static Result read(String text, Path base) {
-        return new Builder(base).build(text);
+        return read(text, base, JclLibrary.empty());
+    }
+
+    /**
+     * 目録手続きを引ける構成で JCL を読む。
+     *
+     * @param library {@code EXEC 手続き名} と {@code INCLUDE} の取り出し先
+     */
+    public static Result read(String text, Path base, JclLibrary library) {
+        return new Builder(base, library).build(text);
     }
 
     /** JCL をバイト列から読む。JCL の本文は UTF-8 のテキストである。 */
@@ -67,6 +75,7 @@ public final class Jcl {
     private static final class Builder {
 
         private final Path base;
+        private final JclLibrary library;
         private final List<JobDiagnostic> diagnostics = new ArrayList<>();
         private final List<Step> steps = new ArrayList<>();
         private String jobName;
@@ -80,14 +89,17 @@ public final class Jcl {
         /** 直前の DD 名。名前欄が空の DD カードは、これに連結される。 */
         private String lastDd;
 
-        private Builder(Path base) {
+        private Builder(Path base, JclLibrary library) {
             this.base = base;
+            this.library = library;
         }
 
         private Result build(String text) {
-            JclReader.Result read = JclReader.read(text, diagnostics);
-            for (JclCard card : read.cards()) {
-                readCard(card, read.data());
+            // 手続きとシンボリックパラメタは、モデルを組む前に展開しておく
+            List<JclCard> cards = JclExpander.expand(
+                    JclReader.read(text, diagnostics), library, diagnostics);
+            for (JclCard card : cards) {
+                readCard(card);
             }
             closeStep();
             if (jobName == null) {
@@ -98,12 +110,12 @@ public final class Jcl {
                     : new Result(null, diagnostics);
         }
 
-        private void readCard(JclCard card, Map<Integer, byte[]> data) {
+        private void readCard(JclCard card) {
             switch (card.operation()) {
                 case "JOB" -> readJob(card);
                 case "EXEC" -> readExec(card);
-                case "DD" -> readDd(card, data);
-                case "PROC", "PEND", "INCLUDE", "SET", "IF", "ELSE", "ENDIF", "OUTPUT", "JCLLIB" ->
+                case "DD" -> readDd(card);
+                case "IF", "ELSE", "ENDIF", "OUTPUT", "JCLLIB" ->
                         report(card, card.operation() + " is not supported yet");
                 default -> report(card, "unknown JCL operation: " + card.operation());
             }
@@ -135,15 +147,15 @@ public final class Jcl {
                 readExecOperand(card, operand);
             }
             if (program == null) {
-                report(card, "EXEC needs PGM=; cataloged procedures are not supported yet");
+                report(card, "EXEC needs PGM= or a procedure name");
             }
         }
 
         private void readExecOperand(JclCard card, String operand) {
             String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
             if (operand.trim().equals(JclOperands.key(operand))) {
-                // 鍵だけのオペランドは目録手続きの名前である
-                report(card, "EXEC needs PGM=; a procedure name is not supported yet");
+                // 鍵だけのオペランドは手続きの名前である。展開の段で消えているはずである
+                report(card, "no such procedure: " + key);
                 return;
             }
             String value = JclOperands.value(operand);
@@ -151,6 +163,10 @@ public final class Jcl {
                 case "PGM" -> program = value.toUpperCase(Locale.ROOT);
                 case "PARM" -> parm = JclOperands.unquote(value);
                 case "COND" -> condition = conditionOf(card, value);
+                // 手続きへ渡すシンボリックパラメタは展開の段で使い切っている
+                case "PROC", "REGION", "TIME" -> {
+                    // 資源の指定は、この実装では効かない
+                }
                 default -> report(card, "EXEC does not support: " + key);
             }
         }
@@ -260,12 +276,12 @@ public final class Jcl {
             };
         }
 
-        private void readDd(JclCard card, Map<Integer, byte[]> data) {
+        private void readDd(JclCard card) {
             if (stepName == null) {
                 report(card, "DD comes inside a step");
                 return;
             }
-            DdTarget target = targetOf(card, data);
+            DdTarget target = targetOf(card);
             if (target == null) {
                 return;
             }
@@ -296,11 +312,12 @@ public final class Jcl {
             dd.set(last, new DdAssignment(lastDd, new DdTarget.Concatenation(parts)));
         }
 
-        private DdTarget targetOf(JclCard card, Map<Integer, byte[]> data) {
+        private DdTarget targetOf(JclCard card) {
             String operands = card.operands().trim();
             if (operands.equals("*") || operands.startsWith("*,")
                     || operands.equals("DATA") || operands.startsWith("DATA,")) {
-                return new DdTarget.Inline(data.getOrDefault(card.line(), new byte[0]));
+                return new DdTarget.Inline(
+                        card.inline() == null ? new byte[0] : card.inline());
             }
             String name = null;
             Disposition disposition = Disposition.SHR;

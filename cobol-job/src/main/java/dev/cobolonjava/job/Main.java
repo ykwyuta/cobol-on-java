@@ -15,7 +15,8 @@ import dev.cobolonjava.job.jcl.Jcl;
  * ジョブ実行のコマンドライン入口 (要件 FR-130, FR-132)。
  *
  * <pre>
- * cobolj [-d クラスの置き場] [-w 作業領域] [-b データセットの基点] ジョブ記述
+ * cobolj [-d クラスの置き場] [-w 作業領域] [-b データセットの基点] [-p 手続きの入れ物]
+ *        ジョブ記述
  * </pre>
  *
  * <p>記述形式は拡張子で見分ける。{@code .jcl} なら JCL、それ以外は宣言的形式である。
@@ -33,18 +34,21 @@ public final class Main {
         Path classes = Path.of(".");
         Path work = Path.of("work");
         Path base = Path.of(".");
+        Path procedures = null;
         Path description = null;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "-d" -> classes = Path.of(args[++i]);
                 case "-w" -> work = Path.of(args[++i]);
                 case "-b" -> base = Path.of(args[++i]);
+                case "-p" -> procedures = Path.of(args[++i]);
                 default -> description = Path.of(args[i]);
             }
         }
         if (description == null) {
             System.err.println(
-                    "usage: cobolj [-d classes] [-w work] [-b base] job-description");
+                    "usage: cobolj [-d classes] [-w work] [-b base] [-p proclib]"
+                            + " job-description");
             System.exit(2);
             return;
         }
@@ -55,7 +59,9 @@ public final class Main {
         List<JobDiagnostic> diagnostics;
         if (description.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
                 .endsWith(".jcl")) {
-            Jcl.Result parsed = Jcl.read(text, base);
+            Jcl.Result parsed = Jcl.read(text, base, procedures == null
+                    ? dev.cobolonjava.job.jcl.JclLibrary.empty()
+                    : dev.cobolonjava.job.jcl.JclLibrary.at(procedures));
             job = parsed.job();
             diagnostics = parsed.diagnostics();
         } else {
