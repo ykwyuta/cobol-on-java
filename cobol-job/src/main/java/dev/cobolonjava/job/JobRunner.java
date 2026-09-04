@@ -5,6 +5,8 @@ import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.DataSetCatalog;
 import dev.cobolonjava.runtime.file.RecordFormat;
+import dev.cobolonjava.job.utility.Utilities;
+import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -40,6 +42,8 @@ public final class JobRunner {
     private final ClassLoader loader;
     private final OutputStream out;
     private final CodePage codePage;
+    /** 結び付けられていない DD 名が指す先。データセットの置き場である。 */
+    private Path base = Path.of(".");
 
     public JobRunner(Path workDirectory, ClassLoader loader, OutputStream out, CodePage codePage) {
         this.workDirectory = workDirectory;
@@ -51,6 +55,12 @@ public final class JobRunner {
     /** 既定のコードページで実行する構成。 */
     public static JobRunner at(Path workDirectory, ClassLoader loader, OutputStream out) {
         return new JobRunner(workDirectory, loader, out, CodePages.DEFAULT);
+    }
+
+    /** データセットの置き場を差し替える。書かれていない DD 名はこの下を指す。 */
+    public JobRunner withBase(Path value) {
+        this.base = value;
+        return this;
     }
 
     /** ステップがどうなったか。 */
@@ -108,7 +118,7 @@ public final class JobRunner {
         }
         Path stepWork = workDirectory.resolve(job.name() + "." + step.name());
         createDirectory(stepWork);
-        DataSetCatalog catalog = new DataSetCatalog(stepWork);
+        DataSetCatalog catalog = new DataSetCatalog(base);
         List<Path> spools = new ArrayList<>();
         for (DdAssignment assignment : step.dd()) {
             spools.addAll(assign(catalog, stepWork, assignment));
@@ -119,8 +129,14 @@ public final class JobRunner {
                 .withOutput(out)
                 .withCatalog(catalog);
         try {
-            ProgramContext.Loaded loaded = context.resolve(step.program(), loader);
-            loaded.program().runFresh(context, arguments(step));
+            // ユーティリティは翻訳された資産ではない。名前で先に引き当てる (要件 FR-137)
+            CobolProgram utility = Utilities.find(step.program());
+            if (utility != null) {
+                utility.runFresh(context, arguments(step));
+            } else {
+                ProgramContext.Loaded loaded = context.resolve(step.program(), loader);
+                loaded.program().runFresh(context, arguments(step));
+            }
         } catch (ProgramNotFoundException e) {
             // ロードモジュールが見つからないのは異常終了である (要件 FR-141 の S806 相当)
             return abend(step, state, e.getMessage());

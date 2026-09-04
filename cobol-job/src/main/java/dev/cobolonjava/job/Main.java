@@ -77,7 +77,9 @@ public final class Main {
             return;
         }
 
-        JobRunner.Result result = JobRunner.at(work, loaderFor(classes), System.out).run(job);
+        JobRunner.Result result = JobRunner.at(work, loaderFor(classes), System.out)
+                .withBase(base)
+                .run(job);
         for (JobRunner.StepOutcome step : result.steps()) {
             System.err.println(describe(job.name(), step));
         }

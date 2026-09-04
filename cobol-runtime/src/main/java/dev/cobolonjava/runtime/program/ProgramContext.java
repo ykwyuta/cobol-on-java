@@ -182,6 +182,17 @@ public final class ProgramContext {
         return registers;
     }
 
+    /**
+     * 復帰コードを置く (要件 FR-084)。
+     *
+     * <p>ユーティリティのように、生成コードを通らずに復帰コードを立てるものが使う。
+     * 置き場は生成コードが読み書きするものと同じである。
+     */
+    public void setReturnCode(int value) {
+        registers.view(SpecialRegisterArea.RETURN_CODE_OFFSET, 2)
+                .setBytes(new byte[] {(byte) (value >> 8), (byte) value});
+    }
+
     /** {@code STOP RUN} のあとにプロセスの終了コードとなる値 (要件 FR-084)。 */
     public int returnCode() {
         byte[] bytes = registers.array();
