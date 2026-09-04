@@ -1,7 +1,7 @@
 package dev.cobolonjava.runtime.program;
 
 /**
- * {@code GOBACK} と手続き部の終わりによる<b>呼んだ側への復帰</b> (要件 FR-080)。
+ * {@code GOBACK} と手続き部の終わりによる<b>呼んだ側への復帰</b> (要件 FR-067)。
  *
  * <p>{@link ProgramStop} との違いは<b>どこまで抜けるか</b>である。{@code STOP RUN} は
  * 実行そのものを終える。{@code GOBACK} は 1 つ上へ戻るだけであり、副プログラムから

@@ -296,6 +296,12 @@ public final class ProcedureBuilder {
             return new Statement.GoTo(goTo.paragraphName().getText().toUpperCase(Locale.ROOT),
                     ReferenceResolver.originOf(goTo));
         }
+        if (context.initializeStatement() != null) {
+            return initializeOf(context.initializeStatement());
+        }
+        if (context.setStatement() != null) {
+            return setOf(context.setStatement());
+        }
         if (context.callStatement() != null) {
             return callOf(context.callStatement());
         }
@@ -597,6 +603,110 @@ public final class ProcedureBuilder {
     /** {@code NEXT SENTENCE} は「この文の残りを飛ばす」ことであり、いまは空の並びとする。 */
     private List<Statement> branchOf(CobolParser.IfBranchContext context) {
         return listOf(context.statement());
+    }
+
+    /**
+     * {@code INITIALIZE} (要件 FR-060)。
+     *
+     * <p>書き込むバイト列を翻訳時に組み立てる ({@link InitializeImage})。基本項目ごとの
+     * 転記へ素直に展開すると、表の反復の数だけ転記が並んでしまう。
+     */
+    private Statement initializeOf(CobolParser.InitializeStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        boolean withFiller = context.FILLER() != null;
+        List<InitializeImage.Replacing> replacing = new ArrayList<>();
+        for (CobolParser.InitializeReplacingContext rule : context.initializeReplacing()) {
+            if (rule.identifier() != null) {
+                // 値が実行時に決まる形は、反復の数だけ転記が並ぶことになる
+                report(origin, "INITIALIZE ... REPLACING BY a data item is not supported yet");
+                return null;
+            }
+            InitializeImage.Category category = categoryOf(rule.initializeCategory());
+            try {
+                replacing.add(new InitializeImage.Replacing(category,
+                        LiteralValue.of(rule.literal())));
+            } catch (RuntimeException e) {
+                report(origin, "invalid literal: " + rule.literal().getText());
+                return null;
+            }
+        }
+
+        List<Statement> statements = new ArrayList<>();
+        for (CobolParser.IdentifierContext identifier : context.identifier()) {
+            DataReference target = resolver.resolve(identifier);
+            if (target == null) {
+                return null;
+            }
+            if (target.refMod() != null) {
+                report(origin, "INITIALIZE cannot take a reference modification: "
+                        + describe(target));
+                return null;
+            }
+            statements.add(new Statement.Initialize(target, withFiller, replacing, origin));
+        }
+        return statements.size() == 1
+                ? statements.get(0)
+                : new Statement.Sequence(statements, origin);
+    }
+
+    private static InitializeImage.Category categoryOf(
+            CobolParser.InitializeCategoryContext context) {
+        if (context.ALPHABETIC() != null) {
+            return InitializeImage.Category.ALPHABETIC;
+        }
+        if (context.ALPHANUMERIC_EDITED() != null) {
+            return InitializeImage.Category.ALPHANUMERIC_EDITED;
+        }
+        if (context.ALPHANUMERIC() != null) {
+            return InitializeImage.Category.ALPHANUMERIC;
+        }
+        return context.NUMERIC_EDITED() != null
+                ? InitializeImage.Category.NUMERIC_EDITED
+                : InitializeImage.Category.NUMERIC;
+    }
+
+    /**
+     * {@code SET 条件名 TO TRUE} (要件 FR-068)。
+     *
+     * <p>条件名を成り立たせるとは、<b>親の項目にその条件名の値を入れる</b>ことである。
+     * 値が複数書かれていれば最初のものを入れる。範囲なら下限を入れる。
+     * したがって普通の {@code MOVE} へ展開できる。
+     */
+    private Statement setOf(CobolParser.SetStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement> moves = new ArrayList<>();
+        for (CobolParser.IdentifierContext identifier : context.identifier()) {
+            String name = identifier.qualifiedDataName().dataName(0).getText()
+                    .toUpperCase(Locale.ROOT);
+            Statement move = conditionNameMove(name, origin);
+            if (move == null) {
+                return null;
+            }
+            moves.add(move);
+        }
+        return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
+    }
+
+    private Statement conditionNameMove(String name, Origin origin) {
+        for (DataItem item : layout.all()) {
+            for (DataItem.ConditionName conditionName : item.conditionNames()) {
+                if (!name.equals(conditionName.name())) {
+                    continue;
+                }
+                if (conditionName.values().isEmpty()) {
+                    report(origin, "condition-name has no value: " + name);
+                    return null;
+                }
+                Operand source = new Operand.Literal(conditionName.values().get(0).from());
+                DataReference target = new DataReference(item, List.of(), null, origin);
+                Statement.Move.Target checked = checkMove(source, target, origin);
+                return checked == null
+                        ? null
+                        : new Statement.Move(source, List.of(checked), false, origin);
+            }
+        }
+        report(origin, "undefined condition-name: " + name);
+        return null;
     }
 
     /**

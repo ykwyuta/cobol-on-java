@@ -9,6 +9,7 @@ import dev.cobolonjava.compiler.semantic.DataSection;
 import dev.cobolonjava.compiler.semantic.Expression;
 import dev.cobolonjava.compiler.semantic.IntermediateDigits;
 import dev.cobolonjava.compiler.semantic.InitialImage;
+import dev.cobolonjava.compiler.semantic.InitializeImage;
 import dev.cobolonjava.compiler.semantic.LiteralValue;
 import dev.cobolonjava.compiler.semantic.Operand;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
@@ -284,6 +285,8 @@ public final class ProgramGenerator {
                 // STOP RUN は実行そのものを終え、GOBACK は呼んだ側へ戻る
                 String name = stop.wholeRun() ? "stopRun" : "programReturn";
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name, "()V", false));
+            } else if (statement instanceof Statement.Initialize initialize) {
+                planInitialize(initialize, body);
             } else if (statement instanceof Statement.Call call) {
                 planCall(call, body);
             } else if (statement instanceof Statement.Cancel cancel) {
@@ -668,6 +671,52 @@ public final class ProgramGenerator {
         run.visitLabel(noOverflow);
         otherwise.forEach(Runnable::run);
         run.visitLabel(end);
+    }
+
+    /**
+     * {@code INITIALIZE} を組み立てる (要件 FR-060)。
+     *
+     * <p>入る値は翻訳時に決まるので、<b>書き込むバイト列も決まる</b>。基本項目ごとの転記へ
+     * 展開せず、連続する部分ごとにまとめて 1 回で書く。表の反復の数だけ転記が並ぶのを
+     * 避けるためである。
+     *
+     * <p>{@code FILLER} と {@code REDEFINES} で重ねた項目は初期化しない。だから
+     * 一括で塗り潰すのではなく、書く場所だけを選んで書いている。
+     */
+    private void planInitialize(Statement.Initialize statement, List<Runnable> body) {
+        Runnable address = planAddress(statement.target(), statement.origin());
+        if (address == null) {
+            return;
+        }
+        InitializeImage.Result image = InitializeImage.build(statement.target().item(),
+                statement.withFiller(), statement.replacing(), codePage);
+        diagnostics.addAll(image.diagnostics());
+        if (!image.succeeded()) {
+            return;
+        }
+        if (image.runs().isEmpty()) {
+            // 何も書き込まない INITIALIZE は書き間違いである
+            report(statement.origin(), "INITIALIZE has nothing to initialize");
+            return;
+        }
+        for (InitializeImage.Run runSpec : image.runs()) {
+            String field = bytesConstant(runSpec.bytes());
+            int at = runSpec.offset();
+            int length = runSpec.bytes().length;
+            body.add(() -> {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+                address.run();
+                if (at != 0) {
+                    push(at);
+                    run.visitInsn(Opcodes.IADD);
+                }
+                push(length);
+                run.visitInsn(Opcodes.ICONST_0);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
+                        "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+            });
+        }
     }
 
     // ---- CALL ----

@@ -274,7 +274,8 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `MOVE` / `ADD` / `SUBTRACT` の `CORRESPONDING`、
 `COMPUTE` (加減乗除・括弧・単項符号)、
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
-`GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、`CALL` / `CANCEL`、
+`GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、`SET 条件名 TO TRUE`、
+`CALL` / `CANCEL`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。
@@ -355,6 +356,6 @@ COBOL のプログラム名から Java のクラス名を作る規則は<b>ラ�
 
 ## 次の増分
 
-1. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
-2. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
-3. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
+1. 反復を実行時のループとして出す形 (暫定判断 P-033)。`SEARCH` にも要る。
+2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
+3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。

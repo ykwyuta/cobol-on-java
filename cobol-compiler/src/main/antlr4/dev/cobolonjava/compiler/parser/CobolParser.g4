@@ -41,6 +41,8 @@ tokens {
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING, USING, REFERENCE, CONTENT,
     CALL, END_CALL, CANCEL, EXCEPTION,
+    INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
+    NUMERIC_EDITED,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -333,6 +335,8 @@ statement
     | exitStatement
     | callStatement
     | cancelStatement
+    | initializeStatement
+    | setStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -541,6 +545,29 @@ evaluateObject
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
 displayStatement
     : DISPLAY arithmeticOperand+ (UPON IDENTIFIER)? (WITH? NO ADVANCING)?
+    ;
+
+// INITIALIZE は配下の基本項目それぞれへの転記の集まりである
+initializeStatement
+    : INITIALIZE identifier+ (WITH? FILLER)?
+      (THEN? REPLACING initializeReplacing+)?
+    ;
+
+initializeReplacing
+    : initializeCategory DATA? BY (identifier | literal)
+    ;
+
+initializeCategory
+    : ALPHABETIC
+    | ALPHANUMERIC_EDITED
+    | ALPHANUMERIC
+    | NUMERIC_EDITED
+    | NUMERIC
+    ;
+
+// SET は条件名を成り立たせる形だけを扱う。指標名は未対応である
+setStatement
+    : SET identifier+ TO TRUE
     ;
 
 // 呼び先は文字定数か、実行時に名前が決まるデータ項目である

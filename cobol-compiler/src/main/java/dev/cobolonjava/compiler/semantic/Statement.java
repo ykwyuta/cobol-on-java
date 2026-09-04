@@ -391,6 +391,26 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code INITIALIZE} 文 (要件 FR-060)。
+     *
+     * <p>書き込むバイト列は翻訳時に決まるが、組み立てるのは<b>コード生成</b>である
+     * ({@link InitializeImage})。実行時のコードページを知っているのはそちらだからである。
+     * ここに持つのは書かれたとおりの指定だけである。
+     *
+     * @param target     初期化する項目
+     * @param withFiller {@code FILLER} も初期化するか
+     * @param replacing  {@code REPLACING} の指定
+     */
+    record Initialize(DataReference target, boolean withFiller,
+                      List<InitializeImage.Replacing> replacing, Origin origin)
+            implements Statement {
+
+        public Initialize {
+            replacing = List.copyOf(replacing);
+        }
+    }
+
+    /**
      * {@code GO TO} 文。
      *
      * <p>{@code PERFORM} と違い<b>戻ってこない</b>。段落の途中から別の段落へ移り、
