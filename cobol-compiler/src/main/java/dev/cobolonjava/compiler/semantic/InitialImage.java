@@ -91,6 +91,11 @@ public final class InitialImage {
         byte[] storage = new byte[layout.totalLength()];
         Arrays.fill(storage, codePage.space());
         for (DataItem record : layout.records()) {
+            if (record.section() == DataSection.LINKAGE) {
+                // 連絡節の項目は記憶域を持たない。初期値を書く先がない
+                builder.checkNoInitialValue(record);
+                continue;
+            }
             byte[] image = builder.repeat(builder.imageOf(record), record);
             images.add(new RecordImage(record, image));
             // 01 レベルの REDEFINES は同じ位置に重なる。書いた順に上書きされる
@@ -98,6 +103,20 @@ public final class InitialImage {
                     Math.min(image.length, storage.length - record.base()));
         }
         return new Result(List.copyOf(images), storage, List.copyOf(builder.diagnostics));
+    }
+
+    /**
+     * 連絡節に {@code VALUE} が書かれていないか確かめる。
+     *
+     * <p>初期化する先がないので、書かれていれば書き間違いである。規格も禁じている
+     * (88 レベルの条件名は別で、これは記憶域を占めない)。
+     */
+    private void checkNoInitialValue(DataItem item) {
+        if (hasInitialValue(item)) {
+            report(item.origin(), "VALUE is not allowed in the LINKAGE SECTION: "
+                    + describe(item));
+        }
+        item.children().forEach(this::checkNoInitialValue);
     }
 
     /** 項目 1 回分のイメージ。 */

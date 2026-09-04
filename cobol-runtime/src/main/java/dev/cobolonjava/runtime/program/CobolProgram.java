@@ -1,5 +1,6 @@
 package dev.cobolonjava.runtime.program;
 
+import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 
 /**
@@ -11,25 +12,38 @@ import dev.cobolonjava.runtime.storage.Storage;
  */
 public interface CobolProgram {
 
+    /** 引数のない呼び出し。 */
+    DataView[] NO_ARGUMENTS = new DataView[0];
+
     /** 作業場所の初期イメージ。{@code VALUE} 句から翻訳時に決まる。 */
     byte[] initialStorage();
 
     /**
      * 手続き部を実行する。
      *
-     * @param context {@code DISPLAY} の行き先など、外へ触れるための入口
+     * <p>連絡節の項目は<b>記憶域を持たない</b>。{@code PROCEDURE DIVISION USING} に
+     * 並べた順で {@code arguments} の要素に対応し、実体は呼ぶ側にある。
+     * 参照渡しであるから、書き換えは呼ぶ側から即座に見える。
+     *
+     * @param context   {@code DISPLAY} の行き先など、外へ触れるための入口
+     * @param arguments 呼ぶ側から渡された領域。{@code USING} の順に並ぶ
      */
-    void run(Storage storage, ProgramContext context);
+    void run(Storage storage, ProgramContext context, DataView[] arguments);
+
+    /** 引数を取らない実行。 */
+    default void run(Storage storage, ProgramContext context) {
+        run(storage, context, NO_ARGUMENTS);
+    }
 
     /**
      * 初期イメージから記憶域を作って実行する。
      *
      * <p>{@code STOP RUN} と {@code GOBACK} はここで受け止める。
      */
-    default Storage runFresh(ProgramContext context) {
+    default Storage runFresh(ProgramContext context, DataView... arguments) {
         Storage storage = Storage.wrap(initialStorage());
         try {
-            run(storage, context);
+            run(storage, context, arguments);
         } catch (ProgramStop stop) {
             // 実行が終わっただけであり、誤りではない
         }

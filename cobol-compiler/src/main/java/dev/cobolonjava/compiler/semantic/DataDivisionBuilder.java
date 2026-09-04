@@ -44,6 +44,7 @@ public final class DataDivisionBuilder {
     private static final int RENAMES_LEVEL = 66;
 
     private final List<Diagnostic> diagnostics = new ArrayList<>();
+    private DataSection currentSection = DataSection.WORKING_STORAGE;
     private final List<DataItem> records = new ArrayList<>();
     /** 開いている群項目。いちばん上が現在の親である。 */
     private final Deque<DataItem> open = new ArrayDeque<>();
@@ -83,10 +84,21 @@ public final class DataDivisionBuilder {
             return;
         }
         for (CobolParser.DataDivisionSectionContext section : unit.dataDivision().dataDivisionSection()) {
+            currentSection = sectionOf(section);
             for (CobolParser.DataDescriptionEntryContext entry : entriesOf(section)) {
                 addEntry(entry);
             }
         }
+        currentSection = DataSection.WORKING_STORAGE;
+    }
+
+    private static DataSection sectionOf(CobolParser.DataDivisionSectionContext section) {
+        if (section.workingStorageSection() != null) {
+            return DataSection.WORKING_STORAGE;
+        }
+        return section.localStorageSection() != null
+                ? DataSection.LOCAL_STORAGE
+                : DataSection.LINKAGE;
     }
 
     private static List<CobolParser.DataDescriptionEntryContext> entriesOf(
@@ -127,6 +139,7 @@ public final class DataDivisionBuilder {
 
         if (level == 1 || level == INDEPENDENT_LEVEL) {
             open.clear();
+            item.setSection(currentSection);
             records.add(item);
         } else {
             while (!open.isEmpty() && open.peek().level() >= level) {
@@ -275,10 +288,19 @@ public final class DataDivisionBuilder {
 
     // ---- 割り付け ----
 
+    /**
+     * 01 レベルを記憶域へ並べる。
+     *
+     * <p>連絡節の項目は<b>記憶域を占めない</b>。記憶域の位置は実行時に渡されるため、
+     * 位置は 0 のままにして、その中での位置だけを決める。
+     */
     private void layoutRecords() {
         int base = 0;
         for (DataItem record : records) {
             layout(record, 0);
+            if (record.section() == DataSection.LINKAGE) {
+                continue;
+            }
             if (record.redefinesName() != null) {
                 // 01 レベルの REDEFINES は記憶域を進めない。重ねる先と同じ位置から始まる
                 DataItem target = redefinedRecord(record);

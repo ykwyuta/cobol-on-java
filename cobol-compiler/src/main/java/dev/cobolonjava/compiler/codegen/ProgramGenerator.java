@@ -5,6 +5,7 @@ import dev.cobolonjava.compiler.semantic.Condition;
 import dev.cobolonjava.compiler.semantic.DataCategory;
 import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
+import dev.cobolonjava.compiler.semantic.DataSection;
 import dev.cobolonjava.compiler.semantic.Expression;
 import dev.cobolonjava.compiler.semantic.IntermediateDigits;
 import dev.cobolonjava.compiler.semantic.InitialImage;
@@ -28,6 +29,7 @@ import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramSupport;
+import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import dev.cobolonjava.runtime.verb.InspectScan;
 import dev.cobolonjava.runtime.verb.Region;
@@ -67,6 +69,7 @@ import org.objectweb.asm.Type;
  */
 public final class ProgramGenerator {
 
+    private static final String DATA_VIEW = Type.getInternalName(DataView.class);
     private static final String OPS = Type.getInternalName(Ops.class);
     private static final String SUPPORT = Type.getInternalName(ProgramSupport.class);
     private static final String STORAGE = Type.getInternalName(Storage.class);
@@ -81,30 +84,32 @@ public final class ProgramGenerator {
     private final CodePage codePage;
     /** {@code SSRANGE} が効いているか。効いていれば添字と部分参照の位置を実行時に検査する。 */
     private final boolean rangeChecks;
+    /** {@code PROCEDURE DIVISION USING} に並べた 01 レベル。連絡節の位置決めに使う。 */
+    private List<DataItem> parameters = List.of();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
     /** 静的初期化子で作る定数。綴りから field 名を引く。 */
     private final Map<String, Constant> constants = new LinkedHashMap<>();
 
-    /** 局所変数の 0 番は {@code this}、1 番は記憶域、2 番は実行時の入口である。 */
-    private static final int FIRST_FREE_LOCAL = 3;
+    /**
+     * 局所変数の 0 番は {@code this}、1 番は記憶域、2 番は実行時の入口、3 番は引数の並びである。
+     */
+    private static final int FIRST_FREE_LOCAL = 4;
 
-    /** 段落のメソッドと {@code run} の署名。 */
+    /** 記憶域・文脈・引数。手続き部を実行するメソッドはどれもこの 3 つを持ち回る。 */
+    private static final String FRAME =
+            "L" + Type.getInternalName(Storage.class) + ";"
+                    + Type.getDescriptor(ProgramContext.class)
+                    + "[" + Type.getDescriptor(DataView.class);
     /** 段落のメソッド。次にどこへ行くかを返す。 */
-    private static final String PARAGRAPH_DESCRIPTOR =
-            "(L" + Type.getInternalName(Storage.class) + ";"
-                    + Type.getDescriptor(ProgramContext.class) + ")I";
-    /** {@code dispatch(段落の番号, 記憶域, 文脈)}。 */
-    private static final String DISPATCH_DESCRIPTOR =
-            "(IL" + Type.getInternalName(Storage.class) + ";"
-                    + Type.getDescriptor(ProgramContext.class) + ")I";
-    /** {@code performRange(最初, 最後, 記憶域, 文脈)}。 */
-    private static final String PERFORM_DESCRIPTOR =
-            "(IIL" + Type.getInternalName(Storage.class) + ";"
-                    + Type.getDescriptor(ProgramContext.class) + ")V";
-    private static final String RUN_DESCRIPTOR =
-            "(L" + Type.getInternalName(Storage.class) + ";"
-                    + Type.getDescriptor(ProgramContext.class) + ")V";
+    private static final String PARAGRAPH_DESCRIPTOR = "(" + FRAME + ")I";
+    /** {@code dispatch(段落の番号, 記憶域, 文脈, 引数)}。 */
+    private static final String DISPATCH_DESCRIPTOR = "(I" + FRAME + ")I";
+    /** {@code performRange(最初, 最後, 記憶域, 文脈, 引数)}。 */
+    private static final String PERFORM_DESCRIPTOR = "(II" + FRAME + ")V";
+    /** 引数の並びが入る局所変数。0 が this、1 が記憶域、2 が文脈である。 */
+    private static final int ARGUMENTS_LOCAL = 3;
+    private static final String RUN_DESCRIPTOR = "(" + FRAME + ")V";
 
     private ClassWriter writer;
     private String internal;
@@ -171,6 +176,7 @@ public final class ProgramGenerator {
     }
 
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
+        parameters = procedure.parameters();
         writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         internal = className.replace('.', '/');
         writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER,
@@ -388,7 +394,7 @@ public final class ProgramGenerator {
      * 分からないため、結果を局所変数へ取ってから使う。
      */
     private void planString(Statement.StringStatement statement, List<Runnable> body) {
-        Runnable offset = planOffset(statement.target(), statement.origin());
+        Runnable offset = planAddress(statement.target(), statement.origin());
         OptionalInt length = lengthOf(statement.target(), statement.origin());
         if (offset == null || length.isEmpty()) {
             return;
@@ -419,7 +425,6 @@ public final class ProgramGenerator {
         List<Runnable> otherwise = planStatements(overflowOf(statement.overflow(), false));
 
         body.add(() -> {
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             push(length.getAsInt());
             pointer.run();
@@ -461,7 +466,7 @@ public final class ProgramGenerator {
     }
 
     private void planUnstring(Statement.Unstring statement, List<Runnable> body) {
-        Runnable offset = planOffset(statement.source(), statement.origin());
+        Runnable offset = planAddress(statement.source(), statement.origin());
         OptionalInt length = lengthOf(statement.source(), statement.origin());
         if (offset == null || length.isEmpty()) {
             return;
@@ -523,7 +528,6 @@ public final class ProgramGenerator {
         List<Runnable> otherwise = planStatements(overflowOf(statement.overflow(), false));
 
         body.add(() -> {
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             push(length.getAsInt());
             pointer.run();
@@ -544,7 +548,7 @@ public final class ProgramGenerator {
 
     private Runnable planUnstringTarget(Statement.Unstring.UnstringTarget target, int index,
                                         int result, Origin origin) {
-        Runnable fieldOffset = planOffset(target.field(), origin);
+        Runnable fieldOffset = planAddress(target.field(), origin);
         OptionalInt fieldLength = lengthOf(target.field(), origin);
         if (fieldOffset == null || fieldLength.isEmpty()) {
             return null;
@@ -553,7 +557,7 @@ public final class ProgramGenerator {
 
         Runnable delimiter = null;
         if (target.delimiter() != null) {
-            Runnable at = planOffset(target.delimiter(), origin);
+            Runnable at = planAddress(target.delimiter(), origin);
             OptionalInt size = lengthOf(target.delimiter(), origin);
             if (at == null || size.isEmpty()) {
                 return null;
@@ -562,7 +566,6 @@ public final class ProgramGenerator {
             delimiter = () -> {
                 run.visitVarInsn(Opcodes.ALOAD, result);
                 push(index);
-                run.visitVarInsn(Opcodes.ALOAD, 1);
                 at.run();
                 push(size.getAsInt());
                 run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
@@ -574,7 +577,7 @@ public final class ProgramGenerator {
 
         Runnable count = null;
         if (target.count() != null) {
-            Runnable at = planOffset(target.count(), origin);
+            Runnable at = planAddress(target.count(), origin);
             String field = numericItemConstant(target.count().item(), origin);
             if (at == null || field == null) {
                 return null;
@@ -583,7 +586,6 @@ public final class ProgramGenerator {
                 run.visitVarInsn(Opcodes.ALOAD, result);
                 push(index);
                 run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-                run.visitVarInsn(Opcodes.ALOAD, 1);
                 at.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringCount",
                         "(L" + resultType + ";I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
@@ -595,7 +597,6 @@ public final class ProgramGenerator {
         return () -> {
             run.visitVarInsn(Opcodes.ALOAD, result);
             push(index);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             fieldOffset.run();
             push(fieldLength.getAsInt());
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringField",
@@ -630,7 +631,7 @@ public final class ProgramGenerator {
         if (target == null) {
             return () -> { };
         }
-        Runnable offset = planOffset(target, origin);
+        Runnable offset = planAddress(target, origin);
         String field = numericItemConstant(target.item(), origin);
         if (offset == null || field == null) {
             return null;
@@ -639,7 +640,6 @@ public final class ProgramGenerator {
             run.visitVarInsn(Opcodes.ALOAD, result);
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, resultType, accessor, "()I", false);
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
                     "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
@@ -694,7 +694,7 @@ public final class ProgramGenerator {
      * ひとつの走査にまとめると、数える句が位置を取ってしまい置き換えが起きない。
      */
     private void planInspect(Statement.Inspect statement, List<Runnable> body) {
-        Runnable offset = planOffset(statement.target(), statement.origin());
+        Runnable offset = planAddress(statement.target(), statement.origin());
         OptionalInt length = lengthOf(statement.target(), statement.origin());
         if (offset == null || length.isEmpty()) {
             return;
@@ -729,7 +729,6 @@ public final class ProgramGenerator {
 
         body.add(() -> {
             if (!tallyClauses.isEmpty()) {
-                run.visitVarInsn(Opcodes.ALOAD, 1);
                 offset.run();
                 push(size);
                 emitClauseArray(tallyClauses);
@@ -739,7 +738,6 @@ public final class ProgramGenerator {
                 counters.forEach(Runnable::run);
             }
             if (!replaceClauses.isEmpty()) {
-                run.visitVarInsn(Opcodes.ALOAD, 1);
                 offset.run();
                 push(size);
                 emitClauseArray(replaceClauses);
@@ -843,7 +841,7 @@ public final class ProgramGenerator {
 
     private Runnable planTallyAdd(Statement.Inspect.InspectClause clause, int index, int array,
                                   Origin origin) {
-        Runnable offset = planOffset(clause.counter(), origin);
+        Runnable offset = planAddress(clause.counter(), origin);
         String field = numericItemConstant(clause.counter().item(), origin);
         if (offset == null || field == null) {
             return null;
@@ -853,7 +851,6 @@ public final class ProgramGenerator {
             push(index);
             run.visitInsn(Opcodes.IALOAD);
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "addTally",
                     "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
@@ -870,7 +867,6 @@ public final class ProgramGenerator {
             return;
         }
         body.add(() -> {
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             push(size);
             from.run();
@@ -1095,7 +1091,7 @@ public final class ProgramGenerator {
         if (value == null) {
             return null;
         }
-        Runnable offset = planOffset(target, origin);
+        Runnable offset = planAddress(target, origin);
         DataItem item = target.item();
         String field = numericItemConstant(item, origin);
         if (offset == null || field == null || item.picture() == null) {
@@ -1104,7 +1100,6 @@ public final class ProgramGenerator {
         return () -> {
             value.run();
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             loadRounding(rounding);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
@@ -1246,6 +1241,7 @@ public final class ProgramGenerator {
             dispatch.visitVarInsn(Opcodes.ALOAD, 0);
             dispatch.visitVarInsn(Opcodes.ALOAD, 2);
             dispatch.visitVarInsn(Opcodes.ALOAD, 3);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 4);
             dispatch.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, paragraphMethod(i),
                     PARAGRAPH_DESCRIPTOR, false);
             dispatch.visitInsn(Opcodes.IRETURN);
@@ -1275,8 +1271,8 @@ public final class ProgramGenerator {
         MethodVisitor perform = writer.visitMethod(Opcodes.ACC_PRIVATE, "performRange",
                 PERFORM_DESCRIPTOR, null, null);
         perform.visitCode();
-        int pc = 5;
-        int next = 6;
+        int pc = 6;
+        int next = 7;
         perform.visitVarInsn(Opcodes.ILOAD, 1);
         perform.visitVarInsn(Opcodes.ISTORE, pc);
 
@@ -1288,6 +1284,7 @@ public final class ProgramGenerator {
         perform.visitVarInsn(Opcodes.ILOAD, pc);
         perform.visitVarInsn(Opcodes.ALOAD, 3);
         perform.visitVarInsn(Opcodes.ALOAD, 4);
+        perform.visitVarInsn(Opcodes.ALOAD, 5);
         perform.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "dispatch",
                 DISPATCH_DESCRIPTOR, false);
         perform.visitVarInsn(Opcodes.ISTORE, next);
@@ -1365,6 +1362,7 @@ public final class ProgramGenerator {
         push(through);
         run.visitVarInsn(Opcodes.ALOAD, 1);
         run.visitVarInsn(Opcodes.ALOAD, 2);
+        run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
         run.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "performRange",
                 PERFORM_DESCRIPTOR, false);
     }
@@ -1375,7 +1373,7 @@ public final class ProgramGenerator {
 
     private void planMove(Statement.Move move, List<Runnable> body) {
         for (Statement.Move.Target target : move.targets()) {
-            Runnable offset = planOffset(target.reference(), move.origin());
+            Runnable offset = planAddress(target.reference(), move.origin());
             OptionalInt length = lengthOf(target.reference(), move.origin());
             if (offset == null || length.isEmpty()) {
                 return;
@@ -1398,7 +1396,6 @@ public final class ProgramGenerator {
         boolean justified = target.reference().item().justified();
         body.add(() -> {
             source.run();
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             push(length);
             run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
@@ -1422,7 +1419,6 @@ public final class ProgramGenerator {
         body.add(() -> {
             source.run();
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveNumeric",
                     "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
@@ -1439,7 +1435,6 @@ public final class ProgramGenerator {
         body.add(() -> {
             source.run();
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, PICTURE);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveNumericEdited",
@@ -1560,7 +1555,7 @@ public final class ProgramGenerator {
     /** 収まらなければ受取項目を変えず、条件を立てる格納。 */
     private Runnable planCheckedStore(Statement.Arithmetic.Target target, int slot, int flag,
                                       Origin origin) {
-        Runnable offset = planOffset(target.reference(), origin);
+        Runnable offset = planAddress(target.reference(), origin);
         DataItem item = target.reference().item();
         String field = numericItemConstant(item, origin);
         if (offset == null || field == null || item.picture() == null) {
@@ -1571,7 +1566,6 @@ public final class ProgramGenerator {
             Label done = new Label();
             run.visitVarInsn(Opcodes.ALOAD, slot);
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             loadRounding(rounding);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
@@ -1660,7 +1654,7 @@ public final class ProgramGenerator {
             return;
         }
         for (Statement.Arithmetic.Target target : statement.targets()) {
-            Runnable offset = planOffset(target.reference(), statement.origin());
+            Runnable offset = planAddress(target.reference(), statement.origin());
             if (offset == null) {
                 return;
             }
@@ -1678,7 +1672,6 @@ public final class ProgramGenerator {
                 String source = field;
                 value.add(() -> {
                     run.visitFieldInsn(Opcodes.GETSTATIC, internal, source, NUMERIC_ITEM);
-                    run.visitVarInsn(Opcodes.ALOAD, 1);
                     offset.run();
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
                             "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
@@ -1694,7 +1687,6 @@ public final class ProgramGenerator {
             body.add(() -> {
                 value.forEach(Runnable::run);
                 run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-                run.visitVarInsn(Opcodes.ALOAD, 1);
                 offset.run();
                 loadRounding(rounding);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
@@ -1894,7 +1886,7 @@ public final class ProgramGenerator {
 
     private Runnable planCheckedTarget(Statement.Arithmetic statement,
                                        Statement.Arithmetic.Target target, int flag) {
-        Runnable offset = planOffset(target.reference(), statement.origin());
+        Runnable offset = planAddress(target.reference(), statement.origin());
         if (offset == null) {
             return null;
         }
@@ -1949,7 +1941,6 @@ public final class ProgramGenerator {
 
             if (statement.accumulate() != null) {
                 run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-                run.visitVarInsn(Opcodes.ALOAD, 1);
                 offset.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
                         "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
@@ -1959,7 +1950,6 @@ public final class ProgramGenerator {
                 run.visitVarInsn(Opcodes.ALOAD, folded);
             }
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             loadRounding(rounding);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
@@ -2034,6 +2024,52 @@ public final class ProgramGenerator {
      * 位置 = 項目の変位 + Σ (添字 - 1) x その表の 1 回分の長さ
      * </pre>
      */
+    /**
+     * 記憶域と、その中の位置を<b>この順に</b>積む命令。
+     *
+     * <p>ランタイムの入口はどれも「記憶域」「位置」をこの順で取る。1 つの組にしてあるので、
+     * <b>記憶域が項目ごとに違っても</b>呼び出し側は変わらない。
+     *
+     * <p>連絡節の項目は記憶域を持たない。呼ぶ側から渡された領域が実体であり、
+     * 記憶域も位置もその領域から取る。
+     */
+    private Runnable planAddress(DataReference reference, Origin origin) {
+        Runnable offset = planOffset(reference, origin);
+        if (offset == null) {
+            return null;
+        }
+        DataItem record = reference.item().record();
+        if (record.section() != DataSection.LINKAGE) {
+            return () -> {
+                run.visitVarInsn(Opcodes.ALOAD, 1);
+                offset.run();
+            };
+        }
+        int index = parameters.indexOf(record);
+        if (index < 0) {
+            report(origin, "a LINKAGE SECTION item is not listed in PROCEDURE DIVISION USING: "
+                    + describe(record));
+            return null;
+        }
+        return () -> {
+            emitArgument(index);
+            run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, DATA_VIEW, "storage",
+                    "()L" + Type.getInternalName(Storage.class) + ";", false);
+            // 渡された領域の始まりからの位置になる
+            emitArgument(index);
+            run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, DATA_VIEW, "offset", "()I", false);
+            offset.run();
+            run.visitInsn(Opcodes.IADD);
+        };
+    }
+
+    /** {@code USING} の {@code index} 番目に渡された領域を積む。 */
+    private void emitArgument(int index) {
+        run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+        push(index);
+        run.visitInsn(Opcodes.AALOAD);
+    }
+
     private Runnable planOffset(DataReference reference, Origin origin) {
         OptionalInt constant = reference.absoluteOffset();
         if (constant.isPresent()) {
@@ -2168,13 +2204,12 @@ public final class ProgramGenerator {
             return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
         }
         DataReference reference = ((Operand.Reference) source).reference();
-        Runnable offset = planOffset(reference, origin);
+        Runnable offset = planAddress(reference, origin);
         OptionalInt length = lengthOf(reference, origin);
         if (offset == null || length.isEmpty()) {
             return null;
         }
         return () -> {
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             push(length.getAsInt());
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
@@ -2193,7 +2228,7 @@ public final class ProgramGenerator {
             return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, DECIMAL);
         }
         DataReference reference = ((Operand.Reference) source).reference();
-        Runnable offset = planOffset(reference, origin);
+        Runnable offset = planAddress(reference, origin);
         OptionalInt length = lengthOf(reference, origin);
         if (offset == null || length.isEmpty()) {
             return null;
@@ -2201,7 +2236,6 @@ public final class ProgramGenerator {
         if (!DataCategory.of(reference).isNumeric()) {
             // 英数字項目から数値項目への転記。送出側は符号なしの整数として読む
             return () -> {
-                run.visitVarInsn(Opcodes.ALOAD, 1);
                 offset.run();
                 push(length.getAsInt());
                 loadCodePage();
@@ -2215,7 +2249,6 @@ public final class ProgramGenerator {
         }
         return () -> {
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
                     "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);

@@ -42,8 +42,13 @@ public final class ProcedureBuilder {
         }
     }
 
-    /** 組み立ての結果。 */
-    public record Result(List<Paragraph> paragraphs, List<Diagnostic> diagnostics) {
+    /**
+     * 組み立ての結果。
+     *
+     * @param parameters {@code PROCEDURE DIVISION USING} に並べた 01 レベル。書かれた順
+     */
+    public record Result(List<Paragraph> paragraphs, List<DataItem> parameters,
+                         List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
             return diagnostics.isEmpty();
@@ -64,13 +69,51 @@ public final class ProcedureBuilder {
         List<Diagnostic> diagnostics = new ArrayList<>();
         ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics);
         List<Paragraph> paragraphs = new ArrayList<>();
+        List<DataItem> parameters = new ArrayList<>();
         for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
             if (unit.procedureDivision() != null) {
+                parameters.addAll(builder.parametersOf(unit.procedureDivision()));
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs);
             }
         }
         builder.checkProcedureTargets(paragraphs);
-        return new Result(List.copyOf(paragraphs), List.copyOf(diagnostics));
+        return new Result(List.copyOf(paragraphs), List.copyOf(parameters),
+                List.copyOf(diagnostics));
+    }
+
+    /**
+     * {@code PROCEDURE DIVISION USING} に並べた項目。
+     *
+     * <p>並べられるのは<b>連絡節の 01 レベル</b>だけである。作業場所の項目を並べても
+     * 渡される先がなく、01 レベル以外を並べても渡された領域の切り出し方が決まらない。
+     */
+    private List<DataItem> parametersOf(CobolParser.ProcedureDivisionContext context) {
+        List<DataItem> parameters = new ArrayList<>();
+        for (CobolParser.ProcedureParameterContext parameter : context.procedureParameter()) {
+            if (parameter.VALUE() != null) {
+                report(ReferenceResolver.originOf(parameter),
+                        "BY VALUE is not supported yet");
+                continue;
+            }
+            DataReference reference = resolver.resolve(parameter.identifier());
+            if (reference == null) {
+                continue;
+            }
+            DataItem item = reference.item();
+            Origin origin = ReferenceResolver.originOf(parameter);
+            if (item.section() != DataSection.LINKAGE) {
+                report(origin, "PROCEDURE DIVISION USING requires a LINKAGE SECTION item: "
+                        + describe(reference));
+                continue;
+            }
+            if (item != item.record()) {
+                report(origin, "PROCEDURE DIVISION USING requires an 01 level item: "
+                        + describe(reference));
+                continue;
+            }
+            parameters.add(item);
+        }
+        return parameters;
     }
 
     /**

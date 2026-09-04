@@ -39,7 +39,7 @@ tokens {
     COMPUTE, END_COMPUTE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
-    UPON, NO, ADVANCING,
+    UPON, NO, ADVANCING, USING, REFERENCE,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -291,8 +291,13 @@ subscript
 
 // ---- 手続き部 ----
 
+// USING に並べた項目が、呼ぶ側から渡される領域に対応する
 procedureDivision
-    : PROCEDURE DIVISION PERIOD procedureBody
+    : PROCEDURE DIVISION (USING procedureParameter+)? PERIOD procedureBody
+    ;
+
+procedureParameter
+    : (BY? (REFERENCE | VALUE))? identifier
     ;
 
 // 段落名を持たない文が先に来ることがある

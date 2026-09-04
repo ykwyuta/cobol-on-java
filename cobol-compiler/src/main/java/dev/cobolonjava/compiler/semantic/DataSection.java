@@ -1,0 +1,20 @@
+package dev.cobolonjava.compiler.semantic;
+
+/**
+ * データ部の節 (要件 FR-010, FR-070)。
+ *
+ * <p>どの節に書かれたかで<b>記憶域がどこにあるか</b>が変わる。作業場所節の項目は
+ * プログラム自身の記憶域を占める。連絡節の項目は<b>記憶域を持たない</b>。
+ * 呼ぶ側から渡された領域への窓であり、実体は呼ぶ側にある。
+ */
+public enum DataSection {
+
+    /** {@code WORKING-STORAGE SECTION}。プログラム自身の記憶域。 */
+    WORKING_STORAGE,
+
+    /** {@code LOCAL-STORAGE SECTION}。呼び出しのたびに作り直される記憶域。 */
+    LOCAL_STORAGE,
+
+    /** {@code LINKAGE SECTION}。記憶域を持たず、渡された領域への窓である。 */
+    LINKAGE
+}

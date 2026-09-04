@@ -40,6 +40,7 @@ public final class DataItem {
     private int offset;
     private int length;
     private int base;
+    private DataSection section = DataSection.WORKING_STORAGE;
 
     DataItem(int level, String name, Origin origin) {
         this.level = level;
@@ -132,9 +133,22 @@ public final class DataItem {
     /**
      * この項目が属する 01 レベルが、プログラムの記憶域上のどこから始まるか。
      * 01 レベルと独立項目以外では 0 である。
+     *
+     * <p>連絡節の項目では意味を持たない。記憶域の位置は<b>実行時に渡される</b>ためである。
      */
     public int base() {
         return base;
+    }
+
+    /**
+     * この項目が書かれた節。01 レベルに設定され、配下の項目は根のものを引き継ぐ。
+     */
+    public DataSection section() {
+        return record().sectionOfRecord();
+    }
+
+    private DataSection sectionOfRecord() {
+        return section;
     }
 
     /** この項目が属する 01 レベル (または独立項目)。 */
@@ -211,6 +225,10 @@ public final class DataItem {
 
     void setLength(int value) {
         this.length = value;
+    }
+
+    void setSection(DataSection value) {
+        this.section = value;
     }
 
     void setBase(int value) {
