@@ -19,6 +19,14 @@ public final class FileStatus {
     public static final String LENGTH_MISMATCH = "04";
     /** ファイルの終わり。 */
     public static final String AT_END = "10";
+    /** 鍵の順序が昇順でない ({@code ACCESS SEQUENTIAL} の {@code WRITE})。 */
+    public static final String KEY_SEQUENCE = "21";
+    /** 同じ鍵のレコードがすでにある。 */
+    public static final String DUPLICATE_KEY = "22";
+    /** その鍵のレコードがない。 */
+    public static final String NO_RECORD = "23";
+    /** 書ける範囲の外である (相対レコード番号が大きすぎる、領域が足りない)。 */
+    public static final String BOUNDARY = "24";
     /** 開こうとしたファイルがない。 */
     public static final String NOT_FOUND = "35";
     /** 開き方が編成に合わない。 */
@@ -45,5 +53,16 @@ public final class FileStatus {
     /** 成功したかどうか。先頭が {@code 0} なら成功か軽微な注意である。 */
     public static boolean succeeded(String status) {
         return status.charAt(0) == '0';
+    }
+
+    /**
+     * 鍵に関する誤りかどうか (要件 FR-103)。
+     *
+     * <p>先頭が {@code 2} のものが<b>無効鍵条件</b>である。{@code INVALID KEY} を書いて
+     * あればそこへ分岐する。順編成の {@code AT END} にあたるものが、鍵で引く編成では
+     * これになる。
+     */
+    public static boolean invalidKey(String status) {
+        return status.charAt(0) == '2';
     }
 }

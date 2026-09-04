@@ -7,6 +7,8 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -27,8 +29,19 @@ import java.util.Locale;
  * @param format       レコード様式
  * @param recordLength レコード長。行順では最大長として使う
  * @param codePage     文字の解釈。区切りの改行もここから引く
+ * @param emptySlots   相対編成の空きスロットの番号 (1 起点)。ほかの編成では空
  */
-public record DataSetAttributes(RecordFormat format, int recordLength, CodePage codePage) {
+public record DataSetAttributes(RecordFormat format, int recordLength, CodePage codePage,
+                                List<Integer> emptySlots) {
+
+    public DataSetAttributes {
+        emptySlots = List.copyOf(emptySlots);
+    }
+
+    /** 空きスロットを持たない構成。順編成と行順編成はこちらである。 */
+    public DataSetAttributes(RecordFormat format, int recordLength, CodePage codePage) {
+        this(format, recordLength, codePage, List.of());
+    }
 
     /** サイドカーがないときの既定。固定長 80 バイト、IBM-1047。 */
     public static DataSetAttributes standard() {
@@ -37,7 +50,18 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
 
     /** レコード長だけを差し替える。 */
     public DataSetAttributes withRecordLength(int value) {
-        return new DataSetAttributes(format, value, codePage);
+        return new DataSetAttributes(format, value, codePage, emptySlots);
+    }
+
+    /**
+     * 空きスロットを差し替える (要件 FR-100)。
+     *
+     * <p>相対編成では<b>どのスロットが使われているか</b>がバイト列から分からない。
+     * 消したスロットと空白だけのレコードは同じバイトになる。VSAM は制御情報として持っており、
+     * レコードのバイト列の外にある。したがってサイドカーに持つ (暫定判断 P-039)。
+     */
+    public DataSetAttributes withEmptySlots(List<Integer> values) {
+        return new DataSetAttributes(format, recordLength, codePage, values);
     }
 
     /** サイドカーのパス。 */
@@ -89,12 +113,36 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
         String value = text.substring(equals + 1).trim();
         return switch (name) {
             case "recfm" -> new DataSetAttributes(RecordFormat.of(value),
-                    attributes.recordLength(), attributes.codePage());
+                    attributes.recordLength(), attributes.codePage(), attributes.emptySlots());
             case "lrecl" -> attributes.withRecordLength(Integer.parseInt(value));
             case "codepage" -> new DataSetAttributes(attributes.format(),
-                    attributes.recordLength(), CodePages.forName(value));
+                    attributes.recordLength(), CodePages.forName(value), attributes.emptySlots());
+            case "empty" -> attributes.withEmptySlots(slotsOf(value));
             default -> attributes;
         };
+    }
+
+    /** {@code empty=2,5} の並びを読む。空きが 1 つもなければ行そのものを書かない。 */
+    private static List<Integer> slotsOf(String value) {
+        List<Integer> slots = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String text = part.trim();
+            if (!text.isEmpty()) {
+                slots.add(Integer.valueOf(text));
+            }
+        }
+        return slots;
+    }
+
+    private static String join(List<Integer> slots) {
+        StringBuilder sb = new StringBuilder();
+        for (int slot : slots) {
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(slot);
+        }
+        return sb.toString();
     }
 
     /** サイドカーを書く。データセットを作った側が属性を残すために使う。 */
@@ -105,7 +153,8 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
             case LINE -> "LINE";
         } + System.lineSeparator()
                 + "lrecl=" + recordLength + System.lineSeparator()
-                + "codepage=" + codePage.name() + System.lineSeparator();
+                + "codepage=" + codePage.name() + System.lineSeparator()
+                + (emptySlots.isEmpty() ? "" : "empty=" + join(emptySlots) + System.lineSeparator());
         try {
             Files.writeString(sidecarOf(data), text, StandardCharsets.UTF_8);
         } catch (IOException e) {
