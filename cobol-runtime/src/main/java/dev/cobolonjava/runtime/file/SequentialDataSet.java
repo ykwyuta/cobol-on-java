@@ -25,10 +25,11 @@ import java.util.List;
  * 差が出ず、レコードの切り出しに集中できる。大きなデータセットを流す形は、
  * 相対編成と索引編成を実装する段で改める (暫定判断 P-038)。
  */
-public final class SequentialDataSet {
+public final class SequentialDataSet implements DataSet {
 
     private final Path path;
-    private final DataSetAttributes attributes;
+    /** 開くたびにサイドカーから読み直す。バイト列を切り分けた属性が正だからである。 */
+    private DataSetAttributes attributes;
 
     private OpenMode mode;
     private List<byte[]> records;

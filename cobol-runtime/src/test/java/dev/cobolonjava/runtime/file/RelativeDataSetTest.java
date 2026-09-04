@@ -300,4 +300,46 @@ class RelativeDataSetTest {
         assertTrue(!FileStatus.invalidKey(FileStatus.OK));
         assertTrue(!FileStatus.invalidKey(FileStatus.AT_END));
     }
+
+    @Test
+    @DisplayName("同じ入れ物で開き直しても空きスロットは持ち越さない (FR-100)")
+    void reopeningRereadsTheEmptySlots() {
+        // 1 つの実行の中で、書いてから開き直す。同じ入れ物を使い回すことになる
+        RelativeDataSet file = at("R.DAT");
+        file.open(OpenMode.OUTPUT, false);
+        file.writeAt(1, bytes("aaa"));
+        file.writeAt(3, bytes("ccc"));
+        file.close();
+
+        file.open(OpenMode.IO, false);
+        // 2 番は書いていない。開いたときに読み直さなければ、空白のレコードとして見えてしまう
+        assertEquals(FileStatus.NO_RECORD, file.readAt(2, area()));
+        assertEquals(FileStatus.OK, file.deleteAt(3));
+        file.close();
+
+        file.open(OpenMode.INPUT, false);
+        assertEquals(FileStatus.OK, file.readAt(1, area()));
+        assertEquals(FileStatus.NO_RECORD, file.readAt(3, area()));
+    }
+
+    @Test
+    @DisplayName("空きがなくなればサイドカーから行が消える (FR-100)")
+    void anEmptyListLeavesNoLine() throws IOException {
+        RelativeDataSet file = at("R.DAT");
+        file.open(OpenMode.OUTPUT, false);
+        file.writeAt(2, bytes("bbb"));
+        file.close();
+        assertEquals(List.of(1), RelativeDataSet.at(directory.resolve("R.DAT"), SLOTS)
+                .attributes().emptySlots());
+
+        // 穴を埋めれば、空きの一覧は空になる
+        file.open(OpenMode.IO, false);
+        file.writeAt(1, bytes("aaa"));
+        file.close();
+
+        assertEquals(List.of("recfm=F", "lrecl=3", "codepage=IBM-1047"),
+                Files.readAllLines(DataSetAttributes.sidecarOf(directory.resolve("R.DAT"))));
+        assertEquals(List.of(), RelativeDataSet.at(directory.resolve("R.DAT"), SLOTS)
+                .attributes().emptySlots());
+    }
 }

@@ -3,6 +3,7 @@ package dev.cobolonjava.compiler.semantic;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.OpenMode;
 import java.util.ArrayList;
 import java.util.List;
@@ -222,7 +223,23 @@ public final class ProcedureBuilder {
             return overflowStatements(unstring.overflow());
         }
         if (statement instanceof Statement.Read read) {
-            return List.of(read.atEnd(), read.notAtEnd());
+            List<List<Statement>> nested = new ArrayList<>();
+            nested.add(read.atEnd());
+            nested.add(read.notAtEnd());
+            nested.addAll(keyCheckStatements(read.keyCheck()));
+            return List.copyOf(nested);
+        }
+        if (statement instanceof Statement.Write write) {
+            return keyCheckStatements(write.keyCheck());
+        }
+        if (statement instanceof Statement.Rewrite rewrite) {
+            return keyCheckStatements(rewrite.keyCheck());
+        }
+        if (statement instanceof Statement.Delete delete) {
+            return keyCheckStatements(delete.keyCheck());
+        }
+        if (statement instanceof Statement.Start start) {
+            return keyCheckStatements(start.keyCheck());
         }
         if (statement instanceof Statement.Search search) {
             List<List<Statement>> nested = new ArrayList<>();
@@ -241,6 +258,12 @@ public final class ProcedureBuilder {
         return sizeError == null
                 ? List.of()
                 : List.of(sizeError.onError(), sizeError.otherwise());
+    }
+
+    private static List<List<Statement>> keyCheckStatements(Statement.KeyCheck keyCheck) {
+        return keyCheck == null
+                ? List.of()
+                : List.of(keyCheck.onInvalid(), keyCheck.otherwise());
     }
 
     private static List<List<Statement>> overflowStatements(Statement.Overflow overflow) {
@@ -359,6 +382,12 @@ public final class ProcedureBuilder {
         }
         if (context.rewriteStatement() != null) {
             return rewriteOf(context.rewriteStatement());
+        }
+        if (context.deleteStatement() != null) {
+            return deleteOf(context.deleteStatement());
+        }
+        if (context.startStatement() != null) {
+            return startOf(context.startStatement());
         }
         if (context.exitStatement() != null) {
             // EXIT は何もしない。CONTINUE と同じ扱いでよい
@@ -2202,14 +2231,34 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
+        boolean next = context.NEXT() != null;
+        if (next && file.access() != FileDescription.Access.DYNAMIC) {
+            // NEXT と書けるのは動的アクセスだけである。ほかの様式では意味が決まっている
+            report(origin, "READ ... NEXT requires ACCESS MODE IS DYNAMIC");
+            return null;
+        }
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
                 : listOf(context.atEndPhrase().statement());
         List<Statement> notAtEnd = context.notAtEndPhrase() == null
                 ? List.of()
                 : listOf(context.notAtEndPhrase().statement());
+        Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
+                context.notInvalidKeyPhrase(), file, readsByKey(file, next), origin);
+        if (keyCheck == null && context.invalidKeyPhrase() != null) {
+            return null;
+        }
         // listOf は組み立てられなかった文を落とす。誤りは診断として残っている
-        return new Statement.Read(file, into, atEnd, notAtEnd, origin);
+        return new Statement.Read(file, next, into, atEnd, notAtEnd, keyCheck, origin);
+    }
+
+    /** その {@code READ} が鍵で引く形かどうか。動的アクセスでは {@code NEXT} の有無で決まる。 */
+    private static boolean readsByKey(FileDescription file, boolean next) {
+        return switch (file.access()) {
+            case SEQUENTIAL -> false;
+            case RANDOM -> true;
+            case DYNAMIC -> !next;
+        };
     }
 
     /**
@@ -2231,7 +2280,13 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
-        return new Statement.Write(files.get(record.fileName()), record, from, origin);
+        FileDescription file = files.get(record.fileName());
+        Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
+                context.notInvalidKeyPhrase(), file, file.isKeyed(), origin);
+        if (keyCheck == null && context.invalidKeyPhrase() != null) {
+            return null;
+        }
+        return new Statement.Write(file, record, from, keyCheck, origin);
     }
 
     /**
@@ -2253,7 +2308,115 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
-        return new Statement.Rewrite(files.get(record.fileName()), record, from, origin);
+        FileDescription file = files.get(record.fileName());
+        Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
+                context.notInvalidKeyPhrase(), file, file.isKeyed(), origin);
+        if (keyCheck == null && context.invalidKeyPhrase() != null) {
+            return null;
+        }
+        return new Statement.Rewrite(file, record, from, keyCheck, origin);
+    }
+
+    /**
+     * {@code DELETE} を組み立てる (要件 FR-101, FR-102)。
+     *
+     * <p>消せるのは鍵で引く編成だけである。順編成には「そのレコードだけを消す」場所がない。
+     */
+    private Statement deleteOf(CobolParser.DeleteStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        FileDescription file = fileOf(context.IDENTIFIER().getText(), origin);
+        if (file == null) {
+            return null;
+        }
+        if (!file.isKeyed()) {
+            report(origin, "DELETE requires a RELATIVE or INDEXED file: " + file.name());
+            return null;
+        }
+        Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
+                context.notInvalidKeyPhrase(), file, true, origin);
+        if (keyCheck == null && context.invalidKeyPhrase() != null) {
+            return null;
+        }
+        return new Statement.Delete(file, keyCheck, origin);
+    }
+
+    /**
+     * {@code START} を組み立てる (要件 FR-101)。
+     *
+     * <p>鍵を省略すれば、そのファイルの鍵そのものと等しいレコードを探す。
+     */
+    private Statement startOf(CobolParser.StartStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        FileDescription file = fileOf(context.IDENTIFIER().getText(), origin);
+        if (file == null) {
+            return null;
+        }
+        if (!file.isKeyed()) {
+            report(origin, "START requires a RELATIVE or INDEXED file: " + file.name());
+            return null;
+        }
+        DataReference key = file.relativeKey();
+        if (context.identifier() != null) {
+            key = resolver.resolve(context.identifier());
+        }
+        if (key == null) {
+            report(origin, "START needs a key; declare RELATIVE KEY or name one: " + file.name());
+            return null;
+        }
+        KeyRelation relation = KeyRelation.EQUAL;
+        if (context.relationalOperator() != null) {
+            relation = relationOf(comparisonOf(context.relationalOperator()), origin);
+            if (relation == null) {
+                return null;
+            }
+        }
+        Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
+                context.notInvalidKeyPhrase(), file, true, origin);
+        if (keyCheck == null && context.invalidKeyPhrase() != null) {
+            return null;
+        }
+        return new Statement.Start(file, key, relation, keyCheck, origin);
+    }
+
+    /** {@code KEY IS} の関係。等しくないものは探せない。範囲の端が決まらないからである。 */
+    private KeyRelation relationOf(Condition.Comparison comparison, Origin origin) {
+        if (comparison == null) {
+            report(origin, "START does not understand this KEY relation");
+            return null;
+        }
+        return switch (comparison) {
+            case EQUAL -> KeyRelation.EQUAL;
+            case GREATER -> KeyRelation.GREATER;
+            case GREATER_OR_EQUAL -> KeyRelation.NOT_LESS;
+            case LESS -> KeyRelation.LESS;
+            case LESS_OR_EQUAL -> KeyRelation.NOT_GREATER;
+            case NOT_EQUAL -> {
+                report(origin, "START KEY IS NOT EQUAL does not name a position");
+                yield null;
+            }
+        };
+    }
+
+    /**
+     * {@code INVALID KEY} と {@code NOT INVALID KEY} (要件 FR-103)。
+     *
+     * @param keyed その文が鍵で引く形かどうか。そうでなければ書けない
+     */
+    private Statement.KeyCheck keyCheckOf(CobolParser.InvalidKeyPhraseContext onInvalid,
+                                          CobolParser.NotInvalidKeyPhraseContext otherwise,
+                                          FileDescription file, boolean keyed, Origin origin) {
+        if (onInvalid == null && otherwise == null) {
+            return null;
+        }
+        if (!keyed) {
+            // 鍵で引かない文に INVALID KEY を書いても、通ることがない
+            report(origin, "INVALID KEY is not allowed here; " + file.name()
+                    + " is not accessed by a key");
+            return null;
+        }
+        return new Statement.KeyCheck(
+                onInvalid == null ? List.of() : listOf(onInvalid.statement()),
+                otherwise == null ? List.of() : listOf(otherwise.statement()));
     }
 
     /** レコード名から、その {@code FD} 配下のレコード記述を引く。 */

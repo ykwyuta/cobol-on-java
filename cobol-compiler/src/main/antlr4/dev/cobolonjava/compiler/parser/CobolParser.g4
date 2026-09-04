@@ -34,6 +34,7 @@ tokens {
     CURRENCY, DECIMAL_POINT,
     INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
+    RELATIVE, RANDOM, DYNAMIC,
 
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
@@ -50,6 +51,7 @@ tokens {
     UP, DOWN, SEARCH, END_SEARCH, AT,
     OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
     END_READ, END_WRITE, REWRITE, END_REWRITE, INVALID, FD, RECORD,
+    DELETE, END_DELETE, START, END_START,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -141,10 +143,12 @@ selectEntry
     ;
 
 selectClause
-    : ORGANIZATION IS? LINE? SEQUENTIAL
-    | ACCESS MODE? IS? SEQUENTIAL
+    : ORGANIZATION IS? (LINE? SEQUENTIAL | RELATIVE | INDEXED)
+    | ACCESS MODE? IS? (SEQUENTIAL | RANDOM | DYNAMIC)
     | FILE STATUS IS? identifier
     | RECORDING MODE? IS? IDENTIFIER
+    | RELATIVE KEY? IS? identifier
+    | RECORD KEY? IS? identifier
     ;
 
 configurationSection
@@ -427,6 +431,8 @@ statement
     | readStatement
     | writeStatement
     | rewriteStatement
+    | deleteStatement
+    | startStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -653,20 +659,43 @@ closeStatement
 
 // AT END はファイルの終わりに来たときだけ通る
 readStatement
-    : READ IDENTIFIER RECORD? (INTO identifier)? atEndPhrase? notAtEndPhrase? END_READ?
+    : READ IDENTIFIER NEXT? RECORD? (INTO identifier)?
+      atEndPhrase? notAtEndPhrase? invalidKeyPhrase? notInvalidKeyPhrase? END_READ?
     ;
 
 notAtEndPhrase
     : NOT AT? END statement+
     ;
 
+// INVALID KEY は鍵で引く編成の AT END にあたる
+invalidKeyPhrase
+    : INVALID KEY? statement+
+    ;
+
+notInvalidKeyPhrase
+    : NOT INVALID KEY? statement+
+    ;
+
 writeStatement
-    : WRITE IDENTIFIER (FROM identifier)? END_WRITE?
+    : WRITE IDENTIFIER (FROM identifier)?
+      invalidKeyPhrase? notInvalidKeyPhrase? END_WRITE?
     ;
 
 // REWRITE が書き換えるのは、直前に読んだレコードである
 rewriteStatement
-    : REWRITE IDENTIFIER (FROM identifier)? END_REWRITE?
+    : REWRITE IDENTIFIER (FROM identifier)?
+      invalidKeyPhrase? notInvalidKeyPhrase? END_REWRITE?
+    ;
+
+// DELETE に書くのはファイル名である。消す相手は鍵か、直前に読んだレコードである
+deleteStatement
+    : DELETE IDENTIFIER RECORD? invalidKeyPhrase? notInvalidKeyPhrase? END_DELETE?
+    ;
+
+// START は読まずに位置だけを決める
+startStatement
+    : START IDENTIFIER (KEY relationalOperator identifier)?
+      invalidKeyPhrase? notInvalidKeyPhrase? END_START?
     ;
 
 // SEARCH は表を順に見る。SEARCH ALL は 2 分探索であり、条件の形が限られる

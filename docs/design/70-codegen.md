@@ -276,7 +276,8 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
 `GO TO`、`DISPLAY`、`ACCEPT`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、`SET`、
 `SEARCH` / `SEARCH ALL`、`CALL` / `CANCEL`、
-`OPEN` / `READ` / `WRITE` / `REWRITE` / `CLOSE` (`INTO` / `FROM` / `AT END` / `NOT AT END`)、
+`OPEN` / `READ` / `WRITE` / `REWRITE` / `DELETE` / `START` / `CLOSE`
+(`INTO` / `FROM` / `NEXT` / `AT END` / `NOT AT END` / `INVALID KEY` / `NOT INVALID KEY`)、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。
@@ -317,9 +318,10 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 成功したかどうかの判定にもう 1 度使うためである。分岐は 3 方向になる。
 
 ```
-fileAtEnd ?  → AT END の文
-fileSucceeded ? → INTO の転記 → NOT AT END の文
-それ以外        → どちらも通らない
+fileAtEnd ?     → AT END の文
+fileInvalidKey ? → INVALID KEY の文
+fileSucceeded ? → INTO の転記 → NOT AT END と NOT INVALID KEY の文
+それ以外        → どれも通らない
 ```
 
 誤りのときにレコード領域の中身は決まっていない。読めたことにして先へ進めるわけには
@@ -328,6 +330,15 @@ fileSucceeded ? → INTO の転記 → NOT AT END の文
 可変長では、読めたあとに<b>実際の長さを `DEPENDING ON` の項目へ入れる</b>
 (要件 FR-106)。書くときはその逆で、項目の値を読んでレコード長にする。長さそのものが
 データなので、翻訳時には決まらず実行時に読む。
+
+## アクセス様式は翻訳時に効く
+
+同じ `READ` でも、`ACCESS MODE` によって呼ぶ先が変わる。順なら次のレコード、乱なら鍵で引く。
+動的はその両方を持ち、`READ ... NEXT` と書いたときだけ順になる。
+
+<b>どちらを呼ぶかは生成時に決まる</b>。様式は `SELECT` に書いてあり、翻訳時に分かっている。
+実行時に様式で分岐することはない。`WRITE` / `REWRITE` / `DELETE` も同じで、
+鍵で引く様式なら番号を渡す入口を呼ぶ。
 
 ## CALL はクラスローダを持ち回る
 
@@ -427,4 +438,4 @@ COBOL のプログラム名から Java のクラス名を作る規則は<b>ラ�
 1. 反復を実行時のループとして出す形 (暫定判断 P-033)。
 2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
 3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
-4. 相対編成と索引編成 ([設計 80](80-file-io.md) の第 3 段)。
+4. 索引編成 ([設計 80](80-file-io.md) の第 3 段の残り)。

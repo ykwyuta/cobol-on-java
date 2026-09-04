@@ -3,6 +3,7 @@ package dev.cobolonjava.compiler.semantic;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,19 +20,52 @@ import java.util.Map;
  *
  * @param name         {@code SELECT} と {@code FD} に書かれたファイル名
  * @param ddName       {@code ASSIGN TO} に書かれた DD 名
- * @param format       レコード様式。{@code ORGANIZATION} から決まる
+ * @param organization ファイル編成。レコードをどう探すかを決める
+ * @param format       レコード様式。どこでレコードが切れるかを決める
+ * @param access       アクセス様式。文の意味がこれで変わる
  * @param status       {@code FILE STATUS} の項目。書かれていなければ {@code null}
  * @param optional     {@code SELECT OPTIONAL}。ないファイルを開いてもよい
+ * @param relativeKey  {@code RELATIVE KEY} の項目。相対編成以外では {@code null}
  * @param records      {@code FD} 配下のレコード記述。すべて同じ領域に重なる
  * @param recordLength レコード長。{@code FD} 配下の記述から決まる
  * @param varying      可変長の指定。固定長なら {@code null}
  */
-public record FileDescription(String name, String ddName, RecordFormat format,
-                              DataReference status, boolean optional, List<DataItem> records,
-                              int recordLength, Varying varying, Origin origin) {
+public record FileDescription(String name, String ddName, Organization organization,
+                              RecordFormat format, Access access, DataReference status,
+                              boolean optional, DataReference relativeKey,
+                              List<DataItem> records, int recordLength, Varying varying,
+                              Origin origin) {
 
     public FileDescription {
         records = List.copyOf(records);
+    }
+
+    /**
+     * アクセス様式 (要件 FR-101)。
+     *
+     * <p>同じ {@code READ} でも様式で意味が変わる。順なら次のレコード、乱なら鍵で引く。
+     * 動的はその両方を持ち、{@code READ ... NEXT} と書いたときだけ順になる。
+     */
+    public enum Access {
+
+        /** 順アクセス。前から順にたどる。 */
+        SEQUENTIAL,
+
+        /** 乱アクセス。鍵で引く。 */
+        RANDOM,
+
+        /** 動的アクセス。順と乱の両方。 */
+        DYNAMIC;
+
+        /** 鍵で引く形かどうか。 */
+        public boolean isKeyed() {
+            return this != SEQUENTIAL;
+        }
+    }
+
+    /** 鍵で引く編成かどうか。{@code START} と {@code DELETE} が書けるかが決まる。 */
+    public boolean isKeyed() {
+        return organization == Organization.RELATIVE || organization == Organization.INDEXED;
     }
 
     /**
@@ -67,8 +101,9 @@ public record FileDescription(String name, String ddName, RecordFormat format,
      * <p>レコード長は {@code FD} を読まなければ決まらない。環境部の解析の時点では
      * データ部をまだ見ていないので、2 段に分ける。
      */
-    record Selected(String name, String ddName, RecordFormat format, boolean optional,
-                    CobolParser.IdentifierContext status, Origin origin) {
+    record Selected(String name, String ddName, Organization organization, RecordFormat format,
+                    Access access, boolean optional, CobolParser.IdentifierContext status,
+                    CobolParser.IdentifierContext relativeKey, Origin origin) {
     }
 
     /** 環境部の {@code SELECT} 句を読む。 */
@@ -102,19 +137,50 @@ public record FileDescription(String name, String ddName, RecordFormat format,
                 ? unquote(entry.LITERAL().getText())
                 : names.get(1).getText().toUpperCase(Locale.ROOT);
 
+        Organization organization = Organization.SEQUENTIAL;
         RecordFormat format = RecordFormat.FIXED;
+        Access access = Access.SEQUENTIAL;
         CobolParser.IdentifierContext status = null;
+        CobolParser.IdentifierContext relativeKey = null;
         for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
             if (clause.ORGANIZATION() != null) {
+                organization = organizationOf(clause);
                 // 行順編成だけが切り出し方の違う編成である
-                format = clause.LINE() != null ? RecordFormat.LINE : RecordFormat.FIXED;
+                format = organization == Organization.LINE_SEQUENTIAL
+                        ? RecordFormat.LINE
+                        : RecordFormat.FIXED;
+            } else if (clause.ACCESS() != null) {
+                access = accessOf(clause);
             } else if (clause.STATUS() != null) {
                 status = clause.identifier();
+            } else if (clause.RELATIVE() != null) {
+                relativeKey = clause.identifier();
+            } else if (clause.RECORD() != null) {
+                diagnostics.add(new Diagnostic(origin,
+                        "RECORD KEY is not supported yet; INDEXED files are the next increment"));
             } else if (clause.RECORDING() != null) {
                 format = recordingOf(clause.IDENTIFIER().getText(), format, origin, diagnostics);
             }
         }
-        return new Selected(name, ddName, format, entry.OPTIONAL() != null, status, origin);
+        return new Selected(name, ddName, organization, format, access, entry.OPTIONAL() != null,
+                status, relativeKey, origin);
+    }
+
+    private static Organization organizationOf(CobolParser.SelectClauseContext clause) {
+        if (clause.RELATIVE() != null) {
+            return Organization.RELATIVE;
+        }
+        if (clause.INDEXED() != null) {
+            return Organization.INDEXED;
+        }
+        return clause.LINE() != null ? Organization.LINE_SEQUENTIAL : Organization.SEQUENTIAL;
+    }
+
+    private static Access accessOf(CobolParser.SelectClauseContext clause) {
+        if (clause.RANDOM() != null) {
+            return Access.RANDOM;
+        }
+        return clause.DYNAMIC() != null ? Access.DYNAMIC : Access.SEQUENTIAL;
     }
 
     /** {@code RECORDING MODE} の綴り。不定長 (U) はまだ扱わない。 */
@@ -159,6 +225,17 @@ public record FileDescription(String name, String ddName, RecordFormat format,
                 format = recordingOf(recording, format, one.origin(), diagnostics);
             }
             Varying varying = varyingOf(entry, length, resolver, diagnostics);
+            if (one.organization() == Organization.RELATIVE && format == RecordFormat.VARIABLE) {
+                diagnostics.add(new Diagnostic(one.origin(),
+                        "a RELATIVE file cannot have variable-length records"));
+                continue;
+            }
+            if (varying != null && one.organization() == Organization.RELATIVE) {
+                // 相対編成のスロットは固定長である。長さが違えば番号が住所にならない
+                diagnostics.add(new Diagnostic(one.origin(),
+                        "a RELATIVE file cannot have variable-length records"));
+                continue;
+            }
             if (varying != null) {
                 // RECORD IS VARYING と書けば、様式は可変長である
                 format = RecordFormat.VARIABLE;
@@ -173,9 +250,17 @@ public record FileDescription(String name, String ddName, RecordFormat format,
                         "FILE STATUS requires a two-character item"));
                 continue;
             }
+            DataReference relativeKey = relativeKeyOf(one, varying, resolver, diagnostics);
+            if (one.relativeKey() != null && relativeKey == null) {
+                continue;
+            }
+            if (!checkOrganization(one, relativeKey, diagnostics)) {
+                continue;
+            }
             if (files.putIfAbsent(one.name(),
-                    new FileDescription(one.name(), one.ddName(), format, status, one.optional(),
-                            area, length, varying, one.origin())) != null) {
+                    new FileDescription(one.name(), one.ddName(), one.organization(), format,
+                            one.access(), status, one.optional(), relativeKey, area, length,
+                            varying, one.origin())) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }
         }
@@ -186,6 +271,64 @@ public record FileDescription(String name, String ddName, RecordFormat format,
             }
         }
         return new Result(Map.copyOf(files), List.copyOf(diagnostics));
+    }
+
+    /**
+     * {@code RELATIVE KEY} の項目 (要件 FR-101)。
+     *
+     * <p>相対レコード番号を持つ入れ物である。<b>符号なしの整数</b>でなければならない。
+     * 番号なので小数点も符号も意味を持たない。
+     */
+    private static DataReference relativeKeyOf(Selected one, Varying varying,
+                                               ReferenceResolver resolver,
+                                               List<Diagnostic> diagnostics) {
+        if (one.relativeKey() == null) {
+            return null;
+        }
+        DataReference key = resolver.resolve(one.relativeKey());
+        if (key == null) {
+            return null;
+        }
+        if (!DataCategory.of(key).isNumeric()) {
+            diagnostics.add(new Diagnostic(one.origin(),
+                    "RELATIVE KEY requires an unsigned integer item"));
+            return null;
+        }
+        return key;
+    }
+
+    /**
+     * 編成とアクセス様式と鍵の組み合わせを検査する (要件 FR-100, FR-101)。
+     *
+     * <p>組み合わせには<b>成り立たないもの</b>がある。順編成に番号で引く鍵はないし、
+     * 鍵なしで乱アクセスはできない。
+     */
+    private static boolean checkOrganization(Selected one, DataReference relativeKey,
+                                             List<Diagnostic> diagnostics) {
+        Origin origin = one.origin();
+        if (one.organization() == Organization.INDEXED) {
+            diagnostics.add(new Diagnostic(origin,
+                    "ORGANIZATION INDEXED is not supported yet"));
+            return false;
+        }
+        boolean relative = one.organization() == Organization.RELATIVE;
+        if (!relative && relativeKey != null) {
+            diagnostics.add(new Diagnostic(origin,
+                    "RELATIVE KEY requires ORGANIZATION IS RELATIVE"));
+            return false;
+        }
+        if (!relative && one.access().isKeyed()) {
+            diagnostics.add(new Diagnostic(origin, "ACCESS MODE " + one.access()
+                    + " requires a keyed organization"));
+            return false;
+        }
+        if (relative && one.access().isKeyed() && relativeKey == null) {
+            // 鍵で引くと言われても、番号の置き場がなければ引けない
+            diagnostics.add(new Diagnostic(origin, "ACCESS MODE " + one.access()
+                    + " on a RELATIVE file requires a RELATIVE KEY"));
+            return false;
+        }
+        return true;
     }
 
     /** ファイル名から {@code FD} を引く表。 */

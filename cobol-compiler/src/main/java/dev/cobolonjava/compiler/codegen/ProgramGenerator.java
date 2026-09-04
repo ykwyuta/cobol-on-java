@@ -25,6 +25,7 @@ import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.decimal.DecimalDivideException;
+import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
 import dev.cobolonjava.runtime.picture.Picture;
@@ -327,6 +328,10 @@ public final class ProgramGenerator {
                 planWrite(write, body);
             } else if (statement instanceof Statement.Rewrite rewrite) {
                 planRewrite(rewrite, body);
+            } else if (statement instanceof Statement.Delete delete) {
+                planDelete(delete, body);
+            } else if (statement instanceof Statement.Start start) {
+                planStart(start, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
             } else if (statement instanceof Statement.Continue) {
@@ -1046,22 +1051,24 @@ public final class ProgramGenerator {
     private void planOpen(Statement.Open statement, List<Runnable> body) {
         for (Statement.Open.Opened opened : statement.files()) {
             FileDescription file = opened.file();
-            Runnable status = planFileStatus(file, statement.origin());
+            Runnable status = planFileStatus(file, statement.origin(), false, false);
             if (status == null) {
                 return;
             }
             int mode = opened.mode().ordinal();
+            int organization = file.organization().ordinal();
             int format = file.format().ordinal();
             int length = file.recordLength();
             boolean optional = file.optional();
             body.add(() -> {
                 emitFileName(file);
                 push(mode);
+                push(organization);
                 push(format);
                 push(length);
                 run.visitInsn(optional ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "open",
-                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;IIIZ)[B", false);
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;IIIIZ)[B", false);
                 status.run();
             });
         }
@@ -1070,7 +1077,7 @@ public final class ProgramGenerator {
     /** {@code CLOSE} を組み立てる (要件 FR-102)。 */
     private void planClose(Statement.Close statement, List<Runnable> body) {
         for (FileDescription file : statement.files()) {
-            Runnable status = planFileStatus(file, statement.origin());
+            Runnable status = planFileStatus(file, statement.origin(), false, false);
             if (status == null) {
                 return;
             }
@@ -1093,7 +1100,8 @@ public final class ProgramGenerator {
      */
     private void planRead(Statement.Read statement, List<Runnable> body) {
         FileDescription file = statement.file();
-        Runnable status = planFileStatus(file, statement.origin());
+        Runnable status = planFileStatus(file, statement.origin(), !statement.atEnd().isEmpty(),
+                statement.keyCheck() != null);
         Runnable area = planAddress(areaOf(file, statement.origin()), statement.origin());
         if (status == null || area == null) {
             return;
@@ -1102,46 +1110,120 @@ public final class ProgramGenerator {
         if (depending == null && file.varying() != null && file.varying().depending() != null) {
             return;
         }
+        boolean byKey = keyed(file, statement.next());
+        Runnable key = byKey ? planKeyValue(file.relativeKey(), statement.origin()) : null;
+        if (byKey && key == null) {
+            return;
+        }
+        // 順次読みでは読んでみるまで番号が決まらない。読めた番号を鍵の項目へ返す
+        Runnable number = !byKey && file.organization() == Organization.RELATIVE
+                        && file.relativeKey() != null
+                ? planRelativeNumber(file, statement.origin())
+                : null;
         List<Runnable> into = statement.into() == null
                 ? List.of()
                 : planStatements(List.of(statement.into()));
         List<Runnable> atEnd = planStatements(statement.atEnd());
         List<Runnable> notAtEnd = planStatements(statement.notAtEnd());
+        List<Runnable> onInvalid = planStatements(onInvalidOf(statement.keyCheck(), true));
+        List<Runnable> otherwise = planStatements(onInvalidOf(statement.keyCheck(), false));
         int slot = nextLocal++;
         int length = file.recordLength();
         body.add(() -> {
             emitFileName(file);
+            if (byKey) {
+                key.run();
+            }
             area.run();
             push(length);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";II)[B",
-                    false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, byKey ? "readAt" : "read",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
+                            + (byKey ? "I" : "") + "L" + STORAGE + ";II)[B", false);
             run.visitVarInsn(Opcodes.ASTORE, slot);
             run.visitVarInsn(Opcodes.ALOAD, slot);
             status.run();
 
             Label ended = new Label();
+            Label invalid = new Label();
             Label end = new Label();
-            run.visitVarInsn(Opcodes.ALOAD, slot);
-            loadCodePage();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileAtEnd",
-                    "([B" + CODE_PAGE + ")Z", false);
-            run.visitJumpInsn(Opcodes.IFNE, ended);
-            run.visitVarInsn(Opcodes.ALOAD, slot);
-            loadCodePage();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileSucceeded",
-                    "([B" + CODE_PAGE + ")Z", false);
-            run.visitJumpInsn(Opcodes.IFEQ, end);
+            emitStatusTest(slot, "fileAtEnd", Opcodes.IFNE, ended);
+            emitStatusTest(slot, "fileInvalidKey", Opcodes.IFNE, invalid);
+            emitStatusTest(slot, "fileSucceeded", Opcodes.IFEQ, end);
+            if (number != null) {
+                number.run();
+            }
             if (depending != null) {
                 depending.run();
             }
             into.forEach(Runnable::run);
             notAtEnd.forEach(Runnable::run);
+            otherwise.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(invalid);
+            onInvalid.forEach(Runnable::run);
             run.visitJumpInsn(Opcodes.GOTO, end);
             run.visitLabel(ended);
             atEnd.forEach(Runnable::run);
             run.visitLabel(end);
         });
+    }
+
+    /** その文が鍵で引く形かどうか。動的アクセスでは {@code NEXT} の有無で決まる。 */
+    private static boolean keyed(FileDescription file, boolean next) {
+        return switch (file.access()) {
+            case SEQUENTIAL -> false;
+            case RANDOM -> true;
+            case DYNAMIC -> !next;
+        };
+    }
+
+    private static List<Statement> onInvalidOf(Statement.KeyCheck keyCheck, boolean invalid) {
+        if (keyCheck == null) {
+            return List.of();
+        }
+        return invalid ? keyCheck.onInvalid() : keyCheck.otherwise();
+    }
+
+    /** 状態コードを判定して飛ぶ。 */
+    private void emitStatusTest(int slot, String test, int jump, Label target) {
+        run.visitVarInsn(Opcodes.ALOAD, slot);
+        loadCodePage();
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, test, "([B" + CODE_PAGE + ")Z", false);
+        run.visitJumpInsn(jump, target);
+    }
+
+    /** 数値項目の値を {@code int} として積む。相対レコード番号とレコード長に使う。 */
+    private Runnable planKeyValue(DataReference key, Origin origin) {
+        Runnable address = planAddress(key, origin);
+        String field = numericItemConstant(key.item(), origin);
+        if (address == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
+        };
+    }
+
+    /** 読めたレコードの相対レコード番号を {@code RELATIVE KEY} の項目へ入れる。 */
+    private Runnable planRelativeNumber(FileDescription file, Origin origin) {
+        DataReference key = file.relativeKey();
+        Runnable address = planAddress(key, origin);
+        String field = numericItemConstant(key.item(), origin);
+        if (address == null || field == null) {
+            return null;
+        }
+        return () -> {
+            emitFileName(file);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "relativeNumber",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)I", false);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
+                    "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+        };
     }
 
     /**
@@ -1151,31 +1233,8 @@ public final class ProgramGenerator {
      * 書き出しがあとである。
      */
     private void planWrite(Statement.Write statement, List<Runnable> body) {
-        FileDescription file = statement.file();
-        Runnable status = planFileStatus(file, statement.origin());
-        Runnable area = planAddress(
-                new DataReference(statement.record(), List.of(), null, statement.origin()),
-                statement.origin());
-        if (status == null || area == null) {
-            return;
-        }
-        Runnable length = planWrittenLength(file, statement.record(), statement.origin());
-        if (length == null) {
-            return;
-        }
-        if (statement.from() != null) {
-            planMove(statement.from(), body);
-        }
-        body.add(() -> {
-            emitFileName(file);
-            area.run();
-            length.run();
-            emitLengthBounds(file, statement.record());
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "write",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";IIII)[B",
-                    false);
-            status.run();
-        });
+        planRecordOutput(statement.file(), statement.record(), statement.from(),
+                statement.keyCheck(), "write", statement.origin(), body);
     }
 
     /**
@@ -1185,27 +1244,131 @@ public final class ProgramGenerator {
      * 「どのレコードを書き換えるか」を知っているのは開いているファイルのほうである。
      */
     private void planRewrite(Statement.Rewrite statement, List<Runnable> body) {
-        FileDescription file = statement.file();
-        Runnable status = planFileStatus(file, statement.origin());
-        Runnable area = planAddress(
-                new DataReference(statement.record(), List.of(), null, statement.origin()),
-                statement.origin());
-        Runnable length = planWrittenLength(file, statement.record(), statement.origin());
+        planRecordOutput(statement.file(), statement.record(), statement.from(),
+                statement.keyCheck(), "rewrite", statement.origin(), body);
+    }
+
+    /**
+     * {@code WRITE} と {@code REWRITE} を組み立てる (要件 FR-101, FR-102)。
+     *
+     * <p>2 つの違いは呼ぶ先だけである。鍵で引く様式なら番号を渡す形になり、
+     * どちらを呼ぶかは<b>アクセス様式で翻訳時に決まる</b>。
+     */
+    private void planRecordOutput(FileDescription file, DataItem record, Statement.Move from,
+                                  Statement.KeyCheck keyCheck, String verb, Origin origin,
+                                  List<Runnable> body) {
+        Runnable status = planFileStatus(file, origin, false, keyCheck != null);
+        Runnable area = planAddress(new DataReference(record, List.of(), null, origin), origin);
+        Runnable length = planWrittenLength(file, record, origin);
         if (status == null || area == null || length == null) {
             return;
         }
-        if (statement.from() != null) {
-            planMove(statement.from(), body);
+        boolean byKey = file.access().isKeyed();
+        Runnable key = byKey ? planKeyValue(file.relativeKey(), origin) : null;
+        if (byKey && key == null) {
+            return;
         }
-        body.add(() -> {
+        if (from != null) {
+            planMove(from, body);
+        }
+        Runnable call = () -> {
             emitFileName(file);
+            if (byKey) {
+                key.run();
+            }
             area.run();
             length.run();
-            emitLengthBounds(file, statement.record());
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "rewrite",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";IIII)[B",
-                    false);
+            emitLengthBounds(file, record);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, byKey ? verb + "At" : verb,
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + (byKey ? "I" : "")
+                            + "L" + STORAGE + ";IIII)[B", false);
+        };
+        planKeyedCall(call, status, keyCheck, body);
+    }
+
+    /**
+     * {@code DELETE} を組み立てる (要件 FR-101, FR-102)。
+     *
+     * <p>消す相手は文に書かれていない。順アクセスなら直前に読んだレコード、
+     * 乱アクセスなら鍵の指すレコードである。
+     */
+    private void planDelete(Statement.Delete statement, List<Runnable> body) {
+        FileDescription file = statement.file();
+        Runnable status = planFileStatus(file, statement.origin(), false,
+                statement.keyCheck() != null);
+        if (status == null) {
+            return;
+        }
+        boolean byKey = file.access().isKeyed();
+        Runnable key = byKey ? planKeyValue(file.relativeKey(), statement.origin()) : null;
+        if (byKey && key == null) {
+            return;
+        }
+        planKeyedCall(() -> {
+            emitFileName(file);
+            if (byKey) {
+                key.run();
+            }
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, byKey ? "deleteAt" : "delete",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + (byKey ? "I" : "")
+                            + ")[B", false);
+        }, status, statement.keyCheck(), body);
+    }
+
+    /**
+     * {@code START} を組み立てる (要件 FR-101)。
+     *
+     * <p>読まない。位置を決めるだけである。
+     */
+    private void planStart(Statement.Start statement, List<Runnable> body) {
+        FileDescription file = statement.file();
+        Runnable status = planFileStatus(file, statement.origin(), false,
+                statement.keyCheck() != null);
+        Runnable key = planKeyValue(statement.key(), statement.origin());
+        if (status == null || key == null) {
+            return;
+        }
+        int relation = statement.relation().ordinal();
+        planKeyedCall(() -> {
+            emitFileName(file);
+            key.run();
+            push(relation);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "start",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;II)[B", false);
+        }, status, statement.keyCheck(), body);
+    }
+
+    /**
+     * 入出力を呼び、状態コードを始末して {@code INVALID KEY} で分かれる。
+     *
+     * @param call 状態コードのバイト列を積む命令
+     */
+    private void planKeyedCall(Runnable call, Runnable status, Statement.KeyCheck keyCheck,
+                               List<Runnable> body) {
+        if (keyCheck == null) {
+            body.add(() -> {
+                call.run();
+                status.run();
+            });
+            return;
+        }
+        List<Runnable> onInvalid = planStatements(keyCheck.onInvalid());
+        List<Runnable> otherwise = planStatements(keyCheck.otherwise());
+        int slot = nextLocal++;
+        body.add(() -> {
+            call.run();
+            run.visitVarInsn(Opcodes.ASTORE, slot);
+            run.visitVarInsn(Opcodes.ALOAD, slot);
             status.run();
+
+            Label invalid = new Label();
+            Label end = new Label();
+            emitStatusTest(slot, "fileInvalidKey", Opcodes.IFNE, invalid);
+            otherwise.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(invalid);
+            onInvalid.forEach(Runnable::run);
+            run.visitLabel(end);
         });
     }
 
@@ -1297,14 +1460,17 @@ public final class ProgramGenerator {
      * 書かれていなければ<b>異常なら止める</b>。黙って続けると、読めていないデータで
      * 処理が進んでしまう。
      */
-    private Runnable planFileStatus(FileDescription file, Origin origin) {
+    private Runnable planFileStatus(FileDescription file, Origin origin, boolean atEndHandled,
+                                    boolean invalidKeyHandled) {
         if (file.status() == null) {
             String name = file.name();
             return () -> {
                 loadCodePage();
                 run.visitLdcInsn(name);
+                run.visitInsn(atEndHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                run.visitInsn(invalidKeyHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "checkFile",
-                        "([B" + CODE_PAGE + "Ljava/lang/String;)V", false);
+                        "([B" + CODE_PAGE + "Ljava/lang/String;ZZ)V", false);
             };
         }
         Runnable address = planAddress(file.status(), origin);

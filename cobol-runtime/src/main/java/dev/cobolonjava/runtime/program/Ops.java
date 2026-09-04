@@ -6,10 +6,13 @@ import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.data.ZonedDecimal;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
+import dev.cobolonjava.runtime.file.DataSet;
 import dev.cobolonjava.runtime.file.FileStatus;
+import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.OpenMode;
+import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.RecordFormat;
-import dev.cobolonjava.runtime.file.SequentialDataSet;
+import dev.cobolonjava.runtime.file.RelativeDataSet;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -242,9 +245,10 @@ public final class Ops {
      * @return ファイル状態コードのバイト列。2 バイトである
      */
     public static byte[] open(ProgramContext context, String name, String ddName, int mode,
-                              int format, int recordLength, boolean optional) {
-        return status(context, context.file(name, ddName, RecordFormat.values()[format],
-                recordLength).open(OpenMode.values()[mode], optional));
+                              int organization, int format, int recordLength, boolean optional) {
+        return status(context, context.file(name, ddName,
+                Organization.values()[organization], RecordFormat.values()[format], recordLength)
+                .open(OpenMode.values()[mode], optional));
     }
 
     /**
@@ -254,7 +258,7 @@ public final class Ops {
      */
     public static byte[] read(ProgramContext context, String name, String ddName,
                               Storage storage, int offset, int length) {
-        SequentialDataSet file = context.file(name, ddName);
+        DataSet file = context.file(name, ddName);
         byte[] record = new byte[length];
         String status = file.read(record);
         if (FileStatus.succeeded(status)) {
@@ -314,6 +318,78 @@ public final class Ops {
     }
 
     /**
+     * 番号で読む (要件 FR-101)。相対編成だけである。
+     *
+     * @param number 相対レコード番号 (1 起点)
+     */
+    public static byte[] readAt(ProgramContext context, String name, String ddName, int number,
+                                Storage storage, int offset, int length) {
+        RelativeDataSet file = relative(context, name, ddName);
+        byte[] record = new byte[length];
+        String status = file.readAt(number, record);
+        if (FileStatus.succeeded(status)) {
+            storage.view(offset, length).setBytes(record);
+        }
+        return status(context, status);
+    }
+
+    /** 番号を指定して書く (要件 FR-101)。 */
+    public static byte[] writeAt(ProgramContext context, String name, String ddName, int number,
+                                 Storage storage, int offset, int length, int minimum,
+                                 int maximum) {
+        int actual = clamp(length, minimum, maximum);
+        return status(context, lengthChecked(
+                relative(context, name, ddName).writeAt(number, read(storage, offset, actual)),
+                actual, length));
+    }
+
+    /** 番号を指定して書き換える (要件 FR-101)。 */
+    public static byte[] rewriteAt(ProgramContext context, String name, String ddName, int number,
+                                   Storage storage, int offset, int length, int minimum,
+                                   int maximum) {
+        int actual = clamp(length, minimum, maximum);
+        return status(context, lengthChecked(
+                relative(context, name, ddName).rewriteAt(number, read(storage, offset, actual)),
+                actual, length));
+    }
+
+    /** 直前に読んだレコードを消す (要件 FR-102)。 */
+    public static byte[] delete(ProgramContext context, String name, String ddName) {
+        return status(context, relative(context, name, ddName).delete());
+    }
+
+    /** 番号を指定して消す (要件 FR-101)。 */
+    public static byte[] deleteAt(ProgramContext context, String name, String ddName, int number) {
+        return status(context, relative(context, name, ddName).deleteAt(number));
+    }
+
+    /**
+     * 位置だけを決める (要件 FR-101)。
+     *
+     * @param relation {@link KeyRelation} の並び順
+     */
+    public static byte[] start(ProgramContext context, String name, String ddName, int number,
+                               int relation) {
+        return status(context, relative(context, name, ddName)
+                .start(number, KeyRelation.values()[relation]));
+    }
+
+    /**
+     * 直前に読んだレコードの相対レコード番号 (要件 FR-101)。
+     *
+     * <p>順次読みでは<b>読んでみるまで番号が決まらない</b>。空きスロットを飛ばすためである。
+     * {@code RELATIVE KEY} の項目へ返す値がこれである。
+     */
+    public static int relativeNumber(ProgramContext context, String name, String ddName) {
+        return relative(context, name, ddName).currentNumber();
+    }
+
+    /** 相対編成として引く。編成は翻訳時に決まっているので、ここは必ず当たる。 */
+    private static RelativeDataSet relative(ProgramContext context, String name, String ddName) {
+        return (RelativeDataSet) context.file(name, ddName);
+    }
+
+    /**
      * 直前に読み書きしたレコードの長さ (要件 FR-106)。
      *
      * <p>可変長では<b>長さそのものがデータである</b>。{@code RECORD IS VARYING ... DEPENDING ON}
@@ -354,15 +430,34 @@ public final class Ops {
     }
 
     /**
+     * 鍵に関する誤りかどうか (要件 FR-103)。{@code INVALID KEY} の分岐に使う。
+     *
+     * <p>順編成の {@code AT END} にあたるものが、鍵で引く編成ではこれである。
+     */
+    public static boolean fileInvalidKey(byte[] status, CodePage codePage) {
+        return FileStatus.invalidKey(codePage.decode(status));
+    }
+
+    /**
      * {@code FILE STATUS} を書いていないファイルで異常が起きたときの扱い (要件 FR-104)。
      *
      * <p>黙って続けると、<b>読めていないデータで処理が進む</b>。異常終了させる。
+     *
+     * <p>ただし文に受け止める句が書いてあれば、そちらへ分岐するのが正しい。
+     * {@code AT END} を書いた {@code READ} でファイルの終わりに来るのは誤りではない。
+     *
+     * @param atEndHandled      文に {@code AT END} が書かれているか
+     * @param invalidKeyHandled 文に {@code INVALID KEY} が書かれているか
      */
-    public static void checkFile(byte[] status, CodePage codePage, String name) {
+    public static void checkFile(byte[] status, CodePage codePage, String name,
+                                 boolean atEndHandled, boolean invalidKeyHandled) {
         String text = codePage.decode(status);
-        if (!FileStatus.succeeded(text) && !FileStatus.AT_END.equals(text)) {
-            throw new FileOperationException(name, text);
+        if (FileStatus.succeeded(text)
+                || (atEndHandled && FileStatus.AT_END.equals(text))
+                || (invalidKeyHandled && FileStatus.invalidKey(text))) {
+            return;
         }
+        throw new FileOperationException(name, text);
     }
 
     // ---- ACCEPT ----

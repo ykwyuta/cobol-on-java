@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.semantic;
 
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.OpenMode;
 import java.util.List;
 
@@ -533,12 +534,26 @@ public sealed interface Statement {
      * @param atEnd    {@code AT END} の文。指定がなければ空
      * @param notAtEnd {@code NOT AT END} の文。指定がなければ空
      */
-    record Read(FileDescription file, Move into, List<Statement> atEnd, List<Statement> notAtEnd,
-                Origin origin) implements Statement {
+    record Read(FileDescription file, boolean next, Move into, List<Statement> atEnd,
+                List<Statement> notAtEnd, KeyCheck keyCheck, Origin origin) implements Statement {
 
         public Read {
             atEnd = List.copyOf(atEnd);
             notAtEnd = List.copyOf(notAtEnd);
+        }
+    }
+
+    /**
+     * {@code INVALID KEY} と {@code NOT INVALID KEY} (要件 FR-103)。
+     *
+     * <p>鍵で引く編成での {@code AT END} にあたる。求めたレコードがなかった、
+     * すでにあった、範囲の外だった — いずれも<b>鍵が使えなかった</b>ことである。
+     */
+    record KeyCheck(List<Statement> onInvalid, List<Statement> otherwise) {
+
+        public KeyCheck {
+            onInvalid = List.copyOf(onInvalid);
+            otherwise = List.copyOf(otherwise);
         }
     }
 
@@ -551,8 +566,8 @@ public sealed interface Statement {
      * @param record 書き出すレコード記述
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
-    record Write(FileDescription file, DataItem record, Move from, Origin origin)
-            implements Statement {
+    record Write(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
+                 Origin origin) implements Statement {
     }
 
     /**
@@ -564,8 +579,30 @@ public sealed interface Statement {
      * @param record 書き出すレコード記述
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
-    record Rewrite(FileDescription file, DataItem record, Move from, Origin origin)
-            implements Statement {
+    record Rewrite(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
+                   Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code DELETE} 文 (要件 FR-101, FR-102)。
+     *
+     * <p>消す相手は、順アクセスなら<b>直前に読んだレコード</b>、乱アクセスなら<b>鍵の指す
+     * レコード</b>である。文に書くのはファイル名だけであり、どちらかはアクセス様式で決まる。
+     */
+    record Delete(FileDescription file, KeyCheck keyCheck, Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code START} 文 (要件 FR-101)。
+     *
+     * <p>レコードを<b>読まない</b>。指定した鍵との関係を満たす最初のレコードへ位置を合わせ、
+     * そのあとの順次読み出しがそこから始まる。
+     *
+     * @param key      比べる鍵の項目
+     * @param relation {@code KEY IS} に書いた関係。省略時は等号
+     */
+    record Start(FileDescription file, DataReference key, KeyRelation relation, KeyCheck keyCheck,
+                 Origin origin) implements Statement {
     }
 
     /**

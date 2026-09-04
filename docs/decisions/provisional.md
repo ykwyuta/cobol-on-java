@@ -926,13 +926,14 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 
 `INPUT-OUTPUT SECTION` と `FILE-CONTROL` も実装した (2026-09-04)。`SELECT` に書ける句は
 `ASSIGN TO`、`ORGANIZATION`、`ACCESS MODE`、`FILE STATUS`、`RECORDING MODE` であり、
-`SELECT OPTIONAL` も読む。`FD` 側では `RECORD IS VARYING IN SIZE ... DEPENDING ON` と
+`SELECT OPTIONAL`、`ORGANIZATION IS RELATIVE`、`ACCESS MODE IS RANDOM` / `DYNAMIC`、
+`RELATIVE KEY` も読む。`FD` 側では `RECORD IS VARYING IN SIZE ... DEPENDING ON` と
 `RECORDING MODE` を読む。
 
 **まだ未実装**:
 
-- `SELECT` の `ORGANIZATION IS RELATIVE` / `INDEXED`、`ACCESS MODE IS RANDOM` / `DYNAMIC`、
-  `RECORD KEY`、`ALTERNATE RECORD KEY`。順編成と行順編成だけを通す (設計 80 の第 3 段)
+- `SELECT` の `ORGANIZATION IS INDEXED`、`RECORD KEY`、`ALTERNATE RECORD KEY`。
+  誤りとして報告する (設計 80 の第 3 段の残り)
 - `RECORDING MODE U` (不定長)。誤りとして報告する
 - `I-O-CONTROL` 段落 (`SAME AREA`、`APPLY`、`RERUN`)。書けば構文誤りになる
 - `ALPHABET`、`CLASS`、`SYMBOLIC CHARACTERS` の各句。書けば構文誤りになる
@@ -1093,3 +1094,20 @@ VSAM の制御情報を持つ形式を選べるようにする。そのときに
 
 **解消条件**: 索引編成を実装する段で、位置を持つ処理 (`START` / `READ NEXT` / 書き込み) の
 関係をまとめて定義する。相対編成と索引編成で同じ規則になる。
+
+---
+
+## P-041 索引編成が未実装である
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `FileDescription.checkOrganization` |
+| 関連要件 | FR-100, FR-101 |
+
+**暫定の扱い**: `ORGANIZATION IS INDEXED` と `RECORD KEY` を誤りとして報告する。
+黙って順編成として扱うと、鍵で引いたつもりの処理が別のレコードを返す。
+
+**解消条件**: 設計 80 の第 3 段の残りとして実装する。相対編成で作った `START` /
+`READ NEXT` / `DELETE` と `INVALID KEY` の仕組みはそのまま使える。違うのは
+<b>鍵がレコードの中にある</b>ことだけである。

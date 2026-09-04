@@ -24,10 +24,16 @@ import java.util.List;
  * レコードのバイト列の外にある。ここではサイドカーに持つ (暫定判断 P-039)。データ本体は
  * 移行したままの固定長スロットの並びである。
  */
-public final class RelativeDataSet {
+public final class RelativeDataSet implements DataSet {
 
     private final Path path;
-    private final DataSetAttributes attributes;
+    /**
+     * 開くたびにサイドカーから読み直す。
+     *
+     * <p>空きスロットの一覧は<b>閉じるたびに変わる</b>。1 度読んだきりにすると、
+     * 同じ実行の中で書いてから開き直したときに古い一覧を使ってしまう。
+     */
+    private DataSetAttributes attributes;
 
     private OpenMode mode;
     /** スロットの並び。{@code null} が空きスロットである。 */
@@ -83,6 +89,8 @@ public final class RelativeDataSet {
         if (missing && requested != OpenMode.OUTPUT && !optional) {
             return FileStatus.NOT_FOUND;
         }
+        // 空きスロットの一覧はいちど白紙に戻してから読む。書かれていなければ空きはない
+        attributes = DataSetAttributes.read(path, attributes.withEmptySlots(List.of()));
         slots = requested == OpenMode.OUTPUT || missing ? new ArrayList<>() : load();
         mode = requested;
         position = requested == OpenMode.EXTEND ? slots.size() : 0;

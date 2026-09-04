@@ -9,11 +9,15 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.time.Clock;
+import dev.cobolonjava.runtime.file.DataSet;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.DataSetCatalog;
+import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.RecordFormat;
+import dev.cobolonjava.runtime.file.RelativeDataSet;
 import dev.cobolonjava.runtime.file.SequentialDataSet;
 import dev.cobolonjava.runtime.storage.Storage;
+import java.nio.file.Path;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -53,12 +57,12 @@ public final class ProgramContext {
     /** DD 名から実際のファイルを探す目録。 */
     private final DataSetCatalog catalog;
     /** 開いているファイル。ファイル名から引く。 */
-    private final Map<String, SequentialDataSet> files;
+    private final Map<String, DataSet> files;
 
     private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
                            Supplier<String> input, Storage registers,
-                           DataSetCatalog catalog, Map<String, SequentialDataSet> files) {
+                           DataSetCatalog catalog, Map<String, DataSet> files) {
         this.codePage = codePage;
         this.out = out;
         this.error = error;
@@ -80,7 +84,7 @@ public final class ProgramContext {
      * @param name   {@code FD} に書かれたファイル名
      * @param ddName {@code ASSIGN TO} に書かれた DD 名
      */
-    public SequentialDataSet file(String name, String ddName) {
+    public DataSet file(String name, String ddName) {
         return files.computeIfAbsent(name, k -> SequentialDataSet.at(catalog.resolve(ddName)));
     }
 
@@ -93,10 +97,15 @@ public final class ProgramContext {
      * @param format       {@code ORGANIZATION} と {@code RECORDING MODE} から決まる様式
      * @param recordLength {@code FD} 配下のレコード記述から決まる長さ
      */
-    public SequentialDataSet file(String name, String ddName, RecordFormat format,
-                                  int recordLength) {
-        return files.computeIfAbsent(name, k -> SequentialDataSet.at(catalog.resolve(ddName),
-                new DataSetAttributes(format, recordLength, codePage)));
+    public DataSet file(String name, String ddName, Organization organization,
+                        RecordFormat format, int recordLength) {
+        return files.computeIfAbsent(name, k -> {
+            DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage);
+            Path path = catalog.resolve(ddName);
+            return organization == Organization.RELATIVE
+                    ? RelativeDataSet.at(path, declared)
+                    : SequentialDataSet.at(path, declared);
+        });
     }
 
     /** DD 名から実際のファイルを探す目録。 */
