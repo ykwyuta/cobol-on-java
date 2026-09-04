@@ -43,6 +43,7 @@ tokens {
     CALL, END_CALL, CANCEL, EXCEPTION,
     INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
     NUMERIC_EDITED,
+    ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -337,6 +338,7 @@ statement
     | cancelStatement
     | initializeStatement
     | setStatement
+    | acceptStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -545,6 +547,19 @@ evaluateObject
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
 displayStatement
     : DISPLAY arithmeticOperand+ (UPON IDENTIFIER)? (WITH? NO ADVANCING)?
+    ;
+
+// ACCEPT は日付と時刻の特殊レジスタか、端末からの 1 行を受け取る
+acceptStatement
+    : ACCEPT identifier (FROM acceptSource)?
+    ;
+
+acceptSource
+    : DATE YYYYMMDD?
+    | DAY YYYYDDD?
+    | DAY_OF_WEEK
+    | TIME
+    | identifier
     ;
 
 // INITIALIZE は配下の基本項目それぞれへの転記の集まりである

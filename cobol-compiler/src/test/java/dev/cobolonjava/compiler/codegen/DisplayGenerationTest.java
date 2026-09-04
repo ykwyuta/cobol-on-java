@@ -67,21 +67,21 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("DISPLAY は項目の中身を文字として出す (FR-062)")
+    @DisplayName("DISPLAY は項目の中身を文字として出す (FR-060)")
     void displayWritesTheContentOfItsItem() {
         assertEquals("HELLO|", output(
                 List.of("01 WS-A PIC X(5) VALUE 'HELLO'."), "DISPLAY WS-A."));
     }
 
     @Test
-    @DisplayName("定数もそのまま出せる (FR-062)")
+    @DisplayName("定数もそのまま出せる (FR-060)")
     void aLiteralCanBeDisplayed() {
         assertEquals("HELLO, WORLD|", output(List.of("01 WS-A PIC X."),
                 "DISPLAY 'HELLO, WORLD'."));
     }
 
     @Test
-    @DisplayName("被演算子を並べると続けて出る (FR-062)")
+    @DisplayName("被演算子を並べると続けて出る (FR-060)")
     void severalOperandsAreWrittenInSequence() {
         // 途中で行を改めない。改めると 1 つの DISPLAY が複数行になってしまう
         assertEquals("A=1|", output(
@@ -89,7 +89,7 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("WITH NO ADVANCING は行を改めない (FR-062)")
+    @DisplayName("WITH NO ADVANCING は行を改めない (FR-060)")
     void withNoAdvancingKeepsTheLine() {
         assertEquals("AB|", output(List.of("01 WS-A PIC X."),
                 "DISPLAY 'A' WITH NO ADVANCING",
@@ -97,7 +97,7 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("COMP-3 の項目は読める形へ直して出す (FR-062)")
+    @DisplayName("COMP-3 の項目は読める形へ直して出す (FR-060)")
     void aPackedItemIsConvertedToItsDisplayForm() {
         // 記憶域のバイトをそのまま出しても読めない
         assertEquals("00123|", output(
@@ -105,14 +105,14 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("2 進項目も読める形へ直して出す (FR-062)")
+    @DisplayName("2 進項目も読める形へ直して出す (FR-060)")
     void aBinaryItemIsConvertedToo() {
         assertEquals("0300|", output(
                 List.of("01 WS-N PIC 9(4) COMP VALUE 300."), "DISPLAY WS-N."));
     }
 
     @Test
-    @DisplayName("符号は最後の桁に重ねて出る (FR-031, FR-062)")
+    @DisplayName("符号は最後の桁に重ねて出る (FR-031, FR-060)")
     void theSignIsOverpunchedOnTheLastDigit() {
         // -12 は "01K" になる。K は EBCDIC の D2、すなわち負のゾーンを持つ 2 である。
         // 見た目は驚くが、参照実装の DISPLAY はこの形である
@@ -124,14 +124,14 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("DISPLAY 項目はそのまま出す (FR-062)")
+    @DisplayName("DISPLAY 項目はそのまま出す (FR-060)")
     void aDisplayItemIsWrittenAsItIs() {
         assertEquals("00123|", output(
                 List.of("01 WS-N PIC 9(5) VALUE 123."), "DISPLAY WS-N."));
     }
 
     @Test
-    @DisplayName("添字を書いた項目も出せる (FR-024, FR-062)")
+    @DisplayName("添字を書いた項目も出せる (FR-024, FR-060)")
     void aSubscriptedItemCanBeDisplayed() {
         assertEquals("B|", output(
                 List.of("01 WS-I PIC 9(3) COMP VALUE 2.",
@@ -142,7 +142,7 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("繰り返しの中で出せる (FR-061, FR-062)")
+    @DisplayName("繰り返しの中で出せる (FR-061, FR-060)")
     void displayWorksInsideALoop() {
         assertEquals("1|2|3|", output(
                 List.of("01 WS-I PIC 9 VALUE 1."),
@@ -153,7 +153,7 @@ class DisplayGenerationTest {
     }
 
     @Test
-    @DisplayName("UPON の出力先指定はまだ扱えないと報告する (FR-062)")
+    @DisplayName("UPON の出力先指定はまだ扱えないと報告する (FR-060)")
     void displayUponIsReportedAsUnsupported() {
         CobolCompiler.Result result = compile(
                 List.of("01 WS-A PIC X."), "DISPLAY 'X' UPON SYSERR.");

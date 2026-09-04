@@ -274,8 +274,8 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `MOVE` / `ADD` / `SUBTRACT` の `CORRESPONDING`、
 `COMPUTE` (加減乗除・括弧・単項符号)、
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
-`GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、`SET 条件名 TO TRUE`、
-`CALL` / `CANCEL`、
+`GO TO`、`DISPLAY`、`ACCEPT`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、
+`SET 条件名 TO TRUE`、`CALL` / `CANCEL`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。

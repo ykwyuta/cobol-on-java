@@ -183,6 +183,31 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 `nestedStatements` の 1 か所へまとめたのは、新しい文を足すたびに走査の抜けが
 できるのを防ぐためである。
 
+## ACCEPT の送出側はどれも符号なし整数の表示形式
+
+`ACCEPT` は日付と時刻の特殊レジスタか、端末から読んだ 1 行を受け取る (要件 FR-060)。
+どちらも<b>符号なし整数の表示形式のバイト列</b>として扱う。違うのは値を作る呼び出しだけで
+あり、受け取る項目への詰め方は普通の転記と同じ規則で決まる。
+
+| 指定 | 形 | 桁 |
+| --- | --- | --- |
+| `DATE` | YYMMDD | 6 |
+| `DATE YYYYMMDD` | YYYYMMDD | 8 |
+| `DAY` | YYDDD | 5 |
+| `DAY YYYYDDD` | YYYYDDD | 7 |
+| `DAY-OF-WEEK` | D (月曜が 1) | 1 |
+| `TIME` | HHMMSSss | 8 |
+
+英数字項目なら数字がそのまま並び、数値項目なら整数として読まれる。受取項目が短ければ
+切り捨てられ、長ければ埋められる。<b>切り捨てられる側が違う</b>のがここの見どころで、
+英数字なら左から詰めるので下位が落ち、数値なら小数点で合わせるので上位が落ちる。
+
+### 時計は外から渡す
+
+日付と時刻は実行のたびに変わる。そのままでは試験に書けないので、時計を
+`ProgramContext` が持ち、外から差し替えられるようにした (要件 FR-204)。端末からの入力も同じ
+理由で差し替えられる。
+
 ## INITIALIZE は書き込むバイト列を先に決める
 
 `INITIALIZE` は配下の基本項目それぞれへの転記の集まりである (要件 FR-060)。素直に展開すると
@@ -251,7 +276,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 `MOVE`、算術文 4 つ (`DIVIDE ... REMAINDER` を含む)、`COMPUTE`、`IF`、`EVALUATE`、
 `PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`GO TO`、`DISPLAY`、`INSPECT`、
-`STRING`、`UNSTRING`、`INITIALIZE`、`SET 条件名 TO TRUE`、`CALL` / `CANCEL`、
+`STRING`、`UNSTRING`、`INITIALIZE`、`SET 条件名 TO TRUE`、`ACCEPT`、`CALL` / `CANCEL`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である。
 `MOVE` / `ADD` / `SUBTRACT` には `CORRESPONDING` を書ける。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
@@ -274,6 +299,6 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `ACCEPT` (日付・時刻の特殊レジスタと、端末からの入力)。
-2. `SEARCH` / `SEARCH ALL` と、反復を実行時のループとして出す形 (暫定判断 P-033)。
-3. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
+1. `SEARCH` / `SEARCH ALL` と、反復を実行時のループとして出す形 (暫定判断 P-033)。
+2. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
+3. `SPECIAL-NAMES` (呼び名、`CURRENCY SIGN`、`DECIMAL-POINT IS COMMA`)。

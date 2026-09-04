@@ -296,6 +296,9 @@ public final class ProcedureBuilder {
             return new Statement.GoTo(goTo.paragraphName().getText().toUpperCase(Locale.ROOT),
                     ReferenceResolver.originOf(goTo));
         }
+        if (context.acceptStatement() != null) {
+            return acceptOf(context.acceptStatement());
+        }
         if (context.initializeStatement() != null) {
             return initializeOf(context.initializeStatement());
         }
@@ -603,6 +606,58 @@ public final class ProcedureBuilder {
     /** {@code NEXT SENTENCE} は「この文の残りを飛ばす」ことであり、いまは空の並びとする。 */
     private List<Statement> branchOf(CobolParser.IfBranchContext context) {
         return listOf(context.statement());
+    }
+
+    /**
+     * {@code ACCEPT} (要件 FR-060、テスト時の固定は FR-204)。
+     *
+     * <p>送出側は日付と時刻の特殊レジスタか、端末から読んだ 1 行である。どちらも
+     * <b>符号なし整数の表示形式のバイト列</b>として扱い、受け取る項目への詰め方は
+     * 普通の転記と同じ規則で決める。
+     */
+    private Statement acceptOf(CobolParser.AcceptStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        DataReference target = resolver.resolve(context.identifier());
+        if (target == null) {
+            return null;
+        }
+
+        Statement.Accept.Source source = Statement.Accept.Source.CONSOLE;
+        String register = null;
+        CobolParser.AcceptSourceContext from = context.acceptSource();
+        if (from != null) {
+            if (from.identifier() != null) {
+                // 呼び名は環境部の SPECIAL-NAMES と結び付く。まだ扱えない
+                report(origin, "ACCEPT ... FROM a mnemonic name is not supported yet");
+                return null;
+            }
+            source = Statement.Accept.Source.REGISTER;
+            register = registerOf(from);
+        }
+
+        DataCategory receiver = DataCategory.of(target);
+        // 送出側は符号なし整数の表示形式である。分類は英数字として扱う
+        if (!MoveRules.isAllowed(DataCategory.ALPHANUMERIC, receiver)
+                && !receiver.isNumeric()) {
+            report(origin, "ACCEPT into " + describe(target) + " is not allowed: "
+                    + MoveRules.reason(DataCategory.ALPHANUMERIC, receiver));
+            return null;
+        }
+        MoveRules.Kind kind = receiver.isNumeric()
+                ? MoveRules.Kind.NUMERIC
+                : MoveRules.Kind.ALPHANUMERIC;
+        return new Statement.Accept(target, source, register, kind, origin);
+    }
+
+    /** 特殊レジスタの形式。ランタイムの {@code SpecialRegisters.Form} に対応する。 */
+    private static String registerOf(CobolParser.AcceptSourceContext context) {
+        if (context.DATE() != null) {
+            return context.YYYYMMDD() != null ? "DATE_YYYYMMDD" : "DATE";
+        }
+        if (context.DAY() != null) {
+            return context.YYYYDDD() != null ? "DAY_YYYYDDD" : "DAY";
+        }
+        return context.TIME() != null ? "TIME" : "DAY_OF_WEEK";
     }
 
     /**

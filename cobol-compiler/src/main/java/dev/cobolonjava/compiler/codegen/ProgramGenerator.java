@@ -11,6 +11,7 @@ import dev.cobolonjava.compiler.semantic.IntermediateDigits;
 import dev.cobolonjava.compiler.semantic.InitialImage;
 import dev.cobolonjava.compiler.semantic.InitializeImage;
 import dev.cobolonjava.compiler.semantic.LiteralValue;
+import dev.cobolonjava.compiler.semantic.MoveRules;
 import dev.cobolonjava.compiler.semantic.Operand;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
 import dev.cobolonjava.compiler.semantic.Statement;
@@ -285,6 +286,8 @@ public final class ProgramGenerator {
                 // STOP RUN は実行そのものを終え、GOBACK は呼んだ側へ戻る
                 String name = stop.wholeRun() ? "stopRun" : "programReturn";
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name, "()V", false));
+            } else if (statement instanceof Statement.Accept accept) {
+                planAccept(accept, body);
             } else if (statement instanceof Statement.Initialize initialize) {
                 planInitialize(initialize, body);
             } else if (statement instanceof Statement.Call call) {
@@ -671,6 +674,62 @@ public final class ProgramGenerator {
         run.visitLabel(noOverflow);
         otherwise.forEach(Runnable::run);
         run.visitLabel(end);
+    }
+
+    /**
+     * {@code ACCEPT} を組み立てる (要件 FR-060、テスト時の固定は FR-204)。
+     *
+     * <p>送出側は<b>符号なし整数の表示形式のバイト列</b>である。日付でも端末からの入力でも
+     * 同じ形なので、違うのは値を作る呼び出しだけである。詰め方は普通の転記と同じ規則で決まる。
+     */
+    private void planAccept(Statement.Accept statement, List<Runnable> body) {
+        Runnable address = planAddress(statement.target(), statement.origin());
+        OptionalInt length = lengthOf(statement.target(), statement.origin());
+        if (address == null || length.isEmpty()) {
+            return;
+        }
+        String register = statement.register();
+        Runnable source = statement.source() == Statement.Accept.Source.REGISTER
+                ? () -> {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitLdcInsn(register);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "register",
+                            "(" + Type.getDescriptor(ProgramContext.class)
+                                    + "Ljava/lang/String;)[B", false);
+                }
+                : () -> {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "acceptLine",
+                            "(" + Type.getDescriptor(ProgramContext.class) + ")[B", false);
+                };
+
+        if (statement.kind() == MoveRules.Kind.ALPHANUMERIC) {
+            boolean justified = statement.target().item().justified();
+            body.add(() -> {
+                source.run();
+                address.run();
+                push(length.getAsInt());
+                run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
+                        "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+            });
+            return;
+        }
+        String field = numericItemConstant(statement.target().item(), statement.origin());
+        if (field == null) {
+            return;
+        }
+        body.add(() -> {
+            source.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "asInteger",
+                    "([B" + CODE_PAGE + ")" + DECIMAL, false);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveNumeric",
+                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+        });
     }
 
     /**

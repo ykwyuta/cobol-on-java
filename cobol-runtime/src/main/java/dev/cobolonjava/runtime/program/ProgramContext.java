@@ -2,18 +2,22 @@ package dev.cobolonjava.runtime.program;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.time.Clock;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
- * 実行中のプログラムが外へ触れるための入口 (要件 FR-062)。
+ * 実行中のプログラムが外へ触れるための入口 (要件 FR-060)。
  *
  * <p>{@code DISPLAY} の行き先と、実行時のコードページを持つ。生成コードが
  * 大域の状態に触れないようにするために引き回す。試験では出力を捕まえられる。
@@ -35,13 +39,19 @@ public final class ProgramContext {
     private final Charset outputCharset;
     /** 呼び出しをまたいで残る副プログラム。名前から引く。 */
     private final Map<String, Loaded> loaded;
+    /** 日付と時刻の特殊レジスタが見る時計。試験では固定する。 */
+    private final Clock clock;
+    /** {@code ACCEPT} が読む行の出どころ。 */
+    private final Supplier<String> input;
 
     private ProgramContext(CodePage codePage, OutputStream out, Charset outputCharset,
-                           Map<String, Loaded> loaded) {
+                           Map<String, Loaded> loaded, Clock clock, Supplier<String> input) {
         this.codePage = codePage;
         this.out = out;
         this.outputCharset = outputCharset;
         this.loaded = loaded;
+        this.clock = clock;
+        this.input = input;
     }
 
     /**
@@ -55,13 +65,13 @@ public final class ProgramContext {
     /** 端末へ書く既定の構成。 */
     public static ProgramContext standard() {
         return new ProgramContext(CodePages.DEFAULT, System.out, Charset.defaultCharset(),
-                new HashMap<>());
+                new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput);
     }
 
     /** 出力を捕まえる構成。試験で使う。 */
     public static ProgramContext capturing(ByteArrayOutputStream sink) {
         return new ProgramContext(CodePages.DEFAULT, sink, StandardCharsets.UTF_8,
-                new HashMap<>());
+                new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput);
     }
 
     /**
@@ -70,8 +80,52 @@ public final class ProgramContext {
      * <p>読み込んだ副プログラムは<b>引き継ぐ</b>。同じ実行の続きだからである。
      */
     public ProgramContext withCodePage(CodePage value) {
-        return new ProgramContext(value, out, outputCharset, loaded);
+        return new ProgramContext(value, out, outputCharset, loaded, clock, input);
     }
+
+    /**
+     * 時計を差し替えた構成を返す。
+     *
+     * <p>実行のたびに変わる値は、そのままでは試験に書けない。日付と時刻を固定するために要る。
+     */
+    public ProgramContext withClock(Clock value) {
+        return new ProgramContext(codePage, out, outputCharset, loaded, value, input);
+    }
+
+    /** {@code ACCEPT} が読む行の出どころを差し替えた構成を返す。 */
+    public ProgramContext withInput(Supplier<String> value) {
+        return new ProgramContext(codePage, out, outputCharset, loaded, clock, value);
+    }
+
+    /** 日付と時刻の特殊レジスタが見る時計。 */
+    public Clock clock() {
+        return clock;
+    }
+
+    /**
+     * {@code ACCEPT} が読む 1 行。
+     *
+     * <p>入力が尽きていれば空文字を返す。参照実装も入力がなければ受取項目を変えないため、
+     * 例外にはしない。
+     */
+    public String readLine() {
+        String line = input.get();
+        return line == null ? "" : line;
+    }
+
+    private static String readStandardInput() {
+        try {
+            if (standardInput == null) {
+                standardInput = new BufferedReader(
+                        new InputStreamReader(System.in, Charset.defaultCharset()));
+            }
+            return standardInput.readLine();
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read program input", e);
+        }
+    }
+
+    private static BufferedReader standardInput;
 
     /**
      * 名前で副プログラムを引く。まだ読み込んでいなければ読み込む。

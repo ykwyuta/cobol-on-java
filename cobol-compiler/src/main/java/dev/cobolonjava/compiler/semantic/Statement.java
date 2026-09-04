@@ -391,6 +391,28 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code ACCEPT} 文 (要件 FR-060、テスト時の固定は FR-204)。
+     *
+     * <p>送出側は<b>符号なし整数の表示形式のバイト列</b>である。日付と時刻の特殊レジスタも、
+     * 端末から読んだ 1 行も同じ形であり、受け取る項目への詰め方が分類で決まる。
+     *
+     * @param source   受け取る値の出どころ
+     * @param register 特殊レジスタの形式。端末からの入力では {@code null}
+     * @param kind     受け取る項目への詰め方
+     */
+    record Accept(DataReference target, Source source, String register, MoveRules.Kind kind,
+                  Origin origin) implements Statement {
+
+        /** 値の出どころ。 */
+        public enum Source {
+            /** 端末からの 1 行。 */
+            CONSOLE,
+            /** 日付と時刻の特殊レジスタ。 */
+            REGISTER
+        }
+    }
+
+    /**
      * {@code INITIALIZE} 文 (要件 FR-060)。
      *
      * <p>書き込むバイト列は翻訳時に決まるが、組み立てるのは<b>コード生成</b>である

@@ -219,6 +219,39 @@ public final class Ops {
         return Compare.alphanumeric(left, right, codePage);
     }
 
+    // ---- ACCEPT ----
+
+    /**
+     * 日付と時刻の特殊レジスタ (要件 FR-060、テスト時の固定は FR-204)。
+     *
+     * <p>返すのは<b>符号なし整数の表示形式</b>のバイト列である。受け取る項目が英数字なら
+     * 数字がそのまま並び、数値なら {@link #asInteger} で整数として読まれる。
+     */
+    public static byte[] register(ProgramContext context, String form) {
+        return SpecialRegisters.valueOf(SpecialRegisters.Form.valueOf(form), context.clock(),
+                context.codePage());
+    }
+
+    /**
+     * {@code ACCEPT} が端末から読む 1 行 (要件 FR-060)。
+     *
+     * <p>読んだ文字を実行時のコードページのバイト列へ直す。受け取る項目への詰め方は
+     * 普通の転記と同じである。
+     */
+    public static byte[] acceptLine(ProgramContext context) {
+        return context.codePage().encode(context.readLine());
+    }
+
+    /**
+     * バイト列を符号なし整数として読む。
+     *
+     * <p>{@code ACCEPT} の送出側は<b>符号なし整数の表示形式</b>と決まっている。
+     * 数値項目が受け取るときはこれを通す。
+     */
+    public static Decimal asInteger(byte[] bytes, CodePage codePage) {
+        return ZonedDecimal.decode(bytes, 0, SignPosition.UNSIGNED, codePage, NumProcMode.NOPFD);
+    }
+
     // ---- 副プログラムの呼び出し ----
 
     /**
