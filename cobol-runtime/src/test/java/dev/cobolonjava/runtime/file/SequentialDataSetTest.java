@@ -328,4 +328,173 @@ class SequentialDataSetTest {
         back.read(record);
         assertEquals("cd  ", decode(record));
     }
+
+    // ---- 第 2 段: 可変長・REWRITE・OPEN I-O ----
+
+    @Test
+    @DisplayName("REWRITE は直前に読んだレコードを書き換える (FR-102)")
+    void rewriteReplacesTheRecordJustRead() throws IOException {
+        Path path = write("F.DAT", "aaabbbccc");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        assertEquals(FileStatus.OK, file.open(OpenMode.IO));
+        byte[] record = area(3);
+        file.read(record);
+        file.read(record);
+        assertEquals("bbb", decode(record));
+        assertEquals(FileStatus.OK, file.rewrite(CodePages.DEFAULT.encode("XYZ")));
+        file.close();
+
+        assertEquals("aaaXYZccc", decode(Files.readAllBytes(path)));
+    }
+
+    @Test
+    @DisplayName("読まずに REWRITE すれば 43 になる (FR-103)")
+    void rewritingWithoutReadingFails() throws IOException {
+        SequentialDataSet file = new SequentialDataSet(write("F.DAT", "aaa"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.IO);
+        assertEquals(FileStatus.NO_CURRENT_RECORD, file.rewrite(CodePages.DEFAULT.encode("bbb")));
+    }
+
+    @Test
+    @DisplayName("REWRITE を続けて 2 回書けば 2 回目は 43 になる (FR-103)")
+    void rewritingTwiceNeedsAnotherRead() throws IOException {
+        SequentialDataSet file = new SequentialDataSet(write("F.DAT", "aaa"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.IO);
+        file.read(area(3));
+        assertEquals(FileStatus.OK, file.rewrite(CodePages.DEFAULT.encode("bbb")));
+        assertEquals(FileStatus.NO_CURRENT_RECORD, file.rewrite(CodePages.DEFAULT.encode("ccc")));
+    }
+
+    @Test
+    @DisplayName("I-O 以外で開いた REWRITE は 49 になる (FR-103)")
+    void rewritingOutsideInputOutputFails() throws IOException {
+        SequentialDataSet file = new SequentialDataSet(write("F.DAT", "aaa"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        file.read(area(3));
+        assertEquals(FileStatus.REWRITE_NOT_ALLOWED,
+                file.rewrite(CodePages.DEFAULT.encode("bbb")));
+    }
+
+    @Test
+    @DisplayName("固定長で長さの違う REWRITE は 44 になる (FR-103)")
+    void rewritingAFixedRecordCannotChangeItsLength() throws IOException {
+        SequentialDataSet file = new SequentialDataSet(write("F.DAT", "aaa"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.IO);
+        file.read(area(3));
+        assertEquals(FileStatus.REWRITE_LENGTH, file.rewrite(CodePages.DEFAULT.encode("bbbb")));
+    }
+
+    @Test
+    @DisplayName("可変長の REWRITE は長さを変えられる (FR-102, FR-106)")
+    void rewritingAVariableRecordMayChangeItsLength() {
+        Path path = directory.resolve("V.DAT");
+        DataSetAttributes attributes =
+                new DataSetAttributes(RecordFormat.VARIABLE, 10, CodePages.DEFAULT);
+        SequentialDataSet out = new SequentialDataSet(path, attributes);
+        out.open(OpenMode.OUTPUT);
+        out.write(CodePages.DEFAULT.encode("aaaa"));
+        out.write(CodePages.DEFAULT.encode("bb"));
+        out.close();
+
+        SequentialDataSet file = new SequentialDataSet(path, attributes);
+        file.open(OpenMode.IO);
+        file.read(area(10));
+        assertEquals(FileStatus.OK, file.rewrite(CodePages.DEFAULT.encode("x")));
+        file.close();
+
+        SequentialDataSet back = new SequentialDataSet(path, attributes);
+        back.open(OpenMode.INPUT);
+        byte[] record = area(10);
+        back.read(record);
+        assertEquals(1, back.lastLength());
+        back.read(record);
+        assertEquals(2, back.lastLength());
+    }
+
+    @Test
+    @DisplayName("可変長は受取領域の余りに触らない (FR-106)")
+    void variableRecordsLeaveTheRestOfTheAreaAlone() {
+        Path path = directory.resolve("V.DAT");
+        DataSetAttributes attributes =
+                new DataSetAttributes(RecordFormat.VARIABLE, 8, CodePages.DEFAULT);
+        SequentialDataSet out = new SequentialDataSet(path, attributes);
+        out.open(OpenMode.OUTPUT);
+        out.write(CodePages.DEFAULT.encode("ab"));
+        out.close();
+
+        byte[] record = CodePages.DEFAULT.encode("ZZZZZZZZ");
+        SequentialDataSet file = new SequentialDataSet(path, attributes);
+        file.open(OpenMode.INPUT);
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(2, file.lastLength());
+        // 読んだ 2 バイトだけが変わり、残りは前のままである
+        assertEquals("abZZZZZZ", decode(record));
+    }
+
+    @Test
+    @DisplayName("受取領域より長い可変長レコードは 04 になる (FR-103)")
+    void aVariableRecordLongerThanTheAreaIsTruncated() {
+        Path path = directory.resolve("V.DAT");
+        SequentialDataSet out = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.VARIABLE, 8, CodePages.DEFAULT));
+        out.open(OpenMode.OUTPUT);
+        out.write(CodePages.DEFAULT.encode("abcdef"));
+        out.close();
+
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.VARIABLE, 8, CodePages.DEFAULT));
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        assertEquals(FileStatus.LENGTH_MISMATCH, file.read(record));
+        assertEquals("abc", decode(record));
+    }
+
+    @Test
+    @DisplayName("OPTIONAL ならないファイルを開いて 05 になる (FR-103)")
+    void anOptionalFileMayBeMissing() {
+        SequentialDataSet file = SequentialDataSet.at(directory.resolve("NONE.DAT"));
+
+        assertEquals(FileStatus.OPTIONAL_CREATED, file.open(OpenMode.INPUT, true));
+        assertTrue(file.isOpen());
+        assertEquals(FileStatus.AT_END, file.read(area(80)));
+    }
+
+    @Test
+    @DisplayName("ないファイルを I-O と EXTEND で開いても 35 になる (FR-103)")
+    void missingFilesFailForInputOutputAndExtend() {
+        assertEquals(FileStatus.NOT_FOUND,
+                SequentialDataSet.at(directory.resolve("A.DAT")).open(OpenMode.IO));
+        assertEquals(FileStatus.NOT_FOUND,
+                SequentialDataSet.at(directory.resolve("B.DAT")).open(OpenMode.EXTEND));
+        // OUTPUT だけは作ってよい。中身を消して書き直す開き方だからである
+        assertEquals(FileStatus.OK,
+                SequentialDataSet.at(directory.resolve("C.DAT")).open(OpenMode.OUTPUT));
+    }
+
+    @Test
+    @DisplayName("I-O で開けば読みも書きもできる (FR-102)")
+    void inputOutputReadsAndWrites() throws IOException {
+        Path path = write("F.DAT", "aaabbb");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.IO);
+        byte[] record = area(3);
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.AT_END, file.read(record));
+        file.close();
+
+        assertEquals("aaabbb", decode(Files.readAllBytes(path)));
+    }
 }

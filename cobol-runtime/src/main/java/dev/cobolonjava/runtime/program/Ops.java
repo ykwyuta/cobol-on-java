@@ -9,6 +9,7 @@ import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.FileStatus;
 import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.file.RecordFormat;
+import dev.cobolonjava.runtime.file.SequentialDataSet;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -20,6 +21,7 @@ import dev.cobolonjava.runtime.verb.InspectScan;
 import dev.cobolonjava.runtime.verb.Region;
 import dev.cobolonjava.runtime.verb.StringVerb;
 import dev.cobolonjava.runtime.verb.UnstringVerb;
+import java.util.Arrays;
 import java.util.List;
 import dev.cobolonjava.runtime.verb.Move;
 
@@ -170,6 +172,11 @@ public final class Ops {
         }
     }
 
+    /** 数値項目を {@code int} として読む。長さそのものが値である場面で使う。 */
+    public static int readInteger(NumericItem source, Storage storage, int offset) {
+        return readNumeric(source, storage, offset).toBigDecimal().intValue();
+    }
+
     /** 整数を数値項目へ入れる。{@code POINTER} や {@code TALLYING} が使う。 */
     public static void storeInteger(int value, NumericItem target, Storage storage, int offset) {
         store(Decimal.of(value, 0), target, storage, offset, CobolRounding.TRUNCATION);
@@ -235,9 +242,9 @@ public final class Ops {
      * @return ファイル状態コードのバイト列。2 バイトである
      */
     public static byte[] open(ProgramContext context, String name, String ddName, int mode,
-                              int format, int recordLength) {
+                              int format, int recordLength, boolean optional) {
         return status(context, context.file(name, ddName, RecordFormat.values()[format],
-                recordLength).open(OpenMode.values()[mode]));
+                recordLength).open(OpenMode.values()[mode], optional));
     }
 
     /**
@@ -247,20 +254,73 @@ public final class Ops {
      */
     public static byte[] read(ProgramContext context, String name, String ddName,
                               Storage storage, int offset, int length) {
+        SequentialDataSet file = context.file(name, ddName);
         byte[] record = new byte[length];
-        String status = context.file(name, ddName).read(record);
+        String status = file.read(record);
         if (FileStatus.succeeded(status)) {
-            // 読めなかったときにレコード領域を触らないのは、前の内容が残る規則のためである
-            storage.view(offset, length).setBytes(record);
+            // 読めなかったときにレコード領域を触らないのは、前の内容が残る規則のためである。
+            // 可変長では読めた分だけを入れる。その先の中身は規格上決まっていない (要件 FR-106)
+            int copied = file.attributes().format() == RecordFormat.VARIABLE
+                    ? file.lastLength()
+                    : length;
+            storage.view(offset, copied).setBytes(Arrays.copyOf(record, copied));
         }
         return status(context, status);
     }
 
-    /** {@code WRITE} (要件 FR-102)。 */
+    /**
+     * {@code WRITE} (要件 FR-102, FR-106)。
+     *
+     * @param length  書き出す長さ。可変長では {@code DEPENDING ON} の項目の値である
+     * @param minimum 宣言された下限
+     * @param maximum 宣言された上限。レコード領域より長くはならない
+     */
     public static byte[] write(ProgramContext context, String name, String ddName,
-                               Storage storage, int offset, int length) {
-        return status(context, context.file(name, ddName)
-                .write(read(storage, offset, length)));
+                               Storage storage, int offset, int length, int minimum,
+                               int maximum) {
+        int actual = clamp(length, minimum, maximum);
+        return status(context, lengthChecked(
+                context.file(name, ddName).write(read(storage, offset, actual)), actual, length));
+    }
+
+    /**
+     * {@code REWRITE} (要件 FR-102)。直前に読んだレコードを書き換える。
+     *
+     * @return ファイル状態コード
+     */
+    public static byte[] rewrite(ProgramContext context, String name, String ddName,
+                                 Storage storage, int offset, int length, int minimum,
+                                 int maximum) {
+        int actual = clamp(length, minimum, maximum);
+        return status(context, lengthChecked(
+                context.file(name, ddName).rewrite(read(storage, offset, actual)), actual, length));
+    }
+
+    /**
+     * 宣言された範囲へ収める (要件 FR-106)。
+     *
+     * <p>{@code DEPENDING ON} の項目に範囲外の値が入っていることはありうる。そのまま使えば
+     * <b>レコード領域の外を読み書きする</b>。収めたうえで、食い違ったことを状態コードで知らせる。
+     */
+    private static int clamp(int length, int minimum, int maximum) {
+        return Math.max(minimum, Math.min(length, maximum));
+    }
+
+    /** 長さを収めたなら {@code 04} を立てる。成功しているときだけである。 */
+    private static String lengthChecked(String status, int actual, int requested) {
+        return actual != requested && FileStatus.succeeded(status)
+                ? FileStatus.LENGTH_MISMATCH
+                : status;
+    }
+
+    /**
+     * 直前に読み書きしたレコードの長さ (要件 FR-106)。
+     *
+     * <p>可変長では<b>長さそのものがデータである</b>。{@code RECORD IS VARYING ... DEPENDING ON}
+     * の項目へ入れる値がこれである。
+     */
+    public static int recordLength(ProgramContext context, String name, String ddName) {
+        return context.file(name, ddName).lastLength();
     }
 
     /** {@code CLOSE} (要件 FR-102)。 */

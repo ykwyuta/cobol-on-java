@@ -49,7 +49,7 @@ tokens {
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
     UP, DOWN, SEARCH, END_SEARCH, AT,
     OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
-    END_READ, END_WRITE, INVALID, FD, RECORD,
+    END_READ, END_WRITE, REWRITE, END_REWRITE, INVALID, FD, RECORD,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -200,10 +200,17 @@ fileDescriptionEntry
     ;
 
 fileDescriptionClause
-    : BLOCK CONTAINS? NUMBER (TO NUMBER)? (RECORDS | CHARACTER)?
-    | RECORD CONTAINS? NUMBER (TO NUMBER)? CHARACTER?
+    : BLOCK CONTAINS? NUMBER (TO NUMBER)? (RECORDS | CHARACTER | CHARACTERS)?
+    | recordVaryingClause
+    | RECORD CONTAINS? NUMBER (TO NUMBER)? (CHARACTER | CHARACTERS)?
     | LABEL RECORD (IS | ARE)? (STANDARD | OMITTED)
     | RECORDING MODE? IS? IDENTIFIER
+    ;
+
+// 可変長レコードの長さは DEPENDING ON の項目が持つ
+recordVaryingClause
+    : RECORD IS? VARYING IN? SIZE? (FROM NUMBER)? (TO NUMBER)?
+      (CHARACTER | CHARACTERS)? (DEPENDING ON? identifier)?
     ;
 
 workingStorageSection
@@ -419,6 +426,7 @@ statement
     | closeStatement
     | readStatement
     | writeStatement
+    | rewriteStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -654,6 +662,11 @@ notAtEndPhrase
 
 writeStatement
     : WRITE IDENTIFIER (FROM identifier)? END_WRITE?
+    ;
+
+// REWRITE が書き換えるのは、直前に読んだレコードである
+rewriteStatement
+    : REWRITE IDENTIFIER (FROM identifier)? END_REWRITE?
     ;
 
 // SEARCH は表を順に見る。SEARCH ALL は 2 分探索であり、条件の形が限られる

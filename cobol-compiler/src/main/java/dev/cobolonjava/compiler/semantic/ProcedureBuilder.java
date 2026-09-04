@@ -357,6 +357,9 @@ public final class ProcedureBuilder {
         if (context.writeStatement() != null) {
             return writeOf(context.writeStatement());
         }
+        if (context.rewriteStatement() != null) {
+            return rewriteOf(context.rewriteStatement());
+        }
         if (context.exitStatement() != null) {
             // EXIT は何もしない。CONTINUE と同じ扱いでよい
             return new Statement.Continue(ReferenceResolver.originOf(context.exitStatement()));
@@ -2205,9 +2208,7 @@ public final class ProcedureBuilder {
         List<Statement> notAtEnd = context.notAtEndPhrase() == null
                 ? List.of()
                 : listOf(context.notAtEndPhrase().statement());
-        if (atEnd.contains(null) || notAtEnd.contains(null)) {
-            return null;
-        }
+        // listOf は組み立てられなかった文を落とす。誤りは診断として残っている
         return new Statement.Read(file, into, atEnd, notAtEnd, origin);
     }
 
@@ -2219,19 +2220,8 @@ public final class ProcedureBuilder {
      */
     private Statement writeOf(CobolParser.WriteStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        String name = context.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
-        DataItem record = null;
-        FileDescription file = null;
-        for (FileDescription candidate : files.values()) {
-            for (DataItem one : candidate.records()) {
-                if (name.equals(one.name())) {
-                    record = one;
-                    file = candidate;
-                }
-            }
-        }
+        DataItem record = recordOf(context.IDENTIFIER().getText(), "WRITE", origin);
         if (record == null) {
-            report(origin, "WRITE names an item that is not a record of any FD: " + name);
             return null;
         }
         Statement.Move from = null;
@@ -2241,7 +2231,43 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
-        return new Statement.Write(file, record, from, origin);
+        return new Statement.Write(files.get(record.fileName()), record, from, origin);
+    }
+
+    /**
+     * {@code REWRITE} を組み立てる (要件 FR-102)。
+     *
+     * <p>書き換える相手は文に書かれていない。直前に読んだレコードであり、それを覚えているのは
+     * 開いているファイルのほうである。したがってここで作るのは {@code WRITE} と同じ形になる。
+     */
+    private Statement rewriteOf(CobolParser.RewriteStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        DataItem record = recordOf(context.IDENTIFIER().getText(), "REWRITE", origin);
+        if (record == null) {
+            return null;
+        }
+        Statement.Move from = null;
+        if (context.identifier() != null) {
+            from = recordMove(record, context.identifier(), origin);
+            if (from == null) {
+                return null;
+            }
+        }
+        return new Statement.Rewrite(files.get(record.fileName()), record, from, origin);
+    }
+
+    /** レコード名から、その {@code FD} 配下のレコード記述を引く。 */
+    private DataItem recordOf(String text, String verb, Origin origin) {
+        String name = text.toUpperCase(Locale.ROOT);
+        for (FileDescription candidate : files.values()) {
+            for (DataItem one : candidate.records()) {
+                if (name.equals(one.name())) {
+                    return one;
+                }
+            }
+        }
+        report(origin, verb + " names an item that is not a record of any FD: " + name);
+        return null;
     }
 
     /** {@code READ ... INTO} の転記。送り出すのはレコード領域そのものである。 */

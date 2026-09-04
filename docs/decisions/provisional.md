@@ -925,13 +925,15 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 `SOURCE-COMPUTER` と `OBJECT-COMPUTER` は段落ごと読み飛ばす。翻訳の結果に効かないためである。
 
 `INPUT-OUTPUT SECTION` と `FILE-CONTROL` も実装した (2026-09-04)。`SELECT` に書ける句は
-`ASSIGN TO`、`ORGANIZATION`、`ACCESS MODE`、`FILE STATUS`、`RECORDING MODE` である。
+`ASSIGN TO`、`ORGANIZATION`、`ACCESS MODE`、`FILE STATUS`、`RECORDING MODE` であり、
+`SELECT OPTIONAL` も読む。`FD` 側では `RECORD IS VARYING IN SIZE ... DEPENDING ON` と
+`RECORDING MODE` を読む。
 
 **まだ未実装**:
 
 - `SELECT` の `ORGANIZATION IS RELATIVE` / `INDEXED`、`ACCESS MODE IS RANDOM` / `DYNAMIC`、
   `RECORD KEY`、`ALTERNATE RECORD KEY`。順編成と行順編成だけを通す (設計 80 の第 3 段)
-- `RECORDING MODE V` / `VB` (可変長)。誤りとして報告する (設計 80 の第 2 段)
+- `RECORDING MODE U` (不定長)。誤りとして報告する
 - `I-O-CONTROL` 段落 (`SAME AREA`、`APPLY`、`RERUN`)。書けば構文誤りになる
 - `ALPHABET`、`CLASS`、`SYMBOLIC CHARACTERS` の各句。書けば構文誤りになる
 - `SYSPUNCH` などの機能名。知らない綴りは誤りとして報告する

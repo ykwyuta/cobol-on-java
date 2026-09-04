@@ -34,6 +34,14 @@ public final class SequentialDataSet {
     private List<byte[]> records;
     private int position;
     private boolean atEnd;
+    /**
+     * 直前に読んだレコードの番号。{@code REWRITE} が書き換える相手である。
+     *
+     * <p>{@code -1} は「いま指しているレコードがない」ことを表す。読む前、書いたあと、
+     * 書き換えたあとがそれにあたる。
+     */
+    private int current = -1;
+    private int lastLength;
 
     public SequentialDataSet(Path path, DataSetAttributes attributes) {
         this.path = path;
@@ -69,14 +77,30 @@ public final class SequentialDataSet {
      * @return ファイル状態コード
      */
     public String open(OpenMode requested) {
+        return open(requested, false);
+    }
+
+    /**
+     * 開く (要件 FR-102, FR-103)。
+     *
+     * <p>{@code OUTPUT} 以外は<b>ファイルがあることを前提とする</b>。ないなら {@code 35} で
+     * ある。{@code SELECT OPTIONAL} と書いてあるときだけ、空のファイルとして作って
+     * {@code 05} を返す。黙って空のファイルを作ると、入力を取り違えたジョブが
+     * 「0 件処理した」と言って正常終了してしまう。
+     *
+     * @param optional {@code SELECT OPTIONAL} と書かれているか
+     * @return ファイル状態コード
+     */
+    public String open(OpenMode requested, boolean optional) {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
-        if (requested == OpenMode.INPUT && !Files.isReadable(path)) {
+        boolean missing = !Files.isReadable(path);
+        if (missing && requested != OpenMode.OUTPUT && !optional) {
             return FileStatus.NOT_FOUND;
         }
         try {
-            records = requested == OpenMode.OUTPUT || !Files.isReadable(path)
+            records = requested == OpenMode.OUTPUT || missing
                     ? new ArrayList<>()
                     : split(Files.readAllBytes(path));
         } catch (IOException e) {
@@ -86,7 +110,11 @@ public final class SequentialDataSet {
         // EXTEND は末尾から書き足す。ほかは先頭から
         position = requested == OpenMode.EXTEND ? records.size() : 0;
         atEnd = false;
-        return FileStatus.OK;
+        current = -1;
+        lastLength = 0;
+        return missing && requested != OpenMode.OUTPUT
+                ? FileStatus.OPTIONAL_CREATED
+                : FileStatus.OK;
     }
 
     /**
@@ -111,10 +139,26 @@ public final class SequentialDataSet {
             return FileStatus.AT_END;
         }
         byte[] record = records.get(position++);
+        current = position - 1;
         int length = Math.min(record.length, into.length);
         System.arraycopy(record, 0, into, 0, length);
+        lastLength = length;
+        if (attributes.format() == RecordFormat.VARIABLE) {
+            // 可変長では受取領域の余りに触らない。規格上そこの中身は決まっていない
+            return record.length > into.length ? FileStatus.LENGTH_MISMATCH : FileStatus.OK;
+        }
         Arrays.fill(into, length, into.length, attributes.codePage().space());
         return record.length == into.length ? FileStatus.OK : FileStatus.LENGTH_MISMATCH;
+    }
+
+    /**
+     * 直前に読み書きしたレコードの長さ。
+     *
+     * <p>可変長では<b>長さそのものがデータである</b>。{@code DEPENDING ON} の項目へ返すために
+     * 要る (要件 FR-106)。
+     */
+    public int lastLength() {
+        return lastLength;
     }
 
     /**
@@ -131,6 +175,38 @@ public final class SequentialDataSet {
         }
         records.add(from.clone());
         position = records.size();
+        current = -1;
+        lastLength = from.length;
+        return FileStatus.OK;
+    }
+
+    /**
+     * 直前に読んだレコードを書き換える (要件 FR-102)。
+     *
+     * <p>順編成の {@code REWRITE} は<b>読んだ直後にしか書けない</b>。書き換える相手は
+     * 「いま指しているレコード」であり、読まなければ何も指していないからである。
+     * 開き方も {@code I-O} に限る。読みながら書き戻す使い方だけが意味を持つ。
+     *
+     * @return ファイル状態コード
+     */
+    public String rewrite(byte[] from) {
+        if (mode == null) {
+            return FileStatus.NOT_OPEN;
+        }
+        if (mode != OpenMode.IO) {
+            return FileStatus.REWRITE_NOT_ALLOWED;
+        }
+        if (current < 0) {
+            return FileStatus.NO_CURRENT_RECORD;
+        }
+        if (attributes.format() == RecordFormat.FIXED
+                && from.length != records.get(current).length) {
+            // 固定長では長さを変えられない。あとのレコードの位置がずれてしまう
+            return FileStatus.REWRITE_LENGTH;
+        }
+        records.set(current, from.clone());
+        lastLength = from.length;
+        current = -1;
         return FileStatus.OK;
     }
 
@@ -154,6 +230,7 @@ public final class SequentialDataSet {
         }
         mode = null;
         records = null;
+        current = -1;
         return FileStatus.OK;
     }
 

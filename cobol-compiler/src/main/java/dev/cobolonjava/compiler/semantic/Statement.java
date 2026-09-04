@@ -556,6 +556,19 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code REWRITE} 文 (要件 FR-102)。
+     *
+     * <p>書き換える相手は<b>直前に読んだレコード</b>である。文には書かれていない。
+     * 場所を持っているのは開いているファイルのほうであり、そこが覚えている。
+     *
+     * @param record 書き出すレコード記述
+     * @param from   {@code FROM} の転記。指定がなければ {@code null}
+     */
+    record Rewrite(FileDescription file, DataItem record, Move from, Origin origin)
+            implements Statement {
+    }
+
+    /**
      * {@code GO TO} 文。
      *
      * <p>{@code PERFORM} と違い<b>戻ってこない</b>。段落の途中から別の段落へ移り、

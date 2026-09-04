@@ -325,6 +325,8 @@ public final class ProgramGenerator {
                 planRead(read, body);
             } else if (statement instanceof Statement.Write write) {
                 planWrite(write, body);
+            } else if (statement instanceof Statement.Rewrite rewrite) {
+                planRewrite(rewrite, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
             } else if (statement instanceof Statement.Continue) {
@@ -1051,13 +1053,15 @@ public final class ProgramGenerator {
             int mode = opened.mode().ordinal();
             int format = file.format().ordinal();
             int length = file.recordLength();
+            boolean optional = file.optional();
             body.add(() -> {
                 emitFileName(file);
                 push(mode);
                 push(format);
                 push(length);
+                run.visitInsn(optional ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "open",
-                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;III)[B", false);
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;IIIZ)[B", false);
                 status.run();
             });
         }
@@ -1094,6 +1098,10 @@ public final class ProgramGenerator {
         if (status == null || area == null) {
             return;
         }
+        Runnable depending = planReadLength(file, statement.origin());
+        if (depending == null && file.varying() != null && file.varying().depending() != null) {
+            return;
+        }
         List<Runnable> into = statement.into() == null
                 ? List.of()
                 : planStatements(List.of(statement.into()));
@@ -1124,6 +1132,9 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileSucceeded",
                     "([B" + CODE_PAGE + ")Z", false);
             run.visitJumpInsn(Opcodes.IFEQ, end);
+            if (depending != null) {
+                depending.run();
+            }
             into.forEach(Runnable::run);
             notAtEnd.forEach(Runnable::run);
             run.visitJumpInsn(Opcodes.GOTO, end);
@@ -1148,19 +1159,123 @@ public final class ProgramGenerator {
         if (status == null || area == null) {
             return;
         }
+        Runnable length = planWrittenLength(file, statement.record(), statement.origin());
+        if (length == null) {
+            return;
+        }
         if (statement.from() != null) {
             planMove(statement.from(), body);
         }
-        int length = statement.record().totalLength();
         body.add(() -> {
             emitFileName(file);
             area.run();
-            push(length);
+            length.run();
+            emitLengthBounds(file, statement.record());
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "write",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";II)[B",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";IIII)[B",
                     false);
             status.run();
         });
+    }
+
+    /**
+     * {@code REWRITE} を組み立てる (要件 FR-102)。
+     *
+     * <p>{@code WRITE} と組み立ては同じである。違うのは呼ぶ先だけであり、
+     * 「どのレコードを書き換えるか」を知っているのは開いているファイルのほうである。
+     */
+    private void planRewrite(Statement.Rewrite statement, List<Runnable> body) {
+        FileDescription file = statement.file();
+        Runnable status = planFileStatus(file, statement.origin());
+        Runnable area = planAddress(
+                new DataReference(statement.record(), List.of(), null, statement.origin()),
+                statement.origin());
+        Runnable length = planWrittenLength(file, statement.record(), statement.origin());
+        if (status == null || area == null || length == null) {
+            return;
+        }
+        if (statement.from() != null) {
+            planMove(statement.from(), body);
+        }
+        body.add(() -> {
+            emitFileName(file);
+            area.run();
+            length.run();
+            emitLengthBounds(file, statement.record());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "rewrite",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + STORAGE + ";IIII)[B",
+                    false);
+            status.run();
+        });
+    }
+
+    /**
+     * 書き出す長さの下限と上限を積む (要件 FR-106)。
+     *
+     * <p>固定長ではレコード記述の長さそのものである。可変長では宣言された範囲であり、
+     * {@code DEPENDING ON} の項目に範囲外の値が入っていたときにそこへ収める。
+     */
+    private void emitLengthBounds(FileDescription file, DataItem record) {
+        FileDescription.Varying varying = file.varying();
+        if (varying == null) {
+            push(record.totalLength());
+            push(record.totalLength());
+            return;
+        }
+        push(Math.max(1, varying.minimum()));
+        push(varying.maximum());
+    }
+
+    /**
+     * 書き出す長さを積む命令 (要件 FR-106)。
+     *
+     * <p>固定長なら翻訳時に決まる。可変長で {@code DEPENDING ON} が書かれていれば、
+     * <b>その項目の値がレコード長である</b>。長さそのものがデータなので、実行時に読む。
+     */
+    private Runnable planWrittenLength(FileDescription file, DataItem record, Origin origin) {
+        FileDescription.Varying varying = file.varying();
+        if (varying == null || varying.depending() == null) {
+            // DEPENDING ON がなければ、書いたレコード記述の長さがそのままレコード長である
+            int length = record.totalLength();
+            return () -> push(length);
+        }
+        Runnable address = planAddress(varying.depending(), origin);
+        String field = numericItemConstant(varying.depending().item(), origin);
+        if (address == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
+        };
+    }
+
+    /**
+     * 読めた長さを {@code DEPENDING ON} の項目へ入れる命令 (要件 FR-106)。
+     *
+     * @return 可変長でなければ {@code null}
+     */
+    private Runnable planReadLength(FileDescription file, Origin origin) {
+        FileDescription.Varying varying = file.varying();
+        if (varying == null || varying.depending() == null) {
+            return null;
+        }
+        Runnable address = planAddress(varying.depending(), origin);
+        String field = numericItemConstant(varying.depending().item(), origin);
+        if (address == null || field == null) {
+            return null;
+        }
+        return () -> {
+            emitFileName(file);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "recordLength",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)I", false);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
+                    "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+        };
     }
 
     /** 実行時の入口とファイル名・DD 名を積む。どの入出力にも要る前置きである。 */

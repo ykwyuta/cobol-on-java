@@ -276,7 +276,7 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
 `GO TO`、`DISPLAY`、`ACCEPT`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、`SET`、
 `SEARCH` / `SEARCH ALL`、`CALL` / `CANCEL`、
-`OPEN` / `READ` / `WRITE` / `CLOSE` (`INTO` / `FROM` / `AT END` / `NOT AT END`)、
+`OPEN` / `READ` / `WRITE` / `REWRITE` / `CLOSE` (`INTO` / `FROM` / `AT END` / `NOT AT END`)、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。
@@ -324,6 +324,10 @@ fileSucceeded ? → INTO の転記 → NOT AT END の文
 
 誤りのときにレコード領域の中身は決まっていない。読めたことにして先へ進めるわけには
 いかない。
+
+可変長では、読めたあとに<b>実際の長さを `DEPENDING ON` の項目へ入れる</b>
+(要件 FR-106)。書くときはその逆で、項目の値を読んでレコード長にする。長さそのものが
+データなので、翻訳時には決まらず実行時に読む。
 
 ## CALL はクラスローダを持ち回る
 
@@ -423,4 +427,4 @@ COBOL のプログラム名から Java のクラス名を作る規則は<b>ラ�
 1. 反復を実行時のループとして出す形 (暫定判断 P-033)。
 2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
 3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
-4. `REWRITE` と可変長レコード ([設計 80](80-file-io.md) の第 2 段)。
+4. 相対編成と索引編成 ([設計 80](80-file-io.md) の第 3 段)。

@@ -13,6 +13,8 @@ public final class FileStatus {
 
     /** 成功。 */
     public static final String OK = "00";
+    /** 省略可能なファイルがなかったので作った。 */
+    public static final String OPTIONAL_CREATED = "05";
     /** レコード長が記述と合わない。 */
     public static final String LENGTH_MISMATCH = "04";
     /** ファイルの終わり。 */
@@ -27,12 +29,16 @@ public final class FileStatus {
     public static final String NOT_OPEN = "42";
     /** 読んでいないのに書き換えようとした。 */
     public static final String NO_CURRENT_RECORD = "43";
+    /** 書き換えようとしたレコードの長さが読んだものと違う。 */
+    public static final String REWRITE_LENGTH = "44";
     /** 読める位置にない。 */
     public static final String NOT_READABLE = "46";
     /** 読み取りが許されていない開き方である。 */
     public static final String READ_NOT_ALLOWED = "47";
     /** 書き込みが許されていない開き方である。 */
     public static final String WRITE_NOT_ALLOWED = "48";
+    /** 書き換えが許されていない開き方である。{@code REWRITE} は {@code I-O} だけである。 */
+    public static final String REWRITE_NOT_ALLOWED = "49";
     /** 入出力の誤り。 */
     public static final String IO_ERROR = "30";
 
