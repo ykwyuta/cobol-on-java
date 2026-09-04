@@ -42,7 +42,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | --- | --- | --- |
 | `cobol-runtime` | データ表現・10 進演算・編集移送・文字コード変換・データセットの意味論 | P0-a 第 1 増分 実装済。順編成の読み書きを追加 |
 | `cobol-oracle` | Hercules 用テストの生成と期待値の採取 | 第 1 増分 実装済 |
-| `cobol-job` | 内部ジョブモデル・ジョブ実行・宣言的形式のフロントエンド | FR-130〜FR-136 のうち、内部モデル・実行機構・宣言的形式を実装済 |
+| `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-136 のうち、内部モデル・実行機構・宣言的形式・JCL を実装済 |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。`MOVE`・算術文 (`CORRESPONDING` を含む)・`COMPUTE`・`IF`・`EVALUATE`・`PERFORM` (`VARYING` を含む)・`GO TO`・`CALL`・`INITIALIZE`・`SEARCH` / `SEARCH ALL`・`ACCEPT`・`DISPLAY`・`INSPECT`・`STRING`・`UNSTRING` を含むプログラムが、ソースからクラスファイルまで通って動く |
 
 ## ビルド
@@ -64,9 +64,12 @@ java -cp out:<classpath> cobol.generated.HELLO
 
 ```
 java -cp <classpath> dev.cobolonjava.job.Main -d out -w work payroll.jobs
+java -cp <classpath> dev.cobolonjava.job.Main -d out -w work -b data payroll.jcl
 ```
 
-プロセスの終了コードはジョブの終了コードである。記述形式は[設計 90](docs/design/90-job.md) を参照。
+記述形式は拡張子で見分ける。`.jcl` なら JCL、それ以外は宣言的形式である。どちらも同じ
+内部モデルへ落ちるので結果は同じになる。プロセスの終了コードはジョブの終了コードである。
+詳しくは[設計 90](docs/design/90-job.md) を参照。
 
 生成したクラスは `main` を持つので、そのまま起動できる。
 `-I` でコピー句のディレクトリ、`--free` で自由形式、`-q` で翻訳時オプションを指定する
@@ -110,7 +113,7 @@ Hercules が見つからない場合、V2 テストは失敗ではなくスキ�
 ## 現在のステータス
 
 要件定義フェーズ完了 (要件定義書 第 15 章に決定事項)。
-P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。ジョブ実行の内部モデルを実装済。テスト 1010 件。
+P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。ジョブ実行 (JCL を含む) を実装済。テスト 1036 件。
 うち 33 件は Hercules 上での実行と突き合わせる**検証レベル V2** であり、残りは V1。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい
 (詳細は[設計 20](docs/design/20-oracle.md))。

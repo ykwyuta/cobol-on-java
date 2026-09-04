@@ -184,10 +184,57 @@ public final class JobRunner {
                 new DataSetAttributes(RecordFormat.LINE, 80, codePage).write(inline);
                 catalog.assign(name, inline);
             }
-            case DdTarget.Concatenation ignored -> throw new IllegalArgumentException(
-                    "concatenated DD is not supported yet: " + name);
+            case DdTarget.Concatenation target -> {
+                Path joined = stepWork.resolve(name + ".concat");
+                writeBytes(joined, concatenate(target.parts(), name));
+                copyAttributes(target.parts(), joined);
+                catalog.assign(name, joined);
+            }
         }
         return List.of();
+    }
+
+    /**
+     * 連結したデータセットを 1 つにまとめる (要件 FR-131)。
+     *
+     * <p>読むときは<b>並べた順に 1 つのファイルに見える</b>。ここでは作業領域へ書き出して
+     * 1 つのファイルにしている。読むだけの使い方でしか意味を持たない (暫定判断 P-044)。
+     */
+    private byte[] concatenate(List<DdTarget> parts, String name) {
+        java.io.ByteArrayOutputStream joined = new java.io.ByteArrayOutputStream();
+        for (DdTarget part : parts) {
+            byte[] bytes = switch (part) {
+                case DdTarget.DataSet dataSet -> readBytes(dataSet.path());
+                case DdTarget.Inline inline -> inline.data();
+                case DdTarget.Dummy ignored -> new byte[0];
+                default -> throw new IllegalArgumentException(
+                        "a concatenated DD holds data sets: " + name);
+            };
+            joined.writeBytes(bytes);
+        }
+        return joined.toByteArray();
+    }
+
+    /** レコードの切れ目は、連結の<b>先頭のデータセット</b>のものに揃える。 */
+    private void copyAttributes(List<DdTarget> parts, Path joined) {
+        for (DdTarget part : parts) {
+            if (!(part instanceof DdTarget.DataSet dataSet)) {
+                continue;
+            }
+            Path sidecar = DataSetAttributes.sidecarOf(dataSet.path());
+            if (Files.isReadable(sidecar)) {
+                DataSetAttributes.read(dataSet.path()).write(joined);
+                return;
+            }
+        }
+    }
+
+    private static byte[] readBytes(Path path) {
+        try {
+            return Files.isReadable(path) ? Files.readAllBytes(path) : new byte[0];
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + path, e);
+        }
     }
 
     /** スプールに溜まったものをジョブの出力へ流す。 */

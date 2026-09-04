@@ -12,8 +12,17 @@ import java.util.List;
  */
 public sealed interface DdTarget {
 
-    /** 実ファイル。{@code DSN=} にあたる。 */
-    record DataSet(Path path) implements DdTarget {
+    /**
+     * 実ファイル。{@code DSN=} にあたる。
+     *
+     * @param disposition {@code DISP=} の 1 つ目の副パラメタ。指定がなければ {@code SHR}
+     */
+    record DataSet(Path path, Disposition disposition) implements DdTarget {
+
+        /** 処置を書かない割当。宣言的形式はこちらを使う。 */
+        public DataSet(Path path) {
+            this(path, Disposition.SHR);
+        }
     }
 
     /**

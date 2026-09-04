@@ -256,4 +256,44 @@ class JobRunnerTest {
         assertEquals(JobRunner.Status.BYPASSED, result.step("THIRD").status());
         assertEquals(4, result.returnCode());
     }
+
+    @Test
+    @DisplayName("連結した DD は並べた順に 1 つのファイルに見える (FR-131, FR-133)")
+    void aConcatenatedDdReadsAsOneFile() {
+        write("east.dat", ebcdic("EEEEEEEEEEEEEEEEEEEE"));
+        write("east.dat.meta", "recfm=F\nlrecl=20\ncodepage=IBM-1047\n"
+                .getBytes(StandardCharsets.UTF_8));
+        write("west.dat", ebcdic("WWWWWWWWWWWWWWWWWWWW"));
+
+        JobRunner.Result result = runner().run(new Job("J", List.of(
+                step("COPY", "COPYDD", null, new StepCondition.Always(),
+                        new DdAssignment("INDD", new DdTarget.Concatenation(List.of(
+                                new DdTarget.DataSet(directory.resolve("east.dat")),
+                                new DdTarget.DataSet(directory.resolve("west.dat"))))),
+                        new DdAssignment("OUTDD",
+                                new DdTarget.DataSet(directory.resolve("out.dat")))))));
+
+        assertEquals(JobRunner.Status.EXECUTED, result.step("COPY").status());
+        assertEquals("EEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWW",
+                CodePages.DEFAULT.decode(bytesOf("out.dat")));
+    }
+
+    @Test
+    @DisplayName("JCL で書いたジョブがそのまま動く (FR-130, FR-131)")
+    void aJclJobRunsAsWritten() {
+        dev.cobolonjava.job.jcl.Jcl.Result parsed = dev.cobolonjava.job.jcl.Jcl.read(
+                String.join("\n", List.of(
+                        "//PAYROLL  JOB  (ACCT),'PAY RUN'",
+                        "//FIRST    EXEC PGM=SETRC,PARM='4'",
+                        "//SECOND   EXEC PGM=SAYPARM,PARM='OK',COND=(4,LT,FIRST)",
+                        "//THIRD    EXEC PGM=SAYPARM,PARM='NEVER',COND=(0,LT,FIRST)")),
+                directory);
+        assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
+
+        JobRunner.Result result = runner().run(parsed.job());
+
+        assertEquals("PARM(2)=OK|", output());
+        assertEquals(JobRunner.Status.BYPASSED, result.step("THIRD").status());
+        assertEquals(4, result.returnCode());
+    }
 }
