@@ -103,6 +103,25 @@ public sealed interface StepCondition {
         }
     }
 
+    /**
+     * そのステップが動いたか。JCL の {@code ステップ名.RUN} にあたる。
+     *
+     * <p>異常終了したステップも<b>動いたことになる</b>。飛ばされたステップだけが動いていない。
+     */
+    record Ran(String step) implements StepCondition {
+
+        @Override
+        public boolean allows(JobState state) {
+            return state.returnCode(step) != null;
+        }
+
+        @Override
+        public boolean survivesAbend() {
+            // 異常終了のあとに後始末を動かすために使う。異常終了で止まっては用をなさない
+            return true;
+        }
+    }
+
     /** {@code COND=EVEN}。異常終了していても動かす。 */
     record EvenIfAbend() implements StepCondition {
 

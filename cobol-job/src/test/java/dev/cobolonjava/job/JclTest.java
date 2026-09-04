@@ -255,9 +255,9 @@ class JclTest {
     @DisplayName("未対応の JCL 構文は読み飛ばさない (FR-131)")
     void unsupportedConstructsAreReported() {
         assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)",
-                "//         IF (RC = 0) THEN").contains("IF is not supported yet"));
-        assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)",
                 "//         JCLLIB ORDER=(MY.PROCLIB)").contains("JCLLIB is not supported yet"));
+        assertTrue(diagnostics("//PAYROLL  JOB  (ACCT)",
+                "//         OUTPUT DEFAULT=YES").contains("OUTPUT is not supported yet"));
     }
 
     @Test

@@ -100,7 +100,9 @@ public final class JclReader {
         }
         int end = indexOfBlank(rest);
         String operation = (end < 0 ? rest : rest.substring(0, end)).toUpperCase(Locale.ROOT);
-        String operands = end < 0 ? "" : operands(rest.substring(end).stripLeading());
+        String tail = end < 0 ? "" : rest.substring(end).stripLeading();
+        // IF だけは THEN までがオペランドである。関係式の中に空白が入る
+        String operands = operation.equals("IF") ? operandsOfIf(tail) : operands(tail);
         return new JclCard(name, operation, joinContinuations(operands), number);
     }
 
@@ -133,6 +135,48 @@ public final class JclReader {
             }
         }
         return text;
+    }
+
+    /**
+     * {@code IF} のオペランド欄を切り出す。
+     *
+     * <p>{@code THEN} までが文であり、そのあとは注記である。関係式の中には空白が入るので、
+     * ほかの文と同じ切り方はできない。
+     */
+    private static String operandsOfIf(String text) {
+        int depth = 0;
+        boolean quoted = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quoted) {
+                quoted = c != '\'';
+                continue;
+            }
+            switch (c) {
+                case '\'' -> quoted = true;
+                case '(' -> depth++;
+                case ')' -> depth--;
+                default -> {
+                    // 何もしない
+                }
+            }
+            if (depth == 0 && isWordAt(text, i, "THEN")) {
+                return text.substring(0, i + "THEN".length());
+            }
+        }
+        return text;
+    }
+
+    /** その位置から独立した語として始まっているか。 */
+    private static boolean isWordAt(String text, int at, String word) {
+        if (!text.regionMatches(true, at, word, 0, word.length())) {
+            return false;
+        }
+        if (at > 0 && Character.isLetterOrDigit(text.charAt(at - 1))) {
+            return false;
+        }
+        int after = at + word.length();
+        return after >= text.length() || !Character.isLetterOrDigit(text.charAt(after));
     }
 
     /** コンマで終わっていれば、次のカードのオペランドをつなぐ。 */

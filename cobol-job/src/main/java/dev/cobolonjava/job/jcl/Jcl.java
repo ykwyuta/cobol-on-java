@@ -88,6 +88,15 @@ public final class Jcl {
         private List<DdAssignment> dd = new ArrayList<>();
         /** 直前の DD 名。名前欄が空の DD カードは、これに連結される。 */
         private String lastDd;
+        /**
+         * 開いている {@code IF} の条件。内側から外側の順ではなく、外側から並ぶ。
+         *
+         * <p>ステップの条件は<b>囲んでいる条件をすべて満たしたうえで</b>自分の
+         * {@code COND} も満たすときに成り立つ。
+         */
+        private final java.util.Deque<StepCondition> open = new java.util.ArrayDeque<>();
+        /** そのステップを囲んでいた条件。{@code EXEC} を読んだ時点のものである。 */
+        private List<StepCondition> enclosing = List.of();
 
         private Builder(Path base, JclLibrary library) {
             this.base = base;
@@ -102,6 +111,9 @@ public final class Jcl {
                 readCard(card);
             }
             closeStep();
+            if (!open.isEmpty()) {
+                diagnostics.add(new JobDiagnostic(1, "an IF is not closed by ENDIF"));
+            }
             if (jobName == null) {
                 diagnostics.add(new JobDiagnostic(1, "the JCL needs a JOB statement"));
             }
@@ -115,7 +127,10 @@ public final class Jcl {
                 case "JOB" -> readJob(card);
                 case "EXEC" -> readExec(card);
                 case "DD" -> readDd(card);
-                case "IF", "ELSE", "ENDIF", "OUTPUT", "JCLLIB" ->
+                case "IF" -> readIf(card);
+                case "ELSE" -> readElse(card);
+                case "ENDIF" -> readEndIf(card);
+                case "OUTPUT", "JCLLIB" ->
                         report(card, card.operation() + " is not supported yet");
                 default -> report(card, "unknown JCL operation: " + card.operation());
             }
@@ -143,6 +158,8 @@ public final class Jcl {
                     ? "STEP" + (steps.size() + 1)
                     : card.name().toUpperCase(Locale.ROOT);
             lastDd = null;
+            // 囲んでいる条件は EXEC を読んだ時点のものである。ENDIF はあとから来る
+            enclosing = List.copyOf(open);
             for (String operand : JclOperands.split(card.operands())) {
                 readExecOperand(card, operand);
             }
@@ -361,8 +378,7 @@ public final class Jcl {
                 return;
             }
             if (program != null) {
-                steps.add(new Step(stepName, program, parm, dd,
-                        condition == null ? new StepCondition.Always() : condition));
+                steps.add(new Step(stepName, program, parm, dd, combined()));
             }
             stepName = null;
             program = null;
@@ -370,6 +386,57 @@ public final class Jcl {
             condition = null;
             dd = new ArrayList<>();
             lastDd = null;
+            enclosing = List.of();
+        }
+
+        /** 囲んでいる条件と、そのステップ自身の {@code COND} を重ねる。 */
+        private StepCondition combined() {
+            List<StepCondition> parts = new ArrayList<>(enclosing);
+            if (condition != null && !(condition instanceof StepCondition.Always)) {
+                parts.add(condition);
+            }
+            if (parts.isEmpty()) {
+                return new StepCondition.Always();
+            }
+            return parts.size() == 1 ? parts.get(0) : new StepCondition.All(parts);
+        }
+
+        /**
+         * {@code IF (関係式) THEN}。
+         *
+         * <p>{@code COND} と違って<b>「真なら動かす」</b>の向きで書く。内部モデルの向きと
+         * 同じなので裏返さない。
+         */
+        private void readIf(JclCard card) {
+            String text = card.operands();
+            String upper = text.toUpperCase(Locale.ROOT).trim();
+            if (!upper.endsWith("THEN")) {
+                report(card, "IF needs THEN");
+                return;
+            }
+            text = text.trim().substring(0, text.trim().length() - "THEN".length());
+            StepCondition condition = JclCondition.parse(text, card, diagnostics);
+            // 読めなかった条件も積む。ENDIF との対応を崩さないためである
+            open.push(condition == null ? new StepCondition.Always() : condition);
+        }
+
+        /** {@code ELSE}。開いている条件を裏返す。 */
+        private void readElse(JclCard card) {
+            if (open.isEmpty()) {
+                report(card, "ELSE without a matching IF");
+                return;
+            }
+            // ステップはここで閉じなくてよい。囲んでいる条件は EXEC を読んだ時点で写してある
+            open.push(new StepCondition.Not(open.pop()));
+        }
+
+        /** {@code ENDIF}。開いている条件を閉じる。 */
+        private void readEndIf(JclCard card) {
+            if (open.isEmpty()) {
+                report(card, "ENDIF without a matching IF");
+                return;
+            }
+            open.pop();
         }
 
         private void report(JclCard card, String message) {
