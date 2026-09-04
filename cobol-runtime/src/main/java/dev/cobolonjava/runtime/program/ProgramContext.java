@@ -155,6 +155,16 @@ public final class ProgramContext {
         return catalog;
     }
 
+    /**
+     * 出力の行き先を差し替えた構成を返す。
+     *
+     * <p>ジョブ実行がステップの出力をまとめて受け取るために要る。
+     */
+    public ProgramContext withOutput(OutputStream value) {
+        return new ProgramContext(codePage, value, value, outputCharset, loaded, clock, input,
+                registers, catalog, files);
+    }
+
     /** 目録を差し替えた構成を返す。 */
     public ProgramContext withCatalog(DataSetCatalog value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
