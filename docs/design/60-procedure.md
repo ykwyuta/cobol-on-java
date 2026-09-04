@@ -147,7 +147,8 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 ## いま組み立てられる文
 
-`MOVE`、算術文 4 つ、`IF`、`EVALUATE`、`PERFORM`、`DISPLAY`、`INSPECT`、
+`MOVE`、算術文 4 つ、`IF`、`EVALUATE`、
+`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`DISPLAY`、`INSPECT`、
 `STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` である
 (`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。

@@ -283,18 +283,35 @@ public sealed interface Statement {
      * @param times     {@code TIMES} の回数。指定がなければ {@code null}
      * @param until     {@code UNTIL} の条件。指定がなければ {@code null}
      * @param testAfter {@code WITH TEST AFTER} 指定。中身を 1 度実行してから条件を見る
+     * @param varying   {@code VARYING} … {@code AFTER} …。外側から内側の順。指定がなければ空
      * @param body      その場に書いた文。段落を呼ぶ形では空
      */
     record Perform(String target, String through, Operand times, Condition until,
-                   boolean testAfter, List<Statement> body, Origin origin) implements Statement {
+                   boolean testAfter, List<Varying> varying, List<Statement> body, Origin origin)
+            implements Statement {
 
         public Perform {
+            varying = List.copyOf(varying);
             body = List.copyOf(body);
         }
 
         /** 段落を呼ぶ形かどうか。 */
         public boolean callsParagraph() {
             return target != null;
+        }
+
+        /**
+         * {@code VARYING} 1 段分。
+         *
+         * <p>{@code AFTER} で並べた段は、外側が 1 進むたびに内側が {@code from} へ戻る。
+         * そのため {@code from} は<b>繰り返しのたびに評価しなおす</b>。
+         *
+         * @param target 変える項目
+         * @param from   初期値
+         * @param by     1 回ごとに足す値
+         * @param until  やめる条件
+         */
+        public record Varying(DataReference target, Operand from, Operand by, Condition until) {
         }
     }
 }

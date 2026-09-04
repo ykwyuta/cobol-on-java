@@ -36,7 +36,7 @@ tokens {
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
     SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
-    PERFORM, END_PERFORM, UNTIL, WITH, TEST, BEFORE, AFTER,
+    PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
@@ -543,7 +543,25 @@ procedureReference
 
 performPhrase
     : arithmeticOperand TIMES
-    | (WITH? TEST (BEFORE | AFTER))? UNTIL condition
+    | performTest? UNTIL condition
+    | performTest? varyingPhrase varyingAfterPhrase*
+    ;
+
+performTest
+    : WITH? TEST (BEFORE | AFTER)
+    ;
+
+// VARYING の入れ子。AFTER のたびに内側の繰り返しが 1 段深くなる
+varyingPhrase
+    : VARYING varyingSpec
+    ;
+
+varyingAfterPhrase
+    : AFTER varyingSpec
+    ;
+
+varyingSpec
+    : identifier FROM arithmeticOperand BY arithmeticOperand UNTIL condition
     ;
 
 // ---- 算術文 ----

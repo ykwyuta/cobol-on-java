@@ -876,6 +876,10 @@ public final class ProgramGenerator {
             planUntil(statement, once, body);
             return;
         }
+        if (!statement.varying().isEmpty()) {
+            planVarying(statement, once, body);
+            return;
+        }
         body.add(once);
     }
 
@@ -947,6 +951,127 @@ public final class ProgramGenerator {
             run.visitJumpInsn(Opcodes.GOTO, top);
             run.visitLabel(end);
         });
+    }
+
+    /**
+     * {@code PERFORM VARYING} … {@code AFTER} … の繰り返し。
+     *
+     * <p>{@code AFTER} で並べた段は入れ子であり、<b>外側が 1 進むたびに内側は初期値へ戻る</b>。
+     * 段ごとに「初期値を入れる」命令と「1 回分足す」命令を作り、両者を組み合わせて出す。
+     *
+     * <p>{@code TEST BEFORE} では段の数だけ判定を縦に並べ、内側の段が尽きたところで
+     * その段を初期値へ戻して外側を 1 進める。{@code TEST AFTER} では中身を先に実行し、
+     * 内側の条件から順に見ていく。どちらも<b>初期値へ戻すのは判定に負けた段だけ</b>である。
+     */
+    private void planVarying(Statement.Perform statement, Runnable once, List<Runnable> body) {
+        List<Statement.Perform.Varying> levels = statement.varying();
+        List<Runnable> set = new ArrayList<>();
+        List<Runnable> step = new ArrayList<>();
+        for (Statement.Perform.Varying level : levels) {
+            Runnable initialize = planStore(level.target(),
+                    planSourceDecimal(level.from(), statement.origin()), statement.origin());
+            Runnable increment = planIncrement(level, statement.origin());
+            if (initialize == null || increment == null) {
+                return;
+            }
+            set.add(initialize);
+            step.add(increment);
+        }
+
+        int depth = levels.size();
+        body.add(() -> {
+            set.forEach(Runnable::run);
+            if (statement.testAfter()) {
+                emitVaryingTestAfter(levels, set, step, once);
+            } else {
+                emitVaryingTestBefore(levels, set, step, once, depth);
+            }
+        });
+    }
+
+    private void emitVaryingTestBefore(List<Statement.Perform.Varying> levels, List<Runnable> set,
+                                       List<Runnable> step, Runnable once, int depth) {
+        Label end = new Label();
+        Label[] test = new Label[depth];
+        Label[] exhausted = new Label[depth];
+        for (int k = 0; k < depth; k++) {
+            test[k] = new Label();
+            // いちばん外側が尽きたら文全体が終わる
+            exhausted[k] = k == 0 ? end : new Label();
+        }
+        for (int k = 0; k < depth; k++) {
+            run.visitLabel(test[k]);
+            emitCondition(levels.get(k).until(), exhausted[k], true);
+        }
+        once.run();
+        step.get(depth - 1).run();
+        run.visitJumpInsn(Opcodes.GOTO, test[depth - 1]);
+        for (int k = depth - 1; k >= 1; k--) {
+            run.visitLabel(exhausted[k]);
+            set.get(k).run();
+            step.get(k - 1).run();
+            run.visitJumpInsn(Opcodes.GOTO, test[k - 1]);
+        }
+        run.visitLabel(end);
+    }
+
+    private void emitVaryingTestAfter(List<Statement.Perform.Varying> levels, List<Runnable> set,
+                                      List<Runnable> step, Runnable once) {
+        Label top = new Label();
+        run.visitLabel(top);
+        once.run();
+        for (int k = levels.size() - 1; k >= 0; k--) {
+            Label exhausted = new Label();
+            emitCondition(levels.get(k).until(), exhausted, true);
+            step.get(k).run();
+            run.visitJumpInsn(Opcodes.GOTO, top);
+            run.visitLabel(exhausted);
+            if (k > 0) {
+                set.get(k).run();
+            }
+        }
+    }
+
+    /** {@code v = v + by} を組み立てる。 */
+    private Runnable planIncrement(Statement.Perform.Varying level, Origin origin) {
+        Runnable current = planSourceDecimal(new Operand.Reference(level.target()), origin);
+        Runnable by = planSourceDecimal(level.by(), origin);
+        if (current == null || by == null) {
+            return null;
+        }
+        return planStore(level.target(), () -> {
+            current.run();
+            by.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "add",
+                    "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+        }, origin);
+    }
+
+    /**
+     * 積んだ {@link Decimal} を数値項目へ書き込む命令。
+     *
+     * <p>{@code ROUNDED} は書けないため、常に切り捨てる。
+     */
+    private Runnable planStore(DataReference target, Runnable value, Origin origin) {
+        if (value == null) {
+            return null;
+        }
+        Runnable offset = planOffset(target, origin);
+        DataItem item = target.item();
+        String field = numericItemConstant(item, origin);
+        if (offset == null || field == null || item.picture() == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            offset.run();
+            loadRounding("TRUNCATION");
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
+                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
+                            + Type.getDescriptor(CobolRounding.class) + ")V", false);
+        };
     }
 
     /**

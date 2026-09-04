@@ -497,11 +497,18 @@ public final class ProcedureBuilder {
         Operand times = null;
         Condition until = null;
         boolean testAfter = false;
+        List<Statement.Perform.Varying> varying = List.of();
         CobolParser.PerformPhraseContext phrase = context.performPhrase();
         if (phrase != null) {
+            testAfter = phrase.performTest() != null && phrase.performTest().AFTER() != null;
             if (phrase.TIMES() != null) {
                 times = operandOf(phrase.arithmeticOperand(), origin);
                 if (times == null) {
+                    return null;
+                }
+            } else if (phrase.varyingPhrase() != null) {
+                varying = varyingOf(phrase, origin);
+                if (varying == null) {
                     return null;
                 }
             } else {
@@ -509,7 +516,6 @@ public final class ProcedureBuilder {
                 if (until == null) {
                     return null;
                 }
-                testAfter = phrase.AFTER() != null;
             }
         }
 
@@ -520,7 +526,37 @@ public final class ProcedureBuilder {
                 body.add(built);
             }
         }
-        return new Statement.Perform(target, through, times, until, testAfter, body, origin);
+        return new Statement.Perform(target, through, times, until, testAfter, varying, body,
+                origin);
+    }
+
+    /**
+     * {@code VARYING} … {@code AFTER} … を外側から内側の順に並べる。
+     *
+     * <p>{@code AFTER} は入れ子の内側であり、並び順がそのまま深さになる。
+     *
+     * @return 組み立てられなければ {@code null}
+     */
+    private List<Statement.Perform.Varying> varyingOf(CobolParser.PerformPhraseContext phrase,
+                                                      Origin origin) {
+        List<CobolParser.VaryingSpecContext> specs = new ArrayList<>();
+        specs.add(phrase.varyingPhrase().varyingSpec());
+        for (CobolParser.VaryingAfterPhraseContext after : phrase.varyingAfterPhrase()) {
+            specs.add(after.varyingSpec());
+        }
+
+        List<Statement.Perform.Varying> varying = new ArrayList<>();
+        for (CobolParser.VaryingSpecContext spec : specs) {
+            DataReference target = resolver.resolve(spec.identifier());
+            Operand from = operandOf(spec.arithmeticOperand(0), origin);
+            Operand by = operandOf(spec.arithmeticOperand(1), origin);
+            Condition until = conditionOf(spec.condition());
+            if (target == null || from == null || by == null || until == null) {
+                return null;
+            }
+            varying.add(new Statement.Perform.Varying(target, from, by, until));
+        }
+        return varying;
     }
 
     /**
