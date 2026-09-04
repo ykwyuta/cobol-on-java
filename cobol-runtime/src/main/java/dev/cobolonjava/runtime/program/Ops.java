@@ -530,13 +530,41 @@ public final class Ops {
      */
     public static void checkFile(byte[] status, CodePage codePage, String name,
                                  boolean atEndHandled, boolean invalidKeyHandled) {
-        String text = codePage.decode(status);
-        if (FileStatus.succeeded(text)
-                || (atEndHandled && FileStatus.AT_END.equals(text))
-                || (invalidKeyHandled && FileStatus.invalidKey(text))) {
-            return;
+        if (fileFailed(status, codePage, atEndHandled, invalidKeyHandled)) {
+            throw new FileOperationException(name, codePage.decode(status));
         }
-        throw new FileOperationException(name, text);
+    }
+
+    /**
+     * 受け止め手のない異常かどうか (要件 FR-104, FR-105)。
+     *
+     * <p>{@code USE AFTER STANDARD ERROR PROCEDURE} を呼ぶかどうかの判定であり、
+     * {@code FILE STATUS} を書いていないときに異常終了させるかどうかの判定でもある。
+     * 文に受け止める句があれば、そちらへ分岐するのが正しい。
+     */
+    public static boolean fileFailed(byte[] status, CodePage codePage, boolean atEndHandled,
+                                     boolean invalidKeyHandled) {
+        String text = codePage.decode(status);
+        if (FileStatus.succeeded(text)) {
+            return false;
+        }
+        if (atEndHandled && FileStatus.AT_END.equals(text)) {
+            return false;
+        }
+        return !(invalidKeyHandled && FileStatus.invalidKey(text));
+    }
+
+    /**
+     * いまの開き方 (要件 FR-105)。
+     *
+     * <p>{@code USE ... ON INPUT} のように<b>開き方で指定した宣言節</b>が、
+     * その入出力に効くかどうかを決めるために要る。
+     *
+     * @return {@link OpenMode} の並び順。開いていなければ {@code -1}
+     */
+    public static int fileMode(ProgramContext context, String name, String ddName) {
+        OpenMode mode = context.file(name, ddName).mode();
+        return mode == null ? -1 : mode.ordinal();
     }
 
     // ---- ACCEPT ----

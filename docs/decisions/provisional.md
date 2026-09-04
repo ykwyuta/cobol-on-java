@@ -935,6 +935,7 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 
 - `RECORDING MODE U` (不定長)。誤りとして報告する
 - `I-O-CONTROL` 段落 (`SAME AREA`、`APPLY`、`RERUN`)。書けば構文誤りになる
+- `USE FOR DEBUGGING` と `USE AFTER STANDARD ERROR` 以外の宣言節。書けば構文誤りになる
 - `ALPHABET`、`CLASS`、`SYMBOLIC CHARACTERS` の各句。書けば構文誤りになる
 - `SYSPUNCH` などの機能名。知らない綴りは誤りとして報告する
 

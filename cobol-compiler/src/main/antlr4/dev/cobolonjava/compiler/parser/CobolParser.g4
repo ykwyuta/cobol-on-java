@@ -51,7 +51,7 @@ tokens {
     UP, DOWN, SEARCH, END_SEARCH, AT,
     OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
     END_READ, END_WRITE, REWRITE, END_REWRITE, INVALID, FD, RECORD,
-    DELETE, END_DELETE, START, END_START,
+    DELETE, END_DELETE, START, END_START, DECLARATIVES, USE,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -392,8 +392,39 @@ procedureParameter
     ;
 
 // 段落名を持たない文が先に来ることがある
+// 宣言部分は手続き部の先頭にあり、通常の流れでは通らない
 procedureBody
-    : sentence* paragraph*
+    : declarativesPart? sentence* procedureUnit*
+    ;
+
+declarativesPart
+    : DECLARATIVES PERIOD declarativeSection+ END DECLARATIVES PERIOD
+    ;
+
+declarativeSection
+    : sectionHeader useStatement PERIOD sentence* paragraph*
+    ;
+
+// USE は文ではなく、その節がいつ動くかの宣言である
+useStatement
+    : USE GLOBAL? AFTER? STANDARD? (ERROR | EXCEPTION) PROCEDURE ON? useTarget
+    ;
+
+useTarget
+    : INPUT
+    | OUTPUT
+    | I_O
+    | EXTEND
+    | IDENTIFIER+
+    ;
+
+procedureUnit
+    : sectionHeader sentence* paragraph*
+    | paragraph
+    ;
+
+sectionHeader
+    : paragraphName SECTION NUMBER? PERIOD
     ;
 
 paragraph

@@ -63,6 +63,12 @@ public final class RelativeDataSet implements KeyedDataSet {
         return mode != null;
     }
 
+    /** いまの開き方。開いていなければ {@code null}。 */
+    @Override
+    public OpenMode mode() {
+        return mode;
+    }
+
     /** 直前に読み書きしたレコードの長さ。 */
     public int lastLength() {
         return lastLength;
