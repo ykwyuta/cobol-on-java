@@ -87,6 +87,18 @@ public final class ProgramGenerator {
     private static final int FIRST_FREE_LOCAL = 3;
 
     /** 段落のメソッドと {@code run} の署名。 */
+    /** 段落のメソッド。次にどこへ行くかを返す。 */
+    private static final String PARAGRAPH_DESCRIPTOR =
+            "(L" + Type.getInternalName(Storage.class) + ";"
+                    + Type.getDescriptor(ProgramContext.class) + ")I";
+    /** {@code dispatch(段落の番号, 記憶域, 文脈)}。 */
+    private static final String DISPATCH_DESCRIPTOR =
+            "(IL" + Type.getInternalName(Storage.class) + ";"
+                    + Type.getDescriptor(ProgramContext.class) + ")I";
+    /** {@code performRange(最初, 最後, 記憶域, 文脈)}。 */
+    private static final String PERFORM_DESCRIPTOR =
+            "(IIL" + Type.getInternalName(Storage.class) + ";"
+                    + Type.getDescriptor(ProgramContext.class) + ")V";
     private static final String RUN_DESCRIPTOR =
             "(L" + Type.getInternalName(Storage.class) + ";"
                     + Type.getDescriptor(ProgramContext.class) + ")V";
@@ -161,6 +173,10 @@ public final class ProgramGenerator {
         }
         emitRun(paragraphs.size());
         emitMain();
+        if (!paragraphs.isEmpty()) {
+            emitDispatch(paragraphs.size());
+            emitPerformMethod(paragraphs.size());
+        }
         for (int i = 0; i < paragraphs.size(); i++) {
             emitParagraph(i, paragraphs.get(i));
         }
@@ -247,6 +263,8 @@ public final class ProgramGenerator {
             } else if (statement instanceof Statement.Stop) {
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "stopRun", "()V",
                         false));
+            } else if (statement instanceof Statement.GoTo goTo) {
+                planGoTo(goTo, body);
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
@@ -902,12 +920,7 @@ public final class ProgramGenerator {
             report(statement.origin(), "undefined paragraph: " + statement.target());
             return null;
         }
-        // THRU は範囲の段落を順に呼ぶ
-        return () -> {
-            for (int i = from; i <= to; i++) {
-                callParagraph(i);
-            }
-        };
+        return () -> emitPerformRange(from, to);
     }
 
     private void planTimes(Statement.Perform statement, Runnable once, List<Runnable> body) {
@@ -1175,16 +1188,119 @@ public final class ProgramGenerator {
         };
     }
 
-    /** {@code run} は段落を書かれた順に呼ぶ。素直に流れる実行がこれにあたる。 */
+    /**
+     * {@code run} は段落全体を 1 つの範囲として実行する。
+     *
+     * <p>素直に流れる実行も {@code PERFORM} も、同じ「範囲を実行する」機構で書ける。
+     * 違いは範囲の終わりがどこかだけである。
+     */
     private void emitRun(int paragraphCount) {
         run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", RUN_DESCRIPTOR, null, null);
         run.visitCode();
-        for (int i = 0; i < paragraphCount; i++) {
-            callParagraph(i);
+        if (paragraphCount > 0) {
+            emitPerformRange(0, paragraphCount - 1);
         }
         run.visitInsn(Opcodes.RETURN);
         run.visitMaxs(0, 0);
         run.visitEnd();
+    }
+
+    /**
+     * 段落の番号から段落のメソッドへ振り分ける。
+     *
+     * <p>{@code GO TO} の行き先は<b>実行時にしか分からない</b>。飛び先の番号を受け取って
+     * 呼び分ける入口が要る。表引きの分岐 1 つで済む。
+     */
+    private void emitDispatch(int paragraphCount) {
+        MethodVisitor dispatch = writer.visitMethod(Opcodes.ACC_PRIVATE, "dispatch",
+                DISPATCH_DESCRIPTOR, null, null);
+        dispatch.visitCode();
+        Label[] targets = new Label[paragraphCount];
+        for (int i = 0; i < paragraphCount; i++) {
+            targets[i] = new Label();
+        }
+        Label fallthrough = new Label();
+        dispatch.visitVarInsn(Opcodes.ILOAD, 1);
+        dispatch.visitTableSwitchInsn(0, paragraphCount - 1, fallthrough, targets);
+        for (int i = 0; i < paragraphCount; i++) {
+            dispatch.visitLabel(targets[i]);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 0);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 2);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 3);
+            dispatch.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, paragraphMethod(i),
+                    PARAGRAPH_DESCRIPTOR, false);
+            dispatch.visitInsn(Opcodes.IRETURN);
+        }
+        dispatch.visitLabel(fallthrough);
+        dispatch.visitInsn(Opcodes.ICONST_M1);
+        dispatch.visitInsn(Opcodes.IRETURN);
+        dispatch.visitMaxs(0, 0);
+        dispatch.visitEnd();
+    }
+
+    /**
+     * 段落の範囲 {@code [from, through]} を実行する。
+     *
+     * <p>段落は「次はどこか」を返す。{@code -1} なら最後まで流れたということであり、
+     * 0 以上なら {@code GO TO} で飛んだ先である。
+     *
+     * <p><b>範囲が終わるのは、最後の段落を最後まで流れきったときだけ</b>である。
+     * {@code GO TO} で範囲の外へ出ても戻ってはこない。参照実装が範囲の終わりに戻り口を
+     * 置くのと同じであり、そこへ来なければ戻らない。
+     *
+     * <p>範囲の外へ出たまま手続き部の最後まで流れきったときは、{@code PERFORM} へ
+     * 戻るのではなく<b>暗黙の {@code STOP RUN}</b> になる。手続き部の終わりに達したのだから、
+     * 待っている {@code PERFORM} があってもそこで実行は終わる。
+     */
+    private void emitPerformMethod(int paragraphCount) {
+        MethodVisitor perform = writer.visitMethod(Opcodes.ACC_PRIVATE, "performRange",
+                PERFORM_DESCRIPTOR, null, null);
+        perform.visitCode();
+        int pc = 5;
+        int next = 6;
+        perform.visitVarInsn(Opcodes.ILOAD, 1);
+        perform.visitVarInsn(Opcodes.ISTORE, pc);
+
+        Label top = new Label();
+        Label end = new Label();
+        Label jumped = new Label();
+        perform.visitLabel(top);
+        perform.visitVarInsn(Opcodes.ALOAD, 0);
+        perform.visitVarInsn(Opcodes.ILOAD, pc);
+        perform.visitVarInsn(Opcodes.ALOAD, 3);
+        perform.visitVarInsn(Opcodes.ALOAD, 4);
+        perform.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "dispatch",
+                DISPATCH_DESCRIPTOR, false);
+        perform.visitVarInsn(Opcodes.ISTORE, next);
+
+        // GO TO で飛んだのなら、範囲の終わりに来たとは言えない
+        perform.visitVarInsn(Opcodes.ILOAD, next);
+        perform.visitJumpInsn(Opcodes.IFGE, jumped);
+        perform.visitVarInsn(Opcodes.ILOAD, pc);
+        perform.visitVarInsn(Opcodes.ILOAD, 2);
+        perform.visitJumpInsn(Opcodes.IF_ICMPEQ, end);
+        perform.visitIincInsn(pc, 1);
+        Label check = new Label();
+        perform.visitJumpInsn(Opcodes.GOTO, check);
+        perform.visitLabel(jumped);
+        perform.visitVarInsn(Opcodes.ILOAD, next);
+        perform.visitVarInsn(Opcodes.ISTORE, pc);
+
+        // 最後の段落を流れきったら、手続き部の終わりである。暗黙の STOP RUN になる
+        Label offEnd = new Label();
+        perform.visitLabel(check);
+        perform.visitVarInsn(Opcodes.ILOAD, pc);
+        push(perform, paragraphCount);
+        perform.visitJumpInsn(Opcodes.IF_ICMPGE, offEnd);
+        perform.visitJumpInsn(Opcodes.GOTO, top);
+
+        perform.visitLabel(offEnd);
+        perform.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "stopRun", "()V", false);
+
+        perform.visitLabel(end);
+        perform.visitInsn(Opcodes.RETURN);
+        perform.visitMaxs(0, 0);
+        perform.visitEnd();
     }
 
     /**
@@ -1205,22 +1321,33 @@ public final class ProgramGenerator {
         main.visitEnd();
     }
 
+    /**
+     * 段落 1 つをメソッドとして出す。
+     *
+     * <p>返す値は<b>次にどこへ行くか</b>である。最後まで流れたら {@code -1}、
+     * {@code GO TO} で飛ぶならその段落の番号。{@code GO TO} を素直な {@code return} に
+     * できるので、段落の途中からでも抜けられる。
+     */
     private void emitParagraph(int index, List<Runnable> body) {
         run = writer.visitMethod(Opcodes.ACC_PRIVATE, paragraphMethod(index),
-                RUN_DESCRIPTOR, null, null);
+                PARAGRAPH_DESCRIPTOR, null, null);
         run.visitCode();
         body.forEach(Runnable::run);
-        run.visitInsn(Opcodes.RETURN);
+        run.visitInsn(Opcodes.ICONST_M1);
+        run.visitInsn(Opcodes.IRETURN);
         run.visitMaxs(0, 0);
         run.visitEnd();
     }
 
-    private void callParagraph(int index) {
+    /** 段落の範囲を実行する呼び出しを積む。 */
+    private void emitPerformRange(int from, int through) {
         run.visitVarInsn(Opcodes.ALOAD, 0);
+        push(from);
+        push(through);
         run.visitVarInsn(Opcodes.ALOAD, 1);
         run.visitVarInsn(Opcodes.ALOAD, 2);
-        run.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, paragraphMethod(index),
-                RUN_DESCRIPTOR, false);
+        run.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "performRange",
+                PERFORM_DESCRIPTOR, false);
     }
 
     private static String paragraphMethod(int index) {
@@ -2038,7 +2165,30 @@ public final class ProgramGenerator {
     }
 
     private void push(int value) {
-        run.visitLdcInsn(value);
+        push(run, value);
+    }
+
+    private static void push(MethodVisitor method, int value) {
+        method.visitLdcInsn(value);
+    }
+
+    /**
+     * {@code GO TO} を組み立てる。
+     *
+     * <p>段落のメソッドから<b>飛び先の番号を返して抜ける</b>だけである。段落の途中でも
+     * 入れ子の {@code IF} や {@code PERFORM} の中でも、その場で {@code return} できる。
+     * これが段落を別々のメソッドにしている構えの効いているところである。
+     */
+    private void planGoTo(Statement.GoTo statement, List<Runnable> body) {
+        int target = paragraphNames.indexOf(statement.target());
+        if (target < 0) {
+            report(statement.origin(), "undefined paragraph: " + statement.target());
+            return;
+        }
+        body.add(() -> {
+            push(target);
+            run.visitInsn(Opcodes.IRETURN);
+        });
     }
 
     private void report(Origin origin, String message) {

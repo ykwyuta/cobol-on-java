@@ -37,7 +37,7 @@ tokens {
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
     SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE,
     COMPUTE, END_COMPUTE,
-    IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
+    IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
@@ -323,6 +323,8 @@ statement
     | displayStatement
     | performStatement
     | continueStatement
+    | goToStatement
+    | exitStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -531,6 +533,16 @@ evaluateObject
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
 displayStatement
     : DISPLAY arithmeticOperand+ (UPON IDENTIFIER)? (WITH? NO ADVANCING)?
+    ;
+
+// GO TO は段落の途中から別の段落へ飛ぶ。PERFORM と違い、戻ってこない
+goToStatement
+    : GO TO? paragraphName
+    ;
+
+// EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある
+exitStatement
+    : EXIT
     ;
 
 // 段落を呼ぶ形と、その場に本体を書く形の 2 つがある。

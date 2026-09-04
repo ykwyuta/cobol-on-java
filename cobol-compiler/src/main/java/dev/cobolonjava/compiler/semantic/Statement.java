@@ -290,8 +290,17 @@ public sealed interface Statement {
     record Stop(Origin origin) implements Statement {
     }
 
-    /** {@code CONTINUE}。何もしない。 */
+    /** {@code CONTINUE} と {@code EXIT}。どちらも何もしない。 */
     record Continue(Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code GO TO} 文。
+     *
+     * <p>{@code PERFORM} と違い<b>戻ってこない</b>。段落の途中から別の段落へ移り、
+     * そのまま流れ続ける。
+     */
+    record GoTo(String target, Origin origin) implements Statement {
     }
 
     /**

@@ -139,6 +139,16 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 `WHEN WS-X` の `WS-X` は、主語が `TRUE` なら条件名、そうでなければ<b>比べる値</b>である。
 文法だけでは見分けられないため、意味解析で読み替えている。
 
+## GO TO の行き先は組み立ての最後に確かめる
+
+段落はあとから書かれることもあるため、`GO TO` と `PERFORM` の行き先が実在するかは
+<b>すべての段落を組み立てたあと</b>に見る。
+
+このとき文の中に入れ子になっている文も辿る。`IF` や `PERFORM` の中だけでなく、
+`ON SIZE ERROR` や `ON OVERFLOW` の中にも文が書ける。入れ子の数え上げを
+`nestedStatements` の 1 か所へまとめたのは、新しい文を足すたびに走査の抜けが
+できるのを防ぐためである。
+
 ## STOP RUN は例外で抜ける
 
 段落は別々のメソッドとして生成される (設計 70) ため、単に戻るだけでは呼び出し元へ
@@ -148,8 +158,8 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 ## いま組み立てられる文
 
 `MOVE`、算術文 4 つ、`COMPUTE`、`IF`、`EVALUATE`、
-`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`DISPLAY`、`INSPECT`、
-`STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` である
+`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`GO TO`、`DISPLAY`、`INSPECT`、
+`STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である
 (`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
 べき乗 (`**`) は文法が受け付けるが、まだ生成できないと報告する (暫定判断 P-028)。

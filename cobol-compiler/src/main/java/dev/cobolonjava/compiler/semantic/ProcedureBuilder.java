@@ -69,38 +69,38 @@ public final class ProcedureBuilder {
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs);
             }
         }
-        builder.checkPerformTargets(paragraphs);
+        builder.checkProcedureTargets(paragraphs);
         return new Result(List.copyOf(paragraphs), List.copyOf(diagnostics));
     }
 
     /**
-     * {@code PERFORM} が呼ぶ段落が実在するか確かめる。
+     * {@code PERFORM} と {@code GO TO} が名指す段落が実在するか確かめる。
      *
      * <p>段落はあとから書かれることもあるため、すべての段落を組み立てたあとに見る。
      */
-    private void checkPerformTargets(List<Paragraph> paragraphs) {
+    private void checkProcedureTargets(List<Paragraph> paragraphs) {
         List<String> names = new ArrayList<>();
         for (Paragraph paragraph : paragraphs) {
             names.add(paragraph.name());
         }
         for (Paragraph paragraph : paragraphs) {
             for (Statement statement : paragraph.statements()) {
-                checkPerformTargets(statement, names);
+                checkProcedureTargets(statement, names);
             }
         }
     }
 
-    private void checkPerformTargets(Statement statement, List<String> names) {
-        if (statement instanceof Statement.If branch) {
-            branch.onTrue().forEach(s -> checkPerformTargets(s, names));
-            branch.onFalse().forEach(s -> checkPerformTargets(s, names));
+    private void checkProcedureTargets(Statement statement, List<String> names) {
+        for (List<Statement> nested : nestedStatements(statement)) {
+            nested.forEach(s -> checkProcedureTargets(s, names));
+        }
+        if (statement instanceof Statement.GoTo goTo) {
+            if (!names.contains(goTo.target())) {
+                report(goTo.origin(), "undefined paragraph: " + goTo.target());
+            }
             return;
         }
-        if (!(statement instanceof Statement.Perform perform)) {
-            return;
-        }
-        perform.body().forEach(s -> checkPerformTargets(s, names));
-        if (!perform.callsParagraph()) {
+        if (!(statement instanceof Statement.Perform perform) || !perform.callsParagraph()) {
             return;
         }
         int from = names.indexOf(perform.target());
@@ -119,6 +119,48 @@ public final class ProcedureBuilder {
             report(perform.origin(), "PERFORM THRU names paragraphs in reverse order: "
                     + perform.target() + " comes after " + perform.through());
         }
+    }
+
+    /**
+     * 文の中に入れ子になっている文の並び。
+     *
+     * <p>条件分岐と繰り返しだけでなく、{@code ON SIZE ERROR} や {@code ON OVERFLOW} の
+     * 中にも文が書ける。1 か所で数え上げておかないと、新しい文を足すたびに
+     * 走査の抜けができる。
+     */
+    private static List<List<Statement>> nestedStatements(Statement statement) {
+        if (statement instanceof Statement.If branch) {
+            return List.of(branch.onTrue(), branch.onFalse());
+        }
+        if (statement instanceof Statement.Perform perform) {
+            return List.of(perform.body());
+        }
+        if (statement instanceof Statement.Arithmetic arithmetic) {
+            return sizeErrorStatements(arithmetic.sizeError());
+        }
+        if (statement instanceof Statement.Compute compute) {
+            return sizeErrorStatements(compute.sizeError());
+        }
+        if (statement instanceof Statement.StringStatement text) {
+            return overflowStatements(text.overflow());
+        }
+        if (statement instanceof Statement.Unstring unstring) {
+            return overflowStatements(unstring.overflow());
+        }
+        return List.of();
+    }
+
+    private static List<List<Statement>> sizeErrorStatements(
+            Statement.Arithmetic.SizeError sizeError) {
+        return sizeError == null
+                ? List.of()
+                : List.of(sizeError.onError(), sizeError.otherwise());
+    }
+
+    private static List<List<Statement>> overflowStatements(Statement.Overflow overflow) {
+        return overflow == null
+                ? List.of()
+                : List.of(overflow.onOverflow(), overflow.otherwise());
     }
 
     private void addBody(CobolParser.ProcedureBodyContext body, List<Paragraph> paragraphs) {
@@ -192,6 +234,15 @@ public final class ProcedureBuilder {
         }
         if (context.computeStatement() != null) {
             return computeOf(context.computeStatement());
+        }
+        if (context.goToStatement() != null) {
+            CobolParser.GoToStatementContext goTo = context.goToStatement();
+            return new Statement.GoTo(goTo.paragraphName().getText().toUpperCase(Locale.ROOT),
+                    ReferenceResolver.originOf(goTo));
+        }
+        if (context.exitStatement() != null) {
+            // EXIT は何もしない。CONTINUE と同じ扱いでよい
+            return new Statement.Continue(ReferenceResolver.originOf(context.exitStatement()));
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;
