@@ -41,6 +41,8 @@ public final class DataItem {
     private int length;
     private int base;
     private DataSection section = DataSection.WORKING_STORAGE;
+    private final List<String> indexNames = new ArrayList<>();
+    private boolean index;
 
     DataItem(int level, String name, Origin origin) {
         this.level = level;
@@ -119,6 +121,23 @@ public final class DataItem {
 
     public List<DataItem> children() {
         return Collections.unmodifiableList(children);
+    }
+
+    /**
+     * {@code INDEXED BY} で書かれた指標名。表の項目にだけ付く。
+     */
+    public List<String> indexNames() {
+        return Collections.unmodifiableList(indexNames);
+    }
+
+    /**
+     * この項目が指標名の実体かどうか。
+     *
+     * <p>指標名はデータ項目ではない。書き込めるのは {@code SET} だけであり、
+     * {@code MOVE} の受取側にはできない。
+     */
+    public boolean isIndex() {
+        return index;
     }
 
     public List<ConditionName> conditionNames() {
@@ -225,6 +244,14 @@ public final class DataItem {
 
     void setLength(int value) {
         this.length = value;
+    }
+
+    void addIndexName(String value) {
+        indexNames.add(value);
+    }
+
+    void markIndex() {
+        this.index = true;
     }
 
     void setSection(DataSection value) {

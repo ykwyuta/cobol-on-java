@@ -391,6 +391,35 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code SEARCH} 文 (要件 FR-066)。
+     *
+     * <p>表を<b>いまの指標の位置から</b>順に見る。{@code SEARCH} は指標を初期化しない。
+     * どこから見はじめるかは、直前の {@code SET} が決める。
+     *
+     * @param index   進める指標。表の {@code INDEXED BY} の 1 つ
+     * @param varying 指標と一緒に進める項目。指定がなければ {@code null}
+     * @param occurs  表の反復の回数。ここを超えたら {@code AT END} になる
+     * @param atEnd   最後まで見つからなかったときの文
+     * @param whens   条件と、成り立ったときの文。書かれた順に試す
+     */
+    record Search(DataReference index, DataReference varying, int occurs,
+                  List<Statement> atEnd, List<When> whens, Origin origin) implements Statement {
+
+        public Search {
+            atEnd = List.copyOf(atEnd);
+            whens = List.copyOf(whens);
+        }
+
+        /** {@code WHEN} 1 個。 */
+        public record When(Condition condition, List<Statement> statements) {
+
+            public When {
+                statements = List.copyOf(statements);
+            }
+        }
+    }
+
+    /**
      * {@code ACCEPT} 文 (要件 FR-060、テスト時の固定は FR-204)。
      *
      * <p>送出側は<b>符号なし整数の表示形式のバイト列</b>である。日付と時刻の特殊レジスタも、

@@ -12,8 +12,10 @@ import dev.cobolonjava.runtime.picture.PictureParser;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 
@@ -45,6 +47,8 @@ public final class DataDivisionBuilder {
 
     private final List<Diagnostic> diagnostics = new ArrayList<>();
     private DataSection currentSection = DataSection.WORKING_STORAGE;
+    /** 指標名から、その実体の項目を引く。 */
+    private final Map<String, DataItem> indexes = new LinkedHashMap<>();
     private final List<DataItem> records = new ArrayList<>();
     /** 開いている群項目。いちばん上が現在の親である。 */
     private final Deque<DataItem> open = new ArrayDeque<>();
@@ -74,8 +78,9 @@ public final class DataDivisionBuilder {
         for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
             builder.addProgramUnit(unit);
         }
+        builder.addIndexItems();
         builder.layoutRecords();
-        return new Result(new DataLayout(builder.records, builder.totalLength),
+        return new Result(new DataLayout(builder.records, builder.indexes, builder.totalLength),
                 List.copyOf(builder.diagnostics));
     }
 
@@ -284,6 +289,50 @@ public final class DataDivisionBuilder {
         } catch (NumberFormatException e) {
             report(origin, "OCCURS requires an integer: " + text);
         }
+        if (clause.occursIndexedClause() != null) {
+            for (var name : clause.occursIndexedClause().IDENTIFIER()) {
+                item.addIndexName(name.getText().toUpperCase(Locale.ROOT));
+            }
+        }
+    }
+
+    /**
+     * 指標名の実体を作る (要件 FR-025)。
+     *
+     * <p>指標名は COBOL のデータ項目ではないが、<b>反復の番号を持つ入れ物</b>であることに
+     * 変わりはない。2 進 4 バイトの項目として記憶域の後ろへ足し、添字も {@code SET} も
+     * 普通のデータ項目と同じ道を通す。参照実装は変位を持つが、観測できるのは
+     * 「何番目か」だけである。
+     *
+     * <p>名前には {@code $} を入れてある。COBOL 語に使えない文字なので、
+     * <b>ソースから名前で引き当てられない</b>。指標名は専用の表からしか引けない。
+     */
+    private void addIndexItems() {
+        List<DataItem> tables = new ArrayList<>();
+        for (DataItem record : records) {
+            collectTables(record, tables);
+        }
+        for (DataItem table : tables) {
+            for (String name : table.indexNames()) {
+                if (indexes.containsKey(name)) {
+                    report(table.origin(), "duplicate index name: " + name);
+                    continue;
+                }
+                DataItem item = new DataItem(INDEPENDENT_LEVEL, "IDX$" + name, table.origin());
+                item.setPicture(PictureParser.parse("9(9)"));
+                item.setUsage(Usage.COMP);
+                item.markIndex();
+                indexes.put(name, item);
+                records.add(item);
+            }
+        }
+    }
+
+    private static void collectTables(DataItem item, List<DataItem> tables) {
+        if (!item.indexNames().isEmpty()) {
+            tables.add(item);
+        }
+        item.children().forEach(child -> collectTables(child, tables));
     }
 
     // ---- 割り付け ----

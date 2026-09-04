@@ -296,6 +296,9 @@ public final class ProcedureBuilder {
             return new Statement.GoTo(goTo.paragraphName().getText().toUpperCase(Locale.ROOT),
                     ReferenceResolver.originOf(goTo));
         }
+        if (context.searchStatement() != null) {
+            return searchOf(context.searchStatement());
+        }
         if (context.acceptStatement() != null) {
             return acceptOf(context.acceptStatement());
         }
@@ -609,6 +612,83 @@ public final class ProcedureBuilder {
     }
 
     /**
+     * {@code SEARCH} (要件 FR-066)。
+     *
+     * <p>表をいまの指標の位置から順に見る。<b>指標は初期化しない</b>のが要である。
+     * どこから見はじめるかは直前の {@code SET} が決める。すでに範囲の外なら
+     * 一度も見ずに {@code AT END} へ行く。
+     */
+    private Statement searchOf(CobolParser.SearchStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        if (context.ALL() != null) {
+            // 2 分探索は ASCENDING / DESCENDING KEY を割り付けまで通す必要がある
+            report(origin, "SEARCH ALL is not supported yet");
+            return null;
+        }
+        CobolParser.IdentifierContext tableName = context.identifier(0);
+        DataItem table = resolver.resolveName(tableName.qualifiedDataName(), origin);
+        if (table == null) {
+            return null;
+        }
+        String name = table.name();
+        if (!table.isTable()) {
+            report(origin, "SEARCH requires a table: " + name);
+            return null;
+        }
+        if (table.indexNames().isEmpty()) {
+            report(origin, "SEARCH requires INDEXED BY on " + name);
+            return null;
+        }
+        if (DataReference.tableChain(table).size() != 1) {
+            report(origin, "SEARCH on a table inside another table is not supported yet: " + name);
+            return null;
+        }
+        if (tableName.subscripts() != null) {
+            report(origin, "SEARCH takes the table itself, not one occurrence: " + name);
+            return null;
+        }
+
+        DataReference index = indexReference(table.indexNames().get(0), origin);
+        DataReference varying = null;
+        if (context.VARYING() != null) {
+            DataReference given = resolver.resolve(context.identifier(1));
+            if (given == null) {
+                return null;
+            }
+            // この表の指標を書いたなら、それが進める指標になる。
+            // ほかの項目なら、指標と一緒に進める
+            if (given.item().isIndex()
+                    && table.indexNames().contains(indexNameOf(given.item()))) {
+                index = given;
+            } else {
+                varying = given;
+            }
+        }
+
+        List<Statement> atEnd = context.atEndPhrase() == null
+                ? List.of()
+                : listOf(context.atEndPhrase().statement());
+        List<Statement.Search.When> whens = new ArrayList<>();
+        for (CobolParser.SearchWhenContext when : context.searchWhen()) {
+            Condition condition = conditionOf(when.condition());
+            if (condition == null) {
+                return null;
+            }
+            whens.add(new Statement.Search.When(condition, listOf(when.statement())));
+        }
+        return new Statement.Search(index, varying, table.occurs(), atEnd, whens, origin);
+    }
+
+    private DataReference indexReference(String name, Origin origin) {
+        return new DataReference(layout.findIndex(name), List.of(), null, origin);
+    }
+
+    /** 指標の実体から、書かれていた指標名へ戻す。 */
+    private static String indexNameOf(DataItem item) {
+        return item.name().substring("IDX$".length());
+    }
+
+    /**
      * {@code ACCEPT} (要件 FR-060、テスト時の固定は FR-204)。
      *
      * <p>送出側は日付と時刻の特殊レジスタか、端末から読んだ 1 行である。どちらも
@@ -729,17 +809,66 @@ public final class ProcedureBuilder {
      */
     private Statement setOf(CobolParser.SetStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        List<Statement> moves = new ArrayList<>();
+        if (context.TRUE() != null) {
+            List<Statement> moves = new ArrayList<>();
+            for (CobolParser.IdentifierContext identifier : context.identifier()) {
+                String name = identifier.qualifiedDataName().dataName(0).getText()
+                        .toUpperCase(Locale.ROOT);
+                Statement move = conditionNameMove(name, origin);
+                if (move == null) {
+                    return null;
+                }
+                moves.add(move);
+            }
+            return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
+        }
+        return indexSetOf(context, origin);
+    }
+
+    /**
+     * {@code SET 指標名 TO n} と {@code SET 指標名 UP/DOWN BY n} (要件 FR-025)。
+     *
+     * <p>指標名が持つのは<b>何番目か</b>である。したがって {@code TO} は転記、
+     * {@code UP BY} と {@code DOWN BY} は加算と減算になる。
+     *
+     * <p>受取側は指標名でなければならない。普通のデータ項目を動かすなら
+     * {@code MOVE} と算術文を書く。
+     */
+    private Statement indexSetOf(CobolParser.SetStatementContext context, Origin origin) {
+        Operand value = operandOf(context.arithmeticOperand(), origin);
+        if (value == null) {
+            return null;
+        }
+        List<Statement.Arithmetic.Target> targets = new ArrayList<>();
         for (CobolParser.IdentifierContext identifier : context.identifier()) {
-            String name = identifier.qualifiedDataName().dataName(0).getText()
-                    .toUpperCase(Locale.ROOT);
-            Statement move = conditionNameMove(name, origin);
-            if (move == null) {
+            DataReference reference = resolver.resolve(identifier);
+            if (reference == null) {
                 return null;
             }
-            moves.add(move);
+            if (!reference.item().isIndex()) {
+                report(origin, "SET requires an index name: " + describe(reference));
+                return null;
+            }
+            targets.add(new Statement.Arithmetic.Target(reference, false));
         }
-        return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
+
+        if (context.TO() != null) {
+            List<Statement> moves = new ArrayList<>();
+            for (Statement.Arithmetic.Target target : targets) {
+                Statement.Move.Target checked =
+                        checkMove(value, target.reference(), origin, true);
+                if (checked == null) {
+                    return null;
+                }
+                moves.add(new Statement.Move(value, List.of(checked), false, origin));
+            }
+            return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
+        }
+        Statement.Arithmetic.Operator operator = context.UP() != null
+                ? Statement.Arithmetic.Operator.ADD
+                : Statement.Arithmetic.Operator.SUBTRACT;
+        return new Statement.Arithmetic(Statement.Arithmetic.Operator.ADD, List.of(value),
+                operator, targets, null, origin);
     }
 
     private Statement conditionNameMove(String name, Origin origin) {
@@ -1771,6 +1900,21 @@ public final class ProcedureBuilder {
 
     /** 分類の組み合わせを検査し、転記の種類を決める。 */
     private Statement.Move.Target checkMove(Operand source, DataReference target, Origin origin) {
+        return checkMove(source, target, origin, false);
+    }
+
+    /**
+     * 分類の組み合わせを検査し、転記の種類を決める。
+     *
+     * @param allowIndex 受取側が指標名でもよいか。{@code SET 指標名 TO n} だけが許す
+     */
+    private Statement.Move.Target checkMove(Operand source, DataReference target, Origin origin,
+                                            boolean allowIndex) {
+        if (target.item().isIndex() && !allowIndex) {
+            // 指標名はデータ項目ではない。書き込めるのは SET だけである
+            report(origin, "an index name cannot receive a MOVE: " + describe(target));
+            return null;
+        }
         DataCategory receiver = DataCategory.of(target);
         DataCategory sender = categoryOf(source, receiver);
         if (!MoveRules.isAllowed(sender, receiver)) {

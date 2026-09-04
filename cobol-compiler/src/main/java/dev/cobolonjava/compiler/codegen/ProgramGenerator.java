@@ -286,6 +286,8 @@ public final class ProgramGenerator {
                 // STOP RUN は実行そのものを終え、GOBACK は呼んだ側へ戻る
                 String name = stop.wholeRun() ? "stopRun" : "programReturn";
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name, "()V", false));
+            } else if (statement instanceof Statement.Search search) {
+                planSearch(search, body);
             } else if (statement instanceof Statement.Accept accept) {
                 planAccept(accept, body);
             } else if (statement instanceof Statement.Initialize initialize) {
@@ -674,6 +676,103 @@ public final class ProgramGenerator {
         run.visitLabel(noOverflow);
         otherwise.forEach(Runnable::run);
         run.visitLabel(end);
+    }
+
+    /**
+     * {@code SEARCH} を組み立てる (要件 FR-066)。
+     *
+     * <p>形は素直な繰り返しである。<b>指標を初期化しない</b>のが要で、どこから見はじめるかは
+     * 直前の {@code SET} が決める。すでに範囲の外なら一度も見ずに {@code AT END} へ行く。
+     *
+     * <pre>
+     * 先頭:  指標 &gt; 回数 ならば 終わり へ
+     *        条件1 が成り立てば 当たり1 へ
+     *        条件2 が成り立てば 当たり2 へ
+     *        指標 = 指標 + 1
+     *        先頭 へ
+     * 終わり: AT END の文
+     *        出口 へ
+     * 当たり1: その文 ; 出口 へ
+     * 当たり2: その文 ; 出口 へ
+     * 出口:
+     * </pre>
+     *
+     * <p>当たったところで<b>繰り返しから抜ける</b>。{@code PERFORM} の形では書けないのは
+     * ここであり、飛び先を直に置いている。
+     */
+    private void planSearch(Statement.Search statement, List<Runnable> body) {
+        Runnable step = planIndexStep(statement.index(), statement.origin());
+        if (step == null) {
+            return;
+        }
+        Runnable stepVarying = null;
+        if (statement.varying() != null) {
+            stepVarying = planIndexStep(statement.varying(), statement.origin());
+            if (stepVarying == null) {
+                return;
+            }
+        }
+        Runnable limit = planSourceDecimal(new Operand.Reference(statement.index()),
+                statement.origin());
+        if (limit == null) {
+            return;
+        }
+
+        List<Runnable> atEnd = planStatements(statement.atEnd());
+        List<List<Runnable>> matched = new ArrayList<>();
+        for (Statement.Search.When when : statement.whens()) {
+            matched.add(planStatements(when.statements()));
+        }
+        Runnable advance = stepVarying;
+        body.add(() -> {
+            Label top = new Label();
+            Label exhausted = new Label();
+            Label done = new Label();
+            Label[] hit = new Label[statement.whens().size()];
+            for (int i = 0; i < hit.length; i++) {
+                hit[i] = new Label();
+            }
+
+            run.visitLabel(top);
+            // 指標が回数を超えていたら、そこで終わりである
+            limit.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            push(statement.occurs());
+            run.visitJumpInsn(Opcodes.IF_ICMPGT, exhausted);
+            for (int i = 0; i < hit.length; i++) {
+                emitCondition(statement.whens().get(i).condition(), hit[i], true);
+            }
+            step.run();
+            if (advance != null) {
+                advance.run();
+            }
+            run.visitJumpInsn(Opcodes.GOTO, top);
+
+            run.visitLabel(exhausted);
+            atEnd.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, done);
+            for (int i = 0; i < hit.length; i++) {
+                run.visitLabel(hit[i]);
+                matched.get(i).forEach(Runnable::run);
+                run.visitJumpInsn(Opcodes.GOTO, done);
+            }
+            run.visitLabel(done);
+        });
+    }
+
+    /** 指標を 1 進める命令。 */
+    private Runnable planIndexStep(DataReference index, Origin origin) {
+        Runnable current = planSourceDecimal(new Operand.Reference(index), origin);
+        if (current == null) {
+            return null;
+        }
+        String one = decimalConstant(Decimal.of(1, 0));
+        return planStore(index, () -> {
+            current.run();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, one, DECIMAL);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "add",
+                    "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+        }, origin);
     }
 
     /**

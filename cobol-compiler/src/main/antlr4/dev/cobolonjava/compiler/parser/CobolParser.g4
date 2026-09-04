@@ -44,6 +44,7 @@ tokens {
     INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
     NUMERIC_EDITED,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
+    UP, DOWN, SEARCH, END_SEARCH, AT,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -339,6 +340,7 @@ statement
     | initializeStatement
     | setStatement
     | acceptStatement
+    | searchStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -549,6 +551,20 @@ displayStatement
     : DISPLAY arithmeticOperand+ (UPON IDENTIFIER)? (WITH? NO ADVANCING)?
     ;
 
+// SEARCH は表を順に見る。SEARCH ALL は 2 分探索であり、条件の形が限られる
+searchStatement
+    : SEARCH ALL identifier atEndPhrase? searchWhen+ END_SEARCH?
+    | SEARCH identifier (VARYING identifier)? atEndPhrase? searchWhen+ END_SEARCH?
+    ;
+
+atEndPhrase
+    : AT? END statement+
+    ;
+
+searchWhen
+    : WHEN condition statement+
+    ;
+
 // ACCEPT は日付と時刻の特殊レジスタか、端末からの 1 行を受け取る
 acceptStatement
     : ACCEPT identifier (FROM acceptSource)?
@@ -580,9 +596,11 @@ initializeCategory
     | NUMERIC
     ;
 
-// SET は条件名を成り立たせる形だけを扱う。指標名は未対応である
+// SET は条件名を成り立たせる形と、指標名を動かす形の 2 つがある
 setStatement
     : SET identifier+ TO TRUE
+    | SET identifier+ TO arithmeticOperand
+    | SET identifier+ (UP | DOWN) BY arithmeticOperand
     ;
 
 // 呼び先は文字定数か、実行時に名前が決まるデータ項目である

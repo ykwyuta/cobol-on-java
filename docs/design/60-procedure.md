@@ -183,6 +183,22 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 `nestedStatements` の 1 か所へまとめたのは、新しい文を足すたびに走査の抜けが
 できるのを防ぐためである。
 
+## SEARCH は指標を初期化しない
+
+`SEARCH` は表をいまの指標の位置から順に見る (要件 FR-066)。<b>指標を初期化しない</b>のが
+要である。どこから見はじめるかは直前の `SET` が決める。すでに範囲の外なら一度も見ずに
+`AT END` へ行く。
+
+抜けたあとも指標はそのままなので、当たった位置から表を引ける。これが `SEARCH` の使い道の
+半分である。
+
+`VARYING` に<b>その表の指標名</b>を書いたなら、それが進める指標になる。ほかの項目を書いたなら、
+指標と一緒に進む。同じ語で 2 つの意味があるので、意味解析で見分けている。
+
+`SEARCH ALL` (2 分探索) は文法は受け付けるが、まだ生成できないと報告する。探す向きを
+知らなければ書けず、`OCCURS ... ASCENDING KEY` を割り付けまで通す必要がある
+(暫定判断 P-036)。
+
 ## ACCEPT の送出側はどれも符号なし整数の表示形式
 
 `ACCEPT` は日付と時刻の特殊レジスタか、端末から読んだ 1 行を受け取る (要件 FR-060)。
@@ -276,7 +292,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 `MOVE`、算術文 4 つ (`DIVIDE ... REMAINDER` を含む)、`COMPUTE`、`IF`、`EVALUATE`、
 `PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`GO TO`、`DISPLAY`、`INSPECT`、
-`STRING`、`UNSTRING`、`INITIALIZE`、`SET 条件名 TO TRUE`、`ACCEPT`、`CALL` / `CANCEL`、
+`STRING`、`UNSTRING`、`INITIALIZE`、`SET`、`SEARCH`、`ACCEPT`、`CALL` / `CANCEL`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である。
 `MOVE` / `ADD` / `SUBTRACT` には `CORRESPONDING` を書ける。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
@@ -299,6 +315,6 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `SEARCH` / `SEARCH ALL` と、反復を実行時のループとして出す形 (暫定判断 P-033)。
-2. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。
-3. `SPECIAL-NAMES` (呼び名、`CURRENCY SIGN`、`DECIMAL-POINT IS COMMA`)。
+1. `SEARCH ALL` と `OCCURS ... ASCENDING KEY` (暫定判断 P-036)。
+2. `SPECIAL-NAMES` (呼び名、`CURRENCY SIGN`、`DECIMAL-POINT IS COMMA`)。
+3. `RETURN-CODE` と `BY VALUE` (暫定判断 P-032)。

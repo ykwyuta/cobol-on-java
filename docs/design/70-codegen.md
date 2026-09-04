@@ -274,8 +274,8 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `MOVE` / `ADD` / `SUBTRACT` の `CORRESPONDING`、
 `COMPUTE` (加減乗除・括弧・単項符号)、
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
-`GO TO`、`DISPLAY`、`ACCEPT`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、
-`SET 条件名 TO TRUE`、`CALL` / `CANCEL`、
+`GO TO`、`DISPLAY`、`ACCEPT`、`INSPECT`、`STRING`、`UNSTRING`、`INITIALIZE`、`SET`、
+`SEARCH`、`CALL` / `CANCEL`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。
@@ -318,6 +318,26 @@ COBOL のプログラム名から Java のクラス名を作る規則は<b>ラ�
 引数は `BY REFERENCE` なら呼ぶ側の領域そのもの、`BY CONTENT` なら写しを渡す。
 どちらも `DataView` 1 個であり、呼ばれた側から見れば区別はない。
 
+## SEARCH は飛び先を直に置く
+
+`SEARCH` は繰り返しだが、<b>当たったところで抜ける</b>。`PERFORM` の形では書けないので、
+飛び先を直に置いている。
+
+```
+先頭:   指標 > 回数 ならば 終わり へ
+        条件1 が成り立てば 当たり1 へ
+        条件2 が成り立てば 当たり2 へ
+        指標 = 指標 + 1
+        先頭 へ
+終わり: AT END の文 ; 出口 へ
+当たり1: その文 ; 出口 へ
+当たり2: その文 ; 出口 へ
+出口:
+```
+
+条件の判定には `emitCondition` をそのまま使える。`IF` のために用意した「真のときに飛ぶ」形が
+ここでも効いている。
+
 ## SSRANGE の検査は値をそのまま返す
 
 `SSRANGE` を指定すると、実行時に決まる添字と部分参照の位置を実行時に検査する
@@ -356,6 +376,6 @@ COBOL のプログラム名から Java のクラス名を作る規則は<b>ラ�
 
 ## 次の増分
 
-1. 反復を実行時のループとして出す形 (暫定判断 P-033)。`SEARCH` にも要る。
-2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
-3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
+1. `SEARCH ALL` の 2 分探索 (暫定判断 P-036)。
+2. 反復を実行時のループとして出す形 (暫定判断 P-033)。
+3. `GO TO ... DEPENDING ON` (暫定判断 P-029)。

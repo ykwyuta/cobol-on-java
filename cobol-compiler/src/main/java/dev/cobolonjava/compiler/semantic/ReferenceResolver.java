@@ -87,6 +87,13 @@ public final class ReferenceResolver {
                 found.add(candidate);
             }
         }
+        if (found.isEmpty() && qualifiers.isEmpty()) {
+            // 指標名はデータ項目ではないので、名前で項目を探す道では見つからない
+            DataItem index = layout.findIndex(target);
+            if (index != null) {
+                return index;
+            }
+        }
         if (found.isEmpty()) {
             report(origin, layout.findAll(target).isEmpty()
                     ? "undefined data item: " + target
