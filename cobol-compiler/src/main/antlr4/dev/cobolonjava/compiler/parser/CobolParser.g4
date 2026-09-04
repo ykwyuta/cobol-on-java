@@ -585,13 +585,18 @@ varyingSpec
 // GIVING があれば被演算子、なければ受取項目である。文法では区別せず、
 // 意味解析で振り分ける
 
+// CORRESPONDING の形は受取項目が 1 つだけである。名前の合う組ごとに 1 回ずつ計算する
 addStatement
-    : ADD arithmeticOperand+ (TO roundedOperand+)? (GIVING roundedTarget+)?
+    : ADD (CORRESPONDING | CORR) identifier TO roundedTarget
+      sizeErrorPhrases END_ADD?
+    | ADD arithmeticOperand+ (TO roundedOperand+)? (GIVING roundedTarget+)?
       sizeErrorPhrases END_ADD?
     ;
 
 subtractStatement
-    : SUBTRACT arithmeticOperand+ FROM roundedOperand+ (GIVING roundedTarget+)?
+    : SUBTRACT (CORRESPONDING | CORR) identifier FROM roundedTarget
+      sizeErrorPhrases END_SUBTRACT?
+    | SUBTRACT arithmeticOperand+ FROM roundedOperand+ (GIVING roundedTarget+)?
       sizeErrorPhrases END_SUBTRACT?
     ;
 

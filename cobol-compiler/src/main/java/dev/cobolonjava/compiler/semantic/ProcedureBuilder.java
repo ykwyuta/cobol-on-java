@@ -141,6 +141,9 @@ public final class ProcedureBuilder {
         if (statement instanceof Statement.Arithmetic arithmetic) {
             return sizeErrorStatements(arithmetic.sizeError());
         }
+        if (statement instanceof Statement.ArithmeticGroup group) {
+            return sizeErrorStatements(group.sizeError());
+        }
         if (statement instanceof Statement.Compute compute) {
             return sizeErrorStatements(compute.sizeError());
         }
@@ -983,6 +986,11 @@ public final class ProcedureBuilder {
      */
     private Statement addOf(CobolParser.AddStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
+        if (context.CORRESPONDING() != null || context.CORR() != null) {
+            return correspondingArithmeticOf(Statement.Arithmetic.Operator.ADD,
+                    context.identifier(), context.roundedTarget(0),
+                    context.sizeErrorPhrases(), origin);
+        }
         List<Operand> operands = operandsOf(context.arithmeticOperand(), origin);
         if (context.GIVING() == null) {
             if (context.roundedOperand().isEmpty()) {
@@ -1004,6 +1012,11 @@ public final class ProcedureBuilder {
      */
     private Statement subtractOf(CobolParser.SubtractStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
+        if (context.CORRESPONDING() != null || context.CORR() != null) {
+            return correspondingArithmeticOf(Statement.Arithmetic.Operator.SUBTRACT,
+                    context.identifier(), context.roundedTarget(0),
+                    context.sizeErrorPhrases(), origin);
+        }
         List<Operand> subtrahends = operandsOf(context.arithmeticOperand(), origin);
         if (context.GIVING() == null) {
             // 引く側をまず足し合わせ、その和を受取項目から引く
@@ -1127,6 +1140,58 @@ public final class ProcedureBuilder {
             return null;
         }
         return new Expression.Binary(operator, left, right);
+    }
+
+    /**
+     * {@code ADD CORRESPONDING} と {@code SUBTRACT CORRESPONDING}。
+     *
+     * <p>名前の合う組ごとに {@code 受取項目 = 受取項目 演算 送出項目} を行う。
+     * <b>数値の基本項目どうしの組だけ</b>が対象である。ほかの組は計算しようがないので
+     * 選ばない。
+     *
+     * <p>{@code ON SIZE ERROR} は組ごとではなく<b>全体で 1 つ</b>である。
+     * その関係を {@link Statement.ArithmeticGroup} で表す。
+     */
+    private Statement correspondingArithmeticOf(Statement.Arithmetic.Operator operator,
+                                                CobolParser.IdentifierContext sourceContext,
+                                                CobolParser.RoundedTargetContext targetContext,
+                                                CobolParser.SizeErrorPhrasesContext phrases,
+                                                Origin origin) {
+        DataReference source = resolver.resolve(sourceContext);
+        DataReference target = resolver.resolve(targetContext.identifier());
+        if (source == null || target == null) {
+            return null;
+        }
+        if (!checkCorrespondingOperand(source, origin)
+                || !checkCorrespondingOperand(target, origin)) {
+            return null;
+        }
+        boolean rounded = targetContext.ROUNDED() != null;
+
+        List<Statement.Arithmetic> operations = new ArrayList<>();
+        for (Correspondence.Pair pair : Correspondence.of(source.item(), target.item())) {
+            DataReference from =
+                    new DataReference(pair.source(), source.subscripts(), null, origin);
+            DataReference to =
+                    new DataReference(pair.target(), target.subscripts(), null, origin);
+            if (!isNumericElementary(from) || !isNumericElementary(to)) {
+                continue;
+            }
+            // 被演算子が 1 個なので畳み方は効かない。受取項目を巻き込む演算だけが意味を持つ
+            operations.add(new Statement.Arithmetic(Statement.Arithmetic.Operator.ADD,
+                    List.of(new Operand.Reference(from)), operator,
+                    List.of(new Statement.Arithmetic.Target(to, rounded)), null, origin));
+        }
+        if (operations.isEmpty()) {
+            report(origin, "CORRESPONDING found no numeric elementary pairs between "
+                    + describe(source) + " and " + describe(target));
+            return null;
+        }
+        return new Statement.ArithmeticGroup(operations, sizeErrorOf(phrases), origin);
+    }
+
+    private static boolean isNumericElementary(DataReference reference) {
+        return reference.item().isElementary() && DataCategory.of(reference).isNumeric();
     }
 
     private Statement arithmetic(Statement.Arithmetic.Operator fold, List<Operand> operands,

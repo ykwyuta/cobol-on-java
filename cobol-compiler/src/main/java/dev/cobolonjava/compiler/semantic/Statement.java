@@ -110,6 +110,27 @@ public sealed interface Statement {
     }
 
     /**
+     * 1 つの {@code ON SIZE ERROR} を分け合う算術文の集まり。
+     *
+     * <p>{@code ADD CORRESPONDING} は名前の合う組の数だけ加算を行うが、
+     * <b>条件文を通るのは全部を計算し終えたあと 1 度だけ</b>である。組ごとに独立した
+     * 算術文へ展開すると、あふれた組の数だけ条件文を通ってしまう。
+     *
+     * <p>そのため、条件を分け合うという関係だけをここで表す。中身は普通の
+     * {@link Arithmetic} であり、それぞれの {@code sizeError} は {@code null} である。
+     *
+     * @param operations 順に行う算術文
+     * @param sizeError  全体で 1 つの条件。指定がなければ {@code null}
+     */
+    record ArithmeticGroup(List<Arithmetic> operations, Arithmetic.SizeError sizeError,
+                           Origin origin) implements Statement {
+
+        public ArithmeticGroup {
+            operations = List.copyOf(operations);
+        }
+    }
+
+    /**
      * {@code COMPUTE} 文。
      *
      * <p>ほかの算術文との違いは<b>式を取る</b>ことだけである。受取項目と

@@ -261,6 +261,8 @@ public final class ProgramGenerator {
                 planMove(move, body);
             } else if (statement instanceof Statement.Arithmetic arithmetic) {
                 planArithmetic(arithmetic, body);
+            } else if (statement instanceof Statement.ArithmeticGroup group) {
+                planArithmeticGroup(group, body);
             } else if (statement instanceof Statement.Compute compute) {
                 planCompute(compute, body);
             } else if (statement instanceof Statement.If branch) {
@@ -1719,13 +1721,25 @@ public final class ProgramGenerator {
             }
             perTarget.add(planned);
         }
-        List<Runnable> onError = planStatements(statement.sizeError().onError());
-        List<Runnable> otherwise = planStatements(statement.sizeError().otherwise());
+        planSizeErrorBranch(perTarget, statement.sizeError(), flag, body);
+    }
+
+    /**
+     * 計算のあとに条件を見る形を組み立てる。
+     *
+     * <p>旗は<b>計算の全体で 1 つ</b>である。受取項目が複数あっても、
+     * {@code CORRESPONDING} で組が複数あっても、条件文を通るのは 1 度だけである。
+     */
+    private void planSizeErrorBranch(List<Runnable> operations,
+                                     Statement.Arithmetic.SizeError sizeError, int flag,
+                                     List<Runnable> body) {
+        List<Runnable> onError = planStatements(sizeError.onError());
+        List<Runnable> otherwise = planStatements(sizeError.otherwise());
 
         body.add(() -> {
             run.visitInsn(Opcodes.ICONST_0);
             run.visitVarInsn(Opcodes.ISTORE, flag);
-            perTarget.forEach(Runnable::run);
+            operations.forEach(Runnable::run);
 
             Label noError = new Label();
             Label end = new Label();
@@ -1737,6 +1751,29 @@ public final class ProgramGenerator {
             otherwise.forEach(Runnable::run);
             run.visitLabel(end);
         });
+    }
+
+    /**
+     * 1 つの {@code ON SIZE ERROR} を分け合う算術文の集まりを組み立てる。
+     *
+     * <p>指定がなければ、ただ順に出すだけである。指定があれば<b>旗を 1 つだけ作り</b>、
+     * すべての計算で共有する。組ごとに条件文を通ってしまわないようにするためである。
+     */
+    private void planArithmeticGroup(Statement.ArithmeticGroup group, List<Runnable> body) {
+        if (group.sizeError() == null) {
+            group.operations().forEach(operation -> planArithmetic(operation, body));
+            return;
+        }
+        int flag = nextLocal++;
+        List<Runnable> operations = new ArrayList<>();
+        for (Statement.Arithmetic operation : group.operations()) {
+            Runnable planned = planCheckedTarget(operation, operation.targets().get(0), flag);
+            if (planned == null) {
+                return;
+            }
+            operations.add(planned);
+        }
+        planSizeErrorBranch(operations, group.sizeError(), flag, body);
     }
 
     private Runnable planCheckedTarget(Statement.Arithmetic statement,

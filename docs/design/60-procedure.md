@@ -161,6 +161,18 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 あり、黙って通すと「実行しても何も起きない」という最も気付きにくい形になる。
 参照実装は警告に留めるため、この点は挙動が違う (暫定判断 P-030)。
 
+### 算術文の CORRESPONDING は条件を分け合う
+
+`ADD CORRESPONDING` と `SUBTRACT CORRESPONDING` は<b>数値の基本項目どうしの組だけ</b>を
+選ぶ。ほかの組は計算しようがない。
+
+`MOVE` と違って展開しきれないものが 1 つある。`ON SIZE ERROR` は組ごとではなく
+<b>全体で 1 つ</b>であり、参照実装はすべての計算を終えてから条件文を 1 度だけ実行する。
+組ごとに独立した算術文へ展開すると、あふれた組の数だけ条件文を通ってしまう。
+
+そこで「1 つの `ON SIZE ERROR` を分け合う」という関係だけを `Statement.ArithmeticGroup`
+で表す。中身は普通の `Statement.Arithmetic` であり、それぞれの条件は空である。
+
 ## GO TO の行き先は組み立ての最後に確かめる
 
 段落はあとから書かれることもあるため、`GO TO` と `PERFORM` の行き先が実在するかは
@@ -182,7 +194,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 `MOVE`、算術文 4 つ、`COMPUTE`、`IF`、`EVALUATE`、
 `PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`GO TO`、`DISPLAY`、`INSPECT`、
 `STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である。
-`MOVE CORRESPONDING` も書ける。
+`MOVE` / `ADD` / `SUBTRACT` には `CORRESPONDING` を書ける。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
 べき乗 (`**`) は文法が受け付けるが、まだ生成できないと報告する (暫定判断 P-028)。
 
@@ -203,7 +215,6 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `ADD CORRESPONDING` と `SUBTRACT CORRESPONDING` (暫定判断 P-031)。
-2. `DIVIDE ... REMAINDER` (暫定判断 P-028)。
-3. `CALL` による副プログラムの呼び出し。
-4. `ACCEPT` と `INITIALIZE` / `SET`。
+1. `DIVIDE ... REMAINDER` (暫定判断 P-028)。
+2. `CALL` による副プログラムの呼び出し。
+3. `ACCEPT` と `INITIALIZE` / `SET`。

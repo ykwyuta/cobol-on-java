@@ -208,6 +208,11 @@ END:
 受取項目ごとに条件を見て、<b>収まったものだけが書き換わる</b>。
 どれか 1 つでも条件が立てば、最後に `ON SIZE ERROR` の文を通る。
 
+旗が計算の全体で 1 つであることが効いてくるのが `ADD CORRESPONDING` である。
+組ごとに独立した算術文へ展開すると、あふれた組の数だけ条件文を通ってしまう。
+「1 つの条件を分け合う算術文の集まり」(`Statement.ArithmeticGroup`) として出せば、
+違いは<b>旗を立てる計算がいくつあるか</b>だけになる。尾部の分岐はそのまま分け合える。
+
 ## 位置は「定数の分をまとめてから変数の分を足す」
 
 添字がすべて定数なら位置は翻訳時に決まり、定数を積むだけでよい。
@@ -264,8 +269,8 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 
 ## いま生成できる範囲
 
-`MOVE` の 3 種類 (英数字・数値・数字編集) と `MOVE CORRESPONDING`、
-算術文 4 つ (`GIVING` と `ROUNDED` を含む)、
+`MOVE` の 3 種類 (英数字・数値・数字編集)、
+算術文 4 つ (`GIVING` と `ROUNDED` を含む)、`MOVE` / `ADD` / `SUBTRACT` の `CORRESPONDING`、
 `COMPUTE` (加減乗除・括弧・単項符号)、
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
 `GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、
@@ -303,6 +308,6 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 
 ## 次の増分
 
-1. `ADD CORRESPONDING` と `SUBTRACT CORRESPONDING` (暫定判断 P-031)。
-2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
-3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
+1. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
+2. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
+3. `DIVIDE ... REMAINDER` (暫定判断 P-028)。
