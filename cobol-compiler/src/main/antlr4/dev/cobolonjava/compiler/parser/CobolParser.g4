@@ -52,6 +52,7 @@ tokens {
     OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
     END_READ, END_WRITE, REWRITE, END_REWRITE, INVALID, FD, RECORD,
     DELETE, END_DELETE, START, END_START, DECLARATIVES, USE,
+    SD, SORT, MERGE, RELEASE, RETURN, END_RETURN, ORDER, COLLATING, SEQUENCE,
     EVALUATE, END_EVALUATE, ALSO, ANY, OTHER, TRUE, FALSE,
     STOP, RUN, GOBACK,
     INSPECT, TALLYING, CONVERTING, FIRST, FOR, INITIAL,
@@ -200,8 +201,9 @@ fileSection
     : FILE SECTION PERIOD fileDescriptionEntry*
     ;
 
+// SD は整列作業ファイルである。データセットではなく作業場所を表す
 fileDescriptionEntry
-    : FD IDENTIFIER fileDescriptionClause* PERIOD dataDescriptionEntry*
+    : (FD | SD) IDENTIFIER fileDescriptionClause* PERIOD dataDescriptionEntry*
     ;
 
 fileDescriptionClause
@@ -465,6 +467,10 @@ statement
     | rewriteStatement
     | deleteStatement
     | startStatement
+    | sortStatement
+    | mergeStatement
+    | releaseStatement
+    | returnStatement
     | addStatement
     | subtractStatement
     | multiplyStatement
@@ -711,6 +717,47 @@ notInvalidKeyPhrase
 writeStatement
     : WRITE IDENTIFIER (FROM identifier)?
       invalidKeyPhrase? notInvalidKeyPhrase? END_WRITE?
+    ;
+
+// SORT は溜めて並べ替えて配る。入口と出口はファイルか手続きのどちらかである
+sortStatement
+    : SORT IDENTIFIER sortKeyClause+ sortDuplicates? sortInput sortOutput
+    ;
+
+mergeStatement
+    : MERGE IDENTIFIER sortKeyClause+ sortDuplicates? sortUsing sortOutput
+    ;
+
+sortKeyClause
+    : ON? (ASCENDING | DESCENDING) KEY? identifier+
+    ;
+
+sortDuplicates
+    : WITH? DUPLICATES (IN ORDER)?
+    ;
+
+sortInput
+    : sortUsing
+    | INPUT PROCEDURE IS? paragraphName ((THRU | THROUGH) paragraphName)?
+    ;
+
+sortUsing
+    : USING IDENTIFIER+
+    ;
+
+sortOutput
+    : GIVING IDENTIFIER+
+    | OUTPUT PROCEDURE IS? paragraphName ((THRU | THROUGH) paragraphName)?
+    ;
+
+// RELEASE は整列作業ファイルへ渡し、RETURN は受け取る
+releaseStatement
+    : RELEASE IDENTIFIER (FROM identifier)?
+    ;
+
+returnStatement
+    : RETURN IDENTIFIER RECORD? (INTO identifier)?
+      atEndPhrase? notAtEndPhrase? END_RETURN?
     ;
 
 // REWRITE が書き換えるのは、直前に読んだレコードである

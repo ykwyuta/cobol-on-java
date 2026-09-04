@@ -27,6 +27,7 @@ import java.util.Map;
  * @param optional     {@code SELECT OPTIONAL}。ないファイルを開いてもよい
  * @param relativeKey  {@code RELATIVE KEY} の項目。相対編成以外では {@code null}
  * @param keys         索引編成の鍵。先頭が主鍵、以降が副鍵。ほかの編成では空
+ * @param sort         {@code SD} で書かれた整列作業ファイルか
  * @param records      {@code FD} 配下のレコード記述。すべて同じ領域に重なる
  * @param recordLength レコード長。{@code FD} 配下の記述から決まる
  * @param varying      可変長の指定。固定長なら {@code null}
@@ -34,12 +35,31 @@ import java.util.Map;
 public record FileDescription(String name, String ddName, Organization organization,
                               RecordFormat format, Access access, DataReference status,
                               boolean optional, DataReference relativeKey, List<RecordKey> keys,
-                              List<DataItem> records, int recordLength, Varying varying,
-                              Origin origin) {
+                              boolean sort, List<DataItem> records, int recordLength,
+                              Varying varying, Origin origin) {
 
     public FileDescription {
         records = List.copyOf(records);
         keys = List.copyOf(keys);
+    }
+
+    /**
+     * 整列作業ファイルの宣言を検査する (要件 FR-120)。
+     *
+     * <p>{@code SD} が表すのは<b>データセットではなく作業場所</b>である。開くことも閉じることも
+     * ないので、編成もアクセス様式もファイル状態も意味を持たない。
+     */
+    private static boolean checkSortWork(Selected one, DataReference status,
+                                         DataReference relativeKey, List<RecordKey> keys,
+                                         List<Diagnostic> diagnostics) {
+        if (status != null || relativeKey != null || !keys.isEmpty()
+                || one.organization() != Organization.SEQUENTIAL
+                || one.access() != Access.SEQUENTIAL) {
+            diagnostics.add(new Diagnostic(one.origin(), "a sort-merge file (SD) takes only "
+                    + "ASSIGN; it is a work area, not a data set: " + one.name()));
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -289,12 +309,18 @@ public record FileDescription(String name, String ddName, Organization organizat
             if (keys == null) {
                 continue;
             }
-            if (!checkOrganization(one, relativeKey, keys, diagnostics)) {
+            if (entry != null && entry.SD() != null) {
+                // 整列作業ファイルは編成を持たない。データセットではなく作業場所である
+                if (!checkSortWork(one, status, relativeKey, keys, diagnostics)) {
+                    continue;
+                }
+            } else if (!checkOrganization(one, relativeKey, keys, diagnostics)) {
                 continue;
             }
             if (files.putIfAbsent(one.name(),
                     new FileDescription(one.name(), one.ddName(), one.organization(), format,
-                            one.access(), status, one.optional(), relativeKey, keys, area, length,
+                            one.access(), status, one.optional(), relativeKey, keys,
+                            entry != null && entry.SD() != null, area, length,
                             varying, one.origin())) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }

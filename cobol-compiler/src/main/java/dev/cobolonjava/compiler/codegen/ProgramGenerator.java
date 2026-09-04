@@ -31,6 +31,7 @@ import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.picture.PictureParser;
+import dev.cobolonjava.runtime.sort.SortKey;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
@@ -340,6 +341,12 @@ public final class ProgramGenerator {
                 planDelete(delete, body);
             } else if (statement instanceof Statement.Start start) {
                 planStart(start, body);
+            } else if (statement instanceof Statement.Sort sort) {
+                planSort(sort, body);
+            } else if (statement instanceof Statement.Release release) {
+                planRelease(release, body);
+            } else if (statement instanceof Statement.Return returned) {
+                planReturn(returned, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
             } else if (statement instanceof Statement.Continue) {
@@ -1563,6 +1570,191 @@ public final class ProgramGenerator {
         push(index);
         push(value);
         run.visitInsn(Opcodes.IASTORE);
+    }
+
+    // ---- 整列と合併 ----
+
+    /**
+     * {@code SORT} と {@code MERGE} を組み立てる (要件 FR-120, FR-121)。
+     *
+     * <p>出すのは<b>溜めて、並べ替えて、配る</b>の 3 つである。入口と出口がファイルなら
+     * ランタイムの入口を呼び、手続きなら段落の範囲を実行する。並べ替えそのものは
+     * ランタイムが持つ (方針 ARC-7)。
+     */
+    private void planSort(Statement.Sort statement, List<Runnable> body) {
+        FileDescription work = statement.work();
+        List<Runnable> keys = new ArrayList<>();
+        for (Statement.Sort.SortKeySpec key : statement.keys()) {
+            Runnable element = planSortKey(key, statement.origin());
+            if (element == null) {
+                return;
+            }
+            keys.add(element);
+        }
+        Runnable input = planSortSide(statement.using(), statement.input(), "sortUsing",
+                work, statement.origin());
+        Runnable output = planSortSide(statement.giving(), statement.output(), "sortGiving",
+                work, statement.origin());
+        if (input == null || output == null) {
+            return;
+        }
+        String name = work.name();
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(name);
+            emitArray(keys, Type.getInternalName(SortKey.class));
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "sortOpen",
+                    "(" + CONTEXT + "Ljava/lang/String;[" + Type.getDescriptor(SortKey.class)
+                            + ")V", false);
+            input.run();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(name);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "sortRecords",
+                    "(" + CONTEXT + "Ljava/lang/String;)V", false);
+            output.run();
+        });
+    }
+
+    /**
+     * 鍵 1 個を作る命令。
+     *
+     * <p>数値項目なら<b>値として</b>比べる。{@code 010} と {@code 9} はバイトで比べれば
+     * {@code 010} が小さいが、値としては {@code 9} が小さい。
+     */
+    private Runnable planSortKey(Statement.Sort.SortKeySpec key, Origin origin) {
+        DataReference reference = key.reference();
+        OptionalInt offset = reference.constantOffset();
+        OptionalInt length = reference.constantLength();
+        if (offset.isEmpty() || length.isEmpty()) {
+            report(origin, "a sort key must have a fixed position and length");
+            return null;
+        }
+        String field = DataCategory.of(reference).isNumeric()
+                ? numericItemConstant(reference.item(), origin)
+                : null;
+        if (DataCategory.of(reference).isNumeric() && field == null) {
+            return null;
+        }
+        int at = offset.getAsInt();
+        int size = length.getAsInt();
+        boolean ascending = key.ascending();
+        return () -> {
+            run.visitTypeInsn(Opcodes.NEW, Type.getInternalName(SortKey.class));
+            run.visitInsn(Opcodes.DUP);
+            push(at);
+            push(size);
+            run.visitInsn(ascending ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            if (field == null) {
+                run.visitInsn(Opcodes.ACONST_NULL);
+            } else {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            }
+            run.visitMethodInsn(Opcodes.INVOKESPECIAL, Type.getInternalName(SortKey.class),
+                    "<init>", "(IIZ" + NUMERIC_ITEM + ")V", false);
+        };
+    }
+
+    /**
+     * 入口と出口を組み立てる。
+     *
+     * @param files ファイルで指定したもの。手続きで指定していれば空
+     * @param entry ランタイムの入口の名前 ({@code sortUsing} か {@code sortGiving})
+     */
+    private Runnable planSortSide(List<FileDescription> files,
+                                  Statement.Sort.Procedure procedure, String entry,
+                                  FileDescription work, Origin origin) {
+        if (procedure != null) {
+            int from = paragraphNames.indexOf(procedure.from());
+            int through = procedure.through() == null
+                    ? lastOf(procedure.from(), from)
+                    : lastOf(procedure.through(), paragraphNames.indexOf(procedure.through()));
+            if (from < 0 || through < 0) {
+                report(origin, "undefined paragraph: " + procedure.from());
+                return null;
+            }
+            return () -> emitPerformRange(from, through);
+        }
+        String name = work.name();
+        List<Runnable> calls = new ArrayList<>();
+        for (FileDescription file : files) {
+            int organization = file.organization().ordinal();
+            int format = file.format().ordinal();
+            int length = file.recordLength();
+            calls.add(() -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                run.visitLdcInsn(name);
+                run.visitLdcInsn(file.name());
+                run.visitLdcInsn(file.ddName());
+                push(organization);
+                push(format);
+                push(length);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, entry,
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
+                                + "Ljava/lang/String;III)V", false);
+            });
+        }
+        return () -> calls.forEach(Runnable::run);
+    }
+
+    /** {@code RELEASE} を組み立てる (要件 FR-120)。 */
+    private void planRelease(Statement.Release statement, List<Runnable> body) {
+        Runnable area = planAddress(
+                new DataReference(statement.record(), List.of(), null, statement.origin()),
+                statement.origin());
+        if (area == null) {
+            return;
+        }
+        if (statement.from() != null) {
+            planMove(statement.from(), body);
+        }
+        String name = statement.work().name();
+        int length = statement.record().totalLength();
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(name);
+            area.run();
+            push(length);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "release",
+                    "(" + CONTEXT + "Ljava/lang/String;L" + STORAGE + ";II)V", false);
+        });
+    }
+
+    /**
+     * {@code RETURN} を組み立てる (要件 FR-120)。
+     *
+     * <p>返すものが尽きたかどうかで分かれるだけである。ファイルの状態コードは持たない。
+     * 整列作業ファイルはデータセットではないので、状態を持たせる先がない。
+     */
+    private void planReturn(Statement.Return statement, List<Runnable> body) {
+        FileDescription work = statement.work();
+        Runnable area = planAddress(areaOf(work, statement.origin()), statement.origin());
+        if (area == null) {
+            return;
+        }
+        List<Runnable> into = statement.into() == null
+                ? List.of()
+                : planStatements(List.of(statement.into()));
+        List<Runnable> atEnd = planStatements(statement.atEnd());
+        List<Runnable> notAtEnd = planStatements(statement.notAtEnd());
+        String name = work.name();
+        int length = work.recordLength();
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(name);
+            area.run();
+            push(length);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "sortReturn",
+                    "(" + CONTEXT + "Ljava/lang/String;L" + STORAGE + ";II)Z", false);
+            Label ended = new Label();
+            Label end = new Label();
+            run.visitJumpInsn(Opcodes.IFEQ, ended);
+            into.forEach(Runnable::run);
+            notAtEnd.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(ended);
+            atEnd.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
     }
 
     /** 実行時の入口とファイル名・DD 名を積む。どの入出力にも要る前置きである。 */

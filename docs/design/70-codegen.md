@@ -278,6 +278,7 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `SEARCH` / `SEARCH ALL`、`CALL` / `CANCEL`、
 `OPEN` / `READ` / `WRITE` / `REWRITE` / `DELETE` / `START` / `CLOSE`
 (`INTO` / `FROM` / `NEXT` / `AT END` / `NOT AT END` / `INVALID KEY` / `NOT INVALID KEY`)、
+`SORT` / `MERGE` / `RELEASE` / `RETURN`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。

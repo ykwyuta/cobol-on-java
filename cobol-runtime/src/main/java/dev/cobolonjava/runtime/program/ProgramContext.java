@@ -16,6 +16,8 @@ import dev.cobolonjava.runtime.file.IndexedDataSet;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.file.RelativeDataSet;
+import dev.cobolonjava.runtime.sort.SortKey;
+import dev.cobolonjava.runtime.sort.SortWork;
 import dev.cobolonjava.runtime.file.SequentialDataSet;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.nio.file.Path;
@@ -56,10 +58,33 @@ public final class ProgramContext {
     private final Supplier<String> input;
     /** 特殊レジスタの置き場。実行の全体で 1 つである。 */
     private final Storage registers;
+    /**
+     * 整列作業ファイルを用意する (要件 FR-120)。
+     *
+     * <p>{@code SD} が表すのは<b>データセットではなく作業場所</b>である。開くことも閉じることも
+     * なく、{@code SORT} のたびに作り直す。前の整列の中身が残っていてはならない。
+     */
+    public SortWork sortWork(String name, List<SortKey> keys) {
+        SortWork work = new SortWork(keys, codePage);
+        sorts.put(name, work);
+        return work;
+    }
+
+    /** 用意済みの整列作業ファイル。{@code RELEASE} と {@code RETURN} が使う。 */
+    public SortWork sortWork(String name) {
+        SortWork work = sorts.get(name);
+        if (work == null) {
+            throw new IllegalStateException("sort work is not in use: " + name);
+        }
+        return work;
+    }
+
     /** DD 名から実際のファイルを探す目録。 */
     private final DataSetCatalog catalog;
     /** 開いているファイル。ファイル名から引く。 */
     private final Map<String, DataSet> files;
+    /** 整列作業ファイル。{@code SORT} の間だけ存在する。 */
+    private final Map<String, SortWork> sorts = new HashMap<>();
 
     private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
