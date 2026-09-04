@@ -254,7 +254,10 @@ public final class ProgramGenerator {
     private List<Runnable> planStatements(List<Statement> statements) {
         List<Runnable> body = new ArrayList<>();
         for (Statement statement : statements) {
-            if (statement instanceof Statement.Move move) {
+            if (statement instanceof Statement.Sequence sequence) {
+                // 意味解析で展開された文の並び。そのまま並べて出す
+                body.addAll(planStatements(sequence.statements()));
+            } else if (statement instanceof Statement.Move move) {
                 planMove(move, body);
             } else if (statement instanceof Statement.Arithmetic arithmetic) {
                 planArithmetic(arithmetic, body);
@@ -1367,10 +1370,6 @@ public final class ProgramGenerator {
     }
 
     private void planMove(Statement.Move move, List<Runnable> body) {
-        if (move.corresponding()) {
-            report(move.origin(), "MOVE CORRESPONDING is not supported yet");
-            return;
-        }
         for (Statement.Move.Target target : move.targets()) {
             Runnable offset = planOffset(target.reference(), move.origin());
             OptionalInt length = lengthOf(target.reference(), move.origin());

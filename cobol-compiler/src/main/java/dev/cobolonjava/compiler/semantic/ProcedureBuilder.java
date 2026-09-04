@@ -129,6 +129,9 @@ public final class ProcedureBuilder {
      * 走査の抜けができる。
      */
     private static List<List<Statement>> nestedStatements(Statement statement) {
+        if (statement instanceof Statement.Sequence sequence) {
+            return List.of(sequence.statements());
+        }
         if (statement instanceof Statement.If branch) {
             return List.of(branch.onTrue(), branch.onFalse());
         }
@@ -1230,6 +1233,9 @@ public final class ProcedureBuilder {
 
     private Statement moveOf(CobolParser.MoveStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
+        if (context.CORRESPONDING() != null || context.CORR() != null) {
+            return correspondingMoveOf(context, origin);
+        }
         Operand source = operandOf(context.moveSource(), origin);
         List<Statement.Move.Target> targets = new ArrayList<>();
         for (CobolParser.IdentifierContext target : context.identifier()) {
@@ -1246,8 +1252,97 @@ public final class ProcedureBuilder {
             // 解決できなかった参照と書けない組み合わせは報告済みである。文は組み立てない
             return null;
         }
-        boolean corresponding = context.CORRESPONDING() != null || context.CORR() != null;
-        return new Statement.Move(source, targets, corresponding, origin);
+        return new Statement.Move(source, targets, false, origin);
+    }
+
+    /**
+     * {@code MOVE CORRESPONDING} を、名前の合う組の数だけの {@code MOVE} へ展開する。
+     *
+     * <p>展開をここで済ませておけば、コード生成は普通の {@code MOVE} を出すだけでよい。
+     * 分類の組み合わせの検査も 1 組ずつ同じ経路を通る。
+     */
+    private Statement correspondingMoveOf(CobolParser.MoveStatementContext context,
+                                          Origin origin) {
+        DataReference source = correspondingOperand(context.moveSource(), origin);
+        if (source == null) {
+            return null;
+        }
+        List<Statement> moves = new ArrayList<>();
+        for (CobolParser.IdentifierContext identifier : context.identifier()) {
+            DataReference target = resolver.resolve(identifier);
+            if (target == null) {
+                return null;
+            }
+            if (!checkCorrespondingOperand(target, origin)) {
+                return null;
+            }
+            List<Statement> expanded = correspondingMoves(source, target, origin);
+            if (expanded == null) {
+                return null;
+            }
+            moves.addAll(expanded);
+        }
+        return new Statement.Sequence(moves, origin);
+    }
+
+    /** 送出側は集団項目でなければならない。定数は書けない。 */
+    private DataReference correspondingOperand(CobolParser.MoveSourceContext context,
+                                               Origin origin) {
+        if (context.identifier() == null) {
+            report(origin, "MOVE CORRESPONDING requires a group item, not a literal");
+            return null;
+        }
+        DataReference reference = resolver.resolve(context.identifier());
+        if (reference == null) {
+            return null;
+        }
+        return checkCorrespondingOperand(reference, origin) ? reference : null;
+    }
+
+    private boolean checkCorrespondingOperand(DataReference reference, Origin origin) {
+        if (reference.item().isElementary()) {
+            report(origin, "MOVE CORRESPONDING requires a group item: " + describe(reference));
+            return false;
+        }
+        if (reference.refMod() != null) {
+            report(origin, "MOVE CORRESPONDING cannot take a reference modification: "
+                    + describe(reference));
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 対応する組ごとの {@code MOVE}。
+     *
+     * <p>添字は<b>集団項目に書かれたものをそのまま引き継ぐ</b>。対応付けの対象から
+     * {@code OCCURS} の項目を外してあるので、組になった項目の表の連なりは
+     * 集団項目のものと同じである。
+     */
+    private List<Statement> correspondingMoves(DataReference source, DataReference target,
+                                               Origin origin) {
+        List<Correspondence.Pair> pairs =
+                Correspondence.of(source.item(), target.item());
+        if (pairs.isEmpty()) {
+            // 何も移さない MOVE は書き間違いである。黙って通さない
+            report(origin, "MOVE CORRESPONDING found no corresponding items between "
+                    + describe(source) + " and " + describe(target));
+            return null;
+        }
+        List<Statement> moves = new ArrayList<>();
+        for (Correspondence.Pair pair : pairs) {
+            DataReference from =
+                    new DataReference(pair.source(), source.subscripts(), null, origin);
+            DataReference to =
+                    new DataReference(pair.target(), target.subscripts(), null, origin);
+            Operand operand = new Operand.Reference(from);
+            Statement.Move.Target checked = checkMove(operand, to, origin);
+            if (checked == null) {
+                return null;
+            }
+            moves.add(new Statement.Move(operand, List.of(checked), false, origin));
+        }
+        return moves;
     }
 
     /** 分類の組み合わせを検査し、転記の種類を決める。 */

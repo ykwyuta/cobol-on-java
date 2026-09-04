@@ -290,6 +290,19 @@ public sealed interface Statement {
     record Stop(Origin origin) implements Statement {
     }
 
+    /**
+     * 文の並び。1 つの文が<b>複数の文へ展開された</b>ときに使う。
+     *
+     * <p>{@code MOVE CORRESPONDING} は名前の合う組の数だけ {@code MOVE} になる。
+     * 展開を意味解析で済ませておけば、コード生成は普通の {@code MOVE} を出すだけでよい。
+     */
+    record Sequence(List<Statement> statements, Origin origin) implements Statement {
+
+        public Sequence {
+            statements = List.copyOf(statements);
+        }
+    }
+
     /** {@code CONTINUE} と {@code EXIT}。どちらも何もしない。 */
     record Continue(Origin origin) implements Statement {
     }

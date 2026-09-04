@@ -139,6 +139,28 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 `WHEN WS-X` の `WS-X` は、主語が `TRUE` なら条件名、そうでなければ<b>比べる値</b>である。
 文法だけでは見分けられないため、意味解析で読み替えている。
 
+## CORRESPONDING は意味解析で展開する
+
+`MOVE CORRESPONDING A TO B` は、名前の合う組の数だけの `MOVE` へ展開する
+(`Statement.Sequence`)。展開をここで済ませておけば、コード生成は普通の `MOVE` を
+出すだけでよい。分類の組み合わせの検査も 1 組ずつ同じ経路を通る。
+
+組になる条件は `Correspondence` にある。名前が同じで `FILLER` でないこと、
+<b>少なくとも一方が基本項目</b>であること、そして `OCCURS` や `REDEFINES` で
+書かれていないことである。
+
+両方が集団項目のときに組にせず下へ降りるのが要である。組にしてしまうと
+<b>下位の対応付けが上位の一括転記に飲み込まれる</b>。`CORRESPONDING` は名前の合うものだけを
+移すものであり、集団項目まるごとの転記とは違う。
+
+`OCCURS` と `REDEFINES` を外すのは、<b>名前が同じでも指す範囲が違いうる</b>ためである。
+副作用として、組になった項目の表の連なりは集団項目のものと同じになる。
+集団項目に書かれた添字をそのまま引き継げるのはこのためである。
+
+名前の合う項目が 1 つもなければ誤りとして報告する。何も移さない `MOVE` は書き間違いで
+あり、黙って通すと「実行しても何も起きない」という最も気付きにくい形になる。
+参照実装は警告に留めるため、この点は挙動が違う (暫定判断 P-030)。
+
 ## GO TO の行き先は組み立ての最後に確かめる
 
 段落はあとから書かれることもあるため、`GO TO` と `PERFORM` の行き先が実在するかは
@@ -159,8 +181,8 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 `MOVE`、算術文 4 つ、`COMPUTE`、`IF`、`EVALUATE`、
 `PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`GO TO`、`DISPLAY`、`INSPECT`、
-`STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である
-(`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
+`STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である。
+`MOVE CORRESPONDING` も書ける。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
 べき乗 (`**`) は文法が受け付けるが、まだ生成できないと報告する (暫定判断 P-028)。
 
@@ -181,7 +203,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `MOVE CORRESPONDING` の対応付け。
+1. `ADD CORRESPONDING` と `SUBTRACT CORRESPONDING` (暫定判断 P-031)。
 2. `DIVIDE ... REMAINDER` (暫定判断 P-028)。
 3. `CALL` による副プログラムの呼び出し。
 4. `ACCEPT` と `INITIALIZE` / `SET`。

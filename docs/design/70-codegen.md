@@ -264,7 +264,8 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 
 ## いま生成できる範囲
 
-`MOVE` の 3 種類 (英数字・数値・数字編集)、算術文 4 つ (`GIVING` と `ROUNDED` を含む)、
+`MOVE` の 3 種類 (英数字・数値・数字編集) と `MOVE CORRESPONDING`、
+算術文 4 つ (`GIVING` と `ROUNDED` を含む)、
 `COMPUTE` (加減乗除・括弧・単項符号)、
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
 `GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、
@@ -302,6 +303,6 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 
 ## 次の増分
 
-1. `MOVE CORRESPONDING` の対応付け。
+1. `ADD CORRESPONDING` と `SUBTRACT CORRESPONDING` (暫定判断 P-031)。
 2. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
 3. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
