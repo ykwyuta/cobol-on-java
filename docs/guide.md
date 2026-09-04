@@ -131,7 +131,7 @@ Hello, COBOL on Java
        PROCEDURE DIVISION USING LNK-AMOUNT LNK-TAX.
        MAIN-LOGIC.
            COMPUTE LNK-TAX = LNK-AMOUNT * WS-TAX-RATE
-           EXIT PROGRAM.
+           GOBACK.
 ```
 
 #### ② 主プログラム (`MAIN-JOB.cbl`)
