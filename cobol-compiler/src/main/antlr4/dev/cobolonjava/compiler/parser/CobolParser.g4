@@ -17,6 +17,7 @@ tokens {
     // 関係演算子の記号形。COBOL 語として書けない綴りなので、
     // SourceTokenSource が綴りから直接この種別へ写す
     EQUAL_SIGN, GREATER_SIGN, LESS_SIGN, GREATER_EQUAL_SIGN, LESS_EQUAL_SIGN, NOT_EQUAL_SIGN,
+    PLUS_SIGN, MINUS_SIGN, TIMES_SIGN, DIVIDE_SIGN, POWER_SIGN,
 
     // 島 (不透明トークン)
     PICTURE_STRING, EXEC_BLOCK,
@@ -35,6 +36,7 @@ tokens {
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
     SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE,
+    COMPUTE, END_COMPUTE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING,
@@ -325,6 +327,7 @@ statement
     | subtractStatement
     | multiplyStatement
     | divideStatement
+    | computeStatement
     ;
 
 moveStatement
@@ -588,6 +591,27 @@ multiplyStatement
 divideStatement
     : DIVIDE arithmeticOperand (INTO | BY) roundedOperand+ (GIVING roundedTarget+)?
       sizeErrorPhrases END_DIVIDE?
+    ;
+
+// COMPUTE だけが式を取る。ほかの算術文は被演算子の並びである
+computeStatement
+    : COMPUTE roundedTarget+ EQUAL_SIGN expression sizeErrorPhrases END_COMPUTE?
+    ;
+
+// ---- 算術式 ----
+//
+// 優先順位は高いほうから 単項符号、べき乗、乗除、加減 である。ANTLR の左再帰では
+// 先に書いた選択肢ほど優先順位が高い。
+// COBOL は演算子の前後に空白を要求するため、`A-B` は 1 つの利用者定義語になる。
+// 字句の切り出しはプリプロセッサが済ませており、ここでは並びを見るだけである
+
+expression
+    : (PLUS_SIGN | MINUS_SIGN) expression              # unaryExpression
+    | <assoc=right> expression POWER_SIGN expression   # powerExpression
+    | expression (TIMES_SIGN | DIVIDE_SIGN) expression # multiplicativeExpression
+    | expression (PLUS_SIGN | MINUS_SIGN) expression   # additiveExpression
+    | LPAREN expression RPAREN                         # parenthesizedExpression
+    | arithmeticOperand                                # operandExpression
     ;
 
 // ON SIZE ERROR / NOT ON SIZE ERROR は片方だけでも両方でも書ける

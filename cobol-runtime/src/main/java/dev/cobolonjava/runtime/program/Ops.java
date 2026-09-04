@@ -234,6 +234,20 @@ public final class Ops {
         return Arithmetic.divide(dividend, divisor, scale, rounding);
     }
 
+    public static Decimal negate(Decimal value) {
+        return value.negate();
+    }
+
+    /**
+     * 中間結果を指定の小数桁へ切り捨てる (要件 FR-047)。
+     *
+     * <p>中間結果の総桁数が上限を超えたときにだけ呼ばれる。丸めるのは受取項目へ
+     * 格納する最後の 1 回だけであり、途中は切り捨てる。
+     */
+    public static Decimal truncate(Decimal value, int scale) {
+        return value.rescale(scale, CobolRounding.TRUNCATION);
+    }
+
     /** 除数が 0 かどうか。{@code ON SIZE ERROR} つきの除算で、割る前に見る。 */
     public static boolean isZero(Decimal value) {
         return value.isZero();

@@ -50,6 +50,7 @@ public final class SourceTokenSource implements TokenSource {
             "PERIOD", "COMMA", "SEMICOLON", "LPAREN", "RPAREN", "COLON",
             "EQUAL_SIGN", "GREATER_SIGN", "LESS_SIGN",
             "GREATER_EQUAL_SIGN", "LESS_EQUAL_SIGN", "NOT_EQUAL_SIGN",
+            "PLUS_SIGN", "MINUS_SIGN", "TIMES_SIGN", "DIVIDE_SIGN", "POWER_SIGN",
             "PICTURE_STRING", "EXEC_BLOCK",
             "IDENTIFIER", "LITERAL", "NUMBER");
 
@@ -58,16 +59,26 @@ public final class SourceTokenSource implements TokenSource {
     /**
      * 関係演算子の記号形。
      *
-     * <p>{@code =} や {@code >=} は COBOL 語として書けない綴りなので、
-     * 語彙から名前で引くことができない。ここで綴りから直接種別へ写す。
+     * <p>{@code =} や {@code >=}、算術演算子の {@code +} {@code -} {@code *} {@code /}
+     * {@code **} は COBOL 語として書けない綴りなので、語彙から名前で引くことができない。
+     * ここで綴りから直接種別へ写す。
+     *
+     * <p>符号つきの数字定数より<b>先に</b>引く。{@code -} 1 文字は演算子であり、
+     * {@code -3} は定数である。COBOL は演算子の前後に空白を要求するため、
+     * この 2 つは元のソースでも分かれている。
      */
-    private static final Map<String, Integer> OPERATOR_SYMBOLS = Map.of(
-            "=", CobolParser.EQUAL_SIGN,
-            ">", CobolParser.GREATER_SIGN,
-            "<", CobolParser.LESS_SIGN,
-            ">=", CobolParser.GREATER_EQUAL_SIGN,
-            "<=", CobolParser.LESS_EQUAL_SIGN,
-            "<>", CobolParser.NOT_EQUAL_SIGN);
+    private static final Map<String, Integer> OPERATOR_SYMBOLS = Map.ofEntries(
+            Map.entry("=", CobolParser.EQUAL_SIGN),
+            Map.entry(">", CobolParser.GREATER_SIGN),
+            Map.entry("<", CobolParser.LESS_SIGN),
+            Map.entry(">=", CobolParser.GREATER_EQUAL_SIGN),
+            Map.entry("<=", CobolParser.LESS_EQUAL_SIGN),
+            Map.entry("<>", CobolParser.NOT_EQUAL_SIGN),
+            Map.entry("+", CobolParser.PLUS_SIGN),
+            Map.entry("-", CobolParser.MINUS_SIGN),
+            Map.entry("*", CobolParser.TIMES_SIGN),
+            Map.entry("/", CobolParser.DIVIDE_SIGN),
+            Map.entry("**", CobolParser.POWER_SIGN));
 
     private final List<SourceToken> tokens;
     private final Pair<TokenSource, CharStream> stream = new Pair<>(this, null);

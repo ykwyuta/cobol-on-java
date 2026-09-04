@@ -5,6 +5,8 @@ import dev.cobolonjava.compiler.semantic.Condition;
 import dev.cobolonjava.compiler.semantic.DataCategory;
 import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
+import dev.cobolonjava.compiler.semantic.Expression;
+import dev.cobolonjava.compiler.semantic.IntermediateDigits;
 import dev.cobolonjava.compiler.semantic.InitialImage;
 import dev.cobolonjava.compiler.semantic.LiteralValue;
 import dev.cobolonjava.compiler.semantic.Operand;
@@ -16,6 +18,7 @@ import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.decimal.Decimal;
+import dev.cobolonjava.runtime.decimal.DecimalDivideException;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
 import dev.cobolonjava.runtime.picture.Picture;
@@ -227,6 +230,8 @@ public final class ProgramGenerator {
                 planMove(move, body);
             } else if (statement instanceof Statement.Arithmetic arithmetic) {
                 planArithmetic(arithmetic, body);
+            } else if (statement instanceof Statement.Compute compute) {
+                planCompute(compute, body);
             } else if (statement instanceof Statement.If branch) {
                 planIf(branch, body);
             } else if (statement instanceof Statement.Perform perform) {
@@ -1047,12 +1052,14 @@ public final class ProgramGenerator {
         }, origin);
     }
 
-    /**
-     * 積んだ {@link Decimal} を数値項目へ書き込む命令。
-     *
-     * <p>{@code ROUNDED} は書けないため、常に切り捨てる。
-     */
+    /** 積んだ {@link Decimal} を数値項目へ切り捨てて書き込む命令。 */
     private Runnable planStore(DataReference target, Runnable value, Origin origin) {
+        return planStore(target, value, "TRUNCATION", origin);
+    }
+
+    /** 積んだ {@link Decimal} を数値項目へ書き込む命令。 */
+    private Runnable planStore(DataReference target, Runnable value, String rounding,
+                               Origin origin) {
         if (value == null) {
             return null;
         }
@@ -1067,7 +1074,7 @@ public final class ProgramGenerator {
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             run.visitVarInsn(Opcodes.ALOAD, 1);
             offset.run();
-            loadRounding("TRUNCATION");
+            loadRounding(rounding);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
                     "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
                             + Type.getDescriptor(CobolRounding.class) + ")V", false);
@@ -1306,6 +1313,205 @@ public final class ProgramGenerator {
      * <p>受取項目ごとに計算をまるごと出す。<b>除算の商の桁数は受取項目に合わせる</b>ため、
      * 受取項目が複数あれば計算そのものが変わりうるからである。
      */
+    /**
+     * {@code COMPUTE} を組み立てる。
+     *
+     * <p>式は<b>1 度だけ</b>評価し、局所変数へ取ってから受取項目へ配る。受取項目ごとに
+     * 評価しなおすと、式の中に受取項目が現れたときに 2 つ目以降の値が変わってしまう。
+     *
+     * <p>中間結果の桁数は {@link IntermediateDigits} が決める (要件 5.5.1)。
+     * 除算だけは結果の桁数が被演算子から決まらないため、この桁数がなければ命令が出せない。
+     */
+    private void planCompute(Statement.Compute statement, List<Runnable> body) {
+        IntermediateDigits digits = IntermediateDigits.of(statement.value(), statement.targets());
+        Runnable value = planExpression(statement.value(), digits, statement.origin());
+        if (value == null) {
+            return;
+        }
+        if (statement.isChecked()) {
+            planCheckedCompute(statement, value, body);
+            return;
+        }
+        int slot = nextLocal++;
+        List<Runnable> stores = new ArrayList<>();
+        for (Statement.Arithmetic.Target target : statement.targets()) {
+            Runnable store = planStore(target.reference(),
+                    () -> run.visitVarInsn(Opcodes.ALOAD, slot),
+                    target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION",
+                    statement.origin());
+            if (store == null) {
+                return;
+            }
+            stores.add(store);
+        }
+        body.add(() -> {
+            value.run();
+            run.visitVarInsn(Opcodes.ASTORE, slot);
+            stores.forEach(Runnable::run);
+        });
+    }
+
+    /**
+     * {@code ON SIZE ERROR} つきの {@code COMPUTE}。
+     *
+     * <p>0 除算は<b>式のどこにでも現れうる</b>。ほかの算術文のように割る前に除数を調べる形は
+     * 取れないため、式の評価そのものを {@code try} で囲み、ランタイムが投げる
+     * {@code DecimalDivideException} を条件へ読み替える。
+     */
+    private void planCheckedCompute(Statement.Compute statement, Runnable value,
+                                    List<Runnable> body) {
+        int flag = nextLocal++;
+        int slot = nextLocal++;
+        List<Runnable> stores = new ArrayList<>();
+        for (Statement.Arithmetic.Target target : statement.targets()) {
+            Runnable store = planCheckedStore(target, slot, flag, statement.origin());
+            if (store == null) {
+                return;
+            }
+            stores.add(store);
+        }
+        List<Runnable> onError = planStatements(statement.sizeError().onError());
+        List<Runnable> otherwise = planStatements(statement.sizeError().otherwise());
+
+        body.add(() -> {
+            run.visitInsn(Opcodes.ICONST_0);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+
+            Label start = new Label();
+            Label caught = new Label();
+            Label handler = new Label();
+            Label evaluated = new Label();
+            run.visitTryCatchBlock(start, caught, handler,
+                    Type.getInternalName(DecimalDivideException.class));
+            run.visitLabel(start);
+            value.run();
+            run.visitVarInsn(Opcodes.ASTORE, slot);
+            run.visitLabel(caught);
+            run.visitJumpInsn(Opcodes.GOTO, evaluated);
+            run.visitLabel(handler);
+            run.visitInsn(Opcodes.POP);
+            run.visitInsn(Opcodes.ICONST_1);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+            run.visitInsn(Opcodes.ACONST_NULL);
+            run.visitVarInsn(Opcodes.ASTORE, slot);
+            run.visitLabel(evaluated);
+
+            // 0 除算なら受取項目には触れない
+            Label stored = new Label();
+            run.visitVarInsn(Opcodes.ILOAD, flag);
+            run.visitJumpInsn(Opcodes.IFNE, stored);
+            stores.forEach(Runnable::run);
+            run.visitLabel(stored);
+
+            Label noError = new Label();
+            Label end = new Label();
+            run.visitVarInsn(Opcodes.ILOAD, flag);
+            run.visitJumpInsn(Opcodes.IFEQ, noError);
+            onError.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(noError);
+            otherwise.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
+    }
+
+    /** 収まらなければ受取項目を変えず、条件を立てる格納。 */
+    private Runnable planCheckedStore(Statement.Arithmetic.Target target, int slot, int flag,
+                                      Origin origin) {
+        Runnable offset = planOffset(target.reference(), origin);
+        DataItem item = target.reference().item();
+        String field = numericItemConstant(item, origin);
+        if (offset == null || field == null || item.picture() == null) {
+            return null;
+        }
+        String rounding = target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION";
+        return () -> {
+            Label done = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, slot);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            run.visitVarInsn(Opcodes.ALOAD, 1);
+            offset.run();
+            loadRounding(rounding);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
+                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
+                            + Type.getDescriptor(CobolRounding.class) + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFEQ, done);
+            run.visitInsn(Opcodes.ICONST_1);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+            run.visitLabel(done);
+        };
+    }
+
+    /**
+     * 算術式を評価して {@link Decimal} を 1 個積む命令。
+     *
+     * <p>加減乗は正確に計算でき、結果の小数桁は規則どおりになる。上限を超えて桁を削った
+     * ときだけ切り捨てを挟む。除算は<b>この節に決まった桁数で打ち切る</b>。
+     */
+    private Runnable planExpression(Expression expression, IntermediateDigits digits,
+                                    Origin origin) {
+        if (expression instanceof Expression.Value value) {
+            return planSourceDecimal(value.operand(), origin);
+        }
+        if (expression instanceof Expression.Negate negate) {
+            Runnable inner = planExpression(negate.operand(), digits, origin);
+            if (inner == null) {
+                return null;
+            }
+            return () -> {
+                inner.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "negate",
+                        "(" + DECIMAL + ")" + DECIMAL, false);
+            };
+        }
+        Expression.Binary binary = (Expression.Binary) expression;
+        Runnable left = planExpression(binary.left(), digits, origin);
+        Runnable right = planExpression(binary.right(), digits, origin);
+        if (left == null || right == null) {
+            return null;
+        }
+        int scale = digits.of(expression).scale();
+        if (binary.operator() == Expression.Operator.DIVIDE) {
+            return () -> {
+                left.run();
+                right.run();
+                push(scale);
+                loadRounding("TRUNCATION");
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "divide",
+                        "(" + DECIMAL + DECIMAL + "I"
+                                + Type.getDescriptor(CobolRounding.class) + ")" + DECIMAL, false);
+            };
+        }
+        String name = switch (binary.operator()) {
+            case ADD -> "add";
+            case SUBTRACT -> "subtract";
+            case MULTIPLY -> "multiply";
+            case DIVIDE -> throw new IllegalStateException("handled above");
+        };
+        int natural = naturalScale(binary, digits);
+        return () -> {
+            left.run();
+            right.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name,
+                    "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+            if (scale < natural) {
+                // 総桁数の上限を超えたぶんだけ小数部を削る (要件 FR-047)
+                push(scale);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "truncate",
+                        "(" + DECIMAL + "I)" + DECIMAL, false);
+            }
+        };
+    }
+
+    /** 加減乗を正確に計算したときの小数桁。上限で削られる前の値である。 */
+    private static int naturalScale(Expression.Binary binary, IntermediateDigits digits) {
+        int left = digits.of(binary.left()).scale();
+        int right = digits.of(binary.right()).scale();
+        return binary.operator() == Expression.Operator.MULTIPLY
+                ? left + right
+                : Math.max(left, right);
+    }
+
     private void planArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
         if (statement.isChecked()) {
             planCheckedArithmetic(statement, body);

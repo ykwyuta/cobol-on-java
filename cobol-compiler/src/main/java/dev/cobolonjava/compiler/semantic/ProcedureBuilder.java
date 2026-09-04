@@ -190,6 +190,9 @@ public final class ProcedureBuilder {
         if (context.divideStatement() != null) {
             return divideOf(context.divideStatement());
         }
+        if (context.computeStatement() != null) {
+            return computeOf(context.computeStatement());
+        }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;
     }
@@ -997,6 +1000,79 @@ public final class ProcedureBuilder {
         operands.addAll(into ? first : second);
         return arithmetic(Statement.Arithmetic.Operator.DIVIDE, operands, null,
                 targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+    }
+
+    /**
+     * {@code COMPUTE}。ほかの算術文との違いは式を取ることだけである。
+     */
+    private Statement computeOf(CobolParser.ComputeStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement.Arithmetic.Target> targets = targetsOf(context.roundedTarget());
+        Expression value = expressionOf(context.expression(), origin);
+        if (value == null || targets.contains(null) || targets.isEmpty()) {
+            return null;
+        }
+        for (Statement.Arithmetic.Target target : targets) {
+            if (!DataCategory.of(target.reference()).isNumeric()) {
+                report(origin, "an arithmetic statement requires a numeric receiver: "
+                        + describe(target.reference()));
+                return null;
+            }
+        }
+        return new Statement.Compute(value, targets, sizeErrorOf(context.sizeErrorPhrases()),
+                origin);
+    }
+
+    /**
+     * 算術式を木にする。優先順位と結合は文法が決めており、ここは形を写すだけである。
+     *
+     * @return 組み立てられなければ {@code null}
+     */
+    private Expression expressionOf(CobolParser.ExpressionContext context, Origin origin) {
+        if (context instanceof CobolParser.OperandExpressionContext operand) {
+            Operand value = operandOf(operand.arithmeticOperand(), origin);
+            return value == null ? null : new Expression.Value(value);
+        }
+        if (context instanceof CobolParser.ParenthesizedExpressionContext parens) {
+            return expressionOf(parens.expression(), origin);
+        }
+        if (context instanceof CobolParser.UnaryExpressionContext unary) {
+            Expression inner = expressionOf(unary.expression(), origin);
+            if (inner == null) {
+                return null;
+            }
+            // 単項の + は何もしない
+            return unary.MINUS_SIGN() == null ? inner : new Expression.Negate(inner);
+        }
+        if (context instanceof CobolParser.PowerExpressionContext) {
+            report(origin, "exponentiation is not supported yet");
+            return null;
+        }
+        return binaryOf(context, origin);
+    }
+
+    private Expression binaryOf(CobolParser.ExpressionContext context, Origin origin) {
+        Expression.Operator operator;
+        List<CobolParser.ExpressionContext> parts;
+        if (context instanceof CobolParser.MultiplicativeExpressionContext multiplicative) {
+            operator = multiplicative.TIMES_SIGN() != null
+                    ? Expression.Operator.MULTIPLY
+                    : Expression.Operator.DIVIDE;
+            parts = multiplicative.expression();
+        } else {
+            CobolParser.AdditiveExpressionContext additive =
+                    (CobolParser.AdditiveExpressionContext) context;
+            operator = additive.PLUS_SIGN() != null
+                    ? Expression.Operator.ADD
+                    : Expression.Operator.SUBTRACT;
+            parts = additive.expression();
+        }
+        Expression left = expressionOf(parts.get(0), origin);
+        Expression right = expressionOf(parts.get(1), origin);
+        if (left == null || right == null) {
+            return null;
+        }
+        return new Expression.Binary(operator, left, right);
     }
 
     private Statement arithmetic(Statement.Arithmetic.Operator fold, List<Operand> operands,

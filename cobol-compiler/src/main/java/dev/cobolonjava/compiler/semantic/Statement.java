@@ -110,6 +110,28 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code COMPUTE} 文。
+     *
+     * <p>ほかの算術文との違いは<b>式を取る</b>ことだけである。受取項目と
+     * {@code ON SIZE ERROR} は {@link Arithmetic} と同じものを使う。
+     *
+     * <p>中間結果の桁数は翻訳時に決まる ({@link IntermediateDigits})。式の木そのものには
+     * 桁数を持たせない。桁数は<b>文全体</b>から決まるため、節ごとに持つと決めた場所が分かれる。
+     */
+    record Compute(Expression value, List<Arithmetic.Target> targets,
+                   Arithmetic.SizeError sizeError, Origin origin) implements Statement {
+
+        public Compute {
+            targets = List.copyOf(targets);
+        }
+
+        /** {@code ON SIZE ERROR} の指定があるかどうか。 */
+        public boolean isChecked() {
+            return sizeError != null;
+        }
+    }
+
+    /**
      * {@code IF} 文。
      *
      * @param onTrue  条件が成り立つときの文。{@code NEXT SENTENCE} は空の並びになる

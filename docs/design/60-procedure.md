@@ -147,18 +147,31 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 ## いま組み立てられる文
 
-`MOVE`、算術文 4 つ、`IF`、`EVALUATE`、
+`MOVE`、算術文 4 つ、`COMPUTE`、`IF`、`EVALUATE`、
 `PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`DISPLAY`、`INSPECT`、
 `STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` である
 (`MOVE CORRESPONDING` の指定は読むが、対応付けは未実装)。
 算術文には `ON SIZE ERROR` / `NOT ON SIZE ERROR` を書ける。
-`COMPUTE` は未実装で、書くと構文誤りになる (暫定判断 P-028)。
+べき乗 (`**`) は文法が受け付けるが、まだ生成できないと報告する (暫定判断 P-028)。
+
+## COMPUTE だけが式を取る
+
+ほかの算術文は被演算子の並びであり、畳み方が文の種類で決まっている。`COMPUTE` だけが
+木を取る。違いはそこだけなので、受取項目と `ON SIZE ERROR` は `Statement.Arithmetic` の
+ものをそのまま使う。
+
+式の木には<b>桁数を持たせない</b>。中間結果の桁数は文全体から決まる (要件 5.5.1) ため、
+節ごとに持つと決めた場所が分かれる。`IntermediateDigits` が文を 1 度見て `dmax` を決め、
+節を渡されるたびに桁数を答える形にした。
+
+優先順位と結合は文法が決めている。ANTLR の左再帰では<b>先に書いた選択肢ほど優先順位が
+高い</b>ので、単項符号・べき乗・乗除・加減の順に並べてある。
 
 ## 次の増分
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `COMPUTE`。中間結果の桁数の規則を決めてから。
-2. `MOVE CORRESPONDING` の対応付け。
+1. `MOVE CORRESPONDING` の対応付け。
+2. `DIVIDE ... REMAINDER` (暫定判断 P-028)。
 3. `CALL` による副プログラムの呼び出し。
 4. `ACCEPT` と `INITIALIZE` / `SET`。
