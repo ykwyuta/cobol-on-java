@@ -12,6 +12,7 @@ import java.time.Clock;
 import dev.cobolonjava.runtime.file.DataSet;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.DataSetCatalog;
+import dev.cobolonjava.runtime.file.IndexedDataSet;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.file.RelativeDataSet;
@@ -21,6 +22,7 @@ import java.nio.file.Path;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -106,6 +108,21 @@ public final class ProgramContext {
                     ? RelativeDataSet.at(path, declared)
                     : SequentialDataSet.at(path, declared);
         });
+    }
+
+    /**
+     * 索引編成のファイルを引く (要件 FR-100, FR-101)。
+     *
+     * <p>鍵の場所はファイルではなく<b>プログラムが決める</b>。{@code RECORD KEY} に書いた
+     * 項目の位置と長さであり、ここで渡す。
+     *
+     * @param keys 主鍵が先頭、以降が {@code ALTERNATE RECORD KEY} の並び順
+     */
+    public DataSet file(String name, String ddName, RecordFormat format, int recordLength,
+                        List<IndexedDataSet.Key> keys) {
+        return files.computeIfAbsent(name, k -> IndexedDataSet.at(catalog.resolve(ddName),
+                new DataSetAttributes(format, recordLength, codePage),
+                keys.get(0), keys.subList(1, keys.size())));
     }
 
     /** DD 名から実際のファイルを探す目録。 */

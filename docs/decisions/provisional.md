@@ -926,14 +926,13 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 
 `INPUT-OUTPUT SECTION` と `FILE-CONTROL` も実装した (2026-09-04)。`SELECT` に書ける句は
 `ASSIGN TO`、`ORGANIZATION`、`ACCESS MODE`、`FILE STATUS`、`RECORDING MODE` であり、
-`SELECT OPTIONAL`、`ORGANIZATION IS RELATIVE`、`ACCESS MODE IS RANDOM` / `DYNAMIC`、
-`RELATIVE KEY` も読む。`FD` 側では `RECORD IS VARYING IN SIZE ... DEPENDING ON` と
+`SELECT OPTIONAL`、`ORGANIZATION IS RELATIVE` / `INDEXED`、
+`ACCESS MODE IS RANDOM` / `DYNAMIC`、`RELATIVE KEY`、`RECORD KEY`、
+`ALTERNATE RECORD KEY ... WITH DUPLICATES` も読む。`FD` 側では `RECORD IS VARYING IN SIZE ... DEPENDING ON` と
 `RECORDING MODE` を読む。
 
 **まだ未実装**:
 
-- `SELECT` の `ORGANIZATION IS INDEXED`、`RECORD KEY`、`ALTERNATE RECORD KEY`。
-  誤りとして報告する (設計 80 の第 3 段の残り)
 - `RECORDING MODE U` (不定長)。誤りとして報告する
 - `I-O-CONTROL` 段落 (`SAME AREA`、`APPLY`、`RERUN`)。書けば構文誤りになる
 - `ALPHABET`、`CLASS`、`SYMBOLIC CHARACTERS` の各句。書けば構文誤りになる
@@ -1092,8 +1091,9 @@ VSAM の制御情報を持つ形式を選べるようにする。そのときに
 同じだが、`OPEN EXTEND` や `OPEN I-O` で順次書き込みをしたときの位置の決め方は、
 直前の操作にも依る。読み書きを混ぜたときの位置の定義を詰めていない。
 
-**解消条件**: 索引編成を実装する段で、位置を持つ処理 (`START` / `READ NEXT` / 書き込み) の
-関係をまとめて定義する。相対編成と索引編成で同じ規則になる。
+**解消条件**: 位置を持って読み書きする形へ改める段 (暫定判断 P-038) で、位置を持つ処理
+(`START` / `READ NEXT` / 書き込み) の関係をまとめて定義する。相対編成と索引編成で
+同じ規則になる。
 
 ---
 
@@ -1101,13 +1101,16 @@ VSAM の制御情報を持つ形式を選べるようにする。そのときに
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 |
-| 場所 | `FileDescription.checkOrganization` |
+| 状態 | **解消済** (2026-09-04、`IndexedDataSet` として実装) |
+| 場所 | `IndexedDataSet` / `FileDescription.recordKeysOf` |
 | 関連要件 | FR-100, FR-101 |
 
-**暫定の扱い**: `ORGANIZATION IS INDEXED` と `RECORD KEY` を誤りとして報告する。
-黙って順編成として扱うと、鍵で引いたつもりの処理が別のレコードを返す。
+`RECORD KEY` と `ALTERNATE RECORD KEY` (`WITH DUPLICATES` を含む) を実装した。
+相対編成で作った `START` / `READ NEXT` / `DELETE` と `INVALID KEY` の仕組みはそのまま使え、
+違うのは<b>鍵がレコードの中にある</b>ことだけだった。
 
-**解消条件**: 設計 80 の第 3 段の残りとして実装する。相対編成で作った `START` /
-`READ NEXT` / `DELETE` と `INVALID KEY` の仕組みはそのまま使える。違うのは
-<b>鍵がレコードの中にある</b>ことだけである。
+索引はデータから導けるので、ファイルに持つのはレコードだけである。開いたときに組み直す。
+索引を別に保存すると本体と食い違う余地ができる。
+
+**残っている形**: 鍵の照合順序は符号なしのバイト比較である。`PROGRAM COLLATING SEQUENCE` で
+照合順序を差し替えた場合の索引の並びは、照合順序そのものを実装する段で合わせる。

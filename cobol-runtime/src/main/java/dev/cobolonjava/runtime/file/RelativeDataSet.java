@@ -24,7 +24,7 @@ import java.util.List;
  * レコードのバイト列の外にある。ここではサイドカーに持つ (暫定判断 P-039)。データ本体は
  * 移行したままの固定長スロットの並びである。
  */
-public final class RelativeDataSet implements DataSet {
+public final class RelativeDataSet implements KeyedDataSet {
 
     private final Path path;
     /**
@@ -330,6 +330,7 @@ public final class RelativeDataSet implements DataSet {
     }
 
     /** 直前に読んだレコードを消す (要件 FR-102)。 */
+    @Override
     public String delete() {
         String checked = changeable();
         if (checked != null) {

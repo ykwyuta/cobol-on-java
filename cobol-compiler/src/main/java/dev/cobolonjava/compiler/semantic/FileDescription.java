@@ -26,18 +26,41 @@ import java.util.Map;
  * @param status       {@code FILE STATUS} の項目。書かれていなければ {@code null}
  * @param optional     {@code SELECT OPTIONAL}。ないファイルを開いてもよい
  * @param relativeKey  {@code RELATIVE KEY} の項目。相対編成以外では {@code null}
+ * @param keys         索引編成の鍵。先頭が主鍵、以降が副鍵。ほかの編成では空
  * @param records      {@code FD} 配下のレコード記述。すべて同じ領域に重なる
  * @param recordLength レコード長。{@code FD} 配下の記述から決まる
  * @param varying      可変長の指定。固定長なら {@code null}
  */
 public record FileDescription(String name, String ddName, Organization organization,
                               RecordFormat format, Access access, DataReference status,
-                              boolean optional, DataReference relativeKey,
+                              boolean optional, DataReference relativeKey, List<RecordKey> keys,
                               List<DataItem> records, int recordLength, Varying varying,
                               Origin origin) {
 
     public FileDescription {
         records = List.copyOf(records);
+        keys = List.copyOf(keys);
+    }
+
+    /**
+     * 索引編成の鍵 (要件 FR-100)。
+     *
+     * <p>鍵は<b>レコードの中にある</b>。住所ではなく持ち物なので、位置はレコードの
+     * 先頭からの変位になる。
+     *
+     * @param duplicates {@code WITH DUPLICATES}。同じ値を許すか。主鍵では常に {@code false}
+     */
+    public record RecordKey(DataReference reference, boolean duplicates) {
+
+        /** レコードの先頭からの位置。 */
+        public int offset() {
+            return reference.constantOffset().orElse(0);
+        }
+
+        /** 鍵の長さ。 */
+        public int length() {
+            return reference.constantLength().orElse(0);
+        }
     }
 
     /**
@@ -103,7 +126,12 @@ public record FileDescription(String name, String ddName, Organization organizat
      */
     record Selected(String name, String ddName, Organization organization, RecordFormat format,
                     Access access, boolean optional, CobolParser.IdentifierContext status,
-                    CobolParser.IdentifierContext relativeKey, Origin origin) {
+                    CobolParser.IdentifierContext relativeKey,
+                    List<SelectedKey> keys, Origin origin) {
+    }
+
+    /** {@code RECORD KEY} と {@code ALTERNATE RECORD KEY} を読んだ途中の形。 */
+    record SelectedKey(CobolParser.IdentifierContext name, boolean duplicates) {
     }
 
     /** 環境部の {@code SELECT} 句を読む。 */
@@ -142,6 +170,7 @@ public record FileDescription(String name, String ddName, Organization organizat
         Access access = Access.SEQUENTIAL;
         CobolParser.IdentifierContext status = null;
         CobolParser.IdentifierContext relativeKey = null;
+        List<SelectedKey> keys = new ArrayList<>();
         for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
             if (clause.ORGANIZATION() != null) {
                 organization = organizationOf(clause);
@@ -155,15 +184,17 @@ public record FileDescription(String name, String ddName, Organization organizat
                 status = clause.identifier();
             } else if (clause.RELATIVE() != null) {
                 relativeKey = clause.identifier();
+            } else if (clause.ALTERNATE() != null) {
+                keys.add(new SelectedKey(clause.identifier(), clause.DUPLICATES() != null));
             } else if (clause.RECORD() != null) {
-                diagnostics.add(new Diagnostic(origin,
-                        "RECORD KEY is not supported yet; INDEXED files are the next increment"));
+                // 主鍵はいちばん前に置く。副鍵の番号は書かれた順である
+                keys.add(0, new SelectedKey(clause.identifier(), false));
             } else if (clause.RECORDING() != null) {
                 format = recordingOf(clause.IDENTIFIER().getText(), format, origin, diagnostics);
             }
         }
         return new Selected(name, ddName, organization, format, access, entry.OPTIONAL() != null,
-                status, relativeKey, origin);
+                status, relativeKey, keys, origin);
     }
 
     private static Organization organizationOf(CobolParser.SelectClauseContext clause) {
@@ -254,12 +285,16 @@ public record FileDescription(String name, String ddName, Organization organizat
             if (one.relativeKey() != null && relativeKey == null) {
                 continue;
             }
-            if (!checkOrganization(one, relativeKey, diagnostics)) {
+            List<RecordKey> keys = recordKeysOf(one, area, resolver, diagnostics);
+            if (keys == null) {
+                continue;
+            }
+            if (!checkOrganization(one, relativeKey, keys, diagnostics)) {
                 continue;
             }
             if (files.putIfAbsent(one.name(),
                     new FileDescription(one.name(), one.ddName(), one.organization(), format,
-                            one.access(), status, one.optional(), relativeKey, area, length,
+                            one.access(), status, one.optional(), relativeKey, keys, area, length,
                             varying, one.origin())) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }
@@ -298,26 +333,65 @@ public record FileDescription(String name, String ddName, Organization organizat
     }
 
     /**
+     * 索引編成の鍵 (要件 FR-100)。
+     *
+     * <p>鍵は<b>その {@code FD} のレコードの中になければならない</b>。レコードの外にある項目を
+     * 鍵と言われても、書き出したバイト列のどこを見ればよいのか決まらない。
+     *
+     * @return 誤りがあれば {@code null}
+     */
+    private static List<RecordKey> recordKeysOf(Selected one, List<DataItem> area,
+                                                ReferenceResolver resolver,
+                                                List<Diagnostic> diagnostics) {
+        List<RecordKey> keys = new ArrayList<>();
+        for (SelectedKey selected : one.keys()) {
+            DataReference key = resolver.resolve(selected.name());
+            if (key == null) {
+                return null;
+            }
+            if (!area.contains(key.item().record())) {
+                diagnostics.add(new Diagnostic(one.origin(), "a record key must be inside the "
+                        + "record area of " + one.name() + ": " + key.item().name()));
+                return null;
+            }
+            if (key.constantOffset().isEmpty() || key.constantLength().isEmpty()) {
+                diagnostics.add(new Diagnostic(one.origin(),
+                        "a record key must have a fixed position and length"));
+                return null;
+            }
+            keys.add(new RecordKey(key, selected.duplicates()));
+        }
+        return keys;
+    }
+
+    /**
      * 編成とアクセス様式と鍵の組み合わせを検査する (要件 FR-100, FR-101)。
      *
      * <p>組み合わせには<b>成り立たないもの</b>がある。順編成に番号で引く鍵はないし、
      * 鍵なしで乱アクセスはできない。
      */
     private static boolean checkOrganization(Selected one, DataReference relativeKey,
-                                             List<Diagnostic> diagnostics) {
+                                             List<RecordKey> keys, List<Diagnostic> diagnostics) {
         Origin origin = one.origin();
-        if (one.organization() == Organization.INDEXED) {
-            diagnostics.add(new Diagnostic(origin,
-                    "ORGANIZATION INDEXED is not supported yet"));
-            return false;
-        }
         boolean relative = one.organization() == Organization.RELATIVE;
+        boolean indexed = one.organization() == Organization.INDEXED;
         if (!relative && relativeKey != null) {
             diagnostics.add(new Diagnostic(origin,
                     "RELATIVE KEY requires ORGANIZATION IS RELATIVE"));
             return false;
         }
-        if (!relative && one.access().isKeyed()) {
+        if (!indexed && !keys.isEmpty()) {
+            diagnostics.add(new Diagnostic(origin,
+                    "RECORD KEY requires ORGANIZATION IS INDEXED"));
+            return false;
+        }
+        if (indexed && keys.isEmpty()) {
+            // 索引編成は鍵でしか引けない。鍵がなければ何も引けない
+            diagnostics.add(new Diagnostic(origin,
+                    "ORGANIZATION IS INDEXED requires a RECORD KEY"));
+            return false;
+        }
+        if (!relative && !indexed && one.access().isKeyed()) {
             diagnostics.add(new Diagnostic(origin, "ACCESS MODE " + one.access()
                     + " requires a keyed organization"));
             return false;

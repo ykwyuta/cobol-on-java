@@ -534,8 +534,9 @@ public sealed interface Statement {
      * @param atEnd    {@code AT END} の文。指定がなければ空
      * @param notAtEnd {@code NOT AT END} の文。指定がなければ空
      */
-    record Read(FileDescription file, boolean next, Move into, List<Statement> atEnd,
-                List<Statement> notAtEnd, KeyCheck keyCheck, Origin origin) implements Statement {
+    record Read(FileDescription file, boolean next, int keyIndex, Move into,
+                List<Statement> atEnd, List<Statement> notAtEnd, KeyCheck keyCheck, Origin origin)
+            implements Statement {
 
         public Read {
             atEnd = List.copyOf(atEnd);
@@ -598,11 +599,12 @@ public sealed interface Statement {
      * <p>レコードを<b>読まない</b>。指定した鍵との関係を満たす最初のレコードへ位置を合わせ、
      * そのあとの順次読み出しがそこから始まる。
      *
+     * @param keyIndex どの索引を使うか。{@code 0} が主鍵、{@code 1} 以降が副鍵
      * @param key      比べる鍵の項目
      * @param relation {@code KEY IS} に書いた関係。省略時は等号
      */
-    record Start(FileDescription file, DataReference key, KeyRelation relation, KeyCheck keyCheck,
-                 Origin origin) implements Statement {
+    record Start(FileDescription file, int keyIndex, DataReference key, KeyRelation relation,
+                 KeyCheck keyCheck, Origin origin) implements Statement {
     }
 
     /**

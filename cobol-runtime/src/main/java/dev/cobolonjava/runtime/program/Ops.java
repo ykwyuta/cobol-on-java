@@ -8,7 +8,9 @@ import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.DataSet;
 import dev.cobolonjava.runtime.file.FileStatus;
+import dev.cobolonjava.runtime.file.IndexedDataSet;
 import dev.cobolonjava.runtime.file.KeyRelation;
+import dev.cobolonjava.runtime.file.KeyedDataSet;
 import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.RecordFormat;
@@ -318,6 +320,83 @@ public final class Ops {
     }
 
     /**
+     * 索引編成のファイルを開く (要件 FR-100, FR-101)。
+     *
+     * <p>鍵の場所を渡す。{@code keys} は 3 つずつの組であり、位置・長さ・重複を許すかの順に
+     * 並ぶ。先頭の組が主鍵である。
+     */
+    public static byte[] openIndexed(ProgramContext context, String name, String ddName, int mode,
+                                     int format, int recordLength, boolean optional, int[] keys) {
+        List<IndexedDataSet.Key> described = new java.util.ArrayList<>();
+        for (int at = 0; at + 2 < keys.length; at += 3) {
+            described.add(new IndexedDataSet.Key(keys[at], keys[at + 1], keys[at + 2] != 0));
+        }
+        return status(context, context.file(name, ddName, RecordFormat.values()[format],
+                recordLength, described).open(OpenMode.values()[mode], optional));
+    }
+
+    /**
+     * 鍵で読む (要件 FR-101)。索引編成だけである。
+     *
+     * <p>鍵の値は<b>レコード領域の中にある</b>。プログラムが鍵の項目へ入れてから読む。
+     *
+     * @param keyIndex {@code 0} が主鍵、{@code 1} 以降が副鍵の並び順
+     */
+    public static byte[] readKey(ProgramContext context, String name, String ddName, int keyIndex,
+                                 Storage storage, int keyOffset, int keyLength, int offset,
+                                 int length) {
+        IndexedDataSet file = indexed(context, name, ddName);
+        byte[] record = new byte[length];
+        String status = file.readKey(keyIndex, read(storage, keyOffset, keyLength), record);
+        if (FileStatus.succeeded(status)) {
+            int copied = file.attributes().format() == RecordFormat.VARIABLE
+                    ? file.lastLength()
+                    : length;
+            storage.view(offset, copied).setBytes(Arrays.copyOf(record, copied));
+        }
+        return status(context, status);
+    }
+
+    /** 鍵で引いて書く (要件 FR-101)。鍵はレコードの中にある。 */
+    public static byte[] writeKey(ProgramContext context, String name, String ddName,
+                                  Storage storage, int offset, int length, int minimum,
+                                  int maximum) {
+        int actual = clamp(length, minimum, maximum);
+        return status(context, lengthChecked(
+                indexed(context, name, ddName).writeKey(read(storage, offset, actual)),
+                actual, length));
+    }
+
+    /** 鍵で引いて書き換える (要件 FR-101)。 */
+    public static byte[] rewriteKey(ProgramContext context, String name, String ddName,
+                                    Storage storage, int offset, int length, int minimum,
+                                    int maximum) {
+        int actual = clamp(length, minimum, maximum);
+        return status(context, lengthChecked(
+                indexed(context, name, ddName).rewriteKey(read(storage, offset, actual)),
+                actual, length));
+    }
+
+    /** 鍵で引いて消す (要件 FR-101)。 */
+    public static byte[] deleteKey(ProgramContext context, String name, String ddName,
+                                   Storage storage, int keyOffset, int keyLength) {
+        return status(context, indexed(context, name, ddName)
+                .deleteKey(read(storage, keyOffset, keyLength)));
+    }
+
+    /** 鍵で位置だけを決める (要件 FR-101)。 */
+    public static byte[] startKey(ProgramContext context, String name, String ddName,
+                                  int keyIndex, Storage storage, int keyOffset, int keyLength,
+                                  int relation) {
+        return status(context, indexed(context, name, ddName).start(keyIndex,
+                read(storage, keyOffset, keyLength), KeyRelation.values()[relation]));
+    }
+
+    private static IndexedDataSet indexed(ProgramContext context, String name, String ddName) {
+        return (IndexedDataSet) context.file(name, ddName);
+    }
+
+    /**
      * 番号で読む (要件 FR-101)。相対編成だけである。
      *
      * @param number 相対レコード番号 (1 起点)
@@ -353,9 +432,9 @@ public final class Ops {
                 actual, length));
     }
 
-    /** 直前に読んだレコードを消す (要件 FR-102)。 */
+    /** 直前に読んだレコードを消す (要件 FR-102)。鍵で引く編成だけである。 */
     public static byte[] delete(ProgramContext context, String name, String ddName) {
-        return status(context, relative(context, name, ddName).delete());
+        return status(context, ((KeyedDataSet) context.file(name, ddName)).delete());
     }
 
     /** 番号を指定して消す (要件 FR-101)。 */

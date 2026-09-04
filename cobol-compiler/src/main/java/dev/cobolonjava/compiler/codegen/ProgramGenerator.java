@@ -1060,15 +1060,24 @@ public final class ProgramGenerator {
             int format = file.format().ordinal();
             int length = file.recordLength();
             boolean optional = file.optional();
+            boolean indexed = file.organization() == Organization.INDEXED;
             body.add(() -> {
                 emitFileName(file);
                 push(mode);
-                push(organization);
+                if (!indexed) {
+                    push(organization);
+                }
                 push(format);
                 push(length);
                 run.visitInsn(optional ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "open",
-                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;IIIIZ)[B", false);
+                if (indexed) {
+                    emitKeyPositions(file);
+                }
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS,
+                        indexed ? "openIndexed" : "open",
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;II"
+                                + (indexed ? "" : "I") + "IZ" + (indexed ? "[I" : "") + ")[B",
+                        false);
                 status.run();
             });
         }
@@ -1111,9 +1120,20 @@ public final class ProgramGenerator {
             return;
         }
         boolean byKey = keyed(file, statement.next());
-        Runnable key = byKey ? planKeyValue(file.relativeKey(), statement.origin()) : null;
-        if (byKey && key == null) {
-            return;
+        boolean indexed = file.organization() == Organization.INDEXED;
+        Runnable key = null;
+        Runnable recordOffset = null;
+        if (byKey && indexed) {
+            key = planRecordKey(file, statement.keyIndex(), statement.origin());
+            recordOffset = planOffset(areaOf(file, statement.origin()), statement.origin());
+            if (key == null || recordOffset == null) {
+                return;
+            }
+        } else if (byKey) {
+            key = planKeyValue(file.relativeKey(), statement.origin());
+            if (key == null) {
+                return;
+            }
         }
         // 順次読みでは読んでみるまで番号が決まらない。読めた番号を鍵の項目へ返す
         Runnable number = !byKey && file.organization() == Organization.RELATIVE
@@ -1129,16 +1149,30 @@ public final class ProgramGenerator {
         List<Runnable> otherwise = planStatements(onInvalidOf(statement.keyCheck(), false));
         int slot = nextLocal++;
         int length = file.recordLength();
+        Runnable keyArguments = key;
+        Runnable offset = recordOffset;
+        int keyIndex = statement.keyIndex();
         body.add(() -> {
             emitFileName(file);
-            if (byKey) {
-                key.run();
+            if (byKey && indexed) {
+                // 鍵の値はレコード領域の中にある。位置と長さを渡して読ませる
+                push(keyIndex);
+                keyArguments.run();
+                offset.run();
+                push(length);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readKey",
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;IL" + STORAGE
+                                + ";IIII)[B", false);
+            } else {
+                if (byKey) {
+                    keyArguments.run();
+                }
+                area.run();
+                push(length);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, byKey ? "readAt" : "read",
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
+                                + (byKey ? "I" : "") + "L" + STORAGE + ";II)[B", false);
             }
-            area.run();
-            push(length);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, byKey ? "readAt" : "read",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
-                            + (byKey ? "I" : "") + "L" + STORAGE + ";II)[B", false);
             run.visitVarInsn(Opcodes.ASTORE, slot);
             run.visitVarInsn(Opcodes.ALOAD, slot);
             status.run();
@@ -1190,6 +1224,30 @@ public final class ProgramGenerator {
         loadCodePage();
         run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, test, "([B" + CODE_PAGE + ")Z", false);
         run.visitJumpInsn(jump, target);
+    }
+
+    /**
+     * 索引編成の鍵の場所を積む (要件 FR-101)。
+     *
+     * <p>積むのは<b>記憶域・位置・長さ</b>である。鍵の値はレコード領域の中にあり、
+     * プログラムがそこへ入れてから読む。
+     */
+    private Runnable planRecordKey(FileDescription file, int keyIndex, Origin origin) {
+        if (keyIndex < 0 || keyIndex >= file.keys().size()) {
+            report(origin, "no such key on " + file.name());
+            return null;
+        }
+        DataReference key = file.keys().get(keyIndex).reference();
+        Runnable address = planAddress(key, origin);
+        OptionalInt length = lengthOf(key, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        int size = length.getAsInt();
+        return () -> {
+            address.run();
+            push(size);
+        };
     }
 
     /** 数値項目の値を {@code int} として積む。相対レコード番号とレコード長に使う。 */
@@ -1263,25 +1321,33 @@ public final class ProgramGenerator {
         if (status == null || area == null || length == null) {
             return;
         }
+        boolean indexed = file.organization() == Organization.INDEXED;
         boolean byKey = file.access().isKeyed();
-        Runnable key = byKey ? planKeyValue(file.relativeKey(), origin) : null;
-        if (byKey && key == null) {
+        // 索引編成の鍵はレコードの中にある。渡すものは順アクセスと変わらない
+        Runnable key = byKey && !indexed ? planKeyValue(file.relativeKey(), origin) : null;
+        if (byKey && !indexed && key == null) {
             return;
         }
         if (from != null) {
             planMove(from, body);
         }
+        String entry = verb;
+        if (byKey) {
+            entry = indexed ? verb + "Key" : verb + "At";
+        }
+        String called = entry;
+        boolean withNumber = byKey && !indexed;
         Runnable call = () -> {
             emitFileName(file);
-            if (byKey) {
+            if (withNumber) {
                 key.run();
             }
             area.run();
             length.run();
             emitLengthBounds(file, record);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, byKey ? verb + "At" : verb,
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + (byKey ? "I" : "")
-                            + "L" + STORAGE + ";IIII)[B", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, called,
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
+                            + (withNumber ? "I" : "") + "L" + STORAGE + ";IIII)[B", false);
         };
         planKeyedCall(call, status, keyCheck, body);
     }
@@ -1299,19 +1365,30 @@ public final class ProgramGenerator {
         if (status == null) {
             return;
         }
+        boolean indexed = file.organization() == Organization.INDEXED;
         boolean byKey = file.access().isKeyed();
-        Runnable key = byKey ? planKeyValue(file.relativeKey(), statement.origin()) : null;
-        if (byKey && key == null) {
-            return;
+        Runnable key = null;
+        if (byKey) {
+            key = indexed
+                    ? planRecordKey(file, 0, statement.origin())
+                    : planKeyValue(file.relativeKey(), statement.origin());
+            if (key == null) {
+                return;
+            }
         }
+        Runnable keyArguments = key;
         planKeyedCall(() -> {
             emitFileName(file);
             if (byKey) {
-                key.run();
+                keyArguments.run();
             }
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, byKey ? "deleteAt" : "delete",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + (byKey ? "I" : "")
-                            + ")[B", false);
+            String entry = byKey ? (indexed ? "deleteKey" : "deleteAt") : "delete";
+            String arguments = byKey
+                    ? (indexed ? "L" + STORAGE + ";II" : "I")
+                    : "";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, entry,
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + arguments + ")[B",
+                    false);
         }, status, statement.keyCheck(), body);
     }
 
@@ -1324,17 +1401,25 @@ public final class ProgramGenerator {
         FileDescription file = statement.file();
         Runnable status = planFileStatus(file, statement.origin(), false,
                 statement.keyCheck() != null);
-        Runnable key = planKeyValue(statement.key(), statement.origin());
+        boolean indexed = file.organization() == Organization.INDEXED;
+        Runnable key = indexed
+                ? planRecordKey(file, statement.keyIndex(), statement.origin())
+                : planKeyValue(statement.key(), statement.origin());
         if (status == null || key == null) {
             return;
         }
         int relation = statement.relation().ordinal();
+        int keyIndex = statement.keyIndex();
         planKeyedCall(() -> {
             emitFileName(file);
+            if (indexed) {
+                push(keyIndex);
+            }
             key.run();
             push(relation);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "start",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;II)[B", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, indexed ? "startKey" : "start",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
+                            + (indexed ? "IL" + STORAGE + ";III" : "II") + ")[B", false);
         }, status, statement.keyCheck(), body);
     }
 
@@ -1439,6 +1524,31 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
                     "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
         };
+    }
+
+    /**
+     * 索引編成の鍵の場所を積む (要件 FR-100)。
+     *
+     * <p>位置・長さ・重複を許すかの 3 つ組を並べた {@code int[]} である。先頭の組が主鍵で、
+     * 以降が副鍵である。鍵の場所はファイルではなくプログラムが決めるので、開くときに渡す。
+     */
+    private void emitKeyPositions(FileDescription file) {
+        List<FileDescription.RecordKey> keys = file.keys();
+        push(keys.size() * 3);
+        run.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_INT);
+        for (int i = 0; i < keys.size(); i++) {
+            FileDescription.RecordKey key = keys.get(i);
+            emitIntElement(i * 3, key.offset());
+            emitIntElement(i * 3 + 1, key.length());
+            emitIntElement(i * 3 + 2, key.duplicates() ? 1 : 0);
+        }
+    }
+
+    private void emitIntElement(int index, int value) {
+        run.visitInsn(Opcodes.DUP);
+        push(index);
+        push(value);
+        run.visitInsn(Opcodes.IASTORE);
     }
 
     /** 実行時の入口とファイル名・DD 名を積む。どの入出力にも要る前置きである。 */

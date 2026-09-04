@@ -9,7 +9,7 @@ package dev.cobolonjava.runtime.file;
  * <p>どの編成かは翻訳時に分かっている。生成コードは編成に合った入口を呼ぶので、
  * 実行時に編成で分岐することはない。
  */
-public sealed interface DataSet permits SequentialDataSet, RelativeDataSet {
+public sealed interface DataSet permits SequentialDataSet, KeyedDataSet {
 
     /** レコードの切れ目とコードページ。 */
     DataSetAttributes attributes();

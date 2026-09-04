@@ -431,8 +431,8 @@ class FileIoRelativeTest {
     }
 
     @Test
-    @DisplayName("索引編成はまだ実装していない (FR-100)")
-    void indexedIsNotImplementedYet() {
+    @DisplayName("索引編成には RECORD KEY が要る (FR-100)")
+    void indexedNeedsARecordKey() {
         assertTrue(diagnostics(source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. KSDS.",
@@ -446,6 +446,6 @@ class FileIoRelativeTest {
                 "FD  K-FILE.",
                 "01  K-REC PIC X(3).",
                 "PROCEDURE DIVISION.",
-                "    STOP RUN.")).toString().contains("ORGANIZATION INDEXED is not supported yet"));
+                "    STOP RUN.")).toString().contains("requires a RECORD KEY"));
     }
 }

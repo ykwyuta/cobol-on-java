@@ -34,7 +34,7 @@ tokens {
     CURRENCY, DECIMAL_POINT,
     INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
-    RELATIVE, RANDOM, DYNAMIC,
+    RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
 
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
@@ -148,6 +148,7 @@ selectClause
     | FILE STATUS IS? identifier
     | RECORDING MODE? IS? IDENTIFIER
     | RELATIVE KEY? IS? identifier
+    | ALTERNATE RECORD? KEY? IS? identifier (WITH? DUPLICATES)?
     | RECORD KEY? IS? identifier
     ;
 
@@ -659,7 +660,7 @@ closeStatement
 
 // AT END はファイルの終わりに来たときだけ通る
 readStatement
-    : READ IDENTIFIER NEXT? RECORD? (INTO identifier)?
+    : READ IDENTIFIER NEXT? RECORD? (INTO into=identifier)? (KEY IS? key=identifier)?
       atEndPhrase? notAtEndPhrase? invalidKeyPhrase? notInvalidKeyPhrase? END_READ?
     ;
 

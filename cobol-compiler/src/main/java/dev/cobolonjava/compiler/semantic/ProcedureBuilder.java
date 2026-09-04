@@ -4,6 +4,7 @@ import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
 import dev.cobolonjava.runtime.file.KeyRelation;
+import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.OpenMode;
 import java.util.ArrayList;
 import java.util.List;
@@ -2225,8 +2226,8 @@ public final class ProcedureBuilder {
             return null;
         }
         Statement.Move into = null;
-        if (context.identifier() != null) {
-            into = areaMove(file, context.identifier(), origin);
+        if (context.into != null) {
+            into = areaMove(file, context.into, origin);
             if (into == null) {
                 return null;
             }
@@ -2243,13 +2244,48 @@ public final class ProcedureBuilder {
         List<Statement> notAtEnd = context.notAtEndPhrase() == null
                 ? List.of()
                 : listOf(context.notAtEndPhrase().statement());
+        int keyIndex = 0;
+        if (context.key != null) {
+            if (file.organization() != Organization.INDEXED) {
+                report(origin, "READ ... KEY requires ORGANIZATION IS INDEXED: " + file.name());
+                return null;
+            }
+            keyIndex = keyIndexOf(file, context.key, origin);
+            if (keyIndex < 0) {
+                return null;
+            }
+        }
         Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
                 context.notInvalidKeyPhrase(), file, readsByKey(file, next), origin);
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
         // listOf は組み立てられなかった文を落とす。誤りは診断として残っている
-        return new Statement.Read(file, next, into, atEnd, notAtEnd, keyCheck, origin);
+        return new Statement.Read(file, next, keyIndex, into, atEnd, notAtEnd, keyCheck, origin);
+    }
+
+    /**
+     * 書かれた項目が、そのファイルの何番目の鍵か (要件 FR-100)。
+     *
+     * <p>{@code 0} が主鍵、{@code 1} 以降が {@code ALTERNATE RECORD KEY} の書かれた順である。
+     *
+     * @return 鍵でなければ {@code -1}
+     */
+    private int keyIndexOf(FileDescription file, CobolParser.IdentifierContext context,
+                           Origin origin) {
+        DataReference reference = resolver.resolve(context);
+        if (reference == null) {
+            return -1;
+        }
+        List<FileDescription.RecordKey> keys = file.keys();
+        for (int i = 0; i < keys.size(); i++) {
+            if (keys.get(i).reference().item() == reference.item()) {
+                return i;
+            }
+        }
+        report(origin, "not a RECORD KEY or ALTERNATE RECORD KEY of " + file.name() + ": "
+                + reference.item().name());
+        return -1;
     }
 
     /** その {@code READ} が鍵で引く形かどうか。動的アクセスでは {@code NEXT} の有無で決まる。 */
@@ -2355,9 +2391,20 @@ public final class ProcedureBuilder {
             report(origin, "START requires a RELATIVE or INDEXED file: " + file.name());
             return null;
         }
-        DataReference key = file.relativeKey();
+        int keyIndex = 0;
+        DataReference key = file.organization() == Organization.INDEXED
+                ? file.keys().get(0).reference()
+                : file.relativeKey();
         if (context.identifier() != null) {
-            key = resolver.resolve(context.identifier());
+            if (file.organization() == Organization.INDEXED) {
+                keyIndex = keyIndexOf(file, context.identifier(), origin);
+                if (keyIndex < 0) {
+                    return null;
+                }
+                key = file.keys().get(keyIndex).reference();
+            } else {
+                key = resolver.resolve(context.identifier());
+            }
         }
         if (key == null) {
             report(origin, "START needs a key; declare RELATIVE KEY or name one: " + file.name());
@@ -2375,7 +2422,7 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Start(file, key, relation, keyCheck, origin);
+        return new Statement.Start(file, keyIndex, key, relation, keyCheck, origin);
     }
 
     /** {@code KEY IS} の関係。等しくないものは探せない。範囲の端が決まらないからである。 */
