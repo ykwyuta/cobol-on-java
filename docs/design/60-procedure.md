@@ -191,7 +191,7 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 ## いま組み立てられる文
 
-`MOVE`、算術文 4 つ、`COMPUTE`、`IF`、`EVALUATE`、
+`MOVE`、算術文 4 つ (`DIVIDE ... REMAINDER` を含む)、`COMPUTE`、`IF`、`EVALUATE`、
 `PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、`GO TO`、`DISPLAY`、`INSPECT`、
 `STRING`、`UNSTRING`、`STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT` である。
 `MOVE` / `ADD` / `SUBTRACT` には `CORRESPONDING` を書ける。
@@ -215,6 +215,6 @@ EBCDIC では英字が数字より小さいので、ASCII と結果が変わる�
 
 コード生成は[設計 70](70-codegen.md) へ続く。
 
-1. `DIVIDE ... REMAINDER` (暫定判断 P-028)。
-2. `CALL` による副プログラムの呼び出し。
-3. `ACCEPT` と `INITIALIZE` / `SET`。
+1. `CALL` による副プログラムの呼び出し。
+2. `ACCEPT` と `INITIALIZE` / `SET`。
+3. べき乗 (`**`) の中間結果の桁数 (暫定判断 P-028)。

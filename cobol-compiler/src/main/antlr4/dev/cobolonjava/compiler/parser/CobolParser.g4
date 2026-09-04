@@ -35,7 +35,7 @@ tokens {
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
-    SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE,
+    SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE, REMAINDER,
     COMPUTE, END_COMPUTE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
@@ -605,8 +605,12 @@ multiplyStatement
       sizeErrorPhrases END_MULTIPLY?
     ;
 
+// REMAINDER の形は商と剰余を 1 つずつ取る。GIVING は省略できない
 divideStatement
-    : DIVIDE arithmeticOperand (INTO | BY) roundedOperand+ (GIVING roundedTarget+)?
+    : DIVIDE arithmeticOperand (INTO | BY) arithmeticOperand
+      GIVING roundedTarget REMAINDER roundedTarget
+      sizeErrorPhrases END_DIVIDE?
+    | DIVIDE arithmeticOperand (INTO | BY) roundedOperand+ (GIVING roundedTarget+)?
       sizeErrorPhrases END_DIVIDE?
     ;
 

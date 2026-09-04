@@ -289,6 +289,18 @@ public final class Ops {
         return value.rescale(scale, CobolRounding.TRUNCATION);
     }
 
+    /**
+     * {@code DIVIDE ... REMAINDER} の剰余 (要件 FR-044)。
+     *
+     * <p>剰余は<b>切り捨てた商</b>から求める。{@code ROUNDED} を書いても、剰余の計算に
+     * 使う商は丸めない。丸めた商から求めると、商と剰余を足し戻したときに元の値にならない。
+     *
+     * @param quotientScale 商を受け取る項目の小数桁。ここで商を切り捨てる
+     */
+    public static Decimal remainder(Decimal dividend, Decimal divisor, int quotientScale) {
+        return dividend.remainder(divisor, quotientScale);
+    }
+
     /** 除数が 0 かどうか。{@code ON SIZE ERROR} つきの除算で、割る前に見る。 */
     public static boolean isZero(Decimal value) {
         return value.isZero();

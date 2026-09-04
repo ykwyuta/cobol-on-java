@@ -270,7 +270,8 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 ## いま生成できる範囲
 
 `MOVE` の 3 種類 (英数字・数値・数字編集)、
-算術文 4 つ (`GIVING` と `ROUNDED` を含む)、`MOVE` / `ADD` / `SUBTRACT` の `CORRESPONDING`、
+算術文 4 つ (`GIVING`、`ROUNDED`、`DIVIDE ... REMAINDER` を含む)、
+`MOVE` / `ADD` / `SUBTRACT` の `CORRESPONDING`、
 `COMPUTE` (加減乗除・括弧・単項符号)、
 `IF`、`EVALUATE`、`PERFORM` (`TIMES` / `UNTIL` / `VARYING` … `AFTER` …)、
 `GO TO`、`DISPLAY`、`INSPECT`、`STRING`、`UNSTRING`、
@@ -306,8 +307,21 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 範囲外は `RangeCheckException` で止める。黙って続けないのは、範囲外の参照が
 <b>そのあとの結果を信用できなくする</b>ためである。
 
+## DIVIDE ... REMAINDER は書き込む前に両方を求める
+
+1 回の計算から 2 つの値が出る唯一の算術文である。商と剰余は<b>どちらも書き込む前に</b>
+求めて局所変数へ取る。割られる側が商の受取項目でもありうるためであり、商を先に書き込むと
+剰余が狂う。
+
+剰余は切り捨てた商から求める (`Ops.remainder`)。商に `ROUNDED` を書いても、剰余の計算に
+使う商は丸めない。丸めた商から求めると、商と剰余を足し戻したときに元の値にならない。
+
+`ON SIZE ERROR` では 0 除算が商と剰余のどちらの計算でも起きるため、`COMPUTE` と同じく
+計算をまとめて `try` で囲む。商が収まらなければ<b>剰余も書き込まない</b>。
+入らなかった商から求めた剰余に意味はない。
+
 ## 次の増分
 
 1. `GO TO ... DEPENDING ON` (暫定判断 P-029)。
 2. 部分参照の長さにデータ項目を書いた形 (暫定判断 P-027)。
-3. `DIVIDE ... REMAINDER` (暫定判断 P-028)。
+3. `CALL` による副プログラムの呼び出し。

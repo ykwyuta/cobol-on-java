@@ -144,6 +144,9 @@ public final class ProcedureBuilder {
         if (statement instanceof Statement.ArithmeticGroup group) {
             return sizeErrorStatements(group.sizeError());
         }
+        if (statement instanceof Statement.DivideRemainder divide) {
+            return sizeErrorStatements(divide.sizeError());
+        }
         if (statement instanceof Statement.Compute compute) {
             return sizeErrorStatements(compute.sizeError());
         }
@@ -1049,7 +1052,10 @@ public final class ProcedureBuilder {
      */
     private Statement divideOf(CobolParser.DivideStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        List<Operand> first = operandsOf(List.of(context.arithmeticOperand()), origin);
+        if (context.REMAINDER() != null) {
+            return divideRemainderOf(context, origin);
+        }
+        List<Operand> first = operandsOf(List.of(context.arithmeticOperand(0)), origin);
         boolean into = context.INTO() != null;
         if (context.GIVING() == null) {
             if (!into) {
@@ -1192,6 +1198,39 @@ public final class ProcedureBuilder {
 
     private static boolean isNumericElementary(DataReference reference) {
         return reference.item().isElementary() && DataCategory.of(reference).isNumeric();
+    }
+
+    /**
+     * {@code DIVIDE ... REMAINDER}。
+     *
+     * <p>{@code INTO} と {@code BY} で割る側と割られる側が入れ替わるのはほかの形と同じである。
+     */
+    private Statement divideRemainderOf(CobolParser.DivideStatementContext context,
+                                        Origin origin) {
+        Operand first = operandOf(context.arithmeticOperand(0), origin);
+        Operand second = operandOf(context.arithmeticOperand(1), origin);
+        Statement.Arithmetic.Target quotient = targetOf(context.roundedTarget(0));
+        Statement.Arithmetic.Target remainder = targetOf(context.roundedTarget(1));
+        if (first == null || second == null || quotient == null || remainder == null) {
+            return null;
+        }
+        for (Statement.Arithmetic.Target target : List.of(quotient, remainder)) {
+            if (!DataCategory.of(target.reference()).isNumeric()) {
+                report(origin, "an arithmetic statement requires a numeric receiver: "
+                        + describe(target.reference()));
+                return null;
+            }
+        }
+        boolean into = context.INTO() != null;
+        return new Statement.DivideRemainder(into ? second : first, into ? first : second,
+                quotient, remainder, sizeErrorOf(context.sizeErrorPhrases()), origin);
+    }
+
+    private Statement.Arithmetic.Target targetOf(CobolParser.RoundedTargetContext context) {
+        DataReference reference = resolver.resolve(context.identifier());
+        return reference == null
+                ? null
+                : new Statement.Arithmetic.Target(reference, context.ROUNDED() != null);
     }
 
     private Statement arithmetic(Statement.Arithmetic.Operator fold, List<Operand> operands,

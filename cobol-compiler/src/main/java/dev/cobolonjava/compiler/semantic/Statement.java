@@ -131,6 +131,30 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code DIVIDE ... REMAINDER}。
+     *
+     * <p>ほかの算術文と違い、<b>1 回の計算から 2 つの値が出る</b>。商と剰余は
+     * 別々の受取項目へ入り、それぞれに {@code ROUNDED} を書ける。
+     *
+     * <p>剰余は<b>切り捨てた商</b>から求める。商に {@code ROUNDED} を書いても、
+     * 剰余の計算に使う商は丸めない。
+     *
+     * @param dividend  割られる側
+     * @param divisor   割る側
+     * @param quotient  商の受取項目
+     * @param remainder 剰余の受取項目
+     */
+    record DivideRemainder(Operand dividend, Operand divisor, Arithmetic.Target quotient,
+                           Arithmetic.Target remainder, Arithmetic.SizeError sizeError,
+                           Origin origin) implements Statement {
+
+        /** {@code ON SIZE ERROR} の指定があるかどうか。 */
+        public boolean isChecked() {
+            return sizeError != null;
+        }
+    }
+
+    /**
      * {@code COMPUTE} 文。
      *
      * <p>ほかの算術文との違いは<b>式を取る</b>ことだけである。受取項目と

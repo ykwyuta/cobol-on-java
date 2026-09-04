@@ -263,6 +263,8 @@ public final class ProgramGenerator {
                 planArithmetic(arithmetic, body);
             } else if (statement instanceof Statement.ArithmeticGroup group) {
                 planArithmeticGroup(group, body);
+            } else if (statement instanceof Statement.DivideRemainder divide) {
+                planDivideRemainder(divide, body);
             } else if (statement instanceof Statement.Compute compute) {
                 planCompute(compute, body);
             } else if (statement instanceof Statement.If branch) {
@@ -1751,6 +1753,120 @@ public final class ProgramGenerator {
             otherwise.forEach(Runnable::run);
             run.visitLabel(end);
         });
+    }
+
+    /**
+     * {@code DIVIDE ... REMAINDER} を組み立てる。
+     *
+     * <p>商と剰余は<b>どちらも書き込む前に求める</b>。商を先に書き込むと、割られる側が
+     * 商の受取項目と同じだったときに剰余が狂う。
+     *
+     * <p>剰余は切り捨てた商から求める。商に {@code ROUNDED} を書いても、剰余の計算に使う
+     * 商は丸めない。丸めた商から求めると、商と剰余を足し戻したときに元の値にならない。
+     */
+    private void planDivideRemainder(Statement.DivideRemainder statement, List<Runnable> body) {
+        Runnable dividend = planSourceDecimal(statement.dividend(), statement.origin());
+        Runnable divisor = planSourceDecimal(statement.divisor(), statement.origin());
+        Picture quotientPicture = statement.quotient().reference().item().picture();
+        if (dividend == null || divisor == null || quotientPicture == null) {
+            return;
+        }
+        int quotientScale = quotientPicture.scale();
+        String rounding = statement.quotient().rounded()
+                ? "NEAREST_AWAY_FROM_ZERO"
+                : "TRUNCATION";
+
+        int quotient = nextLocal++;
+        int remainder = nextLocal++;
+        Runnable compute = () -> {
+            dividend.run();
+            divisor.run();
+            push(quotientScale);
+            loadRounding(rounding);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "divide",
+                    "(" + DECIMAL + DECIMAL + "I" + Type.getDescriptor(CobolRounding.class) + ")"
+                            + DECIMAL, false);
+            run.visitVarInsn(Opcodes.ASTORE, quotient);
+            dividend.run();
+            divisor.run();
+            push(quotientScale);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "remainder",
+                    "(" + DECIMAL + DECIMAL + "I)" + DECIMAL, false);
+            run.visitVarInsn(Opcodes.ASTORE, remainder);
+        };
+
+        if (!statement.isChecked()) {
+            Runnable storeQuotient = planStore(statement.quotient().reference(),
+                    () -> run.visitVarInsn(Opcodes.ALOAD, quotient), rounding, statement.origin());
+            Runnable storeRemainder = planStore(statement.remainder().reference(),
+                    () -> run.visitVarInsn(Opcodes.ALOAD, remainder),
+                    statement.remainder().rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION",
+                    statement.origin());
+            if (storeQuotient == null || storeRemainder == null) {
+                return;
+            }
+            body.add(() -> {
+                compute.run();
+                storeQuotient.run();
+                storeRemainder.run();
+            });
+            return;
+        }
+        planCheckedDivideRemainder(statement, compute, quotient, remainder, body);
+    }
+
+    /**
+     * {@code ON SIZE ERROR} つきの {@code DIVIDE ... REMAINDER}。
+     *
+     * <p>0 除算は商と剰余の<b>どちらの計算でも</b>起きる。計算をまとめて {@code try} で囲み、
+     * ランタイムが投げる {@code DecimalDivideException} を条件へ読み替える。
+     *
+     * <p>商が受取項目に収まらなければ<b>剰余も書き込まない</b>。入らなかった商から求めた
+     * 剰余に意味はないためである。剰余だけが収まらなければ、剰余だけが変わらずに残る。
+     */
+    private void planCheckedDivideRemainder(Statement.DivideRemainder statement, Runnable compute,
+                                            int quotient, int remainder, List<Runnable> body) {
+        int flag = nextLocal++;
+        Runnable storeQuotient = planCheckedStore(statement.quotient(), quotient, flag,
+                statement.origin());
+        Runnable storeRemainder = planCheckedStore(statement.remainder(), remainder, flag,
+                statement.origin());
+        if (storeQuotient == null || storeRemainder == null) {
+            return;
+        }
+        List<Runnable> operations = List.of(() -> {
+            Label start = new Label();
+            Label caught = new Label();
+            Label handler = new Label();
+            Label computed = new Label();
+            run.visitTryCatchBlock(start, caught, handler,
+                    Type.getInternalName(DecimalDivideException.class));
+            run.visitLabel(start);
+            compute.run();
+            run.visitLabel(caught);
+            run.visitJumpInsn(Opcodes.GOTO, computed);
+            run.visitLabel(handler);
+            run.visitInsn(Opcodes.POP);
+            run.visitInsn(Opcodes.ICONST_1);
+            run.visitVarInsn(Opcodes.ISTORE, flag);
+            run.visitInsn(Opcodes.ACONST_NULL);
+            run.visitVarInsn(Opcodes.ASTORE, quotient);
+            run.visitInsn(Opcodes.ACONST_NULL);
+            run.visitVarInsn(Opcodes.ASTORE, remainder);
+            run.visitLabel(computed);
+
+            // 0 除算なら受取項目には触れない
+            Label stored = new Label();
+            run.visitVarInsn(Opcodes.ILOAD, flag);
+            run.visitJumpInsn(Opcodes.IFNE, stored);
+            storeQuotient.run();
+            // 商が収まらなければ剰余も書かない。入らなかった商から求めた剰余に意味はない
+            run.visitVarInsn(Opcodes.ILOAD, flag);
+            run.visitJumpInsn(Opcodes.IFNE, stored);
+            storeRemainder.run();
+            run.visitLabel(stored);
+        });
+        planSizeErrorBranch(operations, statement.sizeError(), flag, body);
     }
 
     /**
