@@ -244,8 +244,34 @@ java -cp "cobol-compiler/target/*;cobol-runtime/target/*" dev.cobolonjava.compil
 
 ---
 
-## 6. まとめ
+## 6. ファイル入出力（順編成・固定長レコード）の扱い
+
+順編成データセット（ファイル）への書き込みおよび読み込みの基本フローです。
+
+### 構成のポイント
+
+* **`SELECT ... ASSIGN TO DDNAME`**: 指定した DD 名は、実行時に [`DataSetCatalog`](file:///d:/workspace/cobol-on-java/cobol-runtime/src/main/java/dev/cobolonjava/runtime/file/DataSetCatalog.java) によりカレントディレクトリの同名ファイル（`./DDNAME`）と自動的に対応付けられます。
+* **EBCDIC 生バイト格納**: データセットの中身は IBM ホストと同様に EBCDIC（IBM-1047）生バイトとして書き出されます。
+* **属性サイドカーファイル (`DDNAME.meta`)**: レコード様式（`recfm=F`）、レコード長（`lrecl`）、文字コードが自動でメタデータファイルとして記録され、再読込時に検証されます。
+
+---
+
+## 7. すぐに実行できるデモ環境
+
+本リポジトリには、Windows 環境ですぐに実行可能なデモ一式が配置されています。
+
+* [**`demo/001/` (複数プログラム CALL 連携デモ)**](file:///d:/workspace/cobol-on-java/demo/001/README.md)
+  * 主プログラムから副プログラムへの `CALL ... USING` および `LINKAGE SECTION` による計算処理。
+  * 実行用バッチ: [`demo/001/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/001/run_demo.bat)
+* [**`demo/002/` (ファイル入出力・順編成データセットデモ)**](file:///d:/workspace/cobol-on-java/demo/002/README.md)
+  * 顧客データファイル (`CUSTFILE`) へのレコード書き込み (`WRITE-DATA.cbl`) と読み込み・集計表示 (`READ-DATA.cbl`)。
+  * 実行用バッチ: [`demo/002/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/002/run_demo.bat)
+
+---
+
+## 8. まとめ
 
 * **単一/複数コンパイル**: `dev.cobolonjava.compiler.Main` に `-d <出力ディレクトリ>` を指定して実行します。
 * **`CALL` 連動**: プログラム名は `cobol.generated.<PROGRAM_NAME>` クラス名に自動変換され、実行時にクラスパス上から動的に解決されます。
+* **ファイル入出力**: `SELECT ... ASSIGN TO <DD名>` により EBCDIC 生バイトファイルと `.meta` サイドカーが生成・管理されます。
 * **実行環境**: 生成されたクラスの出力フォルダと `cobol-runtime` を `-cp` (クラスパス) に追加し、主プログラムのクラスを起動します。
