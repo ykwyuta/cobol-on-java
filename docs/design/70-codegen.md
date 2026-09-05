@@ -278,6 +278,7 @@ cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free
 `SEARCH` / `SEARCH ALL`、`CALL` / `CANCEL`、
 `OPEN` / `READ` / `WRITE` / `REWRITE` / `DELETE` / `START` / `CLOSE`
 (`INTO` / `FROM` / `NEXT` / `AT END` / `NOT AT END` / `INVALID KEY` / `NOT INVALID KEY`)、
+`SORT` / `MERGE` / `RELEASE` / `RETURN`、
 `STOP RUN` / `GOBACK`、`CONTINUE` / `EXIT`、算術文の `ON SIZE ERROR` と `ON OVERFLOW`、
 `CALL` の `ON EXCEPTION`。
 定数・図形定数・`ALL` の送出。
@@ -344,6 +345,23 @@ fileSucceeded ? → INTO の転記 → NOT AT END と NOT INVALID KEY の文
 索引編成の鍵は<b>レコード領域の中のバイト列</b>である。したがって索引編成では
 記憶域・位置・長さの 3 つを渡す。鍵の場所は `RECORD KEY` に書かれており、
 これも翻訳時に決まる。
+
+## 宣言節は入出力のたびに試される (FR-105)
+
+入出力の状態コードは<b>局所変数へ取る</b>。始末に 1 度、分岐にもう 1 度使うためである。
+そのあと 3 つのうち 1 つを出す。
+
+- `FILE STATUS` が書かれていれば、その項目へ転記する
+- 宣言節が受け持っていれば、受け止め手のない異常のときにその節を動かす
+- どちらもなければ `Ops.checkFile` を呼ぶ。異常なら止まる (要件 FR-104)
+
+受け持ちの決め方は 2 つある。<b>ファイル名で指定したもの</b>が先で、なければ
+<b>開き方で指定したもの</b>を見る。開き方は `OPEN` では書いてあるとおりに決まるので
+翻訳時に選べるが、ほかの文では実行時のものを見るしかない。`Ops.fileMode` で問い合わせて
+比べる。
+
+節を動かすのは `performRange` である。終われば戻ってくるので、宣言節を抜けたあとは
+入出力文の次から続く。
 
 ## CALL はクラスローダを持ち回る
 

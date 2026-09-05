@@ -608,6 +608,60 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code SORT} 文と {@code MERGE} 文 (要件 FR-120, FR-121)。
+     *
+     * <p>やることは 3 つある。<b>溜めて、並べ替えて、配る</b>。入口はファイルか手続きのどちらか
+     * であり、出口も同じである。{@code MERGE} は入口がファイルに限られるだけで、
+     * 溜めてから並べ替えれば結果は合併と同じになる。
+     *
+     * @param work    {@code SD} で書いた整列作業ファイル
+     * @param keys    鍵。書かれた順に効く
+     * @param using   {@code USING} のファイル。入力手続きを書いていれば空
+     * @param input   {@code INPUT PROCEDURE} の節。{@code USING} を書いていれば {@code null}
+     * @param giving  {@code GIVING} のファイル。出力手続きを書いていれば空
+     * @param output  {@code OUTPUT PROCEDURE} の節。{@code GIVING} を書いていれば {@code null}
+     * @param merge   {@code MERGE} 文かどうか
+     */
+    record Sort(FileDescription work, List<SortKeySpec> keys, List<FileDescription> using,
+                Procedure input, List<FileDescription> giving, Procedure output, boolean merge,
+                Origin origin) implements Statement {
+
+        public Sort {
+            keys = List.copyOf(keys);
+            using = List.copyOf(using);
+            giving = List.copyOf(giving);
+        }
+
+        /** 鍵 1 個。 */
+        public record SortKeySpec(DataReference reference, boolean ascending) {
+        }
+
+        /** 入力手続きと出力手続き。段落の範囲である。 */
+        public record Procedure(String from, String through) {
+        }
+    }
+
+    /** {@code RELEASE} 文 (要件 FR-120)。整列作業ファイルへレコードを 1 つ渡す。 */
+    record Release(FileDescription work, DataItem record, Move from, Origin origin)
+            implements Statement {
+    }
+
+    /**
+     * {@code RETURN} 文 (要件 FR-120)。整列作業ファイルからレコードを 1 つ受け取る。
+     *
+     * <p>{@code AT END} は<b>書かなければならない</b>。整列の出口はいつか尽きるのであり、
+     * 尽きたときの行き先を書かずに済ませられない。
+     */
+    record Return(FileDescription work, Move into, List<Statement> atEnd,
+                  List<Statement> notAtEnd, Origin origin) implements Statement {
+
+        public Return {
+            atEnd = List.copyOf(atEnd);
+            notAtEnd = List.copyOf(notAtEnd);
+        }
+    }
+
+    /**
      * {@code GO TO} 文。
      *
      * <p>{@code PERFORM} と違い<b>戻ってこない</b>。段落の途中から別の段落へ移り、

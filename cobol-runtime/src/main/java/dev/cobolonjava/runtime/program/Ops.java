@@ -17,6 +17,8 @@ import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.file.RelativeDataSet;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.picture.Picture;
+import dev.cobolonjava.runtime.sort.SortKey;
+import dev.cobolonjava.runtime.sort.SortWork;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import dev.cobolonjava.runtime.verb.Arithmetic;
@@ -530,13 +532,117 @@ public final class Ops {
      */
     public static void checkFile(byte[] status, CodePage codePage, String name,
                                  boolean atEndHandled, boolean invalidKeyHandled) {
-        String text = codePage.decode(status);
-        if (FileStatus.succeeded(text)
-                || (atEndHandled && FileStatus.AT_END.equals(text))
-                || (invalidKeyHandled && FileStatus.invalidKey(text))) {
-            return;
+        if (fileFailed(status, codePage, atEndHandled, invalidKeyHandled)) {
+            throw new FileOperationException(name, codePage.decode(status));
         }
-        throw new FileOperationException(name, text);
+    }
+
+    /**
+     * 受け止め手のない異常かどうか (要件 FR-104, FR-105)。
+     *
+     * <p>{@code USE AFTER STANDARD ERROR PROCEDURE} を呼ぶかどうかの判定であり、
+     * {@code FILE STATUS} を書いていないときに異常終了させるかどうかの判定でもある。
+     * 文に受け止める句があれば、そちらへ分岐するのが正しい。
+     */
+    public static boolean fileFailed(byte[] status, CodePage codePage, boolean atEndHandled,
+                                     boolean invalidKeyHandled) {
+        String text = codePage.decode(status);
+        if (FileStatus.succeeded(text)) {
+            return false;
+        }
+        if (atEndHandled && FileStatus.AT_END.equals(text)) {
+            return false;
+        }
+        return !(invalidKeyHandled && FileStatus.invalidKey(text));
+    }
+
+    /**
+     * いまの開き方 (要件 FR-105)。
+     *
+     * <p>{@code USE ... ON INPUT} のように<b>開き方で指定した宣言節</b>が、
+     * その入出力に効くかどうかを決めるために要る。
+     *
+     * @return {@link OpenMode} の並び順。開いていなければ {@code -1}
+     */
+    public static int fileMode(ProgramContext context, String name, String ddName) {
+        OpenMode mode = context.file(name, ddName).mode();
+        return mode == null ? -1 : mode.ordinal();
+    }
+
+    // ---- 整列と合併 ----
+
+    /**
+     * 整列作業ファイルを用意する (要件 FR-120)。
+     *
+     * <p>{@code SORT} のたびに作り直す。前の整列の中身が残っていてはならない。
+     */
+    public static void sortOpen(ProgramContext context, String work, SortKey[] keys) {
+        context.sortWork(work, List.of(keys));
+    }
+
+    /** {@code RELEASE} (要件 FR-120)。レコードを 1 つ渡す。 */
+    public static void release(ProgramContext context, String work, Storage storage, int offset,
+                               int length) {
+        context.sortWork(work).release(read(storage, offset, length));
+    }
+
+    /** 並べ替える (要件 FR-120)。安定であり、鍵が等しいレコードは入れた順のまま残る。 */
+    public static void sortRecords(ProgramContext context, String work) {
+        context.sortWork(work).sort();
+    }
+
+    /**
+     * {@code RETURN} (要件 FR-120)。
+     *
+     * @return 返すものがなければ {@code false}。{@code AT END} の分岐に使う
+     */
+    public static boolean sortReturn(ProgramContext context, String work, Storage storage,
+                                     int offset, int length) {
+        byte[] record = new byte[length];
+        if (!context.sortWork(work).next(record)) {
+            return false;
+        }
+        storage.view(offset, length).setBytes(record);
+        return true;
+    }
+
+    /**
+     * {@code USING} のファイルを読み込む (要件 FR-120, FR-121)。
+     *
+     * <p>開いて全部読んで閉じるまでを行う。整列の入力にするファイルは、そのために
+     * <b>プログラムが開いてはならない</b>ことになっている。開け閉めもこちらの仕事である。
+     */
+    public static void sortUsing(ProgramContext context, String work, String name, String ddName,
+                                 int organization, int format, int recordLength) {
+        DataSet file = context.file(name, ddName, Organization.values()[organization],
+                RecordFormat.values()[format], recordLength);
+        SortWork sort = context.sortWork(work);
+        String status = file.open(OpenMode.INPUT, false);
+        if (!FileStatus.succeeded(status)) {
+            throw new FileOperationException(name, status);
+        }
+        byte[] record = new byte[recordLength];
+        while (FileStatus.succeeded(file.read(record))) {
+            sort.release(record);
+        }
+        file.close();
+    }
+
+    /** {@code GIVING} のファイルへ書き出す (要件 FR-120, FR-121)。 */
+    public static void sortGiving(ProgramContext context, String work, String name, String ddName,
+                                  int organization, int format, int recordLength) {
+        DataSet file = context.file(name, ddName, Organization.values()[organization],
+                RecordFormat.values()[format], recordLength);
+        String status = file.open(OpenMode.OUTPUT, false);
+        if (!FileStatus.succeeded(status)) {
+            throw new FileOperationException(name, status);
+        }
+        byte[] record = new byte[recordLength];
+        SortWork sort = context.sortWork(work);
+        while (sort.next(record)) {
+            file.write(record);
+        }
+        file.close();
     }
 
     // ---- ACCEPT ----

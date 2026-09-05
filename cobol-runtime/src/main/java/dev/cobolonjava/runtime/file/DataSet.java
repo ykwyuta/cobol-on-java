@@ -17,6 +17,9 @@ public sealed interface DataSet permits SequentialDataSet, KeyedDataSet {
     /** 開いているかどうか。 */
     boolean isOpen();
 
+    /** いまの開き方。開いていなければ {@code null}。 */
+    OpenMode mode();
+
     /** 直前に読み書きしたレコードの長さ。 */
     int lastLength();
 

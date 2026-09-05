@@ -34,6 +34,21 @@ public final class DataSetCatalog {
         return this;
     }
 
+    /**
+     * その DD 名が結び付けられているか。
+     *
+     * <p>ジョブが書いていない DD 名は、既定のディレクトリの下の同じ名前を指すことになる。
+     * ユーティリティの覚え書きのように<b>書き先がなければ出さない</b>ものが、これを見る。
+     */
+    public boolean isAssigned(String ddName) {
+        return assignments.containsKey(ddName.toUpperCase(Locale.ROOT));
+    }
+
+    /** 既定のディレクトリ。結び付けられていない名前はこの下を指す。 */
+    public Path directory() {
+        return directory;
+    }
+
     /** DD 名が指すファイル。書かれていなければ既定のディレクトリの下を指す。 */
     public Path resolve(String ddName) {
         Path assigned = assignments.get(ddName.toUpperCase(Locale.ROOT));

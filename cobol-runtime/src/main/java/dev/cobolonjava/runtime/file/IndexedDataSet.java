@@ -114,6 +114,12 @@ public final class IndexedDataSet implements KeyedDataSet {
         return mode != null;
     }
 
+    /** いまの開き方。開いていなければ {@code null}。 */
+    @Override
+    public OpenMode mode() {
+        return mode;
+    }
+
     @Override
     public int lastLength() {
         return lastLength;

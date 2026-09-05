@@ -28,6 +28,8 @@ public final class ProcedureBuilder {
     private final List<Diagnostic> diagnostics;
     private final SpecialNames specialNames;
     private final Map<String, FileDescription> files;
+    /** 通常の流れが始まる段落の番号。宣言部分はそれより前にある。 */
+    private int firstNormal;
 
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
                              SpecialNames specialNames, Map<String, FileDescription> files) {
@@ -52,12 +54,43 @@ public final class ProcedureBuilder {
     }
 
     /**
+     * 節 1 個。
+     *
+     * <p>節は段落をまとめたものである。ここが持つのは<b>どこからどこまでか</b>だけであり、
+     * 中身は段落の並びのほうにある。
+     *
+     * @param first       節見出しの段落。節と同じ名前を持つ
+     * @param last        節の最後の段落
+     * @param declarative 宣言部分の節かどうか。通常の流れでは通らない
+     */
+    public record Section(String name, String first, String last, boolean declarative) {
+    }
+
+    /**
+     * 宣言節 1 個 (要件 FR-105)。
+     *
+     * <p>{@code USE AFTER STANDARD ERROR PROCEDURE} が結び付けるのは、<b>どの入出力で
+     * 呼ばれるか</b>である。ファイル名で指定するか、開き方で指定する。
+     *
+     * @param files ファイル名で指定したもの。開き方で指定していれば空
+     * @param mode  開き方で指定したもの。ファイル名で指定していれば {@code null}
+     */
+    public record Declarative(String section, String first, String last,
+                              List<FileDescription> files, OpenMode mode, Origin origin) {
+
+        public Declarative {
+            files = List.copyOf(files);
+        }
+    }
+
+    /**
      * 組み立ての結果。
      *
      * @param parameters {@code PROCEDURE DIVISION USING} に並べた 01 レベル。書かれた順
      */
-    public record Result(List<Paragraph> paragraphs, List<DataItem> parameters,
-                         List<Diagnostic> diagnostics) {
+    public record Result(List<Paragraph> paragraphs, List<Section> sections,
+                         List<Declarative> declaratives, int firstNormalParagraph,
+                         List<DataItem> parameters, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
             return diagnostics.isEmpty();
@@ -90,15 +123,20 @@ public final class ProcedureBuilder {
         List<Diagnostic> diagnostics = new ArrayList<>();
         ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files);
         List<Paragraph> paragraphs = new ArrayList<>();
+        List<Section> sections = new ArrayList<>();
+        List<Declarative> declaratives = new ArrayList<>();
         List<DataItem> parameters = new ArrayList<>();
         for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
             if (unit.procedureDivision() != null) {
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
-                builder.addBody(unit.procedureDivision().procedureBody(), paragraphs);
+                builder.addBody(unit.procedureDivision().procedureBody(), paragraphs, sections,
+                        declaratives);
             }
         }
         builder.checkProcedureTargets(paragraphs);
-        return new Result(List.copyOf(paragraphs), List.copyOf(parameters),
+        builder.checkDeclaratives(declaratives);
+        return new Result(List.copyOf(paragraphs), List.copyOf(sections),
+                List.copyOf(declaratives), builder.firstNormal, List.copyOf(parameters),
                 List.copyOf(diagnostics));
     }
 
@@ -142,6 +180,34 @@ public final class ProcedureBuilder {
      *
      * <p>段落はあとから書かれることもあるため、すべての段落を組み立てたあとに見る。
      */
+    /**
+     * 宣言節の指定が重なっていないか確かめる (要件 FR-105)。
+     *
+     * <p>同じファイルを 2 つの節が受け持てば、どちらが動くか決まらない。
+     */
+    private void checkDeclaratives(List<Declarative> declaratives) {
+        List<String> named = new ArrayList<>();
+        List<OpenMode> modes = new ArrayList<>();
+        for (Declarative declarative : declaratives) {
+            for (FileDescription file : declarative.files()) {
+                if (named.contains(file.name())) {
+                    report(declarative.origin(),
+                            "two USE procedures name the same file: " + file.name());
+                }
+                named.add(file.name());
+            }
+            OpenMode mode = declarative.mode();
+            if (mode == null) {
+                continue;
+            }
+            if (modes.contains(mode)) {
+                report(declarative.origin(),
+                        "two USE procedures name the same open mode: " + mode);
+            }
+            modes.add(mode);
+        }
+    }
+
     private void checkProcedureTargets(List<Paragraph> paragraphs) {
         List<String> names = new ArrayList<>();
         for (Paragraph paragraph : paragraphs) {
@@ -162,6 +228,11 @@ public final class ProcedureBuilder {
             if (!names.contains(goTo.target())) {
                 report(goTo.origin(), "undefined paragraph: " + goTo.target());
             }
+            return;
+        }
+        if (statement instanceof Statement.Sort sort) {
+            checkSortProcedure(sort.input(), names, sort.origin());
+            checkSortProcedure(sort.output(), names, sort.origin());
             return;
         }
         if (!(statement instanceof Statement.Perform perform) || !perform.callsParagraph()) {
@@ -242,6 +313,9 @@ public final class ProcedureBuilder {
         if (statement instanceof Statement.Start start) {
             return keyCheckStatements(start.keyCheck());
         }
+        if (statement instanceof Statement.Return returned) {
+            return List.of(returned.atEnd(), returned.notAtEnd());
+        }
         if (statement instanceof Statement.Search search) {
             List<List<Statement>> nested = new ArrayList<>();
             nested.add(search.atEnd());
@@ -252,6 +326,21 @@ public final class ProcedureBuilder {
             return List.of(searchAll.atEnd(), searchAll.whenStatements());
         }
         return List.of();
+    }
+
+    /** {@code INPUT PROCEDURE} と {@code OUTPUT PROCEDURE} の名指す節が実在するか。 */
+    private void checkSortProcedure(Statement.Sort.Procedure procedure, List<String> names,
+                                    Origin origin) {
+        if (procedure == null) {
+            return;
+        }
+        if (!names.contains(procedure.from())) {
+            report(origin, "undefined paragraph: " + procedure.from());
+            return;
+        }
+        if (procedure.through() != null && !names.contains(procedure.through())) {
+            report(origin, "undefined paragraph: " + procedure.through());
+        }
     }
 
     private static List<List<Statement>> sizeErrorStatements(
@@ -273,17 +362,99 @@ public final class ProcedureBuilder {
                 : List.of(overflow.onOverflow(), overflow.otherwise());
     }
 
-    private void addBody(CobolParser.ProcedureBodyContext body, List<Paragraph> paragraphs) {
+    /**
+     * 手続き部の中身を段落の並びにする。
+     *
+     * <p>節は<b>段落をまとめたもの</b>である。節見出しをその名前の段落として置き、
+     * 範囲を別に覚えておけば、{@code PERFORM 節名} は段落の範囲の実行になる。
+     * 段落の番号付けと飛び先の仕組みをそのまま使える。
+     *
+     * <p>宣言部分は<b>いちばん前に置く</b>。通常の流れはそのうしろから始まるので、
+     * 落ちて入ってしまうことがない。
+     */
+    private void addBody(CobolParser.ProcedureBodyContext body, List<Paragraph> paragraphs,
+                         List<Section> sections, List<Declarative> declaratives) {
+        if (body.declarativesPart() != null) {
+            for (CobolParser.DeclarativeSectionContext section
+                    : body.declarativesPart().declarativeSection()) {
+                addDeclarative(section, paragraphs, sections, declaratives);
+            }
+        }
+        firstNormal = paragraphs.size();
         List<Statement> leading = statementsOf(body.sentence());
         if (!leading.isEmpty()) {
             paragraphs.add(new Paragraph(null, leading, leading.get(0).origin()));
         }
-        for (CobolParser.ParagraphContext paragraph : body.paragraph()) {
-            paragraphs.add(new Paragraph(
-                    paragraph.paragraphName().getText().toUpperCase(Locale.ROOT),
-                    statementsOf(paragraph.sentence()),
-                    ReferenceResolver.originOf(paragraph)));
+        for (CobolParser.ProcedureUnitContext unit : body.procedureUnit()) {
+            if (unit.sectionHeader() != null) {
+                addSection(unit, paragraphs, sections);
+                continue;
+            }
+            addParagraph(unit.paragraph(0), paragraphs);
         }
+    }
+
+    private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
+        paragraphs.add(new Paragraph(
+                paragraph.paragraphName().getText().toUpperCase(Locale.ROOT),
+                statementsOf(paragraph.sentence()),
+                ReferenceResolver.originOf(paragraph)));
+    }
+
+    private void addSection(CobolParser.ProcedureUnitContext unit, List<Paragraph> paragraphs,
+                            List<Section> sections) {
+        String name = unit.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
+        paragraphs.add(new Paragraph(name, statementsOf(unit.sentence()),
+                ReferenceResolver.originOf(unit.sectionHeader())));
+        for (CobolParser.ParagraphContext paragraph : unit.paragraph()) {
+            addParagraph(paragraph, paragraphs);
+        }
+        sections.add(new Section(name, name,
+                paragraphs.get(paragraphs.size() - 1).name(), false));
+    }
+
+    /**
+     * 宣言節を読む (要件 FR-105)。
+     *
+     * <p>{@code USE AFTER STANDARD ERROR PROCEDURE} は文ではない。その節が<b>いつ動くか</b>の
+     * 宣言であり、入出力で異常が起きたときに呼ばれて、終われば元の場所へ戻る。
+     */
+    private void addDeclarative(CobolParser.DeclarativeSectionContext context,
+                                List<Paragraph> paragraphs, List<Section> sections,
+                                List<Declarative> declaratives) {
+        String name = context.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
+        Origin origin = ReferenceResolver.originOf(context.sectionHeader());
+        paragraphs.add(new Paragraph(name, statementsOf(context.sentence()), origin));
+        for (CobolParser.ParagraphContext paragraph : context.paragraph()) {
+            addParagraph(paragraph, paragraphs);
+        }
+        String last = paragraphs.get(paragraphs.size() - 1).name();
+        sections.add(new Section(name, name, last, true));
+
+        CobolParser.UseTargetContext target = context.useStatement().useTarget();
+        OpenMode mode = modeOf(target);
+        List<FileDescription> named = new ArrayList<>();
+        for (org.antlr.v4.runtime.tree.TerminalNode identifier : target.IDENTIFIER()) {
+            FileDescription file = fileOf(identifier.getText(), origin);
+            if (file == null) {
+                return;
+            }
+            named.add(file);
+        }
+        declaratives.add(new Declarative(name, name, last, named, mode, origin));
+    }
+
+    private static OpenMode modeOf(CobolParser.UseTargetContext target) {
+        if (target.INPUT() != null) {
+            return OpenMode.INPUT;
+        }
+        if (target.OUTPUT() != null) {
+            return OpenMode.OUTPUT;
+        }
+        if (target.I_O() != null) {
+            return OpenMode.IO;
+        }
+        return target.EXTEND() != null ? OpenMode.EXTEND : null;
     }
 
     private List<Statement> statementsOf(List<CobolParser.SentenceContext> sentences) {
@@ -389,6 +560,18 @@ public final class ProcedureBuilder {
         }
         if (context.startStatement() != null) {
             return startOf(context.startStatement());
+        }
+        if (context.sortStatement() != null) {
+            return sortOf(context.sortStatement());
+        }
+        if (context.mergeStatement() != null) {
+            return mergeOf(context.mergeStatement());
+        }
+        if (context.releaseStatement() != null) {
+            return releaseOf(context.releaseStatement());
+        }
+        if (context.returnStatement() != null) {
+            return returnOf(context.returnStatement());
         }
         if (context.exitStatement() != null) {
             // EXIT は何もしない。CONTINUE と同じ扱いでよい
@@ -2180,7 +2363,7 @@ public final class ProcedureBuilder {
         for (CobolParser.OpenPhraseContext phrase : context.openPhrase()) {
             OpenMode mode = modeOf(phrase);
             for (org.antlr.v4.runtime.tree.TerminalNode name : phrase.IDENTIFIER()) {
-                FileDescription file = fileOf(name.getText(), origin);
+                FileDescription file = dataFileOf(name.getText(), "OPEN", origin);
                 if (file == null) {
                     return null;
                 }
@@ -2204,7 +2387,7 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context);
         List<FileDescription> closed = new ArrayList<>();
         for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
-            FileDescription file = fileOf(name.getText(), origin);
+            FileDescription file = dataFileOf(name.getText(), "CLOSE", origin);
             if (file == null) {
                 return null;
             }
@@ -2221,7 +2404,7 @@ public final class ProcedureBuilder {
      */
     private Statement readOf(CobolParser.ReadStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        FileDescription file = fileOf(context.IDENTIFIER().getText(), origin);
+        FileDescription file = dataFileOf(context.IDENTIFIER().getText(), "READ", origin);
         if (file == null) {
             return null;
         }
@@ -2317,6 +2500,11 @@ public final class ProcedureBuilder {
             }
         }
         FileDescription file = files.get(record.fileName());
+        if (file.sort()) {
+            report(origin, "WRITE cannot be used on a sort-merge file (SD); use RELEASE: "
+                    + file.name());
+            return null;
+        }
         Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
                 context.notInvalidKeyPhrase(), file, file.isKeyed(), origin);
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
@@ -2345,6 +2533,10 @@ public final class ProcedureBuilder {
             }
         }
         FileDescription file = files.get(record.fileName());
+        if (file.sort()) {
+            report(origin, "REWRITE cannot be used on a sort-merge file (SD): " + file.name());
+            return null;
+        }
         Statement.KeyCheck keyCheck = keyCheckOf(context.invalidKeyPhrase(),
                 context.notInvalidKeyPhrase(), file, file.isKeyed(), origin);
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
@@ -2360,7 +2552,7 @@ public final class ProcedureBuilder {
      */
     private Statement deleteOf(CobolParser.DeleteStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        FileDescription file = fileOf(context.IDENTIFIER().getText(), origin);
+        FileDescription file = dataFileOf(context.IDENTIFIER().getText(), "DELETE", origin);
         if (file == null) {
             return null;
         }
@@ -2383,7 +2575,7 @@ public final class ProcedureBuilder {
      */
     private Statement startOf(CobolParser.StartStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        FileDescription file = fileOf(context.IDENTIFIER().getText(), origin);
+        FileDescription file = dataFileOf(context.IDENTIFIER().getText(), "START", origin);
         if (file == null) {
             return null;
         }
@@ -2507,6 +2699,217 @@ public final class ProcedureBuilder {
         return checked == null
                 ? null
                 : new Statement.Move(new Operand.Reference(from), List.of(checked), false, origin);
+    }
+
+    // ---- 整列と合併 ----
+
+    /** {@code SORT} を組み立てる (要件 FR-120)。 */
+    private Statement sortOf(CobolParser.SortStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        FileDescription work = sortWorkOf(context.IDENTIFIER().getText(), origin);
+        if (work == null) {
+            return null;
+        }
+        List<Statement.Sort.SortKeySpec> keys = keysOf(context.sortKeyClause(), work, origin);
+        if (keys == null) {
+            return null;
+        }
+        List<FileDescription> using = List.of();
+        Statement.Sort.Procedure input = null;
+        if (context.sortInput().sortUsing() != null) {
+            using = inputFilesOf(context.sortInput().sortUsing(), origin);
+            if (using == null) {
+                return null;
+            }
+        } else {
+            input = procedureOf(context.sortInput().paragraphName());
+        }
+        return sorted(work, keys, using, input, context.sortOutput(), false, origin);
+    }
+
+    /** {@code MERGE} を組み立てる (要件 FR-121)。入口はファイルに限られる。 */
+    private Statement mergeOf(CobolParser.MergeStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        FileDescription work = sortWorkOf(context.IDENTIFIER().getText(), origin);
+        if (work == null) {
+            return null;
+        }
+        List<Statement.Sort.SortKeySpec> keys = keysOf(context.sortKeyClause(), work, origin);
+        List<FileDescription> using = inputFilesOf(context.sortUsing(), origin);
+        if (keys == null || using == null) {
+            return null;
+        }
+        if (using.size() < 2) {
+            // 合併するものが 1 つなら、合併ではなく整列である
+            report(origin, "MERGE needs at least two USING files");
+            return null;
+        }
+        return sorted(work, keys, using, null, context.sortOutput(), true, origin);
+    }
+
+    private Statement sorted(FileDescription work, List<Statement.Sort.SortKeySpec> keys,
+                             List<FileDescription> using, Statement.Sort.Procedure input,
+                             CobolParser.SortOutputContext output, boolean merge, Origin origin) {
+        List<FileDescription> giving = List.of();
+        Statement.Sort.Procedure procedure = null;
+        if (output.GIVING() != null) {
+            giving = outputFilesOf(output, origin);
+            if (giving == null) {
+                return null;
+            }
+        } else {
+            procedure = procedureOf(output.paragraphName());
+        }
+        return new Statement.Sort(work, keys, using, input, giving, procedure, merge, origin);
+    }
+
+    /**
+     * 鍵の並び (要件 FR-120)。
+     *
+     * <p>鍵は<b>整列作業ファイルのレコードの中</b>になければならない。ほかの場所にある項目を
+     * 鍵と言われても、並べ替える相手のどこを見ればよいのか決まらない。
+     */
+    private List<Statement.Sort.SortKeySpec> keysOf(
+            List<CobolParser.SortKeyClauseContext> clauses, FileDescription work, Origin origin) {
+        List<Statement.Sort.SortKeySpec> keys = new ArrayList<>();
+        for (CobolParser.SortKeyClauseContext clause : clauses) {
+            boolean ascending = clause.DESCENDING() == null;
+            for (CobolParser.IdentifierContext name : clause.identifier()) {
+                DataReference key = resolver.resolve(name);
+                if (key == null) {
+                    return null;
+                }
+                if (!work.records().contains(key.item().record())) {
+                    report(origin, "a sort key must be inside the record of " + work.name()
+                            + ": " + key.item().name());
+                    return null;
+                }
+                if (key.constantOffset().isEmpty() || key.constantLength().isEmpty()) {
+                    report(origin, "a sort key must have a fixed position and length");
+                    return null;
+                }
+                keys.add(new Statement.Sort.SortKeySpec(key, ascending));
+            }
+        }
+        return keys;
+    }
+
+    private List<FileDescription> inputFilesOf(CobolParser.SortUsingContext context,
+                                               Origin origin) {
+        return dataFilesOf(context.IDENTIFIER(), origin);
+    }
+
+    private List<FileDescription> outputFilesOf(CobolParser.SortOutputContext context,
+                                                Origin origin) {
+        return dataFilesOf(context.IDENTIFIER(), origin);
+    }
+
+    /** {@code USING} と {@code GIVING} に並べるのは、整列作業ファイルではない普通のファイルである。 */
+    private List<FileDescription> dataFilesOf(
+            List<org.antlr.v4.runtime.tree.TerminalNode> names, Origin origin) {
+        List<FileDescription> out = new ArrayList<>();
+        for (org.antlr.v4.runtime.tree.TerminalNode name : names) {
+            FileDescription file = fileOf(name.getText(), origin);
+            if (file == null) {
+                return null;
+            }
+            if (file.sort()) {
+                report(origin, "USING and GIVING name data files, not the sort work: "
+                        + file.name());
+                return null;
+            }
+            out.add(file);
+        }
+        return out;
+    }
+
+    private static Statement.Sort.Procedure procedureOf(
+            List<CobolParser.ParagraphNameContext> names) {
+        String from = names.get(0).getText().toUpperCase(Locale.ROOT);
+        String through = names.size() > 1
+                ? names.get(1).getText().toUpperCase(Locale.ROOT)
+                : null;
+        return new Statement.Sort.Procedure(from, through);
+    }
+
+    /** {@code RELEASE} を組み立てる (要件 FR-120)。 */
+    private Statement releaseOf(CobolParser.ReleaseStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        DataItem record = recordOf(context.IDENTIFIER().getText(), "RELEASE", origin);
+        if (record == null) {
+            return null;
+        }
+        FileDescription work = files.get(record.fileName());
+        if (!work.sort()) {
+            report(origin, "RELEASE names a record of a sort-merge file (SD): "
+                    + record.name());
+            return null;
+        }
+        Statement.Move from = null;
+        if (context.identifier() != null) {
+            from = recordMove(record, context.identifier(), origin);
+            if (from == null) {
+                return null;
+            }
+        }
+        return new Statement.Release(work, record, from, origin);
+    }
+
+    /** {@code RETURN} を組み立てる (要件 FR-120)。 */
+    private Statement returnOf(CobolParser.ReturnStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        FileDescription work = sortWorkOf(context.IDENTIFIER().getText(), origin);
+        if (work == null) {
+            return null;
+        }
+        if (context.atEndPhrase() == null) {
+            // 整列の出口はいつか尽きる。尽きたときの行き先を書かずに済ませられない
+            report(origin, "RETURN requires an AT END phrase");
+            return null;
+        }
+        Statement.Move into = null;
+        if (context.identifier() != null) {
+            into = areaMove(work, context.identifier(), origin);
+            if (into == null) {
+                return null;
+            }
+        }
+        return new Statement.Return(work, into, listOf(context.atEndPhrase().statement()),
+                context.notAtEndPhrase() == null
+                        ? List.of()
+                        : listOf(context.notAtEndPhrase().statement()),
+                origin);
+    }
+
+    /**
+     * 入出力文が名指すファイルを引く。
+     *
+     * <p>整列作業ファイルは<b>開くことも閉じることもない</b>。データセットではなく作業場所で
+     * あり、{@code SORT} の間だけ存在する。
+     */
+    private FileDescription dataFileOf(String name, String verb, Origin origin) {
+        FileDescription file = fileOf(name, origin);
+        if (file == null) {
+            return null;
+        }
+        if (file.sort()) {
+            report(origin, verb + " cannot be used on a sort-merge file (SD): " + file.name());
+            return null;
+        }
+        return file;
+    }
+
+    /** 整列作業ファイルを引く。 */
+    private FileDescription sortWorkOf(String name, Origin origin) {
+        FileDescription work = fileOf(name, origin);
+        if (work == null) {
+            return null;
+        }
+        if (!work.sort()) {
+            report(origin, "not a sort-merge file (SD): " + work.name());
+            return null;
+        }
+        return work;
     }
 
     /** ファイル名を引く。 */

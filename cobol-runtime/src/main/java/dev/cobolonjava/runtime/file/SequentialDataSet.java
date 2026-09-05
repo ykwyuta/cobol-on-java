@@ -72,6 +72,12 @@ public final class SequentialDataSet implements DataSet {
         return mode != null;
     }
 
+    /** いまの開き方。開いていなければ {@code null}。 */
+    @Override
+    public OpenMode mode() {
+        return mode;
+    }
+
     /**
      * 開く (要件 FR-102)。
      *
