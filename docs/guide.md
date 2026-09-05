@@ -266,6 +266,9 @@ java -cp "cobol-compiler/target/*;cobol-runtime/target/*" dev.cobolonjava.compil
 * [**`demo/002/` (ファイル入出力・順編成データセットデモ)**](file:///d:/workspace/cobol-on-java/demo/002/README.md)
   * 顧客データファイル (`CUSTFILE`) へのレコード書き込み (`WRITE-DATA.cbl`) と読み込み・集計表示 (`READ-DATA.cbl`)。
   * 実行用バッチ: [`demo/002/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/002/run_demo.bat)
+* [**`demo/003/` (JCL バッチジョブ実行デモ)**](file:///d:/workspace/cobol-on-java/demo/003/README.md)
+  * メインフレーム互換 JCL (`SALESJOB.jcl`) による複数ステップのバッチ制御、`IEFBR14` ユーティリティ、`PARM` 渡し、DD 動的割り当て、SYSOUT スプール出力、`IF-THEN` / `COND` による条件分岐。
+  * 実行用バッチ: [`demo/003/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/003/run_demo.bat)
 
 ---
 
