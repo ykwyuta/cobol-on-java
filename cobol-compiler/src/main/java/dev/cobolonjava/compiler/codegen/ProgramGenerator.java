@@ -127,6 +127,14 @@ public final class ProgramGenerator {
 
     private ClassWriter writer;
     private String internal;
+    /**
+     * 原文のファイル名。クラスファイルの {@code SourceFile} になる。
+     *
+     * <p>行番号表へ入れるのは<b>このファイルから来た文だけ</b>である。{@code COPY} で
+     * 取り込んだ文の行番号は写本の中の行であり、ここへ混ぜると別のファイルの行を
+     * このファイルの行として指してしまう (暫定判断 P-050)。
+     */
+    private final String sourceName;
     private List<String> paragraphNames = new ArrayList<>();
     private List<ProcedureBuilder.Section> sections = List.of();
     private List<ProcedureBuilder.Declarative> declaratives = List.of();
@@ -137,9 +145,10 @@ public final class ProgramGenerator {
     private MethodVisitor clinit;
     private byte[] initialStorageBytes;
 
-    private ProgramGenerator(String className, CodePage codePage, CompilerOptions options,
-                             SpecialNames specialNames) {
+    private ProgramGenerator(String className, String sourceName, CodePage codePage,
+                             CompilerOptions options, SpecialNames specialNames) {
         this.className = className;
+        this.sourceName = sourceName;
         this.codePage = codePage;
         this.rangeChecks = options.subscriptRangeChecks();
         this.specialNames = specialNames;
@@ -169,6 +178,14 @@ public final class ProgramGenerator {
                 SpecialNames.standard());
     }
 
+    /** 原文のファイル名まで指定してプログラムを生成する (要件 FR-142)。 */
+    public static Result generate(String programName, String sourceName,
+                                  ProcedureBuilder.Result procedure, InitialImage.Result image,
+                                  CompilerOptions options, SpecialNames specialNames) {
+        return new ProgramGenerator(classNameOf(programName), sourceName, CodePages.DEFAULT,
+                options, specialNames).emit(procedure, image);
+    }
+
     /** 翻訳時オプションを指定してプログラムを生成する。 */
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image, CompilerOptions options) {
@@ -186,8 +203,8 @@ public final class ProgramGenerator {
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image, CodePage codePage,
                                   CompilerOptions options, SpecialNames specialNames) {
-        return new ProgramGenerator(classNameOf(programName), codePage, options, specialNames)
-                .emit(procedure, image);
+        return new ProgramGenerator(classNameOf(programName), null, codePage, options,
+                specialNames).emit(procedure, image);
     }
 
     /** COBOL のプログラム名を Java のクラス名にする。ハイフンは下線に読み替える。 */
@@ -205,6 +222,11 @@ public final class ProgramGenerator {
         writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER,
                 internal, null, "java/lang/Object",
                 new String[] {Type.getInternalName(CobolProgram.class)});
+        // 原文のファイル名を埋める。異常終了の覚え書きが原文の行を指せるようになる
+        // (要件 FR-142)。行番号は文ごとに planStatements が入れる
+        if (sourceName != null) {
+            writer.visitSource(sourceName, null);
+        }
 
         emitConstructor(writer, internal);
         emitInitialStorage(image.storage());
@@ -283,9 +305,33 @@ public final class ProgramGenerator {
         return planned;
     }
 
+    /**
+     * この文が原文のどの行から来たかを、クラスファイルの行番号表へ入れる (要件 FR-142)。
+     *
+     * <p>異常終了したとき「どの文で止まったか」を言えなければ、診断は役に立たない。
+     * 対応表を自分で持つのではなく<b>クラスファイルの行番号表を使う</b>。JVM の呼び出し
+     * 履歴がそのまま原文の行を指すようになり、対応表が本体とずれる余地が無い。
+     *
+     * <p>{@code COPY} で取り込んだ行は取り込み元の行を指す。{@link Origin} が
+     * 1 文字ごとに出自を持っているので、写した先ではなく<b>書いてある場所</b>になる。
+     */
+    private void planLine(Origin origin, List<Runnable> body) {
+        if (origin == null || origin.line() <= 0 || sourceName == null
+                || !sourceName.equals(origin.fileName())) {
+            return;
+        }
+        int line = origin.line();
+        body.add(() -> {
+            Label here = new Label();
+            run.visitLabel(here);
+            run.visitLineNumber(line, here);
+        });
+    }
+
     private List<Runnable> planStatements(List<Statement> statements) {
         List<Runnable> body = new ArrayList<>();
         for (Statement statement : statements) {
+            planLine(statement.origin(), body);
             if (statement instanceof Statement.Sequence sequence) {
                 // 意味解析で展開された文の並び。そのまま並べて出す
                 body.addAll(planStatements(sequence.statements()));

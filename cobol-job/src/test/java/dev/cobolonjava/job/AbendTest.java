@@ -6,8 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.runtime.abend.AbendCode;
+import dev.cobolonjava.runtime.codepage.CodePages;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -50,6 +54,14 @@ class AbendTest {
 
     private String output() {
         return sink.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "|");
+    }
+
+    private String read(String name) {
+        try {
+            return CodePages.DEFAULT.decode(Files.readAllBytes(directory.resolve(name)));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     // ---- コードが立つ ----
@@ -246,6 +258,87 @@ class AbendTest {
                 "//STEP1    EXEC PGM=BADDATA");
 
         assertEquals(-1, result.step("STEP1").returnCode());
-        assertTrue(output().isEmpty(), output());
+    }
+
+    // ---- 診断出力 (FR-142, FR-143) ----
+
+    @Test
+    @DisplayName("異常終了すれば診断出力が出る (FR-142)")
+    void anAbendWritesADiagnosis() {
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=BADDATA");
+
+        String written = output();
+        assertTrue(written.contains("ABEND S0C7 WAS ISSUED"), written);
+        assertTrue(written.contains("TRACEBACK"), written);
+        assertTrue(written.contains("BADDATA"), written);
+    }
+
+    @Test
+    @DisplayName("CEEDUMP を書けばそこへ出る (FR-142)")
+    void theDiagnosisGoesToCeedump() {
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=BADDATA",
+                "//CEEDUMP  DD   DSN=DUMP.TXT,DISP=(NEW,CATLG)");
+
+        String dump = read("DUMP.TXT");
+        assertTrue(dump.contains("ABEND S0C7 WAS ISSUED"), dump);
+        // 行き先を書いたのだから、ジョブの出力へは回らない
+        assertFalse(output().contains("CEE3250C"), output());
+    }
+
+    @Test
+    @DisplayName("TERMTHDACT(QUIET) は何も出さない (FR-143)")
+    void quietWritesNothing() {
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=BADDATA",
+                "//CEEOPTS  DD   *",
+                "  TERMTHDACT(QUIET)");
+
+        assertFalse(output().contains("CEE3250C"), output());
+    }
+
+    @Test
+    @DisplayName("TERMTHDACT(MSG) は覚え書きだけを出す (FR-143)")
+    void msgWritesOnlyTheMessage() {
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=BADDATA",
+                "//CEEOPTS  DD   *",
+                "  TERMTHDACT(MSG)");
+
+        assertTrue(output().contains("ABEND S0C7 WAS ISSUED"), output());
+        assertFalse(output().contains("TRACEBACK"), output());
+    }
+
+    @Test
+    @DisplayName("TERMTHDACT(DUMP) は記憶域の中身まで出す (FR-143)")
+    void dumpWritesTheStorage() {
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=NOARG",
+                "//CEEOPTS  DD   *",
+                "  TERMTHDACT(DUMP)");
+
+        assertTrue(output().contains("TRACEBACK"), output());
+        assertTrue(output().contains("STORAGE FOR"), output());
+    }
+
+    @Test
+    @DisplayName("知らない TERMTHDACT の綴りは既定のままにする (FR-143)")
+    void anUnknownLevelKeepsTheDefault() {
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=BADDATA",
+                "//CEEOPTS  DD   *",
+                "  TERMTHDACT(LOUD)");
+
+        assertTrue(output().contains("TRACEBACK"), output());
+    }
+
+    @Test
+    @DisplayName("正常に終われば診断出力は出ない (FR-142)")
+    void nothingIsWrittenWhenNothingFails() {
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEFBR14");
+
+        assertFalse(output().contains("CEE3250C"), output());
     }
 }

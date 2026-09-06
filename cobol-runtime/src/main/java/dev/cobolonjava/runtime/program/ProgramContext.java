@@ -1,5 +1,6 @@
 package dev.cobolonjava.runtime.program;
 
+import dev.cobolonjava.runtime.abend.DumpLevel;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.io.BufferedReader;
@@ -85,6 +86,55 @@ public final class ProgramContext {
     private final Map<String, DataSet> files;
     /** 整列作業ファイル。{@code SORT} の間だけ存在する。 */
     private final Map<String, SortWork> sorts = new HashMap<>();
+    /**
+     * いま動いているプログラム。内側が先頭である (要件 FR-142)。
+     *
+     * <p>異常終了の覚え書きが、止まったところの記憶域を見るために要る。呼び出し履歴だけなら
+     * JVM の呼び出し履歴で足りるが、<b>それぞれの作業場所の中身</b>は積んでおかないと
+     * 取り出せない。
+     */
+    private final java.util.Deque<Active> active = new java.util.ArrayDeque<>();
+    /** 診断出力の細かさ (要件 FR-143)。 */
+    private DumpLevel dumpLevel = DumpLevel.TRACE;
+
+    /**
+     * 動いているプログラム 1 個。
+     *
+     * @param name    プログラム名
+     * @param storage その作業場所
+     */
+    public record Active(String name, Storage storage) {
+    }
+
+    /**
+     * プログラムへ入ったことを記録する。
+     *
+     * <p>抜けるときに {@link #leave()} を呼ぶのは<b>正常に戻ったときだけ</b>である。
+     * 異常終了で抜けたプログラムは積まれたまま残り、覚え書きがその中身を見られる。
+     */
+    public void enter(String name, Storage storage) {
+        active.push(new Active(name, storage));
+    }
+
+    /** プログラムから正常に戻ったことを記録する。 */
+    public void leave() {
+        active.poll();
+    }
+
+    /** いま動いているプログラム。内側が先頭に並ぶ。 */
+    public List<Active> active() {
+        return List.copyOf(active);
+    }
+
+    /** 診断出力の細かさ (要件 FR-143)。 */
+    public DumpLevel dumpLevel() {
+        return dumpLevel;
+    }
+
+    /** 診断出力の細かさを差し替える。ジョブが {@code CEEOPTS} で指定する。 */
+    public void setDumpLevel(DumpLevel value) {
+        this.dumpLevel = value == null ? DumpLevel.TRACE : value;
+    }
 
     private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,

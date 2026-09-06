@@ -182,4 +182,50 @@ class AbendGenerationTest {
     void anOrdinaryFailureHasNoCode() {
         assertNull(Abend.codeOf(new IllegalStateException("something else")));
     }
+
+    // ---- 止まった場所 (FR-142) ----
+
+    @Test
+    @DisplayName("呼び出し履歴が原文の行を指す (FR-142)")
+    void theCallChainNamesTheSourceLine() {
+        // 見出しと作業場所で 7 行、手続き部の見出しが 8 行目。文は 9 行目から並ぶ
+        CobolProgram program = compile(null, sourceOf(null, List.of(
+                "01 WS-A PIC 9(3) VALUE 100.",
+                "01 WS-B PIC 9(3) VALUE 0.",
+                "01 WS-R PIC 9(3) VALUE 0."), List.of(),
+                "MOVE 1 TO WS-R",
+                "DIVIDE WS-A BY WS-B GIVING WS-R."));
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, program::runFresh);
+        StackTraceElement frame = generatedFrame(thrown);
+        assertEquals(FILE, frame.getFileName());
+        assertEquals(10, frame.getLineNumber());
+    }
+
+    @Test
+    @DisplayName("止まった文が変われば行番号も変わる (FR-142)")
+    void theLineFollowsTheStatement() {
+        CobolProgram program = compile(null, sourceOf(null, List.of(
+                "01 WS-A PIC 9(3) VALUE 100.",
+                "01 WS-B PIC 9(3) VALUE 0.",
+                "01 WS-R PIC 9(3) VALUE 0."), List.of(),
+                "MOVE 1 TO WS-R",
+                "MOVE 2 TO WS-R",
+                "MOVE 3 TO WS-R",
+                "DIVIDE WS-A BY WS-B GIVING WS-R."));
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, program::runFresh);
+        assertEquals(12, generatedFrame(thrown).getLineNumber());
+    }
+
+    /** 呼び出し履歴のうち、翻訳したプログラムのいちばん内側の段。 */
+    private static StackTraceElement generatedFrame(RuntimeException thrown) {
+        for (StackTraceElement element : thrown.getStackTrace()) {
+            if (element.getClassName().startsWith("cobol.generated.")
+                    && element.getLineNumber() > 0) {
+                return element;
+            }
+        }
+        throw new AssertionError("no compiled program is on the call chain");
+    }
 }

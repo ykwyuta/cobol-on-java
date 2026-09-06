@@ -2,6 +2,8 @@ package dev.cobolonjava.job;
 
 import dev.cobolonjava.runtime.abend.Abend;
 import dev.cobolonjava.runtime.abend.AbendCode;
+import dev.cobolonjava.runtime.abend.Diagnosis;
+import dev.cobolonjava.runtime.abend.DumpLevel;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
@@ -183,8 +185,10 @@ public final class JobRunner {
                 .withCodePage(codePage)
                 .withOutput(out)
                 .withCatalog(allocation.catalog());
+        context.setDumpLevel(dumpLevelOf(allocation.catalog()));
         String failure = null;
         AbendCode code = null;
+        RuntimeException thrown = null;
         try {
             // ユーティリティは翻訳された資産ではない。名前で先に引き当てる (要件 FR-137)
             CobolProgram utility = Utilities.find(step.program());
@@ -198,9 +202,15 @@ public final class JobRunner {
             // 実行を抜けた例外は異常終了である。コードは条件そのものが名乗る (要件 FR-141)
             failure = describe(e);
             code = Abend.codeOf(e);
+            thrown = e;
+        }
+        boolean abended = failure != null;
+        if (abended) {
+            // 覚え書きはスプールを流す前に書く。CEEDUMP を SYSOUT へ向けたジョブでも
+            // 同じ流れに乗る (要件 FR-142)
+            diagnose(allocation.catalog(), code, thrown, context);
         }
         allocation.spools().forEach(this::spill);
-        boolean abended = failure != null;
         dispose(allocation.dataSets(), abended);
         // 失敗したステップの作業領域は残す。何が起きたのかを見られるほうが役に立つ
         if (!abended) {
@@ -212,6 +222,66 @@ public final class JobRunner {
         int returnCode = context.returnCode();
         state.completed(step.name(), returnCode);
         return new StepOutcome(step.name(), Status.EXECUTED, returnCode, null);
+    }
+
+    /** 診断出力の行き先。ジョブが {@code CEEDUMP} を書いていなければジョブの出力へ回す。 */
+    private static final String CEEDUMP = "CEEDUMP";
+    /** 実行時オプションを書く DD 名。 */
+    private static final String CEEOPTS = "CEEOPTS";
+
+    /**
+     * 異常終了の診断出力を書く (要件 FR-142)。
+     *
+     * <p>行き先はホストと同じく {@code CEEDUMP} である。書かれていなければジョブの出力へ
+     * 回す。黙って捨てると、本番で一度だけ起きた事故を追えなくなる。
+     */
+    private void diagnose(DataSetCatalog catalog, AbendCode code, RuntimeException thrown,
+                          ProgramContext context) {
+        List<String> lines = Diagnosis.of(code, thrown, context);
+        if (lines.isEmpty()) {
+            return;
+        }
+        if (!catalog.isAssigned(CEEDUMP)) {
+            for (String line : lines) {
+                context.display(codePage.encode(line), true, true);
+            }
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String line : lines) {
+            sb.append(line).append('\n');
+        }
+        Path path = catalog.resolve(CEEDUMP);
+        writeBytes(path, codePage.encode(sb.toString()));
+        new DataSetAttributes(RecordFormat.LINE, 132, codePage).write(path);
+    }
+
+    /**
+     * {@code TERMTHDACT} の指定 (要件 FR-143)。
+     *
+     * <p>ホストと同じく {@code CEEOPTS} の DD から読む。書かれていなければ既定の
+     * {@code TRACE} である。
+     */
+    private DumpLevel dumpLevelOf(DataSetCatalog catalog) {
+        if (!catalog.isAssigned(CEEOPTS)) {
+            return DumpLevel.TRACE;
+        }
+        String text = new String(readBytes(catalog.resolve(CEEOPTS)),
+                java.nio.charset.StandardCharsets.ISO_8859_1);
+        String decoded = codePage.decode(text.getBytes(
+                java.nio.charset.StandardCharsets.ISO_8859_1));
+        for (String line : decoded.split("\n")) {
+            String written = line.trim().toUpperCase(java.util.Locale.ROOT);
+            int open = written.indexOf('(');
+            if (!written.startsWith("TERMTHDACT") || open < 0 || !written.endsWith(")")) {
+                continue;
+            }
+            DumpLevel level = DumpLevel.of(written.substring(open + 1, written.length() - 1));
+            if (level != null) {
+                return level;
+            }
+        }
+        return DumpLevel.TRACE;
     }
 
     private StepOutcome abend(Step step, JobState state, String failure, AbendCode code) {

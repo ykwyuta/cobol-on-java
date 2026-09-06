@@ -44,12 +44,24 @@ public interface CobolProgram {
      */
     default Storage runFresh(ProgramContext context, DataView... arguments) {
         Storage storage = Storage.wrap(initialStorage());
+        context.enter(name(), storage);
         try {
             run(storage, context, arguments);
         } catch (ProgramStop | ProgramReturn end) {
             // 実行が終わっただけであり、誤りではない
         }
+        // 異常終了で抜けたときは積まれたまま残す。覚え書きが中身を見る (要件 FR-142)
+        context.leave();
         return storage;
+    }
+
+    /**
+     * プログラム名 (要件 FR-142)。
+     *
+     * <p>生成クラスの名前がそのままプログラム名である。異常終了の覚え書きに書く。
+     */
+    default String name() {
+        return getClass().getSimpleName();
     }
 
     /** 出力を端末へ出して実行する。 */

@@ -714,11 +714,14 @@ public final class Ops {
     public static void call(ProgramContext context, String name, ClassLoader loader,
                             DataView[] arguments) {
         ProgramContext.Loaded target = context.resolve(name, loader);
+        context.enter(name, target.storage());
         try {
             target.program().run(target.storage(), context, arguments);
         } catch (ProgramReturn returned) {
             // 呼ばれた側が戻っただけである
         }
+        // 異常終了で抜けたときは積まれたまま残す (要件 FR-142)
+        context.leave();
     }
 
     /** 動的な {@code CALL}。呼び先の名前をデータ項目から読む。 */
