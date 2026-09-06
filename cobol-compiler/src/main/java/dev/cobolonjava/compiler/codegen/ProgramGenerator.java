@@ -3519,23 +3519,32 @@ public final class ProgramGenerator {
                     + describe(record));
             return null;
         }
+        String item = describe(record);
         return () -> {
-            emitArgument(index);
+            emitArgument(index, item);
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, DATA_VIEW, "storage",
                     "()L" + Type.getInternalName(Storage.class) + ";", false);
             // 渡された領域の始まりからの位置になる
-            emitArgument(index);
+            emitArgument(index, item);
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, DATA_VIEW, "offset", "()I", false);
             offset.run();
             run.visitInsn(Opcodes.IADD);
         };
     }
 
-    /** {@code USING} の {@code index} 番目に渡された領域を積む。 */
-    private void emitArgument(int index) {
+    /**
+     * {@code USING} の {@code index} 番目に渡された領域を積む。
+     *
+     * <p>配列から直に取らずランタイムを通すのは、<b>渡されていないときに打ち切る</b>ため
+     * である。ホストではその場合の中身が定まらず、運が悪ければ {@code S0C4} で終わり、
+     * 運がよければ誤った値のまま処理が進む (要件 FR-141)。
+     */
+    private void emitArgument(int index, String item) {
         run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
         push(index);
-        run.visitInsn(Opcodes.AALOAD);
+        run.visitLdcInsn(item);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "linkage",
+                "([L" + DATA_VIEW + ";ILjava/lang/String;)L" + DATA_VIEW + ";", false);
     }
 
     private Runnable planOffset(DataReference reference, Origin origin) {

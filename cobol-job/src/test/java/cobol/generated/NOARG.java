@@ -1,17 +1,17 @@
 package cobol.generated;
 
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 
 /**
- * かならず異常終了する。異常終了の伝わり方の試験で使う。
+ * 連絡節の項目を触るが、ジョブが {@code PARM} を渡していなければ何も渡されていない。
  *
- * <p>投げるのは<b>コードを名乗らない</b>誤りである。ホストの異常終了に対応しない
- * 実装側の壊れ方がこれにあたり、コードの分からない異常終了として扱われる。
+ * <p>翻訳したプログラムの連絡節参照と同じ入口を通る。
  */
-public final class BOOM implements CobolProgram {
+public final class NOARG implements CobolProgram {
 
     @Override
     public byte[] initialStorage() {
@@ -20,6 +20,6 @@ public final class BOOM implements CobolProgram {
 
     @Override
     public void run(Storage storage, ProgramContext context, DataView[] arguments) {
-        throw new IllegalStateException("something went wrong");
+        Ops.linkage(arguments, 0, "LK-PARM");
     }
 }

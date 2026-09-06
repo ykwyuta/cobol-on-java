@@ -1,5 +1,7 @@
 package dev.cobolonjava.runtime.program;
 
+import dev.cobolonjava.runtime.abend.Abend;
+import dev.cobolonjava.runtime.abend.AbendCode;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.data.NumProcMode;
 import dev.cobolonjava.runtime.data.SignPosition;
@@ -763,6 +765,27 @@ public final class Ops {
     /** 引数の並びを作る。 */
     public static DataView[] arguments(DataView... views) {
         return views;
+    }
+
+    /**
+     * {@code USING} の {@code index} 番目に渡された領域 (要件 FR-141)。
+     *
+     * <p>呼ぶ側が渡していなければ<b>そこで打ち切る</b>。ホストでは連絡節の項目は呼ぶ側の
+     * 領域を指す仕掛け (BLL) だけを持ち、渡されていなければその仕掛けの中身が定まらない。
+     * 運が悪ければ自分の持ち場の外を指し、{@code S0C4} で終わる。運がよければ何かが読めて
+     * <b>誤った値のまま処理が進む</b>。
+     *
+     * <p>ここでは必ず {@code S0C4} で終わることにした。定まらない挙動を再現するより、
+     * 誤りを誤りとして見せるほうがよいという判断である (要件 FR-205 の安全側)。
+     *
+     * @param item 診断に出す項目の名前
+     */
+    public static DataView linkage(DataView[] arguments, int index, String item) {
+        if (arguments == null || index >= arguments.length || arguments[index] == null) {
+            throw new Abend(AbendCode.S0C4,
+                    "the caller did not pass an argument for " + item);
+        }
+        return arguments[index];
     }
 
     // ---- SSRANGE の検査 ----

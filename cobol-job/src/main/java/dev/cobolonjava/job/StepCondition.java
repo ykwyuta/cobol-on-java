@@ -1,5 +1,6 @@
 package dev.cobolonjava.job;
 
+import dev.cobolonjava.runtime.abend.AbendCode;
 import java.util.List;
 
 /**
@@ -128,6 +129,33 @@ public sealed interface StepCondition {
         @Override
         public boolean allows(JobState state) {
             return true;
+        }
+
+        @Override
+        public boolean survivesAbend() {
+            return true;
+        }
+    }
+
+    /**
+     * 異常終了コードを比べる。JCL の {@code ABENDCC} にあたる (要件 FR-141)。
+     *
+     * <p>異常終了は「起きたかどうか」だけでなく<b>何が起きたか</b>で分かれる。データの
+     * 誤りなら入力を直して流し直せばよく、ロードモジュールが無いなら組み立てから直す。
+     * 後始末を分けたいジョブがこれを見る。
+     *
+     * <p>{@code ABENDCC} を書いた時点で「異常終了したときの話」をしているので、
+     * 異常終了で止まらない。
+     *
+     * @param step  比べる相手のステップ。{@code null} なら最後に分かったコード
+     * @param equal {@code true} なら等しいとき、{@code false} なら等しくないとき
+     */
+    record Abend(String step, boolean equal, AbendCode code) implements StepCondition {
+
+        @Override
+        public boolean allows(JobState state) {
+            AbendCode actual = step == null ? state.abendCode() : state.abendCode(step);
+            return equal == (actual == code);
         }
 
         @Override

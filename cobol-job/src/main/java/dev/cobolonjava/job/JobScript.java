@@ -1,5 +1,6 @@
 package dev.cobolonjava.job;
 
+import dev.cobolonjava.runtime.abend.AbendCode;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +29,9 @@ import java.util.Locale;
  *   END
  * STEP CLEANUP PGM=PAYCLN
  *   WHEN ABEND
+ *   DD SYSOUT SYSOUT
+ * STEP RERUN PGM=PAYEXT
+ *   WHEN ABENDCC EXTRACT = S0C7
  *   DD SYSOUT SYSOUT
  * </pre>
  *
@@ -226,8 +230,12 @@ public final class JobScript {
             if (first.equals("EVEN")) {
                 return words.size() == 1 ? new StepCondition.EvenIfAbend() : bad(words, number);
             }
+            if (first.equals("ABENDCC")) {
+                return abendCode(words, number);
+            }
             if (!first.equals("RC")) {
-                report(number, "a condition starts with RC, ABEND, EVEN or NOT: " + words.get(0));
+                report(number,
+                        "a condition starts with RC, ABEND, ABENDCC, EVEN or NOT: " + words.get(0));
                 return null;
             }
             // RC <ステップ> <関係> <値> か、ステップを書かない RC <関係> <値>
@@ -248,6 +256,32 @@ public final class JobScript {
                 report(number, "a return code must be an integer: " + words.get(operand + 1));
                 return null;
             }
+        }
+
+        /**
+         * {@code ABENDCC [ステップ] 関係 コード} (要件 FR-141)。
+         *
+         * <p>比べられるのは等しいか等しくないかだけである。異常終了コードに大小はない。
+         */
+        private StepCondition abendCode(List<String> words, int number) {
+            if (words.size() != 3 && words.size() != 4) {
+                return bad(words, number);
+            }
+            int operand = words.size() == 4 ? 2 : 1;
+            String step = operand == 2 ? words.get(1).toUpperCase(Locale.ROOT) : null;
+            StepCondition.Comparison comparison = comparisonOf(words.get(operand));
+            if (comparison != StepCondition.Comparison.EQ
+                    && comparison != StepCondition.Comparison.NE) {
+                report(number, "ABENDCC compares with = or <> only: " + words.get(operand));
+                return null;
+            }
+            AbendCode code = AbendCode.of(words.get(operand + 1));
+            if (code == null) {
+                report(number, "unknown abend code: " + words.get(operand + 1));
+                return null;
+            }
+            return new StepCondition.Abend(step,
+                    comparison == StepCondition.Comparison.EQ, code);
         }
 
         private StepCondition bad(List<String> words, int number) {

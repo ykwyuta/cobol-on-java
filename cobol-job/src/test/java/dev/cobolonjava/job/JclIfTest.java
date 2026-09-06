@@ -236,9 +236,11 @@ class JclIfTest {
     }
 
     @Test
-    @DisplayName("ABENDCC は未対応である (FR-131, FR-141)")
-    void abendCodesAreNotSupportedYet() {
-        assertTrue(diagnostics("//J JOB", "//  IF (ABENDCC = U4038) THEN", "//  ENDIF")
-                .contains("ABENDCC is not supported yet"));
+    @DisplayName("知らない異常終了コードは誤りである (FR-131, FR-141)")
+    void anUnknownAbendCodeIsAnError() {
+        assertTrue(diagnostics("//J JOB", "//  IF (ABENDCC = S9Z9) THEN", "//  ENDIF")
+                .contains("unknown abend code: S9Z9"));
+        assertTrue(diagnostics("//J JOB", "//  IF (ABENDCC > S0C7) THEN", "//  ENDIF")
+                .contains("ABENDCC compares with"));
     }
 }

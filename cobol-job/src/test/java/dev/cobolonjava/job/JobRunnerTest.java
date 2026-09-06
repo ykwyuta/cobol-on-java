@@ -128,7 +128,7 @@ class JobRunnerTest {
                 step("B", "SETRC", "0", new StepCondition.Always()))));
 
         assertEquals(JobRunner.Status.ABENDED, result.step("A").status());
-        assertEquals("data exception", result.step("A").failure());
+        assertEquals("something went wrong", result.step("A").failure());
         assertEquals(JobRunner.Status.BYPASSED, result.step("B").status());
     }
 

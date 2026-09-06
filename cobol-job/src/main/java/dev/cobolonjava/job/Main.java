@@ -91,7 +91,9 @@ public final class Main {
         return switch (step.status()) {
             case EXECUTED -> job + "." + step.name() + " ENDED - RC=" + step.returnCode();
             case BYPASSED -> job + "." + step.name() + " NOT EXECUTED";
-            case ABENDED -> job + "." + step.name() + " ABENDED - " + step.failure();
+            case ABENDED -> job + "." + step.name() + " ABENDED"
+                    + (step.abendCode() == null ? "" : " " + step.abendCode().text())
+                    + " - " + step.failure();
             case FAILED -> job + "." + step.name() + " JCL ERROR - " + step.failure();
             case FLUSHED -> job + "." + step.name() + " FLUSHED";
         };

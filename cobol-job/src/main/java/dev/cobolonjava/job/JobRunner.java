@@ -1,5 +1,7 @@
 package dev.cobolonjava.job;
 
+import dev.cobolonjava.runtime.abend.Abend;
+import dev.cobolonjava.runtime.abend.AbendCode;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
@@ -8,7 +10,6 @@ import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.job.utility.Utilities;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
-import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.io.IOException;
@@ -82,27 +83,51 @@ public final class JobRunner {
         FLUSHED
     }
 
-    /** JCL エラーで終わったジョブの終了コード。 */
-    private static final int JCL_ERROR = 12;
+    /**
+     * 通らなかったジョブの終了コード。
+     *
+     * <p>異常終了と JCL エラーはどちらも<b>ジョブが通っていない</b>ことを表す。復帰コードは
+     * 立たないので、いちばん大きい復帰コードをそのまま返すと {@code 0} になり、後続の運用が
+     * 「通った」と読み違える。どちらだったかはステップの結末に残る。
+     */
+    private static final int NOT_COMPLETED = 12;
 
     /**
      * ステップ 1 個の結果。
      *
      * @param returnCode 復帰コード。飛ばされたステップでは {@code -1}
      * @param failure    異常終了したときの理由。ほかは {@code null}
+     * @param abendCode  異常終了コード。分からなければ {@code null} (要件 FR-141)
      */
-    public record StepOutcome(String name, Status status, int returnCode, String failure) {
+    public record StepOutcome(String name, Status status, int returnCode, String failure,
+                              AbendCode abendCode) {
+
+        /** コードの分からない結末。 */
+        public StepOutcome(String name, Status status, int returnCode, String failure) {
+            this(name, status, returnCode, failure, null);
+        }
     }
 
     /**
      * ジョブの結果。
      *
-     * @param returnCode ジョブ全体の終了コード。いちばん大きいステップの復帰コードである
+     * @param returnCode ジョブ全体の終了コード。いちばん大きいステップの復帰コードである。
+     *                   通らなかったジョブでは {@code 0} にならない
      */
     public record Result(int returnCode, List<StepOutcome> steps, JobState state) {
 
         public Result {
             steps = List.copyOf(steps);
+        }
+
+        /** どれかのステップが異常終了したか (要件 FR-141)。 */
+        public boolean abended() {
+            return steps.stream().anyMatch(step -> step.status() == Status.ABENDED);
+        }
+
+        /** 割当てに失敗したステップがあったか。 */
+        public boolean failed() {
+            return steps.stream().anyMatch(step -> step.status() == Status.FAILED);
         }
 
         /** ステップの結果を名前で引く。 */
@@ -132,8 +157,11 @@ public final class JobRunner {
             outcomes.add(outcome);
             failed = outcome.status() == Status.FAILED;
         }
-        return new Result(failed ? Math.max(state.highest(), JCL_ERROR) : state.highest(),
-                outcomes, state);
+        // 通らなかったジョブが 0 を返さないようにする。異常終了も JCL エラーも同じである
+        int code = failed || state.abended()
+                ? Math.max(state.highest(), NOT_COMPLETED)
+                : state.highest();
+        return new Result(code, outcomes, state);
     }
 
     private StepOutcome runStep(Job job, Step step, JobState state) {
@@ -156,6 +184,7 @@ public final class JobRunner {
                 .withOutput(out)
                 .withCatalog(allocation.catalog());
         String failure = null;
+        AbendCode code = null;
         try {
             // ユーティリティは翻訳された資産ではない。名前で先に引き当てる (要件 FR-137)
             CobolProgram utility = Utilities.find(step.program());
@@ -165,11 +194,10 @@ public final class JobRunner {
                 ProgramContext.Loaded loaded = context.resolve(step.program(), loader);
                 loaded.program().runFresh(context, arguments(step));
             }
-        } catch (ProgramNotFoundException e) {
-            // ロードモジュールが見つからないのは異常終了である (要件 FR-141 の S806 相当)
-            failure = e.getMessage();
         } catch (RuntimeException e) {
+            // 実行を抜けた例外は異常終了である。コードは条件そのものが名乗る (要件 FR-141)
             failure = describe(e);
+            code = Abend.codeOf(e);
         }
         allocation.spools().forEach(this::spill);
         boolean abended = failure != null;
@@ -179,16 +207,16 @@ public final class JobRunner {
             deleteTree(stepWork);
         }
         if (abended) {
-            return abend(step, state, failure);
+            return abend(step, state, failure, code);
         }
         int returnCode = context.returnCode();
         state.completed(step.name(), returnCode);
         return new StepOutcome(step.name(), Status.EXECUTED, returnCode, null);
     }
 
-    private StepOutcome abend(Step step, JobState state, String failure) {
-        state.abended(step.name());
-        return new StepOutcome(step.name(), Status.ABENDED, -1, failure);
+    private StepOutcome abend(Step step, JobState state, String failure, AbendCode code) {
+        state.abended(step.name(), code);
+        return new StepOutcome(step.name(), Status.ABENDED, -1, failure, code);
     }
 
     private static String describe(RuntimeException failure) {
