@@ -21,7 +21,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 内部ジョブモデルを実行する (要件 FR-130, FR-134, FR-136)。
@@ -149,16 +151,19 @@ public final class JobRunner {
     public Result run(Job job) {
         JobState state = new JobState();
         List<StepOutcome> outcomes = new ArrayList<>();
+        // データセットごとの、いちばん新しい処置。ジョブの終わりに PASS を片付ける
+        Map<Path, Disposition.Action> lastAction = new LinkedHashMap<>();
         boolean failed = false;
         for (Step step : job.steps()) {
             if (failed) {
                 outcomes.add(new StepOutcome(step.name(), Status.FLUSHED, -1, null));
                 continue;
             }
-            StepOutcome outcome = runStep(job, step, state);
+            StepOutcome outcome = runStep(job, step, state, lastAction);
             outcomes.add(outcome);
             failed = outcome.status() == Status.FAILED;
         }
+        endOfJob(job, lastAction);
         // 通らなかったジョブが 0 を返さないようにする。異常終了も JCL エラーも同じである
         int code = failed || state.abended()
                 ? Math.max(state.highest(), NOT_COMPLETED)
@@ -166,7 +171,8 @@ public final class JobRunner {
         return new Result(code, outcomes, state);
     }
 
-    private StepOutcome runStep(Job job, Step step, JobState state) {
+    private StepOutcome runStep(Job job, Step step, JobState state,
+                                Map<Path, Disposition.Action> lastAction) {
         if (!allowed(step, state)) {
             return new StepOutcome(step.name(), Status.BYPASSED, -1, null);
         }
@@ -174,7 +180,7 @@ public final class JobRunner {
         createDirectory(stepWork);
         Allocation allocation;
         try {
-            allocation = allocate(step, stepWork);
+            allocation = allocate(step, stepWork, temporaryArea(job));
         } catch (AllocationFailure e) {
             // 割当てに失敗したステップは動かない。プログラムは呼ばれてすらいない
             deleteTree(stepWork);
@@ -211,7 +217,7 @@ public final class JobRunner {
             diagnose(allocation.catalog(), code, thrown, context);
         }
         allocation.spools().forEach(this::spill);
-        dispose(allocation.dataSets(), abended);
+        dispose(allocation.dataSets(), abended, lastAction);
         // 失敗したステップの作業領域は残す。何が起きたのかを見られるほうが役に立つ
         if (!abended) {
             deleteTree(stepWork);
@@ -315,7 +321,7 @@ public final class JobRunner {
      * @param dataSets ステップのあとで処置を効かせるデータセット
      */
     private record Allocation(DataSetCatalog catalog, List<Path> spools,
-                              List<DdTarget.DataSet> dataSets) {
+                              List<Held> dataSets) {
     }
 
     /** 割当てに失敗した。ホストの JCL エラーにあたる。 */
@@ -327,14 +333,27 @@ public final class JobRunner {
     }
 
     /** ステップのすべての DD を割り当てる。 */
-    private Allocation allocate(Step step, Path stepWork) {
+    private Allocation allocate(Step step, Path stepWork, Path temporary) {
         DataSetCatalog catalog = new DataSetCatalog(base);
         List<Path> spools = new ArrayList<>();
-        List<DdTarget.DataSet> dataSets = new ArrayList<>();
+        List<Held> dataSets = new ArrayList<>();
         for (DdAssignment assignment : step.dd()) {
-            spools.addAll(assign(catalog, stepWork, assignment, dataSets));
+            spools.addAll(assign(catalog, stepWork, temporary, assignment, dataSets));
         }
         return new Allocation(catalog, spools, dataSets);
+    }
+
+    /** 一時データセットの置き場。ジョブごとに 1 つであり、終われば消える。 */
+    private Path temporaryArea(Job job) {
+        return workDirectory.resolve(job.name() + ".temp");
+    }
+
+    /**
+     * ステップのあとで処置を効かせる相手。
+     *
+     * @param temporary ジョブが終われば消えるか
+     */
+    private record Held(Path path, Disposition disposition, boolean temporary) {
     }
 
     /**
@@ -342,18 +361,19 @@ public final class JobRunner {
      *
      * @return ステップのあとで流し出すスプールのファイル
      */
-    private List<Path> assign(DataSetCatalog catalog, Path stepWork, DdAssignment assignment,
-                              List<DdTarget.DataSet> dataSets) {
+    private List<Path> assign(DataSetCatalog catalog, Path stepWork, Path temporary,
+                              DdAssignment assignment, List<Held> dataSets) {
         String name = assignment.name();
         switch (assignment.target()) {
             case DdTarget.DataSet target -> {
-                allocateDataSet(name, target);
-                dataSets.add(target);
-                catalog.assign(name, target.path());
-                if (target.disposition().status() == Disposition.Status.MOD) {
-                    // DISP=MOD は OPEN OUTPUT を末尾への書き足しへ変える (要件 FR-133)
-                    catalog.appendTo(name);
-                }
+                hold(catalog, name, target.path(), target.disposition(), false, dataSets);
+            }
+            case DdTarget.Temporary target -> {
+                // 置き場を決めるのはここである。ジョブが場所を知らないので、
+                // 同じジョブを同時に流しても互いの作業ファイルを踏まない
+                createDirectory(temporary);
+                hold(catalog, name, temporary.resolve(target.name()), target.disposition(),
+                        true, dataSets);
             }
             case DdTarget.Sysout ignored -> {
                 Path spool = stepWork.resolve(name + ".sysout");
@@ -376,12 +396,17 @@ public final class JobRunner {
             case DdTarget.Concatenation target -> {
                 for (DdTarget part : target.parts()) {
                     if (part instanceof DdTarget.DataSet dataSet) {
-                        allocateDataSet(name, dataSet);
-                        dataSets.add(dataSet);
+                        allocateDataSet(name, dataSet.path(), dataSet.disposition());
+                        dataSets.add(new Held(dataSet.path(), dataSet.disposition(), false));
+                    } else if (part instanceof DdTarget.Temporary held) {
+                        createDirectory(temporary);
+                        Path path = temporary.resolve(held.name());
+                        allocateDataSet(name, path, held.disposition());
+                        dataSets.add(new Held(path, held.disposition(), true));
                     }
                 }
                 Path joined = stepWork.resolve(name + ".concat");
-                writeBytes(joined, concatenate(target.parts(), name));
+                writeBytes(joined, concatenate(target.parts(), temporary, name));
                 copyAttributes(target.parts(), joined);
                 catalog.assign(name, joined);
             }
@@ -396,10 +421,21 @@ public final class JobRunner {
      * <b>ステップは動かない</b>。黙って作り直したり、無いものを空として読ませたりすると、
      * 名前を打ち間違えたジョブが「0 件処理した」と言って正常終了してしまう。
      */
-    private void allocateDataSet(String ddName, DdTarget.DataSet target) {
-        Path path = target.path();
+    /** 割り当てて目録へ入れ、あとで処置を効かせる相手として覚える。 */
+    private void hold(DataSetCatalog catalog, String ddName, Path path,
+                      Disposition disposition, boolean temporary, List<Held> dataSets) {
+        allocateDataSet(ddName, path, disposition);
+        dataSets.add(new Held(path, disposition, temporary));
+        catalog.assign(ddName, path);
+        if (disposition.status() == Disposition.Status.MOD) {
+            // DISP=MOD は OPEN OUTPUT を末尾への書き足しへ変える (要件 FR-133)
+            catalog.appendTo(ddName);
+        }
+    }
+
+    private void allocateDataSet(String ddName, Path path, Disposition disposition) {
         boolean exists = Files.exists(path);
-        switch (target.disposition().status()) {
+        switch (disposition.status()) {
             case NEW -> {
                 if (exists) {
                     throw new AllocationFailure("IEF344I " + ddName
@@ -432,13 +468,38 @@ public final class JobRunner {
      * {@code PASS} はどれも残す。目録をディレクトリそのものとしているので、
      * <b>載せる・外すの区別がない</b> (暫定判断 P-045)。
      */
-    private void dispose(List<DdTarget.DataSet> dataSets, boolean abended) {
-        for (DdTarget.DataSet target : dataSets) {
-            if (target.disposition().deletes(abended)) {
-                remove(target.path());
-                remove(DataSetAttributes.sidecarOf(target.path()));
+    private void dispose(List<Held> dataSets, boolean abended,
+                         Map<Path, Disposition.Action> lastAction) {
+        for (Held held : dataSets) {
+            Disposition.Action action = abended
+                    ? held.disposition().abnormal()
+                    : held.disposition().normal();
+            if (action == Disposition.Action.DELETE) {
+                remove(held.path());
+                remove(DataSetAttributes.sidecarOf(held.path()));
+                lastAction.remove(held.path());
+                continue;
+            }
+            lastAction.put(held.path(), action);
+        }
+    }
+
+    /**
+     * ジョブの終わりの後始末 (要件 FR-133)。
+     *
+     * <p>一時データセットは消える。ジョブの間だけ存在するものだからである。
+     *
+     * <p>{@code PASS} で残したものも消える。渡すのは<b>このジョブの後続ステップへ</b>で
+     * あって、次のジョブへではない。残したければ {@code CATLG} と書く。
+     */
+    private void endOfJob(Job job, Map<Path, Disposition.Action> lastAction) {
+        for (Map.Entry<Path, Disposition.Action> entry : lastAction.entrySet()) {
+            if (entry.getValue() == Disposition.Action.PASS) {
+                remove(entry.getKey());
+                remove(DataSetAttributes.sidecarOf(entry.getKey()));
             }
         }
+        deleteTree(temporaryArea(job));
     }
 
     /**
@@ -447,11 +508,12 @@ public final class JobRunner {
      * <p>読むときは<b>並べた順に 1 つのファイルに見える</b>。ここでは作業領域へ書き出して
      * 1 つのファイルにしている。読むだけの使い方でしか意味を持たない (暫定判断 P-044)。
      */
-    private byte[] concatenate(List<DdTarget> parts, String name) {
+    private byte[] concatenate(List<DdTarget> parts, Path temporary, String name) {
         java.io.ByteArrayOutputStream joined = new java.io.ByteArrayOutputStream();
         for (DdTarget part : parts) {
             byte[] bytes = switch (part) {
                 case DdTarget.DataSet dataSet -> readBytes(dataSet.path());
+                case DdTarget.Temporary held -> readBytes(temporary.resolve(held.name()));
                 case DdTarget.Inline inline -> inline.data();
                 case DdTarget.Dummy ignored -> new byte[0];
                 default -> throw new IllegalArgumentException(

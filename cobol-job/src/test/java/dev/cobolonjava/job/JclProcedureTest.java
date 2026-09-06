@@ -158,15 +158,16 @@ class JclProcedureTest {
     }
 
     @Test
-    @DisplayName("&& は 1 つの & を表す (FR-131)")
-    void doubledAmpersandsAreLiteral() {
+    @DisplayName("&& はシンボリックではなく一時データセットになる (FR-131, FR-133)")
+    void doubledAmpersandsMakeATemporaryDataSet() {
         Job job = job(
                 "//PAYROLL  JOB  (ACCT)",
                 "//STEP1    EXEC PGM=P",
                 "//WORK     DD   DSN=&&TEMP,DISP=NEW");
 
-        assertEquals(BASE.resolve("&TEMP"), assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).path());
+        // && は展開の段で 1 つの & になり、先頭の & が一時データセットを表す
+        assertEquals("TEMP", assertInstanceOf(DdTarget.Temporary.class,
+                job.steps().get(0).dd().get(0).target()).name());
     }
 
     @Test

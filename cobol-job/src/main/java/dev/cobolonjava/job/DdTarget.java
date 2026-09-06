@@ -26,6 +26,25 @@ public sealed interface DdTarget {
     }
 
     /**
+     * 一時データセット。JCL の {@code DSN=&&名前} にあたる。
+     *
+     * <p>ジョブの間だけ存在し、<b>終われば消える</b>。ステップの間で受け渡す作業ファイルが
+     * これであり、実資産のバッチではいちばんよく使われる形である。
+     *
+     * <p>場所を持たないのが要点である。置き場はジョブ実行が決めるので、同じジョブを
+     * 同時に何本流しても<b>互いの作業ファイルを踏まない</b>。
+     *
+     * @param name 名前。ジョブの中でこの名前が同じものを指す
+     */
+    record Temporary(String name, Disposition disposition) implements DdTarget {
+
+        /** 処置を書かない割当。 */
+        public Temporary(String name) {
+            this(name, Disposition.of(Disposition.Status.NEW));
+        }
+    }
+
+    /**
      * 標準出力。{@code SYSOUT=} にあたる。
      *
      * <p>ホストでは書いたものがスプールへ溜まる。ここでは実行の標準出力へ流す。

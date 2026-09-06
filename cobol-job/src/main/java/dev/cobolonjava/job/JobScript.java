@@ -18,7 +18,7 @@ import java.util.Locale;
  * JOB PAYROLL
  * STEP EXTRACT PGM=PAYEXT PARM=202609
  *   DD PAYIN DSN=data/pay.dat DISP=SHR
- *   DD PAYOUT DSN=work/extract.dat DISP=(NEW,CATLG)
+ *   DD PAYOUT DSN=&amp;WORK DISP=(NEW,PASS)
  *   DD SYSOUT SYSOUT
  * STEP REPORT PGM=PAYRPT
  *   WHEN RC EXTRACT = 0
@@ -318,8 +318,11 @@ public final class JobScript {
                 if (disposition == null) {
                     return;
                 }
-                dd.add(new DdAssignment(name, new DdTarget.DataSet(
-                        java.nio.file.Path.of(target.substring(4)), disposition)));
+                String written = target.substring(4);
+                // JCL と同じく、先頭が & のものは一時データセットである
+                dd.add(new DdAssignment(name, written.startsWith("&")
+                        ? new DdTarget.Temporary(written.substring(1), disposition)
+                        : new DdTarget.DataSet(java.nio.file.Path.of(written), disposition)));
                 return;
             }
             if (words.size() == 4) {

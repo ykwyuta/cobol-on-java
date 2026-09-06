@@ -257,6 +257,124 @@ class DispositionTest {
                 "何が起きたのかを見られるほうが役に立つ");
     }
 
+    // ---- 一時データセット ----
+
+    @Test
+    @DisplayName("一時データセットはステップの間で受け渡せる (FR-133)")
+    void aTemporaryDataSetIsPassedBetweenSteps() {
+        write("IN.DAT", "AAAAABBBBB", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=&&WORK,DISP=(NEW,PASS)",
+                "//STEP2    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=&&WORK,DISP=(OLD,DELETE)",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("AAAAABBBBB", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("一時データセットはジョブが終われば消える (FR-133)")
+    void aTemporaryDataSetGoesAwayWithTheJob() {
+        write("IN.DAT", "AAAAA", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=&&WORK,DISP=(NEW,PASS)");
+
+        assertEquals(0, result.returnCode());
+        // 置き場ごと消える。名前を知っていても次のジョブからは見えない
+        assertFalse(Files.exists(directory.resolve("work").resolve("J.temp")));
+        assertFalse(exists("WORK"));
+        assertFalse(exists("&WORK"));
+    }
+
+    @Test
+    @DisplayName("一時データセットは置き場を持たない (FR-133)")
+    void aTemporaryDataSetHasNoPlaceOfItsOwn() {
+        JobScript.Result parsed = JobScript.read(String.join("\n",
+                "JOB J",
+                "STEP STEP1 PGM=IEFBR14",
+                "  DD WORK DSN=&W DISP=(NEW,PASS)"));
+        assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
+
+        DdTarget.Temporary target = (DdTarget.Temporary)
+                parsed.job().steps().get(0).dd().get(0).target();
+        assertEquals("W", target.name());
+        assertEquals(Disposition.Action.PASS, target.disposition().normal());
+    }
+
+    @Test
+    @DisplayName("一時データセットにも DISP の前の検査は効く (FR-133)")
+    void aTemporaryDataSetIsStillChecked() {
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEFBR14",
+                "//WORK     DD   DSN=&&NOSUCH,DISP=OLD");
+
+        assertEquals(JobRunner.Status.FAILED, result.step("STEP1").status());
+        assertTrue(result.step("STEP1").failure().contains("DATA SET NOT FOUND"),
+                result.step("STEP1").failure());
+    }
+
+    // ---- PASS ----
+
+    @Test
+    @DisplayName("PASS で残したものはジョブが終われば消える (FR-133)")
+    void aPassedDataSetGoesAwayWithTheJob() {
+        write("IN.DAT", "AAAAA", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,PASS)");
+
+        assertEquals(0, result.returnCode());
+        // 渡すのはこのジョブの後続ステップへであって、次のジョブへではない
+        assertFalse(exists("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("あとの CATLG が PASS を上書きする (FR-133)")
+    void aLaterCatlgKeepsTheDataSet() {
+        write("IN.DAT", "AAAAA", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,PASS)",
+                "//STEP2    EXEC PGM=IEFBR14",
+                "//KEEPIT   DD   DSN=OUT.DAT,DISP=(OLD,CATLG)");
+
+        assertEquals(0, result.returnCode());
+        assertTrue(exists("OUT.DAT"), "いちばん新しい処置が CATLG なので残る");
+    }
+
+    @Test
+    @DisplayName("PASS したものを後続ステップが消せる (FR-133)")
+    void aLaterStepCanDeleteAPassedDataSet() {
+        write("IN.DAT", "AAAAA", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,PASS)",
+                "//STEP2    EXEC PGM=IEFBR14",
+                "//DROPIT   DD   DSN=OUT.DAT,DISP=(OLD,DELETE)");
+
+        assertEquals(0, result.returnCode());
+        assertFalse(exists("OUT.DAT"));
+    }
+
     // ---- 宣言的形式 ----
 
     @Test

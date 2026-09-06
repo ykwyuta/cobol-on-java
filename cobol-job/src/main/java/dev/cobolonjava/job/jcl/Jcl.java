@@ -362,6 +362,11 @@ public final class Jcl {
                 report(card, "DD needs DSN=, SYSOUT=, DUMMY or *");
                 return null;
             }
+            // 先頭が & のものは一時データセットである。シンボリックの展開を抜けた
+            // あとなので、ここまで残っている & は名前の一部である
+            if (name.startsWith("&")) {
+                return new DdTarget.Temporary(name.substring(1), disposition);
+            }
             return new DdTarget.DataSet(base.resolve(name), disposition);
         }
 
