@@ -51,29 +51,6 @@ public final class Dfsort extends UtilityProgram {
     /** 整列の出力。 */
     private static final String SORTOUT = "SORTOUT";
 
-    /** 鍵とふるい分けで使えるデータの形。 */
-    private enum Format {
-        /** 文字。バイトの並びで比べる。 */
-        CH,
-        /** 符号なし 2 進数。バイトの並びで比べれば値の順になる。 */
-        BI,
-        /** ゾーン 10 進数。 */
-        ZD,
-        /** パック 10 進数。 */
-        PD,
-        /** 符号付き固定 2 進数。 */
-        FI
-    }
-
-    /** レコードの中の 1 か所。位置は 0 から数える。 */
-    private record Field(int offset, int length, Format format, boolean ascending) {
-
-        /** 昇順の場所。鍵以外では順は使われない。 */
-        static Field at(int offset, int length, Format format) {
-            return new Field(offset, length, format, true);
-        }
-    }
-
     /** ふるい分けの 1 つ。 */
     private sealed interface Test {
         boolean holds(byte[] record, CodePage codePage);
@@ -111,25 +88,25 @@ public final class Dfsort extends UtilityProgram {
     }
 
     /** 場所と定数を比べる。 */
-    private record Constant(Field field, String relation, byte[] bytes, Decimal number)
+    private record Constant(SortField field, String relation, byte[] bytes, Decimal number)
             implements Test {
         @Override
         public boolean holds(byte[] record, CodePage codePage) {
             int order = bytes != null
-                    ? compareBytes(slice(record, field, codePage), bytes)
-                    : numberOf(record, field, codePage).compareTo(number);
+                    ? SortField.compareBytes(field.slice(record, codePage), bytes)
+                    : field.number(record, codePage).compareTo(number);
             return relates(order, relation);
         }
     }
 
     /** 場所と場所を比べる。 */
-    private record Between(Field left, String relation, Field right) implements Test {
+    private record Between(SortField left, String relation, SortField right) implements Test {
         @Override
         public boolean holds(byte[] record, CodePage codePage) {
-            int order = left.format() == Format.CH || left.format() == Format.BI
-                    ? compareBytes(slice(record, left, codePage), slice(record, right, codePage))
-                    : numberOf(record, left, codePage)
-                            .compareTo(numberOf(record, right, codePage));
+            int order = left.format() == SortField.Format.CH || left.format() == SortField.Format.BI
+                    ? SortField.compareBytes(left.slice(record, codePage), right.slice(record, codePage))
+                    : left.number(record, codePage)
+                            .compareTo(right.number(record, codePage));
             return relates(order, relation);
         }
     }
@@ -151,7 +128,7 @@ public final class Dfsort extends UtilityProgram {
     private final List<String> notes = new ArrayList<>();
 
     /** 並べ替えの鍵。空なら並べ替えない。 */
-    private List<Field> sortFields = List.of();
+    private List<SortField> sortFields = List.of();
     /** {@code FIELDS=COPY} または {@code OPTION COPY}。 */
     private boolean copying;
     /** {@code MERGE}。入力は {@code SORTINnn} である。 */
@@ -165,7 +142,7 @@ public final class Dfsort extends UtilityProgram {
     /** {@code OUTFIL} の並び。書かれていなければ空。 */
     private final List<OutFile> outFiles = new ArrayList<>();
     /** {@code SUM} で足す場所。書かれていなければ {@code null}。 */
-    private List<Field> sumFields;
+    private List<SortField> sumFields;
     /** {@code SUM FIELDS=NONE}。 */
     private boolean sumNone;
     /** 制御文に {@code SORT} も {@code MERGE} も書かれていたか。 */
@@ -205,7 +182,7 @@ public final class Dfsort extends UtilityProgram {
         DataSetAttributes attributes = DataSetAttributes.read(inputs.get(0));
         List<byte[]> records = new ArrayList<>();
         for (Path input : inputs) {
-            records.addAll(split(readBytes(input), attributes));
+            records.addAll(Records.split(readBytes(input), attributes));
         }
         int read = records.size();
 
@@ -349,8 +326,8 @@ public final class Dfsort extends UtilityProgram {
     /** 並べ替えは {@link SortWork} に任せる。COBOL の {@code SORT} と同じ道である。 */
     private List<byte[]> ordered(List<byte[]> records, CodePage codePage) {
         List<SortKey> keys = new ArrayList<>();
-        for (Field field : sortFields) {
-            keys.add(keyOf(field));
+        for (SortField field : sortFields) {
+            keys.add(field.key());
         }
         SortWork work = new SortWork(keys, codePage);
         for (byte[] record : records) {
@@ -386,8 +363,8 @@ public final class Dfsort extends UtilityProgram {
     }
 
     private boolean sameKey(byte[] left, byte[] right, CodePage codePage) {
-        for (Field field : sortFields) {
-            if (compareBytes(slice(left, field, codePage), slice(right, field, codePage)) != 0) {
+        for (SortField field : sortFields) {
+            if (SortField.compareBytes(field.slice(left, codePage), field.slice(right, codePage)) != 0) {
                 return false;
             }
         }
@@ -395,9 +372,9 @@ public final class Dfsort extends UtilityProgram {
     }
 
     private void add(byte[] into, byte[] record, CodePage codePage) {
-        for (Field field : sumFields) {
-            Decimal total = numberOf(into, field, codePage).add(numberOf(record, field, codePage));
-            byte[] bytes = encode(field, total);
+        for (SortField field : sumFields) {
+            Decimal total = field.number(into, codePage).add(field.number(record, codePage));
+            byte[] bytes = field.encode(total);
             if (bytes == null) {
                 fail("ICE000I SUM CANNOT ADD FORMAT " + field.format());
                 return;
@@ -420,7 +397,7 @@ public final class Dfsort extends UtilityProgram {
             out.add(built);
         }
         for (int i = 0; i < out.size(); i++) {
-            out.set(i, padded(out.get(i), width, codePage.space()));
+            out.set(i, SortField.padded(out.get(i), width, codePage.space()));
         }
         return out;
     }
@@ -466,9 +443,9 @@ public final class Dfsort extends UtilityProgram {
             if (digitsOnly(item) && i + 1 < items.size() && digitsOnly(items.get(i + 1).trim())) {
                 int offset = number(item, 1) - 1;
                 int length = number(items.get(i + 1).trim(), 0);
-                buffer.writeBytes(slice(record, offset, length, codePage.space()));
+                buffer.writeBytes(SortField.slice(record, offset, length, codePage.space()));
                 i++;
-                if (i + 1 < items.size() && formatOf(items.get(i + 1).trim()) != null) {
+                if (i + 1 < items.size() && SortField.formatOf(items.get(i + 1).trim()) != null) {
                     // 形は書かれていてもよい。写すだけなので中身は変わらない
                     i++;
                 }
@@ -483,73 +460,9 @@ public final class Dfsort extends UtilityProgram {
     private void write(ProgramContext context, String ddName, List<byte[]> records,
                        DataSetAttributes attributes, boolean reformatted) {
         Path path = pathOf(context, ddName);
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        int width = 0;
-        for (byte[] record : records) {
-            width = Math.max(width, record.length);
-        }
-        switch (attributes.format()) {
-            case FIXED -> {
-                int length = reformatted ? width : attributes.recordLength();
-                for (byte[] record : records) {
-                    buffer.writeBytes(padded(record, length, context.codePage().space()));
-                }
-                writeBytes(path, buffer.toByteArray());
-                new DataSetAttributes(RecordFormat.FIXED, length, context.codePage()).write(path);
-            }
-            case VARIABLE -> {
-                for (byte[] record : records) {
-                    buffer.writeBytes(record);
-                }
-                writeBytes(path, buffer.toByteArray());
-                attributes.write(path);
-            }
-            case LINE -> {
-                byte newline = context.codePage().encode("\n")[0];
-                for (byte[] record : records) {
-                    buffer.writeBytes(record);
-                    buffer.write(newline);
-                }
-                writeBytes(path, buffer.toByteArray());
-                new DataSetAttributes(RecordFormat.LINE, Math.max(width, 1), context.codePage())
-                        .write(path);
-            }
-            default -> throw new IllegalStateException("unknown format " + attributes.format());
-        }
-    }
-
-    // ---- レコードへの切り分け ----
-
-    /**
-     * バイト列をレコードへ切る。
-     *
-     * <p>可変長では長さの 4 バイト (RDW) を<b>レコードに含めたまま</b>持つ。制御文の位置は
-     * それを数に入れるからである。
-     */
-    private static List<byte[]> split(byte[] bytes, DataSetAttributes attributes) {
-        List<byte[]> out = new ArrayList<>();
-        switch (attributes.format()) {
-            case FIXED -> {
-                int length = Math.max(attributes.recordLength(), 1);
-                for (int at = 0; at < bytes.length; at += length) {
-                    out.add(Arrays.copyOfRange(bytes, at, Math.min(at + length, bytes.length)));
-                }
-            }
-            case VARIABLE -> {
-                int at = 0;
-                while (at + 4 <= bytes.length) {
-                    int length = ((bytes[at] & 0xFF) << 8) | (bytes[at + 1] & 0xFF);
-                    if (length < 4 || at + length > bytes.length) {
-                        break;
-                    }
-                    out.add(Arrays.copyOfRange(bytes, at, at + length));
-                    at += length;
-                }
-            }
-            case LINE -> out.addAll(lines(bytes, attributes.codePage()));
-            default -> throw new IllegalStateException("unknown format " + attributes.format());
-        }
-        return out;
+        Records.Framed framed = Records.join(records, attributes, context.codePage(), reformatted);
+        writeBytes(path, framed.bytes());
+        framed.attributes().write(path);
     }
 
     // ---- 制御文の読み取り ----
@@ -645,7 +558,7 @@ public final class Dfsort extends UtilityProgram {
             return;
         }
         List<String> parts = JclOperands.split(JclOperands.unwrap(fields));
-        List<Field> out = new ArrayList<>();
+        List<SortField> out = new ArrayList<>();
         int at = 0;
         while (at < parts.size()) {
             if (at + 1 >= parts.size()) {
@@ -655,9 +568,9 @@ public final class Dfsort extends UtilityProgram {
             int position = number(parts.get(at).trim(), -1);
             int length = number(parts.get(at + 1).trim(), -1);
             at += 2;
-            Format kind = format == null ? null : formatOf(format);
-            if (at < parts.size() && formatOf(parts.get(at).trim()) != null) {
-                kind = formatOf(parts.get(at).trim());
+            SortField.Format kind = format == null ? null : SortField.formatOf(format);
+            if (at < parts.size() && SortField.formatOf(parts.get(at).trim()) != null) {
+                kind = SortField.formatOf(parts.get(at).trim());
                 at++;
             }
             boolean ascending = true;
@@ -669,7 +582,7 @@ public final class Dfsort extends UtilityProgram {
                 fail("ICE000I SORT FIELDS IS NOT VALID: " + fields);
                 return;
             }
-            Field field = new Field(position - 1, length, kind, ascending);
+            SortField field = new SortField(position - 1, length, kind, ascending);
             if (!supported(field)) {
                 return;
             }
@@ -690,7 +603,7 @@ public final class Dfsort extends UtilityProgram {
             return;
         }
         List<String> parts = JclOperands.split(JclOperands.unwrap(fields));
-        List<Field> out = new ArrayList<>();
+        List<SortField> out = new ArrayList<>();
         int at = 0;
         while (at < parts.size()) {
             if (at + 1 >= parts.size()) {
@@ -700,7 +613,7 @@ public final class Dfsort extends UtilityProgram {
             int position = number(parts.get(at).trim(), -1);
             int length = number(parts.get(at + 1).trim(), -1);
             at += 2;
-            Format kind = at < parts.size() ? formatOf(parts.get(at).trim()) : null;
+            SortField.Format kind = at < parts.size() ? SortField.formatOf(parts.get(at).trim()) : null;
             if (kind != null) {
                 at++;
             }
@@ -708,11 +621,11 @@ public final class Dfsort extends UtilityProgram {
                 fail("ICE000I SUM FIELDS IS NOT VALID: " + fields);
                 return;
             }
-            if (kind == Format.CH) {
+            if (kind == SortField.Format.CH) {
                 fail("ICE000I SUM CANNOT ADD FORMAT CH");
                 return;
             }
-            Field field = Field.at(position - 1, length, kind);
+            SortField field = SortField.at(position - 1, length, kind);
             if (!supported(field)) {
                 return;
             }
@@ -874,11 +787,11 @@ public final class Dfsort extends UtilityProgram {
         int position = number(parts.get(at).trim(), -1);
         int length = number(parts.get(at + 1).trim(), -1);
         at += 2;
-        Format kind = formatOf(parts.get(at).trim());
+        SortField.Format kind = SortField.formatOf(parts.get(at).trim());
         if (kind != null) {
             at++;
         } else if (format != null) {
-            kind = formatOf(format);
+            kind = SortField.formatOf(format);
         }
         if (position < 1 || length < 1 || kind == null || at >= parts.size()) {
             fail("ICE000I COND IS NOT VALID");
@@ -890,7 +803,7 @@ public final class Dfsort extends UtilityProgram {
             fail("ICE000I COND RELATION IS NOT VALID: " + relation);
             return null;
         }
-        Field left = Field.at(position - 1, length, kind);
+        SortField left = SortField.at(position - 1, length, kind);
         if (!supported(left)) {
             return null;
         }
@@ -900,20 +813,20 @@ public final class Dfsort extends UtilityProgram {
         if (digitsOnly(value) && at < parts.size() && digitsOnly(parts.get(at).trim())) {
             int rightLength = number(parts.get(at).trim(), -1);
             at++;
-            Format rightKind = kind;
-            if (at < parts.size() && formatOf(parts.get(at).trim()) != null) {
-                rightKind = formatOf(parts.get(at).trim());
+            SortField.Format rightKind = kind;
+            if (at < parts.size() && SortField.formatOf(parts.get(at).trim()) != null) {
+                rightKind = SortField.formatOf(parts.get(at).trim());
                 at++;
             }
             cursor[0] = at;
-            Field right = Field.at(number(value, 1) - 1, rightLength, rightKind);
+            SortField right = SortField.at(number(value, 1) - 1, rightLength, rightKind);
             return supported(right) ? new Between(left, relation, right) : null;
         }
         cursor[0] = at;
         return constant(left, relation, value, codePage);
     }
 
-    private Test constant(Field field, String relation, String value, CodePage codePage) {
+    private Test constant(SortField field, String relation, String value, CodePage codePage) {
         if (value.length() > 2 && (value.charAt(0) == 'C' || value.charAt(0) == 'X')
                 && value.charAt(1) == '\'') {
             byte[] bytes = literal(value, codePage);
@@ -922,16 +835,16 @@ public final class Dfsort extends UtilityProgram {
                 return null;
             }
             byte filler = value.charAt(0) == 'C' ? codePage.space() : 0;
-            return new Constant(field, relation, padded(bytes, field.length(), filler), null);
+            return new Constant(field, relation, SortField.padded(bytes, field.length(), filler), null);
         }
         Decimal number = decimal(value);
         if (number == null) {
             fail("ICE000I COND VALUE IS NOT VALID: " + value);
             return null;
         }
-        if (field.format() == Format.CH) {
+        if (field.format() == SortField.Format.CH) {
             byte[] bytes = codePage.encode(value);
-            return new Constant(field, relation, padded(bytes, field.length(), codePage.space()),
+            return new Constant(field, relation, SortField.padded(bytes, field.length(), codePage.space()),
                     null);
         }
         return new Constant(field, relation, null, number);
@@ -939,107 +852,13 @@ public final class Dfsort extends UtilityProgram {
 
     // ---- 形と値 ----
 
-    private static SortKey keyOf(Field field) {
-        return new SortKey(field.offset(), field.length(), field.ascending(), itemOf(field));
-    }
-
-    /**
-     * その形を数として比べるときの記述子。
-     *
-     * <p>{@code CH} と {@code BI} は {@code null} である。<b>バイトの並びで比べれば値の順に
-     * なる</b>からで、符号なし 2 進数についてはこれが厳密に正しい。
-     */
-    private static NumericItem itemOf(Field field) {
-        return switch (field.format()) {
-            case CH, BI -> null;
-            case ZD -> NumericItem.of("S9(" + field.length() + ")", Usage.DISPLAY);
-            case PD -> NumericItem.of("S9(" + (2 * field.length() - 1) + ")", Usage.COMP_3);
-            case FI -> switch (field.length()) {
-                case 1, 2 -> NumericItem.of("S9(4)", Usage.COMP);
-                case 3, 4 -> NumericItem.of("S9(9)", Usage.COMP);
-                case 8 -> NumericItem.of("S9(18)", Usage.COMP);
-                default -> null;
-            };
-        };
-    }
-
     /** その場所を扱えるか。扱えなければ理由を残す。 */
-    private boolean supported(Field field) {
-        if (field.format() == Format.FI && itemOf(field) == null) {
-            fail("ICE000I FI FIELD LENGTH IS NOT SUPPORTED YET: " + field.length());
-            return false;
+    private boolean supported(SortField field) {
+        if (field.supported()) {
+            return true;
         }
-        if (field.format() == Format.FI && field.length() != 2 && field.length() != 4
-                && field.length() != 8) {
-            fail("ICE000I FI FIELD LENGTH IS NOT SUPPORTED YET: " + field.length());
-            return false;
-        }
-        return true;
-    }
-
-    private static Decimal numberOf(byte[] record, Field field, CodePage codePage) {
-        byte[] bytes = slice(record, field, codePage);
-        if (field.format() == Format.BI || field.format() == Format.CH) {
-            return Decimal.of(new BigInteger(1, bytes.length == 0 ? new byte[] {0} : bytes), 0);
-        }
-        NumericItem item = itemOf(field);
-        try {
-            return item.decode(bytes);
-        } catch (RuntimeException e) {
-            // 数として読めないバイトは 0 とみなす。ふるい分けを止めないためである
-            return Decimal.zero(0);
-        }
-    }
-
-    private static byte[] encode(Field field, Decimal value) {
-        if (field.format() == Format.BI) {
-            byte[] out = new byte[field.length()];
-            byte[] bytes = value.magnitude().toByteArray();
-            int from = Math.max(0, bytes.length - field.length());
-            int to = out.length - (bytes.length - from);
-            System.arraycopy(bytes, from, out, Math.max(to, 0), bytes.length - from);
-            return out;
-        }
-        NumericItem item = itemOf(field);
-        return item == null ? null : item.encode(value);
-    }
-
-    private static byte[] slice(byte[] record, Field field, CodePage codePage) {
-        return slice(record, field.offset(), field.length(),
-                field.format() == Format.CH ? codePage.space() : (byte) 0);
-    }
-
-    private static byte[] slice(byte[] record, int offset, int length, byte filler) {
-        byte[] out = new byte[Math.max(length, 0)];
-        Arrays.fill(out, filler);
-        for (int i = 0; i < out.length && offset + i < record.length; i++) {
-            if (offset + i >= 0) {
-                out[i] = record[offset + i];
-            }
-        }
-        return out;
-    }
-
-    private static byte[] padded(byte[] bytes, int length, byte filler) {
-        if (bytes.length == length) {
-            return bytes;
-        }
-        byte[] out = new byte[length];
-        Arrays.fill(out, filler);
-        System.arraycopy(bytes, 0, out, 0, Math.min(bytes.length, length));
-        return out;
-    }
-
-    /** バイトの並びで比べる。EBCDIC の照合順序はバイトの値そのものである。 */
-    private static int compareBytes(byte[] left, byte[] right) {
-        int length = Math.min(left.length, right.length);
-        for (int i = 0; i < length; i++) {
-            int order = Integer.compare(left[i] & 0xFF, right[i] & 0xFF);
-            if (order != 0) {
-                return order;
-            }
-        }
-        return Integer.compare(left.length, right.length);
+        fail("ICE000I FI FIELD LENGTH IS NOT SUPPORTED YET: " + field.length());
+        return false;
     }
 
     private static boolean relates(int order, String relation) {
@@ -1058,17 +877,6 @@ public final class Dfsort extends UtilityProgram {
         return switch (text) {
             case "EQ", "NE", "GT", "GE", "LT", "LE" -> true;
             default -> false;
-        };
-    }
-
-    private static Format formatOf(String text) {
-        return switch (text.toUpperCase(Locale.ROOT)) {
-            case "CH" -> Format.CH;
-            case "BI" -> Format.BI;
-            case "ZD" -> Format.ZD;
-            case "PD" -> Format.PD;
-            case "FI" -> Format.FI;
-            default -> null;
         };
     }
 

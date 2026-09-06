@@ -1268,7 +1268,7 @@ SEQUENCE IS` は構文誤りとして報告する。
 | `IEBGENER` | 制御文なしの写し | `GENERATE` / `RECORD` / `OUTREC` による編集 |
 | `IDCAMS` | `REPRO` / `DELETE` / `DEFINE CLUSTER` / `LISTCAT` | `EXPORT` / `IMPORT` / `PRINT` / `ALTER` / `VERIFY` |
 | `SORT` | `SORT` / `MERGE` / `INCLUDE` / `OMIT` / `SUM` / `INREC` / `OUTREC` / `OUTFIL` / `OPTION COPY` / `END` | `ALTSEQ` / `MODS` / `JOINKEYS` |
-| `ICETOOL` | — | `TOOLIN` のすべて |
+| `ICETOOL` | `MODE` / `COPY` / `SORT` / `COUNT` / `SELECT` / `DISPLAY` / `OCCUR` / `DEFAULTS` | `SPLICE` / `STATS` / `RANGE` / `UNIQUE` / `VERIFY` / `RESIZE` / `SUBSET` / `MERGE` |
 
 **なぜこうしたか**: 読み飛ばすと、編集したつもりの出力がそのままの写しになる。
 どこで狂ったのかを追うのが難しい。
@@ -1293,9 +1293,14 @@ SEQUENCE IS` は構文誤りとして報告する。
   `SAVE` だけである。`STARTREC` / `ENDREC` / `SPLIT` / `HEADER` / `TRAILER` は読めない
 - `SORT` の覚え書きはホストの書式に似せていない。`ICE143I` / `ICE054I` / `ICE052I` の
   3 行だけであり、行数や統計は合わない
+- `ICETOOL` の `DISPLAY` と `OCCUR` の報告書もホストの書式に似せていない。見出しと値が
+  並ぶだけで、桁揃え・改頁・小計・`HEADER` / `BLANK` / `TOTAL` は無い
+- `ICETOOL` の `SELECT` は `ON` に書いた場所で並べ替えてから組にする。ホストは入力の順を
+  保つ形も選べるが、ここでは並べ替えた順で出る
 
-**解消条件**: `ICETOOL` と `OUTFIL` は実資産で使われている頻度を見てから決める。
-形と `OUTREC` の項目は、読めないものに出会った時点で足す。
+**解消条件**: 残りの操作子と `OUTFIL` の副オペランドは、実資産で使われている頻度を
+見てから決める。形と `OUTREC` の項目は、読めないものに出会った時点で足す。
+報告書の書式は、ホストの出力を読む道具が実際に使われていることが分かったら揃える。
 
 ---
 

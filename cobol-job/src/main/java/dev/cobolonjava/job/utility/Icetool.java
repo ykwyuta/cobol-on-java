@@ -1,22 +1,620 @@
 package dev.cobolonjava.job.utility;
 
+import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.file.DataSetAttributes;
+import dev.cobolonjava.runtime.file.DataSetCatalog;
 import dev.cobolonjava.runtime.program.ProgramContext;
+import dev.cobolonjava.runtime.sort.SortKey;
+import dev.cobolonjava.runtime.sort.SortWork;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * {@code ICETOOL} (要件 FR-137)。
  *
- * <p>{@code TOOLIN} に書いた操作を並べて実行する道具である。1 つ 1 つの操作は
- * {@link Dfsort} を呼び出す形になるが、{@code COUNT}、{@code DISPLAY}、{@code OCCUR} など
- * 整列とは別の働きも持つ。ここではまだ実装しておらず、<b>黙って何もしない代わりに</b>
- * 対応していないことを報告する (暫定判断 P-047)。
+ * <p>{@code TOOLIN} に書いた操作を上から順に実行する道具である。整列そのものは持たず、
+ * <b>{@code SORT} を呼び出す</b>。だから鍵の扱いが 2 か所に分かれない。
+ * {@code ICETOOL} が足しているのは「同じ入力を何度も通す」「重なりを見つける」
+ * 「数える」という、整列の周りの仕事である。
+ *
+ * <h2>操作ごとに復帰コードが立ち、いちばん大きいものが残る</h2>
+ * <p>{@code MODE STOP} (既定) なら、失敗した操作のところで打ち切る。
+ * {@code MODE CONTINUE} なら最後まで通す。「消してから作る」のような並びが
+ * 成り立つかどうかがこれで変わる。
  */
 public final class Icetool extends UtilityProgram {
 
+    /** 操作を書く入り口。 */
+    private static final String TOOLIN = "TOOLIN";
+    /** 覚え書きの出し先。 */
+    private static final String TOOLMSG = "TOOLMSG";
+    /** 呼び出した {@code SORT} の覚え書きの出し先。 */
+    private static final String DFSMSG = "DFSMSG";
+
+    private int highest;
+    /** 失敗した操作のところで打ち切るか。 */
+    private boolean stopping = true;
+
     @Override
     public void run(Storage storage, ProgramContext context, DataView[] arguments) {
-        print(context, "ICE000I ICETOOL IS NOT SUPPORTED YET - USE SORT INSTEAD");
-        context.setReturnCode(16);
+        highest = 0;
+        for (String statement : statements(control(context, TOOLIN))) {
+            int before = highest;
+            execute(context, statement);
+            if (stopping && highest > before && highest >= 12) {
+                print(context, TOOLMSG, "ICE602I OPERATION SEQUENCE STOPPED");
+                break;
+            }
+        }
+        print(context, TOOLMSG, "ICE052I 0 END OF ICETOOL. RETURN CODE IS " + highest);
+        context.setReturnCode(highest);
+    }
+
+    /**
+     * 操作をつなぐ。
+     *
+     * <p>行末のハイフンは次へ続く。1 桁目の {@code *} は注釈である。
+     */
+    private static List<String> statements(List<String> lines) {
+        List<String> out = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (String line : lines) {
+            if (line.startsWith("*")) {
+                continue;
+            }
+            String text = line.strip();
+            if (text.isEmpty()) {
+                continue;
+            }
+            boolean continued = text.endsWith("-");
+            if (continued) {
+                text = text.substring(0, text.length() - 1).stripTrailing();
+            }
+            current.append(current.isEmpty() ? "" : " ").append(text);
+            if (!continued) {
+                out.add(current.toString());
+                current.setLength(0);
+            }
+        }
+        if (!current.isEmpty()) {
+            out.add(current.toString());
+        }
+        return out;
+    }
+
+    private void execute(ProgramContext context, String statement) {
+        List<String> words = words(statement);
+        if (words.isEmpty()) {
+            return;
+        }
+        String operator = words.get(0).toUpperCase(Locale.ROOT);
+        print(context, TOOLMSG, "ICE627I " + operator);
+        switch (operator) {
+            case "MODE" -> mode(context, words);
+            case "COPY" -> copy(context, statement);
+            case "SORT" -> sort(context, statement);
+            case "COUNT" -> count(context, statement);
+            case "DISPLAY" -> display(context, statement);
+            case "OCCUR" -> occur(context, statement);
+            case "SELECT" -> select(context, statement);
+            case "DEFAULTS" -> print(context, TOOLMSG, "ICE628I DEFAULTS ARE IN EFFECT");
+            default -> {
+                print(context, TOOLMSG, "ICE600I OPERATOR IS NOT SUPPORTED YET: " + operator);
+                fail(12);
+            }
+        }
+    }
+
+    /** {@code MODE STOP} と {@code MODE CONTINUE}。 */
+    private void mode(ProgramContext context, List<String> words) {
+        String written = words.size() < 2 ? "" : words.get(1).toUpperCase(Locale.ROOT);
+        switch (written) {
+            case "STOP" -> stopping = true;
+            case "CONTINUE" -> stopping = false;
+            default -> {
+                print(context, TOOLMSG, "ICE600I MODE IS NOT VALID: " + written);
+                fail(12);
+            }
+        }
+    }
+
+    // ---- 写しと整列 ----
+
+    /** {@code COPY FROM(dd) TO(dd,...) [USING(cccc)]}。 */
+    private void copy(ProgramContext context, String statement) {
+        transfer(context, statement, false);
+    }
+
+    /** {@code SORT FROM(dd) TO(dd,...) USING(cccc)}。 */
+    private void sort(ProgramContext context, String statement) {
+        transfer(context, statement, true);
+    }
+
+    /**
+     * 入力を出力へ通す。
+     *
+     * <p>{@code USING} があれば {@code SORT} を呼び、その制御文で通す。無ければそのまま
+     * 写す。<b>整列の規則を持たない</b>のがこの道具の要点である。
+     */
+    private void transfer(ProgramContext context, String statement, boolean sorting) {
+        Path from = ddOf(context, statement, "FROM");
+        List<Path> to = ddsOf(context, statement, "TO");
+        String using = parameter(statement, "USING");
+        if (from == null || to.isEmpty()) {
+            print(context, TOOLMSG, "ICE601I THE OPERATION NEEDS FROM AND TO");
+            fail(12);
+            return;
+        }
+        if (sorting && using == null) {
+            print(context, TOOLMSG, "ICE601I SORT NEEDS USING");
+            fail(12);
+            return;
+        }
+        if (!Files.isReadable(from)) {
+            print(context, TOOLMSG, "ICE603I INPUT DATA SET NOT FOUND");
+            fail(12);
+            return;
+        }
+        if (using != null) {
+            int code = delegate(context, from, to.get(0), using);
+            fail(code);
+            if (code >= 12) {
+                return;
+            }
+        } else {
+            copyBytes(from, to.get(0));
+        }
+        for (int i = 1; i < to.size(); i++) {
+            copyBytes(to.get(0), to.get(i));
+        }
+        print(context, TOOLMSG, "ICE606I RECORDS PROCESSED: " + recordsIn(to.get(0)));
+    }
+
+    /**
+     * {@code SORT} を呼ぶ (要件 FR-137)。
+     *
+     * <p>DD 名を付け替えた目録を渡すだけである。{@code SORT} から見れば普通に
+     * {@code SORTIN} を読んで {@code SORTOUT} へ書いている。
+     *
+     * @param using {@code USING(cccc)} の名前。制御文は {@code ccccCNTL} にある
+     * @return 呼び先の復帰コード
+     */
+    private int delegate(ProgramContext context, Path from, Path to, String using) {
+        DataSetCatalog catalog = new DataSetCatalog(context.catalog().directory());
+        catalog.assign("SORTIN", from);
+        catalog.assign("SORTOUT", to);
+        catalog.assign("SYSIN", context.catalog().resolve(using + "CNTL"));
+        if (context.catalog().isAssigned(DFSMSG)) {
+            catalog.assign("SYSPRINT", context.catalog().resolve(DFSMSG));
+        }
+        ProgramContext sub = context.withCatalog(catalog);
+        new Dfsort().runFresh(sub, new DataView[0]);
+        return sub.returnCode();
+    }
+
+    // ---- 数える ----
+
+    /**
+     * {@code COUNT FROM(dd)}。
+     *
+     * <p>{@code EMPTY} などを書けば、件数が期待どおりでないときに復帰コードが立つ。
+     * 「入力が空なら後続を飛ばす」という並びがこれで書ける。
+     */
+    private void count(ProgramContext context, String statement) {
+        Path from = ddOf(context, statement, "FROM");
+        if (from == null || !Files.isReadable(from)) {
+            print(context, TOOLMSG, "ICE603I INPUT DATA SET NOT FOUND");
+            fail(12);
+            return;
+        }
+        int records = recordsIn(from);
+        print(context, TOOLMSG, "ICE628I RECORD COUNT: " + records);
+        Boolean held = expectation(statement, records);
+        if (held != null && !held) {
+            print(context, TOOLMSG, "ICE607I THE RECORD COUNT IS NOT AS EXPECTED");
+            fail(12);
+        }
+    }
+
+    /**
+     * 件数についての期待。
+     *
+     * @return 書かれていなければ {@code null}
+     */
+    private static Boolean expectation(String statement, int records) {
+        if (hasWord(statement, "EMPTY")) {
+            return records == 0;
+        }
+        if (hasWord(statement, "NOTEMPTY")) {
+            return records > 0;
+        }
+        String higher = parameter(statement, "HIGHER");
+        if (higher != null) {
+            return records > number(higher, -1);
+        }
+        String lower = parameter(statement, "LOWER");
+        if (lower != null) {
+            return records < number(lower, -1);
+        }
+        String equal = parameter(statement, "EQUAL");
+        if (equal != null) {
+            return records == number(equal, -1);
+        }
+        return null;
+    }
+
+    // ---- 見せる ----
+
+    /** {@code DISPLAY FROM(dd) LIST(dd) ON(p,l,fmt)...}。 */
+    private void display(ProgramContext context, String statement) {
+        Path from = ddOf(context, statement, "FROM");
+        String list = name(statement, "LIST");
+        List<SortField> fields = fieldsOf(context, statement);
+        if (from == null || list == null || fields == null) {
+            fail(12);
+            return;
+        }
+        if (!Files.isReadable(from)) {
+            print(context, TOOLMSG, "ICE603I INPUT DATA SET NOT FOUND");
+            fail(12);
+            return;
+        }
+        String title = quoted(statement, "TITLE");
+        if (title != null) {
+            print(context, list, title);
+        }
+        CodePage codePage = context.codePage();
+        for (byte[] record : recordsOf(from)) {
+            List<String> columns = new ArrayList<>();
+            for (SortField field : fields) {
+                columns.add(shown(record, field, codePage));
+            }
+            print(context, list, String.join("  ", columns));
+        }
+    }
+
+    /**
+     * {@code OCCUR FROM(dd) LIST(dd) ON(p,l,fmt)}。
+     *
+     * <p>値ごとの件数を並べる。どの値が何件あるかを知りたいだけのときに、整列と
+     * 数え上げをジョブへ書かずに済む。
+     */
+    private void occur(ProgramContext context, String statement) {
+        Path from = ddOf(context, statement, "FROM");
+        String list = name(statement, "LIST");
+        List<SortField> fields = fieldsOf(context, statement);
+        if (from == null || list == null || fields == null || fields.isEmpty()) {
+            fail(12);
+            return;
+        }
+        if (!Files.isReadable(from)) {
+            print(context, TOOLMSG, "ICE603I INPUT DATA SET NOT FOUND");
+            fail(12);
+            return;
+        }
+        CodePage codePage = context.codePage();
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (byte[] record : ordered(recordsOf(from), fields, codePage)) {
+            List<String> columns = new ArrayList<>();
+            for (SortField field : fields) {
+                columns.add(shown(record, field, codePage));
+            }
+            counts.merge(String.join("  ", columns), 1, Integer::sum);
+        }
+        String title = quoted(statement, "TITLE");
+        if (title != null) {
+            print(context, list, title);
+        }
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            print(context, list, entry.getKey() + "  " + entry.getValue());
+        }
+    }
+
+    // ---- 選ぶ ----
+
+    /**
+     * {@code SELECT FROM(dd) TO(dd) ON(p,l,fmt) 選び方}。
+     *
+     * <p>重なりを見つけるのがこの操作である。{@code ALLDUPS} は重なっているものすべて、
+     * {@code NODUPS} は 1 件しかないもの、{@code FIRST} と {@code LAST} は各組の端である。
+     */
+    private void select(ProgramContext context, String statement) {
+        Path from = ddOf(context, statement, "FROM");
+        List<Path> to = ddsOf(context, statement, "TO");
+        List<SortField> fields = fieldsOf(context, statement);
+        if (from == null || to.isEmpty() || fields == null || fields.isEmpty()) {
+            print(context, TOOLMSG, "ICE601I SELECT NEEDS FROM, TO AND ON");
+            fail(12);
+            return;
+        }
+        if (!Files.isReadable(from)) {
+            print(context, TOOLMSG, "ICE603I INPUT DATA SET NOT FOUND");
+            fail(12);
+            return;
+        }
+        DataSetAttributes attributes = DataSetAttributes.read(from);
+        CodePage codePage = context.codePage();
+        List<byte[]> records = ordered(recordsOf(from), fields, codePage);
+        List<byte[]> chosen = choose(context, records, fields, statement, codePage);
+        if (chosen == null) {
+            fail(12);
+            return;
+        }
+        Records.Framed framed = Records.join(chosen, attributes, codePage, false);
+        for (Path path : to) {
+            writeBytes(path, framed.bytes());
+            framed.attributes().write(path);
+        }
+        print(context, TOOLMSG, "ICE606I RECORDS SELECTED: " + chosen.size());
+    }
+
+    /**
+     * 選び方を当てる。
+     *
+     * @return 選び方が読めなければ {@code null}
+     */
+    private List<byte[]> choose(ProgramContext context, List<byte[]> records,
+                                List<SortField> fields, String statement, CodePage codePage) {
+        List<List<byte[]>> groups = groups(records, fields, codePage);
+        List<byte[]> out = new ArrayList<>();
+        if (hasWord(statement, "FIRST")) {
+            groups.forEach(group -> out.add(group.get(0)));
+            return out;
+        }
+        if (hasWord(statement, "LAST")) {
+            groups.forEach(group -> out.add(group.get(group.size() - 1)));
+            return out;
+        }
+        if (hasWord(statement, "ALLDUPS")) {
+            groups.stream().filter(group -> group.size() > 1).forEach(out::addAll);
+            return out;
+        }
+        if (hasWord(statement, "NODUPS")) {
+            groups.stream().filter(group -> group.size() == 1).forEach(out::addAll);
+            return out;
+        }
+        String higher = parameter(statement, "HIGHER");
+        String lower = parameter(statement, "LOWER");
+        String equal = parameter(statement, "EQUAL");
+        if (higher != null || lower != null || equal != null) {
+            int bound = number(higher != null ? higher : lower != null ? lower : equal, -1);
+            for (List<byte[]> group : groups) {
+                boolean keep = higher != null ? group.size() > bound
+                        : lower != null ? group.size() < bound
+                        : group.size() == bound;
+                if (keep) {
+                    out.addAll(group);
+                }
+            }
+            return out;
+        }
+        print(context, TOOLMSG, "ICE601I SELECT NEEDS A WAY TO CHOOSE");
+        return null;
+    }
+
+    /** 鍵が等しいものをまとめる。並べ替えたあとなので隣り合っている。 */
+    private static List<List<byte[]>> groups(List<byte[]> records, List<SortField> fields,
+                                             CodePage codePage) {
+        List<List<byte[]>> out = new ArrayList<>();
+        for (byte[] record : records) {
+            if (!out.isEmpty() && sameKey(out.get(out.size() - 1).get(0), record, fields,
+                    codePage)) {
+                out.get(out.size() - 1).add(record);
+                continue;
+            }
+            List<byte[]> group = new ArrayList<>();
+            group.add(record);
+            out.add(group);
+        }
+        return out;
+    }
+
+    private static boolean sameKey(byte[] left, byte[] right, List<SortField> fields,
+                                   CodePage codePage) {
+        for (SortField field : fields) {
+            if (SortField.compareBytes(field.slice(left, codePage),
+                    field.slice(right, codePage)) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 並べ替えは {@link SortWork} に任せる。COBOL の {@code SORT} と同じ道である。 */
+    private static List<byte[]> ordered(List<byte[]> records, List<SortField> fields,
+                                        CodePage codePage) {
+        List<SortKey> keys = new ArrayList<>();
+        for (SortField field : fields) {
+            keys.add(field.key());
+        }
+        SortWork work = new SortWork(keys, codePage);
+        records.forEach(work::release);
+        work.sort();
+        return new ArrayList<>(work.all());
+    }
+
+    // ---- 制御文の読み取り ----
+
+    /**
+     * {@code ON(p,l,fmt)} の並び。
+     *
+     * @return 読めなければ {@code null}
+     */
+    private List<SortField> fieldsOf(ProgramContext context, String statement) {
+        List<SortField> out = new ArrayList<>();
+        int at = 0;
+        while (true) {
+            int found = indexOfKey(statement, "ON", at);
+            if (found < 0) {
+                break;
+            }
+            int open = statement.indexOf('(', found);
+            int close = closing(statement, open);
+            at = close + 1;
+            List<String> parts = words(statement.substring(open + 1, close).replace(",", " "));
+            if (parts.size() < 3) {
+                print(context, TOOLMSG, "ICE601I ON NEEDS A POSITION, LENGTH AND FORMAT");
+                return null;
+            }
+            int position = number(parts.get(0), -1);
+            int length = number(parts.get(1), -1);
+            SortField.Format format = SortField.formatOf(parts.get(2));
+            if (position < 1 || length < 1 || format == null) {
+                print(context, TOOLMSG, "ICE601I ON IS NOT VALID: " + parts);
+                return null;
+            }
+            SortField field = SortField.at(position - 1, length, format);
+            if (!field.supported()) {
+                print(context, TOOLMSG,
+                        "ICE600I FI FIELD LENGTH IS NOT SUPPORTED YET: " + length);
+                return null;
+            }
+            out.add(field);
+        }
+        if (out.isEmpty()) {
+            print(context, TOOLMSG, "ICE601I THE OPERATION NEEDS ON");
+            return null;
+        }
+        return out;
+    }
+
+    /** 場所の値を、見せるための文字にする。 */
+    private static String shown(byte[] record, SortField field, CodePage codePage) {
+        if (field.format() == SortField.Format.CH) {
+            return codePage.decode(field.slice(record, codePage));
+        }
+        return field.number(record, codePage).toBigDecimal().toPlainString();
+    }
+
+    private static Path ddOf(ProgramContext context, String statement, String key) {
+        String written = name(statement, key);
+        return written == null ? null : context.catalog().resolve(written);
+    }
+
+    private static List<Path> ddsOf(ProgramContext context, String statement, String key) {
+        List<Path> out = new ArrayList<>();
+        String written = parameter(statement, key);
+        if (written == null) {
+            return out;
+        }
+        for (String each : words(written.replace(",", " "))) {
+            out.add(context.catalog().resolve(each.toUpperCase(Locale.ROOT)));
+        }
+        return out;
+    }
+
+    private static String name(String statement, String key) {
+        String written = parameter(statement, key);
+        return written == null ? null : written.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /** {@code TITLE('...')} の中身。 */
+    private static String quoted(String statement, String key) {
+        String written = parameter(statement, key);
+        if (written == null) {
+            return null;
+        }
+        String text = written.trim();
+        if (text.length() >= 2 && text.startsWith("'") && text.endsWith("'")) {
+            return text.substring(1, text.length() - 1).replace("''", "'");
+        }
+        return text;
+    }
+
+    /** {@code 鍵(値)} の値。書かれていなければ {@code null}。 */
+    private static String parameter(String statement, String key) {
+        int at = indexOfKey(statement, key, 0);
+        if (at < 0) {
+            return null;
+        }
+        int open = statement.indexOf('(', at);
+        return statement.substring(open + 1, closing(statement, open));
+    }
+
+    /** 括弧が続く鍵の位置。前後が英数字でないものだけを当てる。 */
+    private static int indexOfKey(String statement, String key, int from) {
+        String upper = statement.toUpperCase(Locale.ROOT);
+        int at = from;
+        while (true) {
+            at = upper.indexOf(key, at);
+            if (at < 0) {
+                return -1;
+            }
+            int after = at + key.length();
+            boolean standalone = at == 0 || !Character.isLetterOrDigit(upper.charAt(at - 1));
+            if (standalone && after < statement.length() && statement.charAt(after) == '(') {
+                return at;
+            }
+            at = after;
+        }
+    }
+
+    /** 値を取らない語が書かれているか。{@code ALLDUPS} などがこれである。 */
+    private static boolean hasWord(String statement, String word) {
+        for (String each : words(statement)) {
+            if (each.equalsIgnoreCase(word)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int closing(String text, int open) {
+        int depth = 0;
+        for (int i = open; i < text.length(); i++) {
+            if (text.charAt(i) == '(') {
+                depth++;
+            } else if (text.charAt(i) == ')') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return text.length();
+    }
+
+    private static List<String> words(String text) {
+        List<String> out = new ArrayList<>();
+        for (String word : text.split("[\\s]+")) {
+            if (!word.isEmpty()) {
+                out.add(word);
+            }
+        }
+        return out;
+    }
+
+    private static int number(String text, int fallback) {
+        try {
+            return Integer.parseInt(text.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    // ---- データセット ----
+
+    private static List<byte[]> recordsOf(Path path) {
+        return Records.split(readBytes(path), DataSetAttributes.read(path));
+    }
+
+    private static int recordsIn(Path path) {
+        return Files.isReadable(path) ? recordsOf(path).size() : 0;
+    }
+
+    private static void copyBytes(Path from, Path to) {
+        writeBytes(to, readBytes(from));
+        DataSetAttributes.read(from).write(to);
+    }
+
+    private void fail(int code) {
+        highest = Math.max(highest, code);
     }
 }

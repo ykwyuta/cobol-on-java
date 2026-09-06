@@ -64,13 +64,23 @@ abstract class UtilityProgram implements CobolProgram {
         return out;
     }
 
-    /** 覚え書きを 1 行書く。 */
+    /** 覚え書きを 1 行書く。行き先は {@code SYSPRINT} である。 */
     protected static void print(ProgramContext context, String text) {
-        if (!context.catalog().isAssigned(SYSPRINT)) {
+        print(context, SYSPRINT, text);
+    }
+
+    /**
+     * 行を 1 つ書く。
+     *
+     * <p>結び付けがなければ実行時の出力へ回す。道具によって覚え書きの行き先が違う
+     * ({@code SYSPRINT} / {@code TOOLMSG}) ので、行き先を言えるようにしてある。
+     */
+    protected static void print(ProgramContext context, String ddName, String text) {
+        if (!context.catalog().isAssigned(ddName)) {
             context.display(context.codePage().encode(text), true, false);
             return;
         }
-        Path path = pathOf(context, SYSPRINT);
+        Path path = pathOf(context, ddName);
         byte[] line = context.codePage().encode(text + "\n");
         try {
             Files.write(path, line, StandardOpenOption.CREATE, StandardOpenOption.WRITE,

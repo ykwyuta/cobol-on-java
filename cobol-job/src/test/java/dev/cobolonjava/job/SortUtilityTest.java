@@ -507,18 +507,4 @@ class SortUtilityTest {
         assertEquals(16, result.returnCode());
         assertTrue(output().contains("NOT SUPPORTED YET: ALTSEQ"), output());
     }
-
-    @Test
-    @DisplayName("ICETOOL はまだ対応していないことを言う (FR-137, 暫定判断 P-047)")
-    void icetoolIsNotSupportedYet() {
-        JobRunner.Result result = run(
-                "//J        JOB  (ACCT)",
-                "//STEP1    EXEC PGM=ICETOOL",
-                "//SYSOUT   DD   SYSOUT=*",
-                "//TOOLIN   DD   *",
-                "  COPY FROM(IN) TO(OUT)");
-
-        assertEquals(16, result.returnCode());
-        assertTrue(output().contains("ICETOOL IS NOT SUPPORTED YET"), output());
-    }
 }
