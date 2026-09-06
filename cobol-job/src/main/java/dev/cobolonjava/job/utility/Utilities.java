@@ -25,6 +25,12 @@ public final class Utilities {
         out.put("IEFBR14", Iefbr14::new);
         out.put("IEBGENER", Iebgener::new);
         out.put("IDCAMS", Idcams::new);
+        // 整列は名前がいくつもある。呼ばれ方が違うだけで、動きは同じである
+        out.put("SORT", Dfsort::new);
+        out.put("DFSORT", Dfsort::new);
+        out.put("ICEMAN", Dfsort::new);
+        out.put("SYNCSORT", Dfsort::new);
+        out.put("ICETOOL", Icetool::new);
         return Map.copyOf(out);
     }
 

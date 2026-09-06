@@ -1263,7 +1263,8 @@ SEQUENCE IS` は構文誤りとして報告する。
 | --- | --- | --- |
 | `IEBGENER` | 制御文なしの写し | `GENERATE` / `RECORD` / `OUTREC` による編集 |
 | `IDCAMS` | `REPRO` / `DELETE` / `DEFINE CLUSTER` / `LISTCAT` | `EXPORT` / `IMPORT` / `PRINT` / `ALTER` / `VERIFY` |
-| — | — | `SORT` / `ICETOOL` そのもの |
+| `SORT` | `SORT` / `MERGE` / `INCLUDE` / `OMIT` / `SUM` / `OUTREC` / `OPTION COPY` / `END` | `INREC` / `OUTFIL` / `ALTSEQ` / `MODS` / `JOINKEYS` |
+| `ICETOOL` | — | `TOOLIN` のすべて |
 
 **なぜこうしたか**: 読み飛ばすと、編集したつもりの出力がそのままの写しになる。
 どこで狂ったのかを追うのが難しい。
@@ -1275,7 +1276,18 @@ SEQUENCE IS` は構文誤りとして報告する。
   決めるので、いまは要らない
 - `LISTCAT` の出力はホストの書式に似せていない。名前が並ぶだけである
 - `IDCAMS` の `REPRO` に `FROMKEY` / `TOKEY` / `COUNT` / `SKIP` を書けない
+- `SORT` の鍵と条件で使える形は `CH` / `BI` / `ZD` / `PD` / `FI` だけである。`FI` は
+  長さ 2 / 4 / 8 のみ。`FS` / `CSF` / `UFF` などの編集された形は読めない
+- `SORT` の `OPTION` は `COPY` 以外を<b>黙って読み飛ばす</b>。ここだけ報告しないのは、
+  `DYNALLOC` や `MAINSIZE` のように<b>結果を変えない指定</b>が実資産に必ず書かれており、
+  誤りにすると何も動かなくなるからである
+- `OUTREC` に書けるのは `p,l` / `p,l,形` / `nX` / `nZ` / `C'文字'` / `X'16進'` / `p:` だけで
+  ある。数の形を変える `TO=` や `EDIT=` は読めない
+- 可変長データセットへの `OUTREC` は未対応である。RDW を組み直す必要があり、
+  レコードの長さが変わるとブロックの数え方も変わる
+- `SORT` の覚え書きはホストの書式に似せていない。`ICE143I` / `ICE054I` / `ICE052I` の
+  3 行だけであり、行数や統計は合わない
 
-**解消条件**: `SORT` / `ICETOOL` は次の増分で実装する。ほかは実資産で使われている頻度を
-見てから決める。
+**解消条件**: `ICETOOL` と `OUTFIL` は実資産で使われている頻度を見てから決める。
+形と `OUTREC` の項目は、読めないものに出会った時点で足す。
 
