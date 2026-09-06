@@ -337,7 +337,9 @@ public final class Jcl {
                         card.inline() == null ? new byte[0] : card.inline());
             }
             String name = null;
-            Disposition disposition = Disposition.SHR;
+            // DISP を書かなければ「新しく作る」である。ホストの既定はこちらであり、
+            // 読むつもりの DD には DISP=SHR を書かねばならない
+            Disposition disposition = Disposition.of(Disposition.Status.NEW);
             DdTarget special = null;
             for (String operand : JclOperands.split(operands)) {
                 String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
@@ -363,14 +365,29 @@ public final class Jcl {
             return new DdTarget.DataSet(base.resolve(name), disposition);
         }
 
+        /** {@code DISP=(状態, 正常終了時, 異常終了時)}。書かれていないところは既定で埋める。 */
         private Disposition dispositionOf(JclCard card, String value, Disposition fallback) {
             List<String> parts = JclOperands.split(JclOperands.unwrap(value));
-            Disposition disposition = Disposition.of(parts.get(0));
-            if (disposition == null) {
+            Disposition.Status status = Disposition.Status.of(parts.get(0));
+            if (status == null) {
                 report(card, "unknown DISP: " + parts.get(0));
                 return fallback;
             }
-            return disposition;
+            Disposition.Action normal = actionOf(card, parts, 1);
+            Disposition.Action abnormal = actionOf(card, parts, 2);
+            return Disposition.of(status, normal, abnormal);
+        }
+
+        /** {@code DISP} の 2 つ目と 3 つ目。書かれていなければ {@code null} である。 */
+        private Disposition.Action actionOf(JclCard card, List<String> parts, int at) {
+            if (at >= parts.size() || parts.get(at).isBlank()) {
+                return null;
+            }
+            Disposition.Action action = Disposition.Action.of(parts.get(at));
+            if (action == null) {
+                report(card, "unknown DISP: " + parts.get(at));
+            }
+            return action;
         }
 
         private void closeStep() {

@@ -16,8 +16,8 @@ import java.util.Locale;
  * # 行頭の # は注記
  * JOB PAYROLL
  * STEP EXTRACT PGM=PAYEXT PARM=202609
- *   DD PAYIN DSN=data/pay.dat
- *   DD PAYOUT DSN=work/extract.dat
+ *   DD PAYIN DSN=data/pay.dat DISP=SHR
+ *   DD PAYOUT DSN=work/extract.dat DISP=(NEW,CATLG)
  *   DD SYSOUT SYSOUT
  * STEP REPORT PGM=PAYRPT
  *   WHEN RC EXTRACT = 0
@@ -32,6 +32,11 @@ import java.util.Locale;
  * </pre>
  *
  * <p>字下げに意味はない。読みやすさのためだけのものである。
+ *
+ * <h2>DISP は書かなくてよい</h2>
+ * <p>JCL では {@code DISP} を書かなければ「新しく作る」だが、こちらは<b>何も言っていない</b>
+ * ことになる。確かめも、作りも、消しもしない。名前を書くだけで動かせるほうが、この処理系
+ * 自身の試験には都合がよい。ジョブの側で状態を決めたいときは書ける。
  *
  * <h2>知らない書き方は誤りにする</h2>
  * <p>読み飛ばさない。書いたつもりの指定が効いていないことに気付けないからである。
@@ -267,7 +272,7 @@ public final class JobScript {
                 report(number, "DD comes inside a STEP");
                 return;
             }
-            if (words.size() != 3) {
+            if (words.size() != 3 && words.size() != 4) {
                 report(number, "DD takes a name and a target");
                 return;
             }
@@ -275,8 +280,16 @@ public final class JobScript {
             String target = words.get(2);
             String upper = target.toUpperCase(Locale.ROOT);
             if (upper.startsWith("DSN=")) {
-                dd.add(new DdAssignment(name,
-                        new DdTarget.DataSet(java.nio.file.Path.of(target.substring(4)))));
+                Disposition disposition = dispositionOf(words, number);
+                if (disposition == null) {
+                    return;
+                }
+                dd.add(new DdAssignment(name, new DdTarget.DataSet(
+                        java.nio.file.Path.of(target.substring(4)), disposition)));
+                return;
+            }
+            if (words.size() == 4) {
+                report(number, "DISP goes with DSN=");
                 return;
             }
             switch (upper) {
@@ -285,6 +298,44 @@ public final class JobScript {
                 case "DATA" -> dd.add(new DdAssignment(name, readInline(number)));
                 default -> report(number, "unknown DD target: " + target);
             }
+        }
+
+        /**
+         * {@code DISP=状態} または {@code DISP=(状態,正常時,異常時)}。
+         *
+         * @return 書かれていなければ「何も言っていない」処置。綴りが誤りなら {@code null}
+         */
+        private Disposition dispositionOf(List<String> words, int number) {
+            if (words.size() != 4) {
+                return Disposition.UNSPECIFIED;
+            }
+            String written = words.get(3);
+            if (!written.toUpperCase(Locale.ROOT).startsWith("DISP=")) {
+                report(number, "DD takes a name and a target");
+                return null;
+            }
+            String value = written.substring(5).trim();
+            if (value.startsWith("(") && value.endsWith(")")) {
+                value = value.substring(1, value.length() - 1);
+            }
+            String[] parts = value.split(",", -1);
+            Disposition.Status status = Disposition.Status.of(parts[0]);
+            if (status == null) {
+                report(number, "unknown DISP: " + parts[0]);
+                return null;
+            }
+            Disposition.Action[] actions = new Disposition.Action[2];
+            for (int i = 0; i < 2; i++) {
+                if (parts.length <= i + 1 || parts[i + 1].isBlank()) {
+                    continue;
+                }
+                actions[i] = Disposition.Action.of(parts[i + 1]);
+                if (actions[i] == null) {
+                    report(number, "unknown DISP: " + parts[i + 1]);
+                    return null;
+                }
+            }
+            return Disposition.of(status, actions[0], actions[1]);
         }
 
         /** {@code DATA} から {@code END} までを、そのまま埋め込みのデータにする。 */

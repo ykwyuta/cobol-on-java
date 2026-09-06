@@ -15,13 +15,13 @@ public sealed interface DdTarget {
     /**
      * 実ファイル。{@code DSN=} にあたる。
      *
-     * @param disposition {@code DISP=} の 1 つ目の副パラメタ。指定がなければ {@code SHR}
+     * @param disposition {@code DISP=}。ステップの前と後の両方を決める
      */
     record DataSet(Path path, Disposition disposition) implements DdTarget {
 
         /** 処置を書かない割当。宣言的形式はこちらを使う。 */
         public DataSet(Path path) {
-            this(path, Disposition.SHR);
+            this(path, Disposition.UNSPECIFIED);
         }
     }
 

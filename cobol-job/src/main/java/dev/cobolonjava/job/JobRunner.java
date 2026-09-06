@@ -73,8 +73,17 @@ public final class JobRunner {
         BYPASSED,
 
         /** 異常終了した。 */
-        ABENDED
+        ABENDED,
+
+        /** 割当てに失敗した。ホストの JCL エラーにあたる。 */
+        FAILED,
+
+        /** 先行ステップの JCL エラーで流された。 */
+        FLUSHED
     }
+
+    /** JCL エラーで終わったジョブの終了コード。 */
+    private static final int JCL_ERROR = 12;
 
     /**
      * ステップ 1 個の結果。
@@ -102,14 +111,29 @@ public final class JobRunner {
         }
     }
 
-    /** ジョブを実行する。 */
+    /**
+     * ジョブを実行する。
+     *
+     * <h2>割当てに失敗したら残りは流す</h2>
+     * <p>{@code DISP} が言っていることと実際が食い違えば、ステップは動かない。これは
+     * プログラムの異常終了とは別のものであり、{@code COND=EVEN} でも覆せない。
+     * ホストでも以降のステップは<b>実行されずに流される</b>。
+     */
     public Result run(Job job) {
         JobState state = new JobState();
         List<StepOutcome> outcomes = new ArrayList<>();
+        boolean failed = false;
         for (Step step : job.steps()) {
-            outcomes.add(runStep(job, step, state));
+            if (failed) {
+                outcomes.add(new StepOutcome(step.name(), Status.FLUSHED, -1, null));
+                continue;
+            }
+            StepOutcome outcome = runStep(job, step, state);
+            outcomes.add(outcome);
+            failed = outcome.status() == Status.FAILED;
         }
-        return new Result(state.highest(), outcomes, state);
+        return new Result(failed ? Math.max(state.highest(), JCL_ERROR) : state.highest(),
+                outcomes, state);
     }
 
     private StepOutcome runStep(Job job, Step step, JobState state) {
@@ -118,16 +142,20 @@ public final class JobRunner {
         }
         Path stepWork = workDirectory.resolve(job.name() + "." + step.name());
         createDirectory(stepWork);
-        DataSetCatalog catalog = new DataSetCatalog(base);
-        List<Path> spools = new ArrayList<>();
-        for (DdAssignment assignment : step.dd()) {
-            spools.addAll(assign(catalog, stepWork, assignment));
+        Allocation allocation;
+        try {
+            allocation = allocate(step, stepWork);
+        } catch (AllocationFailure e) {
+            // 割当てに失敗したステップは動かない。プログラムは呼ばれてすらいない
+            deleteTree(stepWork);
+            return new StepOutcome(step.name(), Status.FAILED, -1, e.getMessage());
         }
 
         ProgramContext context = ProgramContext.standard()
                 .withCodePage(codePage)
                 .withOutput(out)
-                .withCatalog(catalog);
+                .withCatalog(allocation.catalog());
+        String failure = null;
         try {
             // ユーティリティは翻訳された資産ではない。名前で先に引き当てる (要件 FR-137)
             CobolProgram utility = Utilities.find(step.program());
@@ -139,11 +167,19 @@ public final class JobRunner {
             }
         } catch (ProgramNotFoundException e) {
             // ロードモジュールが見つからないのは異常終了である (要件 FR-141 の S806 相当)
-            return abend(step, state, e.getMessage());
+            failure = e.getMessage();
         } catch (RuntimeException e) {
-            return abend(step, state, describe(e));
-        } finally {
-            spools.forEach(this::spill);
+            failure = describe(e);
+        }
+        allocation.spools().forEach(this::spill);
+        boolean abended = failure != null;
+        dispose(allocation.dataSets(), abended);
+        // 失敗したステップの作業領域は残す。何が起きたのかを見られるほうが役に立つ
+        if (!abended) {
+            deleteTree(stepWork);
+        }
+        if (abended) {
+            return abend(step, state, failure);
         }
         int returnCode = context.returnCode();
         state.completed(step.name(), returnCode);
@@ -174,14 +210,53 @@ public final class JobRunner {
     }
 
     /**
+     * ステップの割当て。
+     *
+     * @param catalog  DD 名から実際のファイルを引く目録
+     * @param spools   ステップのあとで流し出すスプールのファイル
+     * @param dataSets ステップのあとで処置を効かせるデータセット
+     */
+    private record Allocation(DataSetCatalog catalog, List<Path> spools,
+                              List<DdTarget.DataSet> dataSets) {
+    }
+
+    /** 割当てに失敗した。ホストの JCL エラーにあたる。 */
+    private static final class AllocationFailure extends RuntimeException {
+
+        AllocationFailure(String message) {
+            super(message);
+        }
+    }
+
+    /** ステップのすべての DD を割り当てる。 */
+    private Allocation allocate(Step step, Path stepWork) {
+        DataSetCatalog catalog = new DataSetCatalog(base);
+        List<Path> spools = new ArrayList<>();
+        List<DdTarget.DataSet> dataSets = new ArrayList<>();
+        for (DdAssignment assignment : step.dd()) {
+            spools.addAll(assign(catalog, stepWork, assignment, dataSets));
+        }
+        return new Allocation(catalog, spools, dataSets);
+    }
+
+    /**
      * DD 割当を目録へ入れる。
      *
      * @return ステップのあとで流し出すスプールのファイル
      */
-    private List<Path> assign(DataSetCatalog catalog, Path stepWork, DdAssignment assignment) {
+    private List<Path> assign(DataSetCatalog catalog, Path stepWork, DdAssignment assignment,
+                              List<DdTarget.DataSet> dataSets) {
         String name = assignment.name();
         switch (assignment.target()) {
-            case DdTarget.DataSet target -> catalog.assign(name, target.path());
+            case DdTarget.DataSet target -> {
+                allocateDataSet(name, target);
+                dataSets.add(target);
+                catalog.assign(name, target.path());
+                if (target.disposition().status() == Disposition.Status.MOD) {
+                    // DISP=MOD は OPEN OUTPUT を末尾への書き足しへ変える (要件 FR-133)
+                    catalog.appendTo(name);
+                }
+            }
             case DdTarget.Sysout ignored -> {
                 Path spool = stepWork.resolve(name + ".sysout");
                 catalog.assign(name, spool);
@@ -201,6 +276,12 @@ public final class JobRunner {
                 catalog.assign(name, inline);
             }
             case DdTarget.Concatenation target -> {
+                for (DdTarget part : target.parts()) {
+                    if (part instanceof DdTarget.DataSet dataSet) {
+                        allocateDataSet(name, dataSet);
+                        dataSets.add(dataSet);
+                    }
+                }
                 Path joined = stepWork.resolve(name + ".concat");
                 writeBytes(joined, concatenate(target.parts(), name));
                 copyAttributes(target.parts(), joined);
@@ -208,6 +289,58 @@ public final class JobRunner {
             }
         }
         return List.of();
+    }
+
+    /**
+     * データセット 1 個を割り当てる (要件 FR-133)。
+     *
+     * <p>{@code DISP} の 1 つ目が言っていることと、実際にあるかどうかが食い違えば、
+     * <b>ステップは動かない</b>。黙って作り直したり、無いものを空として読ませたりすると、
+     * 名前を打ち間違えたジョブが「0 件処理した」と言って正常終了してしまう。
+     */
+    private void allocateDataSet(String ddName, DdTarget.DataSet target) {
+        Path path = target.path();
+        boolean exists = Files.exists(path);
+        switch (target.disposition().status()) {
+            case NEW -> {
+                if (exists) {
+                    throw new AllocationFailure("IEF344I " + ddName
+                            + " - DUPLICATE NAME ON DIRECT ACCESS: " + path.getFileName());
+                }
+                // 割り当てた時点で場所は取れている。中身が無いだけである
+                writeBytes(path, new byte[0]);
+            }
+            case OLD, SHR -> {
+                if (!exists) {
+                    throw new AllocationFailure("IEF212I " + ddName
+                            + " - DATA SET NOT FOUND: " + path.getFileName());
+                }
+            }
+            case MOD -> {
+                if (!exists) {
+                    writeBytes(path, new byte[0]);
+                }
+            }
+            case ANY -> {
+                // 状態を言っていない。確かめることも作ることもない
+            }
+        }
+    }
+
+    /**
+     * ステップが終わったところで処置を効かせる (要件 FR-133)。
+     *
+     * <p>{@code DELETE} なら消す。{@code KEEP} / {@code CATLG} / {@code UNCATLG} /
+     * {@code PASS} はどれも残す。目録をディレクトリそのものとしているので、
+     * <b>載せる・外すの区別がない</b> (暫定判断 P-045)。
+     */
+    private void dispose(List<DdTarget.DataSet> dataSets, boolean abended) {
+        for (DdTarget.DataSet target : dataSets) {
+            if (target.disposition().deletes(abended)) {
+                remove(target.path());
+                remove(DataSetAttributes.sidecarOf(target.path()));
+            }
+        }
     }
 
     /**
@@ -319,10 +452,40 @@ public final class JobRunner {
 
     private static void writeBytes(Path path, byte[] bytes) {
         try {
+            if (path.getParent() != null) {
+                Files.createDirectories(path.getParent());
+            }
             Files.write(path, bytes, StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot write " + path, e);
+        }
+    }
+
+    private static void remove(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot delete " + path, e);
+        }
+    }
+
+    /**
+     * 作業領域を片付ける (暫定判断 P-043 の解消)。
+     *
+     * <p>スプールも埋め込みデータも連結の写しも、<b>そのステップの間だけ要るもの</b>である。
+     * 残しておくと繰り返し動かすたびに増え続ける。
+     */
+    private static void deleteTree(Path path) {
+        if (!Files.exists(path)) {
+            return;
+        }
+        try (var stream = Files.walk(path)) {
+            for (Path each : stream.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(each);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot delete " + path, e);
         }
     }
 }

@@ -111,12 +111,13 @@ class UtilityTest {
     }
 
     @Test
-    @DisplayName("SYSUT1 がなければ IEBGENER は失敗する (FR-137)")
+    @DisplayName("DD が無ければ IEBGENER 自身が失敗する (FR-137)")
     void iebgenerNeedsItsInput() {
+        // SYSUT1 に DD を書いていない。割当ての段では何も起きず、
+        // 置き場に同じ名前が無いことをユーティリティが見つける
         JobRunner.Result result = run(
                 "//J        JOB  (ACCT)",
                 "//STEP1    EXEC PGM=IEBGENER",
-                "//SYSUT1   DD   DSN=NOSUCH.DAT,DISP=SHR",
                 "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
                 "//SYSPRINT DD   SYSOUT=*");
 

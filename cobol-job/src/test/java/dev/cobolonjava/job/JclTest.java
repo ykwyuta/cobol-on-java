@@ -116,7 +116,7 @@ class JclTest {
         DdTarget.DataSet dataSet =
                 assertInstanceOf(DdTarget.DataSet.class, step.dd().get(0).target());
         assertEquals(BASE.resolve("PAY.MASTER"), dataSet.path());
-        assertEquals(Disposition.SHR, dataSet.disposition());
+        assertEquals(Disposition.Status.SHR, dataSet.disposition().status());
         assertInstanceOf(DdTarget.Sysout.class, step.dd().get(1).target());
         assertInstanceOf(DdTarget.Dummy.class, step.dd().get(2).target());
     }
@@ -129,8 +129,8 @@ class JclTest {
                 "//CHECK    EXEC PGM=PAYCHK",
                 "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG,DELETE)");
 
-        assertEquals(Disposition.NEW, assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).disposition());
+        assertEquals(Disposition.Status.NEW, assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).disposition().status());
     }
 
     @Test
@@ -322,7 +322,7 @@ class JclTest {
         JobScript.Result script = JobScript.read(String.join("\n", List.of(
                 "JOB PAYROLL",
                 "STEP CHECK PGM=PAYCHK",
-                "  DD PAYIN DSN=data/pay.dat",
+                "  DD PAYIN DSN=data/pay.dat DISP=SHR",
                 "  DD SYSOUT SYSOUT",
                 "STEP REPORT PGM=PAYRPT PARM=202609",
                 "  WHEN NOT RC CHECK > 4",

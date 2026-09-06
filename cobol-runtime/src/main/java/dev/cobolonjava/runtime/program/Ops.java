@@ -250,9 +250,26 @@ public final class Ops {
      */
     public static byte[] open(ProgramContext context, String name, String ddName, int mode,
                               int organization, int format, int recordLength, boolean optional) {
-        return status(context, context.file(name, ddName,
-                Organization.values()[organization], RecordFormat.values()[format], recordLength)
-                .open(OpenMode.values()[mode], optional));
+        Organization kind = Organization.values()[organization];
+        return status(context, context.file(name, ddName, kind,
+                RecordFormat.values()[format], recordLength)
+                .open(requested(context, ddName, OpenMode.values()[mode], kind), optional));
+    }
+
+    /**
+     * 実際に開く向き (要件 FR-133)。
+     *
+     * <p>ふつうはプログラムが書いたとおりである。ジョブが {@code DISP=MOD} と言っている
+     * ときだけ、{@code OUTPUT} が<b>末尾への書き足し</b>になる。ジョブの指定がプログラムの
+     * 書いたことを覆す数少ない場所であり、順編成にしか意味がない。
+     */
+    private static OpenMode requested(ProgramContext context, String ddName, OpenMode mode,
+                                      Organization organization) {
+        boolean sequential = organization == Organization.SEQUENTIAL
+                || organization == Organization.LINE_SEQUENTIAL;
+        return mode == OpenMode.OUTPUT && sequential && context.catalog().appends(ddName)
+                ? OpenMode.EXTEND
+                : mode;
     }
 
     /**

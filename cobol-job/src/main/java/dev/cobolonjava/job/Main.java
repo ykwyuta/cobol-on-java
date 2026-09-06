@@ -92,6 +92,8 @@ public final class Main {
             case EXECUTED -> job + "." + step.name() + " ENDED - RC=" + step.returnCode();
             case BYPASSED -> job + "." + step.name() + " NOT EXECUTED";
             case ABENDED -> job + "." + step.name() + " ABENDED - " + step.failure();
+            case FAILED -> job + "." + step.name() + " JCL ERROR - " + step.failure();
+            case FLUSHED -> job + "." + step.name() + " FLUSHED";
         };
     }
 

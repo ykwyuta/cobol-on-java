@@ -18,6 +18,8 @@ public final class DataSetCatalog {
 
     private final Path directory;
     private final Map<String, Path> assignments = new HashMap<>();
+    /** {@code OPEN OUTPUT} を末尾への書き足しとして扱う DD 名。 */
+    private final java.util.Set<String> appended = new java.util.HashSet<>();
 
     public DataSetCatalog(Path directory) {
         this.directory = directory;
@@ -47,6 +49,23 @@ public final class DataSetCatalog {
     /** 既定のディレクトリ。結び付けられていない名前はこの下を指す。 */
     public Path directory() {
         return directory;
+    }
+
+    /**
+     * その DD を<b>末尾への書き足し</b>として開くことにする (要件 FR-133)。
+     *
+     * <p>JCL の {@code DISP=MOD} である。プログラムが {@code OPEN OUTPUT} と書いていても
+     * 末尾へ足す。<b>ジョブの指定がプログラムの書いたことを覆す</b>数少ない場所であり、
+     * 同じプログラムを「作り直す」使い方と「積み増す」使い方の両方へ向けられる。
+     */
+    public DataSetCatalog appendTo(String ddName) {
+        appended.add(ddName.toUpperCase(Locale.ROOT));
+        return this;
+    }
+
+    /** その DD を末尾への書き足しとして開くか。 */
+    public boolean appends(String ddName) {
+        return appended.contains(ddName.toUpperCase(Locale.ROOT));
     }
 
     /** DD 名が指すファイル。書かれていなければ既定のディレクトリの下を指す。 */

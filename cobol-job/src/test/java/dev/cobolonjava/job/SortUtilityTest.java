@@ -337,10 +337,10 @@ class SortUtilityTest {
     @Test
     @DisplayName("入力がなければ失敗する (FR-137)")
     void needsItsInput() {
+        // SORTIN に DD を書いていない。置き場に同じ名前も無い
         JobRunner.Result result = run(
                 "//J        JOB  (ACCT)",
                 "//STEP1    EXEC PGM=SORT",
-                "//SORTIN   DD   DSN=NOSUCH.DAT,DISP=SHR",
                 "//SORTOUT  DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
                 "//SYSOUT   DD   SYSOUT=*",
                 "//SYSIN    DD   *",
