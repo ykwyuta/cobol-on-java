@@ -18,8 +18,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * {@code SORT} (DFSORT) の互換実装 (要件 FR-137)。
@@ -132,6 +134,19 @@ public final class Dfsort extends UtilityProgram {
         }
     }
 
+    /**
+     * {@code OUTFIL} 1 個。
+     *
+     * <p>1 回読んだものを<b>いくつもの出力へ振り分ける</b>ための指定である。条件ごとに
+     * ジョブステップを分けると、そのたびに入力を読み直すことになる。
+     *
+     * @param dds     書き先の DD 名
+     * @param save    どの {@code OUTFIL} にも選ばれなかったものを受け取るか
+     */
+    private record OutFile(List<String> dds, Test include, Test omit, List<String> outrec,
+                           boolean save) {
+    }
+
     private int highest;
     private final List<String> notes = new ArrayList<>();
 
@@ -145,6 +160,10 @@ public final class Dfsort extends UtilityProgram {
     private Test omit;
     /** {@code OUTREC} の項目。書かれていなければ {@code null}。 */
     private List<String> outrec;
+    /** {@code INREC} の項目。書かれていなければ {@code null}。 */
+    private List<String> inrec;
+    /** {@code OUTFIL} の並び。書かれていなければ空。 */
+    private final List<OutFile> outFiles = new ArrayList<>();
     /** {@code SUM} で足す場所。書かれていなければ {@code null}。 */
     private List<Field> sumFields;
     /** {@code SUM FIELDS=NONE}。 */
@@ -190,25 +209,103 @@ public final class Dfsort extends UtilityProgram {
         }
         int read = records.size();
 
-        records = filter(records, codePage);
+        records = filter(records, include, omit, codePage);
+        // INREC は並べ替えの前に組み直す。だから SORT FIELDS の位置は組み直したあとを指す
+        records = reformat(records, inrec, attributes, "INREC", codePage);
         if (!copying && !sortFields.isEmpty()) {
             records = ordered(records, codePage);
         }
         if (sumFields != null || sumNone) {
             records = summed(records, codePage);
         }
-        if (outrec != null) {
-            if (attributes.format() == RecordFormat.VARIABLE) {
-                fail("ICE000I OUTREC ON A VARIABLE LENGTH DATA SET IS NOT SUPPORTED YET");
-                return;
-            }
-            records = rebuilt(records, codePage);
-        }
+        records = reformat(records, outrec, attributes, "OUTREC", codePage);
         if (highest != 0) {
             return;
         }
-        write(context, records, attributes);
+        if (outFiles.isEmpty()) {
+            write(context, SORTOUT, records, attributes, inrec != null || outrec != null);
+            note("ICE054I 0 RECORDS - IN: " + read + ", OUT: " + records.size());
+            return;
+        }
         note("ICE054I 0 RECORDS - IN: " + read + ", OUT: " + records.size());
+        writeOutFiles(context, records, attributes, codePage);
+    }
+
+    /**
+     * {@code INREC} と {@code OUTREC} の組み直し。
+     *
+     * @param items 書かれていなければ {@code null}。そのときは何もしない
+     */
+    private List<byte[]> reformat(List<byte[]> records, List<String> items,
+                                  DataSetAttributes attributes, String verb, CodePage codePage) {
+        if (items == null) {
+            return records;
+        }
+        if (attributes.format() == RecordFormat.VARIABLE) {
+            fail("ICE000I " + verb + " ON A VARIABLE LENGTH DATA SET IS NOT SUPPORTED YET");
+            return records;
+        }
+        return rebuilt(records, items, codePage);
+    }
+
+    /**
+     * {@code OUTFIL} の書き出し (要件 FR-137)。
+     *
+     * <p>1 回読んだものをいくつもの出力へ振り分ける。条件ごとにステップを分けると、
+     * そのたびに<b>入力を読み直す</b>ことになる。実資産で重い整列を 1 回で済ませる仕掛けが
+     * これである。
+     *
+     * <p>{@code SAVE} は「どこにも選ばれなかったもの」を受け取る。だから先に他のものを
+     * 決めてから残りを配る。
+     */
+    private void writeOutFiles(ProgramContext context, List<byte[]> records,
+                               DataSetAttributes attributes, CodePage codePage) {
+        boolean[] taken = new boolean[records.size()];
+        Map<OutFile, List<byte[]>> selected = new LinkedHashMap<>();
+        for (OutFile file : outFiles) {
+            if (file.save()) {
+                continue;
+            }
+            List<byte[]> chosen = new ArrayList<>();
+            for (int i = 0; i < records.size(); i++) {
+                if (matches(records.get(i), file, codePage)) {
+                    chosen.add(records.get(i));
+                    taken[i] = true;
+                }
+            }
+            selected.put(file, chosen);
+        }
+        for (OutFile file : outFiles) {
+            if (!file.save()) {
+                continue;
+            }
+            List<byte[]> chosen = new ArrayList<>();
+            for (int i = 0; i < records.size(); i++) {
+                if (!taken[i]) {
+                    chosen.add(records.get(i));
+                }
+            }
+            selected.put(file, chosen);
+        }
+        for (OutFile file : outFiles) {
+            List<byte[]> chosen = reformat(selected.get(file), file.outrec(), attributes,
+                    "OUTFIL OUTREC", codePage);
+            if (highest != 0) {
+                return;
+            }
+            for (String dd : file.dds()) {
+                write(context, dd, chosen, attributes,
+                        inrec != null || outrec != null || file.outrec() != null);
+                note("ICE224I 0 RECORDS WRITTEN TO " + dd + ": " + chosen.size());
+            }
+        }
+    }
+
+    private static boolean matches(byte[] record, OutFile file, CodePage codePage) {
+        if (file.include() != null && !file.include().holds(record, codePage)) {
+            return false;
+        }
+        return file.omit() == null || !file.omit().holds(record, codePage);
     }
 
     /** 入力のファイル。{@code MERGE} なら {@code SORTINnn} を番号の順に読む。 */
@@ -231,16 +328,17 @@ public final class Dfsort extends UtilityProgram {
         return out;
     }
 
-    private List<byte[]> filter(List<byte[]> records, CodePage codePage) {
-        if (include == null && omit == null) {
+    private static List<byte[]> filter(List<byte[]> records, Test keep, Test drop,
+                                       CodePage codePage) {
+        if (keep == null && drop == null) {
             return records;
         }
         List<byte[]> out = new ArrayList<>();
         for (byte[] record : records) {
-            if (include != null && !include.holds(record, codePage)) {
+            if (keep != null && !keep.holds(record, codePage)) {
                 continue;
             }
-            if (omit != null && omit.holds(record, codePage)) {
+            if (drop != null && drop.holds(record, codePage)) {
                 continue;
             }
             out.add(record);
@@ -310,11 +408,11 @@ public final class Dfsort extends UtilityProgram {
     }
 
     /** {@code OUTREC}。レコードを組み直す。 */
-    private List<byte[]> rebuilt(List<byte[]> records, CodePage codePage) {
+    private List<byte[]> rebuilt(List<byte[]> records, List<String> items, CodePage codePage) {
         List<byte[]> out = new ArrayList<>();
         int width = 0;
         for (byte[] record : records) {
-            byte[] built = build(record, codePage);
+            byte[] built = build(record, items, codePage);
             if (built == null) {
                 return records;
             }
@@ -327,9 +425,8 @@ public final class Dfsort extends UtilityProgram {
         return out;
     }
 
-    private byte[] build(byte[] record, CodePage codePage) {
+    private byte[] build(byte[] record, List<String> items, CodePage codePage) {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        List<String> items = outrec;
         for (int i = 0; i < items.size(); i++) {
             String item = items.get(i).trim();
             if (item.isEmpty()) {
@@ -383,9 +480,9 @@ public final class Dfsort extends UtilityProgram {
         return buffer.toByteArray();
     }
 
-    private void write(ProgramContext context, List<byte[]> records,
-                       DataSetAttributes attributes) {
-        Path path = pathOf(context, SORTOUT);
+    private void write(ProgramContext context, String ddName, List<byte[]> records,
+                       DataSetAttributes attributes, boolean reformatted) {
+        Path path = pathOf(context, ddName);
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         int width = 0;
         for (byte[] record : records) {
@@ -393,7 +490,7 @@ public final class Dfsort extends UtilityProgram {
         }
         switch (attributes.format()) {
             case FIXED -> {
-                int length = outrec == null ? attributes.recordLength() : width;
+                int length = reformatted ? width : attributes.recordLength();
                 for (byte[] record : records) {
                     buffer.writeBytes(padded(record, length, context.codePage().space()));
                 }
@@ -524,7 +621,9 @@ public final class Dfsort extends UtilityProgram {
             }
             case "INCLUDE" -> include = testOf(operands, codePage);
             case "OMIT" -> omit = testOf(operands, codePage);
-            case "OUTREC", "OUTFIL" -> outrecOf(verb, operands);
+            case "OUTREC" -> outrec = itemsOf("OUTREC", operands);
+            case "INREC" -> inrec = itemsOf("INREC", operands);
+            case "OUTFIL" -> outFileOf(operands, codePage);
             case "SUM" -> sumOf(operands);
             case "OPTION" -> optionOf(operands);
             case "END" -> {
@@ -622,20 +721,72 @@ public final class Dfsort extends UtilityProgram {
         sumFields = List.copyOf(out);
     }
 
-    private void outrecOf(String verb, String operands) {
-        if (verb.equals("OUTFIL")) {
-            fail("ICE000I OUTFIL IS NOT SUPPORTED YET");
-            return;
-        }
+    /** {@code FIELDS=(...)} または {@code BUILD=(...)} の項目。 */
+    private List<String> itemsOf(String verb, String operands) {
         String fields = operand(operands, "FIELDS");
         if (fields == null) {
             fields = operand(operands, "BUILD");
         }
         if (fields == null) {
-            fail("ICE000I OUTREC NEEDS FIELDS OR BUILD");
+            fail("ICE000I " + verb + " NEEDS FIELDS OR BUILD");
+            return null;
+        }
+        return JclOperands.split(JclOperands.unwrap(fields));
+    }
+
+    /**
+     * {@code OUTFIL} 1 個 (要件 FR-137)。
+     *
+     * <p>書き先は {@code FNAMES=(dd,...)} か {@code FILES=(01,...)} で言う。番号で言った
+     * ときの DD 名は {@code SORTOFnn} である。
+     */
+    private void outFileOf(String operands, CodePage codePage) {
+        List<String> dds = new ArrayList<>();
+        String names = operand(operands, "FNAMES");
+        if (names != null) {
+            for (String written : JclOperands.split(JclOperands.unwrap(names))) {
+                dds.add(written.trim().toUpperCase(Locale.ROOT));
+            }
+        }
+        String numbers = operand(operands, "FILES");
+        if (numbers != null) {
+            for (String written : JclOperands.split(JclOperands.unwrap(numbers))) {
+                String digits = written.trim();
+                dds.add("SORTOF" + (digits.length() == 1 ? "0" + digits : digits));
+            }
+        }
+        if (dds.isEmpty()) {
+            fail("ICE000I OUTFIL NEEDS FNAMES OR FILES");
             return;
         }
-        outrec = JclOperands.split(JclOperands.unwrap(fields));
+        String format = operand(operands, "FORMAT");
+        String written = operand(operands, "INCLUDE");
+        Test keep = written == null ? null : conditionOf(written, format, codePage);
+        String dropped = operand(operands, "OMIT");
+        Test drop = dropped == null ? null : conditionOf(dropped, format, codePage);
+        String fields = operand(operands, "OUTREC");
+        if (fields == null) {
+            fields = operand(operands, "BUILD");
+        }
+        List<String> built = fields == null
+                ? null
+                : JclOperands.split(JclOperands.unwrap(fields));
+        boolean save = hasWord(operands, "SAVE");
+        if (save && (keep != null || drop != null)) {
+            fail("ICE000I OUTFIL SAVE CANNOT BE COMBINED WITH INCLUDE OR OMIT");
+            return;
+        }
+        outFiles.add(new OutFile(List.copyOf(dds), keep, drop, built, save));
+    }
+
+    /** 値を取らないオペランドが書かれているか。{@code SAVE} がこれである。 */
+    private static boolean hasWord(String operands, String word) {
+        for (String operand : JclOperands.split(operands)) {
+            if (operand.trim().equalsIgnoreCase(word)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void optionOf(String operands) {
@@ -657,13 +808,25 @@ public final class Dfsort extends UtilityProgram {
             fail("ICE000I INCLUDE AND OMIT NEED COND");
             return null;
         }
+        return conditionOf(cond, operand(operands, "FORMAT"), codePage);
+    }
+
+    /**
+     * 条件そのもの。
+     *
+     * <p>{@code INCLUDE COND=(...)} では {@code COND} の中身、{@code OUTFIL INCLUDE=(...)}
+     * では {@code INCLUDE} の中身がここへ来る。<b>書き方が違うだけで同じ条件</b>なので、
+     * 読むところは 1 つにしてある。
+     *
+     * @param format 形を言っていなければ {@code null}
+     */
+    private Test conditionOf(String cond, String format, CodePage codePage) {
         if (cond.equalsIgnoreCase("ALL")) {
             return new Always(true);
         }
         if (cond.equalsIgnoreCase("NONE")) {
             return new Always(false);
         }
-        String format = operand(operands, "FORMAT");
         List<String> parts = JclOperands.split(JclOperands.unwrap(cond));
         List<Test> conjunction = new ArrayList<>();
         List<Test> disjunction = new ArrayList<>();

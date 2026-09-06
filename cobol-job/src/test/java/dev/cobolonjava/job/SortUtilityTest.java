@@ -298,6 +298,151 @@ class SortUtilityTest {
         assertEquals("A    " + "    B", read("OUT.DAT"));
     }
 
+    // ---- INREC ----
+
+    @Test
+    @DisplayName("INREC は並べ替えの前に組み直す (FR-137)")
+    void inrecRebuildsBeforeSorting() {
+        write("IN.DAT", "1A2B3C", 2);
+
+        // 組み直したあとは 1 桁目が英字である。SORT FIELDS はそれを指す
+        assertEquals(0, sort(
+                "  INREC FIELDS=(2,1,1,1)",
+                "  SORT FIELDS=(1,1,CH,A)").returnCode());
+        assertEquals("A1B2C3", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("INREC と OUTREC は両方書ける (FR-137)")
+    void inrecAndOutrecBothApply() {
+        write("IN.DAT", "1A2B", 2);
+
+        assertEquals(0, sort(
+                "  INREC FIELDS=(2,1,1,1)",
+                "  SORT FIELDS=(1,1,CH,A)",
+                "  OUTREC FIELDS=(C'<',1,2,C'>')").returnCode());
+        assertEquals("<A1><B2>", read("OUT.DAT"));
+    }
+
+    // ---- OUTFIL ----
+
+    @Test
+    @DisplayName("OUTFIL は 1 回読んだものを振り分ける (FR-137)")
+    void outfilSplitsTheOutput() {
+        write("IN.DAT", "A1B2A3", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//AS       DD   DSN=A.DAT,DISP=(NEW,CATLG)",
+                "//BS       DD   DSN=B.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=AS,INCLUDE=(1,1,CH,EQ,C'A')",
+                "  OUTFIL FNAMES=BS,INCLUDE=(1,1,CH,EQ,C'B')");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1A3", read("A.DAT"));
+        assertEquals("B2", read("B.DAT"));
+    }
+
+    @Test
+    @DisplayName("FILES は番号で SORTOFnn を指す (FR-137)")
+    void outfilNumbersNameSortofDds() {
+        write("IN.DAT", "A1B2", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//SORTOF01 DD   DSN=ONE.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FILES=01,INCLUDE=(1,1,CH,EQ,C'A')");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1", read("ONE.DAT"));
+    }
+
+    @Test
+    @DisplayName("SAVE はどこにも選ばれなかったものを受け取る (FR-137)")
+    void saveTakesWhatIsLeft() {
+        write("IN.DAT", "A1B2C3", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//AS       DD   DSN=A.DAT,DISP=(NEW,CATLG)",
+                "//REST     DD   DSN=REST.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=REST,SAVE",
+                "  OUTFIL FNAMES=AS,INCLUDE=(1,1,CH,EQ,C'A')");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1", read("A.DAT"));
+        // 書いた順は関係ない。SAVE は他がすべて決まってから配られる
+        assertEquals("B2C3", read("REST.DAT"));
+    }
+
+    @Test
+    @DisplayName("OUTFIL ごとに組み直せる (FR-137)")
+    void eachOutfilCanRebuild() {
+        write("IN.DAT", "A1B2", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//AS       DD   DSN=A.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=AS,OMIT=(1,1,CH,EQ,C'B'),BUILD=(C'[',1,2,C']')");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("[A1]", read("A.DAT"));
+    }
+
+    @Test
+    @DisplayName("1 つの OUTFIL を複数の DD へ書ける (FR-137)")
+    void oneOutfilCanNameSeveralDds() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//ONE      DD   DSN=ONE.DAT,DISP=(NEW,CATLG)",
+                "//TWO      DD   DSN=TWO.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=(ONE,TWO)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1", read("ONE.DAT"));
+        assertEquals("A1", read("TWO.DAT"));
+    }
+
+    @Test
+    @DisplayName("書き先を言わない OUTFIL は誤りである (FR-137)")
+    void anOutfilNeedsAName() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL INCLUDE=(1,1,CH,EQ,C'A')");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("OUTFIL NEEDS FNAMES OR FILES"), output());
+    }
+
     // ---- MERGE ----
 
     @Test
@@ -357,10 +502,10 @@ class SortUtilityTest {
 
         JobRunner.Result result = sort(
                 "  SORT FIELDS=COPY",
-                "  INREC FIELDS=(1,2)");
+                "  ALTSEQ CODE=(F0F1)");
 
         assertEquals(16, result.returnCode());
-        assertTrue(output().contains("NOT SUPPORTED YET: INREC"), output());
+        assertTrue(output().contains("NOT SUPPORTED YET: ALTSEQ"), output());
     }
 
     @Test

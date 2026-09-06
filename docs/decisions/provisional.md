@@ -1267,7 +1267,7 @@ SEQUENCE IS` は構文誤りとして報告する。
 | --- | --- | --- |
 | `IEBGENER` | 制御文なしの写し | `GENERATE` / `RECORD` / `OUTREC` による編集 |
 | `IDCAMS` | `REPRO` / `DELETE` / `DEFINE CLUSTER` / `LISTCAT` | `EXPORT` / `IMPORT` / `PRINT` / `ALTER` / `VERIFY` |
-| `SORT` | `SORT` / `MERGE` / `INCLUDE` / `OMIT` / `SUM` / `OUTREC` / `OPTION COPY` / `END` | `INREC` / `OUTFIL` / `ALTSEQ` / `MODS` / `JOINKEYS` |
+| `SORT` | `SORT` / `MERGE` / `INCLUDE` / `OMIT` / `SUM` / `INREC` / `OUTREC` / `OUTFIL` / `OPTION COPY` / `END` | `ALTSEQ` / `MODS` / `JOINKEYS` |
 | `ICETOOL` | — | `TOOLIN` のすべて |
 
 **なぜこうしたか**: 読み飛ばすと、編集したつもりの出力がそのままの写しになる。
@@ -1287,8 +1287,10 @@ SEQUENCE IS` は構文誤りとして報告する。
   誤りにすると何も動かなくなるからである
 - `OUTREC` に書けるのは `p,l` / `p,l,形` / `nX` / `nZ` / `C'文字'` / `X'16進'` / `p:` だけで
   ある。数の形を変える `TO=` や `EDIT=` は読めない
-- 可変長データセットへの `OUTREC` は未対応である。RDW を組み直す必要があり、
+- 可変長データセットへの `INREC` と `OUTREC` は未対応である。RDW を組み直す必要があり、
   レコードの長さが変わるとブロックの数え方も変わる
+- `OUTFIL` に書けるのは `FNAMES` / `FILES` / `INCLUDE` / `OMIT` / `OUTREC` / `BUILD` /
+  `SAVE` だけである。`STARTREC` / `ENDREC` / `SPLIT` / `HEADER` / `TRAILER` は読めない
 - `SORT` の覚え書きはホストの書式に似せていない。`ICE143I` / `ICE054I` / `ICE052I` の
   3 行だけであり、行数や統計は合わない
 
