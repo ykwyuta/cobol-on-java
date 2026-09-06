@@ -116,8 +116,8 @@ public final class CobolCompiler {
         }
 
         ProgramGenerator.Result generated = ProgramGenerator.generate(
-                programNameOf(parsed.tree()), fileName, procedure, image, effective,
-                specialNames);
+                programNameOf(parsed.tree()), fileName, procedure, image, data.layout(),
+                effective, specialNames);
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
         }

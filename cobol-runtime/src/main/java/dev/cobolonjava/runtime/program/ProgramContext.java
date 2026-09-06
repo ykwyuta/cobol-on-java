@@ -1,6 +1,7 @@
 package dev.cobolonjava.runtime.program;
 
 import dev.cobolonjava.runtime.abend.DumpLevel;
+import dev.cobolonjava.runtime.abend.StorageMap;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.io.BufferedReader;
@@ -102,8 +103,14 @@ public final class ProgramContext {
      *
      * @param name    プログラム名
      * @param storage その作業場所
+     * @param map     作業場所の割り付け。持たないプログラムでは空 (要件 FR-142)
      */
-    public record Active(String name, Storage storage) {
+    public record Active(String name, Storage storage, StorageMap map) {
+
+        /** 割り付けを持たないプログラム。手で書いたものがこれである。 */
+        public Active(String name, Storage storage) {
+            this(name, storage, StorageMap.EMPTY);
+        }
     }
 
     /**
@@ -114,6 +121,11 @@ public final class ProgramContext {
      */
     public void enter(String name, Storage storage) {
         active.push(new Active(name, storage));
+    }
+
+    /** 割り付けまで添えてプログラムへ入ったことを記録する (要件 FR-142)。 */
+    public void enter(String name, Storage storage, StorageMap map) {
+        active.push(new Active(name, storage, map));
     }
 
     /** プログラムから正常に戻ったことを記録する。 */

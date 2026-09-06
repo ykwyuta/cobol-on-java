@@ -10,6 +10,8 @@ import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.ProcessStatement;
 import dev.cobolonjava.runtime.abend.Abend;
 import dev.cobolonjava.runtime.abend.AbendCode;
+import dev.cobolonjava.runtime.abend.StorageMap;
+import dev.cobolonjava.runtime.item.Usage;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -216,6 +218,114 @@ class AbendGenerationTest {
 
         RuntimeException thrown = assertThrows(RuntimeException.class, program::runFresh);
         assertEquals(12, generatedFrame(thrown).getLineNumber());
+    }
+
+    // ---- 作業場所の割り付け (FR-142) ----
+
+    @Test
+    @DisplayName("生成クラスが作業場所の割り付けを持つ (FR-142)")
+    void theProgramCarriesItsStorageMap() {
+        CobolProgram program = compile(null, sourceOf(null, List.of(
+                "01 WS-REC.",
+                "   05 WS-NAME  PIC X(8).",
+                "   05 WS-GRADE PIC 9(2).",
+                "01 WS-TOTAL PIC S9(5) COMP-3."), List.of(),
+                "CONTINUE."));
+
+        StorageMap map = program.storageMap();
+        assertEquals(List.of("WS-REC", "WS-NAME", "WS-GRADE", "WS-TOTAL"),
+                map.entries().stream().map(StorageMap.Entry::name).toList());
+
+        StorageMap.Entry group = map.entries().get(0);
+        assertEquals(StorageMap.Kind.GROUP, group.kind());
+        assertEquals(0, group.offset());
+
+        StorageMap.Entry name = map.entries().get(1);
+        assertEquals(StorageMap.Kind.TEXT, name.kind());
+        assertEquals(0, name.offset());
+        assertEquals(8, name.length());
+        assertEquals(1, name.depth());
+
+        StorageMap.Entry grade = map.entries().get(2);
+        assertEquals(StorageMap.Kind.NUMBER, grade.kind());
+        assertEquals(8, grade.offset());
+        // USAGE を書かなければ DISPLAY である
+        assertEquals(Usage.DISPLAY, grade.usage());
+
+        StorageMap.Entry total = map.entries().get(3);
+        assertEquals(10, total.offset(), "01 レベルは前の 01 の後ろから始まる");
+        assertEquals(Usage.COMP_3, total.usage());
+    }
+
+    @Test
+    @DisplayName("下位の項目の位置は 01 レベルの先頭から数える (FR-142)")
+    void nestedItemsAreAddressedFromTheirRecord() {
+        CobolProgram program = compile(null, sourceOf(null, List.of(
+                "01 WS-FIRST  PIC X(4).",
+                "01 WS-SECOND.",
+                "   05 WS-INNER PIC X(3)."), List.of(),
+                "CONTINUE."));
+
+        StorageMap map = program.storageMap();
+        // base() が立つのは 01 レベルだけである。配下は根から辿らないと 0 になる
+        assertEquals(4, map.entries().get(2).offset());
+    }
+
+    @Test
+    @DisplayName("REDEFINES で重ねた項目は同じ位置を指す (FR-142)")
+    void redefinedItemsShareTheirPlace() {
+        CobolProgram program = compile(null, sourceOf(null, List.of(
+                "01 WS-HEAD PIC X(4).",
+                "01 WS-G.",
+                "   05 WS-TEXT PIC X(3).",
+                "01 WS-N REDEFINES WS-G PIC 9(5) COMP-3."), List.of(),
+                "CONTINUE."));
+
+        StorageMap map = program.storageMap();
+        StorageMap.Entry text = map.entries().stream()
+                .filter(e -> e.name().equals("WS-TEXT")).findFirst().orElseThrow();
+        StorageMap.Entry number = map.entries().stream()
+                .filter(e -> e.name().equals("WS-N")).findFirst().orElseThrow();
+        assertEquals(text.offset(), number.offset());
+    }
+
+    @Test
+    @DisplayName("OCCURS の回数を持つ (FR-142)")
+    void tablesCarryTheirCount() {
+        CobolProgram program = compile(null, sourceOf(null, List.of(
+                "01 WS-T.",
+                "   05 WS-E PIC X(2) OCCURS 4 TIMES."), List.of(),
+                "CONTINUE."));
+
+        StorageMap.Entry element = program.storageMap().entries().get(1);
+        assertEquals(4, element.occurs());
+        assertEquals(2, element.length());
+    }
+
+    @Test
+    @DisplayName("連絡節の項目は割り付けに入らない (FR-142)")
+    void linkageItemsAreNotInTheMap() {
+        CobolProgram program = compile(null, sourceOf(null,
+                List.of("01 WS-R PIC X(4)."),
+                List.of("01 LK-ITEM PIC X(4)."),
+                "CONTINUE."));
+
+        // 実体は呼ぶ側にある。この記憶域の中には無い
+        assertEquals(List.of("WS-R"),
+                program.storageMap().entries().stream().map(StorageMap.Entry::name).toList());
+    }
+
+    @Test
+    @DisplayName("畳んだ割り付けはほどけば元に戻る (FR-142)")
+    void theMapSurvivesEncoding() {
+        CobolProgram program = compile(null, sourceOf(null, List.of(
+                "01 WS-REC.",
+                "   05 WS-NAME  PIC X(8).",
+                "   05 WS-GRADE PIC 9(2)."), List.of(),
+                "CONTINUE."));
+
+        StorageMap map = program.storageMap();
+        assertEquals(map, StorageMap.parse(map.encoded()));
     }
 
     /** 呼び出し履歴のうち、翻訳したプログラムのいちばん内側の段。 */

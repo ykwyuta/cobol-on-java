@@ -1,5 +1,6 @@
 package dev.cobolonjava.runtime.program;
 
+import dev.cobolonjava.runtime.abend.StorageMap;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 
@@ -44,7 +45,7 @@ public interface CobolProgram {
      */
     default Storage runFresh(ProgramContext context, DataView... arguments) {
         Storage storage = Storage.wrap(initialStorage());
-        context.enter(name(), storage);
+        context.enter(name(), storage, storageMap());
         try {
             run(storage, context, arguments);
         } catch (ProgramStop | ProgramReturn end) {
@@ -62,6 +63,17 @@ public interface CobolProgram {
      */
     default String name() {
         return getClass().getSimpleName();
+    }
+
+    /**
+     * 作業場所の割り付け (要件 FR-142)。
+     *
+     * <p>どのバイトがどの項目かを知っているのは翻訳の側である。生成クラスがこれを返し、
+     * 異常終了の覚え書きが<b>項目名と値</b>を書けるようにする。手で書いたプログラムは
+     * 空のままでよい。
+     */
+    default StorageMap storageMap() {
+        return StorageMap.EMPTY;
     }
 
     /** 出力を端末へ出して実行する。 */

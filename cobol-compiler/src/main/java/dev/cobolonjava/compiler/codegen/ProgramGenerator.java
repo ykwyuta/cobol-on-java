@@ -5,6 +5,7 @@ import dev.cobolonjava.compiler.semantic.Condition;
 import dev.cobolonjava.compiler.semantic.DataCategory;
 import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
+import dev.cobolonjava.compiler.semantic.DataLayout;
 import dev.cobolonjava.compiler.semantic.DataSection;
 import dev.cobolonjava.compiler.semantic.Expression;
 import dev.cobolonjava.compiler.semantic.FileDescription;
@@ -29,6 +30,7 @@ import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
+import dev.cobolonjava.runtime.abend.StorageMap;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.picture.PictureParser;
 import dev.cobolonjava.runtime.sort.SortKey;
@@ -79,6 +81,7 @@ public final class ProgramGenerator {
 
     private static final String DATA_VIEW = Type.getInternalName(DataView.class);
     private static final String OPS = Type.getInternalName(Ops.class);
+    private static final String STORAGE_MAP = "L" + Type.getInternalName(StorageMap.class) + ";";
     private static final String SUPPORT = Type.getInternalName(ProgramSupport.class);
     private static final String STORAGE = Type.getInternalName(Storage.class);
     private static final String CODE_PAGE = Type.getDescriptor(CodePage.class);
@@ -135,6 +138,8 @@ public final class ProgramGenerator {
      * このファイルの行として指してしまう (暫定判断 P-050)。
      */
     private final String sourceName;
+    /** 作業場所の割り付け。異常終了の覚え書きが項目名で書けるようにする (要件 FR-142)。 */
+    private DataLayout layout;
     private List<String> paragraphNames = new ArrayList<>();
     private List<ProcedureBuilder.Section> sections = List.of();
     private List<ProcedureBuilder.Declarative> declaratives = List.of();
@@ -178,12 +183,15 @@ public final class ProgramGenerator {
                 SpecialNames.standard());
     }
 
-    /** 原文のファイル名まで指定してプログラムを生成する (要件 FR-142)。 */
+    /** 原文のファイル名と割り付けまで指定してプログラムを生成する (要件 FR-142)。 */
     public static Result generate(String programName, String sourceName,
                                   ProcedureBuilder.Result procedure, InitialImage.Result image,
-                                  CompilerOptions options, SpecialNames specialNames) {
-        return new ProgramGenerator(classNameOf(programName), sourceName, CodePages.DEFAULT,
-                options, specialNames).emit(procedure, image);
+                                  DataLayout layout, CompilerOptions options,
+                                  SpecialNames specialNames) {
+        ProgramGenerator generator = new ProgramGenerator(classNameOf(programName), sourceName,
+                CodePages.DEFAULT, options, specialNames);
+        generator.layout = layout;
+        return generator.emit(procedure, image);
     }
 
     /** 翻訳時オプションを指定してプログラムを生成する。 */
@@ -230,6 +238,7 @@ public final class ProgramGenerator {
 
         emitConstructor(writer, internal);
         emitInitialStorage(image.storage());
+        emitStorageMap();
         List<List<Runnable>> paragraphs = planParagraphs(procedure);
         if (!diagnostics.isEmpty()) {
             return new Result(className, null, List.copyOf(diagnostics));
@@ -3892,6 +3901,86 @@ public final class ProgramGenerator {
                         "(Ljava/lang/String;)" + DECIMAL, false);
             });
         }).name();
+    }
+
+    /**
+     * 作業場所の割り付けを生成クラスへ埋める (要件 FR-142)。
+     *
+     * <p>どのバイトがどの項目かを知っているのは翻訳の側である。実行時に手元にあるのは
+     * バイト列だけなので、割り付けを持ち歩かせる。項目ごとにバイトコードを吐くと項目の
+     * 多いプログラムでクラスファイルが膨らむので、初期イメージと同じく<b>文字列定数
+     * 1 個</b>に畳む。
+     */
+    private void emitStorageMap() {
+        if (layout == null) {
+            return;
+        }
+        List<StorageMap.Entry> entries = new ArrayList<>();
+        for (DataItem record : layout.records()) {
+            if (record.section() == DataSection.LINKAGE
+                    || record.section() == DataSection.SPECIAL_REGISTER) {
+                // 連絡節の実体は呼ぶ側にある。特殊レジスタは実行の全体で 1 つである
+                continue;
+            }
+            collectEntries(record, 0, entries);
+        }
+        if (entries.isEmpty()) {
+            return;
+        }
+        String encoded = new StorageMap(entries).encoded();
+        // フィールドの宣言は静的初期化子を書くところがまとめて行う
+        constants.put("\0storageMap", new Constant("STORAGE_MAP", STORAGE_MAP, () -> {
+            clinit.visitLdcInsn(encoded);
+            clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    Type.getInternalName(StorageMap.class), "parse",
+                    "(Ljava/lang/String;)" + STORAGE_MAP, false);
+        }));
+
+        MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "storageMap",
+                "()" + STORAGE_MAP, null, null);
+        method.visitCode();
+        method.visitFieldInsn(Opcodes.GETSTATIC, internal, "STORAGE_MAP", STORAGE_MAP);
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    /** 項目とその下位を、書かれた順に並べる。 */
+    private static void collectEntries(DataItem item, int depth, List<StorageMap.Entry> out) {
+        if (item.name() != null) {
+            // base() が立つのは 01 レベルだけである。配下の項目は根から辿る
+            int offset = item.record().base() + item.offset();
+            out.add(new StorageMap.Entry(depth, item.level(), item.name(), offset,
+                    item.length(), Math.max(item.occurs(), 1), kindOf(item), pictureOf(item),
+                    usageOf(item)));
+        }
+        for (DataItem child : item.children()) {
+            // 名前のない項目 (FILLER) は段を増やさない。見せ方だけの話である
+            collectEntries(child, item.name() == null ? depth : depth + 1, out);
+        }
+    }
+
+    private static StorageMap.Kind kindOf(DataItem item) {
+        if (!item.isElementary()) {
+            return StorageMap.Kind.GROUP;
+        }
+        if (item.isIndex()) {
+            return StorageMap.Kind.INDEX;
+        }
+        Picture picture = item.picture();
+        return picture != null && picture.isNumeric()
+                ? StorageMap.Kind.NUMBER
+                : StorageMap.Kind.TEXT;
+    }
+
+    /** {@code USAGE} を書かなければ {@code DISPLAY} である。 */
+    private static Usage usageOf(DataItem item) {
+        return item.usage() == null ? Usage.DISPLAY : item.usage();
+    }
+
+    private static String pictureOf(DataItem item) {
+        Picture picture = item.picture();
+        return picture == null ? "" : picture.source();
     }
 
     private void emitStaticInitializer() {

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.decimal.DataException;
+import dev.cobolonjava.runtime.item.Usage;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.List;
@@ -128,6 +129,93 @@ class DiagnosisTest {
         context.leave();
 
         assertEquals(List.of(), context.active());
+    }
+
+    // ---- 項目名で書く (FR-142) ----
+
+    /** 8 バイトの名前と 2 桁の等級。 */
+    private static StorageMap employee() {
+        return new StorageMap(List.of(
+                new StorageMap.Entry(0, 1, "WS-REC", 0, 10, 1,
+                        StorageMap.Kind.GROUP, "", null),
+                new StorageMap.Entry(1, 5, "WS-NAME", 0, 8, 1,
+                        StorageMap.Kind.TEXT, "X(8)", Usage.DISPLAY),
+                new StorageMap.Entry(1, 5, "WS-GRADE", 8, 2, 1,
+                        StorageMap.Kind.NUMBER, "9(2)", Usage.DISPLAY)));
+    }
+
+    @Test
+    @DisplayName("割り付けがあれば項目名と値で書く (FR-142)")
+    void namedItemsAreWritten() {
+        ProgramContext context = context();
+        context.setDumpLevel(DumpLevel.DUMP);
+        context.enter("PAYCHK", Storage.copyOf(CodePages.DEFAULT.encode("SMITH   07")),
+                employee());
+
+        String text = textOf(Diagnosis.of(AbendCode.S0C7, new DataException("bad"), context));
+        assertTrue(text.contains("01 WS-REC"), text);
+        assertTrue(text.contains("05 WS-NAME = 'SMITH   '"), text);
+        assertTrue(text.contains("05 WS-GRADE = 7"), text);
+    }
+
+    @Test
+    @DisplayName("数として読めなければそう書いて 16 進を添える (FR-142)")
+    void unreadableNumbersAreSaidSo() {
+        ProgramContext context = context();
+        context.setDumpLevel(DumpLevel.DUMP);
+        // 等級のところに数字にならないバイトが入っている。これ自体がいちばんの手がかりである。
+        // 'A' のような文字では駄目である。NUMPROC(NOPFD) は上位 4 ビットを見ないので
+        // X'C1' は 1 として読めてしまう
+        byte[] bytes = new byte[10];
+        System.arraycopy(CodePages.DEFAULT.encode("SMITH   "), 0, bytes, 0, 8);
+        bytes[8] = (byte) 0x4A;
+        bytes[9] = (byte) 0x4B;
+        context.enter("PAYCHK", Storage.copyOf(bytes), employee());
+
+        String text = textOf(Diagnosis.of(AbendCode.S0C7, new DataException("bad"), context));
+        assertTrue(text.contains("WS-GRADE = <not numeric>"), text);
+        assertTrue(text.contains("4A4B"), text);
+    }
+
+    @Test
+    @DisplayName("反復は 8 個まで書いて残りは数える (FR-142)")
+    void tablesAreCappedAtEight() {
+        ProgramContext context = context();
+        context.setDumpLevel(DumpLevel.DUMP);
+        context.enter("T", Storage.copyOf(CodePages.DEFAULT.encode("ABCDEFGHIJ")),
+                new StorageMap(List.of(new StorageMap.Entry(0, 1, "WS-E", 0, 1, 10,
+                        StorageMap.Kind.TEXT, "X", Usage.DISPLAY))));
+
+        String text = textOf(Diagnosis.of(AbendCode.S0C7, new DataException("bad"), context));
+        assertTrue(text.contains("WS-E (1) = 'A'"), text);
+        assertTrue(text.contains("WS-E (8) = 'H'"), text);
+        assertFalse(text.contains("WS-E (9)"), text);
+        assertTrue(text.contains("2 more occurrences"), text);
+    }
+
+    @Test
+    @DisplayName("記憶域からはみ出す項目はそう書く (FR-142)")
+    void anItemOutsideTheStorageIsSaidSo() {
+        ProgramContext context = context();
+        context.setDumpLevel(DumpLevel.DUMP);
+        context.enter("T", Storage.allocate(2),
+                new StorageMap(List.of(new StorageMap.Entry(0, 1, "WS-X", 8, 4, 1,
+                        StorageMap.Kind.TEXT, "X(4)", Usage.DISPLAY))));
+
+        String text = textOf(Diagnosis.of(AbendCode.S0C7, new DataException("bad"), context));
+        assertTrue(text.contains("outside the storage"), text);
+    }
+
+    @Test
+    @DisplayName("割り付けが無ければ 16 進の羅列に落ちる (FR-142)")
+    void withoutAMapTheDumpIsHex() {
+        ProgramContext context = context();
+        context.setDumpLevel(DumpLevel.DUMP);
+        context.enter("HAND", Storage.copyOf(CodePages.DEFAULT.encode("ABCD")));
+
+        String text = textOf(Diagnosis.of(AbendCode.S0C7, new DataException("bad"), context));
+        assertTrue(text.contains("C1C2C3C4"), text);
+        assertFalse(text.contains(" = "), text);
     }
 
     @Test

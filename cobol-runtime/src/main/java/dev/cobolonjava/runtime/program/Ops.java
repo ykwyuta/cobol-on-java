@@ -714,7 +714,7 @@ public final class Ops {
     public static void call(ProgramContext context, String name, ClassLoader loader,
                             DataView[] arguments) {
         ProgramContext.Loaded target = context.resolve(name, loader);
-        context.enter(name, target.storage());
+        context.enter(name, target.storage(), target.program().storageMap());
         try {
             target.program().run(target.storage(), context, arguments);
         } catch (ProgramReturn returned) {

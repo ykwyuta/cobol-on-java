@@ -3,8 +3,10 @@ package dev.cobolonjava.runtime.abend;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramSupport;
+import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -17,6 +19,11 @@ import java.util.List;
  * <h2>止まった場所はクラスファイルの行番号表から取る</h2>
  * <p>翻訳するとき、文ごとに原文の行をクラスファイルへ埋めてある。だから<b>JVM の呼び出し
  * 履歴がそのまま原文の行を指す</b>。対応表を自分で持たないので、本体とずれる余地がない。
+ *
+ * <h2>項目名で書ける</h2>
+ * <p>16 進を読んで変位を数えるのと、名前で探すのとでは、追える速さが違う。翻訳の側が
+ * 持っている割り付けを生成クラスへ埋めてあるので ({@link StorageMap})、覚え書きは項目名と
+ * 値で書ける。割り付けを持たないプログラムでは 16 進の羅列に落ちる。
  *
  * <h2>書式はホストのものではない</h2>
  * <p>中身はホストの {@code CEEDUMP} が持つものに揃えたが、<b>並べ方と字面は真似ていない</b>。
@@ -118,9 +125,92 @@ public final class Diagnosis {
         for (ProgramContext.Active active : context.active()) {
             out.add("");
             out.add("STORAGE FOR " + active.name() + ":");
-            out.addAll(hexDump(active.storage(), context.codePage()));
+            if (active.map() == null || active.map().isEmpty()) {
+                // 割り付けを知らない。16 進で出すしかない
+                out.addAll(hexDump(active.storage(), context.codePage()));
+                continue;
+            }
+            out.addAll(named(active, context.codePage()));
         }
         return out;
+    }
+
+    /** 表に出せる反復の数。表全体を書き出すと肝心の 1 行が埋もれる。 */
+    private static final int OCCURRENCES = 8;
+
+    /**
+     * 項目名と値で書く (要件 FR-142)。
+     *
+     * <p>16 進を読んで変位を数えるのと、名前で探すのとでは、追える速さが違う。
+     * 値が数として読めないときは<b>読めないと言って 16 進を添える</b>。読めないバイトが
+     * 入っていること自体が、たいていの場合いちばんの手がかりである。
+     */
+    private static List<String> named(ProgramContext.Active active, CodePage codePage) {
+        List<String> out = new ArrayList<>();
+        byte[] bytes = active.storage() == null ? new byte[0] : active.storage().array();
+        for (StorageMap.Entry entry : active.map().entries()) {
+            String indent = "  ".repeat(entry.depth() + 1);
+            String label = String.format("%02d %s", entry.level(), entry.name());
+            if (entry.kind() == StorageMap.Kind.GROUP) {
+                out.add(indent + label);
+                continue;
+            }
+            int shown = Math.min(entry.occurs(), OCCURRENCES);
+            for (int i = 0; i < shown; i++) {
+                int at = entry.offset() + i * entry.length();
+                String suffix = entry.occurs() > 1 ? " (" + (i + 1) + ")" : "";
+                out.add(indent + label + suffix + " = " + value(bytes, at, entry, codePage));
+            }
+            if (entry.occurs() > shown) {
+                out.add(indent + "  ... " + (entry.occurs() - shown) + " more occurrences");
+            }
+        }
+        return out;
+    }
+
+    /** 項目 1 個の値。読めなければ 16 進で見せる。 */
+    private static String value(byte[] bytes, int at, StorageMap.Entry entry, CodePage codePage) {
+        if (at < 0 || at + entry.length() > bytes.length) {
+            return "<outside the storage>";
+        }
+        byte[] slice = Arrays.copyOfRange(bytes, at, at + entry.length());
+        if (entry.kind() == StorageMap.Kind.NUMBER) {
+            try {
+                NumericItem item = NumericItem.of(entry.picture(), entry.usage());
+                return item.decode(slice).toBigDecimal().toPlainString()
+                        + "  " + hex(slice);
+            } catch (RuntimeException e) {
+                // 数として読めないバイトが入っている。それ自体が手がかりである
+                return "<not numeric>  " + hex(slice);
+            }
+        }
+        if (entry.kind() == StorageMap.Kind.INDEX) {
+            return String.valueOf(new java.math.BigInteger(slice.length == 0 ? new byte[] {0}
+                    : slice).intValue());
+        }
+        return "'" + text(slice, codePage) + "'  " + hex(slice);
+    }
+
+    /** 文字として見せる。読めないバイトは点にする。 */
+    private static String text(byte[] bytes, CodePage codePage) {
+        StringBuilder sb = new StringBuilder();
+        for (byte value : bytes) {
+            sb.append(printable(value, codePage));
+        }
+        return sb.toString();
+    }
+
+    /** 16 進。長い項目は頭だけを見せる。 */
+    private static String hex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        int shown = Math.min(bytes.length, 16);
+        for (int i = 0; i < shown; i++) {
+            sb.append(String.format("%02X", bytes[i]));
+        }
+        if (bytes.length > shown) {
+            sb.append("...");
+        }
+        return sb.toString();
     }
 
     /** 1 行 16 バイト。左に 16 進、右にコードページで読んだ文字。 */
