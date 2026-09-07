@@ -214,6 +214,29 @@ class SearchGenerationTest {
     }
 
     @Test
+    @DisplayName("VARYING に指標データ項目を書ける (FR-025, FR-066)")
+    void theVaryingItemMayBeAnIndexDataItem() {
+        // USAGE INDEX の項目には INDEXED BY のような印が付かない。
+        // 表の指標名と取り違えると、名前を切り出すところで壊れる
+        assertEquals("[3]|", run(
+                List.of("01 WS-T.",
+                        "   05 WS-E OCCURS 3 TIMES INDEXED BY WS-I.",
+                        "      10 WS-KEY  PIC X(3).",
+                        "      10 WS-DATA PIC X(3).",
+                        "01 WS-J USAGE IS INDEX.",
+                        "01 WS-SHOW PIC 9."),
+                procedure(
+                        "    SET WS-I TO 1",
+                        "    SET WS-J TO 1",
+                        "    SEARCH WS-E VARYING WS-J",
+                        "        WHEN WS-KEY (WS-I) = 'ccc'",
+                        "            CONTINUE",
+                        "    END-SEARCH",
+                        "    SET WS-SHOW TO WS-J",
+                        "    DISPLAY '[' WS-SHOW ']'.")));
+    }
+
+    @Test
     @DisplayName("指標名へ MOVE はできない (FR-025)")
     void anIndexNameCannotReceiveAMove() {
         CobolCompiler.Result result = compile(TABLE, "MOVE 1 TO WS-I.");
@@ -224,13 +247,15 @@ class SearchGenerationTest {
     }
 
     @Test
-    @DisplayName("SET の受取側は指標名でなければならない (FR-025)")
-    void setRequiresAnIndexName() {
+    @DisplayName("SET ... TO の受取側は指標名か整数の項目である (FR-025)")
+    void setToRefusesSomethingThatIsNeither() {
+        // 文字の項目は受け取れない。何番目かを入れる先ではない
         CobolCompiler.Result result = compile(
-                List.of("01 WS-N PIC 9(3)."), "SET WS-N TO 1.");
+                List.of("01 WS-X PIC X(3)."), "SET WS-X TO 1.");
 
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("requires an index name"),
+        assertTrue(result.diagnostics().get(0).message()
+                        .contains("an index name or an integer item"),
                 result.diagnostics().toString());
     }
 
@@ -254,6 +279,50 @@ class SearchGenerationTest {
 
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("SEARCH ALL"),
+                result.diagnostics().toString());
+    }
+
+    // ---- SET の受取側 (FR-025、暫定判断 P-035) ----
+
+    @Test
+    @DisplayName("SET ... TO は整数の項目へも書ける (FR-025)")
+    void setToMayWriteAnIntegerItem() {
+        // 規格がそう決めており、実資産も SET WS-COUNT TO IDX と書く。
+        // 指標名に限ると、表の何番目にいるかを取り出す手立てが無くなる
+        List<String> storage = new java.util.ArrayList<>(TABLE);
+        storage.add("01 WS-N PIC 9(4) VALUE 0.");
+
+        assertEquals("[0003]|", run(storage, procedure(
+                "    SET WS-I TO 3",
+                "    SET WS-N TO WS-I",
+                "    DISPLAY '[' WS-N ']'.")));
+    }
+
+    @Test
+    @DisplayName("USAGE INDEX の項目も SET の受取側になる (FR-025, 暫定判断 P-035)")
+    void anIndexDataItemCanBeSet() {
+        List<String> storage = new java.util.ArrayList<>(TABLE);
+        storage.add("01 WS-SAVE USAGE IS INDEX.");
+
+        assertEquals("[222]|", run(storage, procedure(
+                "    SET WS-I TO 2",
+                "    SET WS-SAVE TO WS-I",
+                "    SET WS-I TO 1",
+                "    SET WS-I TO WS-SAVE",
+                "    DISPLAY '[' WS-DATA (WS-I) ']'.")));
+    }
+
+    @Test
+    @DisplayName("SET ... UP BY の受取側は指標名に限る (FR-025)")
+    void setUpByNeedsAnIndexName() {
+        // 動かしているのは表の中の位置そのものである
+        List<String> storage = new java.util.ArrayList<>(TABLE);
+        storage.add("01 WS-N PIC 9(4) VALUE 0.");
+
+        CobolCompiler.Result result = compile(storage, procedure("    SET WS-N UP BY 1."));
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("UP/DOWN BY"),
                 result.diagnostics().toString());
     }
 }

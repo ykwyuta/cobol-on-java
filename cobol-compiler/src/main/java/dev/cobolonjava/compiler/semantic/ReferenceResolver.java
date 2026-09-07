@@ -45,17 +45,8 @@ public final class ReferenceResolver {
             return null;
         }
 
-        List<DataReference.Subscript> subscripts = new ArrayList<>();
-        if (context.subscripts() != null) {
-            for (CobolParser.SubscriptContext subscript : context.subscripts().subscript()) {
-                DataReference.Subscript resolved = resolveSubscript(subscript, origin);
-                if (resolved == null) {
-                    return null;
-                }
-                subscripts.add(resolved);
-            }
-        }
-        if (!checkSubscripts(item, subscripts, origin)) {
+        List<DataReference.Subscript> subscripts = subscriptsOf(context, origin);
+        if (subscripts == null || !checkSubscripts(item, subscripts, origin)) {
             return null;
         }
 
@@ -70,6 +61,44 @@ public final class ReferenceResolver {
         DataReference reference = new DataReference(item, subscripts, refMod, origin);
         checkReferenceModification(reference, origin);
         return reference;
+    }
+
+    /**
+     * 名前で引けない項目への参照を、書かれた添字と合わせて作る。
+     *
+     * <p>条件名 (88 レベル) が使う。条件名そのものは記憶域を持たないので
+     * {@link #resolveName} では引けないが、<b>添字は条件名のほうに書かれる</b>。
+     * {@code IF CN1 (1)} の {@code (1)} は親の表への添字である。
+     *
+     * @return 添字の数や範囲が合わなければ {@code null}
+     */
+    public DataReference resolveAs(DataItem item, CobolParser.IdentifierContext context) {
+        Origin origin = originOf(context);
+        List<DataReference.Subscript> subscripts = subscriptsOf(context, origin);
+        if (subscripts == null || !checkSubscripts(item, subscripts, origin)) {
+            return null;
+        }
+        return new DataReference(item, subscripts, null, origin);
+    }
+
+    /**
+     * 書かれた添字を解く。
+     *
+     * @return 1 つでも解けなければ {@code null}
+     */
+    private List<DataReference.Subscript> subscriptsOf(CobolParser.IdentifierContext context,
+                                                       Origin origin) {
+        List<DataReference.Subscript> subscripts = new ArrayList<>();
+        if (context.subscripts() != null) {
+            for (CobolParser.SubscriptContext subscript : context.subscripts().subscript()) {
+                DataReference.Subscript resolved = resolveSubscript(subscript, origin);
+                if (resolved == null) {
+                    return null;
+                }
+                subscripts.add(resolved);
+            }
+        }
+        return subscripts;
     }
 
     /** 修飾された名前から項目 1 個を決める。 */

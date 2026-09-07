@@ -305,8 +305,19 @@ public final class DataDivisionBuilder {
         }
     }
 
+    /**
+     * {@code USAGE} 句を効かせる。
+     *
+     * <p>{@code INDEX} だけは形が違う。<b>PICTURE を持たない</b>のに数を入れる項目で
+     * あり、入っているのは「表の何番目か」である。指標名と同じ持ち方にしてある
+     * (暫定判断 P-035)。同じ持ち方にすれば、{@code SET} も添字も同じ道を通る。
+     */
     private void applyUsage(DataItem item, CobolParser.UsageClauseContext clause, Origin origin) {
         String name = clause.usageName().getText().toUpperCase(Locale.ROOT);
+        if (name.equals("INDEX")) {
+            applyIndexUsage(item, origin);
+            return;
+        }
         Usage usage = switch (name) {
             case "DISPLAY" -> Usage.DISPLAY;
             case "PACKED-DECIMAL", "COMP-3", "COMPUTATIONAL-3" -> Usage.COMP_3;
@@ -317,12 +328,34 @@ public final class DataDivisionBuilder {
             default -> null;
         };
         if (usage == null) {
-            // INDEX / POINTER / NATIONAL / DISPLAY-1 はランタイムが未対応 (暫定判断 P-006)
+            // POINTER / NATIONAL / DISPLAY-1 はランタイムが未対応 (暫定判断 P-006)
             report(origin, "USAGE " + name + " is not supported yet");
             return;
         }
         item.setUsage(usage);
     }
+
+    /**
+     * {@code USAGE INDEX} の項目 (要件 FR-025、暫定判断 P-035)。
+     *
+     * <p>指標データ項目である。{@code PICTURE} を書いてはならないという決まりがあり、
+     * 大きさは処理系が決める。ここでは指標名と同じ 4 バイトの 2 進数にしてある。
+     *
+     * <p>{@code PICTURE} が書かれていれば誤りとして報せる。黙って通すと、書いた人の
+     * 思った大きさと違う項目ができる。
+     */
+    private void applyIndexUsage(DataItem item, Origin origin) {
+        if (item.picture() != null) {
+            report(origin, "USAGE INDEX cannot have a PICTURE: " + item.name());
+            return;
+        }
+        item.setPicture(PictureParser.parse(INDEX_PICTURE));
+        item.setUsage(Usage.COMP);
+        item.markIndex();
+    }
+
+    /** 指標が持つ数の形。4 バイトの 2 進数である。 */
+    private static final String INDEX_PICTURE = "9(9)";
 
     private static SignPosition signPositionOf(CobolParser.SignClauseContext clause) {
         String text = clause.getText().toUpperCase(Locale.ROOT);
@@ -385,7 +418,7 @@ public final class DataDivisionBuilder {
                     continue;
                 }
                 DataItem item = new DataItem(INDEPENDENT_LEVEL, "IDX$" + name, table.origin());
-                item.setPicture(PictureParser.parse("9(9)"));
+                item.setPicture(PictureParser.parse(INDEX_PICTURE));
                 item.setUsage(Usage.COMP);
                 item.markIndex();
                 indexes.put(name, item);

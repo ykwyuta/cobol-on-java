@@ -1075,10 +1075,20 @@ public final class ProcedureBuilder {
         return new DataReference(layout.findIndex(name), List.of(), null, origin);
     }
 
-    /** 指標の実体から、書かれていた指標名へ戻す。 */
+    /**
+     * 指標の実体から、書かれていた指標名へ戻す。
+     *
+     * <p>{@code INDEXED BY} が作る隠しデータ項目には印が付いている。
+     * {@code USAGE IS INDEX} と書かれた指標データ項目には付かないので、
+     * <b>そのときは書かれた名前がそのまま名前である</b>。
+     */
     private static String indexNameOf(DataItem item) {
-        return item.name().substring("IDX$".length());
+        String name = item.name();
+        return name.startsWith(INDEX_MARK) ? name.substring(INDEX_MARK.length()) : name;
     }
+
+    /** {@code INDEXED BY} が作る隠しデータ項目に付く印 ({@code DataDivisionBuilder} と対) 。 */
+    private static final String INDEX_MARK = "IDX$";
 
     /**
      * {@code ACCEPT} (要件 FR-060、テスト時の固定は FR-204)。
@@ -1216,7 +1226,7 @@ public final class ProcedureBuilder {
             for (CobolParser.IdentifierContext identifier : context.identifier()) {
                 String name = identifier.qualifiedDataName().dataName(0).getText()
                         .toUpperCase(Locale.ROOT);
-                Statement move = conditionNameMove(name, origin);
+                Statement move = conditionNameMove(identifier, name, origin);
                 if (move == null) {
                     return null;
                 }
@@ -1233,22 +1243,34 @@ public final class ProcedureBuilder {
      * <p>指標名が持つのは<b>何番目か</b>である。したがって {@code TO} は転記、
      * {@code UP BY} と {@code DOWN BY} は加算と減算になる。
      *
-     * <p>受取側は指標名でなければならない。普通のデータ項目を動かすなら
-     * {@code MOVE} と算術文を書く。
+     * <p>{@code TO} の受取側は<b>指標名でなくてもよい</b>。整数の項目でもよく、そのときは
+     * 「何番目か」がそこへ入る。規格がそう決めており、実資産も
+     * {@code SET WS-COUNT TO IDX-1} と書く。ここが指標名に限られていると、
+     * <b>表の何番目にいるかを取り出す手立てが無くなる</b>。
+     *
+     * <p>{@code UP BY} と {@code DOWN BY} の受取側は指標名に限る。動かしているのは
+     * 表の中の位置そのものだからである。
      */
     private Statement indexSetOf(CobolParser.SetStatementContext context, Origin origin) {
         Operand value = operandOf(context.arithmeticOperand(), origin);
         if (value == null) {
             return null;
         }
+        boolean stepping = context.TO() == null;
         List<Statement.Arithmetic.Target> targets = new ArrayList<>();
         for (CobolParser.IdentifierContext identifier : context.identifier()) {
             DataReference reference = resolver.resolve(identifier);
             if (reference == null) {
                 return null;
             }
-            if (!reference.item().isIndex()) {
-                report(origin, "SET requires an index name: " + describe(reference));
+            if (stepping && !reference.item().isIndex()) {
+                report(origin, "SET UP/DOWN BY requires an index name: " + describe(reference));
+                return null;
+            }
+            if (!stepping && !reference.item().isIndex()
+                    && !DataCategory.of(reference).isNumeric()) {
+                report(origin, "SET TO requires an index name or an integer item: "
+                        + describe(reference));
                 return null;
             }
             targets.add(new Statement.Arithmetic.Target(reference, false));
@@ -1273,7 +1295,8 @@ public final class ProcedureBuilder {
                 operator, targets, null, origin);
     }
 
-    private Statement conditionNameMove(String name, Origin origin) {
+    private Statement conditionNameMove(CobolParser.IdentifierContext context, String name,
+                                        Origin origin) {
         for (DataItem item : layout.all()) {
             for (DataItem.ConditionName conditionName : item.conditionNames()) {
                 if (!name.equals(conditionName.name())) {
@@ -1284,7 +1307,10 @@ public final class ProcedureBuilder {
                     return null;
                 }
                 Operand source = new Operand.Literal(conditionName.values().get(0).from());
-                DataReference target = new DataReference(item, List.of(), null, origin);
+                DataReference target = resolver.resolveAs(item, context);
+                if (target == null) {
+                    return null;
+                }
                 Statement.Move.Target checked = checkMove(source, target, origin);
                 return checked == null
                         ? null
@@ -1802,7 +1828,11 @@ public final class ProcedureBuilder {
         for (DataItem item : layout.all()) {
             for (DataItem.ConditionName conditionName : item.conditionNames()) {
                 if (name.equals(conditionName.name())) {
-                    return conditionNameCondition(item, conditionName, origin);
+                    // 添字は条件名のほうに書かれる。親が表なら、それを親への参照へ移す
+                    DataReference parent = resolver.resolveAs(item, context.identifier());
+                    return parent == null
+                            ? null
+                            : conditionNameCondition(parent, conditionName, origin);
                 }
             }
         }
@@ -1810,10 +1840,10 @@ public final class ProcedureBuilder {
         return null;
     }
 
-    private Condition conditionNameCondition(DataItem item, DataItem.ConditionName conditionName,
+    private Condition conditionNameCondition(DataReference reference,
+                                             DataItem.ConditionName conditionName,
                                              Origin origin) {
-        Operand subject = new Operand.Reference(
-                new DataReference(item, List.of(), null, origin));
+        Operand subject = new Operand.Reference(reference);
         Condition result = null;
         for (DataItem.ValueRange range : conditionName.values()) {
             Condition test;

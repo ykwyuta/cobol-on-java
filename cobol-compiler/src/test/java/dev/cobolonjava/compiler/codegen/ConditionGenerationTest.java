@@ -169,6 +169,54 @@ class ConditionGenerationTest {
     }
 
     @Test
+    @DisplayName("表の項目に付いた条件名は添字を取る (FR-022, FR-046)")
+    void aConditionNameOnATableItemTakesASubscript() {
+        // 添字は条件名のほうに書かれるが、効くのは親の表への参照である
+        List<String> storage = List.of(
+                "01 WS-TABLE.",
+                "   02 WS-CELL PIC X OCCURS 3 TIMES.",
+                "      88 WS-HIT VALUE 'H'.",
+                "01 WS-R PIC X.");
+
+        assertEquals("H",
+                run(storage,
+                        "MOVE 'H' TO WS-CELL (2)",
+                        "IF WS-HIT (2) MOVE 'H' TO WS-R ELSE MOVE 'M' TO WS-R END-IF.")
+                        .substring(3),
+                "書いた桁の中身を見ている");
+        assertEquals("M",
+                run(storage,
+                        "MOVE 'H' TO WS-CELL (2)",
+                        "IF WS-HIT (1) MOVE 'H' TO WS-R ELSE MOVE 'M' TO WS-R END-IF.")
+                        .substring(3),
+                "別の桁は見ていない");
+    }
+
+    @Test
+    @DisplayName("SET 条件名 TO TRUE も添字を取る (FR-068)")
+    void settingAConditionNameTrueTakesASubscript() {
+        assertEquals(" H ", run(
+                List.of("01 WS-TABLE.",
+                        "   02 WS-CELL PIC X OCCURS 3 TIMES.",
+                        "      88 WS-HIT VALUE 'H'."),
+                "SET WS-HIT (2) TO TRUE."));
+    }
+
+    @Test
+    @DisplayName("添字の数が合わない条件名は診断になる (FR-022)")
+    void aConditionNameWithTheWrongNumberOfSubscriptsIsDiagnosed() {
+        CobolCompiler.Result result = compile(
+                List.of("01 WS-TABLE.",
+                        "   02 WS-CELL PIC X OCCURS 3 TIMES.",
+                        "      88 WS-HIT VALUE 'H'.",
+                        "01 WS-R PIC X."),
+                "IF WS-HIT MOVE 'H' TO WS-R END-IF.");
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("subscript"),
+                () -> result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("ELSE がなくても書ける (FR-061)")
     void theElseBranchIsOptional() {
         assertEquals("40", java.util.HexFormat.of().withUpperCase().formatHex(

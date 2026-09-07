@@ -292,4 +292,31 @@ class DataDivisionBuilderTest {
         assertEquals(FILE, first.origin().fileName());
         assertEquals(7, first.origin().line(), "決まり文句 4 行のあとの 3 行目");
     }
+
+    // ---- USAGE INDEX (FR-025、暫定判断 P-035) ----
+
+    @Test
+    @DisplayName("USAGE INDEX は 4 バイトの指標データ項目になる (FR-025, 暫定判断 P-035)")
+    void anIndexDataItemIsFourBytes() {
+        // PICTURE を持たない項目である。大きさは処理系が決める決まりであり、
+        // ここでは指標名と同じ持ち方にしてある
+        DataItem item = item(layoutOf(
+                "01 WS-REC.",
+                "   05 WS-IDX USAGE IS INDEX."), "WS-IDX");
+        assertTrue(item.isIndex(), "not an index item");
+        assertEquals(4, item.length());
+    }
+
+    @Test
+    @DisplayName("USAGE INDEX に PICTURE は書けない (FR-025)")
+    void anIndexDataItemCannotHaveAPicture() {
+        // 黙って通すと、書いた人の思った大きさと違う項目ができる
+        DataDivisionBuilder.Result result = build(
+                "01 WS-REC.",
+                "   05 WS-IDX PIC 9(4) USAGE IS INDEX.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("PICTURE"),
+                result.diagnostics().toString());
+    }
 }
