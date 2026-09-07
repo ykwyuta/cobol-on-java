@@ -38,8 +38,19 @@ import org.antlr.v4.runtime.misc.Pair;
  */
 public final class SourceTokenSource implements TokenSource {
 
-    /** 数字定数の綴り。COBOL は小数点の前に必ず数字を要求する。 */
-    private static final Pattern NUMERIC = Pattern.compile("[+-]?\\d+(\\.\\d+)?([eE][+-]?\\d+)?");
+    /**
+     * 数字定数の綴り。
+     *
+     * <p>小数点は<b>いちばん右に来てはならない</b>が、いちばん左に来てもよい。
+     * {@code VALUE .5} は正しい COBOL であり、NIST の検査スイートも書いている。
+     * 小数点だけで始まる形を読めないと、{@code PIC V99 VALUE .25} が通らない。
+     *
+     * <p>区切りの終止符と紛れないのは、<b>終止符は空白が続く</b>と決まっているから
+     * である。{@code .5} は空白が続かないので定数であり、{@code . } は区切りである。
+     * 切り分けはここへ来る前に済んでいる。
+     */
+    private static final Pattern NUMERIC =
+            Pattern.compile("[+-]?(\\d+(\\.\\d+)?|\\.\\d+)([eE][+-]?\\d+)?");
 
     /**
      * 文法が宣言しているが予約語ではない名前。区切り文字、島、そして語の種別そのものである。
@@ -102,13 +113,36 @@ public final class SourceTokenSource implements TokenSource {
         return Map.copyOf(words);
     }
 
+    /**
+     * 次のトークン。
+     *
+     * <p>コンマとセミコロンは<b>渡さない</b>。COBOL の決まりでは、この 2 つは空白が
+     * 書ける場所ならどこへでも書ける飾りであり、意味を持たない。文法の側で「ここには
+     * コンマが来るかもしれない」を書いて回ると、書き漏らしたところだけが読めなくなる。
+     * 渡さないほうが漏れようがない (暫定判断 P-062)。
+     *
+     * <p>{@code DECIMAL-POINT IS COMMA} を書くとコンマは小数点になるが、それは
+     * まだ読めない (暫定判断 P-010)。読めるようにする段で、ここも一緒に決める。
+     */
     @Override
     public Token nextToken() {
+        while (index < tokens.size() && decorative(tokens.get(index))) {
+            index++;
+        }
         if (index >= tokens.size()) {
             return endOfFile();
         }
         SourceToken source = tokens.get(index++);
         return new OriginToken(stream, typeOf(source), source);
+    }
+
+    /** 飾りの区切りか。コンマとセミコロンは空白と同じ扱いである。 */
+    private static boolean decorative(SourceToken token) {
+        if (token.kind() != SourceTokenKind.SEPARATOR) {
+            return false;
+        }
+        char c = token.text().charAt(0);
+        return c == ',' || c == ';';
     }
 
     private Token endOfFile() {

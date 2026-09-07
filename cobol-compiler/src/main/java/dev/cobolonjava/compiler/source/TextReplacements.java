@@ -71,7 +71,7 @@ public final class TextReplacements {
      */
     public static Operand readOperand(List<TextWord> words, int start, Origin origin) {
         if (start >= words.size()) {
-            throw new SourceFormatException(origin + ": a replacement operand is missing");
+            throw new SourceFormatException(origin, "a replacement operand is missing");
         }
         if (words.get(start).kind() != TextWordKind.PSEUDO_DELIMITER) {
             return new Operand(List.of(words.get(start)), start);
@@ -83,7 +83,7 @@ public final class TextReplacements {
             i++;
         }
         if (i >= words.size()) {
-            throw new SourceFormatException(origin + ": pseudo-text is not terminated by ==");
+            throw new SourceFormatException(origin, "pseudo-text is not terminated by ==");
         }
         return new Operand(collected, i);
     }

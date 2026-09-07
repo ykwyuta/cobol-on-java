@@ -200,4 +200,48 @@ class CobolParsingTest {
     private static CobolParser.DataDescriptionEntryContext firstEntry(CobolParsing.Result result) {
         return entries(result).get(0);
     }
+
+    // ---- 読めない原文は診断で断る (暫定判断 P-062) ----
+
+    @Test
+    @DisplayName("閉じていない文字定数は例外ではなく診断になる (ARC-8, 暫定判断 P-062)")
+    void anUnclosedLiteralIsReportedNotThrown() {
+        // プリプロセッサは読めない原文で止まるが、止まるのは中だけである。
+        // 呼ぶ側は診断を求めているのだから、例外が表へ出てはならない
+        CobolParsing.Result result = CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE,
+                "       DISPLAY \"UNCLOSED\n"
+                        + "       DISPLAY \"NEXT\".\n");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("literal"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("診断は読めなかった場所を指す (ARC-8, 暫定判断 P-062)")
+    void theDiagnosticPointsAtTheLine() {
+        CobolParsing.Result result = CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE,
+                "       IDENTIFICATION DIVISION.\n"
+                        + "       DISPLAY \"UNCLOSED\n"
+                        + "       DISPLAY \"NEXT\".\n");
+
+        // 指すのは 3 行目である。文字定数が閉じていないと分かるのは、次の行が継続行で
+        // ないと知れた時点だからである
+        Diagnostic diagnostic = result.diagnostics().get(0);
+        assertEquals(FILE, diagnostic.origin().fileName());
+        assertEquals(3, diagnostic.origin().line());
+    }
+
+    @Test
+    @DisplayName("7 桁目が読めない行も診断になる (ARC-8, 暫定判断 P-062)")
+    void anInvalidIndicatorIsReportedNotThrown() {
+        CobolParsing.Result result = CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE,
+                "000100 IDENTIFICATION DIVISION.\n"
+                        + "000200S    DISPLAY \"X\".\n");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("indicator"),
+                result.diagnostics().toString());
+        assertEquals(2, result.diagnostics().get(0).origin().line());
+    }
 }

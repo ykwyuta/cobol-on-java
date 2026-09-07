@@ -2,6 +2,7 @@ package dev.cobolonjava.compiler.parser;
 
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
+import dev.cobolonjava.compiler.source.SourceFormatException;
 import dev.cobolonjava.compiler.source.SourceReader;
 import dev.cobolonjava.compiler.source.SourceToken;
 import java.util.List;
@@ -41,9 +42,25 @@ public final class CobolParsing {
         return new Result(tree, listener.diagnostics());
     }
 
-    /** ソースをプリプロセッサに通してから構文解析する。 */
+    /**
+     * ソースをプリプロセッサに通してから構文解析する。
+     *
+     * <p>プリプロセッサは読めない原文に出会うと例外で止まる。行を継ぎ、写し句を展開し、
+     * 語へ切る流れ作業なので、途中から先のトークン列が作れないからである。
+     *
+     * <p>ここで受け止めて<b>診断へ変える</b>。呼ぶ側は診断を求めているのだから、例外が
+     * 表へ出てはならない。出ていると、読めなかったのか処理系が壊れたのかを呼ぶ側が
+     * 区別できない (暫定判断 P-062)。
+     */
     public static Result parse(Preprocessor preprocessor, String fileName, String source) {
-        return parse(preprocessor.tokenize(fileName, source));
+        List<SourceToken> tokens;
+        try {
+            tokens = preprocessor.tokenize(fileName, source);
+        } catch (SourceFormatException unreadable) {
+            return new Result(null,
+                    List.of(new Diagnostic(unreadable.origin(), unreadable.detail())));
+        }
+        return parse(tokens);
     }
 
     /** コピー句と参照形式を指定してソースを構文解析する。 */

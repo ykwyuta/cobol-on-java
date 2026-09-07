@@ -91,16 +91,44 @@ class CorpusRunnerTest {
     }
 
     @Test
-    @DisplayName("理由は位置と名前を伏せてから数える (NFR-042)")
-    void reasonsAreCountedWithoutPositionsOrNames() {
-        // 位置と名前が混ざったままだと 500 本で 500 通りの理由になり、
+    @DisplayName("理由から位置を落としてから数える (NFR-042)")
+    void reasonsAreCountedWithoutPositions() {
+        // 位置が混ざったままだと 500 本で 500 通りの理由になり、
         // 何がいちばん詰まっているかが見えなくなる
         CorpusRunner runner = new CorpusRunner((name, text) ->
-                refused(name + ":" + text.length() + ": unknown statement '" + name + "'"));
+                refused(name + ":" + text.length() + ": unknown statement 'EVALUATE'"));
 
         CorpusReport report = runner.run(List.of(source("A.cbl"), source("B.cbl")));
 
-        assertEquals(List.of(Map.entry("unknown statement '…'", 2L)), report.reasons(5));
+        assertEquals(List.of(Map.entry("unknown statement 'EVALUATE'", 2L)), report.reasons(5));
+    }
+
+    @Test
+    @DisplayName("詰まった語は残す (NFR-042)")
+    void theWordThatStoppedItIsKept() {
+        // 「読めない文がある」だけでは、次に何を書けばよいのか分からない
+        CorpusRunner runner = new CorpusRunner((name, text) ->
+                refused("unknown statement '" + (name.startsWith("A") ? "EVALUATE" : "SEARCH")
+                        + "'"));
+
+        CorpusReport report = runner.run(List.of(source("A.cbl"), source("B.cbl")));
+
+        assertEquals(2, report.reasons(5).size());
+    }
+
+    @Test
+    @DisplayName("長い引用は頭だけ残して刈り込む (NFR-042)")
+    void aLongQuotationIsTrimmed() {
+        // 構文解析の道具は、詰まった規則の先頭から拾えた語をぜんぶ並べることがある。
+        // そのままでは 1 本ごとに違う理由になり、数がばらける
+        CorpusRunner runner = new CorpusRunner((name, text) ->
+                refused("no viable alternative at input 'OPEN-FILES.OPENOUTPUTPRINT-FILE."
+                        + name + "'"));
+
+        CorpusReport report = runner.run(List.of(source("A.cbl"), source("B.cbl")));
+
+        assertEquals(List.of(Map.entry("no viable alternative at input "
+                + "'OPEN-FILES.OPENOUTPUTPRI…'", 2L)), report.reasons(5));
     }
 
     @Test

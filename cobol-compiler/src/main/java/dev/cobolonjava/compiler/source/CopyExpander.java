@@ -85,19 +85,19 @@ public final class CopyExpander {
                                           boolean suppressedByCaller) {
         String name = statement.textName().toUpperCase(Locale.ROOT);
         if (stack.contains(name)) {
-            throw new SourceFormatException(statement.origin()
-                    + ": COPY " + statement.textName() + " is recursive: "
+            throw new SourceFormatException(statement.origin(),
+                    "COPY " + statement.textName() + " is recursive: "
                     + String.join(" then ", stack) + " then " + name);
         }
         if (stack.size() >= MAX_DEPTH) {
-            throw new SourceFormatException(statement.origin()
-                    + ": COPY nesting exceeds " + MAX_DEPTH + " levels");
+            throw new SourceFormatException(statement.origin(),
+                    "COPY nesting exceeds " + MAX_DEPTH + " levels");
         }
 
         Optional<CopyBook> book = resolver.resolve(statement.textName(), statement.libraryName());
         if (book.isEmpty()) {
-            throw new SourceFormatException(statement.origin()
-                    + ": copybook not found: " + statement.textName()
+            throw new SourceFormatException(statement.origin(),
+                    "copybook not found: " + statement.textName()
                     + (statement.libraryName() == null ? "" : " in " + statement.libraryName()));
         }
 
@@ -130,11 +130,11 @@ public final class CopyExpander {
         Origin origin = words.get(start).origin();
         int i = start + 1;
         if (i >= words.size()) {
-            throw new SourceFormatException(origin + ": COPY requires a text-name");
+            throw new SourceFormatException(origin, "COPY requires a text-name");
         }
         TextWord nameWord = words.get(i++);
         if (nameWord.kind() != TextWordKind.WORD && nameWord.kind() != TextWordKind.LITERAL) {
-            throw new SourceFormatException(origin + ": COPY requires a text-name");
+            throw new SourceFormatException(origin, "COPY requires a text-name");
         }
         String textName = unquote(nameWord);
 
@@ -142,7 +142,7 @@ public final class CopyExpander {
         if (i < words.size() && (words.get(i).isWord("OF") || words.get(i).isWord("IN"))) {
             i++;
             if (i >= words.size()) {
-                throw new SourceFormatException(origin + ": COPY OF/IN requires a library-name");
+                throw new SourceFormatException(origin, "COPY OF/IN requires a library-name");
             }
             libraryName = unquote(words.get(i++));
         }
@@ -163,8 +163,8 @@ public final class CopyExpander {
                 TextReplacements.Operand from = TextReplacements.readOperand(words, i, origin);
                 i = from.endIndex() + 1;
                 if (i >= words.size() || !words.get(i).isWord("BY")) {
-                    throw new SourceFormatException(
-                            origin + ": REPLACING requires BY after an operand");
+                    throw new SourceFormatException(origin,
+                            "REPLACING requires BY after an operand");
                 }
                 i++;
                 TextReplacements.Operand to = TextReplacements.readOperand(words, i, origin);
@@ -174,7 +174,7 @@ public final class CopyExpander {
         }
 
         if (i >= words.size() || !words.get(i).isSeparator('.')) {
-            throw new SourceFormatException(origin + ": COPY must be terminated by a period");
+            throw new SourceFormatException(origin, "COPY must be terminated by a period");
         }
         return new CopyStatement(textName, libraryName, suppress, replacements, i, origin);
     }

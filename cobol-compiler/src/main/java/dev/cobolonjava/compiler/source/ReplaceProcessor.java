@@ -81,7 +81,7 @@ public final class ReplaceProcessor {
         Origin origin = words.get(start).origin();
         int i = start + 1;
         if (i >= words.size()) {
-            throw new SourceFormatException(origin + ": REPLACE requires operands or OFF");
+            throw new SourceFormatException(origin, "REPLACE requires operands or OFF");
         }
 
         if (words.get(i).isWord("OFF")) {
@@ -96,12 +96,12 @@ public final class ReplaceProcessor {
             if (words.get(i).kind() != TextWordKind.PSEUDO_DELIMITER) {
                 // REPLACE の被演算子は擬似テキストでなければならない。
                 // COPY ... REPLACING が 1 語の指定も許すのとは違う
-                throw new SourceFormatException(
-                        origin + ": REPLACE operands must be pseudo-text enclosed in ==");
+                throw new SourceFormatException(origin,
+                        "REPLACE operands must be pseudo-text enclosed in ==");
             }
             i = from.endIndex() + 1;
             if (i >= words.size() || !words.get(i).isWord("BY")) {
-                throw new SourceFormatException(origin + ": REPLACE requires BY after an operand");
+                throw new SourceFormatException(origin, "REPLACE requires BY after an operand");
             }
             i++;
             TextReplacements.Operand to = TextReplacements.readOperand(words, i, origin);
@@ -110,7 +110,7 @@ public final class ReplaceProcessor {
         }
 
         if (replacements.isEmpty()) {
-            throw new SourceFormatException(origin + ": REPLACE requires at least one operand pair");
+            throw new SourceFormatException(origin, "REPLACE requires at least one operand pair");
         }
         requirePeriod(words, i, origin);
         return new ReplaceStatement(replacements, i);
@@ -118,7 +118,7 @@ public final class ReplaceProcessor {
 
     private static void requirePeriod(List<TextWord> words, int i, Origin origin) {
         if (i >= words.size() || !words.get(i).isSeparator('.')) {
-            throw new SourceFormatException(origin + ": REPLACE must be terminated by a period");
+            throw new SourceFormatException(origin, "REPLACE must be terminated by a period");
         }
     }
 

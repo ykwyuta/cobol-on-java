@@ -18,8 +18,10 @@ class CorpusReportTest {
     private static CorpusReport report() {
         return new CorpusReport(List.of(
                 CompileOutcome.compiled("A.cbl", "NC"),
-                CompileOutcome.rejected("B.cbl", "NC", List.of("B.cbl:1: unknown statement 'X'")),
-                CompileOutcome.rejected("C.cbl", "SQ", List.of("C.cbl:9: unknown statement 'Y'")),
+                CompileOutcome.rejected("B.cbl", "NC",
+                        List.of("B.cbl:1: unknown statement 'EVALUATE'")),
+                CompileOutcome.rejected("C.cbl", "SQ",
+                        List.of("C.cbl:9: unknown statement 'EVALUATE'")),
                 CompileOutcome.crashed("D.cbl", "SQ", new IllegalStateException("boom"))));
     }
 
@@ -62,7 +64,7 @@ class CorpusReportTest {
         // 100 件を止めている構文を先に書くほうがよい
         CorpusReport report = report();
 
-        assertEquals("unknown statement '…'", report.reasons(3).get(0).getKey());
+        assertEquals("unknown statement 'EVALUATE'", report.reasons(3).get(0).getKey());
         assertEquals(2L, report.reasons(3).get(0).getValue());
     }
 

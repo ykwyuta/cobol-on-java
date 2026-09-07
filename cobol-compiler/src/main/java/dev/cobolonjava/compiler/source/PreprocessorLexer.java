@@ -92,8 +92,8 @@ public final class PreprocessorLexer {
             }
             i++;
         }
-        throw new SourceFormatException(
-                source.originOf(start) + ": a non-numeric literal is left unclosed");
+        throw new SourceFormatException(source.originOf(start),
+                "a non-numeric literal is left unclosed");
     }
 
     private static TextWord build(NormalizedSource source, String text, int start, int end,

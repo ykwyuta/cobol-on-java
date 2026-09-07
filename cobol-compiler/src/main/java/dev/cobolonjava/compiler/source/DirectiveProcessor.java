@@ -88,8 +88,8 @@ public final class DirectiveProcessor {
             i++;
         }
         if (!frames.isEmpty()) {
-            throw new SourceFormatException(frames.peek().origin
-                    + ": conditional compilation directive is not terminated");
+            throw new SourceFormatException(frames.peek().origin,
+                    "conditional compilation directive is not terminated");
         }
         return out;
     }
@@ -145,8 +145,8 @@ public final class DirectiveProcessor {
                     state.callInterface = joined(operands).toUpperCase(Locale.ROOT);
                 }
             }
-            default -> throw new SourceFormatException(
-                    origin + ": unknown compiler directive: " + line.get(0).text());
+            default -> throw new SourceFormatException(origin,
+                    "unknown compiler directive: " + line.get(0).text());
         }
     }
 
@@ -161,11 +161,11 @@ public final class DirectiveProcessor {
     private void elseBranch(Origin origin, List<TextWord> operands) {
         Frame frame = requireFrame(origin, "IF", "ELSE");
         if (frame.sawElse) {
-            throw new SourceFormatException(origin + ": >>ELSE appears twice for one >>IF");
+            throw new SourceFormatException(origin, ">>ELSE appears twice for one >>IF");
         }
         frame.sawElse = true;
         if (!operands.isEmpty()) {
-            throw new SourceFormatException(origin + ": >>ELSE takes no operands");
+            throw new SourceFormatException(origin, ">>ELSE takes no operands");
         }
         frame.active = frame.parentActive && !frame.branchTaken;
         frame.branchTaken = true;
@@ -209,7 +209,7 @@ public final class DirectiveProcessor {
     private void endBlock(Origin origin, String opener) {
         Frame frame = frames.peek();
         if (frame == null || !frame.opener.equals(opener)) {
-            throw new SourceFormatException(origin + ": >>END-" + opener + " without >>" + opener);
+            throw new SourceFormatException(origin, ">>END-" + opener + " without >>" + opener);
         }
         frames.pop();
     }
@@ -217,8 +217,8 @@ public final class DirectiveProcessor {
     private Frame requireFrame(Origin origin, String opener, String directive) {
         Frame frame = frames.peek();
         if (frame == null || !frame.opener.equals(opener)) {
-            throw new SourceFormatException(
-                    origin + ": >>" + directive + " without >>" + opener);
+            throw new SourceFormatException(origin,
+                    ">>" + directive + " without >>" + opener);
         }
         return frame;
     }
@@ -240,7 +240,7 @@ public final class DirectiveProcessor {
      */
     private boolean evaluateCondition(Origin origin, List<TextWord> operands) {
         if (operands.isEmpty()) {
-            throw new SourceFormatException(origin + ": a condition is required");
+            throw new SourceFormatException(origin, "a condition is required");
         }
         Resolved left = resolve(origin, operands, 0);
         int i = left.next();
@@ -253,8 +253,8 @@ public final class DirectiveProcessor {
             i++;
         }
         if (i >= operands.size()) {
-            throw new SourceFormatException(
-                    origin + ": a condition requires DEFINED or a relational operator");
+            throw new SourceFormatException(origin,
+                    "a condition requires DEFINED or a relational operator");
         }
 
         boolean result;
@@ -265,8 +265,8 @@ public final class DirectiveProcessor {
             String operator = operands.get(i).text();
             i++;
             if (i >= operands.size()) {
-                throw new SourceFormatException(
-                        origin + ": the relational operator " + operator + " requires an operand");
+                throw new SourceFormatException(origin,
+                        "the relational operator " + operator + " requires an operand");
             }
             Resolved right = resolve(origin, operands, i);
             i = right.next();
@@ -279,8 +279,8 @@ public final class DirectiveProcessor {
 
     private static void requireEnd(Origin origin, List<TextWord> operands, int i) {
         if (i != operands.size()) {
-            throw new SourceFormatException(
-                    origin + ": unexpected text in a directive: " + operands.get(i).text());
+            throw new SourceFormatException(origin,
+                    "unexpected text in a directive: " + operands.get(i).text());
         }
     }
 
@@ -293,16 +293,16 @@ public final class DirectiveProcessor {
             case "<=" -> order <= 0;
             case ">=" -> order >= 0;
             case "<>" -> order != 0;
-            default -> throw new SourceFormatException(
-                    origin + ": unknown relational operator: " + operator);
+            default -> throw new SourceFormatException(origin,
+                    "unknown relational operator: " + operator);
         };
     }
 
     private Value requireDefined(Origin origin, Resolved resolved) {
         if (!resolved.defined()) {
             // 打ち間違いを黙って偽にしない。定義の有無は DEFINED で問う
-            throw new SourceFormatException(
-                    origin + ": undefined compilation constant: " + resolved.name());
+            throw new SourceFormatException(origin,
+                    "undefined compilation constant: " + resolved.name());
         }
         return resolved.value();
     }
@@ -310,7 +310,7 @@ public final class DirectiveProcessor {
     /** 被演算子 1 個を読む。定数名は値へ解決する。 */
     private Resolved resolve(Origin origin, List<TextWord> operands, int index) {
         if (index >= operands.size()) {
-            throw new SourceFormatException(origin + ": an operand is required");
+            throw new SourceFormatException(origin, "an operand is required");
         }
         TextWord word = operands.get(index);
         if (word.kind() == TextWordKind.LITERAL) {
@@ -330,16 +330,16 @@ public final class DirectiveProcessor {
 
     private void define(Origin origin, List<TextWord> operands) {
         if (operands.isEmpty()) {
-            throw new SourceFormatException(origin + ": >>DEFINE requires a constant-name");
+            throw new SourceFormatException(origin, ">>DEFINE requires a constant-name");
         }
         String name = operands.get(0).text().toUpperCase(Locale.ROOT);
         int i = 1;
         if (i >= operands.size() || !operands.get(i).isWord("AS")) {
-            throw new SourceFormatException(origin + ": >>DEFINE requires AS");
+            throw new SourceFormatException(origin, ">>DEFINE requires AS");
         }
         i++;
         if (i >= operands.size()) {
-            throw new SourceFormatException(origin + ": >>DEFINE requires a value");
+            throw new SourceFormatException(origin, ">>DEFINE requires a value");
         }
 
         if (operands.get(i).isWord("OFF")) {
@@ -351,7 +351,7 @@ public final class DirectiveProcessor {
         List<TextWord> value = operands.subList(i, override ? operands.size() - 1 : operands.size());
         if (!override && state.constants.containsKey(name)) {
             // 黙って上書きすると、どちらの定義が効いているか追えなくなる
-            throw new SourceFormatException(origin + ": compilation constant " + name
+            throw new SourceFormatException(origin, "compilation constant " + name
                     + " is already defined; add OVERRIDE to redefine it");
         }
 
@@ -367,8 +367,8 @@ public final class DirectiveProcessor {
             return;
         }
         if (value.size() != 1) {
-            throw new SourceFormatException(
-                    origin + ": >>DEFINE takes a single literal as its value");
+            throw new SourceFormatException(origin,
+                    ">>DEFINE takes a single literal as its value");
         }
         TextWord single = value.get(0);
         state.constants.put(name, single.kind() == TextWordKind.LITERAL
@@ -378,7 +378,7 @@ public final class DirectiveProcessor {
 
     private void pop(Origin origin) {
         if (pushed.isEmpty()) {
-            throw new SourceFormatException(origin + ": >>POP without >>PUSH");
+            throw new SourceFormatException(origin, ">>POP without >>PUSH");
         }
         state = pushed.pop();
     }
@@ -432,8 +432,8 @@ public final class DirectiveProcessor {
                 return number.compareTo(other.number);
             }
             if (number != null || other.number != null) {
-                throw new SourceFormatException(origin
-                        + ": a numeric and an alphanumeric compilation constant cannot be compared");
+                throw new SourceFormatException(origin,
+                    "a numeric and an alphanumeric compilation constant cannot be compared");
             }
             return text.compareTo(other.text);
         }

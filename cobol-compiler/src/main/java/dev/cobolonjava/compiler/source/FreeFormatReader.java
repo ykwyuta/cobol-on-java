@@ -64,8 +64,7 @@ public final class FreeFormatReader implements SourceReader {
         }
 
         if (openQuote != 0) {
-            throw new SourceFormatException(fileName + ":" + openLine
-                    + ": a non-numeric literal is left unclosed at end of source");
+            throw new SourceFormatException(new Origin(fileName, openLine, 1), "a non-numeric literal is left unclosed at end of source");
         }
         return out.build();
     }
@@ -92,12 +91,10 @@ public final class FreeFormatReader implements SourceReader {
                                     String raw, char openQuote) {
         int first = SourceText.countLeadingSpaces(raw);
         if (first >= raw.length()) {
-            throw new SourceFormatException(fileName + ":" + number
-                    + ": a continued non-numeric literal must resume on the next line");
+            throw new SourceFormatException(new Origin(fileName, number, 1), "a continued non-numeric literal must resume on the next line");
         }
         if (raw.charAt(first) != openQuote) {
-            throw new SourceFormatException(fileName + ":" + number
-                    + ": a continued non-numeric literal must resume with the quotation character "
+            throw new SourceFormatException(new Origin(fileName, number, 1), "a continued non-numeric literal must resume with the quotation character "
                     + openQuote);
         }
 
@@ -118,8 +115,7 @@ public final class FreeFormatReader implements SourceReader {
     private static int requireContinuationHyphen(String fileName, int number, String content) {
         int last = SourceText.lastNonBlankIndex(content);
         if (last < 0 || content.charAt(last) != CONTINUATION) {
-            throw new SourceFormatException(fileName + ":" + number
-                    + ": a non-numeric literal that crosses a line must end the line with '"
+            throw new SourceFormatException(new Origin(fileName, number, 1), "a non-numeric literal that crosses a line must end the line with '"
                     + CONTINUATION + "'");
         }
         return last;

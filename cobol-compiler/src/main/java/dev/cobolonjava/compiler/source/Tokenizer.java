@@ -108,7 +108,7 @@ public final class Tokenizer {
         int start = i;
         int end = pictureEnd(start);
         if (end == start) {
-            throw new SourceFormatException(clause + ": PICTURE requires a character-string");
+            throw new SourceFormatException(clause, "PICTURE requires a character-string");
         }
         emit(SourceTokenKind.PICTURE_STRING, start, end);
     }
@@ -137,8 +137,8 @@ public final class Tokenizer {
             }
             j++;
         }
-        throw new SourceFormatException(
-                source.originOf(start) + ": EXEC block is not terminated by END-EXEC");
+        throw new SourceFormatException(source.originOf(start),
+                "EXEC block is not terminated by END-EXEC");
     }
 
     /** 位置 {@code j} に語としての {@code END-EXEC} があるか。 */
@@ -191,8 +191,8 @@ public final class Tokenizer {
             }
             j++;
         }
-        throw new SourceFormatException(
-                source.originOf(start) + ": a non-numeric literal is left unclosed");
+        throw new SourceFormatException(source.originOf(start),
+                "a non-numeric literal is left unclosed");
     }
 
     private boolean equalsIgnoreCase(int start, int end, String word) {

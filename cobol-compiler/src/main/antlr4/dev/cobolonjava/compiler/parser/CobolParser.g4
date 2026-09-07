@@ -11,7 +11,8 @@
 parser grammar CobolParser;
 
 tokens {
-    // 区切り文字
+    // 区切り文字。コンマとセミコロンは飾りなので SourceTokenSource が落とす。
+    // 名前だけ残してあるのは、利用者定義語として引かれないようにするためである
     PERIOD, COMMA, SEMICOLON, LPAREN, RPAREN, COLON,
 
     // 関係演算子の記号形。COBOL 語として書けない綴りなので、
@@ -314,7 +315,7 @@ occursIndexedClause
 // 88 レベルの条件名は値を並べたり範囲で書いたりできる。
 // 通常のデータ項目の VALUE 句はその 1 個の場合にあたる
 valueClause
-    : (VALUE | VALUES) (IS | ARE)? valueRange (COMMA? valueRange)*
+    : (VALUE | VALUES) (IS | ARE)? valueRange valueRange*
     ;
 
 valueRange
@@ -370,7 +371,7 @@ qualifiedDataName
     ;
 
 subscripts
-    : LPAREN subscript (COMMA? subscript)* RPAREN
+    : LPAREN subscript subscript* RPAREN
     ;
 
 referenceModifier
@@ -479,7 +480,7 @@ statement
     ;
 
 moveStatement
-    : MOVE (CORRESPONDING | CORR)? moveSource TO identifier (COMMA? identifier)*
+    : MOVE (CORRESPONDING | CORR)? moveSource TO identifier identifier*
     ;
 
 moveSource

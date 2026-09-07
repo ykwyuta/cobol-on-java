@@ -78,7 +78,7 @@ public final class FixedFormatReader implements SourceReader {
         try {
             indicator = LineIndicator.of(indicatorChar);
         } catch (SourceFormatException e) {
-            throw new SourceFormatException(fileName + ":" + lineNumber + ": " + e.getMessage());
+            throw new SourceFormatException(new Origin(fileName, lineNumber, 1), "" + e.getMessage());
         }
 
         int from = Math.min(raw.length(), SourceLine.CONTENT_START_COLUMN - 1);
@@ -117,8 +117,7 @@ public final class FixedFormatReader implements SourceReader {
                 openQuote = appendContinuation(out, line, openQuote);
             } else {
                 if (openQuote != 0) {
-                    throw new SourceFormatException(line.fileName() + ":" + line.lineNumber()
-                            + ": a non-numeric literal is left unclosed and the next line is not a"
+                    throw new SourceFormatException(new Origin(line.fileName(), line.lineNumber(), 1), "a non-numeric literal is left unclosed and the next line is not a"
                             + " continuation line");
                 }
                 openQuote = appendNormal(out, line);
@@ -163,16 +162,14 @@ public final class FixedFormatReader implements SourceReader {
         String content = line.content();
         int first = SourceText.countLeadingSpaces(content);
         if (first >= content.length()) {
-            throw new SourceFormatException(line.fileName() + ":" + line.lineNumber()
-                    + ": a continuation line has no content in area B");
+            throw new SourceFormatException(new Origin(line.fileName(), line.lineNumber(), 1), "a continuation line has no content in area B");
         }
 
         int start = first;
         if (openQuote != 0) {
             // 定数の継続。B 領域の最初の非空白は引用符でなければならず、それは定数に含めない
             if (content.charAt(first) != openQuote) {
-                throw new SourceFormatException(line.fileName() + ":" + line.lineNumber()
-                        + ": a continued non-numeric literal must resume with the quotation"
+                throw new SourceFormatException(new Origin(line.fileName(), line.lineNumber(), 1), "a continued non-numeric literal must resume with the quotation"
                         + " character " + openQuote);
             }
             start = first + 1;

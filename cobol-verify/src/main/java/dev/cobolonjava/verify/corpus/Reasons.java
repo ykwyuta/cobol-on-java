@@ -1,5 +1,8 @@
 package dev.cobolonjava.verify.corpus;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * 診断の文面を、数えられる形へ揃える (要件 NFR-042)。
  *
@@ -13,6 +16,7 @@ package dev.cobolonjava.verify.corpus;
  * 元の文面は残してある。直す人が見るのはそちらだからである。
  */
 final class Reasons {
+
 
     private Reasons() {
     }
@@ -35,9 +39,32 @@ final class Reasons {
             }
             text = text.substring(colon + 2);
         }
-        return text.replaceAll("'[^']*'", "'…'")
-                .replaceAll("\"[^\"]*\"", "\"…\"")
-                .replaceAll("\\b\\d+\\b", "n")
-                .strip();
+        return shortened(text.replaceAll("\\b\\d+\\b", "n")).strip();
     }
+
+    /**
+     * 引用符の中身を刈り込む。
+     *
+     * <p>引用符の中には<b>どの語で詰まったか</b>が入っている。これは残したい。
+     * {@code no viable alternative at input '…'} だけでは、何を書けばよいのか分からない。
+     *
+     * <p>ところが構文解析の道具は、詰まった規則の先頭から拾えた語をぜんぶ並べることが
+     * ある。長い引用は 1 本ごとに違うものになり、数がばらける。頭だけ残して刈り込む。
+     */
+    private static String shortened(String text) {
+        StringBuilder out = new StringBuilder();
+        Matcher quoted = Pattern.compile("'([^']*)'|\"([^\"]*)\"").matcher(text);
+        while (quoted.find()) {
+            String inside = quoted.group(1) != null ? quoted.group(1) : quoted.group(2);
+            char mark = quoted.group(1) != null ? '\'' : '"';
+            String kept = inside.length() <= KEPT ? inside
+                    : inside.substring(0, KEPT) + "…";
+            quoted.appendReplacement(out, Matcher.quoteReplacement(mark + kept + mark));
+        }
+        quoted.appendTail(out);
+        return out.toString();
+    }
+
+    /** 引用符の中を残す長さ。 */
+    private static final int KEPT = 24;
 }
