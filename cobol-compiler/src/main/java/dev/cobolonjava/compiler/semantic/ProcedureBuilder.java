@@ -1882,12 +1882,13 @@ public final class ProcedureBuilder {
                 return null;
             }
             return arithmetic(Statement.Arithmetic.Operator.ADD, operands,
-                    Statement.Arithmetic.Operator.ADD, targetsOf(context.roundedOperand(), origin),
+                    Statement.Arithmetic.Operator.ADD,
+                    targetsOf(context.roundedOperand(), origin), false,
                     context.sizeErrorPhrases(), origin);
         }
         operands.addAll(operandsOf(context.roundedOperand(), origin));
         return arithmetic(Statement.Arithmetic.Operator.ADD, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -1906,12 +1907,13 @@ public final class ProcedureBuilder {
             // 引く側をまず足し合わせ、その和を受取項目から引く
             return arithmetic(Statement.Arithmetic.Operator.ADD, subtrahends,
                     Statement.Arithmetic.Operator.SUBTRACT,
-                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
+                    targetsOf(context.roundedOperand(), origin), false,
+                    context.sizeErrorPhrases(), origin);
         }
         List<Operand> operands = operandsOf(context.roundedOperand(), origin);
         operands.addAll(subtrahends);
         return arithmetic(Statement.Arithmetic.Operator.SUBTRACT, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     private Statement multiplyOf(CobolParser.MultiplyStatementContext context) {
@@ -1920,12 +1922,13 @@ public final class ProcedureBuilder {
         if (context.GIVING() == null) {
             return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, multiplier,
                     Statement.Arithmetic.Operator.MULTIPLY,
-                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
+                    targetsOf(context.roundedOperand(), origin), false,
+                    context.sizeErrorPhrases(), origin);
         }
         List<Operand> operands = new ArrayList<>(multiplier);
         operands.addAll(operandsOf(context.roundedOperand(), origin));
         return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -1945,7 +1948,8 @@ public final class ProcedureBuilder {
             }
             return arithmetic(Statement.Arithmetic.Operator.DIVIDE, first,
                     Statement.Arithmetic.Operator.DIVIDE,
-                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
+                    targetsOf(context.roundedOperand(), origin), false,
+                    context.sizeErrorPhrases(), origin);
         }
         List<Operand> second = operandsOf(context.roundedOperand(), origin);
         List<Operand> operands = new ArrayList<>();
@@ -1953,7 +1957,7 @@ public final class ProcedureBuilder {
         operands.addAll(into ? second : first);
         operands.addAll(into ? first : second);
         return arithmetic(Statement.Arithmetic.Operator.DIVIDE, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -1966,12 +1970,8 @@ public final class ProcedureBuilder {
         if (value == null || targets.contains(null) || targets.isEmpty()) {
             return null;
         }
-        for (Statement.Arithmetic.Target target : targets) {
-            if (!DataCategory.of(target.reference()).isNumeric()) {
-                report(origin, "an arithmetic statement requires a numeric receiver: "
-                        + describe(target.reference()));
-                return null;
-            }
+        if (!checkReceivers(targets, true, origin)) {
+            return null;
         }
         return new Statement.Compute(value, targets, sizeErrorOf(context.sizeErrorPhrases()),
                 origin);
@@ -2095,12 +2095,9 @@ public final class ProcedureBuilder {
         if (first == null || second == null || quotient == null || remainder == null) {
             return null;
         }
-        for (Statement.Arithmetic.Target target : List.of(quotient, remainder)) {
-            if (!DataCategory.of(target.reference()).isNumeric()) {
-                report(origin, "an arithmetic statement requires a numeric receiver: "
-                        + describe(target.reference()));
-                return null;
-            }
+        // 商も剰余も GIVING の右である。どちらも数字編集項目でよい
+        if (!checkReceivers(List.of(quotient, remainder), true, origin)) {
+            return null;
         }
         boolean into = context.INTO() != null;
         return new Statement.DivideRemainder(into ? second : first, into ? first : second,
@@ -2116,21 +2113,45 @@ public final class ProcedureBuilder {
 
     private Statement arithmetic(Statement.Arithmetic.Operator fold, List<Operand> operands,
                                  Statement.Arithmetic.Operator accumulate,
-                                 List<Statement.Arithmetic.Target> targets,
+                                 List<Statement.Arithmetic.Target> targets, boolean giving,
                                  CobolParser.SizeErrorPhrasesContext phrases, Origin origin) {
         if (operands.contains(null) || targets.contains(null) || targets.isEmpty()) {
             // 解決できなかった参照は報告済みである
             return null;
         }
-        for (Statement.Arithmetic.Target target : targets) {
-            if (!DataCategory.of(target.reference()).isNumeric()) {
-                report(origin, "an arithmetic statement requires a numeric receiver: "
-                        + describe(target.reference()));
-                return null;
-            }
+        if (!checkReceivers(targets, giving, origin)) {
+            return null;
         }
         return new Statement.Arithmetic(fold, operands, accumulate, targets,
                 sizeErrorOf(phrases), origin);
+    }
+
+    /**
+     * 算術文の受取項目が受け取れる形かどうか (要件 FR-041)。
+     *
+     * <p>{@code GIVING} の右に書かれた受取項目は<b>数字編集項目でもよい</b>。
+     * {@code DIVIDE ... GIVING 編集項目 REMAINDER 編集項目} も書ける。
+     * {@code GIVING} を書かない形の受取項目は<b>計算に加わる</b>ので、数値でなければならない。
+     * 編集した文字列を読み戻して足すことはできない。
+     */
+    private boolean checkReceivers(List<Statement.Arithmetic.Target> targets, boolean giving,
+                                   Origin origin) {
+        for (Statement.Arithmetic.Target target : targets) {
+            if (!receives(target.reference(), giving)) {
+                report(origin, giving
+                        ? "an arithmetic statement requires a numeric or numeric-edited receiver: "
+                                + describe(target.reference())
+                        : "an arithmetic statement requires a numeric receiver: "
+                                + describe(target.reference()));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean receives(DataReference reference, boolean giving) {
+        DataCategory category = DataCategory.of(reference);
+        return category.isNumeric() || (giving && category == DataCategory.NUMERIC_EDITED);
     }
 
     /**

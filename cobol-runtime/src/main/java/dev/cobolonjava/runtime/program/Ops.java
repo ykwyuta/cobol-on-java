@@ -1008,6 +1008,36 @@ public final class Ops {
     }
 
     /**
+     * 算術文の結果を数字編集項目へ格納する (要件 FR-041)。
+     *
+     * <p>{@code GIVING} と {@code COMPUTE} の受取側は数字編集項目でもよい。
+     * 丸めるのは<b>編集の前</b>である。編集は桁を絵に当てはめるだけの処理であり、
+     * どちら向きに丸めるかを知らないからである。
+     */
+    public static void storeEdited(Decimal value, Picture target, Storage storage, int offset,
+                                   CobolRounding rounding, CodePage codePage) {
+        Move.toNumericEdited(value.rescale(target.scale(), rounding), target,
+                storage.view(offset, target.size()), codePage);
+    }
+
+    /**
+     * {@code ON SIZE ERROR} つきの、数字編集項目への格納。
+     *
+     * <p>桁に収まらなければ<b>受取項目を変えず</b>に {@code true} を返す。
+     * 収まるかどうかを見るのは絵の桁数であり、編集用の文字は数えない。
+     */
+    public static boolean storeEditedChecked(Decimal value, Picture target, Storage storage,
+                                             int offset, CobolRounding rounding,
+                                             CodePage codePage) {
+        Decimal rounded = value.rescale(target.scale(), rounding);
+        if (!rounded.fitsInDigits(target.digits(), target.scale())) {
+            return true;
+        }
+        Move.toNumericEdited(rounded, target, storage.view(offset, target.size()), codePage);
+        return false;
+    }
+
+    /**
      * 英数字項目を数値として読む。
      *
      * <p>参照実装は英数字項目から数値項目への転記で、送出側を<b>符号なしの整数</b>として

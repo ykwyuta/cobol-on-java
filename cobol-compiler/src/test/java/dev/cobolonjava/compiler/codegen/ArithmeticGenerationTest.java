@@ -179,6 +179,55 @@ class ArithmeticGenerationTest {
     }
 
     @Test
+    @DisplayName("GIVING の受取項目は数字編集項目でよい (FR-041, FR-043)")
+    void aGivingReceiverMayBeNumericEdited() {
+        assertEquals("007  8", run(
+                List.of("01 WS-A PIC 9(3) VALUE 007.", "01 WS-E PIC ZZ9."),
+                "ADD WS-A 1 GIVING WS-E."));
+    }
+
+    @Test
+    @DisplayName("数字編集項目への格納でも ROUNDED は効く (FR-041, FR-045)")
+    void roundingHappensBeforeTheEditing() {
+        // 24.68 を小数 1 桁へ丸めてから絵に当てはめる。切り捨てなら 24.6 になる
+        assertEquals("01234 24.7", run(
+                List.of("01 WS-A PIC 9(3)V99 VALUE 012.34.", "01 WS-E PIC ZZ9.9."),
+                "MULTIPLY WS-A BY 2 GIVING WS-E ROUNDED."));
+    }
+
+    @Test
+    @DisplayName("REMAINDER の受取項目も数字編集項目でよい (FR-041, FR-044)")
+    void theRemainderReceiverMayBeNumericEdited() {
+        // 174 / 16 = 10 あまり 14。剰余は切り捨てた商から求める
+        assertEquals(" 10 14", run(
+                List.of("01 WS-Q PIC ZZ9.", "01 WS-R PIC ZZ9."),
+                "DIVIDE 16 INTO 174 GIVING WS-Q REMAINDER WS-R."));
+    }
+
+    @Test
+    @DisplayName("GIVING を書かない受取項目に数字編集項目は書けない (FR-043)")
+    void aReceiverThatJoinsTheComputationMustBeNumeric() {
+        // 受取項目が計算に加わる形である。編集した文字列を読み戻して足すことはできない
+        CobolCompiler.Result result = compile(
+                List.of("01 WS-E PIC ZZ9."), "ADD 1 TO WS-E.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message()
+                        .contains("requires a numeric receiver"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("数字編集項目でも ON SIZE ERROR は受取項目を変えない (FR-041, FR-043)")
+    void aSizeErrorLeavesAnEditedReceiverAlone() {
+        assertEquals("   X", run(
+                List.of("01 WS-E PIC ZZ9.", "01 WS-F PIC X."),
+                "ADD 900 500 GIVING WS-E",
+                "    ON SIZE ERROR MOVE 'X' TO WS-F",
+                "END-ADD."));
+    }
+
+    @Test
     @DisplayName("数値でない受取項目は誤りとして報告する (FR-043)")
     void aNonNumericReceiverIsReported() {
         CobolCompiler.Result result = compile(

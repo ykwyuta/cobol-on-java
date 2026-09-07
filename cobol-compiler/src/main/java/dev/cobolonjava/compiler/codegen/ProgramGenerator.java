@@ -2639,8 +2639,14 @@ public final class ProgramGenerator {
         }
         Runnable offset = planAddress(target, origin);
         DataItem item = target.item();
+        if (offset == null || item.picture() == null) {
+            return null;
+        }
+        if (DataCategory.of(target) == DataCategory.NUMERIC_EDITED) {
+            return planStoreEdited(item, value, offset, rounding);
+        }
         String field = numericItemConstant(item, origin);
-        if (offset == null || field == null || item.picture() == null) {
+        if (field == null) {
             return null;
         }
         return () -> {
@@ -2651,6 +2657,28 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
                     "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
                             + Type.getDescriptor(CobolRounding.class) + ")V", false);
+        };
+    }
+
+    /**
+     * 積んだ {@link Decimal} を数字編集項目へ書き込む命令 (要件 FR-041)。
+     *
+     * <p>{@code GIVING} と {@code COMPUTE} の受取側は数字編集項目でもよい。書き込む道が
+     * 転記と同じになるのは、<b>編集は転記の規則そのもの</b>だからである。違うのは丸めが
+     * 効くことだけで、ランタイムが編集の前に丸める。
+     */
+    private Runnable planStoreEdited(DataItem item, Runnable value, Runnable offset,
+                                     String rounding) {
+        String picture = pictureConstant(item.picture());
+        return () -> {
+            value.run();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, picture, PICTURE);
+            offset.run();
+            loadRounding(rounding);
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeEdited",
+                    "(" + DECIMAL + PICTURE + "L" + STORAGE + ";I"
+                            + Type.getDescriptor(CobolRounding.class) + CODE_PAGE + ")V", false);
         };
     }
 
@@ -3127,20 +3155,32 @@ public final class ProgramGenerator {
                                       Origin origin) {
         Runnable offset = planAddress(target.reference(), origin);
         DataItem item = target.reference().item();
-        String field = numericItemConstant(item, origin);
-        if (offset == null || field == null || item.picture() == null) {
+        if (offset == null || item.picture() == null) {
             return null;
         }
         String rounding = target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION";
+        boolean edited = DataCategory.of(target.reference()) == DataCategory.NUMERIC_EDITED;
+        String field = edited
+                ? pictureConstant(item.picture())
+                : numericItemConstant(item, origin);
+        if (field == null) {
+            return null;
+        }
         return () -> {
             Label done = new Label();
             run.visitVarInsn(Opcodes.ALOAD, slot);
-            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field,
+                    edited ? PICTURE : NUMERIC_ITEM);
             offset.run();
             loadRounding(rounding);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
-                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
-                            + Type.getDescriptor(CobolRounding.class) + ")Z", false);
+            if (edited) {
+                loadCodePage();
+            }
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS,
+                    edited ? "storeEditedChecked" : "storeChecked",
+                    "(" + DECIMAL + (edited ? PICTURE : NUMERIC_ITEM) + "L" + STORAGE + ";I"
+                            + Type.getDescriptor(CobolRounding.class)
+                            + (edited ? CODE_PAGE : "") + ")Z", false);
             run.visitJumpInsn(Opcodes.IFEQ, done);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitVarInsn(Opcodes.ISTORE, flag);
@@ -3224,13 +3264,8 @@ public final class ProgramGenerator {
             return;
         }
         for (Statement.Arithmetic.Target target : statement.targets()) {
-            Runnable offset = planAddress(target.reference(), statement.origin());
-            if (offset == null) {
-                return;
-            }
             DataItem item = target.reference().item();
-            String field = numericItemConstant(item, statement.origin());
-            if (field == null || item.picture() == null) {
+            if (item.picture() == null) {
                 return;
             }
             int scale = item.picture().scale();
@@ -3238,14 +3273,12 @@ public final class ProgramGenerator {
 
             List<Runnable> value = new ArrayList<>();
             if (statement.accumulate() != null) {
-                // 受取項目の現在値から始める
-                String source = field;
-                value.add(() -> {
-                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, source, NUMERIC_ITEM);
-                    offset.run();
-                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
-                            "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
-                });
+                // 受取項目の現在値から始める。この形の受取項目は数値に限られる
+                Runnable read = planReadReceiver(target.reference(), statement.origin());
+                if (read == null) {
+                    return;
+                }
+                value.add(read);
             }
             if (!planFold(statement, value, scale, rounding)) {
                 return;
@@ -3254,16 +3287,33 @@ public final class ProgramGenerator {
                 value.add(() -> emitOperator(statement.accumulate(), scale, rounding));
             }
 
-            body.add(() -> {
-                value.forEach(Runnable::run);
-                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-                offset.run();
-                loadRounding(rounding);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
-                        "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
-                                + Type.getDescriptor(CobolRounding.class) + ")V", false);
-            });
+            Runnable store = planStore(target.reference(), () -> value.forEach(Runnable::run),
+                    rounding, statement.origin());
+            if (store == null) {
+                return;
+            }
+            body.add(store);
         }
+    }
+
+    /**
+     * {@code GIVING} を書かない算術文が、受取項目の現在値を読む命令。
+     *
+     * <p>この形の受取項目は<b>計算に加わる</b>ので数値項目に限られる。数字編集項目が
+     * ここへ来ることは意味解析が防いでいる。
+     */
+    private Runnable planReadReceiver(DataReference reference, Origin origin) {
+        Runnable offset = planAddress(reference, origin);
+        String field = numericItemConstant(reference.item(), origin);
+        if (offset == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            offset.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
+        };
     }
 
     /**
@@ -3456,17 +3506,23 @@ public final class ProgramGenerator {
 
     private Runnable planCheckedTarget(Statement.Arithmetic statement,
                                        Statement.Arithmetic.Target target, int flag) {
-        Runnable offset = planAddress(target.reference(), statement.origin());
-        if (offset == null) {
-            return null;
-        }
         DataItem item = target.reference().item();
-        String field = numericItemConstant(item, statement.origin());
-        if (field == null || item.picture() == null) {
+        if (item.picture() == null) {
             return null;
         }
         int scale = item.picture().scale();
         String rounding = target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION";
+        Runnable read = statement.accumulate() == null
+                ? () -> { }
+                : planReadReceiver(target.reference(), statement.origin());
+        if (read == null) {
+            return null;
+        }
+        int result = nextLocal++;
+        Runnable store = planCheckedStore(target, result, flag, statement.origin());
+        if (store == null) {
+            return null;
+        }
 
         // 被演算子を先に局所変数へ取る。除数を調べてから割るためである
         List<Integer> slots = new ArrayList<>();
@@ -3510,22 +3566,15 @@ public final class ProgramGenerator {
             }
 
             if (statement.accumulate() != null) {
-                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-                offset.run();
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
-                        "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
+                read.run();
                 run.visitVarInsn(Opcodes.ALOAD, folded);
                 emitOperator(statement.accumulate(), scale, rounding);
             } else {
                 run.visitVarInsn(Opcodes.ALOAD, folded);
             }
-            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            offset.run();
-            loadRounding(rounding);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
-                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
-                            + Type.getDescriptor(CobolRounding.class) + ")Z", false);
-            run.visitJumpInsn(Opcodes.IFEQ, done);
+            run.visitVarInsn(Opcodes.ASTORE, result);
+            store.run();
+            run.visitJumpInsn(Opcodes.GOTO, done);
             run.visitLabel(failed);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitVarInsn(Opcodes.ISTORE, flag);

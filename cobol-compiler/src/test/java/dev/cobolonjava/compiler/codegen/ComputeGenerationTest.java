@@ -235,7 +235,15 @@ class ComputeGenerationTest {
                 List.of("01 WS-R PIC X(5)."), "COMPUTE WS-R = 1 + 1.");
 
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("numeric receiver"),
+        assertTrue(result.diagnostics().get(0).message()
+                        .contains("numeric or numeric-edited receiver"),
                 result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("COMPUTE の受取項目は数字編集項目でよい (FR-041, FR-044)")
+    void theReceiverMayBeNumericEdited() {
+        assertEquals(" 12.35", run(
+                List.of("01 WS-R PIC ZZ9.99."), "COMPUTE WS-R ROUNDED = 24.69 / 2."));
     }
 }
