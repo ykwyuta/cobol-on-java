@@ -11,6 +11,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: 全体アーキテクチャ](docs/design/00-overview.md)
 - [設計: cobol-runtime (P0-a)](docs/design/10-runtime-p0a.md)
 - [設計: cobol-oracle (V2 期待値の採取)](docs/design/20-oracle.md)
+- [設計: 検証基盤 (CCVS85 と OSS コーパス)](docs/design/25-verification.md)
 - [設計: cobol-compiler のプリプロセッサ (P0-b)](docs/design/30-compiler-preprocessor.md)
 - [設計: cobol-compiler の構文解析 (P0-b)](docs/design/40-parser.md)
 - [設計: データ部の記憶域割り付け (P0-b)](docs/design/50-data-layout.md)
@@ -42,6 +43,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | --- | --- | --- |
 | `cobol-runtime` | データ表現・10 進演算・編集移送・文字コード変換・データセットの意味論 | P0-a 第 1 増分 実装済。順編成・相対編成・索引編成の読み書き、割当ての検査 (領域の限り・形・開く段)、区分データセットのディレクトリ (メンバの一覧と並び) を追加 |
 | `cobol-oracle` | Hercules 用テストの生成と期待値の採取 | 第 1 増分 実装済 |
+| `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。`MOVE`・算術文 (`CORRESPONDING` を含む)・`COMPUTE`・`IF`・`EVALUATE`・`PERFORM` (`VARYING` を含む)・`GO TO`・`CALL`・`INITIALIZE`・`SEARCH` / `SEARCH ALL`・`ACCEPT`・`DISPLAY`・`INSPECT`・`STRING`・`UNSTRING` を含むプログラムが、ソースからクラスファイルまで通って動く |
 
@@ -110,10 +112,34 @@ Hercules が見つからない場合、V2 テストは失敗ではなくスキ�
 検出した場合も、理由を示してスキップする。
 詳細は [設計 20](docs/design/20-oracle.md) を参照。
 
+### 検証基盤 (CCVS85 と OSS コーパス) を実行する
+
+```
+sh tools/verify/fetch-ccvs85.sh build/verify
+CCVS85=build/verify/newcob.val mvn -B -pl cobol-verify -am test
+```
+
+NIST の COBOL-85 検証スイート (CCVS85) を処理系へ流し、モジュールごとの受理率と、
+通らなかった理由を多い順に出す。コーパス本体はリポジトリに<b>同梱しない</b>
+(要件 NFR-042)。取得スクリプトが URL とコミットハッシュで固定して持ってくる。
+指定が無ければ、失敗ではなくスキップされる。Hercules と同じ構えである。
+
+数だけを見るなら、道具を直に呼べる。
+
+```
+java -cp cobol-runtime/target/classes:cobol-compiler/target/classes:cobol-verify/target/classes:\
+$(find ~/.m2 -name 'antlr4-runtime-*.jar'):$(find ~/.m2 -name 'asm-9*.jar') \
+  dev.cobolonjava.verify.Main ccvs85 build/verify/newcob.val
+```
+
+詳細は [設計 25](docs/design/25-verification.md) を参照。
+
 ## 現在のステータス
 
 要件定義フェーズ完了 (要件定義書 第 15 章に決定事項)。
-P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。ジョブ実行 (JCL を含む) を実装済。テスト 1456 件。
+P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。ジョブ実行 (JCL を含む) を実装済。
+外の基準で測る検証基盤 (CCVS85 と OSS コーパス) を実装済。テスト 1499 件。
+うち 5 件はコーパスを取ってきていなければスキップされる。
 うち 33 件は Hercules 上での実行と突き合わせる**検証レベル V2** であり、残りは V1。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい
 (詳細は[設計 20](docs/design/20-oracle.md))。

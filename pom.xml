@@ -24,6 +24,7 @@
     <module>cobol-oracle</module>
     <module>cobol-compiler</module>
     <module>cobol-job</module>
+    <module>cobol-verify</module>
   </modules>
 
   <properties>
