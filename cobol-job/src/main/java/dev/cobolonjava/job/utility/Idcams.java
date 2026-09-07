@@ -116,8 +116,8 @@ public final class Idcams extends UtilityProgram {
             fail(12);
             return;
         }
-        byte[] bytes = readBytes(from);
-        writeBytes(to, bytes);
+        byte[] bytes = readSound(context, from);
+        writeSound(context, to, bytes);
         DataSetAttributes.read(from).write(to);
         print(context, "IDC0005I NUMBER OF RECORDS PROCESSED WAS " + records(from, bytes));
     }
@@ -220,10 +220,10 @@ public final class Idcams extends UtilityProgram {
                                String byName) {
         String dd = parameter(statement, byDd);
         if (dd != null) {
-            return context.catalog().resolve(unwrap(dd));
+            return opened(context, unwrap(dd));
         }
         String name = parameter(statement, byName);
-        return name == null ? null : context.catalog().resolve(unwrap(name));
+        return name == null ? null : opened(context, unwrap(name));
     }
 
     /** {@code 鍵(値)} の値。書かれていなければ {@code null}。 */

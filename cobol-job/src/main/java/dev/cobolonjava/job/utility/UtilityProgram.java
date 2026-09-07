@@ -1,10 +1,14 @@
 package dev.cobolonjava.job.utility;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.file.DataSetAllocation;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.DataSetIoException;
+import dev.cobolonjava.runtime.file.FileStatus;
+import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.FileOperationException;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -46,6 +50,63 @@ abstract class UtilityProgram implements CobolProgram {
      */
     protected static Path pathOf(ProgramContext context, String ddName) {
         return context.catalog().resolve(ddName);
+    }
+
+    /**
+     * 開く段の検査を通したパス (要件 FR-113, 暫定判断 P-053)。
+     *
+     * <p>ユーティリティはデータセットを開かずに生バイトを読み書きする。それでも<b>開けない
+     * ものは読めない</b>ことに変わりはない。この検査を通さないと、区分データセットの無い
+     * メンバを読ませたときに空として写し、正常終了してしまう。ホストの {@code IEBGENER} は
+     * そこで {@code S013} になる。
+     *
+     * <p>無いだけのデータセットはここでは止めない。道具ごとに言うことが違う
+     * ({@code IEB000I} / {@code ICE603I} / {@code IDC3300I}) からであり、呼ぶ側が決める。
+     */
+    protected static Path opened(ProgramContext context, String ddName) {
+        Path path = pathOf(context, ddName);
+        // 返る状態コード (35) は捨てる。無いだけのデータセットは道具の言い分で報せる
+        DataSetAllocation.opening(path, OpenMode.INPUT, false,
+                context.catalog().isMemberOfLibrary(ddName));
+        return path;
+    }
+
+    /**
+     * バイト列を読む。形が壊れていれば、そこで止める (要件 FR-141, 暫定判断 P-053)。
+     *
+     * <p>切れないバイト列を黙って写せば、<b>壊れたデータセットを写して正常終了する</b>。
+     * 翻訳された資産なら {@code 30} が立ち、{@code FILE STATUS} を書いていなければ
+     * {@code S001} になる。ユーティリティには状態コードを返す先がないので、そのまま
+     * {@code S001} で止める。
+     */
+    protected static byte[] readSound(ProgramContext context, Path path) {
+        byte[] bytes = readBytes(path);
+        if (Records.damaged(bytes, DataSetAttributes.read(path))) {
+            throw new FileOperationException(named(context, path), FileStatus.IO_ERROR);
+        }
+        return bytes;
+    }
+
+    /**
+     * バイト列を書く。割り当てた領域を越えれば、そこで止める (要件 FR-141, 暫定判断 P-053)。
+     *
+     * <p>JCL の {@code SPACE=} である。ホストのユーティリティは書けなくなったところで
+     * 異常終了し、途中まで書いたものを残す。ここでは<b>1 度に書き出す</b>ので途中までは
+     * 残らない (暫定判断 P-038)。
+     */
+    protected static void writeSound(ProgramContext context, Path path, byte[] bytes) {
+        String ddName = context.catalog().ddNameFor(path);
+        long limit = ddName == null ? 0 : context.catalog().limitOf(ddName);
+        if (limit > 0 && bytes.length > limit) {
+            throw new FileOperationException(named(context, path), FileStatus.NO_SPACE);
+        }
+        writeBytes(path, bytes);
+    }
+
+    /** 覚え書きに書く名前。DD 名で言えるならそちらのほうが分かる。 */
+    private static String named(ProgramContext context, Path path) {
+        String ddName = context.catalog().ddNameFor(path);
+        return ddName != null ? ddName : String.valueOf(path.getFileName());
     }
 
     /** 制御文を読む。1 行が 1 文である。行末の空白は落とす。 */

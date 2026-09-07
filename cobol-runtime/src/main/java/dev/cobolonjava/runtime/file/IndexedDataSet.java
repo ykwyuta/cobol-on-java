@@ -88,6 +88,8 @@ public final class IndexedDataSet implements KeyedDataSet {
     private int lastLength;
     /** 順アクセスの書き込みで、直前に書いた主鍵。昇順の検査に使う。 */
     private ByteKey lastWritten;
+    /** ジョブが割り当てで決めたこと (要件 FR-113, FR-141)。 */
+    private final DataSetAllocation allocation = new DataSetAllocation();
 
     public IndexedDataSet(Path path, DataSetAttributes attributes, Key primary,
                           List<Key> alternates) {
@@ -107,6 +109,16 @@ public final class IndexedDataSet implements KeyedDataSet {
     @Override
     public DataSetAttributes attributes() {
         return attributes;
+    }
+
+    @Override
+    public void limit(long bytes) {
+        allocation.limit(bytes);
+    }
+
+    @Override
+    public void member(boolean value) {
+        allocation.member(value);
     }
 
     @Override
@@ -132,14 +144,21 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
-        boolean missing = !Files.isReadable(path);
-        if (missing && requested != OpenMode.OUTPUT && !optional) {
-            return FileStatus.NOT_FOUND;
+        String refused = allocation.opening(path, requested, optional);
+        if (refused != null) {
+            return refused;
         }
+        boolean missing = !Files.isReadable(path);
         attributes = DataSetAttributes.read(path, attributes);
         records = new TreeMap<>();
         if (requested != OpenMode.OUTPUT && !missing) {
-            for (byte[] record : split(readAll())) {
+            RecordFraming.Framed framed = RecordFraming.split(readAll(), attributes, false);
+            if (framed.damaged()) {
+                // 読む順序が鍵の順である以上、どこまで読めるとは言えない (要件 FR-141)
+                records = null;
+                return FileStatus.IO_ERROR;
+            }
+            for (byte[] record : framed.records()) {
                 records.put(keyOf(record, primary), record);
             }
         }
@@ -218,27 +237,6 @@ public final class IndexedDataSet implements KeyedDataSet {
     }
 
     // ---- レコードの切り出し ----
-
-    private List<byte[]> split(byte[] bytes) {
-        List<byte[]> out = new ArrayList<>();
-        if (attributes.format() == RecordFormat.VARIABLE) {
-            int at = 0;
-            while (at + 4 <= bytes.length) {
-                int length = ((bytes[at] & 0xFF) << 8) | (bytes[at + 1] & 0xFF);
-                if (length < 4 || at + length > bytes.length) {
-                    break;
-                }
-                out.add(Arrays.copyOfRange(bytes, at + 4, at + length));
-                at += length;
-            }
-            return out;
-        }
-        int length = attributes.recordLength();
-        for (int at = 0; at < bytes.length; at += length) {
-            out.add(Arrays.copyOfRange(bytes, at, Math.min(at + length, bytes.length)));
-        }
-        return out;
-    }
 
     private byte[] join(List<byte[]> all) {
         if (attributes.format() == RecordFormat.VARIABLE) {
@@ -441,6 +439,10 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (records.containsKey(key)) {
             return FileStatus.DUPLICATE_KEY;
         }
+        if (allocation.exceeded(occupied(), sizeOf(from))) {
+            // 順編成の 34 にあたるものが、鍵で引く編成では 24 である (要件 FR-141)
+            return FileStatus.BOUNDARY;
+        }
         String conflict = alternateConflict(key, from);
         if (conflict != null) {
             return conflict;
@@ -450,6 +452,22 @@ public final class IndexedDataSet implements KeyedDataSet {
         lastLength = from.length;
         current = null;
         return FileStatus.OK;
+    }
+
+    /** いま書き出したとしたら何バイトになるか (要件 FR-141)。 */
+    private long occupied() {
+        long total = 0;
+        for (byte[] record : records.values()) {
+            total += sizeOf(record);
+        }
+        return total;
+    }
+
+    /** レコード 1 つが占める大きさ。可変長なら {@code RDW} の 4 バイトが付く。 */
+    private long sizeOf(byte[] record) {
+        return attributes.format() == RecordFormat.VARIABLE
+                ? record.length + 4L
+                : attributes.recordLength();
     }
 
     /** {@code WITH DUPLICATES} を書いていない副鍵は、同じ値を 2 つ持てない。 */

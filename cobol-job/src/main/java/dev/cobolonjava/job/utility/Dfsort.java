@@ -182,7 +182,7 @@ public final class Dfsort extends UtilityProgram {
         DataSetAttributes attributes = DataSetAttributes.read(inputs.get(0));
         List<byte[]> records = new ArrayList<>();
         for (Path input : inputs) {
-            records.addAll(Records.split(readBytes(input), attributes));
+            records.addAll(Records.split(readSound(context, input), attributes));
         }
         int read = records.size();
 
@@ -291,14 +291,17 @@ public final class Dfsort extends UtilityProgram {
         if (merging) {
             for (int i = 1; i <= 99; i++) {
                 String name = SORTIN + (i < 10 ? "0" + i : String.valueOf(i));
-                Path path = pathOf(context, name);
-                if (context.catalog().isAssigned(name) && Files.isReadable(path)) {
+                if (!context.catalog().isAssigned(name)) {
+                    continue;
+                }
+                Path path = opened(context, name);
+                if (Files.isReadable(path)) {
                     out.add(path);
                 }
             }
             return out;
         }
-        Path path = pathOf(context, SORTIN);
+        Path path = opened(context, SORTIN);
         if (Files.isReadable(path)) {
             out.add(path);
         }
@@ -459,9 +462,9 @@ public final class Dfsort extends UtilityProgram {
 
     private void write(ProgramContext context, String ddName, List<byte[]> records,
                        DataSetAttributes attributes, boolean reformatted) {
-        Path path = pathOf(context, ddName);
+        Path path = opened(context, ddName);
         Records.Framed framed = Records.join(records, attributes, context.codePage(), reformatted);
-        writeBytes(path, framed.bytes());
+        writeSound(context, path, framed.bytes());
         framed.attributes().write(path);
     }
 

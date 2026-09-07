@@ -21,8 +21,13 @@ import java.util.List;
  *
  * <h2>いちどに読み込む</h2>
  * <p>いまの段では、開いたときにファイル全体を読み、閉じるときに書き出す。順に読む使い方では
- * 差が出ず、レコードの切り出しに集中できる。大きなデータセットを流す形は、
- * 相対編成と索引編成を実装する段で改める (暫定判断 P-038)。
+ * 差が出ず、レコードの切り出しに集中できる。大きなデータセットを流す形は
+ * 未解決である (暫定判断 P-038)。
+ *
+ * <h2>割当てが決めることは別に持つ</h2>
+ * <p>取った領域の大きさと、指しているのが区分データセットのメンバかどうかは、
+ * <b>編成によらず同じこと</b>である。{@link DataSetAllocation} に置いて、
+ * 相対編成・索引編成と分け合う (暫定判断 P-053 の解消)。
  */
 public final class SequentialDataSet implements DataSet {
 
@@ -51,16 +56,8 @@ public final class SequentialDataSet implements DataSet {
      * 実際に読めているからである。ホストも同じで、装置の誤りは読んだ時点で立つ。
      */
     private int damagedAt = -1;
-    /** ジョブが割り当てた領域の大きさ (バイト)。{@code 0} は限りがないことを表す。 */
-    private long limit;
-    /**
-     * 区分データセットのメンバを指しているか (要件 FR-113)。
-     *
-     * <p>無いときの意味が変わる。順編成なら「無いファイル」は {@code 35} で受け止められるが、
-     * メンバの場合は<b>データセットはあってメンバだけが無い</b>ので、割当ては通っている。
-     * ホストではそこで {@code S013} になる。
-     */
-    private boolean member;
+    /** ジョブが割り当てで決めたこと (要件 FR-113, FR-141)。 */
+    private final DataSetAllocation allocation = new DataSetAllocation();
 
     public SequentialDataSet(Path path, DataSetAttributes attributes) {
         this.path = path;
@@ -85,27 +82,14 @@ public final class SequentialDataSet implements DataSet {
         return attributes;
     }
 
-    /**
-     * 書ける大きさに限りを設ける (要件 FR-141)。
-     *
-     * <p>JCL の {@code SPACE=} である。ホストでは<b>あらかじめ場所を取ってから書く</b>ので、
-     * 取った分を使い切れば書けなくなる。二次割当があれば伸ばせるが、無ければそこで終わる。
-     * 限りを設けないと、実機では止まるジョブがここでは通ってしまう。
-     *
-     * @param bytes 書ける大きさ。{@code 0} なら限りなし
-     */
+    @Override
     public void limit(long bytes) {
-        this.limit = bytes;
+        allocation.limit(bytes);
     }
 
-    /**
-     * 区分データセットのメンバであると告げる (要件 FR-113)。
-     *
-     * <p>これを知っているのは割当てだけである。パスを見ても分からない — メンバは
-     * ディレクトリの下のファイルだが、順編成のデータセットも置き場の下のファイルだからである。
-     */
+    @Override
     public void member(boolean value) {
-        this.member = value;
+        allocation.member(value);
     }
 
     /** 開いているかどうか。 */
@@ -148,26 +132,24 @@ public final class SequentialDataSet implements DataSet {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
-        if (Files.isDirectory(path)) {
-            // 区分データセットそのものである。どのメンバを読むのか決まっていない
-            throw new DataSetOpenException("a partitioned data set is opened by member", path);
+        String refused = allocation.opening(path, requested, optional);
+        if (refused != null) {
+            return refused;
         }
         boolean missing = !Files.isReadable(path);
-        if (missing && member && !optional
-                && requested != OpenMode.OUTPUT && requested != OpenMode.EXTEND) {
-            // データセットはある。無いのはメンバであり、受け止め手はない
-            throw new DataSetOpenException("member not found", path);
-        }
-        if (missing && requested != OpenMode.OUTPUT && !optional) {
-            return FileStatus.NOT_FOUND;
-        }
         damagedAt = -1;
-        try {
-            records = requested == OpenMode.OUTPUT || missing
-                    ? new ArrayList<>()
-                    : split(Files.readAllBytes(path));
-        } catch (IOException e) {
-            throw new DataSetIoException("read", path, e);
+        if (requested == OpenMode.OUTPUT || missing) {
+            records = new ArrayList<>();
+        } else {
+            byte[] bytes;
+            try {
+                bytes = Files.readAllBytes(path);
+            } catch (IOException e) {
+                throw new DataSetIoException("read", path, e);
+            }
+            RecordFraming.Framed framed = RecordFraming.split(bytes, attributes, false);
+            records = new ArrayList<>(framed.records());
+            damagedAt = framed.damagedAt();
         }
         mode = requested;
         // EXTEND は末尾から書き足す。ほかは先頭から
@@ -240,7 +222,7 @@ public final class SequentialDataSet implements DataSet {
         if (!mode.canWrite()) {
             return FileStatus.WRITE_NOT_ALLOWED;
         }
-        if (limit > 0 && written() + sizeOf(from) > limit) {
+        if (allocation.exceeded(written(), sizeOf(from))) {
             return FileStatus.NO_SPACE;
         }
         records.add(from.clone());
@@ -304,64 +286,6 @@ public final class SequentialDataSet implements DataSet {
         return FileStatus.OK;
     }
 
-    // ---- レコードの切り出し ----
-
-    /** バイト列をレコードへ切る。切り方は様式で決まる。 */
-    private List<byte[]> split(byte[] bytes) {
-        return switch (attributes.format()) {
-            case FIXED -> splitFixed(bytes);
-            case VARIABLE -> splitVariable(bytes);
-            case LINE -> splitLines(bytes);
-        };
-    }
-
-    /**
-     * 固定長は<b>長さで割り切れなければならない</b>。
-     *
-     * <p>半端が残るのは、書いている途中で落ちたか、レコード長の違うデータセットを
-     * 取り違えたということである。半端をそのまま短いレコードとして渡すと、
-     * <b>読めていないデータで処理が進む</b>。切れるところまでを読めるものとし、
-     * その先を壊れた場所として覚える。
-     */
-    private List<byte[]> splitFixed(byte[] bytes) {
-        List<byte[]> out = new ArrayList<>();
-        int length = attributes.recordLength();
-        int at = 0;
-        while (at + length <= bytes.length) {
-            out.add(Arrays.copyOfRange(bytes, at, at + length));
-            at += length;
-        }
-        if (at < bytes.length) {
-            damagedAt = out.size();
-        }
-        return out;
-    }
-
-    /**
-     * 可変長は 4 バイトの RDW が先頭に付く。最初の 2 バイトが RDW を含む長さである。
-     *
-     * <p>長さが 4 に満たない、残りより長い、という RDW はつながらない。半端なバイトが
-     * 残るのも同じで、いずれもそこから先は切り分けられない。
-     */
-    private List<byte[]> splitVariable(byte[] bytes) {
-        List<byte[]> out = new ArrayList<>();
-        int at = 0;
-        while (at < bytes.length) {
-            if (at + 4 > bytes.length) {
-                damagedAt = out.size();
-                break;
-            }
-            int length = ((bytes[at] & 0xFF) << 8) | (bytes[at + 1] & 0xFF);
-            if (length < 4 || at + length > bytes.length) {
-                damagedAt = out.size();
-                break;
-            }
-            out.add(Arrays.copyOfRange(bytes, at + 4, at + length));
-            at += length;
-        }
-        return out;
-    }
-
     // ---- 領域の勘定 ----
 
     /** いま書き出したとしたら何バイトになるか。 */
@@ -386,24 +310,6 @@ public final class SequentialDataSet implements DataSet {
             case VARIABLE -> record.length + 4L;
             case LINE -> record.length + 1L;
         };
-    }
-
-    /** 行順は改行までが 1 レコードである。改行はコードページのものを使う。 */
-    private List<byte[]> splitLines(byte[] bytes) {
-        byte newline = newline();
-        List<byte[]> out = new ArrayList<>();
-        int start = 0;
-        for (int i = 0; i < bytes.length; i++) {
-            if (bytes[i] == newline) {
-                out.add(Arrays.copyOfRange(bytes, start, i));
-                start = i + 1;
-            }
-        }
-        if (start < bytes.length) {
-            // 最後の改行がなければ、残りも 1 レコードである
-            out.add(Arrays.copyOfRange(bytes, start, bytes.length));
-        }
-        return out;
     }
 
     /** レコードをバイト列へ戻す。 */

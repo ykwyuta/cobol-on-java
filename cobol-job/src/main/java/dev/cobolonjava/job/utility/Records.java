@@ -3,9 +3,8 @@ package dev.cobolonjava.job.utility;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.RecordFormat;
+import dev.cobolonjava.runtime.file.RecordFraming;
 import java.io.ByteArrayOutputStream;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -27,29 +26,18 @@ final class Records {
      * {@code SORT FIELDS=(5,...)} が 1 つずつずれる。
      */
     static List<byte[]> split(byte[] bytes, DataSetAttributes attributes) {
-        List<byte[]> out = new ArrayList<>();
-        switch (attributes.format()) {
-            case FIXED -> {
-                int length = Math.max(attributes.recordLength(), 1);
-                for (int at = 0; at < bytes.length; at += length) {
-                    out.add(Arrays.copyOfRange(bytes, at, Math.min(at + length, bytes.length)));
-                }
-            }
-            case VARIABLE -> {
-                int at = 0;
-                while (at + 4 <= bytes.length) {
-                    int length = ((bytes[at] & 0xFF) << 8) | (bytes[at + 1] & 0xFF);
-                    if (length < 4 || at + length > bytes.length) {
-                        break;
-                    }
-                    out.add(Arrays.copyOfRange(bytes, at, at + length));
-                    at += length;
-                }
-            }
-            case LINE -> out.addAll(lines(bytes, attributes.codePage()));
-            default -> throw new IllegalStateException("unknown format " + attributes.format());
-        }
-        return out;
+        return RecordFraming.split(bytes, attributes, true).records();
+    }
+
+    /**
+     * バイト列が様式どおりに切れるか (要件 FR-141)。
+     *
+     * <p>切れないものを黙って写すと、<b>壊れたデータセットを写して正常終了する</b>。
+     * 切り方と同じところで決めるので、順編成のデータセットと同じ形が壊れているになる
+     * (暫定判断 P-053)。
+     */
+    static boolean damaged(byte[] bytes, DataSetAttributes attributes) {
+        return RecordFraming.split(bytes, attributes, true).damaged();
     }
 
     /** 切り出したレコードと、そのバイト列を書き戻すための属性。 */
@@ -96,20 +84,4 @@ final class Records {
         };
     }
 
-    /** バイト列を行へ切る。区切りはコードページの改行である。 */
-    private static List<byte[]> lines(byte[] bytes, CodePage codePage) {
-        byte newline = codePage.encode("\n")[0];
-        List<byte[]> out = new ArrayList<>();
-        int start = 0;
-        for (int i = 0; i < bytes.length; i++) {
-            if (bytes[i] == newline) {
-                out.add(Arrays.copyOfRange(bytes, start, i));
-                start = i + 1;
-            }
-        }
-        if (start < bytes.length) {
-            out.add(Arrays.copyOfRange(bytes, start, bytes.length));
-        }
-        return out;
-    }
 }

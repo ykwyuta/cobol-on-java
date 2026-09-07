@@ -111,6 +111,24 @@ public final class DataSetCatalog {
         return members.contains(ddName.toUpperCase(Locale.ROOT));
     }
 
+    /**
+     * そのファイルを指している DD 名 (要件 FR-141)。
+     *
+     * <p>{@link #resolve} の逆である。ジョブのユーティリティが要る — あれらは DD 名を
+     * ファイルへ直したあとの世界で動くので、書き出す段になると<b>どの DD だったかを
+     * 失っている</b>。割り当てた領域の限りは DD に付いているから、引き直せなければ効かない。
+     *
+     * @return 指す DD がなければ {@code null}
+     */
+    public String ddNameFor(Path path) {
+        for (Map.Entry<String, Path> entry : assignments.entrySet()) {
+            if (entry.getValue().equals(path)) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
     /** DD 名が指すファイル。書かれていなければ既定のディレクトリの下を指す。 */
     public Path resolve(String ddName) {
         Path assigned = assignments.get(ddName.toUpperCase(Locale.ROOT));

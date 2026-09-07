@@ -19,6 +19,10 @@ import java.util.List;
  * 切って書き直せば、同じ属性なら同じバイトに戻るはずだが、<b>戻るはずだ</b>という仮定を
  * 挟まずに済む。写しは写しである。
  *
+ * <p>写せないものは写さない。区分データセットの無いメンバなら {@code S013}、形が壊れて
+ * いれば {@code S001}、割り当てた領域に収まらなければ {@code S037} である。翻訳された資産と
+ * 同じ検査を通す (暫定判断 P-053)。
+ *
  * <p>レコード様式を変えながら写す使い方 ({@code SYSIN} の制御文) は未対応であり、
  * 制御文が書かれていれば誤りとして報告する (暫定判断 P-047)。
  */
@@ -37,15 +41,15 @@ public final class Iebgener extends UtilityProgram {
             context.setReturnCode(12);
             return;
         }
-        Path from = pathOf(context, SYSUT1);
+        Path from = opened(context, SYSUT1);
         if (!Files.isReadable(from)) {
             print(context, "IEB000I SYSUT1 NOT FOUND");
             context.setReturnCode(12);
             return;
         }
-        Path to = pathOf(context, SYSUT2);
-        byte[] bytes = readBytes(from);
-        writeBytes(to, bytes);
+        Path to = opened(context, SYSUT2);
+        byte[] bytes = readSound(context, from);
+        writeSound(context, to, bytes);
         DataSetAttributes attributes = DataSetAttributes.read(from);
         attributes.write(to);
         print(context, "IEB147I " + records(bytes, attributes) + " RECORDS COPIED");

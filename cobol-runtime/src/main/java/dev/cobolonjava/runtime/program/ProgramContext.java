@@ -216,9 +216,9 @@ public final class ProgramContext {
         return files.computeIfAbsent(name, k -> {
             DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage);
             Path path = catalog.resolve(ddName);
-            return organization == Organization.RELATIVE
+            return allocated(organization == Organization.RELATIVE
                     ? RelativeDataSet.at(path, declared)
-                    : allocated(SequentialDataSet.at(path, declared), ddName);
+                    : SequentialDataSet.at(path, declared), ddName);
         });
     }
 
@@ -228,8 +228,11 @@ public final class ProgramContext {
      * <p>プログラムからは見えないことである。取った領域の大きさも、指しているのが
      * 区分データセットのメンバかどうかも、<b>ジョブが決めてプログラムは知らない</b>。
      * 渡さなければ、実機では止まるジョブがここでは通ってしまう。
+     *
+     * <p>編成によらず渡す。どの編成かでホストとの合い方が変わるのがいちばん困る形だからで
+     * ある (暫定判断 P-053)。
      */
-    private SequentialDataSet allocated(SequentialDataSet file, String ddName) {
+    private DataSet allocated(DataSet file, String ddName) {
         file.limit(catalog.limitOf(ddName));
         file.member(catalog.isMemberOfLibrary(ddName));
         return file;
@@ -245,9 +248,9 @@ public final class ProgramContext {
      */
     public DataSet file(String name, String ddName, RecordFormat format, int recordLength,
                         List<IndexedDataSet.Key> keys) {
-        return files.computeIfAbsent(name, k -> IndexedDataSet.at(catalog.resolve(ddName),
-                new DataSetAttributes(format, recordLength, codePage),
-                keys.get(0), keys.subList(1, keys.size())));
+        return files.computeIfAbsent(name, k -> allocated(IndexedDataSet.at(
+                catalog.resolve(ddName), new DataSetAttributes(format, recordLength, codePage),
+                keys.get(0), keys.subList(1, keys.size())), ddName));
     }
 
     /** DD 名から実際のファイルを探す目録。 */

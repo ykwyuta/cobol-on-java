@@ -1,6 +1,7 @@
 package dev.cobolonjava.runtime.file;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.runtime.codepage.CodePages;
@@ -341,5 +342,81 @@ class RelativeDataSetTest {
                 Files.readAllLines(DataSetAttributes.sidecarOf(directory.resolve("R.DAT"))));
         assertEquals(List.of(), RelativeDataSet.at(directory.resolve("R.DAT"), SLOTS)
                 .attributes().emptySlots());
+    }
+
+    // ---- 割当てが決めること (要件 FR-113, FR-141) ----
+
+    @Test
+    @DisplayName("半端なバイトが残っていれば、そこまで読んだところで 30 になる (FR-141)")
+    void aTrailingFragmentBecomesAnIoError() throws IOException {
+        Path path = directory.resolve("R.DAT");
+        Files.write(path, bytes("aaabbbcc"));
+        SLOTS.write(path);
+        RelativeDataSet file = at("R.DAT");
+
+        file.open(OpenMode.INPUT, false);
+        byte[] record = area();
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("bbb", decode(record));
+        // 3 つめのスロットは 2 バイトしかない。終わりではなく、読めないのである
+        assertEquals(FileStatus.IO_ERROR, file.read(record));
+    }
+
+    @Test
+    @DisplayName("半端なスロットは番号で読んでも 30 である (FR-141)")
+    void aTrailingFragmentIsAnIoErrorByNumberToo() throws IOException {
+        Path path = directory.resolve("R.DAT");
+        Files.write(path, bytes("aaabbbcc"));
+        SLOTS.write(path);
+        RelativeDataSet file = at("R.DAT");
+
+        file.open(OpenMode.INPUT, false);
+        // 「そのスロットが無い」(23) ではない。あるのに読めないのである
+        assertEquals(FileStatus.IO_ERROR, file.readAt(3, area()));
+    }
+
+    @Test
+    @DisplayName("割り当てた領域を越えれば 24 になる (FR-141)")
+    void writingPastTheAllocationReportsTwentyFour() {
+        RelativeDataSet file = at("R.DAT");
+        file.limit(6);
+
+        file.open(OpenMode.OUTPUT, false);
+        assertEquals(FileStatus.OK, file.write(bytes("aaa")));
+        assertEquals(FileStatus.OK, file.write(bytes("bbb")));
+        // 順編成の 34 にあたるものが、鍵で引く編成では 24 である
+        assertEquals(FileStatus.BOUNDARY, file.write(bytes("ccc")));
+    }
+
+    @Test
+    @DisplayName("番号を空けて書けば、空けた番号のぶんも領域を取る (FR-141)")
+    void skippedNumbersStillTakeSpace() {
+        RelativeDataSet file = at("R.DAT");
+        file.limit(9);
+
+        file.open(OpenMode.OUTPUT, false);
+        assertEquals(FileStatus.OK, file.writeAt(3, bytes("ccc")));
+        // 4 番へ書けば 1 番から 4 番まで、12 バイトの場所が要る
+        assertEquals(FileStatus.BOUNDARY, file.writeAt(4, bytes("ddd")));
+    }
+
+    @Test
+    @DisplayName("無いメンバは開けない (FR-113)")
+    void aMissingMemberCannotBeOpened() {
+        RelativeDataSet file = at("R.DAT");
+        file.member(true);
+
+        // 状態コードで受け止められては困る。割当ては通っているのだから
+        assertThrows(DataSetOpenException.class, () -> file.open(OpenMode.INPUT, false));
+    }
+
+    @Test
+    @DisplayName("区分データセットそのものは開けない (FR-113)")
+    void aLibraryIsNotOpenedByItself() throws IOException {
+        Files.createDirectory(directory.resolve("R.LIB"));
+        RelativeDataSet file = at("R.LIB");
+
+        assertThrows(DataSetOpenException.class, () -> file.open(OpenMode.INPUT, false));
     }
 }

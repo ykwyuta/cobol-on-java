@@ -44,6 +44,16 @@ public final class RelativeDataSet implements KeyedDataSet {
     /** 直前に読んだスロット (0 起点)。{@code -1} は指していない。 */
     private int current = -1;
     private int lastLength;
+    /**
+     * 形が壊れているスロット (0 起点)。{@code -1} は壊れていないことを表す。
+     *
+     * <p>スロットは固定長で並ぶので、半端が残れば<b>そこから先は切れない</b>。番号が住所で
+     * ある以上、位置とバイト列の並びは対応している — したがって順編成と同じく、
+     * <b>壊れた場所まで読み進めたときに</b>誤りにできる。
+     */
+    private int damagedAt = -1;
+    /** ジョブが割り当てで決めたこと (要件 FR-113, FR-141)。 */
+    private final DataSetAllocation allocation = new DataSetAllocation();
 
     public RelativeDataSet(Path path, DataSetAttributes attributes) {
         this.path = path;
@@ -57,6 +67,16 @@ public final class RelativeDataSet implements KeyedDataSet {
 
     public DataSetAttributes attributes() {
         return attributes;
+    }
+
+    @Override
+    public void limit(long bytes) {
+        allocation.limit(bytes);
+    }
+
+    @Override
+    public void member(boolean value) {
+        allocation.member(value);
     }
 
     public boolean isOpen() {
@@ -91,12 +111,14 @@ public final class RelativeDataSet implements KeyedDataSet {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
-        boolean missing = !Files.isReadable(path);
-        if (missing && requested != OpenMode.OUTPUT && !optional) {
-            return FileStatus.NOT_FOUND;
+        String refused = allocation.opening(path, requested, optional);
+        if (refused != null) {
+            return refused;
         }
+        boolean missing = !Files.isReadable(path);
         // 空きスロットの一覧はいちど白紙に戻してから読む。書かれていなければ空きはない
         attributes = DataSetAttributes.read(path, attributes.withEmptySlots(List.of()));
+        damagedAt = -1;
         slots = requested == OpenMode.OUTPUT || missing ? new ArrayList<>() : load();
         mode = requested;
         position = requested == OpenMode.EXTEND ? slots.size() : 0;
@@ -129,11 +151,9 @@ public final class RelativeDataSet implements KeyedDataSet {
         } catch (IOException e) {
             throw new UncheckedIOException("cannot read " + path, e);
         }
-        int length = attributes.recordLength();
-        List<byte[]> out = new ArrayList<>();
-        for (int at = 0; at < bytes.length; at += length) {
-            out.add(Arrays.copyOfRange(bytes, at, Math.min(at + length, bytes.length)));
-        }
+        RecordFraming.Framed framed = RecordFraming.fixed(bytes, attributes.recordLength());
+        damagedAt = framed.damagedAt();
+        List<byte[]> out = new ArrayList<>(framed.records());
         for (int slot : attributes.emptySlots()) {
             if (slot >= 1 && slot <= out.size()) {
                 out.set(slot - 1, null);
@@ -180,6 +200,10 @@ public final class RelativeDataSet implements KeyedDataSet {
         while (position < slots.size() && slots.get(position) == null) {
             position++;
         }
+        if (position == damagedAt) {
+            // 切り分けが行き詰まった場所である。ここから先は読めない
+            return FileStatus.IO_ERROR;
+        }
         if (position >= slots.size()) {
             atEnd = true;
             return FileStatus.AT_END;
@@ -194,6 +218,10 @@ public final class RelativeDataSet implements KeyedDataSet {
             return checked;
         }
         int slot = number - 1;
+        if (slot >= 0 && slot == damagedAt) {
+            // 「そのスロットが無い」ではない。読めないのである
+            return FileStatus.IO_ERROR;
+        }
         if (slot < 0 || slot >= slots.size() || slots.get(slot) == null) {
             return FileStatus.NO_RECORD;
         }
@@ -298,6 +326,10 @@ public final class RelativeDataSet implements KeyedDataSet {
     }
 
     private String put(int slot, byte[] from, boolean replacing) {
+        if (slot >= slots.size() && outOfSpace(slot)) {
+            // 番号が住所である以上、飛ばした番号のぶんも場所を取る
+            return FileStatus.BOUNDARY;
+        }
         while (slots.size() <= slot) {
             slots.add(null);
         }
@@ -363,6 +395,18 @@ public final class RelativeDataSet implements KeyedDataSet {
         slots.set(slot, null);
         current = -1;
         return FileStatus.OK;
+    }
+
+    /**
+     * そのスロットまで伸ばすと割り当てた領域を越えるか (要件 FR-141)。
+     *
+     * <p>空きスロットも場所を占めるので、10 番へ書けば 1 番から 10 番までの場所が要る。
+     * 越えたときに立つのは {@code 24} である — 順編成の {@code 34} にあたるものが、
+     * 鍵で引く編成ではこれになる。
+     */
+    private boolean outOfSpace(int slot) {
+        long length = attributes.recordLength();
+        return allocation.exceeded(slots.size() * length, (slot + 1L - slots.size()) * length);
     }
 
     /** 書き換えと削除は {@code I-O} だけである。読みながら直す使い方しか意味を持たない。 */

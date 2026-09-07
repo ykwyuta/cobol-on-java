@@ -169,12 +169,12 @@ public final class Icetool extends UtilityProgram {
                 return;
             }
         } else {
-            copyBytes(from, to.get(0));
+            copyBytes(context, from, to.get(0));
         }
         for (int i = 1; i < to.size(); i++) {
-            copyBytes(to.get(0), to.get(i));
+            copyBytes(context, to.get(0), to.get(i));
         }
-        print(context, TOOLMSG, "ICE606I RECORDS PROCESSED: " + recordsIn(to.get(0)));
+        print(context, TOOLMSG, "ICE606I RECORDS PROCESSED: " + recordsIn(context, to.get(0)));
     }
 
     /**
@@ -214,7 +214,7 @@ public final class Icetool extends UtilityProgram {
             fail(12);
             return;
         }
-        int records = recordsIn(from);
+        int records = recordsIn(context, from);
         print(context, TOOLMSG, "ICE628I RECORD COUNT: " + records);
         Boolean held = expectation(statement, records);
         if (held != null && !held) {
@@ -271,7 +271,7 @@ public final class Icetool extends UtilityProgram {
             print(context, list, title);
         }
         CodePage codePage = context.codePage();
-        for (byte[] record : recordsOf(from)) {
+        for (byte[] record : recordsOf(context, from)) {
             List<String> columns = new ArrayList<>();
             for (SortField field : fields) {
                 columns.add(shown(record, field, codePage));
@@ -301,7 +301,7 @@ public final class Icetool extends UtilityProgram {
         }
         CodePage codePage = context.codePage();
         Map<String, Integer> counts = new LinkedHashMap<>();
-        for (byte[] record : ordered(recordsOf(from), fields, codePage)) {
+        for (byte[] record : ordered(recordsOf(context, from), fields, codePage)) {
             List<String> columns = new ArrayList<>();
             for (SortField field : fields) {
                 columns.add(shown(record, field, codePage));
@@ -341,7 +341,7 @@ public final class Icetool extends UtilityProgram {
         }
         DataSetAttributes attributes = DataSetAttributes.read(from);
         CodePage codePage = context.codePage();
-        List<byte[]> records = ordered(recordsOf(from), fields, codePage);
+        List<byte[]> records = ordered(recordsOf(context, from), fields, codePage);
         List<byte[]> chosen = choose(context, records, fields, statement, codePage);
         if (chosen == null) {
             fail(12);
@@ -349,7 +349,7 @@ public final class Icetool extends UtilityProgram {
         }
         Records.Framed framed = Records.join(chosen, attributes, codePage, false);
         for (Path path : to) {
-            writeBytes(path, framed.bytes());
+            writeSound(context, path, framed.bytes());
             framed.attributes().write(path);
         }
         print(context, TOOLMSG, "ICE606I RECORDS SELECTED: " + chosen.size());
@@ -495,7 +495,7 @@ public final class Icetool extends UtilityProgram {
 
     private static Path ddOf(ProgramContext context, String statement, String key) {
         String written = name(statement, key);
-        return written == null ? null : context.catalog().resolve(written);
+        return written == null ? null : opened(context, written);
     }
 
     private static List<Path> ddsOf(ProgramContext context, String statement, String key) {
@@ -505,7 +505,7 @@ public final class Icetool extends UtilityProgram {
             return out;
         }
         for (String each : words(written.replace(",", " "))) {
-            out.add(context.catalog().resolve(each.toUpperCase(Locale.ROOT)));
+            out.add(opened(context, each.toUpperCase(Locale.ROOT)));
         }
         return out;
     }
@@ -601,16 +601,16 @@ public final class Icetool extends UtilityProgram {
 
     // ---- データセット ----
 
-    private static List<byte[]> recordsOf(Path path) {
-        return Records.split(readBytes(path), DataSetAttributes.read(path));
+    private static List<byte[]> recordsOf(ProgramContext context, Path path) {
+        return Records.split(readSound(context, path), DataSetAttributes.read(path));
     }
 
-    private static int recordsIn(Path path) {
-        return Files.isReadable(path) ? recordsOf(path).size() : 0;
+    private static int recordsIn(ProgramContext context, Path path) {
+        return Files.isReadable(path) ? recordsOf(context, path).size() : 0;
     }
 
-    private static void copyBytes(Path from, Path to) {
-        writeBytes(to, readBytes(from));
+    private static void copyBytes(ProgramContext context, Path from, Path to) {
+        writeSound(context, to, readSound(context, from));
         DataSetAttributes.read(from).write(to);
     }
 
