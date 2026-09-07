@@ -347,6 +347,19 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code EXIT PROGRAM} 文 (要件 FR-067)。
+     *
+     * <p>呼ばれた側から呼んだ側へ戻る。{@code GOBACK} と似ているが<b>同じではない</b>。
+     * 主プログラムで書いた {@code EXIT PROGRAM} は<b>何もしない</b>という決まりがあり、
+     * 次の文へ進む。{@code GOBACK} は主プログラムなら実行を終える。
+     *
+     * <p>したがって、どちらの意味になるかは<b>実行時にしか分からない</b>。同じ
+     * プログラムが呼ばれることも主として動くこともあるからである。
+     */
+    record ExitProgram(Origin origin) implements Statement {
+    }
+
+    /**
      * 文の並び。1 つの文が<b>複数の文へ展開された</b>ときに使う。
      *
      * <p>{@code MOVE CORRESPONDING} は名前の合う組の数だけ {@code MOVE} になる。

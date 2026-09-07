@@ -574,8 +574,12 @@ public final class ProcedureBuilder {
             return returnOf(context.returnStatement());
         }
         if (context.exitStatement() != null) {
-            // EXIT は何もしない。CONTINUE と同じ扱いでよい
-            return new Statement.Continue(ReferenceResolver.originOf(context.exitStatement()));
+            Origin at = ReferenceResolver.originOf(context.exitStatement());
+            if (context.exitStatement().PROGRAM() != null) {
+                return new Statement.ExitProgram(at);
+            }
+            // EXIT だけなら何もしない。PERFORM ... THRU の終わりに置く段落のためにある
+            return new Statement.Continue(at);
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;

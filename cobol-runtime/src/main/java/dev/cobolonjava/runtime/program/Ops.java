@@ -106,6 +106,25 @@ public final class Ops {
         throw new ProgramReturn();
     }
 
+    /**
+     * {@code EXIT PROGRAM} (要件 FR-067)。
+     *
+     * <p>呼ばれていれば呼んだ側へ戻る。<b>主プログラムなら何もしない</b>。COBOL の
+     * 決まりがそうなっており、次の文へ進む。
+     *
+     * <p>{@code GOBACK} との違いはここだけである。{@code GOBACK} は主プログラムなら
+     * 実行を終える。同じプログラムが呼ばれることも主として動くこともあるので、
+     * <b>どちらの意味になるかは実行時にしか分からない</b>。
+     *
+     * <p>積まれているプログラムが 1 つなら主である。{@code CALL} は積むので、
+     * 呼ばれていれば 2 つ以上になる。
+     */
+    public static void exitProgram(ProgramContext context) {
+        if (context.active().size() > 1) {
+            throw new ProgramReturn();
+        }
+    }
+
     // ---- 表示 ----
 
     /**

@@ -393,4 +393,53 @@ class CallGenerationTest {
         assertTrue(result.diagnostics().get(0).message().contains("BY VALUE"),
                 result.diagnostics().toString());
     }
+
+    // ---- EXIT PROGRAM (FR-067) ----
+
+    @Test
+    @DisplayName("EXIT PROGRAM は呼んだ側へ戻る (FR-067)")
+    void exitProgramReturnsToTheCaller() {
+        assertEquals("[in][back]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    CALL 'SUBX'",
+                        "    DISPLAY '[back]'."),
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. SUBX.",
+                        "PROCEDURE DIVISION.",
+                        "SUB-START.",
+                        "    DISPLAY '[in]' WITH NO ADVANCING",
+                        "    EXIT PROGRAM.",
+                        "    DISPLAY '[not reached]'."))));
+    }
+
+    @Test
+    @DisplayName("主プログラムの EXIT PROGRAM は何もしない (FR-067)")
+    void exitProgramDoesNothingInAMainProgram() {
+        // COBOL の決まりである。GOBACK と違うのはここだけであり、
+        // どちらの意味になるかは実行時にしか分からない
+        assertEquals("[one][two]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    DISPLAY '[one]' WITH NO ADVANCING",
+                        "    EXIT PROGRAM.",
+                        "    DISPLAY '[two]'."))));
+    }
+
+    @Test
+    @DisplayName("EXIT だけなら何もしない (FR-067)")
+    void aPlainExitIsStillNothing() {
+        assertEquals("[one][two]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    DISPLAY '[one]' WITH NO ADVANCING",
+                        "    EXIT.",
+                        "    DISPLAY '[two]'."))));
+    }
 }

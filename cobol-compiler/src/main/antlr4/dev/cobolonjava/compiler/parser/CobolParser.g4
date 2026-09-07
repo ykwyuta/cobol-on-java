@@ -882,9 +882,10 @@ goToStatement
     : GO TO? paragraphName
     ;
 
-// EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある
+// EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある。
+// EXIT PROGRAM は別物で、呼ばれた側から戻る
 exitStatement
-    : EXIT
+    : EXIT PROGRAM?
     ;
 
 // 段落を呼ぶ形と、その場に本体を書く形の 2 つがある。

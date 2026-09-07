@@ -370,6 +370,13 @@ public final class ProgramGenerator {
                 // STOP RUN は実行そのものを終え、GOBACK は呼んだ側へ戻る
                 String name = stop.wholeRun() ? "stopRun" : "programReturn";
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name, "()V", false));
+            } else if (statement instanceof Statement.ExitProgram) {
+                // 呼ばれていれば戻り、主プログラムなら何もしない。決めるのは実行時である
+                body.add(() -> {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "exitProgram",
+                            "(" + CONTEXT + ")V", false);
+                });
             } else if (statement instanceof Statement.Search search) {
                 planSearch(search, body);
             } else if (statement instanceof Statement.SearchAll searchAll) {
