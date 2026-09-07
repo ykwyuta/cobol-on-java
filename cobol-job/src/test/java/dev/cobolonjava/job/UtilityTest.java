@@ -1,5 +1,6 @@
 package dev.cobolonjava.job;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -50,11 +51,23 @@ class UtilityTest {
     }
 
     private void write(String name, String content, int length) {
+        write(name, ebcdic(content), length);
+    }
+
+    private void write(String name, byte[] content, int length) {
         try {
-            Files.write(directory.resolve(name), ebcdic(content));
+            Files.write(directory.resolve(name), content);
             Files.write(directory.resolve(name + ".meta"),
                     ("recfm=F\nlrecl=" + length + "\ncodepage=IBM-1047\n")
                             .getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private byte[] raw(String name) {
+        try {
+            return Files.readAllBytes(directory.resolve(name));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -126,8 +139,154 @@ class UtilityTest {
     }
 
     @Test
-    @DisplayName("IEBGENER の制御文は未対応である (FR-137)")
-    void iebgenerControlStatementsAreNotSupportedYet() {
+    @DisplayName("RECORD の FIELD は欄を組み替える (FR-137, 暫定判断 P-047 の解消)")
+    void recordFieldsRearrangeTheColumns() {
+        write("IN.DAT", "ABCD1234EFGH5678", 8);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  GENERATE MAXFLDS=2",
+                "  RECORD   FIELD=(4,5,,1),FIELD=(4,1,,5)",
+                "/*");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("1234ABCD5678EFGH", read("OUT.DAT"));
+        assertEquals(List.of("recfm=F", "lrecl=8", "codepage=IBM-1047"), sidecar("OUT.DAT"));
+        assertTrue(output().contains("IEB147I 2 RECORDS COPIED"), output());
+    }
+
+    @Test
+    @DisplayName("FIELD には定数も書ける (FR-137)")
+    void aFieldCanBeALiteral() {
+        write("IN.DAT", "ABCD", 4);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  GENERATE MAXFLDS=2,MAXLITS=2",
+                "  RECORD   FIELD=(2,'**',,1),FIELD=(4,1,,3)",
+                "/*");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("**ABCD", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("IDENT が指すのは組の最後のレコードである (FR-137, 暫定判断 P-047 の解消)")
+    void identMarksTheLastRecordOfTheGroup() {
+        write("IN.DAT", "HAAABBBB", 4);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  GENERATE MAXFLDS=2,MAXGPS=1",
+                "  RECORD   IDENT=(1,'H',1),FIELD=(4,1,,3)",
+                "  RECORD   FIELD=(4,1,,1)",
+                "/*");
+
+        // 目印の付いた HAAA 自身も 1 つめの組に入る。次の組へ移るのはそのあとである
+        assertEquals(0, result.returnCode());
+        assertEquals("  HAAABBBB  ", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("ZP はゾーン 10 進数をパック 10 進数へ移す (FR-137)")
+    void zpPacksAZonedNumber() {
+        write("IN.DAT", "12345", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  GENERATE MAXFLDS=1",
+                "  RECORD   FIELD=(5,1,ZP,1)",
+                "/*");
+
+        assertEquals(0, result.returnCode());
+        assertArrayEquals(new byte[] {0x12, 0x34, 0x5C}, raw("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("PZ はパック 10 進数をゾーン 10 進数へ戻す (FR-137)")
+    void pzUnpacksAPackedNumber() {
+        write("IN.DAT", new byte[] {0x12, 0x34, 0x5C}, 3);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  GENERATE MAXFLDS=1",
+                "  RECORD   FIELD=(3,1,PZ,1)",
+                "/*");
+
+        // 3 バイトのパック 10 進数は 5 桁である。最後の桁の上位 4 ビットが符号になる
+        assertEquals(0, result.returnCode());
+        assertArrayEquals(new byte[] {(byte) 0xF1, (byte) 0xF2, (byte) 0xF3, (byte) 0xF4,
+                (byte) 0xC5}, raw("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("読めない 10 進数は移し替えずに止める (FR-137)")
+    void aBrokenDecimalStopsTheConversion() {
+        write("IN.DAT", "12.45", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  GENERATE MAXFLDS=1",
+                "  RECORD   FIELD=(5,1,ZP,1)",
+                "/*");
+
+        assertEquals(12, result.returnCode());
+        assertTrue(output().contains("IS NOT A DECIMAL VALUE"), output());
+    }
+
+    @Test
+    @DisplayName("数え上げが足りなければ止める (FR-137, 暫定判断 P-047 の解消)")
+    void theCountsMustCoverWhatIsWritten() {
+        write("IN.DAT", "ABCD1234", 8);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  GENERATE MAXFLDS=1",
+                "  RECORD   FIELD=(4,1,,1),FIELD=(4,5,,5)",
+                "/*");
+
+        assertEquals(12, result.returnCode());
+        assertTrue(output().contains("MAXFLDS IS TOO SMALL"), output());
+    }
+
+    @Test
+    @DisplayName("GENERATE だけならそのまま写す (FR-137)")
+    void generateAloneStillCopies() {
         write("IN.DAT", "AAAAA", 5);
 
         JobRunner.Result result = run(
@@ -140,8 +299,27 @@ class UtilityTest {
                 "  GENERATE MAXFLDS=1",
                 "/*");
 
+        assertEquals(0, result.returnCode());
+        assertEquals("AAAAA", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("読めない制御文は報告する (FR-137, 暫定判断 P-047)")
+    void unknownControlStatementsAreReported() {
+        write("IN.DAT", "AAAAA", 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//SYSPRINT DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  MEMBER NAME=PART1",
+                "/*");
+
         assertEquals(12, result.returnCode());
-        assertTrue(output().contains("NOT SUPPORTED YET"), output());
+        assertTrue(output().contains("NOT SUPPORTED YET: MEMBER"), output());
     }
 
     // ---- IDCAMS ----

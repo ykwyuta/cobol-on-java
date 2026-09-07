@@ -465,7 +465,7 @@ public final class Icetool extends UtilityProgram {
                                         CodePage codePage) {
         List<SortKey> keys = new ArrayList<>();
         for (SortField field : fields) {
-            keys.add(field.key());
+            keys.add(field.key(codePage));
         }
         SortWork work = new SortWork(keys, codePage);
         records.forEach(work::release);

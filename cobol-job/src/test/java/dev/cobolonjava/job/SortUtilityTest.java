@@ -1,5 +1,6 @@
 package dev.cobolonjava.job;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -773,5 +774,215 @@ class SortUtilityTest {
 
         assertEquals(16, result.returnCode());
         assertTrue(output().contains("NOT SUPPORTED YET: ALTSEQ"), output());
+    }
+
+    // ---- 文字で書いた数 (暫定判断 P-047 の解消) ----
+
+    @Test
+    @DisplayName("FS は文字で書いた数を値として並べる (FR-137, 暫定判断 P-047 の解消)")
+    void fsSortsByValueNotByBytes() {
+        write("IN.DAT", " 100  20", 4);
+
+        JobRunner.Result result = sort("  SORT FIELDS=(1,4,FS,A)");
+
+        // バイトで比べれば ' 1' が '  ' より後になり " 100" が後ろへ回る
+        assertEquals(0, result.returnCode());
+        assertEquals("  20 100", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("FS は前に付いた符号を読む (FR-137)")
+    void fsReadsTheLeadingSign() {
+        write("IN.DAT", " 010-020", 4);
+
+        JobRunner.Result result = sort("  SORT FIELDS=(1,4,FS,A)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("-020 010", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("UFF は数字だけを拾う (FR-137)")
+    void uffPicksUpOnlyTheDigits() {
+        write("IN.DAT", "1,234  999", 5);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  INCLUDE COND=(1,5,UFF,GT,1000)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("1,234", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("SFF は後ろに付いた符号も読む (FR-137)")
+    void sffReadsATrailingSign() {
+        write("IN.DAT", "123-456 ", 4);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  INCLUDE COND=(1,4,SFF,LT,0)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("123-", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("UFF は符号を持たないので必ず 0 以上である (FR-137)")
+    void uffHasNoSign() {
+        write("IN.DAT", "123-456 ", 4);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  INCLUDE COND=(1,4,UFF,GT,0)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("123-456 ", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("CSF は FS の別の綴りである (FR-137)")
+    void csfIsAnotherSpellingOfFs() {
+        write("IN.DAT", " 100  20", 4);
+
+        JobRunner.Result result = sort("  SORT FIELDS=(1,4,CSF,A)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("  20 100", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("文字で書いた数は SUM で足せない (FR-137)")
+    void freeFormatsCannotBeSummed() {
+        write("IN.DAT", "A 100A  20", 5);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=(1,1,CH,A)",
+                "  SUM FIELDS=(2,4,FS)");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("SUM CANNOT ADD FORMAT FS"), output());
+    }
+
+    // ---- 数を書き直す (暫定判断 P-047 の解消) ----
+
+    @Test
+    @DisplayName("TO= は数の形を移し替える (FR-137, 暫定判断 P-047 の解消)")
+    void toChangesTheFormatOfANumber() {
+        write("IN.DAT", "123", 3);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,3,ZD,TO=PD)");
+
+        assertEquals(0, result.returnCode());
+        // 3 桁は 2 バイトのパック 10 進数に入る。符号は下位 4 ビットの C である
+        assertArrayEquals(new byte[] {0x12, 0x3C}, bytes("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("LENGTH= で作る大きさを言える (FR-137)")
+    void lengthSaysHowWideTheNumberIs() {
+        write("IN.DAT", "123", 3);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,3,ZD,TO=ZD,LENGTH=5)");
+
+        assertEquals(0, result.returnCode());
+        // 頭は 0 で埋まり、最後の桁の上位 4 ビットが符号になる
+        assertArrayEquals(new byte[] {(byte) 0xF0, (byte) 0xF0, (byte) 0xF1, (byte) 0xF2,
+                (byte) 0xC3}, bytes("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("EDIT= は人が読む形にする (FR-137, 暫定判断 P-047 の解消)")
+    void editMakesANumberReadable() {
+        write("IN.DAT", "0001234", 7);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,7,ZD,EDIT=(I,III,IIT))");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("    1,234", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("T の桁は頭の 0 を消さない (FR-137)")
+    void theTSlotKeepsALeadingZero() {
+        write("IN.DAT", "0012", 4);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,4,ZD,EDIT=(TTTT))");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("0012", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("S の桁は符号を置く (FR-137)")
+    void theSignSlotShowsTheSign() {
+        write("IN.DAT", new byte[] {0x12, 0x3D}, "recfm=F\nlrecl=2\n");
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,2,PD,EDIT=(STTT))");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("-123", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("末尾の合計も同じ書き方で整えられる (FR-137)")
+    void theTrailerTakesTheSameEdit() {
+        write("IN.DAT", "AAA010BBB020", 6);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(C'SUM ',TOTAL=(4,3,ZD,EDIT=(IIIT)))");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("AAA010  BBB020  SUM   30", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("形を書かずに数は書き直せない (FR-137)")
+    void changingANumberNeedsAFormat() {
+        write("IN.DAT", "123", 3);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,3,TO=ZD)");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("NEEDS A FORMAT"), output());
+    }
+
+    @Test
+    @DisplayName("知らない書き直し方は報告する (FR-137, 暫定判断 P-047)")
+    void unknownNumberFormatsAreReported() {
+        write("IN.DAT", "123", 3);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,3,ZD,TO=M11)");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("NUMBER FORMAT IS NOT SUPPORTED YET"), output());
+    }
+
+    @Test
+    @DisplayName("文字で書いた数は行き先にはできない (FR-137)")
+    void aFreeFormatIsNotAPlaceToWrite() {
+        write("IN.DAT", "123", 3);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,3,ZD,TO=UFF)");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("NUMBER FORMAT IS NOT SUPPORTED YET"), output());
     }
 }

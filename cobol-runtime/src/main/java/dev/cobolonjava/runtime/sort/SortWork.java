@@ -76,9 +76,9 @@ public final class SortWork {
 
     private int compare(byte[] left, byte[] right) {
         for (SortKey key : keys) {
-            int order = key.numeric() == null
-                    ? Compare.alphanumeric(slice(left, key), slice(right, key), codePage)
-                    : compareNumeric(left, right, key);
+            int order = key.value() != null || key.numeric() != null
+                    ? compareNumeric(left, right, key)
+                    : Compare.alphanumeric(slice(left, key), slice(right, key), codePage);
             if (order != 0) {
                 return key.ascending() ? order : -order;
             }
@@ -88,9 +88,13 @@ public final class SortWork {
     }
 
     private int compareNumeric(byte[] left, byte[] right, SortKey key) {
-        Decimal a = key.numeric().decode(slice(left, key));
-        Decimal b = key.numeric().decode(slice(right, key));
-        return a.compareTo(b);
+        return number(left, key).compareTo(number(right, key));
+    }
+
+    /** 鍵の場所を数として読む。項目で言い表せない形は {@link SortValue} が読む。 */
+    private Decimal number(byte[] record, SortKey key) {
+        byte[] bytes = slice(record, key);
+        return key.value() != null ? key.value().read(bytes) : key.numeric().decode(bytes);
     }
 
     private static byte[] slice(byte[] record, SortKey key) {

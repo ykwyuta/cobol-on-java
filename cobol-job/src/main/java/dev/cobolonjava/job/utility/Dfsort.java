@@ -437,12 +437,14 @@ public final class Dfsort extends UtilityProgram {
         }
         String key = JclOperands.key(item).toUpperCase(Locale.ROOT);
         String value = JclOperands.value(item);
+        if (key.equals("TOTAL") || key.equals("MIN") || key.equals("MAX") || key.equals("AVG")) {
+            return summary(key, value, scope, codePage);
+        }
         String text = switch (key) {
             case "&PAGE" -> String.valueOf(page);
             case "&DATE" -> LocalDate.now().format(DateTimeFormatter.ofPattern("MM/dd/yy"));
             case "&TIME" -> LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
             case "COUNT" -> String.valueOf(scope.size());
-            case "TOTAL", "MIN", "MAX", "AVG" -> summary(key, value, scope, codePage);
             default -> null;
         };
         if (text == null) {
@@ -455,16 +457,21 @@ public final class Dfsort extends UtilityProgram {
     /**
      * {@code TOTAL=(p,l,fmt)} のような数え上げ。
      *
+     * <p>{@code TOTAL=(4,3,ZD,EDIT=(TTT))} のように、続けて書き方を言える。末尾の合計だけ
+     * コンマが入らない、といったことにならないよう、書き方は {@code OUTREC} と同じ
+     * {@link SortEdit} が読む。
+     *
      * @return 場所が読めなければ {@code null}
      */
-    private String summary(String key, String value, List<byte[]> scope, CodePage codePage) {
-        SortField field = placeOf(value);
+    private byte[] summary(String key, String value, List<byte[]> scope, CodePage codePage) {
+        List<String> parts = JclOperands.split(JclOperands.unwrap(value));
+        SortField field = placeOf(parts);
         if (field == null) {
+            fail("ICE000I OUTFIL HEADER AND TRAILER ITEM IS NOT SUPPORTED YET: "
+                    + key + "=" + value);
             return null;
         }
-        if (scope.isEmpty()) {
-            return "0";
-        }
+        List<String> decorations = parts.subList(Math.min(3, parts.size()), parts.size());
         BigDecimal total = BigDecimal.ZERO;
         BigDecimal least = null;
         BigDecimal most = null;
@@ -474,13 +481,16 @@ public final class Dfsort extends UtilityProgram {
             least = least == null || each.compareTo(least) < 0 ? each : least;
             most = most == null || each.compareTo(most) > 0 ? each : most;
         }
-        return switch (key) {
-            case "TOTAL" -> total.toPlainString();
-            case "MIN" -> least.toPlainString();
-            case "MAX" -> most.toPlainString();
-            default -> total.divide(BigDecimal.valueOf(scope.size()), 0, RoundingMode.DOWN)
-                    .toPlainString();
+        BigDecimal answer = scope.isEmpty() ? BigDecimal.ZERO : switch (key) {
+            case "TOTAL" -> total;
+            case "MIN" -> least;
+            case "MAX" -> most;
+            default -> total.divide(BigDecimal.valueOf(scope.size()), 0, RoundingMode.DOWN);
         };
+        if (decorations.isEmpty()) {
+            return codePage.encode(answer.toPlainString());
+        }
+        return changed(Decimal.parse(answer.toPlainString()), field, decorations, codePage);
     }
 
     /**
@@ -488,8 +498,7 @@ public final class Dfsort extends UtilityProgram {
      *
      * @return 読めなければ {@code null}
      */
-    private static SortField placeOf(String value) {
-        List<String> parts = JclOperands.split(JclOperands.unwrap(value));
+    private static SortField placeOf(List<String> parts) {
         if (parts.size() < 3) {
             return null;
         }
@@ -555,7 +564,7 @@ public final class Dfsort extends UtilityProgram {
     private List<byte[]> ordered(List<byte[]> records, CodePage codePage) {
         List<SortKey> keys = new ArrayList<>();
         for (SortField field : sortFields) {
-            keys.add(field.key());
+            keys.add(field.key(codePage));
         }
         SortWork work = new SortWork(keys, codePage);
         for (byte[] record : records) {
@@ -674,18 +683,63 @@ public final class Dfsort extends UtilityProgram {
             if (digitsOnly(item) && i + 1 < items.size() && digitsOnly(items.get(i + 1).trim())) {
                 int offset = number(item, 1) - 1;
                 int length = number(items.get(i + 1).trim(), 0);
-                buffer.writeBytes(SortField.slice(record, offset, length, codePage.space()));
                 i++;
+                SortField.Format format = null;
                 if (i + 1 < items.size() && SortField.formatOf(items.get(i + 1).trim()) != null) {
-                    // 形は書かれていてもよい。写すだけなので中身は変わらない
+                    format = SortField.formatOf(items.get(i + 1).trim());
                     i++;
                 }
+                List<String> decorations = new ArrayList<>();
+                while (i + 1 < items.size() && SortEdit.names(items.get(i + 1))) {
+                    decorations.add(items.get(i + 1).trim());
+                    i++;
+                }
+                if (decorations.isEmpty()) {
+                    // 形は書かれていてもよい。写すだけなので中身は変わらない
+                    buffer.writeBytes(SortField.slice(record, offset, length, codePage.space()));
+                    continue;
+                }
+                if (format == null) {
+                    fail("ICE000I OUTREC NEEDS A FORMAT TO CHANGE A NUMBER: " + item);
+                    return null;
+                }
+                SortField source = SortField.at(offset, length, format);
+                byte[] written = changed(source.number(record, codePage), source, decorations,
+                        codePage);
+                if (written == null) {
+                    return null;
+                }
+                buffer.writeBytes(written);
                 continue;
             }
             fail("ICE000I OUTREC ITEM IS NOT SUPPORTED YET: " + item);
             return null;
         }
         return buffer.toByteArray();
+    }
+
+    /**
+     * 読んだ数を書き直す (要件 FR-137、暫定判断 P-047 の解消)。
+     *
+     * <p>{@code TO=} は次のプログラムのために形を変え、{@code EDIT=} は人のために型へ
+     * はめる。どちらの読み方も {@link SortEdit} が持っている。
+     *
+     * @return 書き直し方が読めなければ {@code null}
+     */
+    private byte[] changed(Decimal value, SortField source, List<String> decorations,
+                           CodePage codePage) {
+        SortEdit edit = SortEdit.read(decorations);
+        if (edit == null || !edit.sound()) {
+            fail("ICE000I NUMBER FORMAT IS NOT SUPPORTED YET: "
+                    + String.join(",", decorations));
+            return null;
+        }
+        byte[] written = edit.write(value, source, codePage);
+        if (written == null) {
+            fail("ICE000I NUMBER FORMAT IS NOT SUPPORTED YET: "
+                    + String.join(",", decorations));
+        }
+        return written;
     }
 
     private void write(ProgramContext context, String ddName, List<byte[]> records,

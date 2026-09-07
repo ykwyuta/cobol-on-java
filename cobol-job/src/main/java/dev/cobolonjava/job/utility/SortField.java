@@ -34,7 +34,18 @@ record SortField(int offset, int length, Format format, boolean ascending) {
         /** パック 10 進数。 */
         PD,
         /** 符号付き固定 2 進数。 */
-        FI
+        FI,
+        /** 文字で書いた数。前に符号が付いてもよく、空白で埋めてあってもよい ({@code CSF})。 */
+        FS,
+        /** 文字で書いた数。数字だけを拾い、符号は持たない。 */
+        UFF,
+        /** 文字で書いた数。数字だけを拾い、前後の {@code -} を符号として読む。 */
+        SFF;
+
+        /** 文字として書かれた数か。項目では言い表せないので、読み方が別に要る。 */
+        boolean free() {
+            return this == FS || this == UFF || this == SFF;
+        }
     }
 
     /** 昇順の場所。鍵以外では順は使われない。 */
@@ -42,8 +53,17 @@ record SortField(int offset, int length, Format format, boolean ascending) {
         return new SortField(offset, length, format, true);
     }
 
-    /** 整列の鍵にする。 */
-    SortKey key() {
+    /**
+     * 整列の鍵にする。
+     *
+     * <p>文字で書いた数は {@code PICTURE} に当たらないので、読み方そのものを渡す。
+     * 比べ方は {@link dev.cobolonjava.runtime.sort.SortWork} の側に置いたままである。
+     */
+    SortKey key(CodePage codePage) {
+        if (format.free()) {
+            return new SortKey(offset, length, ascending, null,
+                    bytes -> free(bytes, codePage));
+        }
         return new SortKey(offset, length, ascending, item());
     }
 
@@ -55,7 +75,7 @@ record SortField(int offset, int length, Format format, boolean ascending) {
      */
     NumericItem item() {
         return switch (format) {
-            case CH, BI -> null;
+            case CH, BI, FS, UFF, SFF -> null;
             case ZD -> NumericItem.of("S9(" + length + ")", Usage.DISPLAY);
             case PD -> NumericItem.of("S9(" + (2 * length - 1) + ")", Usage.COMP_3);
             case FI -> switch (length) {
@@ -74,12 +94,16 @@ record SortField(int offset, int length, Format format, boolean ascending) {
 
     /** レコードから切り出す。足りなければ埋める。 */
     byte[] slice(byte[] record, CodePage codePage) {
-        return slice(record, offset, length, format == Format.CH ? codePage.space() : (byte) 0);
+        boolean text = format == Format.CH || format.free();
+        return slice(record, offset, length, text ? codePage.space() : (byte) 0);
     }
 
     /** 値として読む。数として読めないバイトは 0 とみなす。 */
     Decimal number(byte[] record, CodePage codePage) {
         byte[] bytes = slice(record, codePage);
+        if (format.free()) {
+            return free(bytes, codePage);
+        }
         if (format == Format.BI || format == Format.CH) {
             return Decimal.of(new BigInteger(1, bytes.length == 0 ? new byte[] {0} : bytes), 0);
         }
@@ -98,9 +122,14 @@ record SortField(int offset, int length, Format format, boolean ascending) {
      * ある。{@code ICETOOL} の {@code VERIFY} は<b>読めないこと自体を報せる</b>のが仕事な
      * ので、握り潰さない道がここに要る。
      *
-     * <p>文字と 2 進数はどんなバイトでも読めるので、いつでも真である。
+     * <p>文字と 2 進数はどんなバイトでも読めるので、いつでも真である。{@code UFF} と
+     * {@code SFF} も同じで、数字だけを拾う形には読めないバイトというものが無い。
      */
     boolean valid(byte[] record, CodePage codePage) {
+        if (format.free()) {
+            // 数字だけを拾う形には「読めないバイト」というものが無い
+            return format != Format.FS || readable(codePage.decode(slice(record, codePage)));
+        }
         NumericItem item = item();
         if (item == null) {
             return true;
@@ -119,6 +148,10 @@ record SortField(int offset, int length, Format format, boolean ascending) {
      * @return 書き戻せない形なら {@code null}
      */
     byte[] encode(Decimal value) {
+        if (format.free()) {
+            // 文字で書いた数は読む形であって、書き戻す形ではない
+            return null;
+        }
         if (format == Format.BI) {
             byte[] out = new byte[length];
             byte[] bytes = value.magnitude().toByteArray();
@@ -168,6 +201,68 @@ record SortField(int offset, int length, Format format, boolean ascending) {
         return Integer.compare(left.length, right.length);
     }
 
+    // ---- 文字で書いた数 (要件 FR-137、暫定判断 P-047 の解消) ----
+
+    /**
+     * 文字で書かれた数を読む。
+     *
+     * <p>ホストの帳票や外から来たファイルには、<b>10 進数の欄ではなく文字として</b>数が
+     * 書かれていることがある。空白で右へ寄せてあったり、符号が前に付いていたり、
+     * {@code 1,234} のようにコンマが入っていたりする。{@code ZD} として読めばどれも
+     * 壊れた数になるので、形を分けてある。
+     *
+     * <ul>
+     *   <li>{@code FS} は空白・符号・数字だけを許す。ほかの文字があれば読めない
+     *   <li>{@code UFF} は<b>数字だけを拾う</b>。符号は持たないので、いつでも 0 以上である
+     *   <li>{@code SFF} は数字だけを拾い、前か後ろの {@code -} を符号として読む
+     * </ul>
+     */
+    private Decimal free(byte[] bytes, CodePage codePage) {
+        String text = codePage.decode(bytes);
+        if (format == Format.FS && !readable(text)) {
+            // ふるい分けを止めない。読めないこと自体は valid() が報せる
+            return Decimal.zero(0);
+        }
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isDigit(text.charAt(i))) {
+                digits.append(text.charAt(i));
+            }
+        }
+        if (digits.isEmpty()) {
+            return Decimal.zero(0);
+        }
+        Decimal value = Decimal.of(new BigInteger(digits.toString()), 0);
+        return negative(text) ? value.negate() : value;
+    }
+
+    /** 符号が付いているか。{@code UFF} は符号を持たない。 */
+    private boolean negative(String text) {
+        if (format == Format.UFF) {
+            return false;
+        }
+        String trimmed = text.trim();
+        if (format == Format.SFF && (trimmed.endsWith("-") || trimmed.toUpperCase(Locale.ROOT)
+                .endsWith("CR"))) {
+            return true;
+        }
+        return trimmed.startsWith("-");
+    }
+
+    /** {@code FS} として読めるか。空白と 1 つの符号と数字だけでできていること。 */
+    private static boolean readable(String text) {
+        String trimmed = text.trim();
+        if (trimmed.startsWith("+") || trimmed.startsWith("-")) {
+            trimmed = trimmed.substring(1).trim();
+        }
+        for (int i = 0; i < trimmed.length(); i++) {
+            if (!Character.isDigit(trimmed.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * 綴りから形を読む。
      *
@@ -180,6 +275,10 @@ record SortField(int offset, int length, Format format, boolean ascending) {
             case "ZD" -> Format.ZD;
             case "PD" -> Format.PD;
             case "FI" -> Format.FI;
+            // CSF と FS は同じ形の 2 通りの綴りである
+            case "FS", "CSF" -> Format.FS;
+            case "UFF" -> Format.UFF;
+            case "SFF" -> Format.SFF;
             default -> null;
         };
     }

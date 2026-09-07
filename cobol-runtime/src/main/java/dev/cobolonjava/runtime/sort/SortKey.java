@@ -12,8 +12,15 @@ import dev.cobolonjava.runtime.item.NumericItem;
  * 英数字項目ならバイトで比べる。EBCDIC の照合順序はバイトの値そのものである。
  *
  * @param numeric 数値として比べるときの記述子。英数字なら {@code null}
+ * @param value 項目で言い表せない形の読み方 (要件 FR-137)。ふつうは {@code null}
  */
-public record SortKey(int offset, int length, boolean ascending, NumericItem numeric) {
+public record SortKey(int offset, int length, boolean ascending, NumericItem numeric,
+                      SortValue value) {
+
+    /** 項目として読む鍵。COBOL の {@code SORT} はいつもこちらである。 */
+    public SortKey(int offset, int length, boolean ascending, NumericItem numeric) {
+        this(offset, length, ascending, numeric, null);
+    }
 
     /** 英数字の鍵。 */
     public static SortKey alphanumeric(int offset, int length, boolean ascending) {

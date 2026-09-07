@@ -566,10 +566,11 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
 - **FR-136 (L2)**: ステップの復帰コード (RC) を集約し、後続ステップの `COND` 判定および
   ジョブ全体の終了コードへ反映する。
 - **FR-137 (L1)**: 代表的なユーティリティの互換実装を提供する:
-  `IEBGENER`、`IEFBR14`、
+  `IEBGENER` (制御文なしの写しと、`GENERATE`/`RECORD` による組み替え)、`IEFBR14`、
   `IDCAMS` (`REPRO`、`DEFINE CLUSTER`、`DEFINE GDG`、`DELETE`、`LISTCAT` の主要機能)、
   `SORT` (`SORT FIELDS`、`INCLUDE`/`OMIT`、`OUTREC`、`SUM`、`OUTFIL` による振り分け・
-  見出しと末尾・分割)、
+  見出しと末尾・分割、欄の書式 `CH`/`BI`/`ZD`/`PD`/`FI`/`FS`/`UFF`/`SFF` と
+  `TO=`/`EDIT=` による書き直し)、
   `ICETOOL` (`COPY`/`SORT`/`MERGE`/`COUNT`/`STATS`/`RANGE`/`UNIQUE`/`VERIFY`/`SELECT`/
   `SPLICE`/`SUBSET`/`RESIZE`/`DISPLAY`/`OCCUR`/`MODE`)、
   `IEBCOPY` (`COPY`、`COPYGRP`、`SELECT`、`EXCLUDE`)、

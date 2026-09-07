@@ -506,6 +506,33 @@ class IcetoolTest {
     }
 
     @Test
+    @DisplayName("VERIFY は文字で書いた数も確かめる (FR-137, 暫定判断 P-047 の解消)")
+    void verifyChecksAFreeFormatToo() {
+        write("IN.DAT", " 12   1X", 4);
+
+        JobRunner.Result result = tool(new String[] {
+            "//IN       DD   DSN=IN.DAT,DISP=SHR"},
+                "  VERIFY FROM(IN) ON(1,4,FS)");
+
+        assertEquals(12, result.returnCode());
+        assertTrue(output().contains("RECORD 2 HAS AN INVALID DECIMAL VALUE"), output());
+    }
+
+    @Test
+    @DisplayName("UFF はどんな文字でも読めるので必ず通る (FR-137)")
+    void uffIsAlwaysReadable() {
+        write("IN.DAT", " 12   1X", 4);
+
+        JobRunner.Result result = tool(new String[] {
+            "//IN       DD   DSN=IN.DAT,DISP=SHR"},
+                "  VERIFY FROM(IN) ON(1,4,UFF)");
+
+        // 数字だけを拾う形なので、読めないバイトというものが無い
+        assertEquals(0, result.returnCode());
+        assertTrue(output().contains("INVALID DECIMAL VALUES: 0"), output());
+    }
+
+    @Test
     @DisplayName("VERIFY は文字の場所を断る (FR-137)")
     void verifyNeedsADecimalFormat() {
         write("IN.DAT", "ABC", 3);
