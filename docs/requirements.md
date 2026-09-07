@@ -566,7 +566,8 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
   ジョブ全体の終了コードへ反映する。
 - **FR-137 (L1)**: 代表的なユーティリティの互換実装を提供する:
   `IEBGENER`、`IEFBR14`、`IDCAMS` (`REPRO`、`DEFINE CLUSTER`、`DELETE`、`LISTCAT` の主要機能)、
-  `SORT` / `ICETOOL` (基本的な `SORT FIELDS`、`INCLUDE`/`OMIT`、`OUTREC`、`SUM`)。
+  `SORT` / `ICETOOL` (基本的な `SORT FIELDS`、`INCLUDE`/`OMIT`、`OUTREC`、`SUM`)、
+  `IEBCOPY` (`COPY`、`SELECT`、`EXCLUDE`)、`IKJEFT01` (`LISTDS`)。
 
 ### 7.2 ランタイム (Language Environment 相当)
 

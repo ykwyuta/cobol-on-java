@@ -7,6 +7,7 @@ import dev.cobolonjava.job.Job;
 import dev.cobolonjava.job.JobDiagnostic;
 import dev.cobolonjava.job.Step;
 import dev.cobolonjava.job.StepCondition;
+import dev.cobolonjava.runtime.file.PartitionedDataSet;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -311,11 +312,20 @@ public final class Jcl {
                 return;
             }
             lastDd = card.name().toUpperCase(Locale.ROOT);
-            dd.add(new DdAssignment(lastDd, allocation.target(), allocation.space()));
+            dd.add(new DdAssignment(lastDd, allocation.target(), allocation.space(),
+                    allocation.directory()));
         }
 
-        /** {@code DD} 文 1 枚が言っていること。行き先と、割り当てる大きさである。 */
-        private record Allocation(DdTarget target, long space) {
+        /**
+         * {@code DD} 文 1 枚が言っていること。行き先と、割り当てる大きさである。
+         *
+         * @param directory ディレクトリブロックの数。書かなければ {@code 0}
+         */
+        private record Allocation(DdTarget target, long space, int directory) {
+
+            Allocation(DdTarget target, long space) {
+                this(target, space, 0);
+            }
         }
 
         /** 連結。読むときは並べた順に 1 つのファイルに見える。 */
@@ -350,6 +360,7 @@ public final class Jcl {
             Disposition disposition = Disposition.of(Disposition.Status.NEW);
             DdTarget special = null;
             long space = DdAssignment.UNLIMITED;
+            int directory = 0;
             String serial = null;
             for (String operand : JclOperands.split(operands)) {
                 String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
@@ -359,7 +370,11 @@ public final class Jcl {
                     case "DISP" -> disposition = dispositionOf(card, value, disposition);
                     case "SYSOUT" -> special = new DdTarget.Sysout();
                     case "DUMMY" -> special = new DdTarget.Dummy();
-                    case "SPACE" -> space = spaceOf(card, value);
+                    case "SPACE" -> {
+                        Space allocated = spaceOf(card, value);
+                        space = allocated.bytes();
+                        directory = allocated.directory();
+                    }
                     case "VOL", "VOLUME" -> serial = serialOf(card, value);
                     // 装置と記述の指定は、ファイルとして持つこの実装では効かない
                     case "UNIT", "LRECL", "RECFM", "BLKSIZE", "DCB" ->
@@ -378,14 +393,14 @@ public final class Jcl {
             // あとなので、ここまで残っている & は名前の一部である
             if (name.startsWith("&")) {
                 return new Allocation(new DdTarget.Temporary(name.substring(1), disposition),
-                        space);
+                        space, directory);
             }
             String member = memberOf(card, name);
             if (member != null && member.isEmpty()) {
                 return null;
             }
             return new Allocation(new DdTarget.DataSet(libraryOf(name), member, serial,
-                    disposition), space);
+                    disposition), space, directory);
         }
 
         /**
@@ -421,6 +436,10 @@ public final class Jcl {
          * (要件 FR-114)。まだ持っていないので誤りとして知らせる。黙ってメンバ名として
          * 扱うと、{@code (+1)} という名前のメンバを作ってしまう。
          *
+         * <p>名前そのものも検める (暫定判断 P-056 の解消)。ホストのメンバ名は 8 文字までで
+         * あり、超えていればジョブを<b>読む段で</b>弾かれる。ここで通せば、実機なら JCL
+         * 誤りで動かないジョブがここでは動いてしまう。
+         *
          * @return 書かれていなければ {@code null}。誤りなら空文字列
          */
         private String memberOf(JclCard card, String name) {
@@ -437,7 +456,13 @@ public final class Jcl {
                 report(card, "DSN needs a member name inside the parentheses: " + name);
                 return "";
             }
-            return member.toUpperCase(Locale.ROOT);
+            String upper = member.toUpperCase(Locale.ROOT);
+            if (!PartitionedDataSet.validName(upper)) {
+                // ホストはジョブを読む段で弾く。通せば実機で動かないジョブがここでは動く
+                report(card, "invalid member name: " + member);
+                return "";
+            }
+            return upper;
         }
 
         /** {@code DSN=ライブラリ(メンバ)} のライブラリ名。メンバを書かなければ名前そのもの。 */
@@ -457,27 +482,40 @@ public final class Jcl {
          * 大きさは 3390 のものを使う。実際の装置を持たない以上どこかで決めるほかなく、
          * いちばん広く使われている値を採る。
          */
-        private long spaceOf(JclCard card, String value) {
+        private Space spaceOf(JclCard card, String value) {
             List<String> parts = JclOperands.split(JclOperands.unwrap(value));
             if (parts.isEmpty()) {
                 report(card, "SPACE needs a unit");
-                return DdAssignment.UNLIMITED;
+                return Space.NONE;
             }
             long unit = unitOf(parts.get(0));
             if (unit <= 0) {
                 report(card, "unknown SPACE unit: " + parts.get(0));
-                return DdAssignment.UNLIMITED;
+                return Space.NONE;
             }
             if (parts.size() < 2) {
-                return DdAssignment.UNLIMITED;
+                return Space.NONE;
             }
             List<String> amounts = JclOperands.split(JclOperands.unwrap(parts.get(1)));
+            // 3 つ目はディレクトリブロックの数である。書いてあれば区分データセットになる
+            int directory = amounts.size() >= 3 ? (int) number(amounts.get(2)) : 0;
             if (amounts.size() >= 2 && number(amounts.get(1)) > 0) {
                 // 二次割当があれば伸ばせる。使い切って止まることはない
-                return DdAssignment.UNLIMITED;
+                return new Space(DdAssignment.UNLIMITED, directory);
             }
             long primary = number(amounts.isEmpty() ? "" : amounts.get(0));
-            return primary > 0 ? primary * unit : DdAssignment.UNLIMITED;
+            return new Space(primary > 0 ? primary * unit : DdAssignment.UNLIMITED, directory);
+        }
+
+        /**
+         * {@code SPACE=} が言っていること。
+         *
+         * @param bytes     書ける大きさ。{@code 0} なら限りなし
+         * @param directory ディレクトリブロックの数。{@code 0} なら区分データセットではない
+         */
+        private record Space(long bytes, int directory) {
+
+            static final Space NONE = new Space(DdAssignment.UNLIMITED, 0);
         }
 
         /** 3390 のトラックは 56664 バイト、シリンダは 15 トラックである。 */

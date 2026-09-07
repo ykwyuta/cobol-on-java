@@ -415,7 +415,7 @@ public final class JobRunner {
         switch (assignment.target()) {
             case DdTarget.DataSet target -> {
                 Place place = locate(target);
-                allocateDataSet(name, target, place);
+                allocateDataSet(name, target, place, assignment.partitioned());
                 dataSets.add(new Held(target.name(), place.path(), target.disposition(), false));
                 catalog.assign(name, place.path());
                 if (target.partitioned()) {
@@ -464,7 +464,7 @@ public final class JobRunner {
                 for (DdTarget part : target.parts()) {
                     if (part instanceof DdTarget.DataSet dataSet) {
                         Place place = locate(dataSet);
-                        allocateDataSet(name, dataSet, place);
+                        allocateDataSet(name, dataSet, place, dataSet.partitioned());
                         dataSets.add(new Held(dataSet.name(), place.path(),
                                 dataSet.disposition(), false));
                         parts.add(place.path());
@@ -521,7 +521,8 @@ public final class JobRunner {
      * 次のジョブから<b>覚えのない名前</b>として拾われ、{@code KEEP} と {@code CATLG} の
      * 区別がまた消えてしまう。
      */
-    private void allocateDataSet(String ddName, DdTarget.DataSet target, Place place) {
+    private void allocateDataSet(String ddName, DdTarget.DataSet target, Place place,
+                                 boolean partitioned) {
         // VOL=SER= を書けば目録を通さない。載っていないデータセットへ届く唯一の手である。
         // このジョブが割り当てたものも、目録を通さずに見える
         String name = target.name();
@@ -535,7 +536,7 @@ public final class JobRunner {
                     throw new AllocationFailure("IEF344I " + ddName
                             + " - DUPLICATE NAME ON DIRECT ACCESS: " + name);
                 }
-                create(target, place);
+                create(target, place, partitioned);
             }
             case OLD, SHR -> {
                 if (!found) {
@@ -554,7 +555,7 @@ public final class JobRunner {
                         throw new AllocationFailure("IEF344I " + ddName
                                 + " - DUPLICATE NAME ON DIRECT ACCESS: " + name);
                     }
-                    create(target, place);
+                    create(target, place, partitioned);
                 }
             }
             case ANY -> {
@@ -575,9 +576,13 @@ public final class JobRunner {
      *
      * <p>区分データセットならディレクトリを作る。メンバはまだ無い — 作るのは
      * {@code OPEN OUTPUT} である。
+     *
+     * <p>区分になるかどうかは、メンバを名指したか、{@code SPACE=} にディレクトリブロックの
+     * 数を書いたかで決まる (要件 FR-113)。メンバを言わずにライブラリだけを作ることがあり、
+     * {@code IEBCOPY} の写し先がそれである。
      */
-    private void create(DdTarget.DataSet target, Place place) {
-        if (target.partitioned()) {
+    private void create(DdTarget.DataSet target, Place place, boolean partitioned) {
+        if (partitioned) {
             createDirectory(place.dataSet());
         } else {
             writeBytes(place.dataSet(), new byte[0]);

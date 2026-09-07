@@ -1,6 +1,8 @@
 package dev.cobolonjava.job.utility;
 
+import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
+import dev.cobolonjava.runtime.file.PartitionedDataSet;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -184,7 +186,7 @@ public final class Idcams extends UtilityProgram {
                 names.add(unwrap(entry));
             }
         } else {
-            names.addAll(listing(directory));
+            names.addAll(listing(directory, context.codePage()));
         }
         for (String name : names) {
             Path path = context.catalog().resolve(name);
@@ -197,7 +199,15 @@ public final class Idcams extends UtilityProgram {
         }
     }
 
-    private static List<String> listing(Path directory) {
+    /**
+     * 置き場にある名前を並べる。
+     *
+     * <p>並べ方は<b>コードページの順</b>である (要件 FR-053)。目録の並びは名前を
+     * そのまま比べた順であり、EBCDIC では英字が数字より前に来る。Java の順で並べると
+     * {@code A.PAY1} と {@code A.PAYA} が逆に出る。区分データセットのディレクトリと
+     * 同じ決まりなので、同じ場所から引く。
+     */
+    private static List<String> listing(Path directory, CodePage codePage) {
         List<String> names = new ArrayList<>();
         if (!Files.isDirectory(directory)) {
             return names;
@@ -205,11 +215,11 @@ public final class Idcams extends UtilityProgram {
         try (var stream = Files.list(directory)) {
             stream.map(path -> path.getFileName().toString())
                     .filter(name -> !name.endsWith(".meta"))
-                    .sorted()
                     .forEach(names::add);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot list " + directory, e);
         }
+        names.sort(PartitionedDataSet.order(codePage));
         return names;
     }
 
