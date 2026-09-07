@@ -6,6 +6,7 @@ import dev.cobolonjava.job.Disposition;
 import dev.cobolonjava.job.Job;
 import dev.cobolonjava.job.JobDiagnostic;
 import dev.cobolonjava.job.Step;
+import dev.cobolonjava.job.GenerationDataGroup;
 import dev.cobolonjava.job.StepCondition;
 import dev.cobolonjava.runtime.file.PartitionedDataSet;
 import java.nio.charset.StandardCharsets;
@@ -395,6 +396,13 @@ public final class Jcl {
                 return new Allocation(new DdTarget.Temporary(name.substring(1), disposition),
                         space, directory);
             }
+            // 括弧の中が相対世代なら、これはメンバではなく世代データグループである
+            String qualifier = qualifierOf(name);
+            if (qualifier != null && GenerationDataGroup.relative(qualifier)) {
+                return new Allocation(new DdTarget.DataSet(libraryOf(name), null, serial,
+                        disposition, Integer.valueOf(Integer.parseInt(qualifier))),
+                        space, directory);
+            }
             String member = memberOf(card, name);
             if (member != null && member.isEmpty()) {
                 return null;
@@ -429,12 +437,20 @@ public final class Jcl {
             return null;
         }
 
+        /** {@code DSN=名前(なにか)} の括弧の中。括弧が無ければ {@code null}。 */
+        private static String qualifierOf(String name) {
+            int open = name.indexOf('(');
+            if (open < 0 || !name.endsWith(")")) {
+                return null;
+            }
+            return name.substring(open + 1, name.length() - 1).trim();
+        }
+
         /**
          * {@code DSN=ライブラリ(メンバ)} のメンバ名 (要件 FR-113)。
          *
-         * <p>括弧の中が世代番号のときは<b>世代データグループ</b>であり、メンバではない
-         * (要件 FR-114)。まだ持っていないので誤りとして知らせる。黙ってメンバ名として
-         * 扱うと、{@code (+1)} という名前のメンバを作ってしまう。
+         * <p>括弧の中が相対世代のときは<b>世代データグループ</b>であり、メンバではない
+         * (要件 FR-114)。そちらは呼ぶ前に分けてある。
          *
          * <p>名前そのものも検める (暫定判断 P-056 の解消)。ホストのメンバ名は 8 文字までで
          * あり、超えていればジョブを<b>読む段で</b>弾かれる。ここで通せば、実機なら JCL
@@ -443,14 +459,9 @@ public final class Jcl {
          * @return 書かれていなければ {@code null}。誤りなら空文字列
          */
         private String memberOf(JclCard card, String name) {
-            int open = name.indexOf('(');
-            if (open < 0 || !name.endsWith(")")) {
+            String member = qualifierOf(name);
+            if (member == null) {
                 return null;
-            }
-            String member = name.substring(open + 1, name.length() - 1).trim();
-            if (member.matches("[+-]?\\d+")) {
-                report(card, "a generation data group is not supported yet: " + name);
-                return "";
             }
             if (member.isEmpty()) {
                 report(card, "DSN needs a member name inside the parentheses: " + name);

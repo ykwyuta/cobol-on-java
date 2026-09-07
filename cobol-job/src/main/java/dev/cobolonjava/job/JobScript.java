@@ -353,6 +353,15 @@ public final class JobScript {
                             new DdTarget.Temporary(written.substring(1), disposition), space));
                     return;
                 }
+                // 括弧の中が相対世代なら、これはメンバではなく世代データグループである
+                // (要件 FR-114)。JCL と同じ内部モデルへ落ちる
+                String qualifier = qualifierOf(written);
+                if (qualifier != null && GenerationDataGroup.relative(qualifier)) {
+                    dd.add(new DdAssignment(name, new DdTarget.DataSet(libraryOf(written), null,
+                            serial, disposition, Integer.valueOf(Integer.parseInt(qualifier))),
+                            space));
+                    return;
+                }
                 String member = memberOf(written, number);
                 if ("".equals(member)) {
                     return;
@@ -379,16 +388,24 @@ public final class JobScript {
          * @return 書かれていなければ {@code null}。誤りなら空文字列
          */
         private String memberOf(String written, int number) {
-            int open = written.indexOf('(');
-            if (open < 0 || !written.endsWith(")")) {
+            String member = qualifierOf(written);
+            if (member == null) {
                 return null;
             }
-            String member = written.substring(open + 1, written.length() - 1).trim();
             if (member.isEmpty()) {
                 report(number, "DSN needs a member name inside the parentheses: " + written);
                 return "";
             }
             return member.toUpperCase(Locale.ROOT);
+        }
+
+        /** {@code DSN=名前(なにか)} の括弧の中。括弧が無ければ {@code null}。 */
+        private static String qualifierOf(String written) {
+            int open = written.indexOf('(');
+            if (open < 0 || !written.endsWith(")")) {
+                return null;
+            }
+            return written.substring(open + 1, written.length() - 1).trim();
         }
 
         /** {@code DSN=ライブラリ(メンバ)} のライブラリ名。メンバを書かなければ名前そのもの。 */

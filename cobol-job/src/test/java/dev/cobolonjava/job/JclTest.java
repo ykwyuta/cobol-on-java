@@ -461,11 +461,42 @@ class JclTest {
     @Test
     @DisplayName("世代番号はメンバ名ではない (FR-113, FR-114)")
     void aGenerationDataGroupIsNotAMember() {
-        // 黙ってメンバ名として扱うと、(+1) という名前のメンバを作ってしまう
+        // メンバ名として扱うと、(+1) という名前のメンバを作ってしまう
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//IN       DD   DSN=PAY.HISTORY(+1),DISP=(NEW,CATLG)");
+
+        DdTarget.DataSet target = assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target());
+        assertEquals("PAY.HISTORY", target.name());
+        assertNull(target.member());
+        assertEquals(1, target.generation());
+    }
+
+    @Test
+    @DisplayName("相対世代は読む段では直さない (FR-114)")
+    void aRelativeGenerationIsKeptRelative() {
+        // 絶対名へ直すのはジョブの初めである。読む段では目録が見えない
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//OLD      DD   DSN=PAY.HISTORY(0),DISP=SHR",
+                "//BACK     DD   DSN=PAY.HISTORY(-2),DISP=SHR");
+
+        assertEquals(0, ((DdTarget.DataSet) job.steps().get(0).dd().get(0).target()).generation());
+        assertEquals(-2, ((DdTarget.DataSet) job.steps().get(0).dd().get(1).target()).generation());
+    }
+
+    @Test
+    @DisplayName("桁の多すぎる数字はメンバ名として弾かれる (FR-113, FR-114)")
+    void tooManyDigitsIsNotAGeneration() {
+        // ホストが数えるのは ±255 までである。それより長ければメンバ名として見るが、
+        // メンバ名は数字で始まれないので、どちらに転んでも通らない
         assertTrue(diagnostics(
                 "//J        JOB  (ACCT)",
                 "//STEP1    EXEC PGM=P",
-                "//IN       DD   DSN=PAY.HISTORY(+1),DISP=(NEW,CATLG)")
-                .contains("generation data group is not supported yet"));
+                "//IN       DD   DSN=PAY.HISTORY(12345),DISP=SHR")
+                .contains("invalid member name"));
     }
 }

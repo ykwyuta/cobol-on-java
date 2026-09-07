@@ -57,6 +57,13 @@ public final class JobRunner {
      */
     private SystemCatalog system;
     /**
+     * 世代データグループの基底 (要件 FR-114)。
+     *
+     * <p>目録と分けて持つ。基底の定義は世代が 1 つも無くなっても残るものであり、
+     * データセットの在り処とは寿命が違う。
+     */
+    private GenerationDataGroup groups;
+    /**
      * このジョブが割り当てたデータセットの名前 (要件 FR-131)。
      *
      * <p>目録に載っていなくても、<b>同じジョブの後続ステップからは見える</b>。ホストでは
@@ -171,25 +178,80 @@ public final class JobRunner {
         JobState state = new JobState();
         List<StepOutcome> outcomes = new ArrayList<>();
         system = new SystemCatalog(base);
+        groups = new GenerationDataGroup(base);
         allocated.clear();
+        // 相対世代を絶対名へ直すのはここだけである。以降のステップは番号を知らない
+        Job resolved = withGenerations(job);
         // データセットごとの、いちばん新しい処置。ジョブの終わりに PASS を片付ける
         Map<Path, Outcome> lastAction = new LinkedHashMap<>();
         boolean failed = false;
-        for (Step step : job.steps()) {
+        for (Step step : resolved.steps()) {
             if (failed) {
                 outcomes.add(new StepOutcome(step.name(), Status.FLUSHED, -1, null));
                 continue;
             }
-            StepOutcome outcome = runStep(job, step, state, lastAction);
+            StepOutcome outcome = runStep(resolved, step, state, lastAction);
             outcomes.add(outcome);
             failed = outcome.status() == Status.FAILED;
         }
-        endOfJob(job, lastAction);
+        endOfJob(resolved, lastAction);
         // 通らなかったジョブが 0 を返さないようにする。異常終了も JCL エラーも同じである
         int code = failed || state.abended()
                 ? Math.max(state.highest(), NOT_COMPLETED)
                 : state.highest();
         return new Result(code, outcomes, state);
+    }
+
+    /**
+     * 相対世代を絶対名へ直す (要件 FR-114)。
+     *
+     * <h2>ジョブの初めに 1 度だけである</h2>
+     * <p>{@code (0)} が指すのは<b>ジョブが始まった時点の</b>いちばん新しい世代であり、
+     * ステップ 1 が {@code (+1)} で世代を作っても動かない。ステップ 2 の {@code (+1)} も
+     * ステップ 1 と同じデータセットを指す。ホストの JCL がそう解釈するからである。
+     *
+     * <p>ステップごとに引き直すと、1 つのファイルへ 2 度書くつもりのジョブが世代を
+     * 2 つ作り、しかも<b>片方だけが残る</b>。実機との差が数字ではなくデータの欠落として
+     * 出るので、ここは動かせない。
+     *
+     * <h2>基底が無ければ直さない</h2>
+     * <p>登録されていない名前は相対世代のまま残す。割当ての段で JCL エラーになる。
+     * 黙って絶対名を組み立てると、{@code DEFINE GDG} を忘れたジョブが<b>世代のようで
+     * 世代でないデータセット</b>を作って正常終了してしまう。実機では動かないジョブである。
+     */
+    private Job withGenerations(Job job) {
+        Map<String, Integer> starts = new LinkedHashMap<>();
+        List<Step> steps = new ArrayList<>();
+        for (Step step : job.steps()) {
+            List<DdAssignment> dd = new ArrayList<>();
+            for (DdAssignment assignment : step.dd()) {
+                dd.add(new DdAssignment(assignment.name(),
+                        withGenerations(assignment.target(), starts),
+                        assignment.space(), assignment.directoryBlocks()));
+            }
+            steps.add(new Step(step.name(), step.program(), step.parm(), dd, step.condition()));
+        }
+        return new Job(job.name(), steps);
+    }
+
+    /** 割当 1 個の相対世代を直す。連結は中の各段をたどる。 */
+    private DdTarget withGenerations(DdTarget target, Map<String, Integer> starts) {
+        if (target instanceof DdTarget.Concatenation concatenation) {
+            List<DdTarget> parts = new ArrayList<>();
+            for (DdTarget part : concatenation.parts()) {
+                parts.add(withGenerations(part, starts));
+            }
+            return new DdTarget.Concatenation(parts);
+        }
+        if (!(target instanceof DdTarget.DataSet dataSet) || !dataSet.relativeGeneration()
+                || !groups.defined(dataSet.name())) {
+            return target;
+        }
+        // 基底ごとに 1 度だけ数える。同じジョブの中では何度書いても同じ番号から数える
+        int start = starts.computeIfAbsent(key(dataSet.name()),
+                ignored -> GenerationDataGroup.current(base, system, dataSet.name()));
+        return dataSet.named(
+                GenerationDataGroup.nameOf(dataSet.name(), start + dataSet.generation()));
     }
 
     private StepOutcome runStep(Job job, Step step, JobState state,
@@ -526,6 +588,11 @@ public final class JobRunner {
         // VOL=SER= を書けば目録を通さない。載っていないデータセットへ届く唯一の手である。
         // このジョブが割り当てたものも、目録を通さずに見える
         String name = target.name();
+        if (target.relativeGeneration()) {
+            // ジョブの初めに直せなかった。基底が目録に登録されていないのである
+            throw new AllocationFailure("IEF212I " + ddName
+                    + " - NOT A GENERATION DATA GROUP: " + name);
+        }
         boolean known = target.serial() != null || system.isCataloged(name)
                 || allocated.contains(key(name));
         boolean onVolume = Files.exists(place.dataSet());
@@ -636,6 +703,8 @@ public final class JobRunner {
      * 覚えているのはライブラリであって、メンバ 1 つを消してもライブラリは残る。
      */
     private void dispose(List<Held> dataSets, boolean abended, Map<Path, Outcome> lastAction) {
+        // 基底の登録は読み直す。同じジョブの先行ステップが DEFINE GDG したかもしれない
+        GenerationDataGroup defined = new GenerationDataGroup(base);
         for (Held held : dataSets) {
             Disposition.Action action = abended
                     ? held.disposition().abnormal()
@@ -647,7 +716,10 @@ public final class JobRunner {
             }
             if (held.name() != null) {
                 switch (action) {
-                    case CATLG -> system.catalog(held.name());
+                    case CATLG -> {
+                        system.catalog(held.name());
+                        rollIn(defined, held.name());
+                    }
                     case UNCATLG -> system.uncatalog(held.name());
                     default -> {
                         // KEEP と PASS は目録に触れない。載っているものは載ったまま、
@@ -656,6 +728,50 @@ public final class JobRunner {
                 }
             }
             lastAction.put(held.path(), new Outcome(held.name(), action));
+        }
+    }
+
+    /**
+     * 世代を群れへ組み入れ、あふれたぶんを外す (要件 FR-114)。
+     *
+     * <h2>組み入れは目録へ載った時である</h2>
+     * <p>{@code (+1)} で作っただけの世代はまだ群れの一員ではない。{@code DISP=CATLG} が
+     * 効いて初めて数に入る。だから {@code DISP=(NEW,CATLG,DELETE)} のステップが異常終了
+     * すれば、その世代は消えて<b>群れは元のまま</b>である。ホストが新しい世代を
+     * ロールインまで数えないのはこの形である。
+     *
+     * <h2>あふれたら外す</h2>
+     * <p>{@code LIMIT} を越えたぶんを古いほうから外す。{@code EMPTY} と書いてあれば
+     * <b>いま入れた 1 つを残して全部</b>外す。外すのは目録からであって、置き場からでは
+     * ない。{@code SCRATCH} と書いたときだけ実体も消える。
+     *
+     * <p>外れた世代は目録から引けなくなるので、{@code (0)} も {@code (-1)} も届かない。
+     * バイト列は残っているが、名前で指すには {@code VOL=SER=} が要る。ホストの
+     * {@code NOSCRATCH} がまさにそれである。
+     */
+    private void rollIn(GenerationDataGroup defined, String name) {
+        String group = GenerationDataGroup.baseOf(name);
+        GenerationDataGroup.Definition definition =
+                group == null ? null : defined.definitionOf(group);
+        if (definition == null) {
+            return;
+        }
+        List<Integer> numbers = GenerationDataGroup.generations(base, system, group);
+        int excess = numbers.size() - definition.limit();
+        if (excess <= 0) {
+            return;
+        }
+        // EMPTY はいま入れた 1 つを残して全部、NOEMPTY は古いほうからあふれたぶんだけ
+        List<Integer> rolled = List.copyOf(definition.empty()
+                ? numbers.subList(0, numbers.size() - 1)
+                : numbers.subList(0, excess));
+        for (int generation : rolled) {
+            String victim = GenerationDataGroup.nameOf(group, generation);
+            if (definition.scratch()) {
+                erase(new Held(victim, system.onVolume(victim), null, false));
+            } else {
+                system.uncatalog(victim);
+            }
         }
     }
 
