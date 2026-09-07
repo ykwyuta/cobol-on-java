@@ -81,6 +81,30 @@ public final class ProgramContext {
         return work;
     }
 
+    /**
+     * 開いたままのファイルを閉じる (要件 FR-102, FR-141)。
+     *
+     * <p>実行が終わったのに閉じていないファイルは、<b>書いたものがまだ置き場に届いていない</b>。
+     * ホストでは実行の終了処理がデータセットを閉じるので、途中で異常終了しても
+     * そこまでに書いたレコードは残る。残ったものを見て何が起きたのかを調べられることと、
+     * 処置 ({@code DISP}) が「作りかけのものを消す」という形で効くことの両方がこれに拠る。
+     *
+     * <p>閉じるときの誤りは伝えない。すでに異常終了しているかもしれず、そこへ別の誤りを
+     * かぶせると<b>最初に起きたことが分からなくなる</b>。
+     */
+    public void closeFiles() {
+        for (DataSet file : files.values()) {
+            if (file.mode() != null) {
+                try {
+                    file.close();
+                } catch (RuntimeException ignored) {
+                    // 閉じられなかったファイルのために、閉じられるファイルを諦めない
+                }
+            }
+        }
+        files.clear();
+    }
+
     /** DD 名から実際のファイルを探す目録。 */
     private final DataSetCatalog catalog;
     /** 開いているファイル。ファイル名から引く。 */
@@ -174,7 +198,8 @@ public final class ProgramContext {
      * @param ddName {@code ASSIGN TO} に書かれた DD 名
      */
     public DataSet file(String name, String ddName) {
-        return files.computeIfAbsent(name, k -> SequentialDataSet.at(catalog.resolve(ddName)));
+        return files.computeIfAbsent(name,
+                k -> limited(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
     }
 
     /**
@@ -193,8 +218,19 @@ public final class ProgramContext {
             Path path = catalog.resolve(ddName);
             return organization == Organization.RELATIVE
                     ? RelativeDataSet.at(path, declared)
-                    : SequentialDataSet.at(path, declared);
+                    : limited(SequentialDataSet.at(path, declared), ddName);
         });
+    }
+
+    /**
+     * ジョブが割り当てた領域の大きさを渡す (要件 FR-141)。
+     *
+     * <p>限りがあるのを知っているのは目録だけである。渡さなければ、実機では領域を
+     * 使い切って止まるジョブが、ここでは通ってしまう。
+     */
+    private SequentialDataSet limited(SequentialDataSet file, String ddName) {
+        file.limit(catalog.limitOf(ddName));
+        return file;
     }
 
     /**

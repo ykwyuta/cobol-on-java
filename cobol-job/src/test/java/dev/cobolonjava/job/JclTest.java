@@ -133,6 +133,75 @@ class JclTest {
                 job.steps().get(0).dd().get(0).target()).disposition().status());
     }
 
+    // ---- SPACE (FR-141) ----
+
+    @Test
+    @DisplayName("SPACE はブロック長かける一次割当を書ける大きさにする (FR-141)")
+    void spaceLimitsWhatCanBeWritten() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG),SPACE=(80,(100))");
+
+        assertEquals(8000L, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("二次割当があれば限りなしになる (FR-141)")
+    void aSecondaryAllocationMeansNoLimit() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG),SPACE=(80,(100,20))");
+
+        // 使い切っても伸ばせる。止まらないのだから限りを設けても意味がない
+        assertEquals(DdAssignment.UNLIMITED, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("TRK と CYL は 3390 の大きさで数える (FR-141)")
+    void trackAndCylinderUnitsAreConverted() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//A        DD   DSN=A,DISP=(NEW,CATLG),SPACE=(TRK,(1))",
+                "//B        DD   DSN=B,DISP=(NEW,CATLG),SPACE=(CYL,(1))");
+
+        assertEquals(56664L, job.steps().get(0).dd().get(0).space());
+        assertEquals(56664L * 15, job.steps().get(0).dd().get(1).space());
+    }
+
+    @Test
+    @DisplayName("大きさを書かない SPACE は限りを設けない (FR-141)")
+    void spaceWithoutAnAmountSetsNoLimit() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG),SPACE=(TRK)");
+
+        assertEquals(DdAssignment.UNLIMITED, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("知らない SPACE の単位は誤りである (FR-131, FR-141)")
+    void anUnknownSpaceUnitIsAnError() {
+        assertTrue(diagnostics(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,SPACE=(REEL,(1))").contains("unknown SPACE unit"));
+    }
+
+    @Test
+    @DisplayName("SPACE を書かなければ限りなしである (FR-141)")
+    void noSpaceMeansNoLimit() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG)");
+
+        assertEquals(DdAssignment.UNLIMITED, job.steps().get(0).dd().get(0).space());
+    }
+
     @Test
     @DisplayName("DD * は次の文か /* までを埋め込みデータにする (FR-131)")
     void inlineDataRunsToTheDelimiter() {

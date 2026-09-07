@@ -1,7 +1,6 @@
 package dev.cobolonjava.runtime.file;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -43,6 +42,17 @@ public final class SequentialDataSet implements DataSet {
      */
     private int current = -1;
     private int lastLength;
+    /**
+     * 形が壊れている位置。{@code -1} は壊れていないことを表す。
+     *
+     * <p>開いたときにバイト列を切り分けると、途中で<b>それ以上切れない</b>ことがある。
+     * 固定長で長さが割り切れない、可変長で {@code RDW} がつながらない、という形である。
+     * 壊れた場所まで読み進めたときに初めて誤りにするのは、そこまでのレコードは
+     * 実際に読めているからである。ホストも同じで、装置の誤りは読んだ時点で立つ。
+     */
+    private int damagedAt = -1;
+    /** ジョブが割り当てた領域の大きさ (バイト)。{@code 0} は限りがないことを表す。 */
+    private long limit;
 
     public SequentialDataSet(Path path, DataSetAttributes attributes) {
         this.path = path;
@@ -65,6 +75,19 @@ public final class SequentialDataSet implements DataSet {
 
     public DataSetAttributes attributes() {
         return attributes;
+    }
+
+    /**
+     * 書ける大きさに限りを設ける (要件 FR-141)。
+     *
+     * <p>JCL の {@code SPACE=} である。ホストでは<b>あらかじめ場所を取ってから書く</b>ので、
+     * 取った分を使い切れば書けなくなる。二次割当があれば伸ばせるが、無ければそこで終わる。
+     * 限りを設けないと、実機では止まるジョブがここでは通ってしまう。
+     *
+     * @param bytes 書ける大きさ。{@code 0} なら限りなし
+     */
+    public void limit(long bytes) {
+        this.limit = bytes;
     }
 
     /** 開いているかどうか。 */
@@ -106,12 +129,13 @@ public final class SequentialDataSet implements DataSet {
         if (missing && requested != OpenMode.OUTPUT && !optional) {
             return FileStatus.NOT_FOUND;
         }
+        damagedAt = -1;
         try {
             records = requested == OpenMode.OUTPUT || missing
                     ? new ArrayList<>()
                     : split(Files.readAllBytes(path));
         } catch (IOException e) {
-            throw new UncheckedIOException("cannot read " + path, e);
+            throw new DataSetIoException("read", path, e);
         }
         mode = requested;
         // EXTEND は末尾から書き足す。ほかは先頭から
@@ -140,6 +164,10 @@ public final class SequentialDataSet implements DataSet {
         if (atEnd) {
             // 終わりまで読んだあとにまた読むのは、位置が定まっていない
             return FileStatus.NOT_READABLE;
+        }
+        if (position == damagedAt) {
+            // 切り分けが途中で行き詰まった場所である。ここから先は読めない
+            return FileStatus.IO_ERROR;
         }
         if (position >= records.size()) {
             atEnd = true;
@@ -179,6 +207,9 @@ public final class SequentialDataSet implements DataSet {
         }
         if (!mode.canWrite()) {
             return FileStatus.WRITE_NOT_ALLOWED;
+        }
+        if (limit > 0 && written() + sizeOf(from) > limit) {
+            return FileStatus.NO_SPACE;
         }
         records.add(from.clone());
         position = records.size();
@@ -232,7 +263,7 @@ public final class SequentialDataSet implements DataSet {
                         StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
                 attributes.write(path);
             } catch (IOException e) {
-                throw new UncheckedIOException("cannot write " + path, e);
+                throw new DataSetIoException("write", path, e);
             }
         }
         mode = null;
@@ -252,28 +283,77 @@ public final class SequentialDataSet implements DataSet {
         };
     }
 
+    /**
+     * 固定長は<b>長さで割り切れなければならない</b>。
+     *
+     * <p>半端が残るのは、書いている途中で落ちたか、レコード長の違うデータセットを
+     * 取り違えたということである。半端をそのまま短いレコードとして渡すと、
+     * <b>読めていないデータで処理が進む</b>。切れるところまでを読めるものとし、
+     * その先を壊れた場所として覚える。
+     */
     private List<byte[]> splitFixed(byte[] bytes) {
         List<byte[]> out = new ArrayList<>();
         int length = attributes.recordLength();
-        for (int at = 0; at < bytes.length; at += length) {
-            out.add(Arrays.copyOfRange(bytes, at, Math.min(at + length, bytes.length)));
+        int at = 0;
+        while (at + length <= bytes.length) {
+            out.add(Arrays.copyOfRange(bytes, at, at + length));
+            at += length;
+        }
+        if (at < bytes.length) {
+            damagedAt = out.size();
         }
         return out;
     }
 
-    /** 可変長は 4 バイトの RDW が先頭に付く。最初の 2 バイトが RDW を含む長さである。 */
-    private static List<byte[]> splitVariable(byte[] bytes) {
+    /**
+     * 可変長は 4 バイトの RDW が先頭に付く。最初の 2 バイトが RDW を含む長さである。
+     *
+     * <p>長さが 4 に満たない、残りより長い、という RDW はつながらない。半端なバイトが
+     * 残るのも同じで、いずれもそこから先は切り分けられない。
+     */
+    private List<byte[]> splitVariable(byte[] bytes) {
         List<byte[]> out = new ArrayList<>();
         int at = 0;
-        while (at + 4 <= bytes.length) {
+        while (at < bytes.length) {
+            if (at + 4 > bytes.length) {
+                damagedAt = out.size();
+                break;
+            }
             int length = ((bytes[at] & 0xFF) << 8) | (bytes[at + 1] & 0xFF);
             if (length < 4 || at + length > bytes.length) {
+                damagedAt = out.size();
                 break;
             }
             out.add(Arrays.copyOfRange(bytes, at + 4, at + length));
             at += length;
         }
         return out;
+    }
+
+    // ---- 領域の勘定 ----
+
+    /** いま書き出したとしたら何バイトになるか。 */
+    private long written() {
+        long total = 0;
+        for (byte[] record : records) {
+            total += sizeOf(record);
+        }
+        return total;
+    }
+
+    /**
+     * レコード 1 つが占める大きさ。
+     *
+     * <p>様式によって、レコードの中身のほかに付くものが違う。可変長なら {@code RDW} の
+     * 4 バイト、行順なら区切りの 1 バイトである。固定長は中身の長さによらず
+     * <b>つねにレコード長</b>を占める。
+     */
+    private long sizeOf(byte[] record) {
+        return switch (attributes.format()) {
+            case FIXED -> attributes.recordLength();
+            case VARIABLE -> record.length + 4L;
+            case LINE -> record.length + 1L;
+        };
     }
 
     /** 行順は改行までが 1 レコードである。改行はコードページのものを使う。 */

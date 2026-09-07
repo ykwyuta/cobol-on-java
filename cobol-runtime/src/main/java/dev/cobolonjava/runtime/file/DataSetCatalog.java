@@ -20,6 +20,8 @@ public final class DataSetCatalog {
     private final Map<String, Path> assignments = new HashMap<>();
     /** {@code OPEN OUTPUT} を末尾への書き足しとして扱う DD 名。 */
     private final java.util.Set<String> appended = new java.util.HashSet<>();
+    /** DD 名ごとに割り当てた領域の大きさ (バイト)。 */
+    private final Map<String, Long> limits = new HashMap<>();
 
     public DataSetCatalog(Path directory) {
         this.directory = directory;
@@ -66,6 +68,25 @@ public final class DataSetCatalog {
     /** その DD を末尾への書き足しとして開くか。 */
     public boolean appends(String ddName) {
         return appended.contains(ddName.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * その DD に割り当てる領域の大きさ (要件 FR-141)。
+     *
+     * <p>JCL の {@code SPACE=} である。<b>ジョブが決めることであってプログラムは知らない</b>
+     * ので、データセットの属性ではなくここに持つ。属性はバイト列の切り方を決めるものであり、
+     * 置き場をどれだけ取ったかとは別の話である。
+     *
+     * @param bytes 書ける大きさ。{@code 0} なら限りなし
+     */
+    public DataSetCatalog limit(String ddName, long bytes) {
+        limits.put(ddName.toUpperCase(Locale.ROOT), bytes);
+        return this;
+    }
+
+    /** その DD に割り当てた領域の大きさ。書かれていなければ {@code 0} (限りなし)。 */
+    public long limitOf(String ddName) {
+        return limits.getOrDefault(ddName.toUpperCase(Locale.ROOT), 0L);
     }
 
     /** DD 名が指すファイル。書かれていなければ既定のディレクトリの下を指す。 */

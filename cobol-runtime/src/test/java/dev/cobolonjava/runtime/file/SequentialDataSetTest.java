@@ -497,4 +497,125 @@ class SequentialDataSetTest {
 
         assertEquals("aaabbb", decode(Files.readAllBytes(path)));
     }
+
+    // ---- 形が壊れている (FR-141) ----
+
+    @Test
+    @DisplayName("固定長で割り切れない半端は、そこで読めなくなる (FR-103, FR-141)")
+    void aPartialFixedRecordIsAnIoError() throws IOException {
+        Path path = write("F.DAT", "aaabbbcc");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        // 切れるところまでは読める。読めていたものを捨てはしない
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("aaa", decode(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("bbb", decode(record));
+        assertEquals(FileStatus.IO_ERROR, file.read(record));
+    }
+
+    @Test
+    @DisplayName("半端を短いレコードとして渡さない (FR-141)")
+    void aPartialRecordIsNeverHandedOver() throws IOException {
+        Path path = write("F.DAT", "aaabbbcc");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        file.read(record);
+        file.read(record);
+        file.read(record);
+        // 誤りを返したのだから、受取領域は前のレコードのままである
+        assertEquals("bbb", decode(record));
+    }
+
+    @Test
+    @DisplayName("可変長で RDW がつながらなければ、そこで読めなくなる (FR-103, FR-141)")
+    void abrokenRdwIsAnIoError() throws IOException {
+        // 1 件目は正しい。2 件目の RDW は残りより長い長さを名乗っている
+        byte[] bytes = new byte[]{0, 7, 0, 0, 'a', 'b', 'c', 0, 99, 0, 0, 'x'};
+        Path path = directory.resolve("V.DAT");
+        Files.write(path, bytes);
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.VARIABLE, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.IO_ERROR, file.read(record));
+    }
+
+    @Test
+    @DisplayName("壊れていなければ誤りにはしない (FR-141)")
+    void awholeDataSetIsNotAnError() throws IOException {
+        Path path = write("F.DAT", "aaabbb");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.AT_END, file.read(record));
+    }
+
+    // ---- 割り当てた領域 (FR-141) ----
+
+    @Test
+    @DisplayName("割り当てた領域を使い切れば書けなくなる (FR-103, FR-141)")
+    void writingPastTheSpaceFails() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("O.DAT"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+        file.limit(6);
+
+        file.open(OpenMode.OUTPUT);
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaa")));
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("bbb")));
+        assertEquals(FileStatus.NO_SPACE, file.write(CodePages.DEFAULT.encode("ccc")));
+    }
+
+    @Test
+    @DisplayName("書けなくなっても、それまでのレコードは残る (FR-141)")
+    void whatFitWasStillWritten() throws IOException {
+        Path path = directory.resolve("O.DAT");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+        file.limit(6);
+
+        file.open(OpenMode.OUTPUT);
+        file.write(CodePages.DEFAULT.encode("aaa"));
+        file.write(CodePages.DEFAULT.encode("bbb"));
+        file.write(CodePages.DEFAULT.encode("ccc"));
+        file.close();
+
+        assertEquals("aaabbb", decode(Files.readAllBytes(path)));
+    }
+
+    @Test
+    @DisplayName("限りを設けなければいくらでも書ける (FR-141)")
+    void noLimitMeansNoLimit() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("O.DAT"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.OUTPUT);
+        for (int i = 0; i < 100; i++) {
+            assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaa")));
+        }
+    }
+
+    @Test
+    @DisplayName("可変長では RDW の 4 バイトも領域を使う (FR-141)")
+    void theRdwCountsTowardTheSpace() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("V.DAT"),
+                new DataSetAttributes(RecordFormat.VARIABLE, 3, CodePages.DEFAULT));
+        file.limit(7);
+
+        file.open(OpenMode.OUTPUT);
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaa")));
+        assertEquals(FileStatus.NO_SPACE, file.write(CodePages.DEFAULT.encode("bbb")));
+    }
 }

@@ -210,6 +210,8 @@ public final class JobRunner {
             code = Abend.codeOf(e);
             thrown = e;
         }
+        // 閉じていないファイルをここで閉じる。異常終了しても、そこまでに書いたものは残る
+        context.closeFiles();
         boolean abended = failure != null;
         if (abended) {
             // 覚え書きはスプールを流す前に書く。CEEDUMP を SYSOUT へ向けたジョブでも
@@ -364,6 +366,10 @@ public final class JobRunner {
     private List<Path> assign(DataSetCatalog catalog, Path stepWork, Path temporary,
                               DdAssignment assignment, List<Held> dataSets) {
         String name = assignment.name();
+        if (assignment.space() != DdAssignment.UNLIMITED) {
+            // 割り当てた大きさを目録へ伝える。使い切れば書けなくなる
+            catalog.limit(name, assignment.space());
+        }
         switch (assignment.target()) {
             case DdTarget.DataSet target -> {
                 hold(catalog, name, target.path(), target.disposition(), false, dataSets);

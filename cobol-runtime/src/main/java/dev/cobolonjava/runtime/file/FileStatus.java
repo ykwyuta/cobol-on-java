@@ -47,8 +47,22 @@ public final class FileStatus {
     public static final String WRITE_NOT_ALLOWED = "48";
     /** 書き換えが許されていない開き方である。{@code REWRITE} は {@code I-O} だけである。 */
     public static final String REWRITE_NOT_ALLOWED = "49";
-    /** 入出力の誤り。 */
+    /**
+     * 回復できない入出力の誤り。
+     *
+     * <p>装置の誤り、およびデータセットの形が記述と合っていないことである。固定長なのに
+     * 長さがレコード長で割り切れない、可変長なのに {@code RDW} がつながらない、といった
+     * <b>そこで読むのをやめるほかない</b>状態がこれにあたる。
+     */
     public static final String IO_ERROR = "30";
+
+    /**
+     * 順編成で書ける範囲を越えた。
+     *
+     * <p>ジョブが割り当てた領域を使い切ったということである。鍵で引く編成の {@code 24} に
+     * あたるものが、順編成ではこれになる。
+     */
+    public static final String NO_SPACE = "34";
 
     /** 成功したかどうか。先頭が {@code 0} なら成功か軽微な注意である。 */
     public static boolean succeeded(String status) {

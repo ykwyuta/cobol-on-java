@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 
 import dev.cobolonjava.runtime.decimal.DataException;
 import dev.cobolonjava.runtime.decimal.DecimalDivideException;
+import dev.cobolonjava.runtime.file.DataSetIoException;
 import dev.cobolonjava.runtime.program.FileOperationException;
 import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.program.RangeCheckException;
@@ -33,6 +34,27 @@ class AbendCodeTest {
                 Abend.codeOf(new ProgramNotFoundException("SUB1", null)));
         assertEquals(AbendCode.U4038, Abend.codeOf(new RangeCheckException("out of range")));
         assertEquals(AbendCode.U4038, Abend.codeOf(new FileOperationException("IN", "35")));
+    }
+
+    @Test
+    @DisplayName("ファイルの異常はファイル状態コードで分かれる (FR-104, FR-141)")
+    void fileConditionsSplitByTheirStatus() {
+        // 装置の誤りと、書ける範囲を越えたことだけがシステムのコードになる
+        assertEquals(AbendCode.S001, Abend.codeOf(new FileOperationException("IN", "30")));
+        assertEquals(AbendCode.S037, Abend.codeOf(new FileOperationException("OUT", "34")));
+        // 開き方の誤りや無効鍵はプログラムの誤りであり、言語環境が検出した条件である
+        assertEquals(AbendCode.U4038, Abend.codeOf(new FileOperationException("IN", "37")));
+        assertEquals(AbendCode.U4038, Abend.codeOf(new FileOperationException("IN", "23")));
+    }
+
+    @Test
+    @DisplayName("データセットそのものへ届かなければ S001 (FR-141)")
+    void anUnreachableDataSetIsS001() {
+        DataSetIoException failure = new DataSetIoException("read",
+                java.nio.file.Path.of("PAY.DAT"), new IOException("device gone"));
+        assertEquals(AbendCode.S001, Abend.codeOf(failure));
+        // もとの入出力例外は捨てない
+        assertEquals("device gone", failure.getCause().getMessage());
     }
 
     @Test

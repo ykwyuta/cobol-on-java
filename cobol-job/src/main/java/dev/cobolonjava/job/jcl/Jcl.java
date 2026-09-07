@@ -298,17 +298,21 @@ public final class Jcl {
                 report(card, "DD comes inside a step");
                 return;
             }
-            DdTarget target = targetOf(card);
-            if (target == null) {
+            Allocation allocation = targetOf(card);
+            if (allocation == null) {
                 return;
             }
             if (card.name() == null) {
                 // 名前欄の空いた DD は、直前の DD への連結である
-                concatenate(card, target);
+                concatenate(card, allocation.target());
                 return;
             }
             lastDd = card.name().toUpperCase(Locale.ROOT);
-            dd.add(new DdAssignment(lastDd, target));
+            dd.add(new DdAssignment(lastDd, allocation.target(), allocation.space()));
+        }
+
+        /** {@code DD} 文 1 枚が言っていること。行き先と、割り当てる大きさである。 */
+        private record Allocation(DdTarget target, long space) {
         }
 
         /** 連結。読むときは並べた順に 1 つのファイルに見える。 */
@@ -329,18 +333,20 @@ public final class Jcl {
             dd.set(last, new DdAssignment(lastDd, new DdTarget.Concatenation(parts)));
         }
 
-        private DdTarget targetOf(JclCard card) {
+        private Allocation targetOf(JclCard card) {
             String operands = card.operands().trim();
             if (operands.equals("*") || operands.startsWith("*,")
                     || operands.equals("DATA") || operands.startsWith("DATA,")) {
-                return new DdTarget.Inline(
-                        card.inline() == null ? new byte[0] : card.inline());
+                return new Allocation(new DdTarget.Inline(
+                        card.inline() == null ? new byte[0] : card.inline()),
+                        DdAssignment.UNLIMITED);
             }
             String name = null;
             // DISP を書かなければ「新しく作る」である。ホストの既定はこちらであり、
             // 読むつもりの DD には DISP=SHR を書かねばならない
             Disposition disposition = Disposition.of(Disposition.Status.NEW);
             DdTarget special = null;
+            long space = DdAssignment.UNLIMITED;
             for (String operand : JclOperands.split(operands)) {
                 String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
                 String value = JclOperands.value(operand);
@@ -349,14 +355,15 @@ public final class Jcl {
                     case "DISP" -> disposition = dispositionOf(card, value, disposition);
                     case "SYSOUT" -> special = new DdTarget.Sysout();
                     case "DUMMY" -> special = new DdTarget.Dummy();
-                    // 装置と大きさの指定は、ファイルとして持つこの実装では効かない
-                    case "UNIT", "SPACE", "VOL", "VOLUME", "LRECL", "RECFM", "BLKSIZE", "DCB" ->
+                    case "SPACE" -> space = spaceOf(card, value);
+                    // 装置とボリュームの指定は、ファイルとして持つこの実装では効かない
+                    case "UNIT", "VOL", "VOLUME", "LRECL", "RECFM", "BLKSIZE", "DCB" ->
                             report(card, key + " is not supported yet");
                     default -> report(card, "DD does not support: " + key);
                 }
             }
             if (special != null) {
-                return special;
+                return new Allocation(special, DdAssignment.UNLIMITED);
             }
             if (name == null) {
                 report(card, "DD needs DSN=, SYSOUT=, DUMMY or *");
@@ -365,9 +372,61 @@ public final class Jcl {
             // 先頭が & のものは一時データセットである。シンボリックの展開を抜けた
             // あとなので、ここまで残っている & は名前の一部である
             if (name.startsWith("&")) {
-                return new DdTarget.Temporary(name.substring(1), disposition);
+                return new Allocation(new DdTarget.Temporary(name.substring(1), disposition),
+                        space);
             }
-            return new DdTarget.DataSet(base.resolve(name), disposition);
+            return new Allocation(new DdTarget.DataSet(base.resolve(name), disposition), space);
+        }
+
+        /**
+         * {@code SPACE=(単位,(一次,二次))} (要件 FR-141)。
+         *
+         * <p>読むのは<b>一次割当と二次割当があるかどうか</b>だけである。二次割当があれば
+         * 使い切っても伸ばせるので、限りなしとして扱う。無ければ一次割当がそのまま限りに
+         * なる。ホストで {@code SPACE} を書き忘れたジョブが途中で止まるのは、この形である。
+         *
+         * <p>単位は {@code TRK} / {@code CYL} / ブロック長である。トラックとシリンダの
+         * 大きさは 3390 のものを使う。実際の装置を持たない以上どこかで決めるほかなく、
+         * いちばん広く使われている値を採る。
+         */
+        private long spaceOf(JclCard card, String value) {
+            List<String> parts = JclOperands.split(JclOperands.unwrap(value));
+            if (parts.isEmpty()) {
+                report(card, "SPACE needs a unit");
+                return DdAssignment.UNLIMITED;
+            }
+            long unit = unitOf(parts.get(0));
+            if (unit <= 0) {
+                report(card, "unknown SPACE unit: " + parts.get(0));
+                return DdAssignment.UNLIMITED;
+            }
+            if (parts.size() < 2) {
+                return DdAssignment.UNLIMITED;
+            }
+            List<String> amounts = JclOperands.split(JclOperands.unwrap(parts.get(1)));
+            if (amounts.size() >= 2 && number(amounts.get(1)) > 0) {
+                // 二次割当があれば伸ばせる。使い切って止まることはない
+                return DdAssignment.UNLIMITED;
+            }
+            long primary = number(amounts.isEmpty() ? "" : amounts.get(0));
+            return primary > 0 ? primary * unit : DdAssignment.UNLIMITED;
+        }
+
+        /** 3390 のトラックは 56664 バイト、シリンダは 15 トラックである。 */
+        private static long unitOf(String text) {
+            return switch (text.trim().toUpperCase(Locale.ROOT)) {
+                case "TRK" -> 56664L;
+                case "CYL" -> 56664L * 15;
+                default -> number(text);
+            };
+        }
+
+        private static long number(String text) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException e) {
+                return 0;
+            }
         }
 
         /** {@code DISP=(状態, 正常終了時, 異常終了時)}。書かれていないところは既定で埋める。 */

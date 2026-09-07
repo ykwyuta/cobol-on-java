@@ -18,7 +18,7 @@ import java.util.Locale;
  * JOB PAYROLL
  * STEP EXTRACT PGM=PAYEXT PARM=202609
  *   DD PAYIN DSN=data/pay.dat DISP=SHR
- *   DD PAYOUT DSN=&amp;WORK DISP=(NEW,PASS)
+ *   DD PAYOUT DSN=&amp;WORK DISP=(NEW,PASS) SPACE=8000
  *   DD SYSOUT SYSOUT
  * STEP REPORT PGM=PAYRPT
  *   WHEN RC EXTRACT = 0
@@ -41,6 +41,11 @@ import java.util.Locale;
  * <p>JCL では {@code DISP} を書かなければ「新しく作る」だが、こちらは<b>何も言っていない</b>
  * ことになる。確かめも、作りも、消しもしない。名前を書くだけで動かせるほうが、この処理系
  * 自身の試験には都合がよい。ジョブの側で状態を決めたいときは書ける。
+ *
+ * <h2>大きさはバイトで書く</h2>
+ * <p>JCL の {@code SPACE=} は装置の単位 (トラック、シリンダ、ブロック) で書くが、こちらは
+ * <b>バイトで書く</b>。宣言的形式は装置を知らないので、トラックを持ち込む理由がない。
+ * 書かなければ限りなしであり、使い切って止まることはない。
  *
  * <h2>知らない書き方は誤りにする</h2>
  * <p>読み飛ばさない。書いたつもりの指定が効いていないことに気付けないからである。
@@ -306,27 +311,44 @@ public final class JobScript {
                 report(number, "DD comes inside a STEP");
                 return;
             }
-            if (words.size() != 3 && words.size() != 4) {
+            if (words.size() < 3) {
                 report(number, "DD takes a name and a target");
                 return;
             }
             String name = words.get(1).toUpperCase(Locale.ROOT);
             String target = words.get(2);
             String upper = target.toUpperCase(Locale.ROOT);
-            if (upper.startsWith("DSN=")) {
-                Disposition disposition = dispositionOf(words, number);
-                if (disposition == null) {
+            // 3 語目より後は修飾語である。書く順は問わない
+            Disposition disposition = Disposition.UNSPECIFIED;
+            long space = DdAssignment.UNLIMITED;
+            for (String word : words.subList(3, words.size())) {
+                String key = word.toUpperCase(Locale.ROOT);
+                if (key.startsWith("DISP=")) {
+                    disposition = dispositionOf(word, number);
+                    if (disposition == null) {
+                        return;
+                    }
+                } else if (key.startsWith("SPACE=")) {
+                    space = spaceOf(word.substring(6), number);
+                    if (space < 0) {
+                        return;
+                    }
+                } else {
+                    report(number, "DD does not support: " + word);
                     return;
                 }
+            }
+            if (upper.startsWith("DSN=")) {
                 String written = target.substring(4);
                 // JCL と同じく、先頭が & のものは一時データセットである
                 dd.add(new DdAssignment(name, written.startsWith("&")
                         ? new DdTarget.Temporary(written.substring(1), disposition)
-                        : new DdTarget.DataSet(java.nio.file.Path.of(written), disposition)));
+                        : new DdTarget.DataSet(java.nio.file.Path.of(written), disposition),
+                        space));
                 return;
             }
-            if (words.size() == 4) {
-                report(number, "DISP goes with DSN=");
+            if (words.size() > 3) {
+                report(number, "DISP and SPACE go with DSN=");
                 return;
             }
             switch (upper) {
@@ -338,19 +360,33 @@ public final class JobScript {
         }
 
         /**
+         * {@code SPACE=バイト数} (要件 FR-141)。
+         *
+         * <p>JCL の {@code SPACE=} が装置の単位で書くのに対し、こちらは<b>バイトで書く</b>。
+         * 宣言的形式は装置を知らないので、トラックやシリンダを持ち込む理由がない。
+         *
+         * @return 書かれていなければ限りなし。綴りが誤りなら {@code -1}
+         */
+        private long spaceOf(String written, int number) {
+            try {
+                long bytes = Long.parseLong(written.trim());
+                if (bytes <= 0) {
+                    report(number, "SPACE takes a positive size: " + written);
+                    return -1;
+                }
+                return bytes;
+            } catch (NumberFormatException e) {
+                report(number, "SPACE takes a size in bytes: " + written);
+                return -1;
+            }
+        }
+
+        /**
          * {@code DISP=状態} または {@code DISP=(状態,正常時,異常時)}。
          *
-         * @return 書かれていなければ「何も言っていない」処置。綴りが誤りなら {@code null}
+         * @return 綴りが誤りなら {@code null}
          */
-        private Disposition dispositionOf(List<String> words, int number) {
-            if (words.size() != 4) {
-                return Disposition.UNSPECIFIED;
-            }
-            String written = words.get(3);
-            if (!written.toUpperCase(Locale.ROOT).startsWith("DISP=")) {
-                report(number, "DD takes a name and a target");
-                return null;
-            }
+        private Disposition dispositionOf(String written, int number) {
             String value = written.substring(5).trim();
             if (value.startsWith("(") && value.endsWith(")")) {
                 value = value.substring(1, value.length() - 1);

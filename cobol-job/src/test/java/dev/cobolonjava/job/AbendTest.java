@@ -224,6 +224,90 @@ class AbendTest {
     }
 
     @Test
+    @DisplayName("形の壊れたデータセットを読むのは S001 (FR-141)")
+    void aDamagedDataSetIsS001() {
+        // 20 バイト区切りのはずが 25 バイトある。1 件は読めるが、その先は切り出せない
+        dataSet("IN.DAT", 25, 20);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IOFAIL",
+                "//INDD     DD   DSN=IN.DAT,DISP=SHR",
+                "//OUTDD    DD   DSN=OUT.DAT,DISP=(NEW,CATLG)");
+
+        assertEquals(JobRunner.Status.ABENDED, result.step("STEP1").status());
+        assertEquals(AbendCode.S001, result.step("STEP1").abendCode());
+    }
+
+    @Test
+    @DisplayName("割り当てた領域を使い切って書けなくなるのは S037 (FR-141)")
+    void runningOutOfSpaceIsS037() {
+        dataSet("IN.DAT", 60, 20);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IOFAIL",
+                "//INDD     DD   DSN=IN.DAT,DISP=SHR",
+                "//OUTDD    DD   DSN=OUT.DAT,DISP=(NEW,CATLG),",
+                "//              SPACE=(20,(2))");
+
+        assertEquals(JobRunner.Status.ABENDED, result.step("STEP1").status());
+        assertEquals(AbendCode.S037, result.step("STEP1").abendCode());
+    }
+
+    @Test
+    @DisplayName("異常終了しても、そこまでに書いたレコードは残る (FR-141)")
+    void whatWasWrittenBeforeTheAbendSurvives() {
+        dataSet("IN.DAT", 60, 20);
+
+        run("//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IOFAIL",
+                "//INDD     DD   DSN=IN.DAT,DISP=SHR",
+                "//OUTDD    DD   DSN=OUT.DAT,DISP=(NEW,CATLG,CATLG),",
+                "//              SPACE=(20,(2))");
+
+        // 閉じずに終わっても置き場へ届いている。何が起きたのかを残ったもので調べられる
+        assertEquals(40, size("OUT.DAT"));
+    }
+
+    private long size(String name) {
+        try {
+            return Files.size(directory.resolve(name));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    @DisplayName("二次割当があれば使い切っても伸ばせる (FR-141)")
+    void aSecondaryAllocationExtends() {
+        dataSet("IN.DAT", 60, 20);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IOFAIL",
+                "//INDD     DD   DSN=IN.DAT,DISP=SHR",
+                "//OUTDD    DD   DSN=OUT.DAT,DISP=(NEW,CATLG),",
+                "//              SPACE=(20,(2,1))");
+
+        assertEquals(JobRunner.Status.EXECUTED, result.step("STEP1").status());
+    }
+
+    /** 決まった大きさのデータセットを置く。中身は空白であり、形だけが問題である。 */
+    private void dataSet(String name, int size, int recordLength) {
+        byte[] bytes = new byte[size];
+        java.util.Arrays.fill(bytes, CodePages.DEFAULT.space());
+        try {
+            Files.write(directory.resolve(name), bytes);
+            Files.writeString(directory.resolve(name + ".meta"),
+                    "recfm=F\nlrecl=" + recordLength + "\ncodepage=IBM-1047\n",
+                    StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
     @DisplayName("異常終了はジョブログにコードごと出る (FR-141, FR-142)")
     void theJobLogNamesTheCode() {
         JobRunner.Result result = run(

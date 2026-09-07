@@ -217,4 +217,55 @@ class JobScriptTest {
     void oneDescriptionHoldsOneJob() {
         assertTrue(diagnostics("JOB A", "JOB B").contains("holds one JOB"));
     }
+
+    // ---- SPACE (FR-141) ----
+
+    @Test
+    @DisplayName("SPACE はバイトで書く (FR-132, FR-141)")
+    void spaceIsWrittenInBytes() {
+        Job job = job(
+                "JOB J",
+                "STEP S PGM=P",
+                "  DD OUT DSN=out.dat SPACE=8000");
+
+        assertEquals(8000L, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("DISP と SPACE はどちらの順でも書ける (FR-132, FR-141)")
+    void modifiersComeInAnyOrder() {
+        Job job = job(
+                "JOB J",
+                "STEP S PGM=P",
+                "  DD A DSN=a.dat DISP=(NEW,CATLG) SPACE=100",
+                "  DD B DSN=b.dat SPACE=100 DISP=(NEW,CATLG)");
+
+        assertEquals(100L, job.steps().get(0).dd().get(0).space());
+        assertEquals(100L, job.steps().get(0).dd().get(1).space());
+        assertEquals(Disposition.Status.NEW, assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(1).target()).disposition().status());
+    }
+
+    @Test
+    @DisplayName("SPACE は数でなければ誤りである (FR-132, FR-141)")
+    void spaceMustBeANumber() {
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD OUT DSN=out.dat SPACE=TRK")
+                .contains("SPACE takes a size in bytes"));
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD OUT DSN=out.dat SPACE=0")
+                .contains("SPACE takes a positive size"));
+    }
+
+    @Test
+    @DisplayName("行き先を持たない DD に SPACE は書けない (FR-132, FR-141)")
+    void aSysoutTakesNoSpace() {
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD RPT SYSOUT SPACE=100")
+                .contains("SPACE go with DSN="));
+    }
+
+    @Test
+    @DisplayName("知らない修飾語は誤りである (FR-132)")
+    void anUnknownModifierIsAnError() {
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD OUT DSN=out.dat UNIT=SYSDA")
+                .contains("DD does not support"));
+    }
 }

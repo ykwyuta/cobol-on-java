@@ -2,11 +2,11 @@ package dev.cobolonjava.job.utility;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
+import dev.cobolonjava.runtime.file.DataSetIoException;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -88,7 +88,7 @@ abstract class UtilityProgram implements CobolProgram {
             // 行の並びであることを属性に残す。読み返す側が切れ目を決められる
             new DataSetAttributes(RecordFormat.LINE, 132, context.codePage()).write(path);
         } catch (IOException e) {
-            throw new UncheckedIOException("cannot write " + path, e);
+            throw new DataSetIoException("write", path, e);
         }
     }
 
@@ -113,7 +113,7 @@ abstract class UtilityProgram implements CobolProgram {
         try {
             return Files.isReadable(path) ? Files.readAllBytes(path) : new byte[0];
         } catch (IOException e) {
-            throw new UncheckedIOException("cannot read " + path, e);
+            throw new DataSetIoException("read", path, e);
         }
     }
 
@@ -125,7 +125,7 @@ abstract class UtilityProgram implements CobolProgram {
             Files.write(path, bytes, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
                     StandardOpenOption.TRUNCATE_EXISTING);
         } catch (IOException e) {
-            throw new UncheckedIOException("cannot write " + path, e);
+            throw new DataSetIoException("write", path, e);
         }
     }
 }
