@@ -89,13 +89,13 @@ public final class SpecialNames {
         return mnemonics.get(name.toUpperCase(Locale.ROOT));
     }
 
-    /** 構文木の環境部を読む。 */
-    public static Result build(CobolParser.CompilationUnitContext tree) {
+    /** プログラム 1 本の環境部を読む。 */
+    public static Result build(CobolParser.ProgramUnitContext program) {
         List<Diagnostic> diagnostics = new ArrayList<>();
         char currency = DEFAULT_CURRENCY;
         Map<String, FunctionName> mnemonics = new LinkedHashMap<>();
 
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
+        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             CobolParser.SpecialNamesParagraphContext paragraph = paragraphOf(unit);
             if (paragraph == null) {
                 continue;

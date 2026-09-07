@@ -37,7 +37,7 @@ class DataDivisionBuilderTest {
         CobolParsing.Result parsed =
                 CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE, sb.toString());
         assertTrue(parsed.succeeded(), () -> "syntax errors: " + parsed.diagnostics());
-        return DataDivisionBuilder.build(parsed.tree());
+        return DataDivisionBuilder.build(parsed.tree().programUnit(0));
     }
 
     private static DataLayout layoutOf(String... entries) {

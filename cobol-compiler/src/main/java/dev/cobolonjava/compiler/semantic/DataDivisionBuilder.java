@@ -80,9 +80,9 @@ public final class DataDivisionBuilder {
         }
     }
 
-    /** 構文木のデータ部から割り付けを作る。 */
-    public static Result build(CobolParser.CompilationUnitContext tree) {
-        return build(tree, SpecialNames.standard());
+    /** プログラム 1 本のデータ部から割り付けを作る。 */
+    public static Result build(CobolParser.ProgramUnitContext program) {
+        return build(program, SpecialNames.standard());
     }
 
     /**
@@ -91,12 +91,10 @@ public final class DataDivisionBuilder {
      * <p>{@code SPECIAL-NAMES} を先に読まなければならない。<b>PICTURE の解釈が通貨記号に
      * 依る</b>ためである。
      */
-    public static Result build(CobolParser.CompilationUnitContext tree,
+    public static Result build(CobolParser.ProgramUnitContext program,
                                SpecialNames specialNames) {
         DataDivisionBuilder builder = new DataDivisionBuilder(specialNames);
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
-            builder.addProgramUnit(unit);
-        }
+        builder.addProgramUnit(program);
         builder.addIndexItems();
         builder.layoutRecords();
         return new Result(new DataLayout(builder.records, builder.indexes,

@@ -107,18 +107,18 @@ public final class ProcedureBuilder {
     }
 
     /** 構文木の手続き部から文の並びを作る。 */
-    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout) {
-        return build(tree, layout, SpecialNames.standard());
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout) {
+        return build(program, layout, SpecialNames.standard());
     }
 
     /** 環境部の指定を踏まえて手続き部から文の並びを作る。 */
-    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout,
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
                                SpecialNames specialNames) {
-        return build(tree, layout, specialNames, Map.of());
+        return build(program, layout, specialNames, Map.of());
     }
 
     /** ファイルの宣言も踏まえて手続き部から文の並びを作る。 */
-    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout,
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
                                SpecialNames specialNames, Map<String, FileDescription> files) {
         List<Diagnostic> diagnostics = new ArrayList<>();
         ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files);
@@ -126,7 +126,7 @@ public final class ProcedureBuilder {
         List<Section> sections = new ArrayList<>();
         List<Declarative> declaratives = new ArrayList<>();
         List<DataItem> parameters = new ArrayList<>();
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
+        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             if (unit.procedureDivision() != null) {
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs, sections,

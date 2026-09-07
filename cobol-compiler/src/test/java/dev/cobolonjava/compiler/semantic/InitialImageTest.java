@@ -38,7 +38,7 @@ class InitialImageTest {
         CobolParsing.Result parsed =
                 CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE, sb.toString());
         assertTrue(parsed.succeeded(), () -> "syntax errors: " + parsed.diagnostics());
-        DataDivisionBuilder.Result built = DataDivisionBuilder.build(parsed.tree());
+        DataDivisionBuilder.Result built = DataDivisionBuilder.build(parsed.tree().programUnit(0));
         assertTrue(built.succeeded(), () -> "layout errors: " + built.diagnostics());
         return InitialImage.build(built.layout());
     }

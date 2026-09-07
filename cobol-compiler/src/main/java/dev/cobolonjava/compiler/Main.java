@@ -68,9 +68,13 @@ public final class Main {
             return false;
         }
 
-        Path target = options.output().resolve(result.className().replace('.', '/') + ".class");
-        Files.createDirectories(target.getParent());
-        Files.write(target, result.classFile());
+        // 1 本のソースにプログラムが何本あってもよい。その数だけクラスを出す
+        for (CobolCompiler.Compiled program : result.programs()) {
+            Path target = options.output()
+                    .resolve(program.className().replace('.', '/') + ".class");
+            Files.createDirectories(target.getParent());
+            Files.write(target, program.classFile());
+        }
         return true;
     }
 

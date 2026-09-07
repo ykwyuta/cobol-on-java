@@ -155,10 +155,10 @@ public record FileDescription(String name, String ddName, Organization organizat
     }
 
     /** 環境部の {@code SELECT} 句を読む。 */
-    public static List<Selected> select(CobolParser.CompilationUnitContext tree,
+    public static List<Selected> select(CobolParser.ProgramUnitContext program,
                                         List<Diagnostic> diagnostics) {
         List<Selected> out = new ArrayList<>();
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
+        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             if (unit.environmentDivision() == null
                     || unit.environmentDivision().inputOutputSection() == null
                     || unit.environmentDivision().inputOutputSection()
@@ -253,10 +253,10 @@ public record FileDescription(String name, String ddName, Organization organizat
      *
      * @param records {@code FD} ごとのレコード領域の 01 レベル
      */
-    public static Result build(CobolParser.CompilationUnitContext tree, List<Selected> selected,
+    public static Result build(CobolParser.ProgramUnitContext program, List<Selected> selected,
                                Map<String, List<DataItem>> records,
                                ReferenceResolver resolver, List<Diagnostic> diagnostics) {
-        Map<String, CobolParser.FileDescriptionEntryContext> entries = entriesOf(tree);
+        Map<String, CobolParser.FileDescriptionEntryContext> entries = entriesOf(program);
         Map<String, FileDescription> files = new LinkedHashMap<>();
         for (Selected one : selected) {
             List<DataItem> area = records.get(one.name());
@@ -433,9 +433,9 @@ public record FileDescription(String name, String ddName, Organization organizat
 
     /** ファイル名から {@code FD} を引く表。 */
     private static Map<String, CobolParser.FileDescriptionEntryContext> entriesOf(
-            CobolParser.CompilationUnitContext tree) {
+            CobolParser.ProgramUnitContext program) {
         Map<String, CobolParser.FileDescriptionEntryContext> entries = new LinkedHashMap<>();
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
+        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             if (unit.dataDivision() == null) {
                 continue;
             }

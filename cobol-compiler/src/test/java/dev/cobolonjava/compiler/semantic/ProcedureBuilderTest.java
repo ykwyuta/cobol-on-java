@@ -40,9 +40,9 @@ class ProcedureBuilderTest {
         CobolParsing.Result parsed =
                 CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE, sb.toString());
         assertTrue(parsed.succeeded(), () -> "syntax errors: " + parsed.diagnostics());
-        DataDivisionBuilder.Result data = DataDivisionBuilder.build(parsed.tree());
+        DataDivisionBuilder.Result data = DataDivisionBuilder.build(parsed.tree().programUnit(0));
         assertTrue(data.succeeded(), () -> "layout errors: " + data.diagnostics());
-        return ProcedureBuilder.build(parsed.tree(), data.layout());
+        return ProcedureBuilder.build(parsed.tree().programUnit(0), data.layout());
     }
 
     private static ProcedureBuilder.Result buildOk(List<String> storage, String... procedure) {

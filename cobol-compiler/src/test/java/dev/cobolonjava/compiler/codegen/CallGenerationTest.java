@@ -63,11 +63,14 @@ class CallGenerationTest {
             CobolCompiler.Result result = compile(lines);
             assertTrue(result.succeeded(),
                     () -> "unexpected diagnostics: " + result.diagnostics());
-            try {
-                Class<?> type = loader.define(result.className(), result.classFile());
-                loaded.add((CobolProgram) type.getDeclaredConstructor().newInstance());
-            } catch (ReflectiveOperationException e) {
-                throw new AssertionError("cannot load the generated program", e);
+            // 1 本のソースにプログラムが何本あってもよい。ぜんぶ読み込む
+            for (CobolCompiler.Compiled program : result.programs()) {
+                try {
+                    Class<?> type = loader.define(program.className(), program.classFile());
+                    loaded.add((CobolProgram) type.getDeclaredConstructor().newInstance());
+                } catch (ReflectiveOperationException e) {
+                    throw new AssertionError("cannot load the generated program", e);
+                }
             }
         }
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
@@ -441,5 +444,88 @@ class CallGenerationTest {
                         "    DISPLAY '[one]' WITH NO ADVANCING",
                         "    EXIT.",
                         "    DISPLAY '[two]'."))));
+    }
+
+    // ---- 1 本のソースに何本でも書ける (FR-080) ----
+
+    @Test
+    @DisplayName("END PROGRAM で区切れば 1 本のソースに何本でも書ける (FR-080)")
+    void oneSourceMayHoldSeveralPrograms() {
+        CobolCompiler.Result result = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGA.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    DISPLAY '[one]'.",
+                "END PROGRAM PROGA.",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGB.",
+                "PROCEDURE DIVISION.",
+                "SUB-START.",
+                "    DISPLAY '[two]'."));
+
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertEquals(2, result.programs().size());
+        assertTrue(result.programs().get(0).className().endsWith("PROGA"),
+                result.programs().get(0).className());
+        assertTrue(result.programs().get(1).className().endsWith("PROGB"),
+                result.programs().get(1).className());
+    }
+
+    @Test
+    @DisplayName("プログラムごとに名前は独立である (FR-080)")
+    void namesDoNotLeakBetweenPrograms() {
+        // 同じ名前のファイルを 2 本が別々に持っていても、互いに関わりがない。
+        // まとめて 1 つの割り付けにすると、関わりのない重なりを誤りとして報せてしまう
+        CobolCompiler.Result result = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGA.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT PRINT-FILE ASSIGN TO PRTDD.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  PRINT-FILE.",
+                "01  PRINT-REC PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    STOP RUN.",
+                "END PROGRAM PROGA.",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGB.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT PRINT-FILE ASSIGN TO PRTDD.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  PRINT-FILE.",
+                "01  PRINT-REC PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "SUB-START.",
+                "    STOP RUN."));
+
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertEquals(2, result.programs().size());
+    }
+
+    @Test
+    @DisplayName("並べて書いたプログラムは呼び合える (FR-080)")
+    void programsInOneSourceCanCallEachOther() {
+        assertEquals("[in][back]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    CALL 'SUBY'",
+                        "    DISPLAY '[back]'.",
+                        "END PROGRAM MAIN.",
+                        "IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. SUBY.",
+                        "PROCEDURE DIVISION.",
+                        "SUB-START.",
+                        "    DISPLAY '[in]' WITH NO ADVANCING",
+                        "    EXIT PROGRAM."))));
     }
 }

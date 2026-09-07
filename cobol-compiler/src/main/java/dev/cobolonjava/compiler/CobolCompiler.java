@@ -69,37 +69,87 @@ public final class CobolCompiler {
      * @param diagnostics 見つかった誤り。空なら成功
      */
     public record Result(String className, byte[] classFile, DataLayout layout,
-                         List<Diagnostic> diagnostics) {
+                         List<Diagnostic> diagnostics, List<Compiled> programs) {
+
+        /**
+         * 1 本だけのとき。
+         *
+         * <p>{@code className} と {@code classFile} は<b>最初のプログラム</b>のものである。
+         * 1 本しか書かれていないソースが大多数なので、呼ぶ側はこれだけを見ればよい。
+         */
+        public Result(String className, byte[] classFile, DataLayout layout,
+                      List<Diagnostic> diagnostics) {
+            this(className, classFile, layout, diagnostics,
+                    className == null ? List.of()
+                            : List.of(new Compiled(className, classFile, layout)));
+        }
 
         public boolean succeeded() {
             return diagnostics.isEmpty();
         }
     }
 
-    /** ソースを翻訳する。 */
+    /**
+     * 翻訳できたプログラム 1 本。
+     *
+     * <p>1 本のソースに何本あってもよい。{@code END PROGRAM} で区切って並べる書き方で
+     * ある。
+     */
+    public record Compiled(String className, byte[] classFile, DataLayout layout) {
+    }
+
+    /**
+     * ソースを翻訳する。
+     *
+     * <p>1 本のソースに<b>プログラムが何本あってもよい</b>。{@code END PROGRAM} で区切って
+     * 並べる書き方であり、実資産にも NIST の検査スイートにもある。1 本ずつ別々に翻訳し、
+     * <b>プログラムの数だけクラスを出す</b>。
+     *
+     * <p>まとめて 1 つの割り付けにしてはならない。名前は<b>プログラムごとに独立</b>で
+     * あり、同じ名前の {@code FD} が 2 本あっても互いに関わりがないからである。
+     * まとめると、関わりのない重なりを誤りとして報せてしまう。
+     */
     public Result compile(String fileName, String source) {
         CompilerOptions effective = options.merge(preprocessor.optionsOf(source));
         CobolParsing.Result parsed = CobolParsing.parse(preprocessor, fileName, source);
         if (!parsed.succeeded()) {
             return failed(null, parsed.diagnostics());
         }
+        List<Compiled> programs = new ArrayList<>();
+        for (CobolParser.ProgramUnitContext unit : parsed.tree().programUnit()) {
+            Result one = compile(unit, fileName, effective);
+            if (!one.succeeded()) {
+                return one;
+            }
+            programs.add(new Compiled(one.className(), one.classFile(), one.layout()));
+        }
+        if (programs.isEmpty()) {
+            return failed(null, List.of(new Diagnostic(null, "no program unit in " + fileName)));
+        }
+        Compiled first = programs.get(0);
+        return new Result(first.className(), first.classFile(), first.layout(), List.of(),
+                List.copyOf(programs));
+    }
 
+    /** プログラム 1 本を翻訳する。 */
+    private Result compile(CobolParser.ProgramUnitContext program, String fileName,
+                           CompilerOptions effective) {
         // 環境部を先に読む。PICTURE の解釈が通貨記号に依るためである
-        SpecialNames.Result environment = SpecialNames.build(parsed.tree());
+        SpecialNames.Result environment = SpecialNames.build(program);
         if (!environment.succeeded()) {
             return failed(null, environment.diagnostics());
         }
         SpecialNames specialNames = environment.specialNames();
 
-        DataDivisionBuilder.Result data = DataDivisionBuilder.build(parsed.tree(), specialNames);
+        DataDivisionBuilder.Result data = DataDivisionBuilder.build(program, specialNames);
         if (!data.succeeded()) {
             return failed(data.layout(), data.diagnostics());
         }
 
         // SELECT と FD は離れて書かれる。両方を読み終えてから突き合わせる
         List<Diagnostic> fileDiagnostics = new ArrayList<>();
-        FileDescription.Result declared = FileDescription.build(parsed.tree(),
-                FileDescription.select(parsed.tree(), fileDiagnostics), data.fileRecords(),
+        FileDescription.Result declared = FileDescription.build(program,
+                FileDescription.select(program, fileDiagnostics), data.fileRecords(),
                 new ReferenceResolver(data.layout(), fileDiagnostics), fileDiagnostics);
         if (!declared.succeeded()) {
             return failed(data.layout(), declared.diagnostics());
@@ -108,7 +158,7 @@ public final class CobolCompiler {
         List<Diagnostic> diagnostics = new ArrayList<>();
         InitialImage.Result image = InitialImage.build(data.layout());
         diagnostics.addAll(image.diagnostics());
-        ProcedureBuilder.Result procedure = ProcedureBuilder.build(parsed.tree(), data.layout(),
+        ProcedureBuilder.Result procedure = ProcedureBuilder.build(program, data.layout(),
                 specialNames, declared.files());
         diagnostics.addAll(procedure.diagnostics());
         if (!diagnostics.isEmpty()) {
@@ -116,7 +166,7 @@ public final class CobolCompiler {
         }
 
         ProgramGenerator.Result generated = ProgramGenerator.generate(
-                programNameOf(parsed.tree()), fileName, procedure, image, data.layout(),
+                programNameOf(program), fileName, procedure, image, data.layout(),
                 effective, specialNames);
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
@@ -128,9 +178,9 @@ public final class CobolCompiler {
         return new Result(null, null, layout, List.copyOf(diagnostics));
     }
 
-    /** 最初のプログラムの名前。文字定数で書かれていれば引用符を外す。 */
-    private static String programNameOf(CobolParser.CompilationUnitContext tree) {
-        String name = tree.programUnit(0).identificationDivision().programIdParagraph()
+    /** プログラムの名前。文字定数で書かれていれば引用符を外す。 */
+    private static String programNameOf(CobolParser.ProgramUnitContext program) {
+        String name = program.identificationDivision().programIdParagraph()
                 .programName().getText();
         if (name.length() >= 2 && (name.charAt(0) == '\'' || name.charAt(0) == '"')) {
             name = name.substring(1, name.length() - 1);
