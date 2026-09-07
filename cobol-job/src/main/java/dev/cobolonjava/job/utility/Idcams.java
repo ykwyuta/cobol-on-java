@@ -108,8 +108,8 @@ public final class Idcams extends UtilityProgram {
 
     /** {@code REPRO INFILE(dd) OUTFILE(dd)} と {@code INDATASET/OUTDATASET}。 */
     private void repro(ProgramContext context, String statement) {
-        Path from = target(context, statement, "INFILE", "INDATASET");
-        Path to = target(context, statement, "OUTFILE", "OUTDATASET");
+        Path from = target(context, statement, "INFILE", "INDATASET", false);
+        Path to = target(context, statement, "OUTFILE", "OUTDATASET", true);
         if (from == null || to == null) {
             print(context, "IDC3202I REPRO NEEDS AN INPUT AND AN OUTPUT");
             fail(12);
@@ -334,15 +334,22 @@ public final class Idcams extends UtilityProgram {
 
     // ---- 制御文の読み取り ----
 
-    /** {@code INFILE(dd)} なら DD 名、{@code INDATASET(名前)} ならデータセット名である。 */
+    /**
+     * {@code INFILE(dd)} なら DD 名、{@code INDATASET(名前)} ならデータセット名である。
+     *
+     * @param writing 書き先か。書き先は<b>無くてよい</b> — これから作るのだから
+     */
     private static Path target(ProgramContext context, String statement, String byDd,
-                               String byName) {
+                               String byName, boolean writing) {
         String dd = parameter(statement, byDd);
         if (dd != null) {
-            return opened(context, unwrap(dd));
+            return writing ? created(context, unwrap(dd)) : opened(context, unwrap(dd));
         }
         String name = parameter(statement, byName);
-        return name == null ? null : opened(context, unwrap(name));
+        if (name == null) {
+            return null;
+        }
+        return writing ? created(context, unwrap(name)) : opened(context, unwrap(name));
     }
 
     /** {@code 鍵(値)} の値。書かれていなければ {@code null}。 */

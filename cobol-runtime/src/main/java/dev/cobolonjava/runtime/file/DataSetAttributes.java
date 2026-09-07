@@ -26,16 +26,27 @@ import java.util.Locale;
  * codepage=IBM-1047
  * </pre>
  *
+ * <p>区分データセットはライブラリそのものにもサイドカーを持つ。そこに入るのは
+ * ディレクトリブロックの数だけである — レコードの切り方を持っているのは<b>メンバのほう</b>
+ * だからである。
+ *
  * @param format       レコード様式
  * @param recordLength レコード長。行順では最大長として使う
  * @param codePage     文字の解釈。区切りの改行もここから引く
  * @param emptySlots   相対編成の空きスロットの番号 (1 起点)。ほかの編成では空
+ * @param directoryBlocks 区分データセットのディレクトリブロックの数。ほかでは {@code 0}
  */
 public record DataSetAttributes(RecordFormat format, int recordLength, CodePage codePage,
-                                List<Integer> emptySlots) {
+                                List<Integer> emptySlots, int directoryBlocks) {
 
     public DataSetAttributes {
         emptySlots = List.copyOf(emptySlots);
+    }
+
+    /** ディレクトリを持たない構成。区分データセット以外はこちらである。 */
+    public DataSetAttributes(RecordFormat format, int recordLength, CodePage codePage,
+                             List<Integer> emptySlots) {
+        this(format, recordLength, codePage, emptySlots, 0);
     }
 
     /** 空きスロットを持たない構成。順編成と行順編成はこちらである。 */
@@ -50,7 +61,21 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
 
     /** レコード長だけを差し替える。 */
     public DataSetAttributes withRecordLength(int value) {
-        return new DataSetAttributes(format, value, codePage, emptySlots);
+        return new DataSetAttributes(format, value, codePage, emptySlots, directoryBlocks);
+    }
+
+    /**
+     * ディレクトリブロックの数を差し替える (要件 FR-113、暫定判断 P-059 の解消)。
+     *
+     * <p>{@code SPACE=} の 3 つ目である。<b>作ったジョブしか書いていない</b>ので、
+     * ライブラリの覚え書きへ残さないと、あとからメンバを足すジョブが大きさを知らないまま
+     * 動く。知らなければ限りなしになり、実機では使い切って止まるところで止まらない。
+     *
+     * <p>ホストでもこれはデータセットのラベル (DSCB) にある。レコード様式と同じ場所で
+     * あり、同じサイドカーに置くのが素直である。
+     */
+    public DataSetAttributes withDirectoryBlocks(int value) {
+        return new DataSetAttributes(format, recordLength, codePage, emptySlots, value);
     }
 
     /**
@@ -61,12 +86,29 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
      * レコードのバイト列の外にある。したがってサイドカーに持つ (暫定判断 P-039)。
      */
     public DataSetAttributes withEmptySlots(List<Integer> values) {
-        return new DataSetAttributes(format, recordLength, codePage, values);
+        return new DataSetAttributes(format, recordLength, codePage, values, directoryBlocks);
     }
 
     /** サイドカーのパス。 */
     public static Path sidecarOf(Path data) {
         return data.resolveSibling(data.getFileName() + ".meta");
+    }
+
+    /**
+     * 別名なら指している先 (要件 FR-113、暫定判断 P-059 の解消)。
+     *
+     * <p>区分データセットの別名はディレクトリの項目であって、<b>覚え書きを別に持たない</b>。
+     * 開いた側は別名だと知らずに読むのだから、レコードの切り方は指す先のものでなければ
+     * ならない。引き直さないと、別名から読んだときだけ切れ目が変わる。
+     */
+    private static Path pointedTo(Path data) {
+        try {
+            return Files.isSymbolicLink(data)
+                    ? data.resolveSibling(Files.readSymbolicLink(data))
+                    : data;
+        } catch (IOException e) {
+            return data;
+        }
     }
 
     /**
@@ -88,7 +130,7 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
      * 宣言と食い違っていてもバイト列の事実は変わらないためである。
      */
     public static DataSetAttributes read(Path data, DataSetAttributes fallback) {
-        Path sidecar = sidecarOf(data);
+        Path sidecar = sidecarOf(pointedTo(data));
         if (!Files.isReadable(sidecar)) {
             return fallback;
         }
@@ -113,11 +155,14 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
         String value = text.substring(equals + 1).trim();
         return switch (name) {
             case "recfm" -> new DataSetAttributes(RecordFormat.of(value),
-                    attributes.recordLength(), attributes.codePage(), attributes.emptySlots());
+                    attributes.recordLength(), attributes.codePage(), attributes.emptySlots(),
+                    attributes.directoryBlocks());
             case "lrecl" -> attributes.withRecordLength(Integer.parseInt(value));
             case "codepage" -> new DataSetAttributes(attributes.format(),
-                    attributes.recordLength(), CodePages.forName(value), attributes.emptySlots());
+                    attributes.recordLength(), CodePages.forName(value), attributes.emptySlots(),
+                    attributes.directoryBlocks());
             case "empty" -> attributes.withEmptySlots(slotsOf(value));
+            case "dirblks" -> attributes.withDirectoryBlocks(Integer.parseInt(value));
             default -> attributes;
         };
     }
@@ -154,7 +199,9 @@ public record DataSetAttributes(RecordFormat format, int recordLength, CodePage 
         } + System.lineSeparator()
                 + "lrecl=" + recordLength + System.lineSeparator()
                 + "codepage=" + codePage.name() + System.lineSeparator()
-                + (emptySlots.isEmpty() ? "" : "empty=" + join(emptySlots) + System.lineSeparator());
+                + (emptySlots.isEmpty() ? "" : "empty=" + join(emptySlots) + System.lineSeparator())
+                + (directoryBlocks <= 0 ? ""
+                        : "dirblks=" + directoryBlocks + System.lineSeparator());
         try {
             Files.writeString(sidecarOf(data), text, StandardCharsets.UTF_8);
         } catch (IOException e) {

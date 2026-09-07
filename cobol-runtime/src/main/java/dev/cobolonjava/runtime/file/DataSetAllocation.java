@@ -1,5 +1,6 @@
 package dev.cobolonjava.runtime.file;
 
+import dev.cobolonjava.runtime.codepage.CodePage;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -12,7 +13,8 @@ import java.nio.file.Path;
  *
  * <h2>編成が違っても同じ検査である</h2>
  * <p>「割り当てた領域を使い切ったら書けない」「無いメンバは開けない」「区分データセットそのものは
- * 開けない」の 3 つは、レコードの探し方とは関わりがない。順編成にだけ実装しておくと、
+ * 開けない」「ディレクトリを使い切ったらメンバを増やせない」の 4 つは、レコードの探し方とは
+ * 関わりがない。順編成にだけ実装しておくと、
  * 相対編成のジョブを流したときにだけ実機と食い違う — <b>どの編成かで実機との合い方が変わる</b>
  * というのがいちばん困る形である。したがってここに 1 つ置き、3 つの編成から使う。
  *
@@ -60,8 +62,45 @@ public final class DataSetAllocation {
      * @param optional {@code SELECT OPTIONAL} と書かれているか
      * @return 開けないなら状態コード、進めてよいなら {@code null}
      */
-    String opening(Path path, OpenMode requested, boolean optional) {
-        return opening(path, requested, optional, member);
+    String opening(Path path, OpenMode requested, boolean optional, CodePage codePage) {
+        String refused = opening(path, requested, optional, member);
+        if (refused == null) {
+            directory(path, requested, codePage);
+        }
+        return refused;
+    }
+
+    /**
+     * 新しいメンバがディレクトリに入るか (要件 FR-113, FR-141、暫定判断 P-059 の解消)。
+     *
+     * <p>ホストのディレクトリは<b>あらかじめ取った大きさしかない</b>。使い切れば、
+     * データを置く場所がまだ空いていてもメンバを増やせない。効かせずにいると、実機では
+     * 異常終了するジョブがここでは通り、しかも<b>入りきらなかったメンバがある</b>ままで
+     * 後続が動く。
+     *
+     * <p>すでにある名前へ書き直すだけなら項目は増えないので、いつでも通る。
+     *
+     * <p>止め方は {@link DataSetOpenException} である。受け止め手がない — プログラムは
+     * ライブラリの大きさを知らないし、{@code FILE STATUS} を見て別のライブラリへ
+     * 書き直すようなことはできない。ホストで止まる位置は書き終えた {@code CLOSE} の
+     * ところ ({@code STOW}) であり、ここより後ろである (暫定判断 P-059 の残り)。
+     *
+     * <p>大きさは<b>ライブラリの覚え書きから引く</b>。割当てに持たせて渡す形も採れるが、
+     * そうすると DD を通らない道具 (TSO の {@code RENAME}) から見えない。ホストでも
+     * これはデータセットのラベルにあるものであり、置き場に付いている。
+     */
+    private void directory(Path path, OpenMode requested, CodePage codePage) {
+        Path library = path.getParent();
+        if (!member || requested != OpenMode.OUTPUT || library == null) {
+            return;
+        }
+        int blocks = DataSetAttributes.read(library).directoryBlocks();
+        String name = path.getFileName().toString();
+        if (PartitionedDataSet.roomFor(library, codePage, blocks, name)) {
+            return;
+        }
+        throw new DataSetOpenException("no room in the directory of "
+                + library.getFileName(), path);
     }
 
     /**

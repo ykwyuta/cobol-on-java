@@ -524,6 +524,7 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
   オブジェクトストレージ / RDB 実装を追加できる拡張点を定義する。
 - **FR-113 (L2)**: 区分データセット (PDS/PDSE) をディレクトリとして写像し、
   メンバ名によるアクセスを可能にする (主に COPY ライブラリ、JCL、制御カード用途)。
+  メンバの別名 (`ALIAS`)、ISPF 統計、ディレクトリブロックの上限を再現する。
 - **FR-114 (L2)**: 世代データグループ (GDG) の相対世代 (`(0)`、`(+1)`、`(-1)`) を
   模した参照を提供する。
 - **FR-115 (L2)**: レコードロック・共有オプション (VSAM SHAREOPTIONS 相当) を、
@@ -568,7 +569,8 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
   `IEBGENER`、`IEFBR14`、
   `IDCAMS` (`REPRO`、`DEFINE CLUSTER`、`DEFINE GDG`、`DELETE`、`LISTCAT` の主要機能)、
   `SORT` / `ICETOOL` (基本的な `SORT FIELDS`、`INCLUDE`/`OMIT`、`OUTREC`、`SUM`)、
-  `IEBCOPY` (`COPY`、`SELECT`、`EXCLUDE`)、`IKJEFT01` (`LISTDS`)。
+  `IEBCOPY` (`COPY`、`COPYGRP`、`SELECT`、`EXCLUDE`)、
+  `IKJEFT01` (`LISTDS`、メンバに対する `RENAME`/`DELETE`)。
 
 ### 7.2 ランタイム (Language Environment 相当)
 

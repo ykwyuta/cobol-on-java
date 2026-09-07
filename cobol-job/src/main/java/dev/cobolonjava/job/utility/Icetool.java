@@ -498,6 +498,7 @@ public final class Icetool extends UtilityProgram {
         return written == null ? null : opened(context, written);
     }
 
+    /** {@code TO(dd,dd)} は<b>書き先</b>である。無くてよいし、ディレクトリの空きを見る。 */
     private static List<Path> ddsOf(ProgramContext context, String statement, String key) {
         List<Path> out = new ArrayList<>();
         String written = parameter(statement, key);
@@ -505,7 +506,7 @@ public final class Icetool extends UtilityProgram {
             return out;
         }
         for (String each : words(written.replace(",", " "))) {
-            out.add(opened(context, each.toUpperCase(Locale.ROOT)));
+            out.add(created(context, each.toUpperCase(Locale.ROOT)));
         }
         return out;
     }

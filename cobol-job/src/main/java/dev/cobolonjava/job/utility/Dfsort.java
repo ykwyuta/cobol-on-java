@@ -462,7 +462,7 @@ public final class Dfsort extends UtilityProgram {
 
     private void write(ProgramContext context, String ddName, List<byte[]> records,
                        DataSetAttributes attributes, boolean reformatted) {
-        Path path = opened(context, ddName);
+        Path path = created(context, ddName);
         Records.Framed framed = Records.join(records, attributes, context.codePage(), reformatted);
         writeSound(context, path, framed.bytes());
         framed.attributes().write(path);

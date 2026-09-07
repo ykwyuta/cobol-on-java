@@ -4,8 +4,10 @@ import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAllocation;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.DataSetIoException;
+import dev.cobolonjava.runtime.file.DataSetOpenException;
 import dev.cobolonjava.runtime.file.FileStatus;
 import dev.cobolonjava.runtime.file.OpenMode;
+import dev.cobolonjava.runtime.file.PartitionedDataSet;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.FileOperationException;
@@ -72,6 +74,27 @@ abstract class UtilityProgram implements CobolProgram {
     }
 
     /**
+     * 書きにいく側の検査 (要件 FR-113、暫定判断 P-059 の解消)。
+     *
+     * <p>{@link #opened} との違いは<b>無くてよい</b>ことである。これから作るのだから、
+     * 無いメンバを {@code S013} にしてはならない。区分データセットそのものを名指した
+     * ときだけは、どのメンバへ書くのか決まっていないので止まる。
+     *
+     * <p>代わりにディレクトリの空きを見る。ホストの道具も、入りきらなければそこで
+     * 異常終了する。
+     */
+    protected static Path created(ProgramContext context, String ddName) {
+        Path path = pathOf(context, ddName);
+        boolean member = context.catalog().isMemberOfLibrary(ddName);
+        DataSetAllocation.opening(path, OpenMode.OUTPUT, false, member);
+        Path library = path.getParent();
+        if (member && library != null) {
+            room(context, library, path.getFileName().toString());
+        }
+        return path;
+    }
+
+    /**
      * バイト列を読む。形が壊れていれば、そこで止める (要件 FR-141, 暫定判断 P-053)。
      *
      * <p>切れないバイト列を黙って写せば、<b>壊れたデータセットを写して正常終了する</b>。
@@ -101,6 +124,24 @@ abstract class UtilityProgram implements CobolProgram {
             throw new FileOperationException(named(context, path), FileStatus.NO_SPACE);
         }
         writeBytes(path, bytes);
+    }
+
+    /**
+     * 新しいメンバがディレクトリに入るか (要件 FR-113, FR-141、暫定判断 P-059 の解消)。
+     *
+     * <p>ホストのディレクトリは<b>あらかじめ取った大きさしかない</b>。使い切れば、
+     * データを置く場所が空いていてもメンバを増やせない。翻訳した資産の
+     * {@code OPEN OUTPUT} だけで効かせて道具で効かせずにいると、<b>同じライブラリが
+     * 書き手によって入る数を変える</b>ことになる。
+     *
+     * <p>すでにある名前へ書き直すだけなら項目は増えないので、いつでも通る。
+     */
+    protected static void room(ProgramContext context, Path library, String name) {
+        int blocks = DataSetAttributes.read(library).directoryBlocks();
+        if (!PartitionedDataSet.roomFor(library, context.codePage(), blocks, name)) {
+            throw new DataSetOpenException("no room in the directory of "
+                    + library.getFileName(), PartitionedDataSet.memberOf(library, name));
+        }
     }
 
     /** 覚え書きに書く名前。DD 名で言えるならそちらのほうが分かる。 */

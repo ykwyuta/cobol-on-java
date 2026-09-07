@@ -3,6 +3,7 @@ package dev.cobolonjava.job.utility;
 import dev.cobolonjava.job.jcl.JclOperands;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.FileStatus;
+import dev.cobolonjava.runtime.file.MemberStatistics;
 import dev.cobolonjava.runtime.file.PartitionedDataSet;
 import dev.cobolonjava.runtime.program.FileOperationException;
 import dev.cobolonjava.runtime.program.ProgramContext;
@@ -13,7 +14,9 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -34,6 +37,19 @@ import java.util.Set;
  * <p>写し先に同じ名前のメンバがあれば<b>写さずに飛ばし</b>、復帰コード 4 を立てる。
  * {@code R} を書いたときだけ置き換える。黙って上書きすると、月次で積み増していく
  * ライブラリが毎月まっさらになる。
+ *
+ * <h2>別名は別名のまま写す (暫定判断 P-059 の解消)</h2>
+ * <p>ライブラリを丸ごと写せば、別名も<b>別名として</b>写る。中身を写して普通のメンバに
+ * してしまうと、写した先で同じバイト列が 2 つになり、片方だけを書き直したときに食い違う。
+ * 指している先を一緒に写さないとき ({@code SELECT} で別名だけを選んだとき) は、
+ * 中身を写して普通のメンバにする — 指す先がないのだから、そうするほかない。
+ *
+ * <p>{@code COPYGRP} は<b>選んだメンバとその別名をひと組で</b>写す。{@code SELECT} で
+ * メンバだけを選ぶと別名は置いていかれ、写した先で古い名前から引けなくなる。
+ *
+ * <h2>統計は持ち越す</h2>
+ * <p>ISPF の統計 ({@link MemberStatistics}) は写し先へそのまま持っていく。作り直すのでは
+ * ない — 写しは<b>編集ではない</b>ので、版も更新日時も動かないのがホストの姿である。
  *
  * <h2>写し元と写し先が同じなら圧縮である</h2>
  * <p>{@code COPY INDD=A,OUTDD=A} はホストでは<b>圧縮</b> (使われなくなった領域の詰め直し)
@@ -70,6 +86,8 @@ public final class Iebcopy extends UtilityProgram {
         private String output;
         private final List<Selection> selected = new ArrayList<>();
         private final Set<String> excluded = new LinkedHashSet<>();
+        /** {@code COPYGRP} か。選んだメンバの別名も連れていく。 */
+        private boolean group;
     }
 
     /**
@@ -105,11 +123,11 @@ public final class Iebcopy extends UtilityProgram {
         }
         operation = operation.toUpperCase(Locale.ROOT);
         switch (operation) {
-            case "COPY" -> {
+            case "COPY", "COPYGRP" -> {
                 if (current != null) {
                     perform(context, current);
                 }
-                return copyOf(context, operands);
+                return copyOf(context, operands, operation.equals("COPYGRP"));
             }
             case "SELECT" -> {
                 if (current == null) {
@@ -143,14 +161,15 @@ public final class Iebcopy extends UtilityProgram {
 
     private static boolean known(String word) {
         return switch (word.toUpperCase(Locale.ROOT)) {
-            case "COPY", "COPYMOD", "SELECT", "EXCLUDE", "ALTERMOD" -> true;
+            case "COPY", "COPYGRP", "COPYMOD", "SELECT", "EXCLUDE", "ALTERMOD" -> true;
             default -> false;
         };
     }
 
     /** {@code COPY INDD=...,OUTDD=...}。 */
-    private Copy copyOf(ProgramContext context, String operands) {
+    private Copy copyOf(ProgramContext context, String operands, boolean group) {
         Copy copy = new Copy();
+        copy.group = group;
         for (String operand : JclOperands.split(operands)) {
             String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
             String value = JclOperands.value(operand);
@@ -259,7 +278,8 @@ public final class Iebcopy extends UtilityProgram {
     }
 
     private static int expected(Copy copy, Set<String> found) {
-        return copy.selected.isEmpty() ? found.size() : copy.selected.size();
+        // COPYGRP は選んだメンバのほかに別名も連れていくので、書いた数では足りない
+        return copy.selected.isEmpty() || copy.group ? found.size() : copy.selected.size();
     }
 
     /**
@@ -268,31 +288,95 @@ public final class Iebcopy extends UtilityProgram {
      * <p>写す順はディレクトリの並びである。{@code SELECT} を書いても<b>書いた順ではなく
      * ディレクトリの順</b>で写す。ホストが入力を順に読んで拾うからであり、書いた順に写すと
      * メンバの並びが実機と変わる。
+     *
+     * <p>別名は<b>あとから</b>作る (暫定判断 P-059 の解消)。ディレクトリの並びでは別名が
+     * 指す先より前に来ることがあり、先に作ろうとすると指す先がまだ無い。
      */
     private int copyMembers(ProgramContext context, Copy copy, Source source, Path from, Path to,
                             Set<String> found) {
-        int copied = 0;
+        List<Selection> wanted = selections(context, copy, from);
+        // 何をどの名前で写すか。別名を別名のまま写せるかどうかがこれで決まる
+        Map<String, String> destinations = new LinkedHashMap<>();
         for (String name : PartitionedDataSet.members(from, context.codePage())) {
-            Selection selection = selectionFor(copy, name, source.replace());
-            if (selection == null) {
-                continue;
+            Selection selection = selectionFor(copy, wanted, name, source.replace());
+            if (selection != null) {
+                destinations.put(name, selection.to());
             }
+        }
+        int copied = 0;
+        List<String> links = new ArrayList<>();
+        for (String name : destinations.keySet()) {
+            Selection selection = selectionFor(copy, wanted, name, source.replace());
             found.add(name);
             Path target = PartitionedDataSet.memberOf(to, selection.to());
-            if (Files.exists(target) && !selection.replace()) {
+            if (exists(target) && !selection.replace()) {
                 print(context, "IEB167I MEMBER " + selection.to()
                         + " ALREADY EXISTS IN THE OUTPUT DATA SET AND WAS NOT COPIED");
                 fail(4);
                 continue;
             }
-            byte[] bytes = readSound(context, PartitionedDataSet.memberOf(from, name));
+            String points = PartitionedDataSet.aliasOf(from, name);
+            if (points != null && destinations.containsKey(points)) {
+                // 指す先も一緒に写る。別名のまま写す
+                links.add(name);
+                continue;
+            }
+            Path member = PartitionedDataSet.memberOf(from, name);
+            byte[] bytes = readSound(context, member);
+            room(context, to, selection.to());
+            // 写し先に同じ名前の別名があれば、その項目を落としてから書く。
+            // そのまま書けばリンクをたどって<b>指す先のメンバ</b>を上書きしてしまう
+            if (PartitionedDataSet.alias(to, selection.to())) {
+                PartitionedDataSet.unlink(to, selection.to());
+            }
             fits(context, to, target, bytes);
             writeBytes(target, bytes);
-            DataSetAttributes.read(PartitionedDataSet.memberOf(from, name)).write(target);
+            DataSetAttributes.read(member).write(target);
+            MemberStatistics.copy(member, target);
             print(context, "IEB154I " + selection.to() + " HAS BEEN SUCCESSFULLY COPIED");
             copied++;
         }
+        for (String name : links) {
+            String alias = destinations.get(name);
+            room(context, to, alias);
+            PartitionedDataSet.unlink(to, alias);
+            PartitionedDataSet.link(to, alias,
+                    destinations.get(PartitionedDataSet.aliasOf(from, name)));
+            print(context, "IEB154I " + alias + " HAS BEEN SUCCESSFULLY COPIED AS AN ALIAS");
+            copied++;
+        }
         return copied;
+    }
+
+    /**
+     * 指している先が消えていても項目はある。
+     *
+     * <p>{@link Files#exists} は切れたシンボリックリンクに偽を返す。それで置き換えの
+     * 判断をすると、切れた別名の上に黙って書いてしまう。
+     */
+    private static boolean exists(Path path) {
+        return Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+    }
+
+    /**
+     * 実際に選ばれているもの。{@code COPYGRP} なら別名も連れていく。
+     *
+     * <p>{@code SELECT} でメンバだけを選ぶと別名は置いていかれる。それが困るときに
+     * {@code COPYGRP} と書く。名前を変えて写す指定と一緒に使っても、<b>別名の名前は
+     * 変わらない</b> — 変える先が書かれていないからである。
+     */
+    private static List<Selection> selections(ProgramContext context, Copy copy, Path from) {
+        if (!copy.group || copy.selected.isEmpty()) {
+            return copy.selected;
+        }
+        List<Selection> wanted = new ArrayList<>(copy.selected);
+        for (Selection selection : copy.selected) {
+            for (String alias : PartitionedDataSet.aliasesOf(from, selection.from(),
+                    context.codePage())) {
+                wanted.add(new Selection(alias, alias, selection.replace()));
+            }
+        }
+        return wanted;
     }
 
     /**
@@ -300,14 +384,15 @@ public final class Iebcopy extends UtilityProgram {
      *
      * @return 写さないなら {@code null}
      */
-    private static Selection selectionFor(Copy copy, String name, boolean replace) {
+    private static Selection selectionFor(Copy copy, List<Selection> wanted, String name,
+                                          boolean replace) {
         if (copy.excluded.contains(name)) {
             return null;
         }
-        if (copy.selected.isEmpty()) {
+        if (wanted.isEmpty()) {
             return new Selection(name, name, replace);
         }
-        for (Selection selection : copy.selected) {
+        for (Selection selection : wanted) {
             if (selection.from().equals(name)) {
                 // INDD に R を書けば、選んだメンバも置き換える
                 return replace ? new Selection(name, selection.to(), true) : selection;
@@ -346,7 +431,8 @@ public final class Iebcopy extends UtilityProgram {
         long occupied = 0;
         for (String name : PartitionedDataSet.members(library, context.codePage())) {
             Path member = PartitionedDataSet.memberOf(library, name);
-            if (!member.equals(target)) {
+            // 別名は場所を取らない。ホストのディレクトリの項目が同じ位置を指すだけである
+            if (!member.equals(target) && !PartitionedDataSet.alias(library, name)) {
                 occupied += sizeOf(member);
             }
         }

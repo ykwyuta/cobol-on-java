@@ -47,7 +47,7 @@ public final class Iebgener extends UtilityProgram {
             context.setReturnCode(12);
             return;
         }
-        Path to = opened(context, SYSUT2);
+        Path to = created(context, SYSUT2);
         byte[] bytes = readSound(context, from);
         writeSound(context, to, bytes);
         DataSetAttributes attributes = DataSetAttributes.read(from);

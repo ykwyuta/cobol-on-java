@@ -111,7 +111,7 @@ public final class RelativeDataSet implements KeyedDataSet {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
-        String refused = allocation.opening(path, requested, optional);
+        String refused = allocation.opening(path, requested, optional, attributes.codePage());
         if (refused != null) {
             return refused;
         }
