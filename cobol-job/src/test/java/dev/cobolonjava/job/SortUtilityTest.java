@@ -443,6 +443,273 @@ class SortUtilityTest {
         assertTrue(output().contains("OUTFIL NEEDS FNAMES OR FILES"), output());
     }
 
+    // ---- OUTFIL の副オペランド (暫定判断 P-047 の解消) ----
+
+    @Test
+    @DisplayName("STARTREC は何本目から取るかを言う (FR-137, 暫定判断 P-047 の解消)")
+    void startrecSkipsTheFirstRecords() {
+        write("IN.DAT", "A1B2C3", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,STARTREC=2");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("B2C3", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("ENDREC は何本目までかを言う (FR-137)")
+    void endrecStopsAtTheGivenRecord() {
+        write("IN.DAT", "A1B2C3", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,ENDREC=2");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1B2", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("番号で切ってから中身でふるう (FR-137)")
+    void positionIsTakenBeforeContent() {
+        write("IN.DAT", "A1A2B3A4", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,STARTREC=2,INCLUDE=(1,1,CH,EQ,C'A')");
+
+        // 番号が先なら A1 は数えたうえで落ちる。逆なら A1 が 1 本目になって残る
+        assertEquals(0, result.returnCode());
+        assertEquals("A2A4", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("SAVE は番号で落ちたものも受け取る (FR-137)")
+    void saveSeesWhatStartrecDropped() {
+        write("IN.DAT", "A1B2C3", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//TAKEN    DD   DSN=TAKEN.DAT,DISP=(NEW,CATLG)",
+                "//REST     DD   DSN=REST.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=TAKEN,STARTREC=3",
+                "  OUTFIL FNAMES=REST,SAVE");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("C3", read("TAKEN.DAT"));
+        assertEquals("A1B2", read("REST.DAT"));
+    }
+
+    @Test
+    @DisplayName("SPLIT は書き先へ 1 本ずつ順ぐりに配る (FR-137, 暫定判断 P-047 の解消)")
+    void splitDealsRecordsRoundRobin() {
+        write("IN.DAT", "A1B2C3D4", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//ONE      DD   DSN=ONE.DAT,DISP=(NEW,CATLG)",
+                "//TWO      DD   DSN=TWO.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=(ONE,TWO),SPLIT");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1C3", read("ONE.DAT"));
+        assertEquals("B2D4", read("TWO.DAT"));
+    }
+
+    @Test
+    @DisplayName("SPLITBY はまとめて配る (FR-137)")
+    void splitbyDealsInGroups() {
+        write("IN.DAT", "A1B2C3D4", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//ONE      DD   DSN=ONE.DAT,DISP=(NEW,CATLG)",
+                "//TWO      DD   DSN=TWO.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=(ONE,TWO),SPLITBY=2");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1B2", read("ONE.DAT"));
+        assertEquals("C3D4", read("TWO.DAT"));
+    }
+
+    // ---- 報告書にする ----
+
+    @Test
+    @DisplayName("HEADER1 は先頭に 1 行足す (FR-137, 暫定判断 P-047 の解消)")
+    void header1GoesAtTheTop() {
+        write("IN.DAT", "A1B2", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,HEADER1=(C'REPORT')");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("REPORTA1    B2    ", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("TRAILER1 の COUNT は並んだレコードの数である (FR-137)")
+    void trailer1CountsTheRecords() {
+        write("IN.DAT", "A1B2", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(C'TOTAL ',COUNT)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1     B2     TOTAL 2", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("TRAILER1 の TOTAL は場所を足し上げる (FR-137)")
+    void trailer1AddsUpAField() {
+        write("IN.DAT", "AAA010BBB020", 6);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(C'SUM ',TOTAL=(4,3,ZD))");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("AAA010BBB020SUM 30", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("MIN と MAX と AVG も書ける (FR-137)")
+    void trailer1ReportsTheSpread() {
+        write("IN.DAT", "AAA010BBB030", 6);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(MIN=(4,3,ZD),MAX=(4,3,ZD),",
+                "        AVG=(4,3,ZD))");
+
+        assertEquals(0, result.returnCode());
+        assertTrue(read("OUT.DAT").endsWith("103020"), read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("LINES で頁に切り、TRAILER2 が頁ごとに付く (FR-137)")
+    void linesCutThePages() {
+        write("IN.DAT", "A1B2C3", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,LINES=2,TRAILER2=(C'PAGE ',&PAGE)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1    B2    PAGE 1C3    PAGE 2", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("TRAILER2 は頁の分、TRAILER1 は全体を足す (FR-137)")
+    void eachTrailerCountsItsOwnScope() {
+        write("IN.DAT", "AAA010BBB020CCC030", 6);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,LINES=2,TRAILER2=(TOTAL=(4,3,ZD)),",
+                "        TRAILER1=(TOTAL=(4,3,ZD))");
+
+        assertEquals(0, result.returnCode());
+        // 頁ごとに 30 と 30、全体で 60
+        assertEquals("AAA010BBB02030    CCC03030    60    ", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("HEADER2 は頁の先頭に付く (FR-137)")
+    void header2StartsEachPage() {
+        write("IN.DAT", "A1B2C3", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,LINES=2,HEADER2=(C'P',&PAGE)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("P1A1B2P2C3", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("桁は項目に続けて書ける (FR-137, 暫定判断 P-047 の解消)")
+    void theColumnCanBeAttachedToTheItem() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(1:C'X',5:COUNT)");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1   X   1", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("OUTREC でも桁を項目に続けて書ける (FR-137)")
+    void outrecTakesAnAttachedColumn() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTREC FIELDS=(1,2,4:C'X')");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("A1 X", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("知らない副オペランドは報告する (FR-137, 暫定判断 P-047)")
+    void unknownOutfilOperandsAreReported() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,SAMPLE=2");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("OUTFIL OPERAND IS NOT SUPPORTED YET: SAMPLE"), output());
+    }
+
+    @Test
+    @DisplayName("知らない見出しの項目は報告する (FR-137, 暫定判断 P-047)")
+    void unknownReportItemsAreReported() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(SUBTOTAL)");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("TRAILER ITEM IS NOT SUPPORTED YET"), output());
+    }
+
+    @Test
+    @DisplayName("SPLIT と見出しは一緒に書けない (FR-137)")
+    void splitCannotCarryATrailer() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,SPLIT,TRAILER1=(COUNT)");
+
+        assertEquals(16, result.returnCode());
+        assertTrue(output().contains("SPLIT CANNOT BE COMBINED"), output());
+    }
+
     // ---- MERGE ----
 
     @Test

@@ -568,7 +568,10 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
 - **FR-137 (L1)**: 代表的なユーティリティの互換実装を提供する:
   `IEBGENER`、`IEFBR14`、
   `IDCAMS` (`REPRO`、`DEFINE CLUSTER`、`DEFINE GDG`、`DELETE`、`LISTCAT` の主要機能)、
-  `SORT` / `ICETOOL` (基本的な `SORT FIELDS`、`INCLUDE`/`OMIT`、`OUTREC`、`SUM`)、
+  `SORT` (`SORT FIELDS`、`INCLUDE`/`OMIT`、`OUTREC`、`SUM`、`OUTFIL` による振り分け・
+  見出しと末尾・分割)、
+  `ICETOOL` (`COPY`/`SORT`/`MERGE`/`COUNT`/`STATS`/`RANGE`/`UNIQUE`/`VERIFY`/`SELECT`/
+  `SPLICE`/`SUBSET`/`RESIZE`/`DISPLAY`/`OCCUR`/`MODE`)、
   `IEBCOPY` (`COPY`、`COPYGRP`、`SELECT`、`EXCLUDE`)、
   `IKJEFT01` (`LISTDS`、メンバに対する `RENAME`/`DELETE`)。
 

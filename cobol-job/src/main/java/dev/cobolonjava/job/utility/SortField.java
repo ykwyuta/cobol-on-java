@@ -92,6 +92,28 @@ record SortField(int offset, int length, Format format, boolean ascending) {
     }
 
     /**
+     * 数として読めるバイト列か (要件 FR-137)。
+     *
+     * <p>{@link #number} は読めないものを 0 として返す。ふるい分けを途中で止めないためで
+     * ある。{@code ICETOOL} の {@code VERIFY} は<b>読めないこと自体を報せる</b>のが仕事な
+     * ので、握り潰さない道がここに要る。
+     *
+     * <p>文字と 2 進数はどんなバイトでも読めるので、いつでも真である。
+     */
+    boolean valid(byte[] record, CodePage codePage) {
+        NumericItem item = item();
+        if (item == null) {
+            return true;
+        }
+        try {
+            item.decode(slice(record, codePage));
+            return true;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
      * 値を書き戻すバイト列。
      *
      * @return 書き戻せない形なら {@code null}

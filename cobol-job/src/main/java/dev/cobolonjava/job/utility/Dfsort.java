@@ -13,15 +13,21 @@ import dev.cobolonjava.runtime.sort.SortWork;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * {@code SORT} (DFSORT) の互換実装 (要件 FR-137)。
@@ -112,16 +118,36 @@ public final class Dfsort extends UtilityProgram {
     }
 
     /**
+     * {@code OUTFIL} に付ける見出しと末尾 (要件 FR-137)。
+     *
+     * <p>{@code 1} が付くものはデータセット全体を囲み、{@code 2} が付くものは
+     * {@code LINES=n} で切った頁ごとに付く。
+     *
+     * @param lines 1 頁に入るレコードの数。{@code 0} なら頁で切らない
+     */
+    private record Report(List<String> header1, List<String> trailer1,
+                          List<String> header2, List<String> trailer2, int lines) {
+
+        /** 何も書かれていなければ、行を足す仕事そのものが無い。 */
+        boolean empty() {
+            return header1 == null && trailer1 == null && header2 == null && trailer2 == null;
+        }
+    }
+
+    /**
      * {@code OUTFIL} 1 個。
      *
      * <p>1 回読んだものを<b>いくつもの出力へ振り分ける</b>ための指定である。条件ごとに
      * ジョブステップを分けると、そのたびに入力を読み直すことになる。
      *
-     * @param dds     書き先の DD 名
-     * @param save    どの {@code OUTFIL} にも選ばれなかったものを受け取るか
+     * @param dds      書き先の DD 名
+     * @param save     どの {@code OUTFIL} にも選ばれなかったものを受け取るか
+     * @param startRec 何本目から取るか。{@code 1} なら先頭から
+     * @param endRec   何本目まで取るか。{@code 0} なら終わりまで
+     * @param splitBy  書き先へ順ぐりに配る本数。{@code 0} なら配らない
      */
     private record OutFile(List<String> dds, Test include, Test omit, List<String> outrec,
-                           boolean save) {
+                           boolean save, int startRec, int endRec, int splitBy, Report report) {
     }
 
     private int highest;
@@ -232,6 +258,10 @@ public final class Dfsort extends UtilityProgram {
      * そのたびに<b>入力を読み直す</b>ことになる。実資産で重い整列を 1 回で済ませる仕掛けが
      * これである。
      *
+     * <p>選ぶ順はホストの決まりに従う。まず {@code STARTREC} / {@code ENDREC} が
+     * <b>並びの何本目か</b>で切り、そのあとで {@code INCLUDE} / {@code OMIT} が中身で
+     * ふるう。逆にすると {@code STARTREC=2} の数え方が変わって答えが違う。
+     *
      * <p>{@code SAVE} は「どこにも選ばれなかったもの」を受け取る。だから先に他のものを
      * 決めてから残りを配る。
      */
@@ -245,10 +275,11 @@ public final class Dfsort extends UtilityProgram {
             }
             List<byte[]> chosen = new ArrayList<>();
             for (int i = 0; i < records.size(); i++) {
-                if (matches(records.get(i), file, codePage)) {
-                    chosen.add(records.get(i));
-                    taken[i] = true;
+                if (!within(file, i + 1) || !matches(records.get(i), file, codePage)) {
+                    continue;
                 }
+                chosen.add(records.get(i));
+                taken[i] = true;
             }
             selected.put(file, chosen);
         }
@@ -270,12 +301,206 @@ public final class Dfsort extends UtilityProgram {
             if (highest != 0) {
                 return;
             }
+            boolean rebuilt = inrec != null || outrec != null || file.outrec() != null;
+            if (file.splitBy() > 0) {
+                split(context, file, chosen, attributes, rebuilt);
+                continue;
+            }
+            List<byte[]> lines = decorated(chosen, file.report(), codePage);
+            if (highest != 0) {
+                return;
+            }
             for (String dd : file.dds()) {
-                write(context, dd, chosen, attributes,
-                        inrec != null || outrec != null || file.outrec() != null);
-                note("ICE224I 0 RECORDS WRITTEN TO " + dd + ": " + chosen.size());
+                write(context, dd, lines, attributes, rebuilt || !file.report().empty());
+                note("ICE224I 0 RECORDS WRITTEN TO " + dd + ": " + lines.size());
             }
         }
+    }
+
+    /** {@code STARTREC} と {@code ENDREC} の範囲に入っているか。 */
+    private static boolean within(OutFile file, int number) {
+        return number >= file.startRec() && (file.endRec() <= 0 || number <= file.endRec());
+    }
+
+    /**
+     * {@code SPLIT} と {@code SPLITBY=n} (要件 FR-137)。
+     *
+     * <p>同じ {@code OUTFIL} に書いた書き先へ<b>順ぐりに配る</b>。中身では分けられない
+     * ものを均す仕掛けであり、後の処理を並べて走らせるために使われる。
+     */
+    private void split(ProgramContext context, OutFile file, List<byte[]> records,
+                       DataSetAttributes attributes, boolean rebuilt) {
+        int shares = file.dds().size();
+        List<List<byte[]>> shared = new ArrayList<>();
+        for (int i = 0; i < shares; i++) {
+            shared.add(new ArrayList<>());
+        }
+        for (int i = 0; i < records.size(); i++) {
+            shared.get((i / file.splitBy()) % shares).add(records.get(i));
+        }
+        for (int i = 0; i < shares; i++) {
+            write(context, file.dds().get(i), shared.get(i), attributes, rebuilt);
+            note("ICE224I 0 RECORDS WRITTEN TO " + file.dds().get(i) + ": "
+                    + shared.get(i).size());
+        }
+    }
+
+    /**
+     * 見出しと末尾を付ける (要件 FR-137、暫定判断 P-047 の解消)。
+     *
+     * <p>整列の出力はそのまま報告書として印刷されることが多い。末尾の合計は<b>その上に
+     * 並んだレコードから数えたもの</b>でなければならず、それが正しいのは同じ通り道が
+     * 両方を作っているからである。合計を別のステップで数え直すと、間にふるいが 1 つ
+     * 入っただけで合わなくなる。
+     *
+     * <p>{@code HEADER1} / {@code TRAILER1} はデータセット全体を囲み、
+     * {@code HEADER2} / {@code TRAILER2} は {@code LINES=n} で切った頁ごとに付く。
+     * だから {@code TRAILER1} の合計は全体、{@code TRAILER2} の合計は頁の分になる。
+     */
+    private List<byte[]> decorated(List<byte[]> records, Report report, CodePage codePage) {
+        if (report.empty()) {
+            return records;
+        }
+        List<byte[]> out = new ArrayList<>();
+        int page = 1;
+        if (report.header1() != null) {
+            out.add(reportLine(report.header1(), records, page, codePage));
+        }
+        int depth = report.lines() > 0 ? report.lines() : Math.max(records.size(), 1);
+        for (int at = 0; at < records.size(); at += depth) {
+            List<byte[]> onPage = records.subList(at, Math.min(at + depth, records.size()));
+            if (report.header2() != null) {
+                out.add(reportLine(report.header2(), onPage, page, codePage));
+            }
+            out.addAll(onPage);
+            if (report.trailer2() != null) {
+                out.add(reportLine(report.trailer2(), onPage, page, codePage));
+            }
+            page++;
+        }
+        if (report.trailer1() != null) {
+            out.add(reportLine(report.trailer1(), records, page, codePage));
+        }
+        return out;
+    }
+
+    /**
+     * 見出しか末尾の 1 行を組む。
+     *
+     * @param scope 数えるレコード。{@code TRAILER1} なら全体、{@code TRAILER2} なら頁の分
+     */
+    private byte[] reportLine(List<String> items, List<byte[]> scope, int page,
+                              CodePage codePage) {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        for (String written : items) {
+            String item = written.trim();
+            int colon = item.indexOf(':');
+            if (colon > 0 && digitsOnly(item.substring(0, colon))) {
+                // 桁を言ってから中身を書く。p: だけで終わってもよい
+                while (buffer.size() < number(item.substring(0, colon), 1) - 1) {
+                    buffer.write(codePage.space());
+                }
+                item = item.substring(colon + 1).trim();
+            }
+            if (item.isEmpty()) {
+                continue;
+            }
+            byte[] bytes = reportItem(item, scope, page, codePage);
+            if (bytes == null) {
+                return new byte[0];
+            }
+            buffer.writeBytes(bytes);
+        }
+        return buffer.toByteArray();
+    }
+
+    /**
+     * 見出しと末尾に書ける 1 項目。
+     *
+     * @return 読めなければ {@code null}
+     */
+    private byte[] reportItem(String item, List<byte[]> scope, int page, CodePage codePage) {
+        char last = item.charAt(item.length() - 1);
+        if ((last == 'X' || last == 'Z') && digitsOnly(item.substring(0, item.length() - 1))) {
+            int count = number(item.substring(0, item.length() - 1), 1);
+            byte[] out = new byte[count];
+            Arrays.fill(out, last == 'X' ? codePage.space() : (byte) 0);
+            return out;
+        }
+        if (item.length() > 2 && (item.charAt(0) == 'C' || item.charAt(0) == 'X')
+                && item.charAt(1) == '\'') {
+            byte[] literal = literal(item, codePage);
+            if (literal == null) {
+                fail("ICE000I OUTFIL LITERAL IS NOT VALID: " + item);
+            }
+            return literal;
+        }
+        String key = JclOperands.key(item).toUpperCase(Locale.ROOT);
+        String value = JclOperands.value(item);
+        String text = switch (key) {
+            case "&PAGE" -> String.valueOf(page);
+            case "&DATE" -> LocalDate.now().format(DateTimeFormatter.ofPattern("MM/dd/yy"));
+            case "&TIME" -> LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
+            case "COUNT" -> String.valueOf(scope.size());
+            case "TOTAL", "MIN", "MAX", "AVG" -> summary(key, value, scope, codePage);
+            default -> null;
+        };
+        if (text == null) {
+            fail("ICE000I OUTFIL HEADER AND TRAILER ITEM IS NOT SUPPORTED YET: " + item);
+            return null;
+        }
+        return codePage.encode(text);
+    }
+
+    /**
+     * {@code TOTAL=(p,l,fmt)} のような数え上げ。
+     *
+     * @return 場所が読めなければ {@code null}
+     */
+    private String summary(String key, String value, List<byte[]> scope, CodePage codePage) {
+        SortField field = placeOf(value);
+        if (field == null) {
+            return null;
+        }
+        if (scope.isEmpty()) {
+            return "0";
+        }
+        BigDecimal total = BigDecimal.ZERO;
+        BigDecimal least = null;
+        BigDecimal most = null;
+        for (byte[] record : scope) {
+            BigDecimal each = field.number(record, codePage).toBigDecimal();
+            total = total.add(each);
+            least = least == null || each.compareTo(least) < 0 ? each : least;
+            most = most == null || each.compareTo(most) > 0 ? each : most;
+        }
+        return switch (key) {
+            case "TOTAL" -> total.toPlainString();
+            case "MIN" -> least.toPlainString();
+            case "MAX" -> most.toPlainString();
+            default -> total.divide(BigDecimal.valueOf(scope.size()), 0, RoundingMode.DOWN)
+                    .toPlainString();
+        };
+    }
+
+    /**
+     * {@code (p,l,fmt)} 1 つ。
+     *
+     * @return 読めなければ {@code null}
+     */
+    private static SortField placeOf(String value) {
+        List<String> parts = JclOperands.split(JclOperands.unwrap(value));
+        if (parts.size() < 3) {
+            return null;
+        }
+        int position = number(parts.get(0).trim(), -1);
+        int length = number(parts.get(1).trim(), -1);
+        SortField.Format format = SortField.formatOf(parts.get(2).trim());
+        if (position < 1 || length < 1 || format == null) {
+            return null;
+        }
+        SortField field = SortField.at(position - 1, length, format);
+        return field.supported() ? field : null;
     }
 
     private static boolean matches(byte[] record, OutFile file, CodePage codePage) {
@@ -412,17 +637,20 @@ public final class Dfsort extends UtilityProgram {
             if (item.isEmpty()) {
                 continue;
             }
-            if (item.endsWith(":")) {
-                // p: はここから先が何桁目かを言う
-                int column = number(item.substring(0, item.length() - 1), -1);
-                if (column < 1) {
-                    fail("ICE000I OUTREC COLUMN IS NOT A NUMBER: " + item);
-                    return null;
-                }
+            int colon = item.indexOf(':');
+            if (colon > 0 && digitsOnly(item.substring(0, colon))) {
+                // p: はここから先が何桁目かを言う。中身が続けて書かれていてもよい
+                int column = number(item.substring(0, colon), -1);
                 while (buffer.size() < column - 1) {
                     buffer.write(codePage.space());
                 }
-                continue;
+                item = item.substring(colon + 1).trim();
+                if (item.isEmpty()) {
+                    continue;
+                }
+            } else if (item.endsWith(":")) {
+                fail("ICE000I OUTREC COLUMN IS NOT A NUMBER: " + item);
+                return null;
             }
             char last = item.charAt(item.length() - 1);
             if ((last == 'X' || last == 'Z') && digitsOnly(item.substring(0, item.length() - 1))) {
@@ -655,8 +883,18 @@ public final class Dfsort extends UtilityProgram {
      *
      * <p>書き先は {@code FNAMES=(dd,...)} か {@code FILES=(01,...)} で言う。番号で言った
      * ときの DD 名は {@code SORTOFnn} である。
+     *
+     * <p>知らない副オペランドは<b>誤りとして報告する</b>。読み飛ばすと、切ったつもりの
+     * 出力が切られないまま出る (暫定判断 P-047)。
      */
     private void outFileOf(String operands, CodePage codePage) {
+        for (String operand : JclOperands.split(operands)) {
+            String key = JclOperands.key(operand).trim().toUpperCase(Locale.ROOT);
+            if (!key.isEmpty() && !KNOWN_OUTFIL.contains(key)) {
+                fail("ICE000I OUTFIL OPERAND IS NOT SUPPORTED YET: " + key);
+                return;
+            }
+        }
         List<String> dds = new ArrayList<>();
         String names = operand(operands, "FNAMES");
         if (names != null) {
@@ -692,10 +930,43 @@ public final class Dfsort extends UtilityProgram {
             fail("ICE000I OUTFIL SAVE CANNOT BE COMBINED WITH INCLUDE OR OMIT");
             return;
         }
-        outFiles.add(new OutFile(List.copyOf(dds), keep, drop, built, save));
+        int startRec = count(operands, "STARTREC", 1);
+        int endRec = count(operands, "ENDREC", 0);
+        int splitBy = hasWord(operands, "SPLIT") ? 1 : count(operands, "SPLITBY", 0);
+        Report report = new Report(itemsIn(operands, "HEADER1"), itemsIn(operands, "TRAILER1"),
+                itemsIn(operands, "HEADER2"), itemsIn(operands, "TRAILER2"),
+                count(operands, "LINES", 0));
+        if (splitBy > 0 && !report.empty()) {
+            fail("ICE000I OUTFIL SPLIT CANNOT BE COMBINED WITH A HEADER OR TRAILER");
+            return;
+        }
+        outFiles.add(new OutFile(List.copyOf(dds), keep, drop, built, save, startRec, endRec,
+                splitBy, report));
     }
 
-    /** 値を取らないオペランドが書かれているか。{@code SAVE} がこれである。 */
+    /** 書ける副オペランド。ここに無いものは誤りである (暫定判断 P-047)。 */
+    private static final Set<String> KNOWN_OUTFIL = Set.of(
+            "FNAMES", "FILES", "INCLUDE", "OMIT", "OUTREC", "BUILD", "SAVE", "FORMAT",
+            "STARTREC", "ENDREC", "SPLIT", "SPLITBY", "LINES",
+            "HEADER1", "HEADER2", "TRAILER1", "TRAILER2");
+
+    /** {@code 鍵=n} の数。書かれていなければ既定を返す。 */
+    private static int count(String operands, String key, int fallback) {
+        String written = operand(operands, key);
+        return written == null ? fallback : number(JclOperands.unwrap(written), fallback);
+    }
+
+    /**
+     * {@code HEADER1=(...)} の項目。
+     *
+     * @return 書かれていなければ {@code null}
+     */
+    private static List<String> itemsIn(String operands, String key) {
+        String written = operand(operands, key);
+        return written == null ? null : JclOperands.split(JclOperands.unwrap(written));
+    }
+
+    /** 値を取らないオペランドが書かれているか。{@code SAVE} と {@code SPLIT} である。 */
     private static boolean hasWord(String operands, String word) {
         for (String operand : JclOperands.split(operands)) {
             if (operand.trim().equalsIgnoreCase(word)) {

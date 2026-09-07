@@ -1260,8 +1260,8 @@ SEQUENCE IS` は構文誤りとして報告する。
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 |
-| 場所 | `Iebgener` / `Iebcopy` / `Idcams` |
+| 状態 | 未解決 (`ICETOOL` の操作子と `OUTFIL` の副オペランドは 2026-09-07 に解消) |
+| 場所 | `Iebgener` / `Iebcopy` / `Idcams` / `Dfsort` / `Icetool` |
 | 関連要件 | FR-137 |
 
 **暫定の扱い**: 実装したのは次のものだけであり、ほかは<b>誤りとして報告する</b>。
@@ -1269,10 +1269,11 @@ SEQUENCE IS` は構文誤りとして報告する。
 | 名前 | 読めるもの | 読めないもの |
 | --- | --- | --- |
 | `IEBGENER` | 制御文なしの写し | `GENERATE` / `RECORD` / `OUTREC` による編集 |
-| `IEBCOPY` | `COPY` / `SELECT` / `EXCLUDE` / 名前替え / `R` / 圧縮 | `COPYMOD` / `ALTERMOD` / `COPYGRP` / アンロード形式 |
-| `IDCAMS` | `REPRO` / `DELETE` / `DEFINE CLUSTER` / `LISTCAT` | `EXPORT` / `IMPORT` / `PRINT` / `ALTER` / `VERIFY` |
+| `IEBCOPY` | `COPY` / `COPYGRP` / `SELECT` / `EXCLUDE` / 名前替え / `R` / 圧縮 | `COPYMOD` / `ALTERMOD` / アンロード形式 |
+| `IDCAMS` | `REPRO` / `DELETE` / `DEFINE CLUSTER` / `DEFINE GDG` / `LISTCAT` | `EXPORT` / `IMPORT` / `PRINT` / `ALTER` / `VERIFY` |
 | `SORT` | `SORT` / `MERGE` / `INCLUDE` / `OMIT` / `SUM` / `INREC` / `OUTREC` / `OUTFIL` / `OPTION COPY` / `END` | `ALTSEQ` / `MODS` / `JOINKEYS` |
-| `ICETOOL` | `MODE` / `COPY` / `SORT` / `COUNT` / `SELECT` / `DISPLAY` / `OCCUR` / `DEFAULTS` | `SPLICE` / `STATS` / `RANGE` / `UNIQUE` / `VERIFY` / `RESIZE` / `SUBSET` / `MERGE` |
+| `SORT` の `OUTFIL` | `FNAMES` / `FILES` / `INCLUDE` / `OMIT` / `OUTREC` / `BUILD` / `SAVE` / `STARTREC` / `ENDREC` / `SPLIT` / `SPLITBY` / `LINES` / `HEADER1` / `HEADER2` / `TRAILER1` / `TRAILER2` | `SECTIONS` / `SAMPLE` / `NODETAIL` / `REMOVECC` / `VTOF` / `FTOV` |
+| `ICETOOL` | 操作子はすべて | — |
 
 **なぜこうしたか**: 読み飛ばすと、編集したつもりの出力がそのままの写しになる。
 どこで狂ったのかを追うのが難しい。
@@ -1299,18 +1300,43 @@ SEQUENCE IS` は構文誤りとして報告する。
   ある。数の形を変える `TO=` や `EDIT=` は読めない
 - 可変長データセットへの `INREC` と `OUTREC` は未対応である。RDW を組み直す必要があり、
   レコードの長さが変わるとブロックの数え方も変わる
-- `OUTFIL` に書けるのは `FNAMES` / `FILES` / `INCLUDE` / `OMIT` / `OUTREC` / `BUILD` /
-  `SAVE` だけである。`STARTREC` / `ENDREC` / `SPLIT` / `HEADER` / `TRAILER` は読めない
-- `SORT` の覚え書きはホストの書式に似せていない。`ICE143I` / `ICE054I` / `ICE052I` の
-  3 行だけであり、行数や統計は合わない
+- `OUTFIL` の見出しと末尾に書けるのは `C'文字'` / `X'16進'` / `nX` / `nZ` / `p:` /
+  `&PAGE` / `&DATE` / `&TIME` / `COUNT` / `TOTAL=` / `MIN=` / `MAX=` / `AVG=` だけである。
+  数は<b>桁を揃えずにそのまま</b>出す。ホストの編集マスク (`M0` などや `EDIT=`) は
+  読めないので、印字した幅は合わない
+- `OUTFIL` の `HEADER2` / `TRAILER2` を `LINES=n` なしで書くと<b>全体が 1 頁</b>になる。
+  ホストは導入時の既定 (ふつう 60 行) で切る。既定の値を勝手に決めると、頁の切れ目が
+  実機と違う場所に入るので、書かれていないうちは切らないほうを採った
+- `&DATE` は `mm/dd/yy`、`&TIME` は `hh:mm:ss` で出す。ホストにはほかの形もあるが、
+  接尾辞 (`&DATE1` など) は読めない
+- `OUTFIL` の見出しと末尾からレコードの場所 (`p,l`) は参照できない。参照できる範囲が
+  ホストでは行の種類ごとに違い、実機で確かめないと決められない
+- `ICETOOL` の `SPLICE` は、鍵が同じものが 3 本以上あるとき<b>後のものを順に重ねる</b>。
+  ホストの既定 (`WITHALL` を書かないとき) は組ごとの扱いが違う。2 本の組ではどちらも
+  同じ答えになるので、実資産に 3 本以上の組が現れた段で決める。`KEEPBASE` と `USING` は
+  誤りとして報告する
+- `ICETOOL` の `RESIZE` は入力を<b>一続きのバイト列として</b>数え直す。`TOLEN` が元の
+  長さで割り切れるときはホストと同じ答えになるが、割り切れないときの端の扱い
+  (ここでは空白で埋める) は実機で確かめていない
+- `ICETOOL` の `SUBSET` に `USING` は書けない。`INPUT` と `OUTPUT` は、`USING` が無ければ
+  同じことなので区別していない
+- `ICETOOL` の `VERIFY` は `ZD` / `PD` / `FI` を受ける。`FI` はどんなバイトでも数として
+  読めるので必ず通る。ホストが `FI` を受けるかどうかは確かめていない
+- `STATS` と `AVG=` の平均は 0 の位で切り捨てる。負の数をどちらへ丸めるかは実機で
+  確かめていない
+- `ICETOOL` の覚え書きの番号と文面 (`ICE607I` / `ICE608I` / `ICE609I` / `ICE610I` /
+  `ICE611I` / `ICE612I`) は実機で確かめていない。桁揃えもしていない
+- `SORT` の覚え書きはホストの書式に似せていない。`ICE143I` / `ICE054I` / `ICE052I` /
+  `ICE224I` の 4 種だけであり、行数や統計は合わない
 - `ICETOOL` の `DISPLAY` と `OCCUR` の報告書もホストの書式に似せていない。見出しと値が
-  並ぶだけで、桁揃え・改頁・小計・`HEADER` / `BLANK` / `TOTAL` は無い
+  並ぶだけで、桁揃え・改頁・小計・`HEADER` / `BLANK` / `TOTAL` は無い。同じ仕掛けは
+  `OUTFIL` の側に入ったので、揃えるならそちらを呼ぶ形になる
 - `ICETOOL` の `SELECT` は `ON` に書いた場所で並べ替えてから組にする。ホストは入力の順を
   保つ形も選べるが、ここでは並べ替えた順で出る
 
-**解消条件**: 残りの操作子と `OUTFIL` の副オペランドは、実資産で使われている頻度を
-見てから決める。形と `OUTREC` の項目は、読めないものに出会った時点で足す。
-報告書の書式は、ホストの出力を読む道具が実際に使われていることが分かったら揃える。
+**解消条件**: 残っているのは<b>欄の書式</b>である。形 (`FS` / `UFF`)、`OUTREC` の `TO=` と
+`EDIT=`、見出しと末尾の編集マスクは、読めないものに出会った時点で足す。報告書の桁揃えは、
+ホストの出力を読む道具が実際に使われていることが分かったら揃える。
 
 ---
 
