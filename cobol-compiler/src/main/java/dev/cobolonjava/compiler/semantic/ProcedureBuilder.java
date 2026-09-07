@@ -2510,7 +2510,46 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Write(file, record, from, keyCheck, origin);
+        Statement.Advancing advancing = advancingOf(context.advancingPhrase(), origin);
+        if (context.advancingPhrase() != null && advancing == null) {
+            return null;
+        }
+        return new Statement.Write(file, record, from, keyCheck, advancing, origin);
+    }
+
+    /**
+     * {@code WRITE} の行送りを読む (要件 FR-102)。
+     *
+     * <p>{@code AFTER} は送ってから書き、{@code BEFORE} は書いてから送る。送る量は
+     * 書かれた数か、実行時に決まるデータ項目である。
+     *
+     * @return 書かれていなければ {@code null}。読めなければ診断を残して {@code null}
+     */
+    private Statement.Advancing advancingOf(CobolParser.AdvancingPhraseContext context,
+                                            Origin origin) {
+        if (context == null) {
+            return null;
+        }
+        boolean before = context.BEFORE() != null;
+        if (context.PAGE() != null) {
+            return new Statement.Advancing(null, null, true, before);
+        }
+        CobolParser.AdvancingLinesContext lines = context.advancingLines();
+        if (lines.identifier() != null) {
+            DataReference count = resolver.resolve(lines.identifier());
+            return count == null ? null : new Statement.Advancing(null, count, false, before);
+        }
+        if (lines.NUMBER() == null) {
+            // ZERO と綴られていれば 0 行である
+            return new Statement.Advancing(0, null, false, before);
+        }
+        String written = lines.NUMBER().getText();
+        try {
+            return new Statement.Advancing(Integer.parseInt(written), null, false, before);
+        } catch (NumberFormatException e) {
+            report(origin, "ADVANCING requires an integer number of lines: " + written);
+            return null;
+        }
     }
 
     /**

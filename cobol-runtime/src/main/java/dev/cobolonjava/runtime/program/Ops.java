@@ -310,6 +310,88 @@ public final class Ops {
                 context.file(name, ddName).write(read(storage, offset, actual)), actual, length));
     }
 
+    /** 頁の先頭へ送ることを表す行数。行数と同じ引数に載せるための負の値である。 */
+    public static final int PAGE = -1;
+
+    /**
+     * 行送りを伴う {@code WRITE} (要件 FR-102)。
+     *
+     * <p>印字するファイルは<b>行を送ってから書く</b>か、<b>書いてから送る</b>。
+     * {@code AFTER ADVANCING 2 LINES} なら 1 行空けてから書く。2 行送って印字するとき、
+     * 実際に文字が乗るのは<b>最後の 1 行だけ</b>だからである。
+     *
+     * <h2>行送りは空のレコードで表す</h2>
+     * <p>ホストの印字ファイルはレコードの先頭に紙送りの制御文字を持つ。その形を真似れば
+     * バイト列まで合うが、桁の取り方を実機で確かめていない。確かめないまま 1 バイト
+     * 増やすと<b>レコードの長さが全部ずれる</b>ので、いまは空のレコードを足すほうを
+     * 採った (暫定判断 P-063)。
+     *
+     * @param lines 送る行数。{@link #PAGE} なら頁の先頭へ送る
+     * @param before 書いてから送るか。{@code false} なら送ってから書く
+     * @return ファイル状態コード
+     */
+    public static byte[] writeLine(ProgramContext context, String name, String ddName,
+                                   Storage storage, int offset, int length, int minimum,
+                                   int maximum, int lines, boolean before) {
+        int actual = clamp(length, minimum, maximum);
+        DataSet file = context.file(name, ddName);
+        byte[] record = read(storage, offset, actual);
+        String status = before ? FileStatus.OK : advance(file, lines, actual);
+        if (status.equals(FileStatus.OK)) {
+            status = file.write(record);
+        }
+        if (before && status.equals(FileStatus.OK)) {
+            status = advance(file, lines, actual);
+        }
+        return status(context, lengthChecked(status, actual, length));
+    }
+
+    /**
+     * 行を送る。
+     *
+     * <p>{@code n} 行送って印字するなら、間に空くのは {@code n-1} 行である。
+     * 送らない ({@code 0} 行) は重ね印字であり、紙の上でしか起こらない。ここでは
+     * 空行を足さないだけになる (暫定判断 P-063)。
+     */
+    private static String advance(DataSet file, int lines, int width) {
+        if (lines == PAGE) {
+            return file.write(pageBreak(file, width));
+        }
+        String status = FileStatus.OK;
+        for (int i = 1; i < lines && status.equals(FileStatus.OK); i++) {
+            status = file.write(blankLine(file, width));
+        }
+        return status;
+    }
+
+    /**
+     * 空行のバイト列。
+     *
+     * <p>行の並びなら<b>長さ 0</b> が空行である。決まった長さのレコードなら空白で埋める。
+     * 行の切れ目を決めているのはデータセットの様式であり、そこに合わせる。
+     */
+    private static byte[] blankLine(DataSet file, int width) {
+        if (file.attributes().format() == RecordFormat.LINE) {
+            return new byte[0];
+        }
+        byte[] blank = new byte[Math.max(width, 0)];
+        Arrays.fill(blank, file.attributes().codePage().space());
+        return blank;
+    }
+
+    /**
+     * 改頁のバイト列。
+     *
+     * <p>紙送りの制御文字を持たないので、<b>改頁の文字だけの行</b>を置く。読み返した
+     * ときに頁の切れ目がどこにあったか分かる形である (暫定判断 P-063)。
+     */
+    private static byte[] pageBreak(DataSet file, int width) {
+        byte[] line = blankLine(file, width);
+        byte[] out = line.length > 0 ? line : new byte[1];
+        out[0] = file.attributes().codePage().encode("\f")[0];
+        return out;
+    }
+
     /**
      * {@code REWRITE} (要件 FR-102)。直前に読んだレコードを書き換える。
      *

@@ -45,7 +45,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-oracle` | Hercules 用テストの生成と期待値の採取 | 第 1 増分 実装済 |
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
-| `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。`MOVE`・算術文 (`CORRESPONDING` を含む)・`COMPUTE`・`IF`・`EVALUATE`・`PERFORM` (`VARYING` を含む)・`GO TO`・`CALL`・`INITIALIZE`・`SEARCH` / `SEARCH ALL`・`ACCEPT`・`DISPLAY`・`INSPECT`・`STRING`・`UNSTRING` を含むプログラムが、ソースからクラスファイルまで通って動く |
+| `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。`WRITE ... ADVANCING` による行送りを含む。`MOVE`・算術文 (`CORRESPONDING` を含む)・`COMPUTE`・`IF`・`EVALUATE`・`PERFORM` (`VARYING` を含む)・`GO TO`・`CALL`・`INITIALIZE`・`SEARCH` / `SEARCH ALL`・`ACCEPT`・`DISPLAY`・`INSPECT`・`STRING`・`UNSTRING` を含むプログラムが、ソースからクラスファイルまで通って動く |
 
 ## ビルド
 
@@ -138,7 +138,8 @@ $(find ~/.m2 -name 'antlr4-runtime-*.jar'):$(find ~/.m2 -name 'asm-9*.jar') \
 
 要件定義フェーズ完了 (要件定義書 第 15 章に決定事項)。
 P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。ジョブ実行 (JCL を含む) を実装済。
-外の基準で測る検証基盤 (CCVS85 と OSS コーパス) を実装済。テスト 1504 件。
+外の基準で測る検証基盤 (CCVS85 と OSS コーパス) を実装済。
+NIST CCVS85 の受理率は 25.7% (202 本中 52 本) である。テスト 1514 件。
 うち 5 件はコーパスを取ってきていなければスキップされる。
 うち 33 件は Hercules 上での実行と突き合わせる**検証レベル V2** であり、残りは V1。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい

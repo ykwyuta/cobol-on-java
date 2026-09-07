@@ -44,7 +44,7 @@ tokens {
     COMPUTE, END_COMPUTE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
-    UPON, NO, ADVANCING, USING, REFERENCE, CONTENT,
+    UPON, NO, ADVANCING, USING, REFERENCE, CONTENT, LINES, PAGE,
     CALL, END_CALL, CANCEL, EXCEPTION,
     INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
     NUMERIC_EDITED,
@@ -211,8 +211,11 @@ fileDescriptionClause
     : BLOCK CONTAINS? NUMBER (TO NUMBER)? (RECORDS | CHARACTER | CHARACTERS)?
     | recordVaryingClause
     | RECORD CONTAINS? NUMBER (TO NUMBER)? (CHARACTER | CHARACTERS)?
-    | LABEL RECORD (IS | ARE)? (STANDARD | OMITTED)
+    | LABEL (RECORD | RECORDS) (IS | ARE)? (STANDARD | OMITTED)
     | RECORDING MODE? IS? IDENTIFIER
+    // DATA RECORD(S) は「このファイルにはこの記述がある」と書くだけの覚え書きである。
+    // 実際の記述は FD に続く 01 が持っており、読んで捨てるのが決まりである
+    | DATA (RECORD | RECORDS) (IS | ARE)? IDENTIFIER+
     ;
 
 // 可変長レコードの長さは DEPENDING ON の項目が持つ
@@ -717,7 +720,17 @@ notInvalidKeyPhrase
 
 writeStatement
     : WRITE IDENTIFIER (FROM identifier)?
+      advancingPhrase?
       invalidKeyPhrase? notInvalidKeyPhrase? END_WRITE?
+    ;
+
+// 印字するファイルへの行送り。AFTER は送ってから書き、BEFORE は書いてから送る
+advancingPhrase
+    : (BEFORE | AFTER) ADVANCING? (advancingLines | PAGE)
+    ;
+
+advancingLines
+    : (identifier | NUMBER | ZERO | ZEROS | ZEROES) (LINE | LINES)?
     ;
 
 // SORT は溜めて並べ替えて配る。入口と出口はファイルか手続きのどちらかである

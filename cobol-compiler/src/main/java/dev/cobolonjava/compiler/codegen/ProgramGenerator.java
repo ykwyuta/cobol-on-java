@@ -1366,7 +1366,7 @@ public final class ProgramGenerator {
      */
     private void planWrite(Statement.Write statement, List<Runnable> body) {
         planRecordOutput(statement.file(), statement.record(), statement.from(),
-                statement.keyCheck(), "write", statement.origin(), body);
+                statement.keyCheck(), "write", statement.advancing(), statement.origin(), body);
     }
 
     /**
@@ -1377,7 +1377,7 @@ public final class ProgramGenerator {
      */
     private void planRewrite(Statement.Rewrite statement, List<Runnable> body) {
         planRecordOutput(statement.file(), statement.record(), statement.from(),
-                statement.keyCheck(), "rewrite", statement.origin(), body);
+                statement.keyCheck(), "rewrite", null, statement.origin(), body);
     }
 
     /**
@@ -1387,7 +1387,8 @@ public final class ProgramGenerator {
      * どちらを呼ぶかは<b>アクセス様式で翻訳時に決まる</b>。
      */
     private void planRecordOutput(FileDescription file, DataItem record, Statement.Move from,
-                                  Statement.KeyCheck keyCheck, String verb, Origin origin,
+                                  Statement.KeyCheck keyCheck, String verb,
+                                  Statement.Advancing advancing, Origin origin,
                                   List<Runnable> body) {
         int slot = nextLocal++;
         Runnable status = planFileStatus(file, origin, slot, false, keyCheck != null);
@@ -1410,8 +1411,23 @@ public final class ProgramGenerator {
         if (byKey) {
             entry = indexed ? verb + "Key" : verb + "At";
         }
-        String called = entry;
         boolean withNumber = byKey && !indexed;
+        Runnable lines = null;
+        if (advancing != null) {
+            if (byKey) {
+                // 行送りは印字するファイルのものである。鍵で引くファイルには行がない
+                report(origin, "ADVANCING cannot be used on a keyed file: " + file.name());
+                return;
+            }
+            lines = planAdvancing(advancing, origin);
+            if (lines == null) {
+                return;
+            }
+            entry = "writeLine";
+        }
+        String called = entry;
+        Runnable advance = lines;
+        boolean before = advancing != null && advancing.before();
         Runnable call = () -> {
             emitFileName(file);
             if (withNumber) {
@@ -1420,9 +1436,14 @@ public final class ProgramGenerator {
             area.run();
             length.run();
             emitLengthBounds(file, record);
+            if (advance != null) {
+                advance.run();
+                push(before ? 1 : 0);
+            }
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, called,
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
-                            + (withNumber ? "I" : "") + "L" + STORAGE + ";IIII)[B", false);
+                            + (withNumber ? "I" : "") + "L" + STORAGE + ";IIII"
+                            + (advance != null ? "IZ" : "") + ")[B", false);
         };
         planKeyedCall(call, status, slot, keyCheck, body);
     }
@@ -1565,6 +1586,35 @@ public final class ProgramGenerator {
         }
         Runnable address = planAddress(varying.depending(), origin);
         String field = numericItemConstant(varying.depending().item(), origin);
+        if (address == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
+        };
+    }
+
+    /**
+     * 送る行数を積む命令 (要件 FR-102)。
+     *
+     * <p>頁の先頭へ送る指定は<b>負の数</b>で表す。行数と同じ 1 つの引数に載せられ、
+     * 呼ぶ側の形が増えないからである。
+     *
+     * @return 読めなければ {@code null}
+     */
+    private Runnable planAdvancing(Statement.Advancing advancing, Origin origin) {
+        if (advancing.page()) {
+            return () -> push(Ops.PAGE);
+        }
+        if (advancing.fixed()) {
+            int lines = advancing.lines();
+            return () -> push(lines);
+        }
+        Runnable address = planAddress(advancing.count(), origin);
+        String field = numericItemConstant(advancing.count().item(), origin);
         if (address == null || field == null) {
             return null;
         }

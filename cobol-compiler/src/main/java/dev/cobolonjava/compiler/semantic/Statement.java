@@ -568,7 +568,29 @@ public sealed interface Statement {
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
     record Write(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
-                 Origin origin) implements Statement {
+                 Advancing advancing, Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code WRITE} の行送り (要件 FR-102)。
+     *
+     * <p>印字するファイルは<b>行を送ってから書く</b>か、<b>書いてから送る</b>。
+     * {@code AFTER ADVANCING 2 LINES} なら 1 行空けてから書く。送る量は書かれた数か、
+     * 実行時に決まるデータ項目である。
+     *
+     * <p>{@code PAGE} は次の頁の先頭へ送る。
+     *
+     * @param lines 送る行数。書かれた数なら定数、項目なら {@code null}
+     * @param count 送る行数を持つ項目。定数なら {@code null}
+     * @param page 頁の先頭へ送るか
+     * @param before 書いてから送るか。{@code false} なら送ってから書く
+     */
+    record Advancing(Integer lines, DataReference count, boolean page, boolean before) {
+
+        /** 何行送るかが翻訳時に決まっているか。 */
+        public boolean fixed() {
+            return lines != null;
+        }
     }
 
     /**

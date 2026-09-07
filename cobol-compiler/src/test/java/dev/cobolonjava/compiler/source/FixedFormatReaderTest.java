@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.source;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -164,5 +165,48 @@ class FixedFormatReaderTest {
     void aCommentIndicatorInsideALiteralIsNotAComment() {
         // 落としてしまうと、黙って別のソースになる
         assertEquals("MOVE '*>' TO B.", normalize(line(' ', "    MOVE '*>' TO B.")));
+    }
+
+    // ---- 見出し部の注記段落 (FR-002、暫定判断 P-064) ----
+
+    @Test
+    @DisplayName("注記段落は中身ごと落ちる (FR-002)")
+    void aCommentEntryParagraphIsDropped() {
+        // AUTHOR などの 5 つは COBOL の決まりで注記である。中身に文法は無い
+        NormalizedSource source = new FixedFormatReader(false).normalize("MAIN.cbl", String.join("\n",
+                "000100 IDENTIFICATION DIVISION.",
+                "000200 PROGRAM-ID. MAIN.",
+                "000300 AUTHOR.",
+                "000400     FEDERAL COMPILER TESTING CENTER.",
+                "000500 ENVIRONMENT DIVISION."));
+
+        assertFalse(source.text().contains("AUTHOR"), source.text());
+        assertFalse(source.text().contains("FEDERAL"), source.text());
+        assertTrue(source.text().contains("ENVIRONMENT DIVISION"), source.text());
+    }
+
+    @Test
+    @DisplayName("注記の終わりを決めるのは語ではなく桁である (FR-002)")
+    void theEntryEndsWhereAreaAStarts() {
+        // 注記の中に DATA と書いてあっても、それは部の見出しではない。
+        // B 領域に書かれている限り注記の続きである
+        NormalizedSource source = new FixedFormatReader(false).normalize("MAIN.cbl", String.join("\n",
+                "000100 INSTALLATION.",
+                "000200     GENERAL SERVICES ADMINISTRATION",
+                "000300     AUTOMATED DATA AND TELECOMMUNICATION SERVICE.",
+                "000400 DATA DIVISION."));
+
+        assertFalse(source.text().contains("TELECOMMUNICATION"), source.text());
+        assertTrue(source.text().contains("DATA DIVISION"), source.text());
+    }
+
+    @Test
+    @DisplayName("注記でない段落は落とさない (FR-002)")
+    void anOrdinaryParagraphSurvives() {
+        NormalizedSource source = new FixedFormatReader(false).normalize("MAIN.cbl", String.join("\n",
+                "000100 PROGRAM-ID. MAIN.",
+                "000200     DISPLAY \"X\"."));
+
+        assertTrue(source.text().contains("PROGRAM-ID"), source.text());
     }
 }

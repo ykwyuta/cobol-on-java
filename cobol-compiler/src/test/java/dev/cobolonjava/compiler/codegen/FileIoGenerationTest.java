@@ -272,7 +272,7 @@ class FileIoGenerationTest {
     void lineSequentialUsesTheCodePageNewline(@TempDir Path directory) {
         run(directory, source(
                 "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. LINES.",
+                "PROGRAM-ID. LINESEQ.",
                 "ENVIRONMENT DIVISION.",
                 "INPUT-OUTPUT SECTION.",
                 "FILE-CONTROL.",
@@ -351,5 +351,157 @@ class FileIoGenerationTest {
                 "    DISPLAY LONG-REC.",
                 "    DISPLAY SHORT-REC.",
                 "    STOP RUN.")));
+    }
+
+    // ---- 行送り (要件 FR-102、暫定判断 P-063) ----
+
+    /** 印字するファイルへ 3 本書く。行送りの書き方だけを差し替える。 */
+    private static String printer(String... writes) {
+        String[] head = {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. PRINTER.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT PRINT-FILE ASSIGN TO PRTDD",
+            "        ORGANIZATION IS LINE SEQUENTIAL.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  PRINT-FILE.",
+            "01  PRINT-REC PIC X(3).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-LINES PIC 9 VALUE 3.",
+            "PROCEDURE DIVISION.",
+            "    OPEN OUTPUT PRINT-FILE.",
+        };
+        String[] tail = {
+            "    CLOSE PRINT-FILE.",
+            "    STOP RUN.",
+        };
+        String[] lines = new String[head.length + writes.length + tail.length];
+        System.arraycopy(head, 0, lines, 0, head.length);
+        System.arraycopy(writes, 0, lines, head.length, writes.length);
+        System.arraycopy(tail, 0, lines, head.length + writes.length, tail.length);
+        return source(lines);
+    }
+
+    /** 行順ファイルを読んで、行の並びへ戻す。 */
+    private static List<String> linesOf(Path path) {
+        List<String> out = new java.util.ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (byte b : bytesOf(path)) {
+            if (b == 0x15) {
+                out.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(CodePages.DEFAULT.decode(new byte[] {b}));
+            }
+        }
+        if (!current.isEmpty()) {
+            out.add(current.toString());
+        }
+        return out;
+    }
+
+    @Test
+    @DisplayName("AFTER ADVANCING 1 LINE は 1 行ずつ書く (FR-102)")
+    void singleSpacingWritesOneLineEach(@TempDir Path directory) {
+        run(directory, printer(
+                "    MOVE 'ONE' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 1 LINE.",
+                "    MOVE 'TWO' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 1 LINE."));
+
+        assertEquals(List.of("ONE", "TWO"), linesOf(directory.resolve("PRTDD")));
+    }
+
+    @Test
+    @DisplayName("AFTER ADVANCING 2 LINES は 1 行空ける (FR-102)")
+    void doubleSpacingLeavesOneBlankLine(@TempDir Path directory) {
+        // 2 行送って印字するとき、文字が乗るのは最後の 1 行だけである
+        run(directory, printer(
+                "    MOVE 'ONE' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 1 LINE.",
+                "    MOVE 'TWO' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 2 LINES."));
+
+        assertEquals(List.of("ONE", "", "TWO"), linesOf(directory.resolve("PRTDD")));
+    }
+
+    @Test
+    @DisplayName("BEFORE ADVANCING は書いてから送る (FR-102)")
+    void beforeAdvancingWritesFirst(@TempDir Path directory) {
+        run(directory, printer(
+                "    MOVE 'ONE' TO PRINT-REC.",
+                "    WRITE PRINT-REC BEFORE ADVANCING 3 LINES.",
+                "    MOVE 'TWO' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 1 LINE."));
+
+        assertEquals(List.of("ONE", "", "", "TWO"), linesOf(directory.resolve("PRTDD")));
+    }
+
+    @Test
+    @DisplayName("送る行数は実行時に決まってもよい (FR-102)")
+    void theNumberOfLinesCanBeAnItem(@TempDir Path directory) {
+        run(directory, printer(
+                "    MOVE 'ONE' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 1 LINE.",
+                "    MOVE 'TWO' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING WS-LINES LINES."));
+
+        // WS-LINES は 3 である
+        assertEquals(List.of("ONE", "", "", "TWO"), linesOf(directory.resolve("PRTDD")));
+    }
+
+    @Test
+    @DisplayName("ADVANCING PAGE は改頁の行を置く (FR-102, 暫定判断 P-063)")
+    void advancingPageWritesAPageBreak(@TempDir Path directory) {
+        // ホストは紙送りの制御文字をレコードの先頭に持つ。その桁取りを確かめて
+        // いないので、いまは改頁の文字だけの行を置く
+        run(directory, printer(
+                "    MOVE 'ONE' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 1 LINE.",
+                "    MOVE 'TWO' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING PAGE."));
+
+        assertEquals(List.of("ONE", "\f", "TWO"), linesOf(directory.resolve("PRTDD")));
+    }
+
+    @Test
+    @DisplayName("ADVANCING 0 は空行を足さない (FR-102, 暫定判断 P-063)")
+    void advancingZeroAddsNothing(@TempDir Path directory) {
+        // 紙の上では重ね印字になる。行の並びでは表せないので、そのまま次の行になる
+        run(directory, printer(
+                "    MOVE 'ONE' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 1 LINE.",
+                "    MOVE 'TWO' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 0 LINES."));
+
+        assertEquals(List.of("ONE", "TWO"), linesOf(directory.resolve("PRTDD")));
+    }
+
+    @Test
+    @DisplayName("決まった長さのレコードなら空行も空白で埋める (FR-102)")
+    void aFixedLengthBlankLineIsSpaces(@TempDir Path directory) {
+        run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. FIXEDPRT.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT PRINT-FILE ASSIGN TO FIXDD.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  PRINT-FILE.",
+                "01  PRINT-REC PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT PRINT-FILE.",
+                "    MOVE 'ONE' TO PRINT-REC.",
+                "    WRITE PRINT-REC AFTER ADVANCING 2 LINES.",
+                "    CLOSE PRINT-FILE.",
+                "    STOP RUN."));
+
+        // 行の切れ目を持たない様式では、空行は空白のレコードである
+        assertArrayEquals(ebcdic("   ONE"), bytesOf(directory.resolve("FIXDD")));
     }
 }

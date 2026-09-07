@@ -463,7 +463,8 @@ public record FileDescription(String name, String ddName, Organization organizat
         if (entry != null) {
             for (CobolParser.FileDescriptionClauseContext clause : entry.fileDescriptionClause()) {
                 if (clause.RECORDING() != null) {
-                    mode = clause.IDENTIFIER().getText();
+                    // DATA RECORDS も名前を並べるので、IDENTIFIER は複数ありうる
+                    mode = clause.IDENTIFIER(0).getText();
                 }
             }
         }

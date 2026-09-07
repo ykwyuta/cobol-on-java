@@ -95,6 +95,83 @@ public final class FixedFormatReader implements SourceReader {
 
     /** 分解済みの行を 1 本の正規化済みソースへまとめる。 */
     public NormalizedSource normalize(List<SourceLine> lines) {
+        return join(withoutCommentEntries(lines));
+    }
+
+    /**
+     * 見出し部の注記段落を落とす (要件 FR-002)。
+     *
+     * <p>{@code AUTHOR} / {@code INSTALLATION} / {@code DATE-WRITTEN} /
+     * {@code DATE-COMPILED} / {@code SECURITY} の 5 つは、COBOL の決まりで<b>注記</b>で
+     * ある。書かれた中身に文法は無く、処理系は読んで捨てる。
+     *
+     * <pre>
+     * 000400 AUTHOR.
+     * 000500     FEDERAL COMPILER TESTING CENTER.
+     * 000600 INSTALLATION.
+     * 000700     GENERAL SERVICES ADMINISTRATION
+     * 000800     AUTOMATED DATA AND TELECOMMUNICATION SERVICE.
+     * </pre>
+     *
+     * <p>どこで終わるかを決めるのは<b>桁</b>である。注記は B 領域 (12 桁目から) に書き、
+     * 次に A 領域 (8〜11 桁目) から始まる行が来たら終わりである。語では決められない。
+     * 上の例の注記には {@code DATA} という語が入っており、部の見出しと見分けられない。
+     *
+     * <p>だから構文解析器へ渡す前に、ここで落とす。桁を知っているのはこの層だけである。
+     * 自由形式には領域が無いので、この扱いは固定形式だけである (暫定判断 P-064)。
+     */
+    private static List<SourceLine> withoutCommentEntries(List<SourceLine> lines) {
+        List<SourceLine> out = new ArrayList<>();
+        boolean inside = false;
+        for (SourceLine line : lines) {
+            if (line.indicator() == LineIndicator.COMMENT
+                    || line.indicator() == LineIndicator.EJECT) {
+                out.add(line);
+                continue;
+            }
+            boolean areaA = startsInAreaA(line.content());
+            if (inside && !areaA) {
+                continue;
+            }
+            inside = false;
+            if (areaA && namesCommentEntry(line.content())) {
+                inside = true;
+                continue;
+            }
+            out.add(line);
+        }
+        return out;
+    }
+
+    /** A 領域 (8〜11 桁目) から書き始めているか。 */
+    private static boolean startsInAreaA(String content) {
+        for (int i = 0; i < content.length(); i++) {
+            if (content.charAt(i) != ' ') {
+                return i < AREA_A_WIDTH;
+            }
+        }
+        return false;
+    }
+
+    /** 注記段落の見出しか。{@code AUTHOR.} のように終止符が続く。 */
+    private static boolean namesCommentEntry(String content) {
+        String text = content.strip();
+        int stop = text.indexOf('.');
+        if (stop <= 0) {
+            return false;
+        }
+        return COMMENT_ENTRIES.contains(
+                text.substring(0, stop).strip().toUpperCase(java.util.Locale.ROOT));
+    }
+
+    /** A 領域の広さ。8 桁目から 11 桁目までの 4 桁である。 */
+    private static final int AREA_A_WIDTH = 4;
+
+    /** 中身が注記である段落。COBOL の決まりで、処理系は読んで捨てる。 */
+    private static final java.util.Set<String> COMMENT_ENTRIES = java.util.Set.of(
+            "AUTHOR", "INSTALLATION", "DATE-WRITTEN", "DATE-COMPILED", "SECURITY");
+
+    private NormalizedSource join(List<SourceLine> lines) {
         NormalizedSource.Builder out = new NormalizedSource.Builder();
         // 直前の行が文字定数の途中で終わっているか。継続の扱いを分ける
         char openQuote = 0;
