@@ -59,7 +59,7 @@ public final class Main {
         List<JobDiagnostic> diagnostics;
         if (description.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
                 .endsWith(".jcl")) {
-            Jcl.Result parsed = Jcl.read(text, base, procedures == null
+            Jcl.Result parsed = Jcl.read(text, procedures == null
                     ? dev.cobolonjava.job.jcl.JclLibrary.empty()
                     : dev.cobolonjava.job.jcl.JclLibrary.at(procedures));
             job = parsed.job();

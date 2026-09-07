@@ -34,7 +34,7 @@ class DispositionTest {
     private JobRunner.Result run(String... cards) {
         sink = new ByteArrayOutputStream();
         dev.cobolonjava.job.jcl.Jcl.Result parsed = dev.cobolonjava.job.jcl.Jcl.read(
-                String.join("\n", cards), directory);
+                String.join("\n", cards));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
         return JobRunner.at(directory.resolve("work"),
                         DispositionTest.class.getClassLoader(), sink)
@@ -432,7 +432,7 @@ class DispositionTest {
                 String.join("\n",
                         "//J        JOB  (ACCT)",
                         "//STEP1    EXEC PGM=P",
-                        "//OUT      DD   DSN=OUT.DAT,DISP=(NEW,CATLG,DELETE)"), directory);
+                        "//OUT      DD   DSN=OUT.DAT,DISP=(NEW,CATLG,DELETE)"));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
 
         DdTarget.DataSet target = (DdTarget.DataSet)

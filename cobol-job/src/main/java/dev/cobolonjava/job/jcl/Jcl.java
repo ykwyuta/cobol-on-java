@@ -8,7 +8,6 @@ import dev.cobolonjava.job.JobDiagnostic;
 import dev.cobolonjava.job.Step;
 import dev.cobolonjava.job.StepCondition;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -53,9 +52,15 @@ public final class Jcl {
         }
     }
 
-    /** JCL を読む。データセット名は基点のディレクトリの下に置かれているものとする。 */
-    public static Result read(String text, Path base) {
-        return read(text, base, JclLibrary.empty());
+    /**
+     * JCL を読む。
+     *
+     * <p>置き場を知らない。{@code DSN=} は<b>名前</b>であって場所ではなく、どこにあるかを
+     * 引くのは目録の仕事である (要件 FR-131、暫定判断 P-045 の解消)。ここで場所へ直せば、
+     * 目録に載せる・外すという操作が表せなくなる。
+     */
+    public static Result read(String text) {
+        return read(text, JclLibrary.empty());
     }
 
     /**
@@ -63,18 +68,17 @@ public final class Jcl {
      *
      * @param library {@code EXEC 手続き名} と {@code INCLUDE} の取り出し先
      */
-    public static Result read(String text, Path base, JclLibrary library) {
-        return new Builder(base, library).build(text);
+    public static Result read(String text, JclLibrary library) {
+        return new Builder(library).build(text);
     }
 
     /** JCL をバイト列から読む。JCL の本文は UTF-8 のテキストである。 */
-    public static Result read(byte[] bytes, Path base) {
-        return read(new String(bytes, StandardCharsets.UTF_8), base);
+    public static Result read(byte[] bytes) {
+        return read(new String(bytes, StandardCharsets.UTF_8));
     }
 
     private static final class Builder {
 
-        private final Path base;
         private final JclLibrary library;
         private final List<JobDiagnostic> diagnostics = new ArrayList<>();
         private final List<Step> steps = new ArrayList<>();
@@ -98,8 +102,7 @@ public final class Jcl {
         /** そのステップを囲んでいた条件。{@code EXEC} を読んだ時点のものである。 */
         private List<StepCondition> enclosing = List.of();
 
-        private Builder(Path base, JclLibrary library) {
-            this.base = base;
+        private Builder(JclLibrary library) {
             this.library = library;
         }
 
@@ -347,6 +350,7 @@ public final class Jcl {
             Disposition disposition = Disposition.of(Disposition.Status.NEW);
             DdTarget special = null;
             long space = DdAssignment.UNLIMITED;
+            String serial = null;
             for (String operand : JclOperands.split(operands)) {
                 String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
                 String value = JclOperands.value(operand);
@@ -356,8 +360,9 @@ public final class Jcl {
                     case "SYSOUT" -> special = new DdTarget.Sysout();
                     case "DUMMY" -> special = new DdTarget.Dummy();
                     case "SPACE" -> space = spaceOf(card, value);
-                    // 装置とボリュームの指定は、ファイルとして持つこの実装では効かない
-                    case "UNIT", "VOL", "VOLUME", "LRECL", "RECFM", "BLKSIZE", "DCB" ->
+                    case "VOL", "VOLUME" -> serial = serialOf(card, value);
+                    // 装置と記述の指定は、ファイルとして持つこの実装では効かない
+                    case "UNIT", "LRECL", "RECFM", "BLKSIZE", "DCB" ->
                             report(card, key + " is not supported yet");
                     default -> report(card, "DD does not support: " + key);
                 }
@@ -375,7 +380,70 @@ public final class Jcl {
                 return new Allocation(new DdTarget.Temporary(name.substring(1), disposition),
                         space);
             }
-            return new Allocation(new DdTarget.DataSet(base.resolve(name), disposition), space);
+            String member = memberOf(card, name);
+            if (member != null && member.isEmpty()) {
+                return null;
+            }
+            return new Allocation(new DdTarget.DataSet(libraryOf(name), member, serial,
+                    disposition), space);
+        }
+
+        /**
+         * {@code VOL=SER=通し番号} または {@code VOL=(...,SER=通し番号)} (暫定判断 P-045 の解消)。
+         *
+         * <p>これを書いたジョブは<b>目録を通さずに置き場を直に見る</b>。{@code KEEP} で
+         * 残したデータセットは目録に載っていないので、名前だけでは届かない。ホストで
+         * {@code VOL=SER} を書かねばならないのと同じ形である。
+         */
+        private String serialOf(JclCard card, String value) {
+            for (String part : JclOperands.split(JclOperands.unwrap(value))) {
+                String key = JclOperands.key(part).toUpperCase(Locale.ROOT);
+                if (key.equals("REF")) {
+                    report(card, "VOL=REF is not supported yet");
+                    return null;
+                }
+                if (!key.equals("SER")) {
+                    continue;
+                }
+                List<String> serials =
+                        JclOperands.split(JclOperands.unwrap(JclOperands.value(part)));
+                // 複数ボリュームにまたがるデータセットは持たない。先頭を採る
+                return serials.isEmpty() ? null : JclOperands.unquote(serials.get(0));
+            }
+            report(card, "VOL needs SER=");
+            return null;
+        }
+
+        /**
+         * {@code DSN=ライブラリ(メンバ)} のメンバ名 (要件 FR-113)。
+         *
+         * <p>括弧の中が世代番号のときは<b>世代データグループ</b>であり、メンバではない
+         * (要件 FR-114)。まだ持っていないので誤りとして知らせる。黙ってメンバ名として
+         * 扱うと、{@code (+1)} という名前のメンバを作ってしまう。
+         *
+         * @return 書かれていなければ {@code null}。誤りなら空文字列
+         */
+        private String memberOf(JclCard card, String name) {
+            int open = name.indexOf('(');
+            if (open < 0 || !name.endsWith(")")) {
+                return null;
+            }
+            String member = name.substring(open + 1, name.length() - 1).trim();
+            if (member.matches("[+-]?\\d+")) {
+                report(card, "a generation data group is not supported yet: " + name);
+                return "";
+            }
+            if (member.isEmpty()) {
+                report(card, "DSN needs a member name inside the parentheses: " + name);
+                return "";
+            }
+            return member.toUpperCase(Locale.ROOT);
+        }
+
+        /** {@code DSN=ライブラリ(メンバ)} のライブラリ名。メンバを書かなければ名前そのもの。 */
+        private static String libraryOf(String name) {
+            int open = name.indexOf('(');
+            return open < 0 || !name.endsWith(")") ? name : name.substring(0, open).trim();
         }
 
         /**

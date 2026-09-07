@@ -199,7 +199,7 @@ public final class ProgramContext {
      */
     public DataSet file(String name, String ddName) {
         return files.computeIfAbsent(name,
-                k -> limited(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
+                k -> allocated(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
     }
 
     /**
@@ -218,18 +218,20 @@ public final class ProgramContext {
             Path path = catalog.resolve(ddName);
             return organization == Organization.RELATIVE
                     ? RelativeDataSet.at(path, declared)
-                    : limited(SequentialDataSet.at(path, declared), ddName);
+                    : allocated(SequentialDataSet.at(path, declared), ddName);
         });
     }
 
     /**
-     * ジョブが割り当てた領域の大きさを渡す (要件 FR-141)。
+     * 割当てが決めたことをファイルへ渡す (要件 FR-113, FR-141)。
      *
-     * <p>限りがあるのを知っているのは目録だけである。渡さなければ、実機では領域を
-     * 使い切って止まるジョブが、ここでは通ってしまう。
+     * <p>プログラムからは見えないことである。取った領域の大きさも、指しているのが
+     * 区分データセットのメンバかどうかも、<b>ジョブが決めてプログラムは知らない</b>。
+     * 渡さなければ、実機では止まるジョブがここでは通ってしまう。
      */
-    private SequentialDataSet limited(SequentialDataSet file, String ddName) {
+    private SequentialDataSet allocated(SequentialDataSet file, String ddName) {
         file.limit(catalog.limitOf(ddName));
+        file.member(catalog.isMemberOfLibrary(ddName));
         return file;
     }
 

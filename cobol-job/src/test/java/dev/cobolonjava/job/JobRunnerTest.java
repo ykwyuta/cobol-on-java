@@ -34,7 +34,8 @@ class JobRunnerTest {
     private JobRunner runner() {
         sink = new ByteArrayOutputStream();
         return JobRunner.at(directory.resolve("work"),
-                JobRunnerTest.class.getClassLoader(), sink);
+                JobRunnerTest.class.getClassLoader(), sink)
+                .withBase(directory);
     }
 
     private String output() {
@@ -174,9 +175,9 @@ class JobRunnerTest {
         JobRunner.Result result = runner().run(new Job("J", List.of(
                 step("COPY", "COPYDD", null, new StepCondition.Always(),
                         new DdAssignment("INDD",
-                                new DdTarget.DataSet(directory.resolve("in.dat"))),
+                                new DdTarget.DataSet("in.dat")),
                         new DdAssignment("OUTDD",
-                                new DdTarget.DataSet(directory.resolve("out.dat")))))));
+                                new DdTarget.DataSet("out.dat"))))));
 
         assertEquals(JobRunner.Status.EXECUTED, result.step("COPY").status());
         assertEquals("AAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBB",
@@ -190,7 +191,7 @@ class JobRunnerTest {
                 step("COPY", "COPYDD", null, new StepCondition.Always(),
                         new DdAssignment("INDD", new DdTarget.Dummy()),
                         new DdAssignment("OUTDD",
-                                new DdTarget.DataSet(directory.resolve("out.dat")))))));
+                                new DdTarget.DataSet("out.dat"))))));
 
         assertEquals(JobRunner.Status.EXECUTED, result.step("COPY").status());
         assertEquals(0, bytesOf("out.dat").length);
@@ -268,10 +269,10 @@ class JobRunnerTest {
         JobRunner.Result result = runner().run(new Job("J", List.of(
                 step("COPY", "COPYDD", null, new StepCondition.Always(),
                         new DdAssignment("INDD", new DdTarget.Concatenation(List.of(
-                                new DdTarget.DataSet(directory.resolve("east.dat")),
-                                new DdTarget.DataSet(directory.resolve("west.dat"))))),
+                                new DdTarget.DataSet("east.dat"),
+                                new DdTarget.DataSet("west.dat")))),
                         new DdAssignment("OUTDD",
-                                new DdTarget.DataSet(directory.resolve("out.dat")))))));
+                                new DdTarget.DataSet("out.dat"))))));
 
         assertEquals(JobRunner.Status.EXECUTED, result.step("COPY").status());
         assertEquals("EEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWW",
@@ -286,8 +287,7 @@ class JobRunnerTest {
                         "//PAYROLL  JOB  (ACCT),'PAY RUN'",
                         "//FIRST    EXEC PGM=SETRC,PARM='4'",
                         "//SECOND   EXEC PGM=SAYPARM,PARM='OK',COND=(4,LT,FIRST)",
-                        "//THIRD    EXEC PGM=SAYPARM,PARM='NEVER',COND=(0,LT,FIRST)")),
-                directory);
+                        "//THIRD    EXEC PGM=SAYPARM,PARM='NEVER',COND=(0,LT,FIRST)")));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
 
         JobRunner.Result result = runner().run(parsed.job());

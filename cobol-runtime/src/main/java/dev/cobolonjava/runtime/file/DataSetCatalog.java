@@ -22,6 +22,8 @@ public final class DataSetCatalog {
     private final java.util.Set<String> appended = new java.util.HashSet<>();
     /** DD 名ごとに割り当てた領域の大きさ (バイト)。 */
     private final Map<String, Long> limits = new HashMap<>();
+    /** 区分データセットのメンバを指す DD 名。 */
+    private final java.util.Set<String> members = new java.util.HashSet<>();
 
     public DataSetCatalog(Path directory) {
         this.directory = directory;
@@ -87,6 +89,26 @@ public final class DataSetCatalog {
     /** その DD に割り当てた領域の大きさ。書かれていなければ {@code 0} (限りなし)。 */
     public long limitOf(String ddName) {
         return limits.getOrDefault(ddName.toUpperCase(Locale.ROOT), 0L);
+    }
+
+    /**
+     * その DD が<b>区分データセットのメンバ</b>を指すことにする (要件 FR-113)。
+     *
+     * <p>{@code DSN=ライブラリ(メンバ)} である。無かったときの意味が変わる — 順編成なら
+     * 「無いファイル」だが、こちらは<b>データセットはあってメンバだけが無い</b>。
+     * 割当ては通っているので、開く段で {@code S013} になる。
+     *
+     * <p>パスからは決められない。メンバはディレクトリの下のファイルだが、順編成の
+     * データセットも置き場の下のファイルであり、見分けがつかないからである。
+     */
+    public DataSetCatalog memberOfLibrary(String ddName) {
+        members.add(ddName.toUpperCase(Locale.ROOT));
+        return this;
+    }
+
+    /** その DD が区分データセットのメンバを指すか。 */
+    public boolean isMemberOfLibrary(String ddName) {
+        return members.contains(ddName.toUpperCase(Locale.ROOT));
     }
 
     /** DD 名が指すファイル。書かれていなければ既定のディレクトリの下を指す。 */

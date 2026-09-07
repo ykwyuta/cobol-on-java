@@ -49,6 +49,25 @@ public final class JobRunner {
     private final CodePage codePage;
     /** 結び付けられていない DD 名が指す先。データセットの置き場である。 */
     private Path base = Path.of(".");
+    /**
+     * 名前から置き場を引く目録 (要件 FR-131、暫定判断 P-045 の解消)。
+     *
+     * <p>置き場を差し替えられるので、実行のたびに開き直す。目録は置き場の上に載っている
+     * ものであり、置き場が変われば別の目録になる。
+     */
+    private SystemCatalog system;
+    /**
+     * このジョブが割り当てたデータセットの名前 (要件 FR-131)。
+     *
+     * <p>目録に載っていなくても、<b>同じジョブの後続ステップからは見える</b>。ホストでは
+     * ジョブが割り当てたデータセットを覚えていて、あとのステップが同じ名前を書けば
+     * そこから引く。目録を引き直すのは次のジョブからである。
+     *
+     * <p>{@code DISP=(NEW,KEEP)} で作ったものを次のステップが {@code DISP=OLD} で使う、
+     * という書き方が通るのはこれによる。通らなくなるのは<b>ジョブをまたいだとき</b>で
+     * あり、暫定判断 P-045 が挙げていた危うさもそこにあった。
+     */
+    private final java.util.Set<String> allocated = new java.util.HashSet<>();
 
     public JobRunner(Path workDirectory, ClassLoader loader, OutputStream out, CodePage codePage) {
         this.workDirectory = workDirectory;
@@ -151,8 +170,10 @@ public final class JobRunner {
     public Result run(Job job) {
         JobState state = new JobState();
         List<StepOutcome> outcomes = new ArrayList<>();
+        system = new SystemCatalog(base);
+        allocated.clear();
         // データセットごとの、いちばん新しい処置。ジョブの終わりに PASS を片付ける
-        Map<Path, Disposition.Action> lastAction = new LinkedHashMap<>();
+        Map<Path, Outcome> lastAction = new LinkedHashMap<>();
         boolean failed = false;
         for (Step step : job.steps()) {
             if (failed) {
@@ -172,7 +193,7 @@ public final class JobRunner {
     }
 
     private StepOutcome runStep(Job job, Step step, JobState state,
-                                Map<Path, Disposition.Action> lastAction) {
+                                Map<Path, Outcome> lastAction) {
         if (!allowed(step, state)) {
             return new StepOutcome(step.name(), Status.BYPASSED, -1, null);
         }
@@ -353,9 +374,30 @@ public final class JobRunner {
     /**
      * ステップのあとで処置を効かせる相手。
      *
+     * @param name      目録に載っている名前。一時データセットは載らないので {@code null}。
+     *                  区分データセットのメンバでは<b>ライブラリの名前</b>である。目録が
+     *                  覚えるのはデータセットであってメンバではない
+     * @param path      {@code DELETE} が消すもの。メンバを指した DD ならメンバだけを消す
      * @param temporary ジョブが終われば消えるか
      */
-    private record Held(Path path, Disposition disposition, boolean temporary) {
+    private record Held(String name, Path path, Disposition disposition, boolean temporary) {
+    }
+
+    /**
+     * データセット 1 個に、いちばん新しく効いた処置。
+     *
+     * @param name 目録に載っている名前。一時データセットは {@code null}
+     */
+    private record Outcome(String name, Disposition.Action action) {
+    }
+
+    /**
+     * 名前を引いた結果 (要件 FR-113, FR-131)。
+     *
+     * @param dataSet データセットそのものの場所。区分ならライブラリのディレクトリである
+     * @param path    DD が指すもの。メンバを書いていればライブラリの下のメンバ
+     */
+    private record Place(Path dataSet, Path path) {
     }
 
     /**
@@ -372,14 +414,30 @@ public final class JobRunner {
         }
         switch (assignment.target()) {
             case DdTarget.DataSet target -> {
-                hold(catalog, name, target.path(), target.disposition(), false, dataSets);
+                Place place = locate(target);
+                allocateDataSet(name, target, place);
+                dataSets.add(new Held(target.name(), place.path(), target.disposition(), false));
+                catalog.assign(name, place.path());
+                if (target.partitioned()) {
+                    // メンバが無いことが分かるのは開く段である (要件 FR-113)
+                    catalog.memberOfLibrary(name);
+                }
+                if (target.disposition().status() == Disposition.Status.MOD) {
+                    // DISP=MOD は OPEN OUTPUT を末尾への書き足しへ変える (要件 FR-133)
+                    catalog.appendTo(name);
+                }
             }
             case DdTarget.Temporary target -> {
                 // 置き場を決めるのはここである。ジョブが場所を知らないので、
                 // 同じジョブを同時に流しても互いの作業ファイルを踏まない
                 createDirectory(temporary);
-                hold(catalog, name, temporary.resolve(target.name()), target.disposition(),
-                        true, dataSets);
+                Path path = temporary.resolve(target.name());
+                allocateTemporary(name, path, target.disposition());
+                dataSets.add(new Held(null, path, target.disposition(), true));
+                catalog.assign(name, path);
+                if (target.disposition().status() == Disposition.Status.MOD) {
+                    catalog.appendTo(name);
+                }
             }
             case DdTarget.Sysout ignored -> {
                 Path spool = stepWork.resolve(name + ".sysout");
@@ -400,20 +458,29 @@ public final class JobRunner {
                 catalog.assign(name, inline);
             }
             case DdTarget.Concatenation target -> {
+                // 連結の各段も、それぞれ普通のデータセットとして割り当てる。並べたことで
+                // 割当ての規則が変わるわけではない
+                List<Path> parts = new ArrayList<>();
                 for (DdTarget part : target.parts()) {
                     if (part instanceof DdTarget.DataSet dataSet) {
-                        allocateDataSet(name, dataSet.path(), dataSet.disposition());
-                        dataSets.add(new Held(dataSet.path(), dataSet.disposition(), false));
+                        Place place = locate(dataSet);
+                        allocateDataSet(name, dataSet, place);
+                        dataSets.add(new Held(dataSet.name(), place.path(),
+                                dataSet.disposition(), false));
+                        parts.add(place.path());
                     } else if (part instanceof DdTarget.Temporary held) {
                         createDirectory(temporary);
                         Path path = temporary.resolve(held.name());
-                        allocateDataSet(name, path, held.disposition());
-                        dataSets.add(new Held(path, held.disposition(), true));
+                        allocateTemporary(name, path, held.disposition());
+                        dataSets.add(new Held(null, path, held.disposition(), true));
+                        parts.add(path);
+                    } else {
+                        parts.add(null);
                     }
                 }
                 Path joined = stepWork.resolve(name + ".concat");
-                writeBytes(joined, concatenate(target.parts(), temporary, name));
-                copyAttributes(target.parts(), joined);
+                writeBytes(joined, concatenate(target.parts(), parts, name));
+                copyAttributes(parts, joined);
                 catalog.assign(name, joined);
             }
         }
@@ -421,25 +488,105 @@ public final class JobRunner {
     }
 
     /**
-     * データセット 1 個を割り当てる (要件 FR-133)。
+     * 名前から置き場を引く (要件 FR-113, FR-131、暫定判断 P-045 の解消)。
+     *
+     * <p>目録を通すかどうかはここでは決めない。場所だけを出す。区分データセットなら
+     * ライブラリのディレクトリと、その下のメンバの両方を返す。
+     */
+    private Place locate(DdTarget.DataSet target) {
+        Path dataSet = system.onVolume(target.name());
+        return new Place(dataSet,
+                target.partitioned() ? dataSet.resolve(target.member()) : dataSet);
+    }
+
+    /**
+     * データセット 1 個を割り当てる (要件 FR-131, FR-133)。
      *
      * <p>{@code DISP} の 1 つ目が言っていることと、実際にあるかどうかが食い違えば、
      * <b>ステップは動かない</b>。黙って作り直したり、無いものを空として読ませたりすると、
      * 名前を打ち間違えたジョブが「0 件処理した」と言って正常終了してしまう。
+     *
+     * <h2>「ある」は目録から引けることである</h2>
+     * <p>{@code OLD} と {@code SHR} が確かめるのは<b>目録から引けるか</b>である。置き場に
+     * バイト列が残っていても、目録に載っていなければ名前では届かない。{@code KEEP} で
+     * 残したものがこれにあたり、{@code VOL=SER=} を書いて初めて見える。
+     *
+     * <p>{@code NEW} だけは置き場を見る。目録に載っていなくても<b>場所は塞がっている</b>
+     * ので、そこへ新しく作ることはできない。ホストの {@code DUPLICATE NAME ON DIRECT
+     * ACCESS} がこれである。
+     *
+     * <h2>作っただけでは目録に載らない</h2>
+     * <p>{@code NEW} で作ったものは、その場で「載っていない」と書き留める。目録へ載るのは
+     * ステップが終わって {@code CATLG} が効いたときだけである。書き留めておかないと、
+     * 次のジョブから<b>覚えのない名前</b>として拾われ、{@code KEEP} と {@code CATLG} の
+     * 区別がまた消えてしまう。
      */
-    /** 割り当てて目録へ入れ、あとで処置を効かせる相手として覚える。 */
-    private void hold(DataSetCatalog catalog, String ddName, Path path,
-                      Disposition disposition, boolean temporary, List<Held> dataSets) {
-        allocateDataSet(ddName, path, disposition);
-        dataSets.add(new Held(path, disposition, temporary));
-        catalog.assign(ddName, path);
-        if (disposition.status() == Disposition.Status.MOD) {
-            // DISP=MOD は OPEN OUTPUT を末尾への書き足しへ変える (要件 FR-133)
-            catalog.appendTo(ddName);
+    private void allocateDataSet(String ddName, DdTarget.DataSet target, Place place) {
+        // VOL=SER= を書けば目録を通さない。載っていないデータセットへ届く唯一の手である。
+        // このジョブが割り当てたものも、目録を通さずに見える
+        String name = target.name();
+        boolean known = target.serial() != null || system.isCataloged(name)
+                || allocated.contains(key(name));
+        boolean onVolume = Files.exists(place.dataSet());
+        boolean found = known && onVolume;
+        switch (target.disposition().status()) {
+            case NEW -> {
+                if (onVolume) {
+                    throw new AllocationFailure("IEF344I " + ddName
+                            + " - DUPLICATE NAME ON DIRECT ACCESS: " + name);
+                }
+                create(target, place);
+            }
+            case OLD, SHR -> {
+                if (!found) {
+                    throw new AllocationFailure("IEF212I " + ddName
+                            + " - DATA SET NOT FOUND: " + name);
+                }
+                if (target.partitioned() && !Files.isDirectory(place.dataSet())) {
+                    // メンバを言えるのは区分データセットだけである (要件 FR-113)
+                    throw new AllocationFailure("IEF212I " + ddName
+                            + " - NOT A PARTITIONED DATA SET: " + name);
+                }
+            }
+            case MOD -> {
+                if (!found) {
+                    if (onVolume) {
+                        throw new AllocationFailure("IEF344I " + ddName
+                                + " - DUPLICATE NAME ON DIRECT ACCESS: " + name);
+                    }
+                    create(target, place);
+                }
+            }
+            case ANY -> {
+                // 状態を言っていない。確かめることも作ることもない。宣言的形式のための形で
+                // あり、目録も見ない (暫定判断 P-054)
+            }
         }
+        // このジョブがこの名前を割り当てた。あとのステップは目録を通さずに引ける
+        allocated.add(key(name));
     }
 
-    private void allocateDataSet(String ddName, Path path, Disposition disposition) {
+    private static String key(String name) {
+        return name.toUpperCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * 割り当てた時点で場所を取る。中身が無いだけである。
+     *
+     * <p>区分データセットならディレクトリを作る。メンバはまだ無い — 作るのは
+     * {@code OPEN OUTPUT} である。
+     */
+    private void create(DdTarget.DataSet target, Place place) {
+        if (target.partitioned()) {
+            createDirectory(place.dataSet());
+        } else {
+            writeBytes(place.dataSet(), new byte[0]);
+        }
+        system.uncatalog(target.name());
+    }
+
+    /** 一時データセットを割り当てる。目録には載らないので、あるかどうかだけを見る。 */
+    private void allocateTemporary(String ddName, Path path, Disposition disposition) {
         boolean exists = Files.exists(path);
         switch (disposition.status()) {
             case NEW -> {
@@ -447,7 +594,6 @@ public final class JobRunner {
                     throw new AllocationFailure("IEF344I " + ddName
                             + " - DUPLICATE NAME ON DIRECT ACCESS: " + path.getFileName());
                 }
-                // 割り当てた時点で場所は取れている。中身が無いだけである
                 writeBytes(path, new byte[0]);
             }
             case OLD, SHR -> {
@@ -468,25 +614,63 @@ public final class JobRunner {
     }
 
     /**
-     * ステップが終わったところで処置を効かせる (要件 FR-133)。
+     * ステップが終わったところで処置を効かせる (要件 FR-133、暫定判断 P-045 の解消)。
      *
-     * <p>{@code DELETE} なら消す。{@code KEEP} / {@code CATLG} / {@code UNCATLG} /
-     * {@code PASS} はどれも残す。目録をディレクトリそのものとしているので、
-     * <b>載せる・外すの区別がない</b> (暫定判断 P-045)。
+     * <p>置き場と目録が別なので、4 つの残し方が<b>それぞれ違うことをする</b>。
+     *
+     * <ul>
+     *   <li>{@code DELETE} — 置き場から消し、目録からも外す</li>
+     *   <li>{@code KEEP} — 置き場に残す。目録には<b>触れない</b>。{@code NEW} で作ったものは
+     *       載っていないままなので、次のジョブは名前だけでは届かない</li>
+     *   <li>{@code CATLG} — 置き場に残し、目録へ載せる。名前だけで届くようになる</li>
+     *   <li>{@code UNCATLG} — 置き場に残し、目録から外す。バイト列はあるが名前では届かない</li>
+     *   <li>{@code PASS} — 後続のステップへ渡す。ジョブの終わりに片付ける</li>
+     * </ul>
+     *
+     * <p>メンバを指した DD で {@code DELETE} が消すのは<b>メンバだけ</b>である。目録が
+     * 覚えているのはライブラリであって、メンバ 1 つを消してもライブラリは残る。
      */
-    private void dispose(List<Held> dataSets, boolean abended,
-                         Map<Path, Disposition.Action> lastAction) {
+    private void dispose(List<Held> dataSets, boolean abended, Map<Path, Outcome> lastAction) {
         for (Held held : dataSets) {
             Disposition.Action action = abended
                     ? held.disposition().abnormal()
                     : held.disposition().normal();
             if (action == Disposition.Action.DELETE) {
-                remove(held.path());
-                remove(DataSetAttributes.sidecarOf(held.path()));
+                erase(held);
                 lastAction.remove(held.path());
                 continue;
             }
-            lastAction.put(held.path(), action);
+            if (held.name() != null) {
+                switch (action) {
+                    case CATLG -> system.catalog(held.name());
+                    case UNCATLG -> system.uncatalog(held.name());
+                    default -> {
+                        // KEEP と PASS は目録に触れない。載っているものは載ったまま、
+                        // 載っていないものは載らないままである
+                    }
+                }
+            }
+            lastAction.put(held.path(), new Outcome(held.name(), action));
+        }
+    }
+
+    /**
+     * データセットを置き場からも目録からも消す。
+     *
+     * <p>メンバを指していればメンバだけを消す。ライブラリそのものを指していれば、
+     * 中のメンバごと消える。
+     */
+    private void erase(Held held) {
+        if (Files.isDirectory(held.path())) {
+            deleteTree(held.path());
+        } else {
+            remove(held.path());
+            remove(DataSetAttributes.sidecarOf(held.path()));
+        }
+        // メンバを消してもライブラリは残る。目録から外すのはデータセットを消したときだけ
+        if (held.name() != null && !Files.exists(system.onVolume(held.name()))) {
+            system.forget(held.name());
+            allocated.remove(key(held.name()));
         }
     }
 
@@ -498,12 +682,12 @@ public final class JobRunner {
      * <p>{@code PASS} で残したものも消える。渡すのは<b>このジョブの後続ステップへ</b>で
      * あって、次のジョブへではない。残したければ {@code CATLG} と書く。
      */
-    private void endOfJob(Job job, Map<Path, Disposition.Action> lastAction) {
-        for (Map.Entry<Path, Disposition.Action> entry : lastAction.entrySet()) {
-            if (entry.getValue() == Disposition.Action.PASS) {
-                remove(entry.getKey());
-                remove(DataSetAttributes.sidecarOf(entry.getKey()));
+    private void endOfJob(Job job, Map<Path, Outcome> lastAction) {
+        for (Map.Entry<Path, Outcome> entry : lastAction.entrySet()) {
+            if (entry.getValue().action() != Disposition.Action.PASS) {
+                continue;
             }
+            erase(new Held(entry.getValue().name(), entry.getKey(), null, false));
         }
         deleteTree(temporaryArea(job));
     }
@@ -514,12 +698,13 @@ public final class JobRunner {
      * <p>読むときは<b>並べた順に 1 つのファイルに見える</b>。ここでは作業領域へ書き出して
      * 1 つのファイルにしている。読むだけの使い方でしか意味を持たない (暫定判断 P-044)。
      */
-    private byte[] concatenate(List<DdTarget> parts, Path temporary, String name) {
+    private byte[] concatenate(List<DdTarget> parts, List<Path> places, String name) {
         java.io.ByteArrayOutputStream joined = new java.io.ByteArrayOutputStream();
-        for (DdTarget part : parts) {
+        for (int i = 0; i < parts.size(); i++) {
+            DdTarget part = parts.get(i);
             byte[] bytes = switch (part) {
-                case DdTarget.DataSet dataSet -> readBytes(dataSet.path());
-                case DdTarget.Temporary held -> readBytes(temporary.resolve(held.name()));
+                case DdTarget.DataSet ignored -> readBytes(places.get(i));
+                case DdTarget.Temporary ignored -> readBytes(places.get(i));
                 case DdTarget.Inline inline -> inline.data();
                 case DdTarget.Dummy ignored -> new byte[0];
                 default -> throw new IllegalArgumentException(
@@ -531,14 +716,13 @@ public final class JobRunner {
     }
 
     /** レコードの切れ目は、連結の<b>先頭のデータセット</b>のものに揃える。 */
-    private void copyAttributes(List<DdTarget> parts, Path joined) {
-        for (DdTarget part : parts) {
-            if (!(part instanceof DdTarget.DataSet dataSet)) {
+    private void copyAttributes(List<Path> places, Path joined) {
+        for (Path place : places) {
+            if (place == null) {
                 continue;
             }
-            Path sidecar = DataSetAttributes.sidecarOf(dataSet.path());
-            if (Files.isReadable(sidecar)) {
-                DataSetAttributes.read(dataSet.path()).write(joined);
+            if (Files.isReadable(DataSetAttributes.sidecarOf(place))) {
+                DataSetAttributes.read(place).write(joined);
                 return;
             }
         }

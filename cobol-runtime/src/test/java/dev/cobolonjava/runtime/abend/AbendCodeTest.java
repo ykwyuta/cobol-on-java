@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import dev.cobolonjava.runtime.decimal.DataException;
 import dev.cobolonjava.runtime.decimal.DecimalDivideException;
 import dev.cobolonjava.runtime.file.DataSetIoException;
+import dev.cobolonjava.runtime.file.DataSetOpenException;
 import dev.cobolonjava.runtime.program.FileOperationException;
 import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.program.RangeCheckException;
@@ -55,6 +56,14 @@ class AbendCodeTest {
         assertEquals(AbendCode.S001, Abend.codeOf(failure));
         // もとの入出力例外は捨てない
         assertEquals("device gone", failure.getCause().getMessage());
+    }
+
+    @Test
+    @DisplayName("開けなかったデータセットは S013 (FR-113, FR-141)")
+    void anOpenThatCannotSucceedIsS013() {
+        // 割当ては通ったのに開けない、というところに立つ。ファイル状態コードにならない
+        assertEquals(AbendCode.S013, Abend.codeOf(new DataSetOpenException("member not found",
+                java.nio.file.Path.of("MY.LIB/NOSUCH"))));
     }
 
     @Test

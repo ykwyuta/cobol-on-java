@@ -34,7 +34,7 @@ class UtilityTest {
     private JobRunner.Result run(String... cards) {
         sink = new ByteArrayOutputStream();
         dev.cobolonjava.job.jcl.Jcl.Result parsed = dev.cobolonjava.job.jcl.Jcl.read(
-                String.join("\n", cards), directory);
+                String.join("\n", cards));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
         return JobRunner.at(directory.resolve("work"), UtilityTest.class.getClassLoader(), sink)
                 .withBase(directory)

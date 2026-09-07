@@ -22,13 +22,13 @@ class JclIfTest {
     private static final Path BASE = Path.of("data");
 
     private static Job job(String... cards) {
-        Jcl.Result result = Jcl.read(String.join("\n", cards), BASE);
+        Jcl.Result result = Jcl.read(String.join("\n", cards));
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         return result.job();
     }
 
     private static String diagnostics(String... cards) {
-        return Jcl.read(String.join("\n", cards), BASE).diagnostics().toString();
+        return Jcl.read(String.join("\n", cards)).diagnostics().toString();
     }
 
     /** 条件だけを取り出して動くかどうかを見る。 */

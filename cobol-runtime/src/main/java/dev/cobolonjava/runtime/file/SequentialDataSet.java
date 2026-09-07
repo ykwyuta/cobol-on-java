@@ -53,6 +53,14 @@ public final class SequentialDataSet implements DataSet {
     private int damagedAt = -1;
     /** ジョブが割り当てた領域の大きさ (バイト)。{@code 0} は限りがないことを表す。 */
     private long limit;
+    /**
+     * 区分データセットのメンバを指しているか (要件 FR-113)。
+     *
+     * <p>無いときの意味が変わる。順編成なら「無いファイル」は {@code 35} で受け止められるが、
+     * メンバの場合は<b>データセットはあってメンバだけが無い</b>ので、割当ては通っている。
+     * ホストではそこで {@code S013} になる。
+     */
+    private boolean member;
 
     public SequentialDataSet(Path path, DataSetAttributes attributes) {
         this.path = path;
@@ -90,6 +98,16 @@ public final class SequentialDataSet implements DataSet {
         this.limit = bytes;
     }
 
+    /**
+     * 区分データセットのメンバであると告げる (要件 FR-113)。
+     *
+     * <p>これを知っているのは割当てだけである。パスを見ても分からない — メンバは
+     * ディレクトリの下のファイルだが、順編成のデータセットも置き場の下のファイルだからである。
+     */
+    public void member(boolean value) {
+        this.member = value;
+    }
+
     /** 開いているかどうか。 */
     public boolean isOpen() {
         return mode != null;
@@ -118,6 +136,11 @@ public final class SequentialDataSet implements DataSet {
      * {@code 05} を返す。黙って空のファイルを作ると、入力を取り違えたジョブが
      * 「0 件処理した」と言って正常終了してしまう。
      *
+     * <p>区分データセットのメンバだけは<b>状態コードにならない</b> (要件 FR-113)。
+     * 割当ては通っている — データセットはあるのだから — のにメンバが無い、というのは
+     * この {@code OPEN} 文の失敗ではなく、開くという操作の失敗である。
+     * {@link DataSetOpenException} で止める。
+     *
      * @param optional {@code SELECT OPTIONAL} と書かれているか
      * @return ファイル状態コード
      */
@@ -125,7 +148,16 @@ public final class SequentialDataSet implements DataSet {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
+        if (Files.isDirectory(path)) {
+            // 区分データセットそのものである。どのメンバを読むのか決まっていない
+            throw new DataSetOpenException("a partitioned data set is opened by member", path);
+        }
         boolean missing = !Files.isReadable(path);
+        if (missing && member && !optional
+                && requested != OpenMode.OUTPUT && requested != OpenMode.EXTEND) {
+            // データセットはある。無いのはメンバであり、受け止め手はない
+            throw new DataSetOpenException("member not found", path);
+        }
         if (missing && requested != OpenMode.OUTPUT && !optional) {
             return FileStatus.NOT_FOUND;
         }

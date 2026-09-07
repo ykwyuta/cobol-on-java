@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.cobolonjava.runtime.abend.AbendCode;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -617,5 +618,60 @@ class SequentialDataSetTest {
         file.open(OpenMode.OUTPUT);
         assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaa")));
         assertEquals(FileStatus.NO_SPACE, file.write(CodePages.DEFAULT.encode("bbb")));
+    }
+
+    // ---- 区分データセットのメンバ (要件 FR-113) ----
+
+    @Test
+    @DisplayName("メンバが無ければ開けない。状態コードにならない (FR-113, FR-141)")
+    void aMissingMemberCannotBeOpened() throws IOException {
+        Files.createDirectories(directory.resolve("MY.LIB"));
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("MY.LIB/NOSUCH"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+        file.member(true);
+
+        // データセット (ライブラリ) はある。無いのはメンバなので、割当ては通っている。
+        // プログラムへ制御は戻らない
+        DataSetOpenException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                DataSetOpenException.class, () -> file.open(OpenMode.INPUT));
+        assertEquals(AbendCode.S013, failure.abendCode());
+        assertTrue(failure.getMessage().contains("member not found"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("メンバでなければ、無いファイルは 35 のままである (FR-103, FR-113)")
+    void aMissingSequentialFileIsStillAStatus() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("NOSUCH.DAT"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+
+        // 順編成なら「無いファイル」であり、FILE STATUS で受け止められる
+        assertEquals(FileStatus.NOT_FOUND, file.open(OpenMode.INPUT));
+    }
+
+    @Test
+    @DisplayName("書くのなら無いメンバでもよい。そこで作る (FR-113)")
+    void writingCreatesTheMember() throws IOException {
+        Files.createDirectories(directory.resolve("MY.LIB"));
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("MY.LIB/NEWMEM"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+        file.member(true);
+
+        assertEquals(FileStatus.OK, file.open(OpenMode.OUTPUT));
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaaaa")));
+        file.close();
+        assertEquals("aaaaa", decode(Files.readAllBytes(directory.resolve("MY.LIB/NEWMEM"))));
+    }
+
+    @Test
+    @DisplayName("区分データセットそのものは開けない (FR-113, FR-141)")
+    void aLibraryIsNotOpenedByItself() throws IOException {
+        Files.createDirectories(directory.resolve("MY.LIB"));
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("MY.LIB"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+
+        // どのメンバのバイト列を読むのかが決まっていない
+        DataSetOpenException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                DataSetOpenException.class, () -> file.open(OpenMode.INPUT));
+        assertEquals(AbendCode.S013, failure.abendCode());
     }
 }

@@ -13,15 +13,35 @@ import java.util.List;
 public sealed interface DdTarget {
 
     /**
-     * 実ファイル。{@code DSN=} にあたる。
+     * 名前で指したデータセット。{@code DSN=} にあたる。
      *
+     * <p>場所ではなく<b>名前</b>を持つのが要点である。どのボリュームにあるかを引くのは
+     * 目録の仕事であり (要件 FR-131)、ジョブの記述はそれを知らない。名前と場所を
+     * 同じものにすると、目録に載せる・外すという操作が表せなくなる。
+     *
+     * @param member      区分データセットのメンバ名 (要件 FR-113)。{@code DSN=ライブラリ(メンバ)}
+     *                    と書いたときのメンバである。書かなければ {@code null}
+     * @param serial      {@code VOL=SER=} に書いたボリューム通し番号。書けば<b>目録を通さず</b>
+     *                    置き場を直に見る。目録に載っていないデータセットへ届く唯一の手である。
+     *                    書かなければ {@code null}
      * @param disposition {@code DISP=}。ステップの前と後の両方を決める
      */
-    record DataSet(Path path, Disposition disposition) implements DdTarget {
+    record DataSet(String name, String member, String serial, Disposition disposition)
+            implements DdTarget {
 
         /** 処置を書かない割当。宣言的形式はこちらを使う。 */
-        public DataSet(Path path) {
-            this(path, Disposition.UNSPECIFIED);
+        public DataSet(String name) {
+            this(name, null, null, Disposition.UNSPECIFIED);
+        }
+
+        /** 順編成のデータセットを、目録から引いて使う割当。 */
+        public DataSet(String name, Disposition disposition) {
+            this(name, null, null, disposition);
+        }
+
+        /** 区分データセットのメンバを指しているか (要件 FR-113)。 */
+        public boolean partitioned() {
+            return member != null;
         }
     }
 

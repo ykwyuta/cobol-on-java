@@ -321,6 +321,7 @@ public final class JobScript {
             // 3 語目より後は修飾語である。書く順は問わない
             Disposition disposition = Disposition.UNSPECIFIED;
             long space = DdAssignment.UNLIMITED;
+            String serial = null;
             for (String word : words.subList(3, words.size())) {
                 String key = word.toUpperCase(Locale.ROOT);
                 if (key.startsWith("DISP=")) {
@@ -333,6 +334,12 @@ public final class JobScript {
                     if (space < 0) {
                         return;
                     }
+                } else if (key.startsWith("VOL=")) {
+                    serial = word.substring(4).trim();
+                    if (serial.isEmpty()) {
+                        report(number, "VOL takes a volume serial");
+                        return;
+                    }
                 } else {
                     report(number, "DD does not support: " + word);
                     return;
@@ -341,14 +348,21 @@ public final class JobScript {
             if (upper.startsWith("DSN=")) {
                 String written = target.substring(4);
                 // JCL と同じく、先頭が & のものは一時データセットである
-                dd.add(new DdAssignment(name, written.startsWith("&")
-                        ? new DdTarget.Temporary(written.substring(1), disposition)
-                        : new DdTarget.DataSet(java.nio.file.Path.of(written), disposition),
-                        space));
+                if (written.startsWith("&")) {
+                    dd.add(new DdAssignment(name,
+                            new DdTarget.Temporary(written.substring(1), disposition), space));
+                    return;
+                }
+                String member = memberOf(written, number);
+                if ("".equals(member)) {
+                    return;
+                }
+                dd.add(new DdAssignment(name, new DdTarget.DataSet(libraryOf(written), member,
+                        serial, disposition), space));
                 return;
             }
             if (words.size() > 3) {
-                report(number, "DISP and SPACE go with DSN=");
+                report(number, "DISP, SPACE and VOL go with DSN=");
                 return;
             }
             switch (upper) {
@@ -357,6 +371,31 @@ public final class JobScript {
                 case "DATA" -> dd.add(new DdAssignment(name, readInline(number)));
                 default -> report(number, "unknown DD target: " + target);
             }
+        }
+
+        /**
+         * {@code DSN=ライブラリ(メンバ)} のメンバ名 (要件 FR-113)。
+         *
+         * @return 書かれていなければ {@code null}。誤りなら空文字列
+         */
+        private String memberOf(String written, int number) {
+            int open = written.indexOf('(');
+            if (open < 0 || !written.endsWith(")")) {
+                return null;
+            }
+            String member = written.substring(open + 1, written.length() - 1).trim();
+            if (member.isEmpty()) {
+                report(number, "DSN needs a member name inside the parentheses: " + written);
+                return "";
+            }
+            return member.toUpperCase(Locale.ROOT);
+        }
+
+        /** {@code DSN=ライブラリ(メンバ)} のライブラリ名。メンバを書かなければ名前そのもの。 */
+        private static String libraryOf(String written) {
+            int open = written.indexOf('(');
+            return open < 0 || !written.endsWith(")")
+                    ? written : written.substring(0, open).trim();
         }
 
         /**
