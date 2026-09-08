@@ -511,10 +511,24 @@ public final class ProcedureBuilder {
      *
      * <p>{@code USE AFTER STANDARD ERROR PROCEDURE} は文ではない。その節が<b>いつ動くか</b>の
      * 宣言であり、入出力で異常が起きたときに呼ばれて、終われば元の場所へ戻る。
+     *
+     * <h2>デバッグの節は読み捨てる (要件 FR-193)</h2>
+     * <p>{@code USE FOR DEBUGGING} の節は、{@code WITH DEBUGGING MODE} が書かれて
+     * <b>いなければ注釈と同じ</b>である。これは手加減ではなく規格の決まりであり、
+     * 7 桁目の {@code D} を落とすのと同じ扱いをここでもする。いまの翻訳系は
+     * デバッグを有効にする道を持っていない ({@code FixedFormatReader.standard()}) ので、
+     * 節はいつも注釈になる。
+     *
+     * <p>本体を<b>組み立てない</b>のが肝である。組み立てると、その中の
+     * {@code DEBUG-ITEM} のような特殊レジスタを「宣言されていない」と言うことになる。
+     * 注釈なのだから、読まないのが正しい。
      */
     private void addDeclarative(CobolParser.DeclarativeSectionContext context,
                                 List<Paragraph> paragraphs, List<Section> sections,
                                 List<Declarative> declaratives) {
+        if (context.useStatement().debugTarget() != null) {
+            return;
+        }
         String name = context.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
         Origin origin = ReferenceResolver.originOf(context.sectionHeader());
         paragraphs.add(new Paragraph(name, statementsOf(context.sentence()), origin));

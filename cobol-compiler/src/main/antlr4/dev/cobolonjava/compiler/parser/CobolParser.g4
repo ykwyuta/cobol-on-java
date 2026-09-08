@@ -37,6 +37,9 @@ tokens {
     INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
     RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
+    RESERVE, AREA, AREAS, PASSWORD, PADDING,
+    I_O_CONTROL, SAME, SORT_MERGE, MULTIPLE, TAPE, POSITION, RERUN, APPLY, EVERY,
+    LINAGE, FOOTING, TOP, BOTTOM,
 
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
@@ -61,7 +64,7 @@ tokens {
     STRING, UNSTRING, DELIMITED, DELIMITER, COUNT, OVERFLOW, INTO,
     END_STRING, END_UNSTRING,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
-    FUNCTION, ALTER, PROCEED,
+    FUNCTION, ALTER, PROCEED, DEBUGGING, PROCEDURES, REFERENCES,
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
@@ -134,26 +137,73 @@ environmentDivision
 // ---- 入出力節 ----
 
 inputOutputSection
-    : INPUT_OUTPUT SECTION PERIOD fileControlParagraph?
+    : INPUT_OUTPUT SECTION PERIOD fileControlParagraph? ioControlParagraph?
+    ;
+
+// 入出力の制御。領域の共有 (SAME)、1 巻のテープに何本置くか (MULTIPLE FILE)、
+// 再開の点 (RERUN) の指定である。<b>どれも翻訳の結果には効かない</b> —
+// 記憶と装置の割り付けの話であり、こちらでは実行時の資源管理が引き受ける。
+// 読み飛ばすが、読めないとは言わない
+// <b>1 つの終止符に指定が何本も入る。</b>CCVS85 は SAME を 2 行並べて最後だけ
+// 終止符を打つ。指定ごとに終止符を要求すると、正しいプログラムを断ってしまう
+ioControlParagraph
+    : I_O_CONTROL PERIOD (ioControlEntry+ PERIOD)*
+    ;
+
+ioControlEntry
+    : SAME (RECORD | SORT | SORT_MERGE)? AREA? FOR? IDENTIFIER+
+    | MULTIPLE FILE TAPE? CONTAINS? multipleFile+
+    | RERUN ~(PERIOD | SAME | MULTIPLE | RERUN | APPLY)*
+    | APPLY ~(PERIOD | SAME | MULTIPLE | RERUN | APPLY)*
+    ;
+
+multipleFile
+    : IDENTIFIER (POSITION NUMBER)?
     ;
 
 fileControlParagraph
     : FILE_CONTROL PERIOD selectEntry*
     ;
 
-// ASSIGN に書くのは DD 名であり、ファイルの場所そのものではない
+// ASSIGN に書くのは DD 名であり、ファイルの場所そのものではない。
+//
+// <b>句の順は決まっていない。</b>ASSIGN も句の 1 つであり、ACCESS や ORGANIZATION の
+// あとに書かれることがある。規格が並びを決めているのは SELECT と名前だけである。
+// 必ず 1 つ要るという検査は意味解析でやる — 文法で位置まで縛ると、
+// 順を入れ替えただけの正しいプログラムを「読めない」と断ってしまう
 selectEntry
-    : SELECT OPTIONAL? IDENTIFIER ASSIGN TO? (IDENTIFIER | LITERAL) selectClause* PERIOD
+    : SELECT OPTIONAL? IDENTIFIER selectClause* PERIOD
     ;
 
 selectClause
-    : ORGANIZATION IS? (LINE? SEQUENTIAL | RELATIVE | INDEXED)
+    : assignClause
+    | ORGANIZATION IS? RELATIVE
+    | ORGANIZATION IS? organizationName
+    | organizationName
     | ACCESS MODE? IS? (SEQUENTIAL | RANDOM | DYNAMIC)
-    | FILE STATUS IS? identifier
+    // FILE は省いてよい。CCVS85 は「STATUS IS X」とだけ書く
+    | FILE? STATUS IS? identifier
     | RECORDING MODE? IS? IDENTIFIER
-    | RELATIVE KEY? IS? identifier
+    // 裸の RELATIVE は編成の指定、名前が続けば相対キーの指定である
+    | RELATIVE (KEY? IS? identifier)?
     | ALTERNATE RECORD? KEY? IS? identifier (WITH? DUPLICATES)?
     | RECORD KEY? IS? identifier
+    // 入出力の領域をいくつ取るか。実行時の緩衝の話であり、翻訳の結果には効かない
+    | RESERVE (NUMBER | NO) ALTERNATE? (AREA | AREAS)?
+    | PASSWORD IS? identifier
+    // 順編成のブロックの埋め草と、レコードの切れ目。どちらも装置の話である
+    | PADDING CHARACTER? IS? (identifier | literal)
+    | RECORD DELIMITER IS? (IDENTIFIER | STANDARD_1)
+    ;
+
+assignClause
+    : ASSIGN TO? (IDENTIFIER | LITERAL)+
+    ;
+
+// ORGANIZATION IS は省いてよい
+organizationName
+    : LINE? SEQUENTIAL
+    | INDEXED
     ;
 
 configurationSection
@@ -248,6 +298,32 @@ fileDescriptionClause
     // DATA RECORD(S) は「このファイルにはこの記述がある」と書くだけの覚え書きである。
     // 実際の記述は FD に続く 01 が持っており、読んで捨てるのが決まりである
     | DATA (RECORD | RECORDS) (IS | ARE)? IDENTIFIER+
+    | IS? GLOBAL
+    | IS? EXTERNAL
+    | linageClause
+    // VALUE OF は「ラベルに何を書くか」の指定である。規格でも廃要素であり、
+    // ラベルを持たないこちらでは読んで捨てる
+    | VALUE OF valueOfEntry+
+    ;
+
+valueOfEntry
+    : IDENTIFIER IS? (LITERAL | NUMBER | identifier)
+    ;
+
+// 1 ページに何行置くか (要件 FR-113)。LINAGE-COUNTER と WRITE ... ADVANCING PAGE が使う
+linageClause
+    : LINAGE IS? linageCount LINES? linagePart*
+    ;
+
+linagePart
+    : WITH? FOOTING AT? linageCount
+    | LINES? AT? TOP linageCount
+    | LINES? AT? BOTTOM linageCount
+    ;
+
+linageCount
+    : NUMBER
+    | identifier
     ;
 
 // 可変長レコードの長さは DEPENDING ON の項目が持つ
@@ -460,6 +536,14 @@ declarativeSection
 // USE は文ではなく、その節がいつ動くかの宣言である
 useStatement
     : USE GLOBAL? AFTER? STANDARD? (ERROR | EXCEPTION) PROCEDURE ON? useTarget
+    | USE FOR? DEBUGGING ON? debugTarget
+    ;
+
+// デバッグの節が何を見張るか (要件 FR-193)
+debugTarget
+    : ALL PROCEDURES
+    | ALL REFERENCES? OF? identifier
+    | IDENTIFIER+
     ;
 
 useTarget

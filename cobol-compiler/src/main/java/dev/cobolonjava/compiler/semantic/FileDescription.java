@@ -179,11 +179,11 @@ public record FileDescription(String name, String ddName, Organization organizat
     private static Selected selectedOf(CobolParser.SelectEntryContext entry,
                                        List<Diagnostic> diagnostics) {
         Origin origin = ReferenceResolver.originOf(entry);
-        List<org.antlr.v4.runtime.tree.TerminalNode> names = entry.IDENTIFIER();
-        String name = names.get(0).getText().toUpperCase(Locale.ROOT);
-        String ddName = entry.LITERAL() != null
-                ? unquote(entry.LITERAL().getText())
-                : names.get(1).getText().toUpperCase(Locale.ROOT);
+        String name = entry.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        String ddName = ddNameOf(entry, name, origin, diagnostics);
+        if (ddName == null) {
+            return null;
+        }
 
         Organization organization = Organization.SEQUENTIAL;
         RecordFormat format = RecordFormat.FIXED;
@@ -192,7 +192,14 @@ public record FileDescription(String name, String ddName, Organization organizat
         CobolParser.IdentifierContext relativeKey = null;
         List<SelectedKey> keys = new ArrayList<>();
         for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
-            if (clause.ORGANIZATION() != null) {
+            // RESERVE は ALTERNATE を含むので、副鍵より先に外す。
+            // PASSWORD は名前を持つが鍵ではない。どちらも翻訳の結果には効かない
+            if (clause.assignClause() != null || clause.RESERVE() != null
+                    || clause.PASSWORD() != null || clause.PADDING() != null
+                    || clause.DELIMITER() != null) {
+                continue;
+            }
+            if (clause.organizationName() != null || clause.ORGANIZATION() != null) {
                 organization = organizationOf(clause);
                 // 行順編成だけが切り出し方の違う編成である
                 format = organization == Organization.LINE_SEQUENTIAL
@@ -203,7 +210,13 @@ public record FileDescription(String name, String ddName, Organization organizat
             } else if (clause.STATUS() != null) {
                 status = clause.identifier();
             } else if (clause.RELATIVE() != null) {
-                relativeKey = clause.identifier();
+                // 裸の RELATIVE は編成の指定であり、鍵の名前ではない
+                if (clause.identifier() == null) {
+                    organization = Organization.RELATIVE;
+                    format = RecordFormat.FIXED;
+                } else {
+                    relativeKey = clause.identifier();
+                }
             } else if (clause.ALTERNATE() != null) {
                 keys.add(new SelectedKey(clause.identifier(), clause.DUPLICATES() != null));
             } else if (clause.RECORD() != null) {
@@ -217,14 +230,42 @@ public record FileDescription(String name, String ddName, Organization organizat
                 status, relativeKey, keys, origin);
     }
 
+    /**
+     * {@code ASSIGN} に書かれた名前 (要件 FR-100)。
+     *
+     * <p>句の順は決まっていないので、文法では位置を縛らず<b>ここで必ず 1 つあることを
+     * 確かめる</b>。無ければ、そのファイルをどこへ結び付けるのかが分からない。
+     *
+     * <p>2 つ以上書かれていたら先頭を採る。装置の名前を並べる書き方があるが、
+     * こちらでは DD 名 1 つに対応する。
+     */
+    private static String ddNameOf(CobolParser.SelectEntryContext entry, String name,
+                                   Origin origin, List<Diagnostic> diagnostics) {
+        for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
+            CobolParser.AssignClauseContext assign = clause.assignClause();
+            if (assign == null) {
+                continue;
+            }
+            if (!assign.LITERAL().isEmpty()) {
+                return unquote(assign.LITERAL(0).getText());
+            }
+            return assign.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
+        }
+        diagnostics.add(new Diagnostic(origin, "SELECT " + name + " has no ASSIGN clause"));
+        return null;
+    }
+
     private static Organization organizationOf(CobolParser.SelectClauseContext clause) {
         if (clause.RELATIVE() != null) {
             return Organization.RELATIVE;
         }
-        if (clause.INDEXED() != null) {
+        CobolParser.OrganizationNameContext organization = clause.organizationName();
+        if (organization == null || organization.INDEXED() != null) {
             return Organization.INDEXED;
         }
-        return clause.LINE() != null ? Organization.LINE_SEQUENTIAL : Organization.SEQUENTIAL;
+        return organization.LINE() != null
+                ? Organization.LINE_SEQUENTIAL
+                : Organization.SEQUENTIAL;
     }
 
     private static Access accessOf(CobolParser.SelectClauseContext clause) {
