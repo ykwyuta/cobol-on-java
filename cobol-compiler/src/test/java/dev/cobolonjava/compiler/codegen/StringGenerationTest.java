@@ -196,6 +196,33 @@ class StringGenerationTest {
     }
 
     @Test
+    @DisplayName("TALLYING IN は入れ替えずに足し込む (FR-065)")
+    void tallyingAddsToWhatIsAlreadyThere() {
+        // 規格は「いまの値に配った数を足す」と決めている。入れ替えると、
+        // 数え続ける書き方が壊れる (NC218A の UST-TEST-GF-20)
+        assertEquals("A,B,CA   B   07", run(
+                List.of("01 WS-S PIC X(5) VALUE 'A,B,C'.",
+                        "01 WS-1 PIC X(4) VALUE ALL ' '.",
+                        "01 WS-2 PIC X(4) VALUE ALL ' '.",
+                        "01 WS-N PIC 9(2) VALUE 5."),
+                "UNSTRING WS-S DELIMITED BY ',' INTO WS-1 WS-2 TALLYING IN WS-N."));
+    }
+
+    @Test
+    @DisplayName("受取項目が数字なら、小数点で位置を合わせて入れる (FR-065)")
+    void aNumericReceiverIsFilledByTheNumericRules() {
+        // "12" を PIC 9 へ入れると 2 である。英数字として左から詰めると 1 になる
+        // (NC218A の UST-TEST-GF-5)
+        // JUSTIFIED RIGHT なら右へ寄る。PIC XXX に "12" を入れると " 12" である
+        assertEquals("12000002 12", run(
+                List.of("01 WS-S PIC X(7) VALUE '1200000'.",
+                        "01 WS-N PIC 9 VALUE 0.",
+                        "01 WS-J PIC XXX JUSTIFIED RIGHT VALUE SPACE."),
+                "UNSTRING WS-S DELIMITED BY '0' INTO WS-N.",
+                "UNSTRING WS-S DELIMITED BY '0' INTO WS-J."));
+    }
+
+    @Test
     @DisplayName("区切りを書かなければ受取項目の長さぶんを取る (FR-065)")
     void withoutDelimitersEachFieldTakesItsLength() {
         // 区切りがないので 1 つ目が 4 バイト、2 つ目が残りの 2 バイトを取る

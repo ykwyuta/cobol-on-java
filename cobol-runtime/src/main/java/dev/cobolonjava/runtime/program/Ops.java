@@ -218,9 +218,38 @@ public final class Ops {
 
     /** {@code UNSTRING} の受取項目 1 個。転記が行われなかった項目は変えない。 */
     public static void storeUnstringField(UnstringVerb.Result result, int index, Storage storage,
-                                          int offset, int length) {
+                                          int offset, int length, boolean justifiedRight,
+                                          CodePage codePage) {
         if (index < result.fields().size()) {
-            storage.view(offset, length).setBytes(result.fields().get(index));
+            moveAlphanumeric(result.fields().get(index), storage, offset, length,
+                    justifiedRight, codePage);
+        }
+    }
+
+    /**
+     * {@code UNSTRING} の受取項目が数字項目のとき (要件 FR-060)。
+     *
+     * <p>切り出したものを<b>符号なし整数</b>として読み、小数点で位置を合わせて入れる。
+     * 英数字として左から詰めると、桁があふれたときに<b>上の桁</b>が残ってしまう。
+     * "12" を {@code PIC 9} へ入れると 2 である (NC218A の UST-TEST-GF-5)。
+     */
+    /**
+     * 数を<b>足し込む</b> (要件 FR-060)。
+     *
+     * <p>{@code UNSTRING ... TALLYING} は、受取項目のいまの値に「入れた項目の数」を
+     * 足す。入れ替えるのではない。規格がそう決めている (NC218A の UST-TEST-GF-20)。
+     */
+    public static void addInteger(int value, NumericItem target, Storage storage, int offset) {
+        DataView view = storage.view(offset, target.byteLength());
+        target.store(view, target.load(view).add(Decimal.of(
+                java.math.BigInteger.valueOf(Math.abs(value)), 0, value < 0 ? -1 : 1)));
+    }
+
+    public static void storeUnstringNumeric(UnstringVerb.Result result, int index,
+                                            NumericItem target, Storage storage, int offset,
+                                            CodePage codePage) {
+        if (index < result.fields().size()) {
+            moveNumeric(asInteger(result.fields().get(index), codePage), target, storage, offset);
         }
     }
 

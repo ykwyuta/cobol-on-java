@@ -689,7 +689,8 @@ public final class ProgramGenerator {
 
         int result = nextLocal++;
         Runnable storePointer = planStoreResultInt(statement.pointer(), result,
-                Type.getInternalName(StringVerb.Result.class), "pointer", statement.origin());
+                Type.getInternalName(StringVerb.Result.class), "pointer", false,
+                statement.origin());
         if (storePointer == null) {
             return;
         }
@@ -791,9 +792,10 @@ public final class ProgramGenerator {
         }
         String resultType = Type.getInternalName(UnstringVerb.Result.class);
         Runnable storePointer = planStoreResultInt(statement.pointer(), result, resultType,
-                "pointer", statement.origin());
+                "pointer", false, statement.origin());
+        // TALLYING は<b>足し込む</b>。入れ替えない (規格 VI-135)
         Runnable storeTallying = planStoreResultInt(statement.tallying(), result, resultType,
-                "tallying", statement.origin());
+                "tallying", true, statement.origin());
         if (storePointer == null || storeTallying == null) {
             return;
         }
@@ -865,15 +867,36 @@ public final class ProgramGenerator {
             };
         }
 
+        // 受取項目が数字なら、切り出したものを<b>符号なし整数</b>として入れる。
+        // 英数字として詰めると、桁があふれたときに上の桁が残る (NC218A)
+        boolean numeric = DataCategory.of(target.field()).isNumeric();
+        String numericField = numeric
+                ? numericItemConstant(target.field().item(), origin)
+                : null;
+        if (numeric && numericField == null) {
+            return null;
+        }
+        boolean justifiedField = target.field().item().justified();
         Runnable writeDelimiter = delimiter;
         Runnable writeCount = count;
         return () -> {
             run.visitVarInsn(Opcodes.ALOAD, result);
             push(index);
-            fieldOffset.run();
-            push(fieldLength.getAsInt());
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringField",
-                    "(L" + resultType + ";IL" + STORAGE + ";II)V", false);
+            if (numeric) {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, numericField, NUMERIC_ITEM);
+                fieldOffset.run();
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringNumeric",
+                        "(L" + resultType + ";I" + NUMERIC_ITEM + "L" + STORAGE + ";I"
+                                + CODE_PAGE + ")V", false);
+            } else {
+                fieldOffset.run();
+                push(fieldLength.getAsInt());
+                run.visitInsn(justifiedField ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringField",
+                        "(L" + resultType + ";IL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+            }
             if (writeDelimiter != null) {
                 writeDelimiter.run();
             }
@@ -899,8 +922,13 @@ public final class ProgramGenerator {
     }
 
     /** 実行結果の整数を項目へ書き戻す命令。書き戻す先がなければ何もしない。 */
+    /**
+     * {@code UNSTRING} が返した数を受取項目へ入れる。
+     *
+     * @param accumulate 入れ替えずに<b>足し込む</b>か。{@code TALLYING} がそうである
+     */
     private Runnable planStoreResultInt(DataReference target, int result, String resultType,
-                                        String accessor, Origin origin) {
+                                        String accessor, boolean accumulate, Origin origin) {
         if (target == null) {
             return () -> { };
         }
@@ -909,12 +937,13 @@ public final class ProgramGenerator {
         if (offset == null || field == null) {
             return null;
         }
+        String entry = accumulate ? "addInteger" : "storeInteger";
         return () -> {
             run.visitVarInsn(Opcodes.ALOAD, result);
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, resultType, accessor, "()I", false);
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             offset.run();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, entry,
                     "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
         };
     }

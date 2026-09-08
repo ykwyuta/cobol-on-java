@@ -116,7 +116,10 @@ public final class UnstringVerb {
             }
 
             byte[] content = java.util.Arrays.copyOfRange(source, fieldStart, fieldEnd);
-            outFields.add(Move.alphanumeric(content, field.length(), field.justifiedRight(), codePage));
+            // <b>切り出したそのまま</b>を返す。受取項目へ入れるのは呼ぶ側の仕事である。
+            // 数字項目なら小数点で位置を合わせ、JUSTIFIED なら右へ寄せる。
+            // ここで英数字として詰めてしまうと、その区別が消える (NC218A)
+            outFields.add(content);
             outDelimiters.add(foundDelimiter);
             outCounts.add(content.length);
         }
