@@ -635,11 +635,15 @@ useStatement
     | USE FOR? DEBUGGING ON? debugTarget
     ;
 
-// デバッグの節が何を見張るか (要件 FR-193)
+// デバッグの節が何を見張るか (要件 FR-193)。対象は並べて書ける
 debugTarget
+    : debugItem+
+    ;
+
+debugItem
     : ALL PROCEDURES
     | ALL REFERENCES? OF? identifier
-    | IDENTIFIER+
+    | IDENTIFIER
     ;
 
 useTarget
@@ -1029,7 +1033,8 @@ notAtEndOfPagePhrase
     : NOT AT? (END_OF_PAGE | EOP) branchBody
     ;
 
-// 印字するファイルへの行送り。AFTER は送ってから書き、BEFORE は書いてから送る
+// 印字するファイルへの行送り。AFTER は送ってから書き、BEFORE は書いてから送る。
+// 呼び名を書けば、その装置が決めた送りになる (紙送りの通路)
 advancingPhrase
     : (BEFORE | AFTER) ADVANCING? (advancingLines | PAGE)
     ;
@@ -1149,10 +1154,14 @@ initializeCategory
 // SET は条件名を成り立たせる形と、指標名を動かす形の 2 つがある
 setStatement
     : SET identifier+ TO TRUE
-    // 外から立てる切り替えを、プログラムからも動かせる
-    | SET identifier+ TO (ON | OFF)
+    // 外から立てる切り替えを、プログラムからも動かせる。続けて書ける
+    | SET switchSetting+
     | SET identifier+ TO arithmeticOperand
     | SET identifier+ (UP | DOWN) BY arithmeticOperand
+    ;
+
+switchSetting
+    : identifier+ TO (ON | OFF)
     ;
 
 // 呼び先は文字定数か、実行時に名前が決まるデータ項目である

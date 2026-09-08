@@ -319,4 +319,33 @@ class DataDivisionBuilderTest {
         assertTrue(result.diagnostics().get(0).message().contains("PICTURE"),
                 result.diagnostics().toString());
     }
+
+    @Test
+    @DisplayName("群に書いた USAGE は配下の基本項目に効く (FR-020)")
+    void aUsageOnAGroupReachesItsElementaryItems() {
+        // 群項目そのものは記憶域の切り方を持たない。効くのは下だけである。
+        // 配らないと、詰め 10 進と書いた項目が表示形のまま並ぶ
+        DataLayout layout = layoutOf(
+                "01 WS-G USAGE IS COMP-3.",
+                "   05 WS-A PIC 9(5).",
+                "   05 WS-B PIC 9(3).");
+
+        assertEquals(Usage.COMP_3, layout.findAll("WS-A").get(0).usage());
+        assertEquals(3, layout.findAll("WS-A").get(0).length());
+        assertEquals(2, layout.findAll("WS-B").get(0).length());
+    }
+
+    @Test
+    @DisplayName("群に書いた USAGE IS INDEX は配下を指標データ項目にする (FR-025)")
+    void aGroupMayBeDeclaredAsIndexItems() {
+        // 指標データ項目は PICTURE を書いてはならない。書かれていないのが正しい
+        DataLayout layout = layoutOf(
+                "01 WS-NAMES USAGE IS INDEX.",
+                "   05 WS-K1.",
+                "   05 WS-K2.");
+
+        assertTrue(layout.findAll("WS-K1").get(0).isIndex());
+        assertEquals(4, layout.findAll("WS-K1").get(0).length());
+        assertEquals(8, layout.findAll("WS-NAMES").get(0).length());
+    }
 }

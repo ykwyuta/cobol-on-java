@@ -318,7 +318,8 @@ public final class DataDivisionBuilder {
     private void applyUsage(DataItem item, CobolParser.UsageClauseContext clause, Origin origin) {
         String name = clause.usageName().getText().toUpperCase(Locale.ROOT);
         if (name.equals("INDEX")) {
-            applyIndexUsage(item, origin);
+            // 群に書かれることもある。実体を作るのは木ができてからである
+            item.markIndexDeclared();
             return;
         }
         Usage usage = switch (name) {
@@ -641,6 +642,7 @@ public final class DataDivisionBuilder {
         int base = 0;
         Map<String, Integer> fileBases = new LinkedHashMap<>();
         for (DataItem record : records) {
+            inheritUsage(record, null, false);
             layout(record, 0);
             if (record.section() == DataSection.LINKAGE) {
                 continue;
@@ -690,6 +692,31 @@ public final class DataDivisionBuilder {
      *
      * @param offset この項目が始まる、所属する 01 レベルからの位置
      */
+    /**
+     * 群項目に書いた {@code USAGE} を下位へ配る (要件 FR-020)。
+     *
+     * <p>{@code USAGE} は群項目にも書ける。書けば<b>配下の基本項目すべて</b>に効く。
+     * 群項目そのものは記憶域の切り方を持たないので、効くのは下だけである。
+     *
+     * <p>{@code USAGE IS INDEX} を群に書くと、配下の基本項目はどれも指標データ項目に
+     * なる。{@code PICTURE} は書けない決まりなので、書かれていないのは<b>正しい</b>。
+     */
+    private void inheritUsage(DataItem item, Usage inherited, boolean inheritedIndex) {
+        boolean index = item.indexDeclared() || inheritedIndex;
+        Usage usage = item.usage() == null ? inherited : item.usage();
+        if (item.isElementary()) {
+            if (index) {
+                applyIndexUsage(item, item.origin());
+            } else if (item.usage() == null && usage != null) {
+                item.setUsage(usage);
+            }
+            return;
+        }
+        for (DataItem child : item.children()) {
+            inheritUsage(child, usage, index);
+        }
+    }
+
     private int layout(DataItem item, int offset) {
         item.setOffset(offset);
         item.setLength(item.isElementary() ? elementaryLength(item) : groupLength(item, offset));

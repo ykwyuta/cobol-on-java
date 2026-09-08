@@ -155,6 +155,13 @@ public final class DataItem {
      * <p>指標名はデータ項目ではない。書き込めるのは {@code SET} だけであり、
      * {@code MOVE} の受取側にはできない。
      */
+    /** {@code USAGE IS INDEX} と書かれたか。群に書けば配下の基本項目すべてに効く。 */
+    public boolean indexDeclared() {
+        return indexDeclared;
+    }
+
+    private boolean indexDeclared;
+
     public boolean isIndex() {
         return index;
     }
@@ -301,6 +308,10 @@ public final class DataItem {
 
     void addSearchKey(SearchKey value) {
         searchKeys.add(value);
+    }
+
+    void markIndexDeclared() {
+        this.indexDeclared = true;
     }
 
     void markIndex() {

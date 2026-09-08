@@ -1507,7 +1507,7 @@ public final class ProcedureBuilder {
             }
             return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
         }
-        if (context.ON() != null || context.OFF() != null) {
+        if (!context.switchSetting().isEmpty()) {
             return switchSetOf(context, origin);
         }
         return indexSetOf(context, origin);
@@ -1520,18 +1520,20 @@ public final class ProcedureBuilder {
      * 条件名ではない。切り替えは記憶域を持たないので、転記にはならない。
      */
     private Statement switchSetOf(CobolParser.SetStatementContext context, Origin origin) {
-        boolean on = context.ON() != null;
         List<Statement> moves = new ArrayList<>();
-        for (CobolParser.IdentifierContext identifier : context.identifier()) {
-            String name = identifier.qualifiedDataName().dataName(0).getText()
-                    .toUpperCase(Locale.ROOT);
-            Integer index = specialNames.switchIndexOfMnemonic(name);
-            if (index == null) {
-                report(origin, "SET ... TO ON or OFF needs a switch name declared"
-                        + " in SPECIAL-NAMES: " + name);
-                return null;
+        for (CobolParser.SwitchSettingContext setting : context.switchSetting()) {
+            boolean on = setting.ON() != null;
+            for (CobolParser.IdentifierContext identifier : setting.identifier()) {
+                String name = identifier.qualifiedDataName().dataName(0).getText()
+                        .toUpperCase(Locale.ROOT);
+                Integer index = specialNames.switchIndexOfMnemonic(name);
+                if (index == null) {
+                    report(origin, "SET ... TO ON or OFF needs a switch name declared"
+                            + " in SPECIAL-NAMES: " + name);
+                    return null;
+                }
+                moves.add(new Statement.SetSwitch(index, on, origin));
             }
-            moves.add(new Statement.SetSwitch(index, on, origin));
         }
         return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
     }
@@ -3366,6 +3368,12 @@ public final class ProcedureBuilder {
         }
         CobolParser.AdvancingLinesContext lines = context.advancingLines();
         if (lines.identifier() != null) {
+            String name = lines.identifier().qualifiedDataName().dataName(0).getText();
+            if (specialNames.mnemonic(name) != null) {
+                // 呼び名を書けば、その装置が決めた送りである。紙送りの通路のうち
+                // ほとんどの資産が使うのは「頁の先頭へ」だけなので、そう読む (P-076)
+                return new Statement.Advancing(null, null, true, before);
+            }
             DataReference count = resolver.resolve(lines.identifier());
             return count == null ? null : new Statement.Advancing(null, count, false, before);
         }
