@@ -48,6 +48,11 @@ public final class Ops {
     private Ops() {
     }
 
+    /** デバッグの節を動かすか (要件 FR-193)。実行時の切り替えである。 */
+    public static boolean debuggingProcedures(ProgramContext context) {
+        return context.debuggingProcedures();
+    }
+
     /** 記憶域の一部を取り出す。 */
     public static byte[] read(Storage storage, int offset, int length) {
         return storage.view(offset, length).toByteArray();

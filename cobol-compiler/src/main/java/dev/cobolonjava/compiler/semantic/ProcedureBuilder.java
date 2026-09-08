@@ -388,6 +388,9 @@ public final class ProcedureBuilder {
         if (statement instanceof Statement.Sequence sequence) {
             return List.of(sequence.statements());
         }
+        if (statement instanceof Statement.DebugEntry entry) {
+            return List.of(entry.body());
+        }
         if (statement instanceof Statement.Sentence sentence) {
             return List.of(sentence.body());
         }
@@ -816,7 +819,7 @@ public final class ProcedureBuilder {
             body.add(new Statement.Perform(section.first(), section.last(), null, null,
                     false, List.of(), List.of(), origin));
         }
-        return body;
+        return wrapped(body, origin);
     }
 
     /**
@@ -878,7 +881,17 @@ public final class ProcedureBuilder {
             body.add(new Statement.Perform(section.first(), section.last(), null, null,
                     false, List.of(), List.of(), origin));
         }
-        return body;
+        return wrapped(body, origin);
+    }
+
+    /**
+     * 実行時の切り替えで止められるように包む (要件 FR-193)。
+     *
+     * <p>空のままなら包まない。デバッグを書いていないプログラムには<b>命令が
+     * まったく出ない</b>という性質を保つためである。
+     */
+    private static List<Statement> wrapped(List<Statement> body, Origin origin) {
+        return body.isEmpty() ? List.of() : List.of(new Statement.DebugEntry(body, origin));
     }
 
     private static Statement textMove(Operand source, DataReference target, Origin origin) {

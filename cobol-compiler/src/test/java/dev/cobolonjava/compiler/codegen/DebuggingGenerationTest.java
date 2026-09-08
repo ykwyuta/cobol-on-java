@@ -55,10 +55,15 @@ class DebuggingGenerationTest {
     }
 
     private static String run(Path directory, String source) {
+        return run(directory, source, true);
+    }
+
+    private static String run(Path directory, String source, boolean debuggingProcedures) {
         CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source);
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
-        ProgramContext context = ProgramContext.capturing(sink);
+        ProgramContext context = ProgramContext.capturing(sink)
+                .withDebuggingProcedures(debuggingProcedures);
         if (directory != null) {
             context = context.withCatalog(new DataSetCatalog(directory));
         }
@@ -445,5 +450,35 @@ class DebuggingGenerationTest {
     private static String why(String name, String contents) {
         return "[" + name + " ".repeat(30 - name.length())
                 + "|" + contents + " ".repeat(30 - contents.length()) + "]";
+    }
+
+    @Test
+    @DisplayName("実行時の切り替えを切ると、デバッグ行は動いて節は動かない (FR-193)")
+    void theObjectTimeSwitchStopsTheSectionsButNotTheDebuggingLines() {
+        String[] lines = {
+            "       IDENTIFICATION DIVISION.",
+            "       PROGRAM-ID. MAIN.",
+            "       ENVIRONMENT DIVISION.",
+            "       CONFIGURATION SECTION.",
+            "       SOURCE-COMPUTER. JVM WITH DEBUGGING MODE.",
+            "       DATA DIVISION.",
+            "       PROCEDURE DIVISION.",
+            "       DECLARATIVES.",
+            "       WATCH SECTION.",
+            "           USE FOR DEBUGGING ON ALL PROCEDURES.",
+            "       WATCH-BODY.",
+            "           DISPLAY \"SAW \" DEBUG-NAME.",
+            "       END DECLARATIVES.",
+            "       MAIN SECTION.",
+            "       START-P.",
+            "           DISPLAY \"A\".",
+            "      D    DISPLAY \"D\".",
+            "           STOP RUN.",
+        };
+        String text = String.join("\n", lines) + "\n";
+        // 切り替えが立っていれば、章と段落で 2 度動く
+        assertEquals(saw("MAIN") + "|" + saw("START-P") + "|A|D|", run(null, text, true));
+        // 切ると節だけが止まる。7 桁目の D の行は動いたままである
+        assertEquals("A|D|", run(null, text, false));
     }
 }

@@ -419,6 +419,28 @@ public final class ProgramContext {
         return index >= 0 && index < switches.length && switches[index];
     }
 
+    /**
+     * 実行時のデバッグの切り替え (要件 FR-193)。
+     *
+     * <p>{@code WITH DEBUGGING MODE} は<b>翻訳のとき</b>の切り替えであり、これは
+     * <b>実行のとき</b>の切り替えである。切ると、7 桁目の {@code D} の行は動いたまま
+     * <b>デバッグの節だけが動かなくなる</b>。参照実装ではジョブの指定で切る。
+     *
+     * <p>初めは立っている。翻訳したのに何も起きないほうが分かりにくいからである。
+     */
+    private boolean debuggingProcedures = true;
+
+    /** デバッグの節を動かすかどうかを決める。 */
+    public ProgramContext withDebuggingProcedures(boolean value) {
+        this.debuggingProcedures = value;
+        return this;
+    }
+
+    /** デバッグの節を動かすか。 */
+    public boolean debuggingProcedures() {
+        return debuggingProcedures;
+    }
+
     /** 閉じたファイルに錠を掛ける。 */
     public void lockFile(String name) {
         lockedFiles.add(name);

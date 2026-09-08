@@ -16,8 +16,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -194,6 +195,30 @@ public final class ProgramRunner {
         }
     }
 
+    /**
+     * <b>実行時のデバッグの切り替えを切って流す本</b> (要件 FR-193)。
+     *
+     * <p>DB102A は自分の説明文でこう言っている。
+     *
+     * <pre>
+     * BEFORE BEGINNING EXECUTION OF THE OBJECT PROGRAM, THE JOB
+     * CONTROL LANGUAGE NECESSARY TO DEACTIVATE (TURN OFF) THE
+     * OBJECT TIME DEBUGGING SWITCH MUST BE SUBMITTED.
+     * </pre>
+     *
+     * <p>切り替えを切るのは<b>ジョブの仕事</b>であり、原文からは読めない。差し込み札
+     * (X-card) と同じで、<b>検査が要求している環境を用意する</b>ことである。用意せずに
+     * 流すと、道具のほうが処理系の失敗を作る。
+     */
+    private static final Set<String> DEBUG_SWITCH_OFF = Set.of("DB102A");
+
+    /** その本かどうか。部品の名前は {@code DB102A.cbl} や {@code DB102A,SUBPRG.cbl} である。 */
+    private static boolean debuggingOff(String name) {
+        String bare = name.endsWith(".cbl") ? name.substring(0, name.length() - 4) : name;
+        int comma = bare.indexOf(',');
+        return DEBUG_SWITCH_OFF.contains(comma < 0 ? bare : bare.substring(0, comma));
+    }
+
     /** 時間切れを表す番人。例外そのものではないので、取り違えようがない。 */
     private static final Throwable TIMED_OUT = new Throwable("timed out");
 
@@ -214,6 +239,7 @@ public final class ProgramRunner {
                         .withOutput(OutputStream.nullOutputStream())
                         .withCatalog(new DataSetCatalog(directory));
                 setSwitches(context);
+                context.withDebuggingProcedures(!debuggingOff(source.name()));
                 ((CobolProgram) program.getDeclaredConstructor().newInstance())
                         .runFresh(context);
             } catch (Throwable caught) {

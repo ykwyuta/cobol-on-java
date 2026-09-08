@@ -546,6 +546,8 @@ public final class ProgramGenerator {
                 planReturn(returned, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
+            } else if (statement instanceof Statement.DebugEntry entry) {
+                planDebugEntry(entry, body);
             } else if (statement instanceof Statement.GoToDepending depending) {
                 planGoToDepending(depending, body);
             } else if (statement instanceof Statement.Alter alter) {
@@ -5578,6 +5580,25 @@ public final class ProgramGenerator {
                 ? -1
                 : new DataReference(found.get(0), List.of(), null, null)
                         .absoluteOffset().orElse(-1);
+    }
+
+    /**
+     * デバッグの節を動かすかたまりを組み立てる (要件 FR-193)。
+     *
+     * <p><b>実行時の切り替えで丸ごと止まる</b>。切ると 7 桁目の {@code D} の行は
+     * 動いたまま、デバッグの節だけが動かなくなる。参照実装ではジョブの指定で切る。
+     */
+    private void planDebugEntry(Statement.DebugEntry statement, List<Runnable> body) {
+        List<Runnable> inner = planStatements(statement.body());
+        body.add(() -> {
+            Label skip = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "debuggingProcedures",
+                    "(" + CONTEXT + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFEQ, skip);
+            inner.forEach(Runnable::run);
+            run.visitLabel(skip);
+        });
     }
 
     /** 手続きへ来た理由を控える。{@code storageLocal} はそのメソッドでの記憶域の番号。 */

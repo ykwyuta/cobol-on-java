@@ -365,6 +365,20 @@ public sealed interface Statement {
      * <p>{@code MOVE CORRESPONDING} は名前の合う組の数だけ {@code MOVE} になる。
      * 展開を意味解析で済ませておけば、コード生成は普通の {@code MOVE} を出すだけでよい。
      */
+    /**
+     * デバッグの節を動かす文のかたまり (要件 FR-193)。
+     *
+     * <p>ただの {@link Sequence} と分けてあるのは、<b>実行時の切り替えで丸ごと
+     * 止められる</b>ようにするためである。切り替えを切ると 7 桁目の {@code D} の行は
+     * 動いたまま、デバッグの節だけが動かなくなる。
+     */
+    record DebugEntry(List<Statement> body, Origin origin) implements Statement {
+
+        public DebugEntry {
+            body = List.copyOf(body);
+        }
+    }
+
     record Sequence(List<Statement> statements, Origin origin) implements Statement {
 
         public Sequence {
