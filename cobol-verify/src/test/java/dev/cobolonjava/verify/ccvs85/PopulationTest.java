@@ -195,4 +195,19 @@ class PopulationTest {
         assertEquals("013800*       15 FILLER        PICTURE 9(5).",
                 one(Population.plain(CARDS), "013800T       15 FILLER        PICTURE 9(5)."));
     }
+
+    @Test
+    @DisplayName("CLOSE ... REEL / UNIT の行は選ぶ。選ばないと繰り返しが止まらない")
+    void theReelAndUnitLinesAreChosen() {
+        // SQ109M はこう書いている。H を選ばないと外側の IF の本体が空になり、
+        // 次の IF が<b>その本体になる</b>。すると「325 であり、かつ 750 である」
+        // ときしか抜けられず、750 本で終わるはずの書き込みが止まらなくなる
+        assertEquals("041500            CLOSE SQ-FS1 REEL.",
+                one(Population.plain(CARDS), "041500H           CLOSE SQ-FS1 REEL."));
+        assertEquals("041800            CLOSE SQ-FS3 UNIT.",
+                one(Population.plain(CARDS), "041800E           CLOSE SQ-FS3 UNIT."));
+        // 裏返しの「削除した」と書く行は選ばない。こちらは実装しているからである
+        assertEquals("041600*    MOVE \"CLOSE REEL DELETED\" TO RE-MARK.",
+                one(Population.plain(CARDS), "041600I    MOVE \"CLOSE REEL DELETED\" TO RE-MARK."));
+    }
 }

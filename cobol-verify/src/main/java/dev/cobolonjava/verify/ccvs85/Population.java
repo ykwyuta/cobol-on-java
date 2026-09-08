@@ -67,8 +67,28 @@ public record Population(Set<Character> options, XCards cards) {
      *
      * <p>{@code T} ではなく {@code U} を選ぶ。{@code T} は DB105A にも印が付いていて、
      * そちらは選ばない形でちょうど通っている。<b>直したいところ以外を動かさない</b>。
+     *
+     * <p>{@code H} と {@code E} は {@code CLOSE ... REEL} / {@code UNIT} の印である。
+     * 選ばないと<b>形が壊れる</b>——SQ109M はこう書いている。
+     *
+     * <pre>
+     * IF XRECORD-NUMBER (1) EQUAL TO 325
+     * H        ADD 1 TO REELUNIT-NUMBER (1)
+     * H        CLOSE SQ-FS1 REEL.
+     * I  MOVE "CLOSE REEL DELETED" TO RE-MARK.
+     *     IF XRECORD-NUMBER (1) EQUAL TO 750
+     *         GO TO SEQ-WRITE-001.
+     * </pre>
+     *
+     * <p>{@code H} を選ばないと外側の {@code IF} の本体が空になり、次の {@code IF} が
+     * <b>その本体になる</b>。すると「325 であり、かつ 750 である」ときしか抜けられず、
+     * 750 本で終わるはずの書き込みが<b>止まらなくなる</b>。SQ109M と SQ110M が
+     * 60 秒で見捨てられていたのはこれである。<b>道具が処理系の失敗を作っていた。</b>
+     *
+     * <p>裏返しの {@code I} と {@code F} (「削除した」と紙に書く行) は選ばない。
+     * こちらは {@code CLOSE ... REEL} / {@code UNIT} を実装しているからである。
      */
-    public static final Set<Character> SUPPORTED = Set.of('A', 'U');
+    public static final Set<Character> SUPPORTED = Set.of('A', 'U', 'H', 'E');
 
     /** 支えている機能を選んだ、既定の起こし方。 */
     public static Population plain(XCards cards) {

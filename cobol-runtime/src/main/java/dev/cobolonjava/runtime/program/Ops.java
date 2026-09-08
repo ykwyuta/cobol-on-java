@@ -1302,8 +1302,16 @@ public final class Ops {
      *
      * <p>{@code ACCEPT} の送出側は<b>符号なし整数の表示形式</b>と決まっている。
      * 数値項目が受け取るときはこれを通す。
+     *
+     * <p>入力が尽きていれば<b>長さ 0 のバイト列</b>が来る。桁が 1 つも無いということ
+     * なので {@code 0} とする。英数字の受取項目はすでに同じ扱いになっていて、
+     * 長さ 0 の入力は転記の規則どおり空白で埋まる。数値だけ例外を投げると、
+     * <b>そのプログラムの残りの検査がまとめて消える</b> (暫定判断 P-083)。
      */
     public static Decimal asInteger(byte[] bytes, CodePage codePage) {
+        if (bytes.length == 0) {
+            return Decimal.zero(0);
+        }
         return ZonedDecimal.decode(bytes, 0, SignPosition.UNSIGNED, codePage, NumProcMode.NOPFD);
     }
 

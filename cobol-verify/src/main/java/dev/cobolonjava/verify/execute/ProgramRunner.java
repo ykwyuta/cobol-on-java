@@ -237,6 +237,11 @@ public final class ProgramRunner {
                 // 道具の出力に混ぜると数のほうが読めなくなる
                 ProgramContext context = ProgramContext.standard()
                         .withOutput(OutputStream.nullOutputStream())
+                        // 卓に人はいない。既定の ACCEPT は標準入力を読むので、
+                        // 道具をどう起動したかで<b>止まるか止まらないか</b>が変わって
+                        // しまう。端末から起動すれば返らず、60 秒で見捨てられる。
+                        // 測定が起動の仕方に依ってはならないので、ここで断ち切る
+                        .withInput(() -> null)
                         .withCatalog(new DataSetCatalog(directory));
                 setSwitches(context);
                 context.withDebuggingProcedures(!debuggingOff(source.name()));
