@@ -478,6 +478,10 @@ public final class Ops {
     public static byte[] write(ProgramContext context, String name, String ddName,
                                Storage storage, int offset, int length, int minimum,
                                int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 context.file(name, ddName).write(read(storage, offset, actual)), actual, length));
@@ -506,6 +510,10 @@ public final class Ops {
     public static byte[] writeLine(ProgramContext context, String name, String ddName,
                                    Storage storage, int offset, int length, int minimum,
                                    int maximum, int lines, boolean before) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         DataSet file = context.file(name, ddName);
         byte[] record = read(storage, offset, actual);
@@ -564,6 +572,10 @@ public final class Ops {
         int footing = readCounter(storage, footingAt);
         int top = readCounter(storage, topAt);
         int bottom = readCounter(storage, bottomAt);
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         DataSet file = context.file(name, ddName);
         byte[] record = read(storage, offset, actual);
@@ -710,9 +722,36 @@ public final class Ops {
     public static byte[] rewrite(ProgramContext context, String name, String ddName,
                                  Storage storage, int offset, int length, int minimum,
                                  int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 context.file(name, ddName).rewrite(read(storage, offset, actual)), actual, length));
+    }
+
+    /**
+     * 書き出す長さが宣言の範囲に収まっているか (要件 FR-103, FR-106)。
+     *
+     * <p>{@code RECORD IS VARYING IN SIZE FROM n TO m DEPENDING ON 項目} と書いたとき、
+     * その項目に範囲の外の値が入っていることはありうる。規格はそのとき<b>書かない</b>と
+     * 決めている。レコード領域は変わらず、状態コード {@code 44} が立つ。
+     *
+     * <p>以前は範囲へ収めて<b>書いていた</b>。そうすると、宣言より短いレコードが
+     * ファイルに残る。CCVS85 の SQ212A は 18〜2048 のファイルへ 15〜17 バイトを
+     * 書こうとし、<b>入っていないこと</b>を後から読んで確かめている。
+     *
+     * <p>範囲を持つのは可変長のファイルだけである。固定長では下限と上限が同じ値で
+     * あり、書く長さもその値なので、ここは通らない。
+     *
+     * @return 範囲の外なら状態コードのバイト列。収まっていれば {@code null}
+     */
+    private static byte[] lengthOutOfRange(ProgramContext context, int length,
+                                           int minimum, int maximum) {
+        return length < minimum || length > maximum
+                ? status(context, FileStatus.RECORD_LENGTH_RANGE)
+                : null;
     }
 
     /**
@@ -777,6 +816,10 @@ public final class Ops {
     public static byte[] writeKey(ProgramContext context, String name, String ddName,
                                   Storage storage, int offset, int length, int minimum,
                                   int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 indexed(context, name, ddName).writeKey(read(storage, offset, actual)),
@@ -787,6 +830,10 @@ public final class Ops {
     public static byte[] rewriteKey(ProgramContext context, String name, String ddName,
                                     Storage storage, int offset, int length, int minimum,
                                     int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 indexed(context, name, ddName).rewriteKey(read(storage, offset, actual)),
@@ -832,6 +879,10 @@ public final class Ops {
     public static byte[] writeAt(ProgramContext context, String name, String ddName, int number,
                                  Storage storage, int offset, int length, int minimum,
                                  int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 relative(context, name, ddName).writeAt(number, read(storage, offset, actual)),
@@ -842,6 +893,10 @@ public final class Ops {
     public static byte[] rewriteAt(ProgramContext context, String name, String ddName, int number,
                                    Storage storage, int offset, int length, int minimum,
                                    int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 relative(context, name, ddName).rewriteAt(number, read(storage, offset, actual)),

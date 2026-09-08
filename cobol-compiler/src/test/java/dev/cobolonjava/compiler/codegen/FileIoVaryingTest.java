@@ -453,35 +453,56 @@ class FileIoVaryingTest {
                 result.diagnostics().toString());
     }
 
+    /** 上限 4 の可変長ファイルへ {@code WS-LEN} の長さで 1 本書く。 */
+    private static String[] writeWithLength(int length) {
+        return new String[] {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. RANGEDD.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT OUT-FILE ASSIGN TO CLAMPDD",
+            "        FILE STATUS IS WS-STATUS.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  OUT-FILE",
+            "    RECORD IS VARYING IN SIZE FROM 2 TO 4 DEPENDING ON WS-LEN.",
+            "01  OUT-REC PIC X(4).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-STATUS PIC XX.",
+            "01  WS-LEN    PIC 9(3) COMP.",
+            "PROCEDURE DIVISION.",
+            "    OPEN OUTPUT OUT-FILE.",
+            "    MOVE 'ABCD' TO OUT-REC.",
+            "    MOVE " + length + " TO WS-LEN.",
+            "    WRITE OUT-REC.",
+            "    DISPLAY WS-STATUS.",
+            "    CLOSE OUT-FILE.",
+            "    STOP RUN."};
+    }
+
     @Test
-    @DisplayName("DEPENDING ON が上限を超えていれば収めて 04 になる (FR-106)")
-    void aLengthAboveTheMaximumIsClamped(@TempDir Path directory) {
-        assertEquals("04|", run(directory, source(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. TOOLONG.",
-                "ENVIRONMENT DIVISION.",
-                "INPUT-OUTPUT SECTION.",
-                "FILE-CONTROL.",
-                "    SELECT OUT-FILE ASSIGN TO CLAMPDD",
-                "        FILE STATUS IS WS-STATUS.",
-                "DATA DIVISION.",
-                "FILE SECTION.",
-                "FD  OUT-FILE",
-                "    RECORD IS VARYING IN SIZE FROM 1 TO 4 DEPENDING ON WS-LEN.",
-                "01  OUT-REC PIC X(4).",
-                "WORKING-STORAGE SECTION.",
-                "01  WS-STATUS PIC XX.",
-                "01  WS-LEN    PIC 9(3) COMP.",
-                "PROCEDURE DIVISION.",
-                "    OPEN OUTPUT OUT-FILE.",
-                "    MOVE 'ABCD' TO OUT-REC.",
-                "    MOVE 99 TO WS-LEN.",
-                "    WRITE OUT-REC.",
-                "    DISPLAY WS-STATUS.",
-                "    CLOSE OUT-FILE.",
-                "    STOP RUN.")));
-        // 領域の外へはみ出さず、4 バイトだけが書かれる
-        assertArrayEquals(rdw("ABCD"), bytesOf(directory.resolve("CLAMPDD")));
+    @DisplayName("DEPENDING ON が上限を超えていれば<b>書かずに</b> 44 になる (FR-103, FR-106)")
+    void aLengthAboveTheMaximumIsRefused(@TempDir Path directory) {
+        // 規格は範囲の外の長さを「書かない」と決めている。収めて書くと、宣言と違う
+        // 長さのレコードがファイルに残る。CCVS85 の SQ212A は 18〜2048 のファイルへ
+        // 15〜17 バイトを書こうとし、<b>入っていないこと</b>を後から読んで確かめている
+        assertEquals("44|", run(directory, source(writeWithLength(99))));
+        assertArrayEquals(new byte[0], bytesOf(directory.resolve("CLAMPDD")));
+    }
+
+    @Test
+    @DisplayName("DEPENDING ON が下限を下回っても<b>書かずに</b> 44 になる (FR-103, FR-106)")
+    void aLengthBelowTheMinimumIsRefused(@TempDir Path directory) {
+        assertEquals("44|", run(directory, source(writeWithLength(1))));
+        assertArrayEquals(new byte[0], bytesOf(directory.resolve("CLAMPDD")));
+    }
+
+    @Test
+    @DisplayName("範囲の中なら今までどおり書ける (FR-106)")
+    void aLengthInsideTheRangeIsWritten(@TempDir Path directory) {
+        assertEquals("00|", run(directory, source(writeWithLength(3))));
+        assertArrayEquals(rdw("ABC"), bytesOf(directory.resolve("CLAMPDD")));
     }
 
     @Test

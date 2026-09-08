@@ -48,8 +48,17 @@ public final class FileStatus {
     public static final String NOT_OPEN = "42";
     /** 読んでいないのに書き換えようとした。 */
     public static final String NO_CURRENT_RECORD = "43";
+    /**
+     * レコードの長さが合わない。
+     *
+     * <p>2 つの場合がある。{@code REWRITE} で読んだものと長さが違うときと、
+     * {@code RECORD IS VARYING} のファイルへ宣言の範囲の外の長さを書こうとしたときで
+     * ある。どちらも<b>書かずに</b>このコードを立てる。
+     */
+    public static final String RECORD_LENGTH_RANGE = "44";
+
     /** 書き換えようとしたレコードの長さが読んだものと違う。 */
-    public static final String REWRITE_LENGTH = "44";
+    public static final String REWRITE_LENGTH = RECORD_LENGTH_RANGE;
     /** 読める位置にない。 */
     public static final String NOT_READABLE = "46";
     /** 読み取りが許されていない開き方である。 */
