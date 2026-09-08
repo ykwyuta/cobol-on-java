@@ -253,15 +253,83 @@ class IntrinsicFunctionTest {
         assertTrue(value.charAt(16) == '+' || value.charAt(16) == '-', value);
     }
 
+    /** 近似が入る関数は、小数 6 桁の受取項目で確かめる。 */
+    private static String approx(String expression) {
+        return run(List.of("01 WS-N PIC S9(4)V9(6) SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = " + expression + ".");
+    }
+
+    @Test
+    @DisplayName("SQRT は 10 進のまま正しく丸める (FR-070, FR-071)")
+    void squareRootIsRoundedInDecimal() {
+        assertEquals("+0002000000", approx("FUNCTION SQRT(4)"));
+        assertEquals("+0001414213", approx("FUNCTION SQRT(2)"));
+        assertEquals("+0000000000", approx("FUNCTION SQRT(-1)"), "負の引数は 0 である");
+    }
+
+    @Test
+    @DisplayName("三角関数と対数はラジアンと自然対数である (FR-070)")
+    void theTranscendentalFunctionsFollowTheUsualDefinitions() {
+        assertEquals("+0000000000", approx("FUNCTION SIN(0)"));
+        assertEquals("+0001000000", approx("FUNCTION COS(0)"));
+        assertEquals("+0000000000", approx("FUNCTION TAN(0)"));
+        assertEquals("+0001000000", approx("FUNCTION LOG(2.718281828459045)"));
+        assertEquals("+0002000000", approx("FUNCTION LOG10(100)"));
+        assertEquals("+0001570796", approx("FUNCTION ASIN(1)"));
+        assertEquals("+0000000000", approx("FUNCTION ACOS(1)"));
+        assertEquals("+0000785398", approx("FUNCTION ATAN(1)"));
+    }
+
+    @Test
+    @DisplayName("値域の外の引数は 0 になる (FR-070)")
+    void anArgumentOutsideTheDomainIsZero() {
+        assertEquals("+0000000000", approx("FUNCTION ASIN(2)"));
+        assertEquals("+0000000000", approx("FUNCTION LOG(0)"));
+    }
+
+    @Test
+    @DisplayName("MEAN と VARIANCE は個数で割る (FR-070)")
+    void meanAndVarianceDivideByTheCount() {
+        assertEquals("+0002000000", approx("FUNCTION MEAN(1, 2, 3)"));
+        // 母分散である。個数から 1 を引かない
+        assertEquals("+0000666666", approx("FUNCTION VARIANCE(1, 2, 3)"));
+        assertEquals("+0000816496", approx("FUNCTION STANDARD-DEVIATION(1, 2, 3)"));
+    }
+
+    @Test
+    @DisplayName("ANNUITY は利率 0 なら 1 / 期数である (FR-070)")
+    void annuityWithoutInterestIsOneOverThePeriods() {
+        // NIST CCVS85 が 0.249995 〜 の範囲で判定している値である
+        assertEquals("+0000250000", approx("FUNCTION ANNUITY(0, 4)"));
+        assertEquals("+0002912589", approx("FUNCTION ANNUITY(2.9, 4)"),
+                "CCVS85 は 2.91252 〜 2.91264 の範囲で判定している");
+    }
+
+    @Test
+    @DisplayName("PRESENT-VALUE は将来の金額を割り引く (FR-070)")
+    void presentValueDiscountsTheFutureAmounts() {
+        // 割引率 0 ならそのままの合計になる
+        assertEquals("+0030000000", approx("FUNCTION PRESENT-VALUE(0, 10, 10, 10)"));
+        assertEquals("+0009090909", approx("FUNCTION PRESENT-VALUE(0.1, 10)"));
+    }
+
+    @Test
+    @DisplayName("RANDOM は 0 以上 1 未満で、同じ種は同じ並びになる (FR-070, FR-204)")
+    void randomIsRepeatableFromItsSeed() {
+        String first = approx("FUNCTION RANDOM(1)");
+        assertEquals(first, approx("FUNCTION RANDOM(1)"), "同じ種なら同じ値である");
+        assertTrue(first.startsWith("+0000"), first);
+    }
+
     @Test
     @DisplayName("知らない関数は断る (FR-070)")
     void anUnknownFunctionIsRefused() {
         // 近い値を黙って返すより、書けないと言うほうがよい
         CobolCompiler.Result result = compile(
-                List.of("01 WS-N PIC S9(6)V99."), "COMPUTE WS-N = FUNCTION SQRT(4).");
+                List.of("01 WS-N PIC S9(6)V99."), "COMPUTE WS-N = FUNCTION NO-SUCH-ONE(4).");
 
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("FUNCTION SQRT"),
+        assertTrue(result.diagnostics().get(0).message().contains("FUNCTION NO-SUCH-ONE"),
                 result.diagnostics().toString());
     }
 

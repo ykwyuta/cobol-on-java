@@ -270,6 +270,21 @@ public final class Ops {
                 context.codePage());
     }
 
+    /**
+     * {@code FUNCTION RANDOM} (要件 FR-070)。
+     *
+     * <p>0 以上 1 未満を返す。並びは {@link ProgramContext} が持っている。
+     */
+    public static Decimal random(ProgramContext context) {
+        return Intrinsics.randomValue(context.nextRandom());
+    }
+
+    /** {@code FUNCTION RANDOM(種)}。種を決めてから最初の 1 つを返す。 */
+    public static Decimal random(Decimal seed, ProgramContext context) {
+        context.seedRandom(seed.toBigDecimal().longValue());
+        return Intrinsics.randomValue(context.nextRandom());
+    }
+
     /** 英数字比較。短いほうは空白で埋めて比べる。 */
     public static int compareAlphanumeric(byte[] left, byte[] right, CodePage codePage) {
         return Compare.alphanumeric(left, right, codePage);

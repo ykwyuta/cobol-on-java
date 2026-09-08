@@ -2935,6 +2935,23 @@ public final class ProgramGenerator {
             case FACTORIAL -> planUnary(function, "factorial", origin);
             case MOD -> planBinary(function, "mod", origin);
             case REM -> planBinary(function, "rem", origin);
+            case ANNUITY -> planBinary(function, "annuity", origin);
+            case MEAN -> planFold(function, "mean", origin);
+            case VARIANCE -> planFold(function, "variance", origin);
+            case STANDARD_DEVIATION -> planFold(function, "standardDeviation", origin);
+            case PRESENT_VALUE -> planFold(function, "presentValue", origin);
+            case SQRT -> planUnary(function, "sqrt", origin);
+            case LOG -> planUnary(function, "log", origin);
+            case LOG10 -> planUnary(function, "log10", origin);
+            case EXP -> planUnary(function, "exp", origin);
+            case EXP10 -> planUnary(function, "exp10", origin);
+            case SIN -> planUnary(function, "sin", origin);
+            case COS -> planUnary(function, "cos", origin);
+            case TAN -> planUnary(function, "tan", origin);
+            case ASIN -> planUnary(function, "asin", origin);
+            case ACOS -> planUnary(function, "acos", origin);
+            case ATAN -> planUnary(function, "atan", origin);
+            case RANDOM -> planRandom(function, origin);
             case ORD -> planOrd(function);
             case NUMVAL -> planReading(function, "numval");
             case NUMVAL_C -> planNumvalC(function);
@@ -3057,6 +3074,34 @@ public final class ProgramGenerator {
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "numvalC",
                     "([B[B" + CODE_PAGE + ")" + DECIMAL, false);
+        };
+    }
+
+    /**
+     * {@code FUNCTION RANDOM} (要件 FR-070)。
+     *
+     * <p>引数を書けば種になる。書かなければ<b>前の続き</b>を返すので、並びを持っている
+     * {@link ProgramContext} を渡す。
+     */
+    private Runnable planRandom(Operand.Function function, Origin origin) {
+        if (function.arguments().isEmpty()) {
+            return () -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "random",
+                        "(L" + Type.getInternalName(ProgramContext.class) + ";)" + DECIMAL,
+                        false);
+            };
+        }
+        Runnable seed = planNumericArgument(function, 0, origin);
+        if (seed == null) {
+            return null;
+        }
+        return () -> {
+            seed.run();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "random",
+                    "(" + DECIMAL + "L" + Type.getInternalName(ProgramContext.class) + ";)"
+                            + DECIMAL, false);
         };
     }
 

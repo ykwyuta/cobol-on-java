@@ -68,7 +68,41 @@ public enum Intrinsic {
     /** いまの日付と時刻。21 文字である。 */
     CURRENT_DATE(0, Argument.ANY, Result.TIMESTAMP),
     /** 翻訳した日付と時刻。21 文字である。 */
-    WHEN_COMPILED(0, Argument.ANY, Result.TIMESTAMP);
+    WHEN_COMPILED(0, Argument.ANY, Result.TIMESTAMP),
+    /** 相加平均。 */
+    MEAN(-1, Argument.NUMERIC, Result.NUMERIC),
+    /** 母分散。平均からのずれの 2 乗の平均である。 */
+    VARIANCE(-1, Argument.NUMERIC, Result.NUMERIC),
+    /** 標準偏差。分散の平方根である。 */
+    STANDARD_DEVIATION(-1, Argument.NUMERIC, Result.NUMERIC),
+    /** 平方根。 */
+    SQRT(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 自然対数。 */
+    LOG(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 常用対数。 */
+    LOG10(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 指数関数。 */
+    EXP(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 10 のべき乗。 */
+    EXP10(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 正弦。引数はラジアンである。 */
+    SIN(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 余弦。 */
+    COS(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 正接。 */
+    TAN(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 逆正弦。 */
+    ASIN(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 逆余弦。 */
+    ACOS(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 逆正接。 */
+    ATAN(1, Argument.NUMERIC, Result.NUMERIC),
+    /** 元金 1 に対する毎期の返済額。 */
+    ANNUITY(2, Argument.NUMERIC, Result.NUMERIC),
+    /** 割引率と将来の金額から、いまの価値を求める。 */
+    PRESENT_VALUE(-1, Argument.NUMERIC, Result.NUMERIC),
+    /** 0 以上 1 未満の乱数。引数を書けば種になる。 */
+    RANDOM(-3, Argument.NUMERIC, Result.NUMERIC);
 
     /** 引数の受け取り方。 */
     public enum Argument {
@@ -122,6 +156,7 @@ public enum Intrinsic {
         return switch (arguments) {
             case -1 -> given >= 1;
             case -2 -> given == 1 || given == 2;
+            case -3 -> given == 0 || given == 1;
             default -> given == arguments;
         };
     }
@@ -131,6 +166,7 @@ public enum Intrinsic {
         return switch (arguments) {
             case -1 -> "one or more arguments";
             case -2 -> "one or two arguments";
+            case -3 -> "no arguments or one argument";
             case 0 -> "no arguments";
             case 1 -> "one argument";
             default -> arguments + " arguments";

@@ -359,6 +359,33 @@ public final class ProgramContext {
     }
 
     /**
+     * {@code FUNCTION RANDOM} の乱数列 (要件 FR-070、テスト時の固定は FR-204)。
+     *
+     * <p>種を与えれば<b>そこから決まる同じ並び</b>が出る。規格がそう決めている。
+     * 実行の全体で 1 つ持つのは、種を与えない呼び出しが<b>前の続き</b>を返すためである。
+     */
+    private java.util.Random random;
+
+    /** 種を決めて数列を作り直す。 */
+    public void seedRandom(long seed) {
+        random = new java.util.Random(seed);
+    }
+
+    /**
+     * 次の乱数。
+     *
+     * @return 0 以上 1 未満
+     */
+    public double nextRandom() {
+        if (random == null) {
+            // 種を与えずに呼ばれたときの並びは処理系が決めてよい。
+            // 実行のたびに変わらないほうが試験に書けるので、固定の種から始める
+            random = new java.util.Random(0);
+        }
+        return random.nextDouble();
+    }
+
+    /**
      * {@code ACCEPT} が読む 1 行。
      *
      * <p>入力が尽きていれば空文字を返す。参照実装も入力がなければ受取項目を変えないため、
