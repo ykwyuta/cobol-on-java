@@ -115,6 +115,26 @@ public final class ReferenceResolver {
         return subscripts;
     }
 
+    /**
+     * 名前だけで項目 1 個を引く。
+     *
+     * <p>ソースに書かれない名前を引くためにある。{@code LINAGE-COUNTER} は
+     * {@code FD} に {@code LINAGE} を書いた副作用として存在する項目であり、
+     * データ部のどこにも書かれていない。
+     */
+    public DataReference resolveName(String name, Origin origin) {
+        List<DataItem> found = layout.findAll(name);
+        if (found.isEmpty()) {
+            report(origin, "undefined data item: " + name);
+            return null;
+        }
+        if (found.size() > 1) {
+            report(origin, name + " is ambiguous; qualify it with OF or IN");
+            return null;
+        }
+        return new DataReference(found.get(0), List.of(), null, origin);
+    }
+
     /** 修飾された名前から項目 1 個を決める。 */
     public DataItem resolveName(CobolParser.QualifiedDataNameContext context, Origin origin) {
         List<String> names = new ArrayList<>();

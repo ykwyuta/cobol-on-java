@@ -595,7 +595,21 @@ public sealed interface Statement {
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
     record Write(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
-                 Advancing advancing, Origin origin) implements Statement {
+                 Advancing advancing, PageCheck pageCheck, Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code AT END-OF-PAGE} と {@code NOT AT END-OF-PAGE} (要件 FR-113)。
+     *
+     * <p>頁の終わりに達したかどうかで分かれる。達したかを決めるのは
+     * {@code LINAGE} が定める脚注の行であり、書いたあとの {@code LINAGE-COUNTER} を見る。
+     */
+    record PageCheck(List<Statement> atEnd, List<Statement> otherwise) {
+
+        public PageCheck {
+            atEnd = List.copyOf(atEnd);
+            otherwise = List.copyOf(otherwise);
+        }
     }
 
     /**

@@ -31,12 +31,31 @@ import java.util.Map;
  * @param records      {@code FD} 配下のレコード記述。すべて同じ領域に重なる
  * @param recordLength レコード長。{@code FD} 配下の記述から決まる
  * @param varying      可変長の指定。固定長なら {@code null}
+ * @param linage       {@code LINAGE} の指定。書かれていなければ {@code null}
  */
 public record FileDescription(String name, String ddName, Organization organization,
                               RecordFormat format, Access access, DataReference status,
                               boolean optional, DataReference relativeKey, List<RecordKey> keys,
                               boolean sort, List<DataItem> records, int recordLength,
-                              Varying varying, Origin origin) {
+                              Varying varying, Linage linage, Origin origin) {
+
+    /**
+     * 論理頁の形 (要件 FR-113)。
+     *
+     * <p>紙 1 枚を「上の余白・本文・下の余白」に分ける。{@code LINAGE-COUNTER} が数えるのは
+     * <b>本文の中の何行目か</b>だけであり、余白は数に入らない。
+     *
+     * <p>{@code FOOTING} は本文の中の行番号で、そこへ達した書き込みが
+     * {@code AT END-OF-PAGE} を起こす。
+     *
+     * @param page    本文の行数
+     * @param footing 脚注が始まる行。書かれていなければ 0
+     * @param top     上の余白の行数
+     * @param bottom  下の余白の行数
+     * @param counter {@code LINAGE-COUNTER} の置き場
+     */
+    public record Linage(int page, int footing, int top, int bottom, DataReference counter) {
+    }
 
     public FileDescription {
         records = List.copyOf(records);
@@ -358,11 +377,15 @@ public record FileDescription(String name, String ddName, Organization organizat
             } else if (!checkOrganization(one, relativeKey, keys, diagnostics)) {
                 continue;
             }
+            Linage linage = linageOf(entry, one, resolver, diagnostics);
+            if (linage == null && hasLinage(entry)) {
+                continue;
+            }
             if (files.putIfAbsent(one.name(),
                     new FileDescription(one.name(), one.ddName(), one.organization(), format,
                             one.access(), status, one.optional(), relativeKey, keys,
                             entry != null && entry.SD() != null, area, length,
-                            varying, one.origin())) != null) {
+                            varying, linage, one.origin())) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }
         }
@@ -373,6 +396,94 @@ public record FileDescription(String name, String ddName, Organization organizat
             }
         }
         return new Result(Map.copyOf(files), List.copyOf(diagnostics));
+    }
+
+    /** {@code FD} に {@code LINAGE} が書かれているか。 */
+    private static boolean hasLinage(CobolParser.FileDescriptionEntryContext entry) {
+        return linageClauseOf(entry) != null;
+    }
+
+    private static CobolParser.LinageClauseContext linageClauseOf(
+            CobolParser.FileDescriptionEntryContext entry) {
+        if (entry == null) {
+            return null;
+        }
+        for (CobolParser.FileDescriptionClauseContext clause : entry.fileDescriptionClause()) {
+            if (clause.linageClause() != null) {
+                return clause.linageClause();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * {@code LINAGE} を読む (要件 FR-113)。
+     *
+     * <p>行数は<b>書かれた数だけ</b>を受ける。規格はデータ項目も許しており、その場合は
+     * 開くたびに値を読み直す決まりである。読み直す仕掛けをまだ持っていないので、
+     * 数の代わりに項目が書かれていたら<b>断る</b> (暫定判断 P-071)。黙って
+     * 開いたときの値で固めると、途中で変えたつもりの頁の形が効かない。
+     */
+    private static Linage linageOf(CobolParser.FileDescriptionEntryContext entry, Selected one,
+                                   ReferenceResolver resolver, List<Diagnostic> diagnostics) {
+        CobolParser.LinageClauseContext clause = linageClauseOf(entry);
+        if (clause == null) {
+            return null;
+        }
+        Integer page = countOf(clause.linageCount(), one.origin(), diagnostics);
+        if (page == null) {
+            return null;
+        }
+        int footing = 0;
+        int top = 0;
+        int bottom = 0;
+        for (CobolParser.LinagePartContext part : clause.linagePart()) {
+            Integer value = countOf(part.linageCount(), one.origin(), diagnostics);
+            if (value == null) {
+                return null;
+            }
+            if (part.FOOTING() != null) {
+                footing = value;
+            } else if (part.TOP() != null) {
+                top = value;
+            } else {
+                bottom = value;
+            }
+        }
+        if (page < 1) {
+            diagnostics.add(new Diagnostic(one.origin(),
+                    "LINAGE must be at least one line: " + one.name()));
+            return null;
+        }
+        if (footing > page) {
+            diagnostics.add(new Diagnostic(one.origin(),
+                    "the FOOTING line must be inside the page body: " + one.name()));
+            return null;
+        }
+        DataReference counter = resolver.resolveName(LINAGE_COUNTER, one.origin());
+        if (counter == null) {
+            return null;
+        }
+        return new Linage(page, footing, top, bottom, counter);
+    }
+
+    /** {@code LINAGE-COUNTER} の名前。データ部には書かれないが、名前で読める。 */
+    public static final String LINAGE_COUNTER = "LINAGE-COUNTER";
+
+    private static Integer countOf(CobolParser.LinageCountContext count, Origin origin,
+                                   List<Diagnostic> diagnostics) {
+        if (count.NUMBER() == null) {
+            diagnostics.add(new Diagnostic(origin,
+                    "LINAGE with a data item is not supported yet; write the number"));
+            return null;
+        }
+        try {
+            return Integer.parseInt(count.NUMBER().getText());
+        } catch (NumberFormatException e) {
+            diagnostics.add(new Diagnostic(origin,
+                    "LINAGE takes an integer: " + count.NUMBER().getText()));
+            return null;
+        }
     }
 
     /**

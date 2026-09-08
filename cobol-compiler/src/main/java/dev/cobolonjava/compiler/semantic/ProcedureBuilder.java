@@ -1704,6 +1704,9 @@ public final class ProcedureBuilder {
 
     /** 枝の中身。{@code NEXT SENTENCE} は「この文の残りを飛ばす」ことである。 */
     private List<Statement> bodyOf(CobolParser.BranchBodyContext context) {
+        if (context == null) {
+            return List.of();
+        }
         return context.NEXT() != null
                 ? List.of(new Statement.NextSentence(ReferenceResolver.originOf(context)))
                 : listOf(context.statement());
@@ -2957,13 +2960,21 @@ public final class ProcedureBuilder {
         if (context.advancingPhrase() != null && advancing == null) {
             return null;
         }
+        Statement.PageCheck pageCheck = null;
         if (context.atEndOfPagePhrase() != null || context.notAtEndOfPagePhrase() != null) {
-            // 頁の終わりは LINAGE が決める。まだ行数を数えていないので、
-            // 分岐を黙って通さないことにする (通さないと結果が変わる)
-            report(origin, "WRITE ... AT END-OF-PAGE needs LINAGE, which is not supported yet");
-            return null;
+            if (file.linage() == null) {
+                // 頁の終わりを決めるのは LINAGE である。書いていなければ、
+                // 分岐がいつ通るのかを誰も決めていない
+                report(origin, "AT END-OF-PAGE needs a LINAGE clause on " + file.name());
+                return null;
+            }
+            pageCheck = new Statement.PageCheck(
+                    bodyOf(context.atEndOfPagePhrase() == null
+                            ? null : context.atEndOfPagePhrase().branchBody()),
+                    bodyOf(context.notAtEndOfPagePhrase() == null
+                            ? null : context.notAtEndOfPagePhrase().branchBody()));
         }
-        return new Statement.Write(file, record, from, keyCheck, advancing, origin);
+        return new Statement.Write(file, record, from, keyCheck, advancing, pageCheck, origin);
     }
 
     /**

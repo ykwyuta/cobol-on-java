@@ -375,6 +375,24 @@ public final class ProgramContext {
      */
     private final java.util.Set<String> lockedFiles = new java.util.HashSet<>();
 
+    /**
+     * 直前の {@code WRITE} が頁の終わりに達したか (要件 FR-113)。
+     *
+     * <p>{@code AT END-OF-PAGE} の分岐に使う。文の結果を持ち回るのに記憶域を使わないのは、
+     * <b>プログラムから見えてはならない</b>値だからである。
+     */
+    private boolean endOfPage;
+
+    /** 頁の終わりに達したかを記録する。 */
+    public void setEndOfPage(boolean reached) {
+        endOfPage = reached;
+    }
+
+    /** 直前の {@code WRITE} が頁の終わりに達したか。 */
+    public boolean endOfPage() {
+        return endOfPage;
+    }
+
     /** 閉じたファイルに錠を掛ける。 */
     public void lockFile(String name) {
         lockedFiles.add(name);

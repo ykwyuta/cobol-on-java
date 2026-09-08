@@ -1275,6 +1275,15 @@ public final class ProgramGenerator {
                         false);
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
+                // 開けば頁は初めからである。LINAGE-COUNTER を 0 に戻す。
+                // 0 は「まだ 1 行も置いていない」であり、次の書き込みが上の余白を送る
+                if (file.linage() != null) {
+                    run.visitVarInsn(Opcodes.ALOAD, 1);
+                    push(file.linage().counter().absoluteOffset().orElse(0));
+                    push(0);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "writeCounter",
+                            "(L" + STORAGE + ";II)V", false);
+                }
             });
         }
     }
@@ -1492,6 +1501,34 @@ public final class ProgramGenerator {
     private void planWrite(Statement.Write statement, List<Runnable> body) {
         planRecordOutput(statement.file(), statement.record(), statement.from(),
                 statement.keyCheck(), "write", statement.advancing(), statement.origin(), body);
+        planPageCheck(statement.pageCheck(), body);
+    }
+
+    /**
+     * {@code AT END-OF-PAGE} の分岐を組み立てる (要件 FR-113)。
+     *
+     * <p>頁の終わりに達したかは、書いた側 (実行時) しか知らない。記憶域に残すと
+     * プログラムから見えてしまうので、実行時の入口が覚えたものを読む。
+     */
+    private void planPageCheck(Statement.PageCheck pageCheck, List<Runnable> body) {
+        if (pageCheck == null) {
+            return;
+        }
+        List<Runnable> atEnd = planStatements(pageCheck.atEnd());
+        List<Runnable> otherwise = planStatements(pageCheck.otherwise());
+        body.add(() -> {
+            Label reached = new Label();
+            Label end = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "atEndOfPage",
+                    "(" + CONTEXT + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFNE, reached);
+            otherwise.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(reached);
+            atEnd.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
     }
 
     /**
@@ -1550,9 +1587,16 @@ public final class ProgramGenerator {
             }
             entry = "writeLine";
         }
+        // LINAGE を書いたファイルは、行送りを書かない WRITE も 1 行を使う。
+        // 頁の中の位置を数え続けなければならないので、常にこちらの道を通す
+        FileDescription.Linage linage = "write".equals(verb) && !byKey ? file.linage() : null;
+        if (linage != null) {
+            entry = "writeLinage";
+        }
         String called = entry;
         Runnable advance = lines;
         boolean before = advancing != null && advancing.before();
+        Runnable page = linage == null ? null : planLinageShape(linage);
         Runnable call = () -> {
             emitFileName(file);
             if (withNumber) {
@@ -1561,16 +1605,36 @@ public final class ProgramGenerator {
             area.run();
             length.run();
             emitLengthBounds(file, record);
-            if (advance != null) {
+            if (linage != null && advance == null) {
+                // 行送りを書かない WRITE は AFTER ADVANCING 1 と同じだけ進む
+                push(1);
+                push(0);
+            } else if (advance != null) {
                 advance.run();
                 push(before ? 1 : 0);
+            }
+            if (page != null) {
+                page.run();
             }
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, called,
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
                             + (withNumber ? "I" : "") + "L" + STORAGE + ";IIII"
-                            + (advance != null ? "IZ" : "") + ")[B", false);
+                            + (linage != null || advance != null ? "IZ" : "")
+                            + (linage != null ? "IIIII" : "") + ")[B", false);
         };
         planKeyedCall(call, status, slot, keyCheck, body);
+    }
+
+    /** 論理頁の形を定数として積む (要件 FR-113)。 */
+    private Runnable planLinageShape(FileDescription.Linage linage) {
+        int counterAt = linage.counter().absoluteOffset().orElse(-1);
+        return () -> {
+            push(counterAt);
+            push(linage.page());
+            push(linage.footing());
+            push(linage.top());
+            push(linage.bottom());
+        };
     }
 
     /**

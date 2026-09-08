@@ -438,6 +438,125 @@ public final class Ops {
     }
 
     /**
+     * 論理頁を数えながら書く (要件 FR-113)。
+     *
+     * <p>{@code LINAGE} を書いたファイルは、紙 1 枚を「上の余白・本文・下の余白」に
+     * 分けて扱う。{@code LINAGE-COUNTER} が数えるのは<b>本文の何行目か</b>だけである。
+     *
+     * <h2>数え方は検査スイートが決めている</h2>
+     * <p>NIST CCVS85 の SQ201M が、規格の要求を実行できる形で書いている。そこから
+     * 読み取れる規則は 3 つである。
+     *
+     * <ul>
+     *   <li>1 回の {@code WRITE} が使う行数は、{@code ADVANCING n} なら {@code n}、
+     *       行送りを書かなければ 1 である。<b>{@code BEFORE} でも {@code AFTER} でも
+     *       同じだけ進む</b> (WRT-TEST-004 / 005 / 006)</li>
+     *   <li>{@code ADVANCING PAGE} のあと {@code LINAGE-COUNTER} は 1 である
+     *       (WRT-TEST-002)</li>
+     *   <li>本文をはみ出す書き込みは<b>次の頁の 1 行目</b>へ回り、
+     *       {@code LINAGE-COUNTER} は 1 になる (WRT-TEST-003)</li>
+     * </ul>
+     *
+     * <p>頁の終わり ({@code AT END-OF-PAGE}) は、書いたあとの {@code LINAGE-COUNTER} が
+     * <b>脚注の行に達したとき</b>に起きる。脚注を書いていなければ、本文をはみ出したとき
+     * である。規格がそう分けている。
+     *
+     * <p>行送りそのものは空のレコードで表す (暫定判断 P-063)。紙送りの制御文字を
+     * 実機で確かめていないためである。
+     *
+     * @param counterAt {@code LINAGE-COUNTER} の記憶域上の位置 (2 進 4 バイト)
+     * @param page      本文の行数
+     * @param footing   脚注が始まる行。書かれていなければ 0
+     * @param top       上の余白の行数
+     * @param bottom    下の余白の行数
+     */
+    public static byte[] writeLinage(ProgramContext context, String name, String ddName,
+                                     Storage storage, int offset, int length, int minimum,
+                                     int maximum, int lines, boolean before,
+                                     int counterAt, int page, int footing, int top, int bottom) {
+        int actual = clamp(length, minimum, maximum);
+        DataSet file = context.file(name, ddName);
+        byte[] record = read(storage, offset, actual);
+        int counter = readCounter(storage, counterAt);
+        String status = FileStatus.OK;
+        if (counter == 0) {
+            // まだ 1 行も置いていない頁である。上の余白を先に送る
+            status = blanks(file, top, actual);
+        }
+        int used = lines == PAGE ? 1 : lines;
+        // 頁送りは書かれたとおりの送りであって、はみ出しではない。
+        // すでに 1 行も置いていない頁にいるなら、送る先はいまの頁である
+        boolean turning = lines == PAGE ? counter > 0 : counter + used > page;
+        boolean overflow = lines != PAGE && turning;
+        if (turning && status.equals(FileStatus.OK)) {
+            status = endPage(file, counter, page, bottom, top, actual);
+            counter = 0;
+            used = 1;
+        }
+        if (status.equals(FileStatus.OK)) {
+            status = before
+                    ? placeBefore(file, record, used, actual)
+                    : placeAfter(file, record, used, actual);
+        }
+        counter += used;
+        writeCounter(storage, counterAt, counter);
+        context.setEndOfPage(footing > 0 ? counter >= footing : overflow);
+        return status(context, lengthChecked(status, actual, length));
+    }
+
+    /** 書いてから送る。レコードはいまの行に乗り、残りは空行である。 */
+    private static String placeBefore(DataSet file, byte[] record, int used, int width) {
+        String status = file.write(record);
+        return status.equals(FileStatus.OK) ? blanks(file, used - 1, width) : status;
+    }
+
+    /** 送ってから書く。レコードは送った先の行に乗る。 */
+    private static String placeAfter(DataSet file, byte[] record, int used, int width) {
+        String status = blanks(file, used - 1, width);
+        return status.equals(FileStatus.OK) ? file.write(record) : status;
+    }
+
+    /** 本文の残りと下の余白を送り、次の頁の上の余白まで進める。 */
+    private static String endPage(DataSet file, int counter, int page, int bottom, int top,
+                                  int width) {
+        String status = blanks(file, page - counter, width);
+        if (status.equals(FileStatus.OK)) {
+            status = blanks(file, bottom, width);
+        }
+        return status.equals(FileStatus.OK) ? blanks(file, top, width) : status;
+    }
+
+    /** 空行を {@code count} 行送る。 */
+    private static String blanks(DataSet file, int count, int width) {
+        String status = FileStatus.OK;
+        for (int i = 0; i < count && status.equals(FileStatus.OK); i++) {
+            status = file.write(blankLine(file, width));
+        }
+        return status;
+    }
+
+    /** {@code LINAGE-COUNTER} を読む。2 進 4 バイトである。 */
+    private static int readCounter(Storage storage, int at) {
+        byte[] bytes = storage.array();
+        return ((bytes[at] & 0xFF) << 24) | ((bytes[at + 1] & 0xFF) << 16)
+                | ((bytes[at + 2] & 0xFF) << 8) | (bytes[at + 3] & 0xFF);
+    }
+
+    /** {@code LINAGE-COUNTER} を書く。 */
+    public static void writeCounter(Storage storage, int at, int value) {
+        byte[] bytes = storage.array();
+        bytes[at] = (byte) (value >>> 24);
+        bytes[at + 1] = (byte) (value >>> 16);
+        bytes[at + 2] = (byte) (value >>> 8);
+        bytes[at + 3] = (byte) value;
+    }
+
+    /** 直前の {@code WRITE} が頁の終わりに達したか ({@code AT END-OF-PAGE} の分岐に使う)。 */
+    public static boolean atEndOfPage(ProgramContext context) {
+        return context.endOfPage();
+    }
+
+    /**
      * 行を送る。
      *
      * <p>{@code n} 行送って印字するなら、間に空くのは {@code n-1} 行である。

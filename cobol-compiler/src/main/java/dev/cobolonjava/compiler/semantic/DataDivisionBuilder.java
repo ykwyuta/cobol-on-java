@@ -96,6 +96,7 @@ public final class DataDivisionBuilder {
         DataDivisionBuilder builder = new DataDivisionBuilder(specialNames);
         builder.addProgramUnit(program);
         builder.addIndexItems();
+        builder.addLinageCounters(program);
         builder.layoutRecords();
         return new Result(new DataLayout(builder.records, builder.indexes,
                 specialRegisters(), builder.totalLength),
@@ -425,6 +426,48 @@ public final class DataDivisionBuilder {
                 records.add(item);
             }
         }
+    }
+
+    /**
+     * {@code LINAGE-COUNTER} の実体を作る (要件 FR-113)。
+     *
+     * <p>データ部のどこにも書かれないが、{@code FD} に {@code LINAGE} を書けば存在する。
+     * <b>ファイルごとに 1 つ</b>である。2 つ以上のファイルが {@code LINAGE} を持つときは
+     * 同じ名前の項目が 2 つできるので、修飾せずに書けば「あいまいだ」と断ることになる。
+     * これは規格の決まりどおりである。
+     *
+     * <p>読むだけの項目ではあるが、普通のデータ項目として置くのがいちばん素直である。
+     * 添字も転記も比較も、専用の道を作らずに通る。
+     */
+    private void addLinageCounters(CobolParser.ProgramUnitContext program) {
+        if (program.dataDivision() == null) {
+            return;
+        }
+        for (CobolParser.DataDivisionSectionContext section
+                : program.dataDivision().dataDivisionSection()) {
+            if (section.fileSection() == null) {
+                continue;
+            }
+            for (CobolParser.FileDescriptionEntryContext fd
+                    : section.fileSection().fileDescriptionEntry()) {
+                if (!hasLinageClause(fd)) {
+                    continue;
+                }
+                DataItem counter = new DataItem(INDEPENDENT_LEVEL, "LINAGE-COUNTER", originOf(fd));
+                counter.setPicture(PictureParser.parse(INDEX_PICTURE));
+                counter.setUsage(Usage.COMP);
+                records.add(counter);
+            }
+        }
+    }
+
+    private static boolean hasLinageClause(CobolParser.FileDescriptionEntryContext fd) {
+        for (CobolParser.FileDescriptionClauseContext clause : fd.fileDescriptionClause()) {
+            if (clause.linageClause() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
