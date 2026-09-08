@@ -166,6 +166,22 @@ public final class DataItem {
         return index;
     }
 
+    private boolean external;
+
+    /**
+     * {@code EXTERNAL} と書かれたか (要件 FR-014)。
+     *
+     * <p>書かれた 01 レベルの領域は<b>実行単位で 1 つ</b>である。同じ名前で
+     * {@code EXTERNAL} と書いたどのプログラムからも、同じ中身が見える。
+     */
+    public boolean external() {
+        return external;
+    }
+
+    void setExternal(boolean value) {
+        this.external = value;
+    }
+
     public List<ConditionName> conditionNames() {
         return Collections.unmodifiableList(conditionNames);
     }

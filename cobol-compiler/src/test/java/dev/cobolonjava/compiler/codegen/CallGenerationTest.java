@@ -90,6 +90,91 @@ class CallGenerationTest {
             "    MOVE 'xyz' TO LK-A",
             "    GOBACK.");
 
+    /** EXTERNAL の領域だけを書き換えて戻る副プログラム。引数は取らない。 */
+    private static final List<String> SUB_EXTERNAL = List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. SUBEXT.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01 SHARED-DATA IS EXTERNAL.",
+            "   03 SH-TEXT PIC X(2).",
+            "   03 SH-NUM  PIC 9(4).",
+            "PROCEDURE DIVISION.",
+            "MAIN-START.",
+            "    MOVE 'ZZ' TO SH-TEXT",
+            "    ADD 10 TO SH-NUM",
+            "    GOBACK.");
+
+    @Test
+    @DisplayName("EXTERNAL の領域は実行単位で 1 つである (FR-014)")
+    void anExternalItemIsOneAreaForTheWholeRunUnit() {
+        // 引数を渡していないのに、呼ぶ側が書いた値が呼ばれた側から見え、
+        // 呼ばれた側が書いた値が呼ぶ側から見える。それが EXTERNAL である。
+        // ADD 10 TO SH-NUM が 11 になるのは<b>両方向</b>が通っている証拠になる
+        assertEquals("ZZ0011", run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. EXTMAIN.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 SHARED-DATA IS EXTERNAL.",
+                        "   03 SH-TEXT PIC X(2).",
+                        "   03 SH-NUM  PIC 9(4).",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    MOVE 'AA' TO SH-TEXT",
+                        "    MOVE 1 TO SH-NUM",
+                        "    CALL 'SUBEXT'",
+                        "    DISPLAY SH-TEXT SH-NUM",
+                        "    STOP RUN."),
+                SUB_EXTERNAL)).trim());
+    }
+
+    @Test
+    @DisplayName("EXTERNAL と書かなければ、名前が同じでも別の領域である (FR-014)")
+    void anItemWithoutTheExternalClauseIsNotShared() {
+        // 名前が同じだけでは分け合わない。EXTERNAL と書いたときだけである
+        assertEquals("AA0001", run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. EXTMAIN2.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 SHARED-DATA.",
+                        "   03 SH-TEXT PIC X(2).",
+                        "   03 SH-NUM  PIC 9(4).",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    MOVE 'AA' TO SH-TEXT",
+                        "    MOVE 1 TO SH-NUM",
+                        "    CALL 'SUBEXT'",
+                        "    DISPLAY SH-TEXT SH-NUM",
+                        "    STOP RUN."),
+                SUB_EXTERNAL)).trim());
+    }
+
+    @Test
+    @DisplayName("EXTERNAL は 2 度目の CALL でも引き継がれる (FR-014)")
+    void anExternalItemKeepsItsValueAcrossCalls() {
+        // 副プログラムの作業場所は 2 度目の呼び出しでも前回のままだが、EXTERNAL は
+        // <b>呼ぶ側の書き換えも</b>引き継ぐ。1 + 10 + 10 で 21 になる
+        assertEquals("ZZ0021", run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. EXTMAIN3.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 SHARED-DATA IS EXTERNAL.",
+                        "   03 SH-TEXT PIC X(2).",
+                        "   03 SH-NUM  PIC 9(4).",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    MOVE 'AA' TO SH-TEXT",
+                        "    MOVE 1 TO SH-NUM",
+                        "    CALL 'SUBEXT'",
+                        "    CALL 'SUBEXT'",
+                        "    DISPLAY SH-TEXT SH-NUM",
+                        "    STOP RUN."),
+                SUB_EXTERNAL)).trim());
+    }
+
     @Test
     @DisplayName("CALL は副プログラムを呼び、書き換えは呼ぶ側に届く (FR-080, FR-081)")
     void aCalledProgramWritesThroughToTheCaller() {

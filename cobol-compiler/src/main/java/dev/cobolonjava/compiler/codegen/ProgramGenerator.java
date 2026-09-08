@@ -86,6 +86,9 @@ public final class ProgramGenerator {
     private static final String DATA_VIEW = Type.getInternalName(DataView.class);
     private static final String OPS = Type.getInternalName(Ops.class);
     private static final String STORAGE_MAP = "L" + Type.getInternalName(StorageMap.class) + ";";
+    private static final String EXTERNAL_REGION_INTERNAL =
+            Type.getInternalName(CobolProgram.ExternalRegion.class);
+    private static final String EXTERNAL_REGION = "L" + EXTERNAL_REGION_INTERNAL + ";";
     private static final String SUPPORT = Type.getInternalName(ProgramSupport.class);
     private static final String STORAGE = Type.getInternalName(Storage.class);
     private static final String CODE_PAGE = Type.getDescriptor(CodePage.class);
@@ -281,6 +284,7 @@ public final class ProgramGenerator {
 
         emitInitialStorage(image.storage());
         emitStorageMap();
+        emitExternalRegions();
         List<List<Runnable>> paragraphs = planParagraphs(procedure);
         if (!diagnostics.isEmpty()) {
             return new Result(className, null, List.copyOf(diagnostics));
@@ -5552,6 +5556,92 @@ public final class ProgramGenerator {
         method.visitInsn(Opcodes.ARETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();
+    }
+
+    /**
+     * {@code EXTERNAL} を書いた 01 レベルの領域を返す {@code externalRegions} を出す
+     * (要件 FR-014)。
+     *
+     * <p>返すのは名前と位置だけである。突き合わせるのは実行時の
+     * {@link dev.cobolonjava.runtime.program.ProgramContext} であり、
+     * 生成コードは<b>ふつうに自分の記憶域を指す</b>。参照 1 つずつを実行単位の領域へ
+     * 振り分けると、添字も部分参照も二重に持たなければならなくなる。
+     */
+    private void emitExternalRegions() {
+        if (layout == null) {
+            return;
+        }
+        List<CobolProgram.ExternalRegion> shared = sharedRegions();
+        if (shared.isEmpty()) {
+            return;
+        }
+        MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "externalRegions",
+                "()[" + EXTERNAL_REGION, null, null);
+        method.visitCode();
+        emitInt(method, shared.size());
+        method.visitTypeInsn(Opcodes.ANEWARRAY, EXTERNAL_REGION_INTERNAL);
+        for (int i = 0; i < shared.size(); i++) {
+            CobolProgram.ExternalRegion region = shared.get(i);
+            method.visitInsn(Opcodes.DUP);
+            emitInt(method, i);
+            method.visitTypeInsn(Opcodes.NEW, EXTERNAL_REGION_INTERNAL);
+            method.visitInsn(Opcodes.DUP);
+            method.visitLdcInsn(region.name());
+            emitInt(method, region.offset());
+            emitInt(method, region.length());
+            method.visitMethodInsn(Opcodes.INVOKESPECIAL, EXTERNAL_REGION_INTERNAL, "<init>",
+                    "(Ljava/lang/String;II)V", false);
+            method.visitInsn(Opcodes.AASTORE);
+        }
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    /**
+     * 実行単位で分け合う領域を数え上げる (要件 FR-014)。
+     *
+     * <p>作業場所の 01 レベルは<b>データ名</b>で分け合う。ファイル節のレコード領域は
+     * <b>ファイル名</b>で分け合う — 規格が結び付けているのはファイル結合子であって
+     * レコード記述ではないので、両側でレコードの名前が違っていてもよい。1 つの
+     * {@code FD} に複数の 01 を書けば同じ領域に重なるので、いちばん遠くまで届いた
+     * ものが領域の長さになる。
+     */
+    private List<CobolProgram.ExternalRegion> sharedRegions() {
+        List<CobolProgram.ExternalRegion> regions = new ArrayList<>();
+        Map<String, int[]> files = new LinkedHashMap<>();
+        for (DataItem record : layout.records()) {
+            if (!record.external() || record.section() == DataSection.LINKAGE) {
+                continue;
+            }
+            if (record.section() == DataSection.FILE && record.fileName() != null) {
+                int[] span = files.computeIfAbsent("FD:" + record.fileName(),
+                        k -> new int[] {record.base(), record.base()});
+                span[0] = Math.min(span[0], record.base());
+                span[1] = Math.max(span[1], record.base() + record.length());
+                continue;
+            }
+            regions.add(new CobolProgram.ExternalRegion(
+                    record.name(), record.base(), record.length()));
+        }
+        for (Map.Entry<String, int[]> file : files.entrySet()) {
+            regions.add(new CobolProgram.ExternalRegion(file.getKey(),
+                    file.getValue()[0], file.getValue()[1] - file.getValue()[0]));
+        }
+        return regions;
+    }
+
+    /** 定数を積む。{@code push} は {@code run} へ出すので、ここでは使えない。 */
+    private static void emitInt(MethodVisitor into, int value) {
+        if (value >= -1 && value <= 5) {
+            into.visitInsn(Opcodes.ICONST_0 + value);
+        } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
+            into.visitIntInsn(Opcodes.BIPUSH, value);
+        } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
+            into.visitIntInsn(Opcodes.SIPUSH, value);
+        } else {
+            into.visitLdcInsn(value);
+        }
     }
 
     /** 項目とその下位を、書かれた順に並べる。 */

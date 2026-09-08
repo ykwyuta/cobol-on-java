@@ -150,17 +150,86 @@ public final class ProgramContext {
      * 異常終了で抜けたプログラムは積まれたまま残り、覚え書きがその中身を見られる。
      */
     public void enter(String name, Storage storage) {
-        active.push(new Active(name, storage));
+        enter(name, storage, StorageMap.EMPTY, null);
     }
 
     /** 割り付けまで添えてプログラムへ入ったことを記録する (要件 FR-142)。 */
     public void enter(String name, Storage storage, StorageMap map) {
-        active.push(new Active(name, storage, map));
+        enter(name, storage, map, null);
     }
 
-    /** プログラムから正常に戻ったことを記録する。 */
+    /**
+     * {@code EXTERNAL} の領域まで添えてプログラムへ入ったことを記録する
+     * (要件 FR-014, FR-142)。
+     *
+     * <p>入る前に<b>いま動いている側の中身を実行単位の写しへ書き戻す</b>。そのうえで
+     * 入る側へ読み込む。{@code CALL} は呼ぶ側が書いた値を呼ばれた側が見なければ
+     * ならないので、この順でなければならない。
+     */
+    public void enter(String name, Storage storage, StorageMap map, CobolProgram program) {
+        flushExternals();
+        active.push(new Active(name, storage, map));
+        externalFrames.push(new ExternalFrame(storage, program));
+        loadExternals();
+    }
+
+    /**
+     * プログラムから正常に戻ったことを記録する。
+     *
+     * <p>抜ける側の {@code EXTERNAL} を書き戻してから、呼んだ側へ読み込み直す。
+     * 呼ばれた側が書き換えた値は<b>戻ったところで見えていなければならない</b>。
+     */
     public void leave() {
+        flushExternals();
         active.poll();
+        externalFrames.poll();
+        loadExternals();
+    }
+
+    // ---- EXTERNAL (要件 FR-014) ----
+
+    /** 実行単位で 1 つずつ持つ {@code EXTERNAL} の中身。データ名で引く。 */
+    private final Map<String, byte[]> externals = new java.util.HashMap<>();
+    /** 積まれたプログラムの記憶域と、その {@code EXTERNAL} の位置。 */
+    private final java.util.Deque<ExternalFrame> externalFrames = new java.util.ArrayDeque<>();
+
+    private record ExternalFrame(Storage storage, CobolProgram program) {
+
+        CobolProgram.ExternalRegion[] regions() {
+            return program == null ? CobolProgram.NO_EXTERNAL_REGIONS : program.externalRegions();
+        }
+    }
+
+    /** いま動いている側の {@code EXTERNAL} を実行単位の写しへ書き戻す。 */
+    private void flushExternals() {
+        ExternalFrame frame = externalFrames.peek();
+        if (frame == null) {
+            return;
+        }
+        for (CobolProgram.ExternalRegion region : frame.regions()) {
+            externals.put(region.name(),
+                    frame.storage().view(region.offset(), region.length()).toByteArray());
+        }
+    }
+
+    /**
+     * 実行単位の写しを、いま動いている側へ読み込む。
+     *
+     * <p>まだ写しが無ければ何もしない。<b>そのプログラムの持っている中身が最初の値</b>で
+     * ある。規格は {@code EXTERNAL} に {@code VALUE} を書くことを許していないので、
+     * どのプログラムから見ても同じ初期状態から始まる。
+     */
+    private void loadExternals() {
+        ExternalFrame frame = externalFrames.peek();
+        if (frame == null) {
+            return;
+        }
+        for (CobolProgram.ExternalRegion region : frame.regions()) {
+            byte[] shared = externals.get(region.name());
+            if (shared != null && shared.length == region.length()) {
+                frame.storage().view(region.offset(), region.length()).setBytes(shared);
+            }
+        }
     }
 
     /** いま動いているプログラム。内側が先頭に並ぶ。 */

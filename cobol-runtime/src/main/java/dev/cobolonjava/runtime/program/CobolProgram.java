@@ -45,7 +45,7 @@ public interface CobolProgram {
      */
     default Storage runFresh(ProgramContext context, DataView... arguments) {
         Storage storage = Storage.wrap(initialStorage());
-        context.enter(name(), storage, storageMap());
+        context.enter(name(), storage, storageMap(), this);
         try {
             run(storage, context, arguments);
         } catch (ProgramStop | ProgramReturn end) {
@@ -74,6 +74,36 @@ public interface CobolProgram {
      */
     default StorageMap storageMap() {
         return StorageMap.EMPTY;
+    }
+
+    /** {@code EXTERNAL} を書いた 01 レベルを 1 つも持たないプログラム。 */
+    ExternalRegion[] NO_EXTERNAL_REGIONS = new ExternalRegion[0];
+
+    /**
+     * {@code EXTERNAL} を書いた 01 レベルの領域 (要件 FR-014)。
+     *
+     * <p>{@code EXTERNAL} と書いた 01 レベルの領域は<b>実行単位で 1 つ</b>である。
+     * 同じ名前で書いたどのプログラムからも同じ中身が見える。
+     *
+     * <p>生成コードは項目をふつうに自分の記憶域へ割り付ける。実行単位の写しと
+     * 突き合わせるのは<b>プログラムの境目</b>だけである — 入るとき、抜けるとき、
+     * そして {@code CALL} の前後である。1 度に動くプログラムは 1 つなので、
+     * これで「実体が 1 つある」のと見分けが付かない。
+     *
+     * @return 01 レベルごとの名前と、自分の記憶域での位置
+     */
+    default ExternalRegion[] externalRegions() {
+        return NO_EXTERNAL_REGIONS;
+    }
+
+    /**
+     * {@code EXTERNAL} の領域 1 個。
+     *
+     * @param name   データ名。実行単位でこの名前が同じものは同じ領域である
+     * @param offset このプログラムの記憶域での位置
+     * @param length バイト長
+     */
+    record ExternalRegion(String name, int offset, int length) {
     }
 
     /** 出力を端末へ出して実行する。 */

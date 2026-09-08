@@ -172,12 +172,18 @@ public final class DataDivisionBuilder {
                 report(origin, "duplicate FD for " + currentFile);
                 continue;
             }
+            // FD ... IS EXTERNAL は、ファイル結合子とレコード領域を実行単位で 1 つに
+            // する (要件 FR-014)。領域のほうは記述項に印を付けて持ち回る
+            boolean external = isExternalFile(fd);
             List<DataItem> area = new ArrayList<>();
             for (CobolParser.DataDescriptionEntryContext entry : fd.dataDescriptionEntry()) {
                 int before = records.size();
                 addEntry(entry);
                 for (int i = before; i < records.size(); i++) {
                     area.add(records.get(i));
+                    if (external) {
+                        records.get(i).setExternal(true);
+                    }
                 }
             }
             if (area.isEmpty() && reportNamesOf(fd).isEmpty()) {
@@ -189,6 +195,16 @@ public final class DataDivisionBuilder {
         }
         currentFile = null;
         currentSection = DataSection.WORKING_STORAGE;
+    }
+
+    /** {@code FD ... IS EXTERNAL} と書かれたか (要件 FR-014)。 */
+    private static boolean isExternalFile(CobolParser.FileDescriptionEntryContext fd) {
+        for (CobolParser.FileDescriptionClauseContext clause : fd.fileDescriptionClause()) {
+            if (clause.EXTERNAL() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static DataSection sectionOf(CobolParser.DataDivisionSectionContext section) {
@@ -307,8 +323,11 @@ public final class DataDivisionBuilder {
                 item.setBlankWhenZero(true);
             } else if (clause.valueClause() != null) {
                 applyValue(item, clause.valueClause(), origin);
+            } else if (clause.externalClause() != null) {
+                // 割り付けには効かないが、<b>どの領域を指すか</b>に効く (要件 FR-014)
+                item.setExternal(true);
             }
-            // SYNCHRONIZED / GLOBAL / EXTERNAL は割り付けに効かない
+            // SYNCHRONIZED と GLOBAL は割り付けに効かない
         }
         applyBlankWhenZero(item, origin);
     }
