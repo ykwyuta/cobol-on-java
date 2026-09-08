@@ -1202,15 +1202,15 @@ public final class ProcedureBuilder {
         return new Statement.Alter(List.copyOf(changes), origin);
     }
 
-    private static boolean namesItem(Operand operand, String name) {
-        return operand instanceof Operand.Reference reference
+    private static boolean namesItem(Expression side, String name) {
+        return Condition.Relation.operandOf(side) instanceof Operand.Reference reference
                 && name.equals(reference.reference().item().name());
     }
 
     /** 参照の添字が、探索の指標そのものかどうか。 */
-    private static boolean subscriptedBy(Operand operand, DataReference index) {
-        List<DataReference.Subscript> subscripts =
-                ((Operand.Reference) operand).reference().subscripts();
+    private static boolean subscriptedBy(Expression side, DataReference index) {
+        List<DataReference.Subscript> subscripts = ((Operand.Reference)
+                Condition.Relation.operandOf(side)).reference().subscripts();
         return subscripts.size() == 1
                 && subscripts.get(0) instanceof DataReference.Subscript.Variable variable
                 && variable.offset() == 0
@@ -1728,7 +1728,7 @@ public final class ProcedureBuilder {
     private static Condition alwaysTrue(Origin origin) {
         Operand zero = new Operand.Literal(
                 new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO));
-        return new Condition.Relation(zero, Condition.Comparison.EQUAL, zero, true, origin);
+        return Condition.Relation.of(zero, Condition.Comparison.EQUAL, zero, true, origin);
     }
 
     /**
@@ -1772,8 +1772,9 @@ public final class ProcedureBuilder {
     /** 値を比べる目的語。{@code THRU} なら範囲になる。 */
     private Condition valueObject(CobolParser.ArithmeticOperandContext subject,
                                   CobolParser.EvaluateObjectContext object, Origin origin) {
-        Operand left = operandOf(subject, origin);
-        List<Operand> values = valuesOf(object, origin);
+        Operand operand = operandOf(subject, origin);
+        Expression left = operand == null ? null : new Expression.Value(operand);
+        List<Expression> values = valuesOf(object, origin);
         if (left == null || values == null || values.contains(null)) {
             return null;
         }
@@ -1791,18 +1792,20 @@ public final class ProcedureBuilder {
      * <p>主語が {@code TRUE} でない場合、名前だけの目的語は<b>条件名ではなく値</b>である。
      * 文法だけでは見分けられないため、ここで読み替える。
      */
-    private List<Operand> valuesOf(CobolParser.EvaluateObjectContext object, Origin origin) {
-        if (!object.arithmeticOperand().isEmpty()) {
-            List<Operand> values = new ArrayList<>();
-            for (CobolParser.ArithmeticOperandContext value : object.arithmeticOperand()) {
-                values.add(operandOf(value, origin));
+    private List<Expression> valuesOf(CobolParser.EvaluateObjectContext object, Origin origin) {
+        if (!object.expression().isEmpty()) {
+            List<Expression> values = new ArrayList<>();
+            for (CobolParser.ExpressionContext value : object.expression()) {
+                values.add(expressionOf(value, origin));
             }
             return values;
         }
         CobolParser.IdentifierContext name = soleNameOf(object.condition());
         if (name != null) {
             DataReference reference = resolver.resolve(name);
-            return reference == null ? null : List.of(new Operand.Reference(reference));
+            return reference == null
+                    ? null
+                    : List.of(new Expression.Value(new Operand.Reference(reference)));
         }
         report(origin, "a WHEN object must be a value when the subject is not TRUE or FALSE");
         return null;
@@ -1877,8 +1880,8 @@ public final class ProcedureBuilder {
 
     private Condition relationOf(CobolParser.RelationConditionContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        Operand left = operandOf(context.arithmeticOperand(0), origin);
-        Operand right = operandOf(context.arithmeticOperand(1), origin);
+        Expression left = expressionOf(context.expression(0), origin);
+        Expression right = expressionOf(context.expression(1), origin);
         if (left == null || right == null) {
             return null;
         }
@@ -1898,7 +1901,24 @@ public final class ProcedureBuilder {
     private Condition relation(Operand left, Condition.Comparison comparison, Operand right,
                                Origin origin) {
         boolean numeric = isNumeric(left, true) && isNumeric(right, true);
+        return Condition.Relation.of(left, comparison, right, numeric, origin);
+    }
+
+    /**
+     * 式どうしの関係条件を組み立てる。
+     *
+     * <p>式が被演算子 1 個でなければ<b>必ず数値</b>である。四則の相手は数値しかない。
+     */
+    private Condition relation(Expression left, Condition.Comparison comparison, Expression right,
+                               Origin origin) {
+        boolean numeric = isNumeric(left, true) && isNumeric(right, true);
         return new Condition.Relation(left, comparison, right, numeric, origin);
+    }
+
+    /** 式が数値として扱われるか。 */
+    private static boolean isNumeric(Expression expression, boolean literalDefault) {
+        Operand operand = Condition.Relation.operandOf(expression);
+        return operand == null || isNumeric(operand, literalDefault);
     }
 
     /** 被演算子が数値として扱われるか。定数は受取側に合わせるので、既定の見方を渡す。 */
@@ -2143,7 +2163,7 @@ public final class ProcedureBuilder {
         }
         Operand zero = new Operand.Literal(
                 new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO));
-        return new Condition.Relation(operand, comparison, zero, true, origin);
+        return Condition.Relation.of(operand, comparison, zero, true, origin);
     }
 
     /**

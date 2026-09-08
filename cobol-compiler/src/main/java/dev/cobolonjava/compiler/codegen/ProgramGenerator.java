@@ -2851,12 +2851,15 @@ public final class ProgramGenerator {
         Runnable left;
         Runnable right;
         if (relation.numeric()) {
-            left = planSourceDecimal(relation.left(), relation.origin());
-            right = planSourceDecimal(relation.right(), relation.origin());
+            left = planComparisonSide(relation.left(), relation.origin());
+            right = planComparisonSide(relation.right(), relation.origin());
         } else {
+            // 英数字の比較に式は書けない。四則の相手は数値しかない
             int length = comparisonLength(relation);
-            left = planSourceBytes(relation.left(), relation.origin(), length);
-            right = planSourceBytes(relation.right(), relation.origin(), length);
+            left = planSourceBytes(Condition.Relation.operandOf(relation.left()),
+                    relation.origin(), length);
+            right = planSourceBytes(Condition.Relation.operandOf(relation.right()),
+                    relation.origin(), length);
         }
         if (left == null || right == null) {
             return null;
@@ -2881,13 +2884,28 @@ public final class ProgramGenerator {
         };
     }
 
+    /**
+     * 比べる片側を {@link Decimal} として積む命令。
+     *
+     * <p>被演算子 1 個なら今までどおり。式なら評価して積む。
+     */
+    private Runnable planComparisonSide(Expression side, Origin origin) {
+        Operand operand = Condition.Relation.operandOf(side);
+        return operand != null
+                ? planSourceDecimal(operand, origin)
+                : planExpression(side, IntermediateDigits.of(side, List.of()), origin);
+    }
+
     /** 図形定数を広げる長さ。相手の項目の長さに合わせる。 */
     private static int comparisonLength(Condition.Relation relation) {
-        int length = lengthOf(relation.left());
-        return length > 0 ? length : lengthOf(relation.right());
+        int length = lengthOf(Condition.Relation.operandOf(relation.left()));
+        return length > 0 ? length : lengthOf(Condition.Relation.operandOf(relation.right()));
     }
 
     private static int lengthOf(Operand operand) {
+        if (operand == null) {
+            return 0;
+        }
         if (operand instanceof Operand.Reference reference) {
             return reference.reference().constantLength().orElse(0);
         }

@@ -31,11 +31,31 @@ public sealed interface Condition {
     /**
      * 関係条件。
      *
+     * <p>両辺は<b>算術式</b>である。{@code IF 1 + (TWO * 3) = 7} と書けるので、
+     * 被演算子 1 個では足りない。ふつうの項目や定数は {@link Expression.Value} 1 つに
+     * なるので、式にしても後段の作りは変わらない。
+     *
      * @param numeric 数値として比べるかどうか。両辺が数値なら代数的な比較、
      *                そうでなければコードページの照合順序による比較になる
      */
-    record Relation(Operand left, Comparison comparison, Operand right, boolean numeric,
+    record Relation(Expression left, Comparison comparison, Expression right, boolean numeric,
                     Origin origin) implements Condition {
+
+        /** 被演算子 1 個どうしの比較を作る。符号条件と条件名の展開が使う。 */
+        public static Relation of(Operand left, Comparison comparison, Operand right,
+                                  boolean numeric, Origin origin) {
+            return new Relation(new Expression.Value(left), comparison,
+                    new Expression.Value(right), numeric, origin);
+        }
+
+        /**
+         * 左辺が被演算子 1 個なら、それ。
+         *
+         * @return 式なら {@code null}
+         */
+        public static Operand operandOf(Expression side) {
+            return side instanceof Expression.Value value ? value.operand() : null;
+        }
     }
 
     record Not(Condition inner) implements Condition {

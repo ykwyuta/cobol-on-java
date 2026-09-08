@@ -268,6 +268,28 @@ class ConditionGenerationTest {
     }
 
     @Test
+    @DisplayName("関係条件の両辺に算術式を書ける (FR-046)")
+    void aRelationMayCompareArithmeticExpressions() {
+        assertEquals("T", branchTaken("1 + (WS-A * 2) = 21"));
+        assertEquals("T", branchTaken("WS-A + WS-B = WS-B + WS-A"));
+        assertEquals("F", branchTaken("WS-A * 3 > WS-B * 2"));
+    }
+
+    @Test
+    @DisplayName("EVALUATE の目的語にも算術式を書ける (FR-062)")
+    void anEvaluateObjectMayBeAnArithmeticExpression() {
+        assertEquals("H", run(
+                List.of("01 WS-A PIC 9(3) VALUE 010.",
+                        "01 WS-B PIC 9(3) VALUE 004.",
+                        "01 WS-R PIC X."),
+                "EVALUATE WS-A",
+                "    WHEN WS-B * 2 MOVE 'L' TO WS-R",
+                "    WHEN (WS-B + 1) * 2 MOVE 'H' TO WS-R",
+                "    WHEN OTHER MOVE 'O' TO WS-R",
+                "END-EVALUATE.").substring(6));
+    }
+
+    @Test
     @DisplayName("ELSE がなくても書ける (FR-061)")
     void theElseBranchIsOptional() {
         assertEquals("40", java.util.HexFormat.of().withUpperCase().formatHex(

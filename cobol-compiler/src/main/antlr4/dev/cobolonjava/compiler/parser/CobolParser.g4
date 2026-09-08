@@ -562,8 +562,9 @@ simpleCondition
     | conditionNameCondition
     ;
 
+// 両辺は算術式である。IF 1 + (TWO * 3) = 7 と書ける
 relationCondition
-    : arithmeticOperand relationalOperator arithmeticOperand
+    : expression relationalOperator expression
     ;
 
 signCondition
@@ -724,11 +725,11 @@ evaluateSubject
 // 範囲は THRU で見分ける。残りは条件を先に試し、当たらなければ値とする
 evaluateObject
     : ANY
-    | NOT? arithmeticOperand (THRU | THROUGH) arithmeticOperand
+    | NOT? expression (THRU | THROUGH) expression
     | TRUE
     | FALSE
     | condition
-    | NOT? arithmeticOperand
+    | NOT? expression
     ;
 
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
