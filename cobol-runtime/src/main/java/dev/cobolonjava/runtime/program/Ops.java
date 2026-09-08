@@ -570,10 +570,20 @@ public final class Ops {
      * <p>{@code n} 行送って印字するなら、間に空くのは {@code n-1} 行である。
      * 送らない ({@code 0} 行) は重ね印字であり、紙の上でしか起こらない。ここでは
      * 空行を足さないだけになる (暫定判断 P-063)。
+     *
+     * <h2>負の行数は「改頁してから送る」である</h2>
+     * <p>{@link #PAGE} は {@code -1} であり、「改頁して 1 行目へ」を表す。これを
+     * <b>一般化して</b>、{@code -k} を「改頁して k 行目へ」とする。報告書作成機能
+     * (要件 FR-214) が使う。改頁と行送りを 1 回の書き込みで表せるので、頁の先頭に
+     * 余計な空行が出ない。
      */
     private static String advance(DataSet file, int lines, int width) {
-        if (lines == PAGE) {
-            return file.write(pageBreak(file, width));
+        if (lines < 0) {
+            String status = file.write(pageBreak(file, width));
+            for (int i = 1; i < -lines && status.equals(FileStatus.OK); i++) {
+                status = file.write(blankLine(file, width));
+            }
+            return status;
         }
         String status = FileStatus.OK;
         for (int i = 1; i < lines && status.equals(FileStatus.OK); i++) {

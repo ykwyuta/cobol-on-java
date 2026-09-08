@@ -67,7 +67,19 @@ public final class SourceTokenSource implements TokenSource {
             "GREATER_EQUAL_SIGN", "LESS_EQUAL_SIGN", "NOT_EQUAL_SIGN",
             "PLUS_SIGN", "MINUS_SIGN", "TIMES_SIGN", "DIVIDE_SIGN", "POWER_SIGN",
             "PICTURE_STRING", "EXEC_BLOCK",
+            // NUMBER_KEYWORD は SPELLED_WORDS が綴りを持っている
+            "NUMBER_KEYWORD",
             "IDENTIFIER", "LITERAL", "NUMBER");
+
+    /**
+     * 綴りと字句の名前が一致しない予約語。
+     *
+     * <p>{@code NUMBER} は COBOL の予約語だが、この文法では同じ名前の字句を
+     * <b>数字定数</b>に使っている。{@code LINE NUMBER IS 1} のような書き方を読むには
+     * 語のほうにも字句が要るので、別の名前で宣言して、ここで綴りと結び付ける。
+     */
+    private static final Map<String, Integer> SPELLED_WORDS =
+            Map.of("NUMBER", CobolParser.NUMBER_KEYWORD);
 
     private static final Map<String, Integer> RESERVED_WORDS = reservedWords(CobolParser.VOCABULARY);
 
@@ -228,7 +240,12 @@ public final class SourceTokenSource implements TokenSource {
         if (symbol != null) {
             return symbol;
         }
-        Integer reserved = RESERVED_WORDS.get(text.toUpperCase(Locale.ROOT).replace('-', '_'));
+        String upper = text.toUpperCase(Locale.ROOT);
+        Integer spelled = SPELLED_WORDS.get(upper);
+        if (spelled != null) {
+            return spelled;
+        }
+        Integer reserved = RESERVED_WORDS.get(upper.replace('-', '_'));
         if (reserved != null) {
             return reserved;
         }

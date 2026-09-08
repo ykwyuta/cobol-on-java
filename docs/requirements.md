@@ -432,6 +432,14 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
 - **FR-068 (L2)**: `SET ... TO TRUE / FALSE` による条件名の設定。
 - **FR-069 (L2)**: `XML GENERATE` / `XML PARSE`、`JSON GENERATE` / `JSON PARSE` を
   段階的にサポートする (フェーズ 3、レベル L1 から開始)。
+- **FR-214 (L1)**: 報告書作成機能 (Report Writer)。`REPORT SECTION` の `RD` (頁の形:
+  `PAGE LIMIT` / `HEADING` / `FIRST DETAIL` / `LAST DETAIL` / `FOOTING`)、報告集団の記述
+  (`LINE NUMBER` / `COLUMN NUMBER` / `SOURCE` / `VALUE`、`TYPE` の `REPORT HEADING` /
+  `PAGE HEADING` / `DETAIL` / `PAGE FOOTING` / `REPORT FOOTING`)、`FD` の `REPORT IS` 句、
+  `INITIATE` / `GENERATE` / `TERMINATE`、特殊レジスタ `LINE-COUNTER` と `PAGE-COUNTER`。
+  専用の実行時機構は持たず、**普通のレコード記述と普通の文へ落とす** (制約 C-4)。
+  制御の切れ目 (`CONTROL` / `SUM` / `CONTROL HEADING` / `CONTROL FOOTING`) は後続段階
+  (暫定判断 P-078)。
 
 ### 5.8 組み込み関数
 
@@ -867,7 +875,7 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
 | C-1 | HLASM サブルーチンの実行 | 実行しない。Java による代替実装の登録で対応 (FR-086) |
 | C-2 | ストレージの物理アドレスに依存するコード | ポインタ比較・演算は論理アドレスで模倣。実アドレス値そのものは一致しない |
 | C-3 | 実行時間・CPU 時間に依存するロジック | 値は取得できるが、ホストと同一の値にはならない |
-| C-4 | Report Writer | 初期リリースでは L0。プリプロセッサ方式で後続フェーズに実装 |
+| C-4 | Report Writer | 基本部分を実装済 (L1)。`RD` の頁の形、`LINE` / `COLUMN` / `SOURCE` / `VALUE`、`INITIATE` / `GENERATE` / `TERMINATE`、`LINE-COUNTER` / `PAGE-COUNTER`。制御の切れ目 (`CONTROL` / `SUM` / `CONTROL HEADING` / `CONTROL FOOTING`) は未実装で、**断る** (暫定判断 P-078)。実装は専用の実行時機構を持たず、普通の記述と普通の文へ落とすプリプロセッサ方式である |
 | C-5 | 通信機能 (`COMMUNICATION SECTION`) | L0。現代の資産では使用されないと判断 |
 | C-6 | `SEGMENTATION` (セグメント番号) | 構文は受理するがオーバレイは行わない (L1) |
 | C-7 | 3270 端末エミュレーション | 画面プロトコルそのものは再現しない (FR-162) |

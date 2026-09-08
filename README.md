@@ -17,6 +17,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: cobol-compiler の構文解析 (P0-b)](docs/design/40-parser.md)
 - [設計: データ部の記憶域割り付け (P0-b)](docs/design/50-data-layout.md)
 - [設計: 手続き部と一意名の解決 (P0-b)](docs/design/60-procedure.md)
+- [設計: 報告書作成機能](docs/design/65-report-writer.md)
 - [設計: コード生成 (P0-b)](docs/design/70-codegen.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
@@ -140,8 +141,8 @@ $(find ~/.m2 -name 'antlr4-runtime-*.jar'):$(find ~/.m2 -name 'asm-9*.jar') \
 要件定義フェーズ完了 (要件定義書 第 15 章に決定事項)。
 P0-a (ランタイム先行) と V2 期待値の採取基盤を実装済み。P0-b (コンパイラ) に着手。ジョブ実行 (JCL を含む) を実装済。
 外の基準で測る検証基盤 (CCVS85 と OSS コーパス) を実装済。
-NIST CCVS85 の受理率は 93.4% (458 本中 428 本、壊れたもの 0 本) である。
-配布物の検査プログラムは<b>全数を流している</b> (札が足りずに流せないものは無い)。テスト 1679 件。
+NIST CCVS85 の受理率は 94.8% (458 本中 434 本、壊れたもの 0 本) である。
+配布物の検査プログラムは<b>全数を流している</b> (札が足りずに流せないものは無い)。テスト 1686 件。
 うち 5 件はコーパスを取ってきていなければスキップされる。
 うち 33 件は Hercules 上での実行と突き合わせる**検証レベル V2** であり、残りは V1。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい

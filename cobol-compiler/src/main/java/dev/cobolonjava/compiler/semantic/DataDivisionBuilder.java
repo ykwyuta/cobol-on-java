@@ -65,6 +65,8 @@ public final class DataDivisionBuilder {
     /** 直前に作った項目。条件名 (88) はここへ付く。 */
     private DataItem previous;
     private int totalLength;
+    /** 報告書節から組み立てた記述。 */
+    private final List<ReportDescription> reports = new ArrayList<>();
 
     /**
      * 割り付けの結果。
@@ -73,10 +75,29 @@ public final class DataDivisionBuilder {
      * @param diagnostics 見つかった誤り。空なら成功
      */
     public record Result(DataLayout layout, Map<String, List<DataItem>> fileRecords,
-                         List<Diagnostic> diagnostics) {
+                         List<ReportDescription> reports, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
             return diagnostics.isEmpty();
+        }
+
+        public ReportDescription report(String name) {
+            for (ReportDescription report : reports) {
+                if (report.name().equals(name)) {
+                    return report;
+                }
+            }
+            return null;
+        }
+
+        /** その報告集団を持つ報告書。無ければ {@code null}。 */
+        public ReportDescription reportOfGroup(String groupName) {
+            for (ReportDescription report : reports) {
+                if (report.group(groupName) != null) {
+                    return report;
+                }
+            }
+            return null;
         }
     }
 
@@ -97,11 +118,13 @@ public final class DataDivisionBuilder {
         builder.addProgramUnit(program);
         builder.addIndexItems();
         builder.addLinageCounters(program);
+        builder.addReports(program);
         builder.layoutRecords();
         builder.applyRenames();
         return new Result(new DataLayout(builder.records, builder.indexes,
                 specialRegisters(), builder.totalLength),
-                Map.copyOf(builder.fileRecords), List.copyOf(builder.diagnostics));
+                Map.copyOf(builder.fileRecords), List.copyOf(builder.reports),
+                List.copyOf(builder.diagnostics));
     }
 
     private void addProgramUnit(CobolParser.ProgramUnitContext unit) {
@@ -111,6 +134,10 @@ public final class DataDivisionBuilder {
         for (CobolParser.DataDivisionSectionContext section : unit.dataDivision().dataDivisionSection()) {
             if (section.fileSection() != null) {
                 addFileSection(section.fileSection());
+                continue;
+            }
+            if (section.reportSection() != null) {
+                // 報告書節は記述の形が違う。割り付けは addReports が作る
                 continue;
             }
             currentSection = sectionOf(section);
@@ -146,10 +173,11 @@ public final class DataDivisionBuilder {
                     area.add(records.get(i));
                 }
             }
-            if (area.isEmpty()) {
+            if (area.isEmpty() && reportNamesOf(fd).isEmpty()) {
                 report(origin, "FD " + currentFile + " has no record description");
                 continue;
             }
+            // REPORT を書いたファイルのレコードは報告書節が決める。addReports が足す
             fileRecords.put(currentFile, area);
         }
         currentFile = null;
@@ -627,6 +655,444 @@ public final class DataDivisionBuilder {
                 }
             }
         }
+    }
+
+    // ---- 報告書節 (要件 FR-214) ----
+
+    /** 欄が何も無い報告書でも、行を 1 本は置けるだけの幅を取る。 */
+    private static final int MINIMUM_REPORT_WIDTH = 1;
+
+    /**
+     * 報告書節を、普通の記述と数え札へ落とす (要件 FR-214)。
+     *
+     * <p>報告書作成機能に専用の実行時機構は<b>持たない</b>。行の姿は普通のレコード記述、
+     * 行を置く場所の計算は普通の算術、書き出しは普通の {@code WRITE} である。要件 C-4 が
+     * 言う「プリプロセッサ方式」を、意味解析の段でやっている。こうすると編集も詰め方も
+     * 行送りも、<b>すでに外の基準で確かめた道</b>をそのまま通る。
+     *
+     * <p>作るのは次のものである。
+     * <ul>
+     *   <li>{@code LINE-COUNTER} / {@code PAGE-COUNTER} — 規格が決めた特殊レジスタ。
+     *       報告書ごとに 1 つなので、2 つ以上あれば修飾しないと引けない</li>
+     *   <li>{@code RW-TGT$r} {@code RW-ADV$r} {@code RW-ON$r} {@code RW-EJ$r} — 作業用。
+     *       名前に {@code $} を含むので、書かれた名前とはぶつからない</li>
+     *   <li>行ごとの 01 レベル。{@code FD} のレコード領域として置く</li>
+     * </ul>
+     */
+    private void addReports(CobolParser.ProgramUnitContext program) {
+        if (program.dataDivision() == null) {
+            return;
+        }
+        Map<String, String> fileOfReport = reportFiles(program);
+        for (CobolParser.DataDivisionSectionContext section
+                : program.dataDivision().dataDivisionSection()) {
+            if (section.reportSection() == null) {
+                continue;
+            }
+            for (CobolParser.ReportDescriptionEntryContext rd
+                    : section.reportSection().reportDescriptionEntry()) {
+                addReport(rd, fileOfReport);
+            }
+        }
+    }
+
+    /** {@code FD} の {@code REPORT IS} 句から「報告書 → ファイル」の対応を作る。 */
+    private Map<String, String> reportFiles(CobolParser.ProgramUnitContext program) {
+        Map<String, String> files = new LinkedHashMap<>();
+        for (CobolParser.DataDivisionSectionContext section
+                : program.dataDivision().dataDivisionSection()) {
+            if (section.fileSection() == null) {
+                continue;
+            }
+            for (CobolParser.FileDescriptionEntryContext fd
+                    : section.fileSection().fileDescriptionEntry()) {
+                String file = fd.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+                for (String report : reportNamesOf(fd)) {
+                    files.put(report, file);
+                }
+            }
+        }
+        return files;
+    }
+
+    private static List<String> reportNamesOf(CobolParser.FileDescriptionEntryContext fd) {
+        List<String> names = new ArrayList<>();
+        for (CobolParser.FileDescriptionClauseContext clause : fd.fileDescriptionClause()) {
+            if (clause.REPORT() == null && clause.REPORTS() == null) {
+                continue;
+            }
+            for (org.antlr.v4.runtime.tree.TerminalNode name : clause.IDENTIFIER()) {
+                names.add(name.getText().toUpperCase(Locale.ROOT));
+            }
+        }
+        return names;
+    }
+
+    private void addReport(CobolParser.ReportDescriptionEntryContext rd,
+                           Map<String, String> fileOfReport) {
+        Origin origin = originOf(rd);
+        String name = rd.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        String file = fileOfReport.get(name);
+        if (file == null) {
+            report(origin, "report " + name + " is not named in any FD REPORT clause");
+            return;
+        }
+        for (CobolParser.ReportDescriptionClauseContext clause : rd.reportDescriptionClause()) {
+            if (clause.CONTROL() != null || clause.CONTROLS() != null) {
+                // 制御の切れ目で小計を出す仕組みは、まだ書けない。
+                // 近いものを黙って出すより断るほうがよい
+                report(origin, "a report with CONTROL breaks is not supported yet: " + name);
+                return;
+            }
+        }
+        ReportDescription.PageShape page = pageShapeOf(rd, origin);
+        if (page == null) {
+            return;
+        }
+        List<ReportGroup> groups = new ArrayList<>();
+        List<PlannedLine> planned = new ArrayList<>();
+        if (!collectGroups(rd, name, groups, planned, origin)) {
+            return;
+        }
+        int width = reportWidth(planned, file);
+        for (PlannedLine line : planned) {
+            addLineRecord(line, width, file, origin);
+        }
+        reports.add(new ReportDescription(name, file, page, groups,
+                addReportRegisters(name, origin), origin));
+    }
+
+    /** {@code PAGE} 句。書かれなければ紙の切れ目を持たない報告書になる。 */
+    private ReportDescription.PageShape pageShapeOf(
+            CobolParser.ReportDescriptionEntryContext rd, Origin origin) {
+        Integer limit = null;
+        Integer heading = null;
+        Integer firstDetail = null;
+        Integer lastDetail = null;
+        Integer footing = null;
+        for (CobolParser.ReportDescriptionClauseContext clause : rd.reportDescriptionClause()) {
+            if (clause.PAGE() == null) {
+                continue;
+            }
+            limit = Integer.parseInt(clause.NUMBER().getText());
+            for (CobolParser.PageDetailClauseContext part : clause.pageDetailClause()) {
+                int n = Integer.parseInt(part.NUMBER().getText());
+                if (part.HEADING() != null) {
+                    heading = n;
+                } else if (part.FIRST() != null) {
+                    firstDetail = n;
+                } else if (part.LAST() != null) {
+                    lastDetail = n;
+                } else {
+                    footing = n;
+                }
+            }
+        }
+        if (limit == null) {
+            // 紙の大きさが分からなければ、どこで頁を改めるかも決まらない
+            limit = Integer.MAX_VALUE;
+        }
+        if (limit <= 0) {
+            report(origin, "PAGE LIMIT must be positive: " + limit);
+            return null;
+        }
+        return ReportDescription.PageShape.of(limit, heading, firstDetail, lastDetail, footing);
+    }
+
+    /** 割り付ける前の行。まだ記憶域を持たない。 */
+    private record PlannedLine(String recordName, List<PlannedField> fields) {
+    }
+
+    /** 割り付ける前の欄。 */
+    private record PlannedField(String slotName, int column, Picture picture,
+                                LiteralValue value, Origin origin) {
+    }
+
+    /**
+     * 報告集団を集める。
+     *
+     * <p>集団は 01 レベルで始まる。行は {@code LINE} 句が現れるたびに始まり、続く欄は
+     * その行に属する。{@code LINE} 句を持つ項目そのものが欄でもありうる。
+     *
+     * @return 組み立てられたら {@code true}
+     */
+    private boolean collectGroups(CobolParser.ReportDescriptionEntryContext rd, String report,
+                                  List<ReportGroup> groups, List<PlannedLine> planned,
+                                  Origin origin) {
+        String groupName = null;
+        ReportGroup.Type type = null;
+        Origin groupOrigin = null;
+        List<ReportGroup.ReportLine> lines = new ArrayList<>();
+        List<ReportGroup.ReportField> fields = new ArrayList<>();
+        List<PlannedField> slots = new ArrayList<>();
+        ReportGroup.Placement placement = null;
+
+        for (CobolParser.ReportGroupEntryContext entry : rd.reportGroupEntry()) {
+            Origin at = originOf(entry);
+            int level = Integer.parseInt(entry.levelNumber().getText());
+            ReportGroup.Placement written = placementOf(entry, at);
+            if (level == 1) {
+                if (!closeGroup(groupName, type, groupOrigin, placement, lines, fields, slots,
+                        planned, report, groups, origin)) {
+                    return false;
+                }
+                lines = new ArrayList<>();
+                fields = new ArrayList<>();
+                slots = new ArrayList<>();
+                placement = written;
+                groupName = entry.dataName() == null
+                        ? null
+                        : entry.dataName().getText().toUpperCase(Locale.ROOT);
+                groupOrigin = at;
+                type = typeOf(entry, at);
+                if (type == null) {
+                    return false;
+                }
+                continue;
+            }
+            if (type == null) {
+                report(at, "a report group entry appears before any 01 report group");
+                return false;
+            }
+            if (written != null) {
+                if (placement != null && !fields.isEmpty()) {
+                    closeLine(placement, report, groupName, lines, fields, slots, planned);
+                    fields = new ArrayList<>();
+                    slots = new ArrayList<>();
+                }
+                placement = written;
+            }
+            if (!addField(entry, report, groupName, lines.size(), fields, slots, at)) {
+                return false;
+            }
+        }
+        return closeGroup(groupName, type, groupOrigin, placement, lines, fields, slots,
+                planned, report, groups, origin);
+    }
+
+    private boolean closeGroup(String groupName, ReportGroup.Type type, Origin groupOrigin,
+                               ReportGroup.Placement placement,
+                               List<ReportGroup.ReportLine> lines,
+                               List<ReportGroup.ReportField> fields, List<PlannedField> slots,
+                               List<PlannedLine> planned, String report,
+                               List<ReportGroup> groups, Origin origin) {
+        if (type == null) {
+            return true;
+        }
+        if (!fields.isEmpty() || placement != null) {
+            if (placement == null) {
+                report(origin, "a report group line needs a LINE clause: " + groupName);
+                return false;
+            }
+            closeLine(placement, report, groupName, lines, fields, slots, planned);
+        }
+        groups.add(new ReportGroup(groupName, type, lines, groupOrigin));
+        return true;
+    }
+
+    private void closeLine(ReportGroup.Placement placement, String report, String groupName,
+                           List<ReportGroup.ReportLine> lines,
+                           List<ReportGroup.ReportField> fields, List<PlannedField> slots,
+                           List<PlannedLine> planned) {
+        String recordName = "RW-L$" + report + "$" + groupName + "$" + lines.size();
+        planned.add(new PlannedLine(recordName, List.copyOf(slots)));
+        lines.add(new ReportGroup.ReportLine(placement, recordName, List.copyOf(fields)));
+    }
+
+    private ReportGroup.Placement placementOf(CobolParser.ReportGroupEntryContext entry,
+                                              Origin origin) {
+        for (CobolParser.ReportGroupClauseContext clause : entry.reportGroupClause()) {
+            CobolParser.LineNumberClauseContext line = clause.lineNumberClause();
+            if (line == null) {
+                continue;
+            }
+            if (line.NEXT() != null) {
+                return new ReportGroup.Placement(ReportGroup.Placement.Kind.NEXT_PAGE, 0);
+            }
+            int n = Integer.parseInt(line.NUMBER().getText());
+            return new ReportGroup.Placement(line.PLUS() == null
+                    ? ReportGroup.Placement.Kind.ABSOLUTE
+                    : ReportGroup.Placement.Kind.RELATIVE, n);
+        }
+        return null;
+    }
+
+    private ReportGroup.Type typeOf(CobolParser.ReportGroupEntryContext entry, Origin origin) {
+        for (CobolParser.ReportGroupClauseContext clause : entry.reportGroupClause()) {
+            if (clause.typeClause() == null) {
+                continue;
+            }
+            CobolParser.ReportGroupTypeContext type = clause.typeClause().reportGroupType();
+            if (type.CONTROL() != null) {
+                report(origin, "CONTROL HEADING and CONTROL FOOTING are not supported yet");
+                return null;
+            }
+            if (type.DETAIL() != null) {
+                return ReportGroup.Type.DETAIL;
+            }
+            if (type.REPORT() != null) {
+                return type.HEADING() != null
+                        ? ReportGroup.Type.REPORT_HEADING
+                        : ReportGroup.Type.REPORT_FOOTING;
+            }
+            if (type.PAGE() != null) {
+                return type.HEADING() != null
+                        ? ReportGroup.Type.PAGE_HEADING
+                        : ReportGroup.Type.PAGE_FOOTING;
+            }
+            // 略記。2 文字の語を予約語にしないでおくために、ここで見分ける
+            String word = type.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+            ReportGroup.Type abbreviated = switch (word) {
+                case "RH" -> ReportGroup.Type.REPORT_HEADING;
+                case "PH" -> ReportGroup.Type.PAGE_HEADING;
+                case "DE" -> ReportGroup.Type.DETAIL;
+                case "PF" -> ReportGroup.Type.PAGE_FOOTING;
+                case "RF" -> ReportGroup.Type.REPORT_FOOTING;
+                case "CH", "CF" -> null;
+                default -> null;
+            };
+            if (abbreviated == null) {
+                report(origin, "unknown report group TYPE: " + word);
+            }
+            return abbreviated;
+        }
+        report(origin, "a report group needs a TYPE clause");
+        return null;
+    }
+
+    /** 欄 1 個。{@code COLUMN} と {@code PICTURE} を持つ項目だけが紙に文字を置く。 */
+    private boolean addField(CobolParser.ReportGroupEntryContext entry, String report,
+                             String groupName, int lineIndex,
+                             List<ReportGroup.ReportField> fields, List<PlannedField> slots,
+                             Origin origin) {
+        Integer column = null;
+        Picture picture = null;
+        CobolParser.IdentifierContext source = null;
+        LiteralValue value = null;
+        for (CobolParser.ReportGroupClauseContext clause : entry.reportGroupClause()) {
+            if (clause.columnNumberClause() != null) {
+                column = Integer.parseInt(clause.columnNumberClause().NUMBER().getText());
+            } else if (clause.pictureClause() != null) {
+                picture = pictureOf(clause.pictureClause(), origin);
+            } else if (clause.sourceClause() != null) {
+                source = clause.sourceClause().identifier();
+            } else if (clause.valueClause() != null) {
+                value = literalOf(clause.valueClause().valueRange(0).literal(0), origin);
+            } else if (clause.sumClause() != null) {
+                report(origin, "SUM counters in a report are not supported yet");
+                return false;
+            }
+        }
+        if (column == null) {
+            // COLUMN を書かない項目は紙に文字を置かない。行の入れ物にすぎない
+            return true;
+        }
+        if (picture == null) {
+            report(origin, "a report field with COLUMN needs a PICTURE");
+            return false;
+        }
+        if (source == null && value == null) {
+            report(origin, "a report field needs SOURCE or VALUE");
+            return false;
+        }
+        String slotName = "RW-F$" + report + "$" + groupName + "$" + lineIndex
+                + "$" + fields.size();
+        slots.add(new PlannedField(slotName, column, picture, value, origin));
+        fields.add(new ReportGroup.ReportField(slotName, source, value, origin));
+        return true;
+    }
+
+    private Picture pictureOf(CobolParser.PictureClauseContext clause, Origin origin) {
+        try {
+            return PictureParser.parse(clause.PICTURE_STRING().getText(),
+                    specialNames.currency(), specialNames.decimalPoint());
+        } catch (RuntimeException e) {
+            report(origin, "invalid PICTURE character-string: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 行の幅。
+     *
+     * <p>{@code FD} にレコードの長さが書かれていればそれ、書かれていなければ
+     * <b>いちばん右まで届く欄</b>で決める (暫定判断 P-077)。実機の報告書ファイルの
+     * レコード長を突き合わせていないので、書かれた欄が収まる幅を採っている。
+     */
+    private int reportWidth(List<PlannedLine> planned, String file) {
+        int width = MINIMUM_REPORT_WIDTH;
+        for (PlannedLine line : planned) {
+            for (PlannedField field : line.fields()) {
+                width = Math.max(width, field.column() + field.picture().size() - 1);
+            }
+        }
+        for (DataItem record : fileRecords.getOrDefault(file, List.of())) {
+            width = Math.max(width, record.length());
+        }
+        return width;
+    }
+
+    /** 行 1 本を、そのファイルのレコード領域として置く。 */
+    private void addLineRecord(PlannedLine line, int width, String file, Origin origin) {
+        DataItem record = new DataItem(1, line.recordName(), origin);
+        record.setSection(DataSection.FILE);
+        record.setFileName(file);
+        List<PlannedField> sorted = new ArrayList<>(line.fields());
+        sorted.sort((a, b) -> Integer.compare(a.column(), b.column()));
+        int at = 1;
+        for (PlannedField field : sorted) {
+            if (field.column() < at) {
+                report(field.origin(), "report fields overlap at column " + field.column());
+                return;
+            }
+            if (field.column() > at) {
+                record.addChild(filler(field.column() - at, origin));
+            }
+            DataItem slot = new DataItem(5, field.slotName(), field.origin());
+            slot.setPicture(field.picture());
+            slot.setSection(DataSection.FILE);
+            slot.setFileName(file);
+            record.addChild(slot);
+            at = field.column() + field.picture().size();
+        }
+        if (at <= width) {
+            record.addChild(filler(width - at + 1, origin));
+        }
+        records.add(record);
+        fileRecords.computeIfAbsent(file, k -> new ArrayList<>()).add(record);
+    }
+
+    private DataItem filler(int size, Origin origin) {
+        DataItem gap = new DataItem(5, null, origin);
+        gap.setPicture(PictureParser.parse("X(" + size + ")"));
+        gap.setSection(DataSection.FILE);
+        return gap;
+    }
+
+    /**
+     * 報告書ごとの数え札と作業用の項目。
+     *
+     * <p>{@code LINE-COUNTER} と {@code PAGE-COUNTER} は規格が決めた特殊レジスタで、
+     * <b>報告書ごとに 1 つ</b>である。2 つ以上の報告書があれば同じ名前の項目が 2 つでき、
+     * 修飾せずに書けば「あいまいだ」と断ることになる。規格の決まりどおりである。
+     */
+    private ReportDescription.Registers addReportRegisters(String report, Origin origin) {
+        return new ReportDescription.Registers(
+                reportSlot("LINE-COUNTER", INDEX_PICTURE, origin),
+                reportSlot("PAGE-COUNTER", INDEX_PICTURE, origin),
+                // 行送りの数は改頁を負の数で表すので、符号が要る
+                reportSlot("RW-TGT$" + report, "S9(9)", origin),
+                reportSlot("RW-ADV$" + report, "S9(9)", origin),
+                reportSlot("RW-ON$" + report, "9", origin),
+                reportSlot("RW-EJ$" + report, "9", origin));
+    }
+
+    private DataItem reportSlot(String name, String picture, Origin origin) {
+        DataItem slot = new DataItem(INDEPENDENT_LEVEL, name, origin);
+        slot.setPicture(PictureParser.parse(picture));
+        slot.setUsage(Usage.COMP);
+        records.add(slot);
+        return slot;
     }
 
     private static boolean hasLinageClause(CobolParser.FileDescriptionEntryContext fd) {

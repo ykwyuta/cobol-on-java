@@ -99,6 +99,11 @@ tokens {
     I_O_CONTROL, SAME, SORT_MERGE, MULTIPLE, TAPE, POSITION, RERUN, APPLY, EVERY,
     LINAGE, FOOTING, TOP, BOTTOM,
 
+    // 報告書節 (要件 FR-214)
+    REPORT, REPORTS, RD, DETAIL, HEADING, CONTROL, CONTROLS, FINAL,
+    SUM, SOURCE, COLUMN, LIMIT, LIMITS, GROUP, PLUS, LAST, INDICATE,
+    INITIATE, GENERATE, TERMINATE, NUMBER_KEYWORD,
+
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
@@ -368,6 +373,7 @@ dataDivisionSection
     | workingStorageSection
     | localStorageSection
     | linkageSection
+    | reportSection
     ;
 
 // FD のレコード記述項は、その FD のレコード領域を表す
@@ -397,6 +403,8 @@ fileDescriptionClause
     // VALUE OF は「ラベルに何を書くか」の指定である。規格でも廃要素であり、
     // ラベルを持たないこちらでは読んで捨てる
     | VALUE OF valueOfEntry+
+    // このファイルへ書き出す報告書 (要件 FR-214)
+    | (REPORT | REPORTS) (IS | ARE)? IDENTIFIER+
     ;
 
 valueOfEntry
@@ -437,6 +445,89 @@ localStorageSection
 
 linkageSection
     : LINKAGE SECTION PERIOD dataDescriptionEntry*
+    ;
+
+// ---- 報告書節 (要件 FR-214) ----
+
+reportSection
+    : REPORT SECTION PERIOD reportDescriptionEntry*
+    ;
+
+// RD の下に続く 01 は、その報告書の報告集団である
+reportDescriptionEntry
+    : RD IDENTIFIER reportDescriptionClause* PERIOD reportGroupEntry*
+    ;
+
+reportDescriptionClause
+    : IS? GLOBAL
+    | CODE_SET IS? IDENTIFIER
+    | (CONTROL | CONTROLS) (IS | ARE)? FINAL? identifier*
+    | PAGE (LIMIT | LIMITS)? (IS | ARE)? NUMBER (LINE | LINES)? pageDetailClause*
+    ;
+
+pageDetailClause
+    : HEADING IS? NUMBER
+    | FIRST DETAIL IS? NUMBER
+    | LAST DETAIL IS? NUMBER
+    | FOOTING IS? NUMBER
+    ;
+
+reportGroupEntry
+    : levelNumber dataName? reportGroupClause* PERIOD
+    ;
+
+// 句の並びは自由である。規格が「データ名以外はどの順に書いてもよい」と決めている
+reportGroupClause
+    : lineNumberClause
+    | nextGroupClause
+    | typeClause
+    | columnNumberClause
+    | sourceClause
+    | sumClause
+    | GROUP INDICATE
+    | pictureClause
+    | usageClause
+    | signClause
+    | justifiedClause
+    | blankWhenZeroClause
+    | valueClause
+    ;
+
+lineNumberClause
+    : LINE NUMBER_KEYWORD? IS? (PLUS? NUMBER | NEXT PAGE)
+    ;
+
+nextGroupClause
+    : NEXT GROUP IS? (PLUS? NUMBER | NEXT PAGE)
+    ;
+
+typeClause
+    : TYPE IS? reportGroupType
+    ;
+
+// 略記 (RH PH CH DE CF PF RF) は IDENTIFIER として読み、意味解析で見分ける。
+// 2 文字の語を予約語にすると、資産の項目名とぶつかりうるからである
+reportGroupType
+    : REPORT HEADING
+    | PAGE HEADING
+    | CONTROL HEADING (FINAL | identifier)?
+    | DETAIL
+    | CONTROL FOOTING (FINAL | identifier)?
+    | PAGE FOOTING
+    | REPORT FOOTING
+    | IDENTIFIER (FINAL | identifier)?
+    ;
+
+columnNumberClause
+    : COLUMN NUMBER_KEYWORD? IS? NUMBER
+    ;
+
+sourceClause
+    : SOURCE IS? identifier
+    ;
+
+sumClause
+    : SUM identifier+ (UPON identifier)? (RESET ON? (FINAL | identifier))?
     ;
 
 dataDescriptionEntry
@@ -718,6 +809,24 @@ statement
     | multiplyStatement
     | divideStatement
     | computeStatement
+    | initiateStatement
+    | generateStatement
+    | terminateStatement
+    ;
+
+// ---- 報告書の文 (要件 FR-214) ----
+
+initiateStatement
+    : INITIATE IDENTIFIER+
+    ;
+
+// 引数は報告集団の名前でも報告書の名前でもよい
+generateStatement
+    : GENERATE IDENTIFIER
+    ;
+
+terminateStatement
+    : TERMINATE IDENTIFIER+
     ;
 
 moveStatement
@@ -1346,6 +1455,7 @@ functionName
     | RANDOM
     | DATE
     | DAY
+    | SUM
     ;
 
 // GIVING がなければ受取項目になるため、ROUNDED を書ける

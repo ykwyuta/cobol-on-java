@@ -159,7 +159,7 @@ public final class CobolCompiler {
         InitialImage.Result image = InitialImage.build(data.layout());
         diagnostics.addAll(image.diagnostics());
         ProcedureBuilder.Result procedure = ProcedureBuilder.build(program, data.layout(),
-                specialNames, declared.files());
+                specialNames, declared.files(), data.reports());
         diagnostics.addAll(procedure.diagnostics());
         if (!diagnostics.isEmpty()) {
             return failed(data.layout(), diagnostics);

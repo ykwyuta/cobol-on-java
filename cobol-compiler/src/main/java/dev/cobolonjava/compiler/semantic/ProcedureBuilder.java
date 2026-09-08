@@ -32,13 +32,20 @@ public final class ProcedureBuilder {
     /** 通常の流れが始まる段落の番号。宣言部分はそれより前にある。 */
     private int firstNormal;
 
+    /** 報告書の記述。{@code INITIATE} / {@code GENERATE} / {@code TERMINATE} が引く。 */
+    private final List<ReportDescription> reports;
+    private final ReportLowering reportLowering;
+
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
-                             SpecialNames specialNames, Map<String, FileDescription> files) {
+                             SpecialNames specialNames, Map<String, FileDescription> files,
+                             List<ReportDescription> reports) {
         this.resolver = new ReferenceResolver(layout, diagnostics);
         this.layout = layout;
         this.diagnostics = diagnostics;
         this.specialNames = specialNames;
         this.files = files;
+        this.reports = reports;
+        this.reportLowering = new ReportLowering(this.resolver, diagnostics);
     }
 
     /**
@@ -150,8 +157,16 @@ public final class ProcedureBuilder {
     /** ファイルの宣言も踏まえて手続き部から文の並びを作る。 */
     public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
                                SpecialNames specialNames, Map<String, FileDescription> files) {
+        return build(program, layout, specialNames, files, List.of());
+    }
+
+    /** 報告書の記述も踏まえて手続き部から文の並びを作る。 */
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
+                               SpecialNames specialNames, Map<String, FileDescription> files,
+                               List<ReportDescription> reports) {
         List<Diagnostic> diagnostics = new ArrayList<>();
-        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files);
+        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files,
+                reports);
         List<Paragraph> paragraphs = new ArrayList<>();
         List<Section> sections = new ArrayList<>();
         List<Declarative> declaratives = new ArrayList<>();
@@ -730,6 +745,15 @@ public final class ProcedureBuilder {
         if (context.computeStatement() != null) {
             return computeOf(context.computeStatement());
         }
+        if (context.initiateStatement() != null) {
+            return initiateOf(context.initiateStatement());
+        }
+        if (context.generateStatement() != null) {
+            return generateOf(context.generateStatement());
+        }
+        if (context.terminateStatement() != null) {
+            return terminateOf(context.terminateStatement());
+        }
         if (context.goToStatement() != null) {
             return goToOf(context.goToStatement());
         }
@@ -796,6 +820,98 @@ public final class ProcedureBuilder {
             return new Statement.Continue(at);
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
+        return null;
+    }
+
+    // ---- 報告書の文 (要件 FR-214) ----
+
+    /**
+     * {@code INITIATE}。
+     *
+     * <p>報告書ごとに数え札を初期値へ戻すだけである。紙にはまだ何も置かない。
+     */
+    private Statement initiateOf(CobolParser.InitiateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement> body = new ArrayList<>();
+        for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
+            ReportDescription report = reportNamed(name.getText(), origin);
+            if (report == null) {
+                return null;
+            }
+            body.add(reportLowering.initiate(report, origin));
+        }
+        return new Statement.Sequence(body, origin);
+    }
+
+    /**
+     * {@code GENERATE}。
+     *
+     * <p>引数は本文の報告集団の名前である。報告書の名前を書く形 (集計だけの報告) は
+     * 制御の切れ目を伴うので、まだ書けない。
+     */
+    private Statement generateOf(CobolParser.GenerateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String name = context.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        for (ReportDescription report : reports) {
+            ReportGroup group = report.group(name);
+            if (group == null) {
+                continue;
+            }
+            if (!group.type().isBody()) {
+                report(origin, "GENERATE names a report group that is not a DETAIL group: "
+                        + name);
+                return null;
+            }
+            FileDescription file = files.get(report.file());
+            if (file == null) {
+                report(origin, "the report file is not declared: " + report.file());
+                return null;
+            }
+            return reportLowering.generate(report, group, file, origin);
+        }
+        if (reportNamed(name, null) != null) {
+            report(origin, "GENERATE of a whole report needs CONTROL breaks,"
+                    + " which are not supported yet: " + name);
+            return null;
+        }
+        report(origin, "undefined report group: " + name);
+        return null;
+    }
+
+    /**
+     * {@code TERMINATE}。
+     *
+     * <p>残りの脚注を置いて終える。{@code GENERATE} が一度も動いていなければ何もしない。
+     */
+    private Statement terminateOf(CobolParser.TerminateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement> body = new ArrayList<>();
+        for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
+            ReportDescription report = reportNamed(name.getText(), origin);
+            if (report == null) {
+                return null;
+            }
+            FileDescription file = files.get(report.file());
+            if (file == null) {
+                report(origin, "the report file is not declared: " + report.file());
+                return null;
+            }
+            body.add(reportLowering.terminate(report, file, origin));
+        }
+        return new Statement.Sequence(body, origin);
+    }
+
+    /** 名前で報告書を引く。{@code origin} が {@code null} なら誤りを記録しない。 */
+    private ReportDescription reportNamed(String written, Origin origin) {
+        String name = written.toUpperCase(Locale.ROOT);
+        for (ReportDescription report : reports) {
+            if (report.name().equals(name)) {
+                return report;
+            }
+        }
+        if (origin != null) {
+            report(origin, "undefined report: " + name);
+        }
         return null;
     }
 
