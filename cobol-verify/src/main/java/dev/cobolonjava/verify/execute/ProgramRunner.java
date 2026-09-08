@@ -174,7 +174,7 @@ public final class ProgramRunner {
         return RunOutcome.reported(source.name(), source.group(),
                 TestReport.executed(report).orElse(0), TestReport.total(report).orElse(0),
                 TestReport.failed(report), TestReport.deleted(report),
-                TestReport.inspected(report));
+                TestReport.inspected(report), TestReport.failures(report));
     }
 
     /** 時間切れを表す番人。例外そのものではないので、取り違えようがない。 */

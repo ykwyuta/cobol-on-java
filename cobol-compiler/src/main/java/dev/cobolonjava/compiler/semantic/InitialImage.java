@@ -98,7 +98,17 @@ public final class InitialImage {
             }
             byte[] image = builder.repeat(builder.imageOf(record), record);
             images.add(new RecordImage(record, image));
-            // 01 レベルの REDEFINES は同じ位置に重なる。書いた順に上書きされる
+            if (record.redefinesName() != null) {
+                // 重ねた項目は<b>記憶域へ書かない</b>。重ねる先が同じ場所を持っている。
+                // 書くと、値の無い側の空白が<b>重ねる先の初期値を消してしまう</b>
+                // (NC116A の「01 AN-00008-X-1 REDEFINES DS-L-00008」で消えていた)。
+                // 規格は重ねた項目に VALUE を書くことを禁じているので、書く値も無い
+                if (hasInitialValue(record)) {
+                    builder.report(record.origin(), "VALUE is not allowed in a REDEFINES item: "
+                            + describe(record));
+                }
+                continue;
+            }
             System.arraycopy(image, 0, storage, record.base(),
                     Math.min(image.length, storage.length - record.base()));
         }

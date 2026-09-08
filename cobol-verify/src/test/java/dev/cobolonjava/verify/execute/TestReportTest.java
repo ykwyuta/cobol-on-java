@@ -62,6 +62,41 @@ class TestReportTest {
         assertFalse(TestReport.isComplete(" MULTIPLY BY          PASS  MPY-TEST-F1-1"));
     }
 
+    /** 印字 1 行ぶん。報告のデータセットは<b>改行を持たない</b>ので、桁で並べる。 */
+    private static String printed(String feature, String result, String paragraph,
+                                  String remark) {
+        return " " + pad(feature, 20) + " " + pad(result, 5) + " " + pad(paragraph, 20)
+                + " ".repeat(10) + pad(remark, 61);
+    }
+
+    private static String pad(String text, int width) {
+        return text.length() >= width ? text.substring(0, width)
+                : text + " ".repeat(width - text.length());
+    }
+
+    @Test
+    @DisplayName("落ちた検査を 1 件ずつ取り出す (P-062)")
+    void failingChecksAreListed() {
+        // 報告のデータセットは決まった長さのレコードの並びであり、改行を持たない。
+        // 行頭に錨を打つと 1 件も見つからない
+        String report = printed("CREATE-FILE-FD1", "FAIL*", "WRITE-TEST-GF-01", "IX-41;WRONG")
+                + printed("MULTIPLY BY", "PASS", "MPY-TEST-F1-1", "")
+                + printed("START REDF REC-KEY", "FAIL*", "START-TEST-GF-01", "WRONG RECORD");
+        assertEquals(2, TestReport.failures(report).size());
+        assertEquals("CREATE-FILE-FD1", TestReport.failures(report).get(0).feature());
+        assertEquals("WRITE-TEST-GF-01", TestReport.failures(report).get(0).paragraph());
+        assertEquals("IX-41;WRONG", TestReport.failures(report).get(0).remark());
+        assertEquals("START REDF REC-KEY", TestReport.failures(report).get(1).feature());
+    }
+
+    @Test
+    @DisplayName("機能名の中の空白で切らない (P-062)")
+    void aFeatureNameMayContainSpaces() {
+        // 空白で切ると「START REDF REC-KEY」が 3 件に散る。桁で切る
+        String report = printed("START REDF REC-KEY", "FAIL*", "START-TEST-GF-01", "WRONG");
+        assertEquals("START REDF REC-KEY", TestReport.failures(report).get(0).feature());
+    }
+
     @Test
     @DisplayName("見出しの PASS を数えない (P-062)")
     void theColumnHeadingIsNotCounted() {

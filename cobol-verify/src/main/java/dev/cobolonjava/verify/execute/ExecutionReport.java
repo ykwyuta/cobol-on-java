@@ -121,6 +121,25 @@ public record ExecutionReport(List<RunOutcome> outcomes) {
                 .toList();
     }
 
+    /**
+     * 落ちた検査を<b>機能ごとに</b>数え、多い順に。
+     *
+     * <p>これが<b>次に何を直すか</b>の一覧である。本数で数えると「1 本が全滅」までしか
+     * 分からない。機能で数えると、どの言語機能が壊れているかが出る。
+     */
+    public List<Map.Entry<String, Long>> failedFeatures(int limit) {
+        Map<String, Long> counted = new LinkedHashMap<>();
+        for (RunOutcome outcome : outcomes) {
+            for (TestReport.Failure failure : outcome.failures()) {
+                counted.merge(failure.feature(), 1L, Long::sum);
+            }
+        }
+        return counted.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(limit)
+                .toList();
+    }
+
     /** 動かなかったものを、結末ごとに。 */
     public List<RunOutcome> notRun() {
         return outcomes.stream()
@@ -159,6 +178,13 @@ public record ExecutionReport(List<RunOutcome> outcomes) {
             for (RunOutcome outcome : worst) {
                 out.append(String.format("%6d / %-4d  %s%n",
                         outcome.failed(), outcome.executed() + outcome.failed(), outcome.name()));
+            }
+        }
+        List<Map.Entry<String, Long>> features = failedFeatures(25);
+        if (!features.isEmpty()) {
+            out.append("\n落ちた検査を機能ごとに数えたもの (多い順)\n");
+            for (Map.Entry<String, Long> feature : features) {
+                out.append(String.format("%6d  %s%n", feature.getValue(), feature.getKey()));
             }
         }
         List<RunOutcome> broken = notRun();

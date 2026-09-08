@@ -14,8 +14,11 @@ class ExecutionReportTest {
 
     private static ExecutionReport report() {
         return new ExecutionReport(List.of(
-                RunOutcome.reported("NC101A", "NC", 93, 93, 0, 0, 0),
-                RunOutcome.reported("NC104A", "NC", 40, 52, 7, 3, 2),
+                RunOutcome.reported("NC101A", "NC", 93, 93, 0, 0, 0, List.of()),
+                RunOutcome.reported("NC104A", "NC", 40, 52, 7, 3, 2, List.of(
+                        new TestReport.Failure("MULTIPLY BY", "MPY-TEST-1", ""),
+                        new TestReport.Failure("MULTIPLY BY", "MPY-TEST-2", ""),
+                        new TestReport.Failure("DIVIDE BY", "DIV-TEST-1", ""))),
                 RunOutcome.notCompiled("CM101M", "CM", "extraneous input 'COMMUNICATION'"),
                 RunOutcome.crashed("IX401M", "IX", "NullPointerException"),
                 RunOutcome.timedOut("SQ999X", "SQ", 60)));
@@ -57,6 +60,16 @@ class ExecutionReportTest {
         // まだ書いていない機能と、いま直すべき不具合を混ぜない
         assertEquals(List.of("IX401M", "SQ999X"),
                 report().notRun().stream().map(RunOutcome::name).toList());
+    }
+
+    @Test
+    @DisplayName("落ちた検査を機能ごとに数える (P-062)")
+    void failuresAreCountedByFeature() {
+        // 本数で数えると「1 本が全滅」までしか分からない。機能で数えると
+        // どの言語機能が壊れているかが出る
+        assertEquals(List.of("MULTIPLY BY", "DIVIDE BY"),
+                report().failedFeatures(5).stream().map(java.util.Map.Entry::getKey).toList());
+        assertEquals(2L, report().failedFeatures(5).get(0).getValue());
     }
 
     @Test

@@ -24,10 +24,15 @@ package dev.cobolonjava.verify.execute;
  * @param deleted   流さなかった検査の数 ({@code DELETED})
  * @param inspected 人が見て判断する検査の数 ({@code INSPECTION})
  * @param failure   壊れたときの言い分。それ以外は {@code null}
+ * @param failures  落ちた検査 1 件ずつ。機能ごとに数え上げるために持つ
  */
 public record RunOutcome(String name, String group, Status status,
                          int executed, int total, int failed, int deleted, int inspected,
-                         String failure) {
+                         String failure, java.util.List<TestReport.Failure> failures) {
+
+    public RunOutcome {
+        failures = java.util.List.copyOf(failures);
+    }
 
     /** 動かした結末。 */
     public enum Status {
@@ -52,20 +57,24 @@ public record RunOutcome(String name, String group, Status status,
      * 動かして「報告が無い」と数えると、道具が処理系の失敗を作ることになる。
      */
     public static RunOutcome compileOnly(String name, String group) {
-        return new RunOutcome(name, group, Status.COMPILE_ONLY, 0, 0, 0, 0, 0, null);
+        return new RunOutcome(name, group, Status.COMPILE_ONLY, 0, 0, 0, 0, 0, null,
+                java.util.List.of());
     }
 
     public static RunOutcome notCompiled(String name, String group, String reason) {
-        return new RunOutcome(name, group, Status.NOT_COMPILED, 0, 0, 0, 0, 0, reason);
+        return new RunOutcome(name, group, Status.NOT_COMPILED, 0, 0, 0, 0, 0, reason,
+                java.util.List.of());
     }
 
     public static RunOutcome crashed(String name, String group, String failure) {
-        return new RunOutcome(name, group, Status.CRASHED, 0, 0, 0, 0, 0, failure);
+        return new RunOutcome(name, group, Status.CRASHED, 0, 0, 0, 0, 0, failure,
+                java.util.List.of());
     }
 
     public static RunOutcome timedOut(String name, String group, long seconds) {
         return new RunOutcome(name, group, Status.TIMED_OUT, 0, 0, 0, 0, 0,
-                "the program did not finish within " + seconds + " seconds");
+                "the program did not finish within " + seconds + " seconds",
+                java.util.List.of());
     }
 
     /**
@@ -76,8 +85,9 @@ public record RunOutcome(String name, String group, Status status,
      * 「この処理系では流さない」と決めたもの、後者は人が紙を見て判断するものである。
      */
     public static RunOutcome reported(String name, String group, int executed, int total,
-                                      int failed, int deleted, int inspected) {
+                                      int failed, int deleted, int inspected,
+                                      java.util.List<TestReport.Failure> failures) {
         return new RunOutcome(name, group, failed == 0 ? Status.PASSED : Status.FAILED,
-                executed, total, failed, deleted, inspected, null);
+                executed, total, failed, deleted, inspected, null, failures);
     }
 }

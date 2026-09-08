@@ -1,5 +1,7 @@
 package dev.cobolonjava.verify.execute;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.OptionalInt;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -90,6 +92,54 @@ public final class TestReport {
 
     public static int inspected(String text) {
         return count(INSPECTION, text);
+    }
+
+    /**
+     * 落ちた検査 1 件。
+     *
+     * <p>検査プログラムは落ちた検査を 1 行ずつ印字する。
+     *
+     * <pre>
+     *  CREATE-FILE-FD1      FAIL* WRITE-TEST-GF-01     IX-41;WRONG NUMBER OF RECORDS
+     *  └ 機能 (FEATURE)          └ 段落名 (PAR-NAME)  └ 覚え書き (REMARKS)
+     * </pre>
+     *
+     * <p><b>機能ごとに数えると、どの言語機能が壊れているかが出る</b>。プログラム単位の
+     * 数え上げでは「1 本が全滅」までしか分からない。
+     *
+     * @param feature   何を試した検査か
+     * @param paragraph 検査の段落名
+     * @param remark    プログラムが書いた覚え書き
+     */
+    public record Failure(String feature, String paragraph, String remark) {
+    }
+
+    /**
+     * 落ちた検査の印。
+     *
+     * <p><b>行の区切りを当てにしない</b>。報告のデータセットは決まった長さのレコードの
+     * 並びであり、改行を持たない。行頭に錨を打つと 1 件も見つからない。
+     *
+     * <p>{@code TEST-RESULTS} の桁割りは
+     * 空白 1・機能 20・空白 1・合否 5・空白 1・段落名 20・空白 10・覚え書き 61 である。
+     */
+    private static final Pattern FAIL_LINE =
+            Pattern.compile("(.{20}) FAIL\\* (.{20}) {10}(.{0,61})");
+
+    /**
+     * 落ちた検査を 1 件ずつ取り出す。
+     *
+     * <p>印字は決まった桁に置かれる。桁で切るのは、機能名にも段落名にも空白が
+     * 入りうるからである。空白で切ると 1 件が 2 件に散る。
+     */
+    public static List<Failure> failures(String text) {
+        List<Failure> found = new ArrayList<>();
+        Matcher matcher = FAIL_LINE.matcher(text);
+        while (matcher.find()) {
+            found.add(new Failure(matcher.group(1).trim(), matcher.group(2).trim(),
+                    matcher.group(3).trim()));
+        }
+        return List.copyOf(found);
     }
 
     /** 「NO」は 0 である。書かれていなければ 0 とする。 */

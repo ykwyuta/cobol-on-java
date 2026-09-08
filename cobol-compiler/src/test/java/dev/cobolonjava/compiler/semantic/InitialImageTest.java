@@ -134,6 +134,30 @@ class InitialImageTest {
     }
 
     @Test
+    @DisplayName("01 レベルの REDEFINES も初期値を塗り潰さない (FR-013, FR-021)")
+    void aRedefiningRecordDoesNotEraseTheValueBeneathIt() {
+        // 記憶域そのものを見る。01 どうしは同じ位置に重なるので、値の無い側を
+        // 書くと重ねる先の初期値が空白になる (NC116A がそれで S0C7 で落ちていた)
+        InitialImage.Result result = imageOf(
+                "01 WS-D PIC S9(4) VALUE +1234.",
+                "01 WS-R REDEFINES WS-D PIC X(4).");
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertEquals("F1F2F3C4",
+                HexFormat.of().withUpperCase().formatHex(result.storage()));
+    }
+
+    @Test
+    @DisplayName("01 レベルの REDEFINES の中の VALUE は誤りとして報告する (FR-013, FR-021)")
+    void aValueInARedefiningRecordIsReported() {
+        InitialImage.Result result = imageOf(
+                "01 WS-D PIC X(4) VALUE 'ABCD'.",
+                "01 WS-R REDEFINES WS-D PIC X(4) VALUE 'WXYZ'.");
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("REDEFINES"),
+                result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("群項目の VALUE は中身を一括で埋める (FR-013)")
     void aValueOnAGroupFillsItsWholeContent() {
         assertEquals("C1C2C34040", hex("WS-REC",
