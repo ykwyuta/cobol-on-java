@@ -65,6 +65,9 @@ class LinageGenerationTest {
                 "WORKING-STORAGE SECTION.",
                 "01  WS-N  PIC 9(4).",
                 "01  WS-EOP PIC 9 VALUE 0.",
+                "01  WS-PAGE PIC 9(3) VALUE 3.",
+                "01  WS-FOOT PIC 9(3) VALUE 3.",
+                "01  WS-TOP  PIC 9(3) VALUE 1.",
                 "PROCEDURE DIVISION.",
                 "MAIN-START.",
                 "    MOVE 'LINE' TO PRINT-REC",
@@ -173,6 +176,21 @@ class LinageGenerationTest {
                         "        END-WRITE",
                         "        DISPLAY WS-EOP",
                         "    END-PERFORM.")));
+    }
+
+    @Test
+    @DisplayName("頁の形は項目で書ける。開くたびに読み直す (FR-113)")
+    void thePageShapeMayBeGivenByDataItems() {
+        // 項目で書かれた形は<b>開くたびに読み直す</b>決まりである。
+        // ここを「数で書け」と断っていた
+        assertEquals("0003|0001|", run(directory, program(
+                List.of("    LINAGE IS WS-PAGE LINES",
+                        "        WITH FOOTING AT WS-FOOT",
+                        "        LINES AT TOP WS-TOP."),
+                "    WRITE PRINT-REC AFTER ADVANCING 3 LINES",
+                "    MOVE LINAGE-COUNTER TO WS-N DISPLAY WS-N",
+                "    WRITE PRINT-REC",
+                "    MOVE LINAGE-COUNTER TO WS-N DISPLAY WS-N.")));
     }
 
     @Test

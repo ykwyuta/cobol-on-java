@@ -464,16 +464,24 @@ public final class Ops {
      * <p>行送りそのものは空のレコードで表す (暫定判断 P-063)。紙送りの制御文字を
      * 実機で確かめていないためである。
      *
+     * <p>頁の形は<b>置き場から読む</b>。項目で書けるので、開くたびに読み直された値が
+     * そこに入っている。翻訳時に決まるのは置き場だけである。
+     *
      * @param counterAt {@code LINAGE-COUNTER} の記憶域上の位置 (2 進 4 バイト)
-     * @param page      本文の行数
-     * @param footing   脚注が始まる行。書かれていなければ 0
-     * @param top       上の余白の行数
-     * @param bottom    下の余白の行数
+     * @param pageAt    本文の行数の置き場
+     * @param footingAt 脚注が始まる行の置き場。書かれていなければ 0 が入っている
+     * @param topAt     上の余白の行数の置き場
+     * @param bottomAt  下の余白の行数の置き場
      */
     public static byte[] writeLinage(ProgramContext context, String name, String ddName,
                                      Storage storage, int offset, int length, int minimum,
                                      int maximum, int lines, boolean before,
-                                     int counterAt, int page, int footing, int top, int bottom) {
+                                     int counterAt, int pageAt, int footingAt, int topAt,
+                                     int bottomAt) {
+        int page = Math.max(1, readCounter(storage, pageAt));
+        int footing = readCounter(storage, footingAt);
+        int top = readCounter(storage, topAt);
+        int bottom = readCounter(storage, bottomAt);
         int actual = clamp(length, minimum, maximum);
         DataSet file = context.file(name, ddName);
         byte[] record = read(storage, offset, actual);

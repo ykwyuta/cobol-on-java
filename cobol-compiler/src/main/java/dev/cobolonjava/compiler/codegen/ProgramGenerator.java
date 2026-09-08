@@ -1288,14 +1288,9 @@ public final class ProgramGenerator {
                         false);
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
-                // 開けば頁は初めからである。LINAGE-COUNTER を 0 に戻す。
-                // 0 は「まだ 1 行も置いていない」であり、次の書き込みが上の余白を送る
+                // 開けば頁は初めからである。形を読み直し、行数を 0 に戻す
                 if (file.linage() != null) {
-                    run.visitVarInsn(Opcodes.ALOAD, 1);
-                    push(file.linage().counter().absoluteOffset().orElse(0));
-                    push(0);
-                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "writeCounter",
-                            "(L" + STORAGE + ";II)V", false);
+                    emitLinageSetup(file.linage(), statement.origin());
                 }
             });
         }
@@ -1652,16 +1647,74 @@ public final class ProgramGenerator {
         planKeyedCall(call, status, slot, keyCheck, body);
     }
 
-    /** 論理頁の形を定数として積む (要件 FR-113)。 */
+    /**
+     * 論理頁の形が<b>どこに置いてあるか</b>を積む (要件 FR-113)。
+     *
+     * <p>値そのものではなく置き場を渡す。頁の形は項目で書けるので、開くたびに
+     * 読み直さなければならない。翻訳時に決まるのは置き場だけである。
+     */
     private Runnable planLinageShape(FileDescription.Linage linage) {
         int counterAt = linage.counter().absoluteOffset().orElse(-1);
+        int pageAt = linage.page().at().absoluteOffset().orElse(-1);
+        int footingAt = linage.footing().at().absoluteOffset().orElse(-1);
+        int topAt = linage.top().at().absoluteOffset().orElse(-1);
+        int bottomAt = linage.bottom().at().absoluteOffset().orElse(-1);
         return () -> {
             push(counterAt);
-            push(linage.page());
-            push(linage.footing());
-            push(linage.top());
-            push(linage.bottom());
+            push(pageAt);
+            push(footingAt);
+            push(topAt);
+            push(bottomAt);
         };
+    }
+
+    /**
+     * 開くときに、頁の形をその置き場へ写す (要件 FR-113)。
+     *
+     * <p>項目で書かれた形は<b>開くたびに読み直す</b>決まりである。数で書かれた形も
+     * 同じ道を通す。書かれていない指定は 0 になる。
+     */
+    private void emitLinageSetup(FileDescription.Linage linage, Origin origin) {
+        storeLinageSlot(linage.page(), origin);
+        storeLinageSlot(linage.footing(), origin);
+        storeLinageSlot(linage.top(), origin);
+        storeLinageSlot(linage.bottom(), origin);
+        // 開けば頁は初めからである。0 は「まだ 1 行も置いていない」
+        emitStoreCounter(linage.counter().absoluteOffset().orElse(0), () -> push(0));
+    }
+
+    private void storeLinageSlot(FileDescription.Linage.Slot slot, Origin origin) {
+        int at = slot.at().absoluteOffset().orElse(0);
+        if (slot.source() == null) {
+            emitStoreCounter(at, () -> push(0));
+            return;
+        }
+        Runnable value = planLinageValue(slot.source(), origin);
+        if (value == null) {
+            return;
+        }
+        emitStoreCounter(at, value);
+    }
+
+    /** 頁の形の値を {@code int} として積む。 */
+    private Runnable planLinageValue(Operand source, Origin origin) {
+        if (source instanceof Operand.Literal literal) {
+            Decimal value = decimalOf(literal.value(), origin);
+            if (value == null) {
+                return null;
+            }
+            int written = value.toBigDecimal().intValue();
+            return () -> push(written);
+        }
+        return planKeyValue(((Operand.Reference) source).reference(), origin);
+    }
+
+    private void emitStoreCounter(int at, Runnable value) {
+        run.visitVarInsn(Opcodes.ALOAD, 1);
+        push(at);
+        value.run();
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "writeCounter",
+                "(L" + STORAGE + ";II)V", false);
     }
 
     /**

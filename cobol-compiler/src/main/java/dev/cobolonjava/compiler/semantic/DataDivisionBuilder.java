@@ -594,6 +594,15 @@ public final class DataDivisionBuilder {
                 counter.setPicture(PictureParser.parse(INDEX_PICTURE));
                 counter.setUsage(Usage.COMP);
                 records.add(counter);
+                // 頁の形も置き場を持つ。項目で書かれた形は<b>開くたびに読み直す</b>
+                String file = fd.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+                for (String prefix : List.of("LNG-PAGE$", "LNG-FOOT$", "LNG-TOP$",
+                        "LNG-BOTTOM$")) {
+                    DataItem slot = new DataItem(INDEPENDENT_LEVEL, prefix + file, originOf(fd));
+                    slot.setPicture(PictureParser.parse(INDEX_PICTURE));
+                    slot.setUsage(Usage.COMP);
+                    records.add(slot);
+                }
             }
         }
     }

@@ -54,7 +54,20 @@ public record FileDescription(String name, String ddName, Organization organizat
      * @param bottom  下の余白の行数
      * @param counter {@code LINAGE-COUNTER} の置き場
      */
-    public record Linage(int page, int footing, int top, int bottom, DataReference counter) {
+    public record Linage(DataReference counter, Slot page, Slot footing, Slot top, Slot bottom) {
+
+        /**
+         * 頁の形の値 1 つ。
+         *
+         * <p>数で書かれていても項目で書かれていても、<b>開くたびに置き場へ写す</b>。
+         * 項目で書かれた形は開くたびに読み直す決まりであり、数で書かれた形も同じ道を
+         * 通せば場合分けが要らない。
+         *
+         * @param at     値の置き場 (隠し項目)
+         * @param source 開くときにそこへ書く元。書かれていなければ 0
+         */
+        public record Slot(DataReference at, Operand source) {
+        }
     }
 
     public FileDescription {
@@ -419,15 +432,15 @@ public record FileDescription(String name, String ddName, Organization organizat
         if (clause == null) {
             return null;
         }
-        Integer page = countOf(clause.linageCount(), one.origin(), diagnostics);
+        Operand page = countOf(clause.linageCount(), resolver, one.origin(), diagnostics);
         if (page == null) {
             return null;
         }
-        int footing = 0;
-        int top = 0;
-        int bottom = 0;
+        Operand footing = null;
+        Operand top = null;
+        Operand bottom = null;
         for (CobolParser.LinagePartContext part : clause.linagePart()) {
-            Integer value = countOf(part.linageCount(), one.origin(), diagnostics);
+            Operand value = countOf(part.linageCount(), resolver, one.origin(), diagnostics);
             if (value == null) {
                 return null;
             }
@@ -439,40 +452,57 @@ public record FileDescription(String name, String ddName, Organization organizat
                 bottom = value;
             }
         }
-        if (page < 1) {
-            diagnostics.add(new Diagnostic(one.origin(),
-                    "LINAGE must be at least one line: " + one.name()));
-            return null;
-        }
-        if (footing > page) {
-            diagnostics.add(new Diagnostic(one.origin(),
-                    "the FOOTING line must be inside the page body: " + one.name()));
-            return null;
-        }
         DataReference counter = resolver.resolveName(LINAGE_COUNTER, one.origin());
-        if (counter == null) {
+        Linage.Slot pageSlot = slotOf(resolver, one, "LNG-PAGE$", page, diagnostics);
+        Linage.Slot footingSlot = slotOf(resolver, one, "LNG-FOOT$", footing, diagnostics);
+        Linage.Slot topSlot = slotOf(resolver, one, "LNG-TOP$", top, diagnostics);
+        Linage.Slot bottomSlot = slotOf(resolver, one, "LNG-BOTTOM$", bottom, diagnostics);
+        if (counter == null || pageSlot == null || footingSlot == null
+                || topSlot == null || bottomSlot == null) {
             return null;
         }
-        return new Linage(page, footing, top, bottom, counter);
+        return new Linage(counter, pageSlot, footingSlot, topSlot, bottomSlot);
+    }
+
+    /** 頁の形の値 1 つと、その置き場を結び付ける。 */
+    private static Linage.Slot slotOf(ReferenceResolver resolver, Selected one, String prefix,
+                                      Operand source, List<Diagnostic> diagnostics) {
+        DataReference at = resolver.resolveName(prefix + one.name(), one.origin());
+        return at == null ? null : new Linage.Slot(at, source);
     }
 
     /** {@code LINAGE-COUNTER} の名前。データ部には書かれないが、名前で読める。 */
     public static final String LINAGE_COUNTER = "LINAGE-COUNTER";
 
-    private static Integer countOf(CobolParser.LinageCountContext count, Origin origin,
+    /**
+     * 頁の形の値 1 つ。数でも項目でもよい。
+     *
+     * <p>項目で書かれた形は<b>開くたびに読み直す</b>決まりである。数で書かれた形も
+     * 同じ道 (開くときに置き場へ写す) を通すので、ここでは区別せずに被演算子にする。
+     */
+    private static Operand countOf(CobolParser.LinageCountContext count,
+                                   ReferenceResolver resolver, Origin origin,
                                    List<Diagnostic> diagnostics) {
-        if (count.NUMBER() == null) {
-            diagnostics.add(new Diagnostic(origin,
-                    "LINAGE with a data item is not supported yet; write the number"));
+        if (count.NUMBER() != null) {
+            try {
+                return new Operand.Literal(new LiteralValue.Number(
+                        dev.cobolonjava.runtime.decimal.Decimal.parse(
+                                count.NUMBER().getText())));
+            } catch (NumberFormatException e) {
+                diagnostics.add(new Diagnostic(origin,
+                        "LINAGE takes an integer: " + count.NUMBER().getText()));
+                return null;
+            }
+        }
+        DataReference item = resolver.resolve(count.identifier());
+        if (item == null) {
             return null;
         }
-        try {
-            return Integer.parseInt(count.NUMBER().getText());
-        } catch (NumberFormatException e) {
-            diagnostics.add(new Diagnostic(origin,
-                    "LINAGE takes an integer: " + count.NUMBER().getText()));
+        if (!DataCategory.of(item).isNumeric()) {
+            diagnostics.add(new Diagnostic(origin, "LINAGE requires an integer item"));
             return null;
         }
+        return new Operand.Reference(item);
     }
 
     /**
