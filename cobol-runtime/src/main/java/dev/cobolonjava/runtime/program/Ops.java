@@ -1124,6 +1124,8 @@ public final class Ops {
         }
         byte[] record = new byte[recordLength];
         SortWork sort = context.sortWork(work);
+        // GIVING に複数のファイルを書けば、どれにも同じレコードが全部入る (要件 FR-120)
+        sort.rewind();
         while (sort.next(record)) {
             file.write(record);
         }

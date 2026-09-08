@@ -72,6 +72,16 @@ public final class SortWork {
      * @param into 受け取る領域。足りなければ空白で埋め、あふれれば切り捨てる
      * @return 返すものがなければ {@code false}
      */
+    /**
+     * 取り出し位置を先頭へ戻す (要件 FR-120)。
+     *
+     * <p>{@code GIVING} に複数のファイルを書けば、<b>どのファイルにも同じレコードが
+     * 全部入る</b>。1 つ目で読み切ったままにすると、2 つ目から先が空になる。
+     */
+    public void rewind() {
+        position = 0;
+    }
+
     public boolean next(byte[] into) {
         if (position >= records.size()) {
             return false;
