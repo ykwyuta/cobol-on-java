@@ -183,4 +183,16 @@ class PopulationTest {
         assertTrue(programs.get(0).missing().isEmpty());
         assertEquals(Set.of(14), programs.get(1).missing());
     }
+
+    @Test
+    @DisplayName("索引編成の鍵の長さは T か U のどちらかを必ず選ぶ (U を選ぶ)")
+    void oneOfTheIndexedKeyLengthsIsAlwaysChosen() {
+        // 原文の但し書きが「どちらか一方を選べ」と言っている。どちらも選ばないと
+        // レコードが 10 バイト足りなくなり、副鍵の位置がずれる。
+        // <b>道具が処理系の失敗を作ってはならない</b>
+        assertEquals("013900     10 FILLER           PICTURE X(5).",
+                one(Population.plain(CARDS), "013900U    10 FILLER           PICTURE X(5)."));
+        assertEquals("013800*       15 FILLER        PICTURE 9(5).",
+                one(Population.plain(CARDS), "013800T       15 FILLER        PICTURE 9(5)."));
+    }
 }

@@ -56,8 +56,19 @@ public record Population(Set<Character> options, XCards cards) {
      * 同じである。
      *
      * <p>{@code A} は外から立てる切り替え ({@code UPSI}) の検査であり、こちらは支えている。
+     *
+     * <p>{@code U} は<b>選ばなければ形が壊れる</b>もう 1 つである。索引編成の検査
+     * (IX107A / IX207A / IX208A) は鍵の長さを 2 通り用意していて、{@code T} が
+     * 10 桁、{@code U} が 5 桁である。原文の但し書きは「T か U の<b>どちらか一方を
+     * 必ず選べ</b>」と言っている。どちらも選ばないとレコードが 10 バイト足りなくなり、
+     * <b>副鍵の位置が 5 バイトずれる</b>。ずれた先は詰め物なので、どのレコードも副鍵が
+     * 空白になり、2 本目の {@code WRITE} が重複鍵で撥ねられる。IX208A の 23 件は
+     * 全部これだった。<b>道具が処理系の失敗を作っていた。</b>
+     *
+     * <p>{@code T} ではなく {@code U} を選ぶ。{@code T} は DB105A にも印が付いていて、
+     * そちらは選ばない形でちょうど通っている。<b>直したいところ以外を動かさない</b>。
      */
-    public static final Set<Character> SUPPORTED = Set.of('A');
+    public static final Set<Character> SUPPORTED = Set.of('A', 'U');
 
     /** 支えている機能を選んだ、既定の起こし方。 */
     public static Population plain(XCards cards) {
