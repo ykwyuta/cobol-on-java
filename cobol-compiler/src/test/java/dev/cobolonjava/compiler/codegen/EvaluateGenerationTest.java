@@ -224,6 +224,33 @@ class EvaluateGenerationTest {
     }
 
     @Test
+    @DisplayName("主語に条件名を書ける — 目的語は TRUE か FALSE (FR-061)")
+    void aConditionNameMayBeASubject() {
+        // 規格は EVALUATE の主語に条件式を許している。条件名は条件式である。
+        // 値として読むと「そんな項目は無い」になってしまう
+        assertEquals("HIT|", output(
+                List.of("01 WS-N PIC 99 VALUE 81.",
+                        "   88 IT-IS-81 VALUE 81.",
+                        "01 WS-M PIC 99 VALUE 7."),
+                "    EVALUATE IT-IS-81 ALSO WS-M",
+                "      WHEN TRUE ALSO 7 DISPLAY 'HIT'",
+                "      WHEN OTHER DISPLAY 'MISS'",
+                "    END-EVALUATE."));
+    }
+
+    @Test
+    @DisplayName("条件名の主語に FALSE を書けば、成り立たないほうに当たる (FR-061)")
+    void aConditionNameSubjectAlsoTakesFalse() {
+        assertEquals("HIT|", output(
+                List.of("01 WS-N PIC 99 VALUE 12.",
+                        "   88 IT-IS-81 VALUE 81."),
+                "    EVALUATE IT-IS-81",
+                "      WHEN TRUE DISPLAY 'MISS'",
+                "      WHEN FALSE DISPLAY 'HIT'",
+                "    END-EVALUATE."));
+    }
+
+    @Test
     @DisplayName("PERFORM の中の STOP RUN も全体を終える (FR-061)")
     void stopRunInsideAPerformEndsEverything() {
         // 段落は別のメソッドになるため、単に戻るだけでは呼び出し元へ返ってしまう

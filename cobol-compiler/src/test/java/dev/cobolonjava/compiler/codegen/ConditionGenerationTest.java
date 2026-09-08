@@ -331,6 +331,39 @@ class ConditionGenerationTest {
     }
 
     @Test
+    @DisplayName("同じ条件名を別の表に書いたら、修飾したほうを見る (FR-022)")
+    void aQualifiedConditionNameNamesItsOwnTable() {
+        // どちらの表にも SAYS-A がある。修飾しているほうは 2 次元なので添字も 2 つ要る。
+        // 修飾を見ないと、先に見つかる 1 次元の表で数えてしまう
+        assertEquals("T", run(
+                List.of("01 FLAT-TABLE.",
+                        "   05 FLAT-CELL PIC X OCCURS 3 TIMES.",
+                        "      88 SAYS-A VALUE 'A'.",
+                        "01 DEEP-TABLE.",
+                        "   05 DEEP-ROW OCCURS 2 TIMES.",
+                        "      10 DEEP-CELL PIC X OCCURS 2 TIMES.",
+                        "         88 SAYS-A VALUE 'A'.",
+                        "01 WS-R PIC X."),
+                "MOVE 'A' TO DEEP-CELL OF DEEP-ROW (2, 1)",
+                "IF SAYS-A OF DEEP-CELL (2, 1) MOVE 'T' TO WS-R END-IF.").substring(7));
+    }
+
+    @Test
+    @DisplayName("修飾しても 1 個に絞れなければ、条件名として扱わない (FR-022)")
+    void anAmbiguousConditionNameIsRefused() {
+        CobolCompiler.Result result = compile(
+                List.of("01 G-ONE.",
+                        "   05 C-ONE PIC X.",
+                        "      88 SAYS-A VALUE 'A'.",
+                        "01 G-TWO.",
+                        "   05 C-TWO PIC X.",
+                        "      88 SAYS-A VALUE 'A'.",
+                        "01 WS-R PIC X."),
+                "IF SAYS-A MOVE 'T' TO WS-R END-IF.");
+        assertFalse(result.succeeded());
+    }
+
+    @Test
     @DisplayName("定義のない条件名は誤りとして報告する (FR-022)")
     void anUndefinedConditionNameIsReported() {
         CobolCompiler.Result result = compile(

@@ -4845,8 +4845,17 @@ public final class ProgramGenerator {
         }).name();
     }
 
+    /**
+     * PICTURE を組み立てる定数。
+     *
+     * <p>字面だけでは足りない。{@code BLANK WHEN ZERO} は PICTURE 文字列の外に書く
+     * 句なので、字面から作り直すと落ちてしまう。定数の名前もこれで分ける
+     * — 同じ {@code 9(5)} でも、空白にするものとしないものは別の PICTURE である。
+     */
     private String pictureConstant(Picture picture) {
-        return constants.computeIfAbsent("P:" + picture.source() + ":" + decimalPoint, k -> {
+        boolean blank = picture.blankWhenZero();
+        String key = "P:" + picture.source() + ":" + decimalPoint + ":" + blank;
+        return constants.computeIfAbsent(key, k -> {
             String name = "P" + constants.size();
             return new Constant(name, PICTURE, () -> {
                 clinit.visitLdcInsn(picture.source());
@@ -4855,6 +4864,12 @@ public final class ProgramGenerator {
                 clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
                         Type.getInternalName(PictureParser.class), "parse",
                         "(Ljava/lang/String;CC)" + PICTURE, false);
+                if (blank) {
+                    clinit.visitInsn(Opcodes.ICONST_1);
+                    clinit.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            Type.getInternalName(Picture.class), "withBlankWhenZero",
+                            "(Z)" + PICTURE, false);
+                }
             });
         }).name();
     }

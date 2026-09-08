@@ -275,6 +275,28 @@ public final class DataDivisionBuilder {
             }
             // SYNCHRONIZED / GLOBAL / EXTERNAL は割り付けに効かない
         }
+        applyBlankWhenZero(item, origin);
+    }
+
+    /**
+     * {@code BLANK WHEN ZERO} を PICTURE に効かせる。
+     *
+     * <p>句の並びは自由なので、{@code BLANK WHEN ZERO} が {@code PICTURE} より先に
+     * 書かれていることがある (NC108M がそう書いている)。だから句をすべて読み終えて
+     * から効かせる。規格により、数字項目に書いたときはその項目の種別が
+     * <b>数字編集</b>になる。
+     */
+    private void applyBlankWhenZero(DataItem item, Origin origin) {
+        if (!item.blankWhenZero() || item.picture() == null) {
+            return;
+        }
+        Picture picture = item.picture();
+        if (!picture.isNumeric() && !picture.isNumericEdited()) {
+            report(origin, "BLANK WHEN ZERO requires a numeric or numeric-edited PICTURE: "
+                    + picture.source());
+            return;
+        }
+        item.setPicture(picture.withBlankWhenZero(true));
     }
 
     private void applyValue(DataItem item, CobolParser.ValueClauseContext clause, Origin origin) {

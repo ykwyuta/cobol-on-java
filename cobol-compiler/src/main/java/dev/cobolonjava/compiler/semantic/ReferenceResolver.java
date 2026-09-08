@@ -176,6 +176,36 @@ public final class ReferenceResolver {
         return found.get(0);
     }
 
+    /**
+     * 条件名の修飾子が、条件変数から外へ向かって現れるか。
+     *
+     * <p>データ名の修飾と違い、<b>条件変数そのものから数える</b>。
+     * {@code EQUALS-M OF TABLE-ITEM} の {@code TABLE-ITEM} は条件変数の名前であり、
+     * その祖先ではないからである。{@code EQUALS-M OF TABLE-LEVEL-5} のように
+     * 祖先で修飾することもでき、途中のレベルは飛ばしてよい。
+     *
+     * <p>同じ条件名を複数の表に書ける (NC246A は 4 つの表に同じ 88 を書いている)。
+     * 修飾で絞らないと、いちばん先に見つかった表を黙って使ってしまう。
+     */
+    public static boolean conditionQualifiersMatch(DataItem owner,
+                                                   CobolParser.QualifiedDataNameContext context) {
+        List<String> qualifiers = new ArrayList<>();
+        for (int i = 1; i < context.dataName().size(); i++) {
+            qualifiers.add(context.dataName(i).getText().toUpperCase(Locale.ROOT));
+        }
+        DataItem current = owner;
+        for (String qualifier : qualifiers) {
+            while (current != null && !qualifier.equals(current.name())) {
+                current = current.parent();
+            }
+            if (current == null) {
+                return false;
+            }
+            current = current.parent();
+        }
+        return true;
+    }
+
     /** 修飾子が、外へ向かう順に祖先として現れるか。途中のレベルは飛ばしてよい。 */
     private static boolean qualifiersMatch(DataItem item, List<String> qualifiers) {
         DataItem current = item.parent();

@@ -1598,27 +1598,59 @@ public final class ProcedureBuilder {
 
     private Statement conditionNameMove(CobolParser.IdentifierContext context, String name,
                                         Origin origin) {
+        DataItem item = conditionNameOwner(context, name);
+        if (item == null) {
+            report(origin, "undefined condition-name: " + name);
+            return null;
+        }
+        DataItem.ConditionName conditionName = namedCondition(item, name);
+        if (conditionName.values().isEmpty()) {
+            report(origin, "condition-name has no value: " + name);
+            return null;
+        }
+        Operand source = new Operand.Literal(conditionName.values().get(0).from());
+        DataReference target = resolver.resolveAs(item, context);
+        if (target == null) {
+            return null;
+        }
+        Statement.Move.Target checked = checkMove(source, target, origin);
+        return checked == null
+                ? null
+                : new Statement.Move(source, List.of(checked), false, origin);
+    }
+
+    /**
+     * 条件名を持つ条件変数を、修飾で絞って引く。
+     *
+     * <p>同じ条件名を複数の表に書ける。修飾を見ないでいちばん先に見つかったものを
+     * 使うと、<b>別の表の添字の数で数えてしまう</b> (NC246A がそれで落ちていた)。
+     *
+     * @return 1 個に絞れなければ {@code null}
+     */
+    private DataItem conditionNameOwner(CobolParser.IdentifierContext context, String name) {
+        DataItem found = null;
         for (DataItem item : layout.all()) {
-            for (DataItem.ConditionName conditionName : item.conditionNames()) {
-                if (!name.equals(conditionName.name())) {
-                    continue;
-                }
-                if (conditionName.values().isEmpty()) {
-                    report(origin, "condition-name has no value: " + name);
-                    return null;
-                }
-                Operand source = new Operand.Literal(conditionName.values().get(0).from());
-                DataReference target = resolver.resolveAs(item, context);
-                if (target == null) {
-                    return null;
-                }
-                Statement.Move.Target checked = checkMove(source, target, origin);
-                return checked == null
-                        ? null
-                        : new Statement.Move(source, List.of(checked), false, origin);
+            if (namedCondition(item, name) == null) {
+                continue;
+            }
+            if (!ReferenceResolver.conditionQualifiersMatch(item, context.qualifiedDataName())) {
+                continue;
+            }
+            if (found != null) {
+                // どれか 1 個を選ぶと、書いた人の意図と違う表を黙って使うことになる
+                return null;
+            }
+            found = item;
+        }
+        return found;
+    }
+
+    private static DataItem.ConditionName namedCondition(DataItem item, String name) {
+        for (DataItem.ConditionName conditionName : item.conditionNames()) {
+            if (name.equals(conditionName.name())) {
+                return conditionName;
             }
         }
-        report(origin, "undefined condition-name: " + name);
         return null;
     }
 
@@ -1916,6 +1948,19 @@ public final class ProcedureBuilder {
             report(origin, "a class condition subject takes TRUE or FALSE in its WHEN");
             return null;
         }
+        Condition named = subjectConditionName(subject, origin);
+        if (named != null) {
+            // 規格は EVALUATE の主語に「条件式」を許している。条件名は条件式である。
+            // 文法では名前 1 個の式と見分けが付かないので、ここで読み替える (NC225A)
+            if (object.TRUE() != null) {
+                return named;
+            }
+            if (object.FALSE() != null) {
+                return new Condition.Not(named);
+            }
+            report(origin, "a condition-name subject takes TRUE or FALSE in its WHEN");
+            return null;
+        }
         boolean truthMode = subject.TRUE() != null || subject.FALSE() != null;
         if (truthMode) {
             Condition condition = truthObject(object, origin);
@@ -1926,6 +1971,21 @@ public final class ProcedureBuilder {
             return subject.FALSE() == null ? condition : new Condition.Not(condition);
         }
         return valueObject(subject.expression(), object, origin);
+    }
+
+    /**
+     * 主語が条件名なら、その条件。そうでなければ {@code null}。
+     *
+     * <p>{@code EVALUATE ... ALSO IT-IS-81} のように、主語の位置に 88 レベルの
+     * 条件名を書ける。式として読むと「そんな項目は無い」になってしまう。
+     */
+    private Condition subjectConditionName(CobolParser.EvaluateSubjectContext subject,
+                                           Origin origin) {
+        if (subject.expression() == null) {
+            return null;
+        }
+        CobolParser.IdentifierContext name = soleIdentifierOf(subject.expression());
+        return name == null ? null : conditionNameFor(name, origin);
     }
 
     /** {@code EVALUATE TRUE} の目的語。条件として読む。 */
@@ -2218,17 +2278,14 @@ public final class ProcedureBuilder {
         if (status != null) {
             return new Condition.SwitchTest(status.index(), status.whenOn(), origin);
         }
-        for (DataItem item : layout.all()) {
-            for (DataItem.ConditionName conditionName : item.conditionNames()) {
-                if (name.equals(conditionName.name())) {
-                    DataReference parent = resolver.resolveAs(item, context);
-                    return parent == null
-                            ? null
-                            : conditionNameCondition(parent, conditionName, origin);
-                }
-            }
+        DataItem item = conditionNameOwner(context, name);
+        if (item == null) {
+            return null;
         }
-        return null;
+        DataReference parent = resolver.resolveAs(item, context);
+        return parent == null
+                ? null
+                : conditionNameCondition(parent, namedCondition(item, name), origin);
     }
 
     /** 式が名前 1 個なら、その名前。そうでなければ {@code null}。 */
@@ -2545,19 +2602,28 @@ public final class ProcedureBuilder {
         if (status != null) {
             return new Condition.SwitchTest(status.index(), status.whenOn(), origin);
         }
+        DataItem item = conditionNameOwner(context.identifier(), name);
+        if (item == null) {
+            report(origin, hasConditionName(name)
+                    ? "condition-name " + name + " is ambiguous; qualify it with OF or IN"
+                    : "undefined condition-name: " + name);
+            return null;
+        }
+        // 添字は条件名のほうに書かれる。親が表なら、それを親への参照へ移す
+        DataReference parent = resolver.resolveAs(item, context.identifier());
+        return parent == null
+                ? null
+                : conditionNameCondition(parent, namedCondition(item, name), origin);
+    }
+
+    /** その名前の条件名がどこかに書かれているか。誤りの文面を選ぶためだけに使う。 */
+    private boolean hasConditionName(String name) {
         for (DataItem item : layout.all()) {
-            for (DataItem.ConditionName conditionName : item.conditionNames()) {
-                if (name.equals(conditionName.name())) {
-                    // 添字は条件名のほうに書かれる。親が表なら、それを親への参照へ移す
-                    DataReference parent = resolver.resolveAs(item, context.identifier());
-                    return parent == null
-                            ? null
-                            : conditionNameCondition(parent, conditionName, origin);
-                }
+            if (namedCondition(item, name) != null) {
+                return true;
             }
         }
-        report(origin, "undefined condition-name: " + name);
-        return null;
+        return false;
     }
 
     private Condition conditionNameCondition(DataReference reference,
