@@ -258,4 +258,33 @@ class ArithmeticGenerationTest {
         assertTrue(result.diagnostics().get(0).message().contains("requires GIVING"),
                 result.diagnostics().toString());
     }
+
+    @Test
+    @DisplayName("被演算子は文の実行前に 1 度だけ読む (FR-043、規格 6.11.4 GR2)")
+    void theOperandsAreReadOnceBeforeAnyReceiverIsStored() {
+        // 2 つ目の受取項目が被演算子 WS-A を書き換える。3 つ目以降が書き換えた
+        // あとの値を読むと、別の計算になってしまう。
+        // WS-A=100 WS-B=020 なので、どの受取項目も 100 / 20 = 5 である
+        assertEquals("005020005005", run(
+                List.of("01 WS-A PIC 9(3) VALUE 100.",
+                        "01 WS-B PIC 9(3) VALUE 020.",
+                        "01 WS-D PIC 9(3) VALUE 000.",
+                        "01 WS-E PIC 9(3) VALUE 000."),
+                "DIVIDE WS-B INTO WS-A GIVING WS-D WS-A WS-E."));
+    }
+
+    @Test
+    @DisplayName("ON SIZE ERROR つきでも被演算子は 1 度だけ読む (FR-041, FR-043)")
+    void theOperandsAreReadOnceWithASizeErrorPhraseToo() {
+        // 受取項目 WS-A を書き換えたあとの値で計算し直すと、あふれない計算まで
+        // あふれたことにしてしまう (NC172A の「WRONGLY AFFECTED BY SIZE ERROR」)
+        assertEquals("005020005005N", run(
+                List.of("01 WS-A PIC 9(3) VALUE 100.",
+                        "01 WS-B PIC 9(3) VALUE 020.",
+                        "01 WS-D PIC 9(3) VALUE 000.",
+                        "01 WS-E PIC 9(3) VALUE 000.",
+                        "01 WS-F PIC X VALUE 'N'."),
+                "DIVIDE WS-B INTO WS-A GIVING WS-D WS-A WS-E",
+                "    ON SIZE ERROR MOVE 'Y' TO WS-F."));
+    }
 }

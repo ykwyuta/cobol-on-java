@@ -4349,6 +4349,10 @@ public final class ProgramGenerator {
             planCheckedArithmetic(statement, body);
             return;
         }
+        List<Integer> slots = planOperandSlots(statement, body);
+        if (slots == null) {
+            return;
+        }
         for (Statement.Arithmetic.Target target : statement.targets()) {
             DataItem item = target.reference().item();
             if (item.picture() == null) {
@@ -4366,9 +4370,7 @@ public final class ProgramGenerator {
                 }
                 value.add(read);
             }
-            if (!planFold(statement, value, scale, rounding)) {
-                return;
-            }
+            planFold(statement, slots, value, scale, rounding);
             if (statement.accumulate() != null) {
                 value.add(() -> emitOperator(statement.accumulate(), scale, rounding));
             }
@@ -4413,9 +4415,16 @@ public final class ProgramGenerator {
      */
     private void planCheckedArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
         int flag = nextLocal++;
-        List<Runnable> perTarget = new ArrayList<>();
+        // 被演算子は受取項目より先に、1 度だけ読む。条件文の中で読むので
+        // 「旗を立てる前」ではなく<b>受取項目の並びの先頭</b>へ置く
+        List<Runnable> prologue = new ArrayList<>();
+        List<Integer> slots = planOperandSlots(statement, prologue);
+        if (slots == null) {
+            return;
+        }
+        List<Runnable> perTarget = new ArrayList<>(prologue);
         for (Statement.Arithmetic.Target target : statement.targets()) {
-            Runnable planned = planCheckedTarget(statement, target, flag);
+            Runnable planned = planCheckedTarget(statement, target, flag, slots);
             if (planned == null) {
                 return;
             }
@@ -4581,7 +4590,12 @@ public final class ProgramGenerator {
         int flag = nextLocal++;
         List<Runnable> operations = new ArrayList<>();
         for (Statement.Arithmetic operation : group.operations()) {
-            Runnable planned = planCheckedTarget(operation, operation.targets().get(0), flag);
+            List<Integer> slots = planOperandSlots(operation, operations);
+            if (slots == null) {
+                return;
+            }
+            Runnable planned =
+                    planCheckedTarget(operation, operation.targets().get(0), flag, slots);
             if (planned == null) {
                 return;
             }
@@ -4591,7 +4605,8 @@ public final class ProgramGenerator {
     }
 
     private Runnable planCheckedTarget(Statement.Arithmetic statement,
-                                       Statement.Arithmetic.Target target, int flag) {
+                                       Statement.Arithmetic.Target target, int flag,
+                                       List<Integer> slots) {
         DataItem item = target.reference().item();
         if (item.picture() == null) {
             return null;
@@ -4610,21 +4625,6 @@ public final class ProgramGenerator {
             return null;
         }
 
-        // 被演算子を先に局所変数へ取る。除数を調べてから割るためである
-        List<Integer> slots = new ArrayList<>();
-        List<Runnable> loads = new ArrayList<>();
-        for (Operand operand : statement.operands()) {
-            Runnable push = planSourceDecimal(operand, statement.origin());
-            if (push == null) {
-                return null;
-            }
-            int slot = nextLocal++;
-            slots.add(slot);
-            loads.add(() -> {
-                push.run();
-                run.visitVarInsn(Opcodes.ASTORE, slot);
-            });
-        }
         int folded = nextLocal++;
         boolean foldDivides = statement.fold() == Statement.Arithmetic.Operator.DIVIDE;
         boolean accumulateDivides =
@@ -4633,7 +4633,6 @@ public final class ProgramGenerator {
         return () -> {
             Label failed = new Label();
             Label done = new Label();
-            loads.forEach(Runnable::run);
             if (foldDivides) {
                 // 2 個目以降が除数になる
                 for (int i = 1; i < slots.size(); i++) {
@@ -4675,22 +4674,51 @@ public final class ProgramGenerator {
         run.visitJumpInsn(Opcodes.IFNE, failed);
     }
 
-    /** 被演算子を左から畳む命令を積む。 */
-    private boolean planFold(Statement.Arithmetic statement, List<Runnable> value, int scale,
-                             String rounding) {
-        boolean first = true;
+    /**
+     * 被演算子を<b>1 度だけ</b>読んで局所変数へ取る命令を {@code body} へ積む
+     * (要件 FR-043、規格 6.11.4 GR2)。
+     *
+     * <p>受取項目が被演算子でもあることがある。
+     *
+     * <pre>
+     * DIVIDE B INTO A GIVING R1 A ROUNDED R2 R3
+     * </pre>
+     *
+     * <p>2 つ目の受取項目が {@code A} を書き換える。そのあとで {@code A} を読み直すと、
+     * 3 つ目からは<b>別の計算</b>になる。規格は被演算子を文の実行前に評価すると決めて
+     * いる。NC172A / NC173A がこの形を 32 通り確かめている。
+     *
+     * @return 被演算子ごとの局所変数の番号。読めなければ {@code null}
+     */
+    private List<Integer> planOperandSlots(Statement.Arithmetic statement, List<Runnable> body) {
+        List<Integer> slots = new ArrayList<>();
+        List<Runnable> loads = new ArrayList<>();
         for (Operand operand : statement.operands()) {
             Runnable push = planSourceDecimal(operand, statement.origin());
             if (push == null) {
-                return false;
+                return null;
             }
-            value.add(push);
-            if (!first) {
+            int slot = nextLocal++;
+            slots.add(slot);
+            loads.add(() -> {
+                push.run();
+                run.visitVarInsn(Opcodes.ASTORE, slot);
+            });
+        }
+        body.add(() -> loads.forEach(Runnable::run));
+        return slots;
+    }
+
+    /** 控えておいた被演算子を左から畳む命令を積む。 */
+    private void planFold(Statement.Arithmetic statement, List<Integer> slots,
+                          List<Runnable> value, int scale, String rounding) {
+        for (int i = 0; i < slots.size(); i++) {
+            int slot = slots.get(i);
+            value.add(() -> run.visitVarInsn(Opcodes.ALOAD, slot));
+            if (i > 0) {
                 value.add(() -> emitOperator(statement.fold(), scale, rounding));
             }
-            first = false;
         }
-        return true;
     }
 
     private void emitOperator(Statement.Arithmetic.Operator operator, int scale, String rounding) {
