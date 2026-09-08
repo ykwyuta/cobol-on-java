@@ -4114,9 +4114,28 @@ public final class ProcedureBuilder {
             CobolParser.CloseOptionContext option = one.closeOption();
             closed.add(new Statement.Close.Closed(file,
                     option != null && option.LOCK() != null,
+                    volumeOf(option),
                     fileDebugEntry(file, false, origin)));
         }
         return new Statement.Close(closed, origin);
+    }
+
+    /**
+     * {@code CLOSE} に書かれた巻の扱いを読む (要件 FR-102)。
+     *
+     * <p>{@code REEL} / {@code UNIT} は<b>閉じない</b>。次の巻へ移るだけなので、
+     * ファイルは開いたままである。{@code NO REWIND} は閉じるが巻き戻さない。
+     */
+    private Statement.Close.Volume volumeOf(CobolParser.CloseOptionContext option) {
+        if (option == null) {
+            return Statement.Close.Volume.NONE;
+        }
+        if (option.REEL() != null || option.UNIT() != null) {
+            return Statement.Close.Volume.REEL;
+        }
+        return option.REWIND() != null
+                ? Statement.Close.Volume.NO_REWIND
+                : Statement.Close.Volume.NONE;
     }
 
     /**

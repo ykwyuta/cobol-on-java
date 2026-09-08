@@ -17,6 +17,15 @@ public final class FileStatus {
     public static final String OPTIONAL_CREATED = "05";
     /** レコード長が記述と合わない。 */
     public static final String LENGTH_MISMATCH = "04";
+    /**
+     * 巻を指す {@code CLOSE} を、巻を持たない媒体のファイルに対して実行した。
+     *
+     * <p>{@code CLOSE ... REEL} / {@code UNIT} / {@code NO REWIND} は磁気テープの
+     * 巻送りを指す。ディスク上のデータセットには巻がないので、規格は<b>成功だが
+     * 巻の操作は行われなかった</b>ことをこのコードで伝えるよう定めている
+     * (85 規格 VII-38, 4.2.4(3)F)。先頭が {@code 0} なので誤りではない。
+     */
+    public static final String NON_REEL = "07";
     /** ファイルの終わり。 */
     public static final String AT_END = "10";
     /** 鍵の順序が昇順でない ({@code ACCESS SEQUENTIAL} の {@code WRITE})。 */

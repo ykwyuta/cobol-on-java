@@ -561,9 +561,11 @@ public sealed interface Statement {
     /**
      * {@code CLOSE} 文 (要件 FR-102)。
      *
-     * <p>巻の扱い ({@code REEL} / {@code UNIT} / {@code NO REWIND}) は磁気テープの話で
-     * あり、ここには残さない。残すのは {@code WITH LOCK} だけである — 錠を掛けた
-     * ファイルは<b>この実行単位では二度と開けない</b>という、観測できる違いを持つ。
+     * <p>巻の扱いは磁気テープの話だが、<b>翻訳の結果には効く</b>。{@code REEL} /
+     * {@code UNIT} はファイルを閉じずに巻を送る指示であり、{@code NO REWIND} は
+     * 閉じたあと巻き戻さない指示である。どちらも巻を持たない媒体では巻の操作が起きず、
+     * 状態コード {@code 07} が立つ。{@code WITH LOCK} は錠を掛け、そのファイルを
+     * <b>この実行単位では二度と開けなく</b>する。
      */
     record Close(List<Closed> files, Origin origin) implements Statement {
 
@@ -571,19 +573,31 @@ public sealed interface Statement {
             files = List.copyOf(files);
         }
 
+        /** 巻の扱い。 */
+        public enum Volume {
+            /** 巻を指す語がない。ふつうに閉じる。 */
+            NONE,
+            /** {@code REEL} / {@code UNIT}。<b>閉じない</b>。 */
+            REEL,
+            /** {@code WITH NO REWIND}。閉じるが巻き戻さない。 */
+            NO_REWIND
+        }
+
         /**
-         * 閉じるファイル 1 個と、錠を掛けるかどうか。
+         * 閉じるファイル 1 個と、その閉じ方。
          *
-         * @param lock {@code WITH LOCK} と書かれたか
+         * @param lock   {@code WITH LOCK} と書かれたか
+         * @param volume 巻を指す語が書かれたか
          */
-        public record Closed(FileDescription file, boolean lock, List<Statement> debug) {
+        public record Closed(FileDescription file, boolean lock, Volume volume,
+                             List<Statement> debug) {
 
             public Closed {
                 debug = List.copyOf(debug);
             }
 
             public Closed(FileDescription file, boolean lock) {
-                this(file, lock, List.of());
+                this(file, lock, Volume.NONE, List.of());
             }
         }
     }

@@ -1112,8 +1112,10 @@ closeFile
     : IDENTIFIER closeOption?
     ;
 
-// 巻の扱い (REEL / UNIT / NO REWIND) は磁気テープの話であり、翻訳の結果には効かない。
-// LOCK だけは効く — 閉じたあと<b>この実行単位では二度と開けない</b>
+// 巻の扱いは磁気テープの話だが、翻訳の結果には効く。REEL / UNIT は<b>閉じない</b> —
+// 次の巻へ移るだけである。NO REWIND は閉じるが巻き戻さない。どちらも巻を持たない媒体
+// では巻の操作が起きず、状態コード 07 が立つ。LOCK は錠を掛け、閉じたあと
+// <b>この実行単位では二度と開けなく</b>する
 closeOption
     : (REEL | UNIT) (FOR? REMOVAL)?
     | WITH? NO REWIND

@@ -902,6 +902,38 @@ public final class Ops {
     }
 
     /**
+     * 巻を送って閉じる — {@code CLOSE ... REEL} / {@code UNIT} (要件 FR-102)。
+     *
+     * <p>これは<b>ファイルを閉じない</b>。磁気テープなら、いまの巻を外して次の巻へ
+     * 移る指示であり、ファイルそのものは開いたままである。ディスク上のデータセットには
+     * 巻がないので、位置も内容も動かさず、巻の操作は行われなかったことを表す
+     * {@code 07} を返す (85 規格 VII-38, 4.2.4(3)F)。
+     *
+     * <p>閉じないので、続けて {@code WRITE} も {@code READ} もできる。CCVS85 の
+     * SQ123A / SQ124A はまさにそれを見ている — {@code CLOSE ... UNIT} のあとに
+     * 書き足し、開き直さずに読み進める。
+     */
+    public static byte[] closeReel(ProgramContext context, String name, String ddName) {
+        DataSet file = context.file(name, ddName);
+        if (!file.isOpen()) {
+            return status(context, FileStatus.NOT_OPEN);
+        }
+        return status(context, FileStatus.NON_REEL);
+    }
+
+    /**
+     * 巻を戻さずに閉じる — {@code CLOSE ... WITH NO REWIND} (要件 FR-102)。
+     *
+     * <p>こちらは<b>閉じる</b>。違うのは、閉じたあとテープを巻き戻さないという点だけで
+     * ある。ディスクには巻き戻しがないので閉じ方は変わらないが、巻の操作が行われな
+     * かったことは {@code 07} で伝える (85 規格 VII-38, 4.2.4(3)F)。
+     */
+    public static byte[] closeNoRewind(ProgramContext context, String name, String ddName) {
+        String status = context.file(name, ddName).close();
+        return status(context, FileStatus.OK.equals(status) ? FileStatus.NON_REEL : status);
+    }
+
+    /**
      * 数字編集項目の中身から値を取り出す (要件 FR-060、de-editing)。
      *
      * <p>編集は「値 → 見せ方」の変換である。それを<b>逆にたどる</b>。通貨記号も

@@ -126,8 +126,7 @@ class FileIoGenerationTest {
     @Test
     @DisplayName("CLOSE WITH LOCK で閉じたファイルは二度と開けない (FR-102)")
     void aFileClosedWithLockCannotBeOpenedAgain(@TempDir Path directory) {
-        // 巻の扱い (REEL / NO REWIND) は装置の話であり、翻訳の結果には効かない。
-        // LOCK だけは効く。開き直そうとすると状態コード 38 が立つ
+        // 錠を掛けたら、開き直そうとすると状態コード 38 が立つ
         assertEquals("00|38|", run(directory, source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. LOCKER.",
@@ -178,9 +177,12 @@ class FileIoGenerationTest {
     }
 
     @Test
-    @DisplayName("巻の扱いを書いた CLOSE は、錠を掛けずに閉じる (FR-102)")
-    void theReelPhrasesOfCloseDoNotLockTheFile(@TempDir Path directory) {
-        assertEquals("00|00|", run(directory, source(
+    @DisplayName("CLOSE ... NO REWIND は閉じるが、巻が無いので 07 が立つ (FR-102)")
+    void closeWithNoRewindClosesTheFileAndReportsSevenO7(@TempDir Path directory) {
+        // 巻き戻さないという指示は、巻を持たない媒体では行いようがない。規格は
+        // <b>閉じたが巻の操作はしていない</b>ことを 07 で伝えるよう定めている。
+        // 07 は成功の側なので、錠は掛からず開き直せる
+        assertEquals("07|00|", run(directory, source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. NOREWIND.",
                 "ENVIRONMENT DIVISION.",
@@ -199,6 +201,105 @@ class FileIoGenerationTest {
                 "    CLOSE OUT-FILE WITH NO REWIND.",
                 "    DISPLAY WS-STATUS.",
                 "    OPEN INPUT OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("CLOSE ... UNIT はファイルを閉じない。書き足しが続けられる (FR-102)")
+    void closeUnitLeavesTheFileOpen(@TempDir Path directory) {
+        // REEL / UNIT は「次の巻へ移れ」であって「閉じよ」ではない。巻を持たない媒体では
+        // 移る先がないので何も起きず、07 だけが立つ。ファイルは<b>開いたまま</b>である。
+        // CCVS85 の SQ124A はここを見ている — CLOSE UNIT のあとに 2 本目を書き足す
+        assertEquals("07|00|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. CLOSEUNI.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO OUTDD",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE.",
+                "01  OUT-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE.",
+                "    MOVE \"ALPHA123\" TO OUT-REC.",
+                "    WRITE OUT-REC.",
+                "    CLOSE OUT-FILE UNIT.",
+                "    DISPLAY WS-STATUS.",
+                "    MOVE \"BETA 007\" TO OUT-REC.",
+                "    WRITE OUT-REC.",
+                "    CLOSE OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+        // CLOSE UNIT が本当に閉じていなければ、2 本目は 1 本目と同じファイルに続く
+        assertArrayEquals(ebcdic("ALPHA123BETA 007"), bytesOf(directory.resolve("OUTDD")));
+    }
+
+    @Test
+    @DisplayName("CLOSE ... REEL は読む位置も動かさない (FR-102)")
+    void closeReelDoesNotRepositionTheFile(@TempDir Path directory) {
+        // 巻を送ったのなら、次に読むのは次の巻の先頭である。巻が無いのだから位置も
+        // 動かない。OPEN INPUT の直後に CLOSE REEL しても、1 本目から読める
+        assertEquals("00|07|ALPHA123|BETA 007|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. CLOSEREE.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO OUTDD",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE.",
+                "01  OUT-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE.",
+                "    MOVE \"ALPHA123\" TO OUT-REC.",
+                "    WRITE OUT-REC.",
+                "    MOVE \"BETA 007\" TO OUT-REC.",
+                "    WRITE OUT-REC.",
+                "    CLOSE OUT-FILE.",
+                "    OPEN INPUT OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    CLOSE OUT-FILE REEL.",
+                "    DISPLAY WS-STATUS.",
+                "    READ OUT-FILE AT END DISPLAY \"END\" END-READ.",
+                "    DISPLAY OUT-REC.",
+                "    READ OUT-FILE AT END DISPLAY \"END\" END-READ.",
+                "    DISPLAY OUT-REC.",
+                "    CLOSE OUT-FILE.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("開いていないファイルへの CLOSE ... UNIT は 42 になる (FR-102, FR-103)")
+    void closeUnitOnAClosedFileIsNotOpen(@TempDir Path directory) {
+        // 閉じないのだから成功、とはいかない。巻を送る相手が開いていない
+        assertEquals("42|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. UNITSHUT.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO OUTDD",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE.",
+                "01  OUT-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE.",
+                "    CLOSE OUT-FILE.",
+                "    CLOSE OUT-FILE UNIT.",
                 "    DISPLAY WS-STATUS.",
                 "    STOP RUN.")));
     }

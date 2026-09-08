@@ -1367,9 +1367,19 @@ public final class ProgramGenerator {
             List<Runnable> watched = planStatements(closed.debug());
             body.add(() -> {
                 emitFileName(file);
-                push(closed.lock() ? 1 : 0);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "close",
-                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;Z)[B", false);
+                switch (closed.volume()) {
+                    // REEL / UNIT は閉じない。巻を送るだけなので、ファイルは開いたままである
+                    case REEL -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "closeReel",
+                            "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
+                    case NO_REWIND -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS,
+                            "closeNoRewind",
+                            "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
+                    case NONE -> {
+                        push(closed.lock() ? 1 : 0);
+                        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "close",
+                                "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;Z)[B", false);
+                    }
+                }
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
                 watched.forEach(Runnable::run);
