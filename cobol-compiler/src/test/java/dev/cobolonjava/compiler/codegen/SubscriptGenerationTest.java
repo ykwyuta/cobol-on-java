@@ -223,6 +223,36 @@ class SubscriptGenerationTest {
     }
 
     @Test
+    @DisplayName("部分参照の長さをデータ項目で書ける (FR-026)")
+    void aReferenceModificationLengthMayBeADataItem() {
+        assertEquals("CDE  ", run(
+                List.of("01 WS-A PIC X(8) VALUE 'ABCDEFGH'.",
+                        "01 WS-N PIC 9(3) COMP VALUE 3.",
+                        "01 WS-R PIC X(5)."),
+                "MOVE WS-A (3: WS-N) TO WS-R.").substring(10));
+    }
+
+    @Test
+    @DisplayName("受取側の長さもデータ項目で書ける (FR-026)")
+    void aReferenceModifiedReceiverMayHaveAVariableLength() {
+        // 書き換わるのは 3 桁だけ。受取側は短いほうに合わせて空白で埋められる
+        assertEquals("XY ---", run(
+                List.of("01 WS-N PIC 9(3) COMP VALUE 3.",
+                        "01 WS-A PIC X(6) VALUE ALL '-'."),
+                "MOVE 'XY' TO WS-A (1: WS-N).").substring(2));
+    }
+
+    @Test
+    @DisplayName("長さを省くと項目の終わりまでになる (FR-026)")
+    void anOmittedLengthRunsToTheEndOfTheItem() {
+        assertEquals("DEFGH   ", run(
+                List.of("01 WS-A PIC X(8) VALUE 'ABCDEFGH'.",
+                        "01 WS-I PIC 9(3) COMP VALUE 4.",
+                        "01 WS-R PIC X(8)."),
+                "MOVE WS-A (WS-I:) TO WS-R.").substring(10));
+    }
+
+    @Test
     @DisplayName("条件の中でも添字が使える (FR-024, FR-046)")
     void aSubscriptWorksInsideACondition() {
         assertEquals("T", run(

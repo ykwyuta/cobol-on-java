@@ -249,14 +249,35 @@ class InitializeGenerationTest {
     }
 
     @Test
-    @DisplayName("REPLACING BY データ項目はまだ書けないと報告する (FR-060)")
-    void replacingByADataItemIsReportedAsUnsupported() {
-        CobolCompiler.Result result = compile(
-                List.of("01 WS-N PIC 9(3).", "01 WS-R.", "   05 WS-M PIC 9(3)."),
-                "INITIALIZE WS-R REPLACING NUMERIC DATA BY WS-N.");
+    @DisplayName("REPLACING BY にデータ項目を書ける (FR-060)")
+    void replacingByADataItemMovesItsValue() {
+        // 値が実行時に決まるので、まとめて 1 回では書けない。基本項目ごとの転記になる
+        assertEquals("123123456", run(
+                List.of("01 WS-N PIC 9(3) VALUE 123.",
+                        "01 WS-R.",
+                        "   05 WS-M PIC 9(3).",
+                        "   05 WS-T PIC X(3) VALUE '456'."),
+                "INITIALIZE WS-R REPLACING NUMERIC DATA BY WS-N."));
+    }
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("not supported yet"),
-                result.diagnostics().toString());
+    @Test
+    @DisplayName("REPLACING BY データ項目は、反復のある項目も 1 回ずつ埋める (FR-060)")
+    void replacingByADataItemFillsEveryOccurrence() {
+        assertEquals("07007007007", run(
+                List.of("01 WS-N PIC 9(2) VALUE 7.",
+                        "01 WS-R.",
+                        "   05 WS-E OCCURS 3 TIMES PIC 9(3)."),
+                "INITIALIZE WS-R REPLACING NUMERIC DATA BY WS-N."));
+    }
+
+    @Test
+    @DisplayName("当たらなかった分類は変わらない (FR-060)")
+    void categoriesNotNamedAreLeftAlone() {
+        assertEquals("123XYZ123", run(
+                List.of("01 WS-N PIC 9(3) VALUE 123.",
+                        "01 WS-R.",
+                        "   05 WS-T PIC X(3) VALUE 'XYZ'.",
+                        "   05 WS-M PIC 9(3)."),
+                "INITIALIZE WS-R REPLACING NUMERIC DATA BY WS-N."));
     }
 }

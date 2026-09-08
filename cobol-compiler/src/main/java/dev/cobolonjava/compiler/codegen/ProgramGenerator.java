@@ -3138,7 +3138,10 @@ public final class ProgramGenerator {
             return 0;
         }
         if (operand instanceof Operand.Reference reference) {
-            return reference.reference().constantLength().orElse(0);
+            // 長さが実行時に決まる部分参照でも、項目全体を超えることはない。
+            // 図形定数を広げる長さとしては、その上限で足りる
+            return reference.reference().constantLength()
+                    .orElse(reference.reference().item().length());
         }
         if (operand instanceof Operand.Function function) {
             return functionLength(function);
@@ -3791,22 +3794,33 @@ public final class ProgramGenerator {
     private void planMove(Statement.Move move, List<Runnable> body) {
         for (Statement.Move.Target target : move.targets()) {
             Runnable offset = planAddress(target.reference(), move.origin());
-            OptionalInt length = lengthOf(target.reference(), move.origin());
-            if (offset == null || length.isEmpty()) {
+            if (offset == null) {
                 return;
             }
             switch (target.kind()) {
-                case ALPHANUMERIC -> planAlphanumericMove(move, target, offset,
-                        length.getAsInt(), body);
+                case ALPHANUMERIC -> planAlphanumericMove(move, target, offset, body);
                 case NUMERIC -> planNumericMove(move, target, offset, body);
                 case NUMERIC_EDITED -> planEditedMove(move, target, offset, body);
             }
         }
     }
 
+    /**
+     * 英数字転記。
+     *
+     * <p>受取側の長さは<b>実行時に決まってよい</b> ({@code WS-A (1: WS-N)})。
+     * 図形定数を広げる長さだけは翻訳時に要るので、そこには<b>項目全体の長さ</b>を使う。
+     * 部分参照の長さは項目全体を超えないので、広げてから切り詰めた結果は同じになる。
+     */
     private void planAlphanumericMove(Statement.Move move, Statement.Move.Target target,
-                                      Runnable offset, int length, List<Runnable> body) {
-        Runnable source = planSourceBytes(move.source(), move.origin(), length);
+                                      Runnable offset, List<Runnable> body) {
+        Runnable length = planLength(target.reference(), move.origin());
+        if (length == null) {
+            return;
+        }
+        int widest = target.reference().constantLength()
+                .orElse(target.reference().item().length());
+        Runnable source = planSourceBytes(move.source(), move.origin(), widest);
         if (source == null) {
             return;
         }
@@ -3814,7 +3828,7 @@ public final class ProgramGenerator {
         body.add(() -> {
             source.run();
             offset.run();
-            push(length);
+            length.run();
             run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
@@ -4656,7 +4670,9 @@ public final class ProgramGenerator {
 
     /**
      * 参照の長さ。<b>長さは翻訳時に決まっていなければならない</b>。
-     * 部分参照の長さにデータ項目を書いた場合は、まだ生成できない (暫定判断 P-027)。
+     *
+     * <p>長さそのものを翻訳時の値として使う道 (定数のバイト列を作る、編集の形を決める)
+     * が引く。実行時に決まってよい道は {@link #planLength} を使う。
      */
     private OptionalInt lengthOf(DataReference reference, Origin origin) {
         OptionalInt length = reference.constantLength();
@@ -4665,6 +4681,61 @@ public final class ProgramGenerator {
                     + " is not supported yet");
         }
         return length;
+    }
+
+    /**
+     * 参照の長さを積む命令 (要件 FR-026、暫定判断 P-027)。
+     *
+     * <p>部分参照の長さは<b>データ項目で書ける</b>。{@code WS-A (1: WS-N)} の {@code WS-N}
+     * は実行時にしか決まらない。ランタイムの演算はどれも長さを引数で受け取るので、
+     * <b>定数を積むところを計算に差し替える</b>だけで通る。
+     *
+     * <p>長さを省いた {@code WS-A (WS-I:)} は「項目の終わりまで」であり、
+     * 開始位置が実行時に決まればこれも実行時に決まる。
+     *
+     * @return 積む命令。組み立てられなければ {@code null}
+     */
+    private Runnable planLength(DataReference reference, Origin origin) {
+        OptionalInt constant = reference.constantLength();
+        if (constant.isPresent()) {
+            int length = constant.getAsInt();
+            return () -> push(length);
+        }
+        DataReference.RefMod refMod = reference.refMod();
+        if (refMod.length() != null) {
+            return planSubscriptValue(refMod.length(), origin);
+        }
+        // 長さの省略。項目の終わりまでなので「全体の長さ - (開始位置 - 1)」である
+        Runnable leftmost = planSubscriptValue(refMod.leftmost(), origin);
+        if (leftmost == null) {
+            return null;
+        }
+        int whole = reference.item().length();
+        return () -> {
+            push(whole + 1);
+            leftmost.run();
+            run.visitInsn(Opcodes.ISUB);
+        };
+    }
+
+    /** 添字 1 個の値を {@code int} として積む命令。 */
+    private Runnable planSubscriptValue(DataReference.Subscript subscript, Origin origin) {
+        if (subscript instanceof DataReference.Subscript.Constant value) {
+            return () -> push(value.value());
+        }
+        if (!(subscript instanceof DataReference.Subscript.Variable given)) {
+            report(origin, "ALL may not be written as a reference modification");
+            return null;
+        }
+        Runnable push = planSourceDecimal(new Operand.Reference(given.reference()), origin);
+        if (push == null) {
+            return null;
+        }
+        return () -> {
+            push.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            addOffset(given.offset());
+        };
     }
 
     // ---- 送出側 ----
@@ -4681,13 +4752,13 @@ public final class ProgramGenerator {
         }
         DataReference reference = ((Operand.Reference) source).reference();
         Runnable offset = planAddress(reference, origin);
-        OptionalInt length = lengthOf(reference, origin);
-        if (offset == null || length.isEmpty()) {
+        Runnable length = planLength(reference, origin);
+        if (offset == null || length == null) {
             return null;
         }
         return () -> {
             offset.run();
-            push(length.getAsInt());
+            length.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
                     "(L" + STORAGE + ";II)[B", false);
         };

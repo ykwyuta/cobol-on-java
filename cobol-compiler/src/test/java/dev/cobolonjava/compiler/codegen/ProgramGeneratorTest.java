@@ -177,11 +177,20 @@ class ProgramGeneratorTest {
     }
 
     @Test
-    @DisplayName("部分参照の長さがデータ項目ならまだ生成できないと報告する (P-027)")
-    void aVariableReferenceModificationLengthIsReportedAsUnsupported() {
+    @DisplayName("部分参照の長さはデータ項目で書ける (FR-026)")
+    void aVariableReferenceModificationLengthIsAccepted() {
+        // 書き換わるのは WS-I 桁だけ。受取側が短ければ、送出側は空白で埋められる
+        assertEquals("0002C1C24040", run(
+                List.of("01 WS-I PIC 9(3) COMP VALUE 2.", "01 WS-A PIC X(4)."),
+                "MOVE 'AB' TO WS-A (1:WS-I)."));
+    }
+
+    @Test
+    @DisplayName("STRING の受取側の長さは、まだ翻訳時に決まっていなければならない (P-027)")
+    void aVariableLengthIsStillRefusedWhereItIsNotImplemented() {
         CobolCompiler.Result result = compile(
                 List.of("01 WS-I PIC 9(3) COMP VALUE 1.", "01 WS-A PIC X(5)."),
-                "MOVE 'A' TO WS-A (1:WS-I).");
+                "STRING 'A' DELIMITED BY SIZE INTO WS-A (1:WS-I).");
 
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("not a constant"),

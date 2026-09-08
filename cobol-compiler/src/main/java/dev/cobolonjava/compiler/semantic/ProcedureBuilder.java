@@ -1564,13 +1564,20 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context);
         boolean withFiller = context.FILLER() != null;
         List<InitializeImage.Replacing> replacing = new ArrayList<>();
+        List<ItemReplacing> fromItems = new ArrayList<>();
         for (CobolParser.InitializeReplacingContext rule : context.initializeReplacing()) {
-            if (rule.identifier() != null) {
-                // 値が実行時に決まる形は、反復の数だけ転記が並ぶことになる
-                report(origin, "INITIALIZE ... REPLACING BY a data item is not supported yet");
-                return null;
-            }
             InitializeImage.Category category = categoryOf(rule.initializeCategory());
+            if (rule.identifier() != null) {
+                DataReference source = resolver.resolve(rule.identifier());
+                if (source == null) {
+                    return null;
+                }
+                // 値が実行時に決まるので、まとめて 1 回では書けない。
+                // 値を持たない指定として並べておくと、画像はここを飛ばす
+                replacing.add(new InitializeImage.Replacing(category, null));
+                fromItems.add(new ItemReplacing(category, source));
+                continue;
+            }
             try {
                 replacing.add(new InitializeImage.Replacing(category,
                         LiteralValue.of(rule.literal())));
@@ -1591,11 +1598,109 @@ public final class ProcedureBuilder {
                         + describe(target));
                 return null;
             }
-            statements.add(new Statement.Initialize(target, withFiller, replacing, origin));
+            // 指定が値の決まらないものだけなら、まとめて書く分は何も残らない
+            if (fromItems.size() < replacing.size() || replacing.isEmpty()) {
+                statements.add(new Statement.Initialize(target, withFiller, replacing, origin));
+            }
+            if (!fromItems.isEmpty()
+                    && !addItemReplacements(target, withFiller, fromItems, statements, origin)) {
+                return null;
+            }
         }
         return statements.size() == 1
                 ? statements.get(0)
                 : new Statement.Sequence(statements, origin);
+    }
+
+    /** {@code REPLACING 分類 DATA BY 項目} の指定 1 個。値は実行時に決まる。 */
+    private record ItemReplacing(InitializeImage.Category category, DataReference source) {
+    }
+
+    /**
+     * 一度に並べてよい転記の数。
+     *
+     * <p>{@code OCCURS} の大きい表に対して値の決まらない {@code INITIALIZE} を書くと、
+     * 反復の数だけ転記が並ぶ。<b>翻訳できないほど並ぶくらいなら断る</b>。
+     */
+    private static final int REPLACEMENT_LIMIT = 4096;
+
+    /**
+     * 値がデータ項目で書かれた {@code REPLACING} を、基本項目ごとの転記へ展開する。
+     *
+     * <p>定数なら書き込むバイト列が翻訳時に決まるので 1 回で書ける ({@link InitializeImage})。
+     * データ項目ではそれができない。<b>反復のある項目は 1 回ずつ</b>転記を並べる。
+     *
+     * @return 展開できたら {@code true}
+     */
+    private boolean addItemReplacements(DataReference target, boolean withFiller,
+                                        List<ItemReplacing> rules, List<Statement> out,
+                                        Origin origin) {
+        List<Statement> moves = new ArrayList<>();
+        // 書かれた項目そのものは 1 回分である。表なら添字で 1 つに絞られている
+        if (!replaceOnce(target.item(), target.subscripts(), withFiller, rules, moves, origin)) {
+            return false;
+        }
+        out.addAll(moves);
+        return true;
+    }
+
+    /** 反復のある項目は、すべての回を辿る。 */
+    private boolean replaceAll(DataItem item, List<DataReference.Subscript> subscripts,
+                               boolean withFiller, List<ItemReplacing> rules,
+                               List<Statement> out, Origin origin) {
+        if (item.redefinesName() != null) {
+            // 重ねた項目は初期化しない。重ねる先が同じ場所を持っている
+            return true;
+        }
+        if (!item.isTable()) {
+            return replaceOnce(item, subscripts, withFiller, rules, out, origin);
+        }
+        for (int i = 1; i <= item.occurs(); i++) {
+            List<DataReference.Subscript> here = new ArrayList<>(subscripts);
+            here.add(new DataReference.Subscript.Constant(i));
+            if (!replaceOnce(item, here, withFiller, rules, out, origin)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean replaceOnce(DataItem item, List<DataReference.Subscript> subscripts,
+                                boolean withFiller, List<ItemReplacing> rules,
+                                List<Statement> out, Origin origin) {
+        if (!item.isElementary()) {
+            for (DataItem child : item.children()) {
+                if (!replaceAll(child, subscripts, withFiller, rules, out, origin)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (item.name() == null && !withFiller) {
+            // FILLER は初期化の対象外である
+            return true;
+        }
+        DataCategory category = DataCategory.of(item);
+        for (ItemReplacing rule : rules) {
+            if (!rule.category().matches(category)) {
+                continue;
+            }
+            if (out.size() >= REPLACEMENT_LIMIT) {
+                report(origin, "INITIALIZE ... REPLACING BY a data item would expand into more"
+                        + " than " + REPLACEMENT_LIMIT + " moves");
+                return false;
+            }
+            DataReference into = new DataReference(item, subscripts, null, origin);
+            Statement.Move.Target checked = checkMove(
+                    new Operand.Reference(rule.source()), into, origin);
+            if (checked == null) {
+                return false;
+            }
+            out.add(new Statement.Move(new Operand.Reference(rule.source()),
+                    List.of(checked), false, origin));
+            return true;
+        }
+        return true;
     }
 
     private static InitializeImage.Category categoryOf(

@@ -60,7 +60,7 @@ public final class InitializeImage {
         ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED;
 
         /** 項目の分類がこれに当たるか。 */
-        boolean matches(DataCategory actual) {
+        public boolean matches(DataCategory actual) {
             return switch (this) {
                 case ALPHABETIC -> actual == DataCategory.ALPHABETIC;
                 case ALPHANUMERIC -> actual == DataCategory.ALPHANUMERIC;
