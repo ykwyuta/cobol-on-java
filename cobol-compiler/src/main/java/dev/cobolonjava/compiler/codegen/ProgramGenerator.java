@@ -739,8 +739,9 @@ public final class ProgramGenerator {
 
     private void planUnstring(Statement.Unstring statement, List<Runnable> body) {
         Runnable offset = planAddress(statement.source(), statement.origin());
-        OptionalInt length = lengthOf(statement.source(), statement.origin());
-        if (offset == null || length.isEmpty()) {
+        // 送り出す側なので、可変長の表を含む群なら<b>いま何個あるか</b>までである
+        Runnable length = planSendingLength(statement.source(), statement.origin());
+        if (offset == null || length == null) {
             return;
         }
         Runnable pointer = planPointerValue(statement.pointer(), statement.origin());
@@ -801,7 +802,7 @@ public final class ProgramGenerator {
 
         body.add(() -> {
             offset.run();
-            push(length.getAsInt());
+            length.run();
             pointer.run();
             emitArray(delimiters, Type.getInternalName(UnstringVerb.Delimiter.class));
             emitArray(fields, Type.getInternalName(UnstringVerb.Field.class));
@@ -1975,6 +1976,19 @@ public final class ProgramGenerator {
      * 変わるので、上の引き算では足りないからである。<b>黙って近い値を返さない</b>ため、
      * 見つけたら告げて最大の長さのままにする。
      */
+    /** その項目の中に {@code OCCURS ... DEPENDING ON} の表があるか。 */
+    private static boolean hasDependingTable(DataItem item) {
+        if (item.occursDepending() != null) {
+            return true;
+        }
+        for (DataItem child : item.children()) {
+            if (hasDependingTable(child)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void collectDependingTables(DataItem item, List<DataItem> tables, boolean inside) {
         boolean depending = item.occursDepending() != null;
         if (depending) {
@@ -2631,11 +2645,11 @@ public final class ProgramGenerator {
      */
     private void planInspect(Statement.Inspect statement, List<Runnable> body) {
         Runnable offset = planAddress(statement.target(), statement.origin());
-        OptionalInt length = lengthOf(statement.target(), statement.origin());
-        if (offset == null || length.isEmpty()) {
+        // 可変長の表を含む群なら、走査するのは<b>いま何個あるか</b>までである
+        Runnable size = planSendingLength(statement.target(), statement.origin());
+        if (offset == null || size == null) {
             return;
         }
-        int size = length.getAsInt();
 
         if (statement.converting() != null) {
             planConverting(statement, offset, size, body);
@@ -2666,7 +2680,7 @@ public final class ProgramGenerator {
         body.add(() -> {
             if (!tallyClauses.isEmpty()) {
                 offset.run();
-                push(size);
+                size.run();
                 emitClauseArray(tallyClauses);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tally",
                         "(L" + STORAGE + ";II[" + CLAUSE + ")[I", false);
@@ -2675,7 +2689,7 @@ public final class ProgramGenerator {
             }
             if (!replaceClauses.isEmpty()) {
                 offset.run();
-                push(size);
+                size.run();
                 emitClauseArray(replaceClauses);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replace",
                         "(L" + STORAGE + ";II[" + CLAUSE + ")V", false);
@@ -2793,7 +2807,7 @@ public final class ProgramGenerator {
         };
     }
 
-    private void planConverting(Statement.Inspect statement, Runnable offset, int size,
+    private void planConverting(Statement.Inspect statement, Runnable offset, Runnable size,
                                 List<Runnable> body) {
         Statement.Inspect.Converting converting = statement.converting();
         Runnable from = planInspectBytes(converting.from(), statement.origin());
@@ -2804,7 +2818,7 @@ public final class ProgramGenerator {
         }
         body.add(() -> {
             offset.run();
-            push(size);
+            size.run();
             from.run();
             to.run();
             region.run();
@@ -5075,6 +5089,24 @@ public final class ProgramGenerator {
      *
      * @return 積む命令。組み立てられなければ {@code null}
      */
+    /**
+     * <b>送り出す</b>ときの長さ (要件 FR-020)。
+     *
+     * <p>可変長の表を含む群を送り出すときは、長さが<b>実行時に決まる</b>。いま何個
+     * あるかまでしか送らない。受け取るときは違って<b>いちばん大きい形</b>を使う。
+     * 規格がそう分けている。分けないと、受取側の古い個数で切ってしまう
+     * (NC247A の MOV-TEST-F1-6)。
+     */
+    private Runnable planSendingLength(DataReference reference, Origin origin) {
+        // 添字を書けば<b>1 個分</b>である。表そのものを添字なしで指したときだけ、
+        // いま何個あるかで長さが決まる
+        if (reference.refMod() == null && reference.subscripts().isEmpty()
+                && hasDependingTable(reference.item())) {
+            return planDescribedLength(reference.item(), origin);
+        }
+        return planLength(reference, origin);
+    }
+
     private Runnable planLength(DataReference reference, Origin origin) {
         OptionalInt constant = reference.constantLength();
         if (constant.isPresent()) {
@@ -5132,7 +5164,7 @@ public final class ProgramGenerator {
         }
         DataReference reference = ((Operand.Reference) source).reference();
         Runnable offset = planAddress(reference, origin);
-        Runnable length = planLength(reference, origin);
+        Runnable length = planSendingLength(reference, origin);
         if (offset == null || length == null) {
             return null;
         }

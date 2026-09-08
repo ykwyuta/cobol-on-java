@@ -173,4 +173,43 @@ class AlphanumericEditedMoveTest {
                 "DISPLAY '[' WS-SIGN '][' WS-DIGITS ']'.",
                 "STOP RUN."));
     }
+
+    @Test
+    @DisplayName("可変長の表を含む群は、送るときだけ長さが変わる (FR-020)")
+    void aGroupWithADependingTableSendsOnlyWhatIsActive() {
+        // 送り出す側はいま何個あるかまで。受け取る側は<b>いちばん大きい形</b>である。
+        // 分けないと、受取側の古い個数で切ってしまう (NC247A の MOV-TEST-F1-6)
+        assertEquals("[3ABC]|[9ABCDEFGHI]|", run(
+                List.of("01 WS-SRC.",
+                        "   02 WS-N PIC 9.",
+                        "   02 WS-E PIC X OCCURS 0 TO 9 DEPENDING ON WS-N.",
+                        "01 WS-DST.",
+                        "   02 WD-N PIC 9 VALUE 1.",
+                        "   02 WD-E PIC X OCCURS 0 TO 9 DEPENDING ON WD-N.",
+                        "01 WS-HOLD PIC X(10) VALUE SPACES."),
+                "MOVE 9 TO WS-N.",
+                "MOVE 'ABCDEFGHI' TO WS-HOLD.",
+                "MOVE WS-HOLD (1:9) TO WS-SRC (2:9).",
+                "MOVE 3 TO WS-N.",
+                "DISPLAY '[' WS-SRC ']'.",
+                "MOVE 9 TO WS-N.",
+                "MOVE WS-SRC TO WS-DST.",
+                "DISPLAY '[' WS-DST ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("添字を書けば 1 個分である (FR-020)")
+    void asubscriptedReferenceIsOneOccurrence() {
+        // 表そのものを添字なしで指したときだけ、いま何個あるかで長さが決まる
+        assertEquals("[C]|", run(
+                List.of("01 WS-SRC.",
+                        "   02 WS-N PIC 9 VALUE 3.",
+                        "   02 WS-E PIC X OCCURS 0 TO 9 DEPENDING ON WS-N."),
+                "MOVE 'A' TO WS-E (1).",
+                "MOVE 'B' TO WS-E (2).",
+                "MOVE 'C' TO WS-E (3).",
+                "DISPLAY '[' WS-E (3) ']'.",
+                "STOP RUN."));
+    }
 }
