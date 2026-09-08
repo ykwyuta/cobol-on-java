@@ -110,6 +110,13 @@ public final class ProgramGenerator {
      * 並びと違うときだけ表が入る。{@code null} なら既定の比較を出す。
      */
     private byte[] collating;
+
+    /**
+     * 翻訳を始めた時刻 (要件 FR-070)。{@code FUNCTION WHEN-COMPILED} が返す。
+     *
+     * <p>翻訳時に決まる値なので、生成したクラスの定数として持たせる。
+     */
+    private final java.time.ZonedDateTime compiledAt = java.time.ZonedDateTime.now();
     /** {@code PROCEDURE DIVISION USING} に並べた 01 レベル。連絡節の位置決めに使う。 */
     private List<DataItem> parameters = List.of();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
@@ -2821,6 +2828,7 @@ public final class ProgramGenerator {
     private static int functionLength(Operand.Function function) {
         return switch (function.intrinsic().returns()) {
             case ONE_CHARACTER -> 1;
+            case TIMESTAMP -> Intrinsics.TIMESTAMP_LENGTH;
             case SAME_LENGTH -> alphanumericLength(argument(function, 0));
             case INTEGER, NUMERIC -> 0;
         };
@@ -2857,6 +2865,16 @@ public final class ProgramGenerator {
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "reverse",
                             "([B)[B", false);
                 };
+            }
+            case CURRENT_DATE -> () -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "currentDate",
+                        "(L" + Type.getInternalName(ProgramContext.class) + ";)[B", false);
+            };
+            // 翻訳した時刻は翻訳時に決まっている。実行時に読むものは何も無い
+            case WHEN_COMPILED -> {
+                String field = bytesConstant(Intrinsics.timestamp(compiledAt, CodePages.DEFAULT));
+                yield () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
             }
             case CHAR -> {
                 Runnable ordinal = planNumericArgument(function, 0, origin);
@@ -2900,6 +2918,12 @@ public final class ProgramGenerator {
             case ORD_MAX -> planFold(function, "ordMax", origin);
             case ORD_MIN -> planFold(function, "ordMin", origin);
             case RANGE -> planFold(function, "range", origin);
+            case MEDIAN -> planFold(function, "median", origin);
+            case MIDRANGE -> planFold(function, "midrange", origin);
+            case INTEGER_OF_DATE -> planUnary(function, "integerOfDate", origin);
+            case INTEGER_OF_DAY -> planUnary(function, "integerOfDay", origin);
+            case DATE_OF_INTEGER -> planUnary(function, "dateOfInteger", origin);
+            case DAY_OF_INTEGER -> planUnary(function, "dayOfInteger", origin);
             case INTEGER -> planUnary(function, "integer", origin);
             case INTEGER_PART -> planUnary(function, "integerPart", origin);
             case FACTORIAL -> planUnary(function, "factorial", origin);

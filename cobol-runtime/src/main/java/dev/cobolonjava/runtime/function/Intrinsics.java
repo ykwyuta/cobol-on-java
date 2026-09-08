@@ -5,6 +5,9 @@ import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import java.math.BigInteger;
+import java.time.LocalDate;
+import java.time.ZonedDateTime;
+import java.util.Arrays;
 
 /**
  * 組み込み関数のうち、<b>値が一意に決まる</b>もの (要件 FR-070)。
@@ -145,6 +148,150 @@ public final class Intrinsics {
         }
         return Decimal.of(result, 0);
     }
+
+    /**
+     * {@code FUNCTION MEDIAN}。並べ替えた真ん中である。
+     *
+     * <p>個数が偶数なら真ん中 2 つの平均になる。2 で割るのは 10 進では割り切れるので、
+     * 小数桁が 1 つ増えるだけで<b>近似は入らない</b>。
+     */
+    public static Decimal median(Decimal[] values) {
+        Decimal[] sorted = values.clone();
+        Arrays.sort(sorted, Decimal::compareTo);
+        int middle = sorted.length / 2;
+        return sorted.length % 2 == 1
+                ? sorted[middle]
+                : half(sorted[middle - 1].add(sorted[middle]));
+    }
+
+    /** {@code FUNCTION MIDRANGE}。最大と最小の平均である。 */
+    public static Decimal midrange(Decimal[] values) {
+        return half(max(values).add(min(values)));
+    }
+
+    /**
+     * 2 で割る。10 進では必ず割り切れるので、小数桁を 1 つ増やしてから割る。
+     */
+    private static Decimal half(Decimal value) {
+        return value.divide(TWO, value.scale() + 1, CobolRounding.TRUNCATION);
+    }
+
+    // ---- 日付 ----
+
+    /**
+     * {@code FUNCTION INTEGER-OF-DATE}。{@code YYYYMMDD} を通日へ直す。
+     *
+     * <p>1601 年 1 月 1 日が 1 である。規格がそう決めている。暦はグレゴリオ暦であり、
+     * 1601 年より前は扱わない。
+     *
+     * @return 日付として読めなければ 0
+     */
+    public static Decimal integerOfDate(Decimal yyyymmdd) {
+        long value = toLong(yyyymmdd, "INTEGER-OF-DATE");
+        LocalDate date = dateOf((int) (value / 10000), (int) (value / 100 % 100),
+                (int) (value % 100));
+        return date == null ? Decimal.zero(0) : Decimal.of(dayNumber(date), 0);
+    }
+
+    /**
+     * {@code FUNCTION INTEGER-OF-DAY}。{@code YYYYDDD} を通日へ直す。
+     *
+     * @return 日付として読めなければ 0
+     */
+    public static Decimal integerOfDay(Decimal yyyyddd) {
+        long value = toLong(yyyyddd, "INTEGER-OF-DAY");
+        int year = (int) (value / 1000);
+        int day = (int) (value % 1000);
+        if (year < FIRST_YEAR || year > LAST_YEAR || day < 1) {
+            return Decimal.zero(0);
+        }
+        LocalDate first = LocalDate.of(year, 1, 1);
+        if (day > first.lengthOfYear()) {
+            return Decimal.zero(0);
+        }
+        return Decimal.of(dayNumber(first.plusDays(day - 1L)), 0);
+    }
+
+    /**
+     * {@code FUNCTION DATE-OF-INTEGER}。通日を {@code YYYYMMDD} へ直す。
+     *
+     * @return 範囲の外なら 0
+     */
+    public static Decimal dateOfInteger(Decimal days) {
+        LocalDate date = dateOf(toLong(days, "DATE-OF-INTEGER"));
+        return date == null
+                ? Decimal.zero(0)
+                : Decimal.of(date.getYear() * 10000L
+                        + date.getMonthValue() * 100L + date.getDayOfMonth(), 0);
+    }
+
+    /**
+     * {@code FUNCTION DAY-OF-INTEGER}。通日を {@code YYYYDDD} へ直す。
+     *
+     * @return 範囲の外なら 0
+     */
+    public static Decimal dayOfInteger(Decimal days) {
+        LocalDate date = dateOf(toLong(days, "DAY-OF-INTEGER"));
+        return date == null
+                ? Decimal.zero(0)
+                : Decimal.of(date.getYear() * 1000L + date.getDayOfYear(), 0);
+    }
+
+    /** 規格が数えはじめる日。 */
+    private static final LocalDate EPOCH = LocalDate.of(1601, 1, 1);
+    private static final int FIRST_YEAR = 1601;
+    private static final int LAST_YEAR = 9999;
+    private static final Decimal TWO = Decimal.of(2, 0);
+
+    private static long dayNumber(LocalDate date) {
+        return date.toEpochDay() - EPOCH.toEpochDay() + 1;
+    }
+
+    /** 通日から日付へ。範囲の外なら {@code null}。 */
+    private static LocalDate dateOf(long dayNumber) {
+        if (dayNumber < 1) {
+            return null;
+        }
+        LocalDate date = EPOCH.plusDays(dayNumber - 1);
+        return date.getYear() > LAST_YEAR ? null : date;
+    }
+
+    /** 年月日から日付へ。暦に無い日なら {@code null}。 */
+    private static LocalDate dateOf(int year, int month, int day) {
+        if (year < FIRST_YEAR || year > LAST_YEAR || month < 1 || month > 12 || day < 1) {
+            return null;
+        }
+        LocalDate first = LocalDate.of(year, month, 1);
+        return day > first.lengthOfMonth() ? null : first.withDayOfMonth(day);
+    }
+
+    private static long toLong(Decimal value, String function) {
+        return toIndex(value, function);
+    }
+
+    /**
+     * {@code FUNCTION CURRENT-DATE} が返す 21 文字を組み立てる。
+     *
+     * <pre>
+     * YYYYMMDDhhmmsscc±hhmm
+     * </pre>
+     *
+     * <p>末尾 5 文字は協定世界時からのずれである。ずれが分からない処理系は
+     * {@code 00000} を置くと規格が決めているが、こちらは時計から取れるので入れる。
+     */
+    public static byte[] timestamp(ZonedDateTime now, CodePage codePage) {
+        int offsetSeconds = now.getOffset().getTotalSeconds();
+        char sign = offsetSeconds < 0 ? '-' : '+';
+        int offsetMinutes = Math.abs(offsetSeconds) / 60;
+        String text = String.format("%04d%02d%02d%02d%02d%02d%02d%c%02d%02d",
+                now.getYear(), now.getMonthValue(), now.getDayOfMonth(),
+                now.getHour(), now.getMinute(), now.getSecond(), now.getNano() / 10_000_000,
+                sign, offsetMinutes / 60, offsetMinutes % 60);
+        return codePage.encode(text);
+    }
+
+    /** {@code FUNCTION CURRENT-DATE} が返す文字数。 */
+    public static final int TIMESTAMP_LENGTH = 21;
 
     // ---- 文字 ----
 

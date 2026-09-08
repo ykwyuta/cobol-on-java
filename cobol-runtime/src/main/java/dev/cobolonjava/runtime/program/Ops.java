@@ -10,6 +10,7 @@ import dev.cobolonjava.runtime.data.ZonedDecimal;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.DataSet;
+import dev.cobolonjava.runtime.function.Intrinsics;
 import dev.cobolonjava.runtime.file.FileStatus;
 import dev.cobolonjava.runtime.file.IndexedDataSet;
 import dev.cobolonjava.runtime.file.KeyRelation;
@@ -256,6 +257,17 @@ public final class Ops {
     /** 数値比較。内部表現と桁数の違いに影響されない。 */
     public static int compareNumeric(Decimal left, Decimal right) {
         return Compare.numeric(left, right);
+    }
+
+    /**
+     * {@code FUNCTION CURRENT-DATE} (要件 FR-070、テスト時の固定は FR-204)。
+     *
+     * <p>時計は {@link ProgramContext} が持っている。実行のたびに変わる値を試験に
+     * 書けるようにするためである。
+     */
+    public static byte[] currentDate(ProgramContext context) {
+        return Intrinsics.timestamp(java.time.ZonedDateTime.now(context.clock()),
+                context.codePage());
     }
 
     /** 英数字比較。短いほうは空白で埋めて比べる。 */

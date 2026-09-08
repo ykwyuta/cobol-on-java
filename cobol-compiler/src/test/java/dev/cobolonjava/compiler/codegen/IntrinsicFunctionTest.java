@@ -7,7 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.cobolonjava.compiler.CobolCompiler;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.Storage;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -49,18 +53,31 @@ class IntrinsicFunctionTest {
         }
         sb.append("       PROCEDURE DIVISION.\n");
         for (String line : procedure) {
+            // 固定形式は 72 桁で切れる。長すぎる行を黙って詰めると、
+            // 試験が処理系の失敗を作ってしまう
+            assertTrue(line.length() <= 65,
+                    () -> "the test source runs past column 72: " + line);
             sb.append("       ").append(line).append('\n');
         }
         return CobolCompiler.standard().compile(FILE, sb.toString());
     }
 
+    /** 時計を固定する。実行のたびに変わる値は試験に書けない (要件 FR-204)。 */
+    private static final Clock FIXED =
+            Clock.fixed(Instant.parse("2026-09-04T13:45:07.890Z"), ZoneOffset.UTC);
+
     private static String run(List<String> storage, String... procedure) {
+        return run(ProgramContext.standard().withClock(FIXED), storage, procedure);
+    }
+
+    private static String run(ProgramContext context, List<String> storage,
+                              String... procedure) {
         CobolCompiler.Result result = compile(storage, procedure);
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         try {
             Class<?> type = new GeneratedLoader().define(result.className(), result.classFile());
             CobolProgram program = (CobolProgram) type.getDeclaredConstructor().newInstance();
-            Storage executed = program.runFresh();
+            Storage executed = program.runFresh(context);
             return CodePages.DEFAULT.decode(executed.array());
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("cannot run the generated program", e);
@@ -76,6 +93,12 @@ class IntrinsicFunctionTest {
     private static String computed(String expression) {
         return run(List.of("01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
                 "COMPUTE WS-N = " + expression + ".");
+    }
+
+    /** 日付は 8 桁になるので、受取項目を広げて流す。 */
+    private static String date(String expression) {
+        return run(List.of("01 WS-D PIC S9(9) SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-D = " + expression + ".");
     }
 
     /** 8 バイトの英数字項目 1 個だけを持つプログラムを流す。 */
@@ -186,11 +209,74 @@ class IntrinsicFunctionTest {
     }
 
     @Test
+    @DisplayName("MEDIAN と MIDRANGE は割り切れる (FR-070)")
+    void medianAndMidrangeDivideExactly() {
+        assertEquals("+00000300", computed("FUNCTION MEDIAN(1, 5, 3)"));
+        assertEquals("+00000400", computed("FUNCTION MEDIAN(1, 5, 3, 9)"),
+                "偶数個なら真ん中 2 つの平均である");
+        assertEquals("+00000250", computed("FUNCTION MEDIAN(1, 4)"),
+                "2 で割ると小数桁が 1 つ増える");
+        assertEquals("+00000500", computed("FUNCTION MIDRANGE(1, 5, 3, 9)"));
+    }
+
+    @Test
+    @DisplayName("通日は 1601 年 1 月 1 日から数える (FR-070)")
+    void dayNumbersCountFromTheStartOf1601() {
+        assertEquals("+000000001", date("FUNCTION INTEGER-OF-DATE(16010101)"));
+        assertEquals("+000000001", date("FUNCTION INTEGER-OF-DAY(1601001)"));
+        assertEquals("+016010101", date("FUNCTION DATE-OF-INTEGER(1)"));
+        assertEquals("+001601001", date("FUNCTION DAY-OF-INTEGER(1)"));
+    }
+
+    @Test
+    @DisplayName("日付と通日は行って戻る (FR-070)")
+    void dateAndDayNumberAreInverses() {
+        assertEquals("+000155475", date("FUNCTION INTEGER-OF-DATE(20260904)"));
+        assertEquals("+020260904", date("FUNCTION DATE-OF-INTEGER(155475)"));
+        // 2026-09-04 は年の 247 日目である
+        assertEquals("+002026247", date("FUNCTION DAY-OF-INTEGER(155475)"));
+        assertEquals("+020260904", run(
+                List.of("01 WS-D PIC S9(9) SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-D = FUNCTION INTEGER-OF-DATE(20260904)",
+                "COMPUTE WS-D = FUNCTION DATE-OF-INTEGER(WS-D)."),
+                "行って戻ると元の日付になる");
+    }
+
+    @Test
+    @DisplayName("暦に無い日は 0 になる (FR-070)")
+    void anImpossibleDateIsZero() {
+        assertEquals("+000000000", date("FUNCTION INTEGER-OF-DATE(20260231)"),
+                "2026 年 2 月 31 日は無い");
+        assertEquals("+000000000", date("FUNCTION INTEGER-OF-DATE(15001231)"),
+                "1601 年より前は扱わない");
+        assertEquals("+000000000", date("FUNCTION DATE-OF-INTEGER(0)"));
+    }
+
+    @Test
+    @DisplayName("CURRENT-DATE は 21 文字である (FR-070, FR-204)")
+    void currentDateIsTwentyOneCharacters() {
+        // YYYYMMDDhhmmsscc に、協定世界時からのずれ 5 文字が続く
+        assertEquals("2026090413450789+0000", run(
+                List.of("01 WS-T PIC X(21)."), "MOVE FUNCTION CURRENT-DATE TO WS-T."));
+    }
+
+    @Test
+    @DisplayName("WHEN-COMPILED も 21 文字である (FR-070)")
+    void whenCompiledHasTheSameShape() {
+        String value = run(List.of("01 WS-T PIC X(21)."),
+                "MOVE FUNCTION WHEN-COMPILED TO WS-T.");
+        // 翻訳した時刻そのものは試験に書けない。形だけを確かめる
+        assertEquals(21, value.length());
+        assertTrue(value.substring(0, 16).chars().allMatch(Character::isDigit), value);
+        assertTrue(value.charAt(16) == '+' || value.charAt(16) == '-', value);
+    }
+
+    @Test
     @DisplayName("知らない関数は断る (FR-070)")
     void anUnknownFunctionIsRefused() {
         // 近い値を黙って返すより、書けないと言うほうがよい
         CobolCompiler.Result result = compile(
-                List.of("01 WS-N PIC S9(4)V99."), "COMPUTE WS-N = FUNCTION SQRT(4).");
+                List.of("01 WS-N PIC S9(6)V99."), "COMPUTE WS-N = FUNCTION SQRT(4).");
 
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("FUNCTION SQRT"),

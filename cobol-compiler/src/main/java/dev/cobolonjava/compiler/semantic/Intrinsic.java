@@ -52,7 +52,23 @@ public enum Intrinsic {
     /** 数字の綴りを数値として読む。 */
     NUMVAL(1, Argument.ALPHANUMERIC, Result.NUMERIC),
     /** 通貨記号つきの綴りを数値として読む。第 2 引数は落とす記号である。 */
-    NUMVAL_C(-2, Argument.ALPHANUMERIC, Result.NUMERIC);
+    NUMVAL_C(-2, Argument.ALPHANUMERIC, Result.NUMERIC),
+    /** 並べ替えた真ん中。 */
+    MEDIAN(-1, Argument.NUMERIC, Result.NUMERIC),
+    /** 最大と最小の平均。 */
+    MIDRANGE(-1, Argument.NUMERIC, Result.NUMERIC),
+    /** {@code YYYYMMDD} から通日へ。1601 年 1 月 1 日が 1 である。 */
+    INTEGER_OF_DATE(1, Argument.NUMERIC, Result.INTEGER),
+    /** {@code YYYYDDD} から通日へ。 */
+    INTEGER_OF_DAY(1, Argument.NUMERIC, Result.INTEGER),
+    /** 通日から {@code YYYYMMDD} へ。 */
+    DATE_OF_INTEGER(1, Argument.NUMERIC, Result.INTEGER),
+    /** 通日から {@code YYYYDDD} へ。 */
+    DAY_OF_INTEGER(1, Argument.NUMERIC, Result.INTEGER),
+    /** いまの日付と時刻。21 文字である。 */
+    CURRENT_DATE(0, Argument.ANY, Result.TIMESTAMP),
+    /** 翻訳した日付と時刻。21 文字である。 */
+    WHEN_COMPILED(0, Argument.ANY, Result.TIMESTAMP);
 
     /** 引数の受け取り方。 */
     public enum Argument {
@@ -73,7 +89,9 @@ public enum Intrinsic {
         /** 引数と同じ長さのバイト列。 */
         SAME_LENGTH,
         /** 1 バイト。 */
-        ONE_CHARACTER;
+        ONE_CHARACTER,
+        /** {@code YYYYMMDDhhmmsscc±hhmm} の 21 文字。 */
+        TIMESTAMP;
 
         /** 数値として使えるか。 */
         public boolean isNumeric() {
@@ -113,6 +131,7 @@ public enum Intrinsic {
         return switch (arguments) {
             case -1 -> "one or more arguments";
             case -2 -> "one or two arguments";
+            case 0 -> "no arguments";
             case 1 -> "one argument";
             default -> arguments + " arguments";
         };

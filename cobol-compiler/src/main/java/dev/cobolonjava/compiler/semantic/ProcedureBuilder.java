@@ -2440,7 +2440,7 @@ public final class ProcedureBuilder {
             return switch (function.intrinsic().returns()) {
                 case INTEGER -> DataCategory.NUMERIC_INTEGER;
                 case NUMERIC -> DataCategory.NUMERIC_NONINTEGER;
-                case SAME_LENGTH, ONE_CHARACTER -> DataCategory.ALPHANUMERIC;
+                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP -> DataCategory.ALPHANUMERIC;
             };
         }
         boolean numericReceiver = receiver.isNumeric() || receiver == DataCategory.NUMERIC_EDITED;
