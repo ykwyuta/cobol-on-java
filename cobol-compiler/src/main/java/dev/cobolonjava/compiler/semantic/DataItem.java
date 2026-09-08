@@ -182,6 +182,25 @@ public final class DataItem {
         this.external = value;
     }
 
+    private String globalOwner;
+
+    /**
+     * {@code GLOBAL} と書かれた 01 レベルを持つプログラムの名前 (要件 FR-091)。
+     *
+     * <p>入れ子のプログラムでは、囲む側が {@code GLOBAL} と書いた項目を<b>囲まれた側から
+     * 見える</b>。実体は囲む側が持つので、名前だけでは足りず<b>誰のものか</b>まで要る。
+     * 別のプログラムが同じ名前の {@code GLOBAL} 項目を持っていても、別の領域である。
+     *
+     * @return {@code GLOBAL} でなければ {@code null}
+     */
+    public String globalOwner() {
+        return globalOwner;
+    }
+
+    void setGlobalOwner(String value) {
+        this.globalOwner = value;
+    }
+
     public List<ConditionName> conditionNames() {
         return Collections.unmodifiableList(conditionNames);
     }

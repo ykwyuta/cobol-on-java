@@ -105,6 +105,70 @@ class CallGenerationTest {
             "    ADD 10 TO SH-NUM",
             "    GOBACK.");
 
+    /** 囲む側の GLOBAL 項目を、囲まれた側が書き換えて戻る。 */
+    private static final List<String> NESTED_GLOBAL = List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GLOMAIN.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01 SHARED-DATA IS GLOBAL.",
+            "   03 SH-TEXT PIC X(2).",
+            "   03 SH-NUM  PIC 9(4).",
+            "PROCEDURE DIVISION.",
+            "MAIN-START.",
+            "    MOVE 'AA' TO SH-TEXT",
+            "    MOVE 1 TO SH-NUM",
+            "    CALL 'GLOSUB'",
+            "    DISPLAY SH-TEXT SH-NUM",
+            "    STOP RUN.",
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GLOSUB.",
+            "PROCEDURE DIVISION.",
+            "SUB-START.",
+            "    MOVE 'ZZ' TO SH-TEXT",
+            "    ADD 10 TO SH-NUM",
+            "    GOBACK.",
+            "END PROGRAM GLOSUB.",
+            "END PROGRAM GLOMAIN.");
+
+    @Test
+    @DisplayName("囲む側の GLOBAL 項目は、囲まれた側から見える (FR-091)")
+    void acontainedProgramSeesTheGlobalItemsOfItsContainer() {
+        // GLOSUB は SHARED-DATA を宣言していない。囲む GLOMAIN が GLOBAL と書いたので
+        // 見えている。実体は 1 つなので、書き換えは戻ったところで見える
+        assertEquals("ZZ0011", run(List.of(NESTED_GLOBAL)).trim());
+    }
+
+    @Test
+    @DisplayName("GLOBAL と書かなければ、囲まれた側からは見えない (FR-091)")
+    void withoutTheGlobalClauseAcontainedProgramCannotSeeTheItem() {
+        // 見えないものを使えば<b>翻訳が通らない</b>。黙って別の項目を使うより良い
+        List<String> lines = new ArrayList<>(NESTED_GLOBAL);
+        lines.set(lines.indexOf("01 SHARED-DATA IS GLOBAL."), "01 SHARED-DATA.");
+        CobolCompiler.Result result = compile(lines);
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("SH-TEXT"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("並んだプログラムでは GLOBAL は見えない (FR-091)")
+    void asiblingProgramDoesNotSeeTheGlobalItem() {
+        // 入れ子でなければ引き継がない。END PROGRAM の位置だけが違う —
+        // GLOMAIN を閉じてから GLOSUB を始めれば、2 本は並んだ関係になる
+        List<String> lines = new ArrayList<>(NESTED_GLOBAL);
+        lines.remove("END PROGRAM GLOSUB.");
+        lines.remove("END PROGRAM GLOMAIN.");
+        lines.add(lines.lastIndexOf("IDENTIFICATION DIVISION."), "END PROGRAM GLOMAIN.");
+        lines.add("END PROGRAM GLOSUB.");
+        CobolCompiler.Result result = compile(lines);
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("SH-TEXT"),
+                result.diagnostics().toString());
+    }
+
     @Test
     @DisplayName("EXTERNAL の領域は実行単位で 1 つである (FR-014)")
     void anExternalItemIsOneAreaForTheWholeRunUnit() {

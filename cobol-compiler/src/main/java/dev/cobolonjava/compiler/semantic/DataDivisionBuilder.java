@@ -54,8 +54,69 @@ public final class DataDivisionBuilder {
     private String currentFile;
     private final SpecialNames specialNames;
 
+    /** このプログラムの名前。自分が書いた {@code GLOBAL} 項目の持ち主になる。 */
+    private String programName;
+
     private DataDivisionBuilder(SpecialNames specialNames) {
         this.specialNames = specialNames;
+    }
+
+    /**
+     * 囲む側から引き継ぐ {@code GLOBAL} の 01 レベル 1 個 (要件 FR-091)。
+     *
+     * <p>配下の項目は文法の上では<b>並んだ記述項</b>であって、01 の中に入っていない。
+     * だから 01 とその配下をひとまとまりで持ち運ぶ。
+     *
+     * @param owner   書いたプログラムの名前。実体はそちらにある
+     * @param entries 01 レベルとその配下。書かれた順に並ぶ
+     */
+    public record InheritedGlobal(String owner,
+                                  List<CobolParser.DataDescriptionEntryContext> entries) {
+
+        public InheritedGlobal {
+            entries = List.copyOf(entries);
+        }
+    }
+
+    /**
+     * 囲む側の {@code GLOBAL} 項目を、この割り付けにも並べる (要件 FR-091)。
+     *
+     * <p>同じ名前を自分でも宣言していれば<b>自分のほうが勝つ</b>。規格がそう決めている
+     * ——内側の宣言が外側を隠す。
+     */
+    private void addInheritedGlobals(List<InheritedGlobal> inherited) {
+        for (InheritedGlobal one : inherited) {
+            if (one.entries().isEmpty()) {
+                continue;
+            }
+            String name = nameOf(one.entries().get(0));
+            if (name == null || declares(name)) {
+                continue;
+            }
+            currentSection = DataSection.WORKING_STORAGE;
+            currentFile = null;
+            open.clear();
+            previous = null;
+            int before = records.size();
+            for (CobolParser.DataDescriptionEntryContext entry : one.entries()) {
+                addEntry(entry);
+            }
+            for (int at = before; at < records.size(); at++) {
+                records.get(at).setGlobalOwner(one.owner());
+            }
+        }
+        open.clear();
+        previous = null;
+    }
+
+    /** その名前の 01 レベルを、このプログラムが自分で宣言しているか。 */
+    private boolean declares(String name) {
+        for (DataItem record : records) {
+            if (name.equalsIgnoreCase(record.name())) {
+                return true;
+            }
+        }
+        return false;
     }
     /** 指標名から、その実体の項目を引く。 */
     private final Map<String, DataItem> indexes = new LinkedHashMap<>();
@@ -116,9 +177,27 @@ public final class DataDivisionBuilder {
      */
     public static Result build(CobolParser.ProgramUnitContext program,
                                SpecialNames specialNames) {
+        return build(program, specialNames, null, List.of());
+    }
+
+    /**
+     * 囲む側の {@code GLOBAL} 項目も見えるようにして割り付けを作る (要件 FR-091)。
+     *
+     * <p>入れ子のプログラムでは、囲む側が {@code GLOBAL} と書いた 01 レベルが
+     * <b>囲まれた側から見える</b>。囲まれた側の原文には書かれていないので、
+     * 記述項をそのまま持ってきて、囲まれた側の割り付けにも並べる。
+     *
+     * @param programName このプログラムの名前。自分が書いた {@code GLOBAL} の持ち主になる
+     * @param inherited   囲む側から引き継ぐ {@code GLOBAL} の記述項
+     */
+    public static Result build(CobolParser.ProgramUnitContext program,
+                               SpecialNames specialNames, String programName,
+                               List<InheritedGlobal> inherited) {
         DataDivisionBuilder builder = new DataDivisionBuilder(specialNames);
+        builder.programName = programName;
         builder.addSameAreas(program);
         builder.addProgramUnit(program);
+        builder.addInheritedGlobals(inherited);
         builder.addIndexItems();
         builder.addLinageCounters(program);
         builder.addReports(program);
@@ -326,8 +405,11 @@ public final class DataDivisionBuilder {
             } else if (clause.externalClause() != null) {
                 // 割り付けには効かないが、<b>どの領域を指すか</b>に効く (要件 FR-014)
                 item.setExternal(true);
+            } else if (clause.globalClause() != null && programName != null) {
+                // 囲まれたプログラムから見えるようになる。実体はこちらが持つ (要件 FR-091)
+                item.setGlobalOwner(programName);
             }
-            // SYNCHRONIZED と GLOBAL は割り付けに効かない
+            // SYNCHRONIZED は割り付けに効かない
         }
         applyBlankWhenZero(item, origin);
     }

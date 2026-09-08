@@ -5603,6 +5603,9 @@ public final class ProgramGenerator {
     /**
      * 実行単位で分け合う領域を数え上げる (要件 FR-014)。
      *
+     * <p>{@code GLOBAL} は<b>囲む側のプログラム名とデータ名</b>で分け合う。別の
+     * プログラムが同じ名前の {@code GLOBAL} 項目を持っていても、別の領域である。
+     *
      * <p>作業場所の 01 レベルは<b>データ名</b>で分け合う。ファイル節のレコード領域は
      * <b>ファイル名</b>で分け合う — 規格が結び付けているのはファイル結合子であって
      * レコード記述ではないので、両側でレコードの名前が違っていてもよい。1 つの
@@ -5613,7 +5616,18 @@ public final class ProgramGenerator {
         List<CobolProgram.ExternalRegion> regions = new ArrayList<>();
         Map<String, int[]> files = new LinkedHashMap<>();
         for (DataItem record : layout.records()) {
-            if (!record.external() || record.section() == DataSection.LINKAGE) {
+            if (record.section() == DataSection.LINKAGE) {
+                continue;
+            }
+            if (record.globalOwner() != null) {
+                // 囲む側が持つ 1 つの領域を分け合う。名前だけでは足りない —
+                // 別のプログラムの同じ名前は別の領域である (要件 FR-091)
+                regions.add(new CobolProgram.ExternalRegion(
+                        "GLOBAL:" + record.globalOwner() + ":" + record.name(),
+                        record.base(), record.length()));
+                continue;
+            }
+            if (!record.external()) {
                 continue;
             }
             if (record.section() == DataSection.FILE && record.fileName() != null) {

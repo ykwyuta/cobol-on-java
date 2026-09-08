@@ -14,7 +14,9 @@ import dev.cobolonjava.compiler.semantic.SpecialNames;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 
@@ -118,8 +120,11 @@ public final class CobolCompiler {
         List<Compiled> programs = new ArrayList<>();
         // 告げるだけの診断は翻訳を止めない。積んでおいて結果に載せる (要件 FR-183)
         List<Diagnostic> warnings = new ArrayList<>(parsed.diagnostics());
+        List<List<DataDivisionBuilder.InheritedGlobal>> inherited =
+                inheritedGlobals(parsed.tree().programUnit());
+        int at = 0;
         for (CobolParser.ProgramUnitContext unit : parsed.tree().programUnit()) {
-            Result one = compile(unit, fileName, effective);
+            Result one = compile(unit, fileName, effective, inherited.get(at++));
             if (!one.succeeded()) {
                 return one;
             }
@@ -134,9 +139,106 @@ public final class CobolCompiler {
                 List.copyOf(warnings), List.copyOf(programs));
     }
 
+    /**
+     * 入れ子の関係を組み立て、各プログラムが囲む側から引き継ぐ {@code GLOBAL} を数え上げる
+     * (要件 FR-091、暫定判断 P-070)。
+     *
+     * <p>文法は入れ子を持たない。並んだプログラムとして読み、{@code END PROGRAM} の名前で
+     * <b>あとから木を作る</b>。ある本の {@code END PROGRAM} が続けて何枚も来れば、
+     * その枚数だけ囲みが閉じたということである。
+     *
+     * <pre>
+     * PROGRAM-ID. A.        → 積む [A]
+     * PROGRAM-ID. A-1.      → 積む [A, A-1]   … A-1 は A に囲まれている
+     * END PROGRAM A-1.      → 下ろす [A]
+     * END PROGRAM A.        → 下ろす []
+     * </pre>
+     *
+     * @return プログラムの並び順に、そのプログラムが引き継ぐ {@code GLOBAL} の記述項
+     */
+    private static List<List<DataDivisionBuilder.InheritedGlobal>> inheritedGlobals(
+            List<CobolParser.ProgramUnitContext> units) {
+        List<List<DataDivisionBuilder.InheritedGlobal>> out = new ArrayList<>();
+        // 囲んでいるプログラムの、名前と GLOBAL の記述項
+        Deque<DataDivisionBuilder.InheritedGlobal> open = new ArrayDeque<>();
+        Deque<String> names = new ArrayDeque<>();
+        for (CobolParser.ProgramUnitContext unit : units) {
+            // いま積まれているものが、このプログラムから見える
+            List<DataDivisionBuilder.InheritedGlobal> visible = new ArrayList<>(open);
+            java.util.Collections.reverse(visible);
+            out.add(List.copyOf(visible));
+
+            String name = programNameOf(unit);
+            names.push(name);
+            for (List<CobolParser.DataDescriptionEntryContext> group : globalEntriesOf(unit)) {
+                open.push(new DataDivisionBuilder.InheritedGlobal(name, group));
+            }
+            // END PROGRAM の枚数だけ囲みが閉じる
+            for (int i = 0; i < unit.endProgramStatement().size() && !names.isEmpty(); i++) {
+                String closed = names.pop();
+                while (!open.isEmpty() && closed.equalsIgnoreCase(open.peek().owner())) {
+                    open.pop();
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * そのプログラムが {@code GLOBAL} と書いた 01 レベルと、その配下。
+     *
+     * <p>配下の項目は文法の上では<b>並んだ記述項</b>である。次の 01 か 77 が来るまでが
+     * 1 つの塊になる。
+     */
+    private static List<List<CobolParser.DataDescriptionEntryContext>> globalEntriesOf(
+            CobolParser.ProgramUnitContext unit) {
+        List<List<CobolParser.DataDescriptionEntryContext>> out = new ArrayList<>();
+        if (unit.dataDivision() == null) {
+            return out;
+        }
+        for (CobolParser.DataDivisionSectionContext section : unit.dataDivision().dataDivisionSection()) {
+            if (section.workingStorageSection() == null) {
+                continue;
+            }
+            List<CobolParser.DataDescriptionEntryContext> group = null;
+            for (CobolParser.DataDescriptionEntryContext entry
+                    : section.workingStorageSection().dataDescriptionEntry()) {
+                if (startsRecord(entry)) {
+                    group = isGlobalRecord(entry) ? new ArrayList<>() : null;
+                    if (group != null) {
+                        group.add(entry);
+                        out.add(group);
+                    }
+                    continue;
+                }
+                if (group != null) {
+                    group.add(entry);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 記憶域の先頭から始まる記述項 (01 または 77) か。 */
+    private static boolean startsRecord(CobolParser.DataDescriptionEntryContext entry) {
+        String level = entry.levelNumber().getText();
+        return "01".equals(level) || "1".equals(level) || "77".equals(level);
+    }
+
+    /** {@code GLOBAL} と書かれた記述項か。 */
+    private static boolean isGlobalRecord(CobolParser.DataDescriptionEntryContext entry) {
+        for (CobolParser.DataClauseContext clause : entry.dataClause()) {
+            if (clause.globalClause() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** プログラム 1 本を翻訳する。 */
     private Result compile(CobolParser.ProgramUnitContext program, String fileName,
-                           CompilerOptions effective) {
+                           CompilerOptions effective,
+                           List<DataDivisionBuilder.InheritedGlobal> inherited) {
         // 告げるだけの診断は段をまたいで積む。止めるものが出たところで打ち切る
         List<Diagnostic> warnings = new ArrayList<>();
 
@@ -148,7 +250,8 @@ public final class CobolCompiler {
         warnings.addAll(environment.diagnostics());
         SpecialNames specialNames = environment.specialNames();
 
-        DataDivisionBuilder.Result data = DataDivisionBuilder.build(program, specialNames);
+        DataDivisionBuilder.Result data = DataDivisionBuilder.build(program, specialNames,
+                programNameOf(program), inherited);
         if (!data.succeeded()) {
             return failed(data.layout(), data.diagnostics());
         }
