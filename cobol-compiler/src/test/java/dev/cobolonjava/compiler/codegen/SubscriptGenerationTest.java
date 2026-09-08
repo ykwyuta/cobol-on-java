@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.codegen;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.compiler.CobolCompiler;
@@ -139,13 +140,24 @@ class SubscriptGenerationTest {
     }
 
     @Test
-    @DisplayName("符号を数字にくっつけて書いてもよい (FR-024, FR-025)")
-    void theSignMayBeAttachedToTheNumber() {
-        // COBOL では単項の符号は後ろに空白を置かない。字句の切れ目が変わるだけで
-        // 意味は同じである
-        assertEquals("---X-", run(TABLE,
+    @DisplayName("符号を数字にくっつけたら、それは 2 つ目の添字である (FR-024, FR-025)")
+    void aSignAttachedToTheNumberIsAnotherSubscript() {
+        // 演算子は前後に空白を置く決まりなので、「I + 1」は演算子と数字に切れる。
+        // 「I +1」は符号つきの数字 1 つであり、相対指定ではない。
+        // NIST の検査スイートが ANIMAL (W-1 +1 W-3) と書いている
+        CobolCompiler.Result result = compile(TABLE,
                 "MOVE 3 TO WS-I",
-                "MOVE 'X' TO WS-E (WS-I +1).").substring(2));
+                "MOVE 'X' TO WS-E (WS-I +1).");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("subscript"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("符号つきの数字を添字に書ける (FR-024)")
+    void asignedNumberIsAValidSubscript() {
+        assertEquals("---X-", run(TABLE, "MOVE 'X' TO WS-E (+4).").substring(2));
     }
 
     @Test

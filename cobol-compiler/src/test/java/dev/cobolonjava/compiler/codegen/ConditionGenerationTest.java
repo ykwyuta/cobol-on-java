@@ -216,6 +216,57 @@ class ConditionGenerationTest {
                 () -> result.diagnostics().toString());
     }
 
+    /** 3 つの印を置き、{@code END-IF} のあとに同じ文が続く形を流す。 */
+    private static final List<String> THREE_MARKS = List.of(
+            "01 WS-A PIC 9 VALUE 1.", "01 WS-R PIC X.", "01 WS-S PIC X.");
+
+    @Test
+    @DisplayName("NEXT SENTENCE は文の残りを飛ばす (FR-061)")
+    void nextSentenceSkipsTheRestOfTheSentence() {
+        // END-IF のあとにまだ同じ文が続いている。NEXT SENTENCE は終止符の先へ飛ぶので
+        // WS-S に X は入らない
+        assertEquals("T ", run(THREE_MARKS,
+                "IF WS-A = 1 NEXT SENTENCE ELSE MOVE 'E' TO WS-R END-IF",
+                "MOVE 'X' TO WS-S.",
+                "MOVE 'T' TO WS-R.").substring(1));
+    }
+
+    @Test
+    @DisplayName("CONTINUE は文の残りを飛ばさない (FR-061)")
+    void continueDoesNotSkipTheRestOfTheSentence() {
+        // 同じ形を CONTINUE で書くと、END-IF のあとの MOVE が通る。
+        // ここが 2 つの文の違いである
+        assertEquals("TX", run(THREE_MARKS,
+                "IF WS-A = 1 CONTINUE ELSE MOVE 'E' TO WS-R END-IF",
+                "MOVE 'X' TO WS-S.",
+                "MOVE 'T' TO WS-R.").substring(1));
+    }
+
+    @Test
+    @DisplayName("EVALUATE の枝にも NEXT SENTENCE を書ける (FR-061, FR-062)")
+    void anEvaluateBranchMayBeNextSentence() {
+        assertEquals(" N", run(
+                List.of("01 WS-A PIC 9 VALUE 2.", "01 WS-R PIC X.", "01 WS-S PIC X."),
+                "EVALUATE WS-A",
+                "    WHEN 1 MOVE '1' TO WS-R",
+                "    WHEN 2 NEXT SENTENCE",
+                "    WHEN OTHER MOVE 'O' TO WS-R",
+                "END-EVALUATE",
+                "MOVE 'X' TO WS-R.",
+                "MOVE 'N' TO WS-S.").substring(1),
+                "枝が選ばれたら END-EVALUATE のあとの MOVE は通らない");
+        assertEquals("XN", run(
+                List.of("01 WS-A PIC 9 VALUE 1.", "01 WS-R PIC X.", "01 WS-S PIC X."),
+                "EVALUATE WS-A",
+                "    WHEN 1 MOVE '1' TO WS-R",
+                "    WHEN 2 NEXT SENTENCE",
+                "    WHEN OTHER MOVE 'O' TO WS-R",
+                "END-EVALUATE",
+                "MOVE 'X' TO WS-R.",
+                "MOVE 'N' TO WS-S.").substring(1),
+                "別の枝なら文の続きは通る");
+    }
+
     @Test
     @DisplayName("ELSE がなくても書ける (FR-061)")
     void theElseBranchIsOptional() {

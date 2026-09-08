@@ -706,6 +706,25 @@ public sealed interface Statement {
     }
 
     /**
+     * 1 つの文 (センテンス)。終止符で区切られたひとまとまりである。
+     *
+     * <p>ふつうは並べて出すだけだが、{@code NEXT SENTENCE} の飛び先を決めるのに
+     * <b>どこで文が終わるか</b>が要る。区切りを IR に残しているのはそのためである。
+     */
+    record Sentence(List<Statement> body, Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code NEXT SENTENCE} (要件 FR-061)。
+     *
+     * <p><b>いまの文の残りを飛ばして</b>、次の文の先頭へ移る。{@code CONTINUE} とは違う。
+     * {@code CONTINUE} は「何もしない」であり、囲んでいる {@code IF} の外側にある
+     * 同じ文の続きは実行される。
+     */
+    record NextSentence(Origin origin) implements Statement {
+    }
+
+    /**
      * {@code GO TO ... DEPENDING ON} (要件 FR-063)。
      *
      * <p>値が 1 なら 1 つ目、2 なら 2 つ目へ飛ぶ。<b>並びの外なら飛ばない</b>。

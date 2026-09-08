@@ -189,12 +189,9 @@ public final class ReferenceResolver {
         if (context == null) {
             return 0;
         }
-        String text = context.NUMBER().getText();
-        boolean minus = context.MINUS_SIGN() != null || text.startsWith("-");
         try {
-            int magnitude = Integer.parseInt(text.startsWith("+") || text.startsWith("-")
-                    ? text.substring(1) : text);
-            return minus ? -magnitude : magnitude;
+            int magnitude = Integer.parseInt(context.NUMBER().getText());
+            return context.MINUS_SIGN() != null ? -magnitude : magnitude;
         } catch (NumberFormatException e) {
             report(origin, "a relative subscript must be an integer: " + context.getText());
             return null;

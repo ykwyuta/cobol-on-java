@@ -52,7 +52,17 @@ class ProcedureBuilderTest {
     }
 
     private static Statement.Move firstMove(ProcedureBuilder.Result result) {
-        return assertInstanceOf(Statement.Move.class, result.statements().get(0));
+        return assertInstanceOf(Statement.Move.class, sentence(result).get(0));
+    }
+
+    /**
+     * 最初の文 (センテンス) の中身。
+     *
+     * <p>段落が持っているのは<b>文の並び</b>である。{@code NEXT SENTENCE} の飛び先を
+     * 決めるのに区切りが要るので、1 つの文は {@link Statement.Sentence} で束ねてある。
+     */
+    private static List<Statement> sentence(ProcedureBuilder.Result result) {
+        return assertInstanceOf(Statement.Sentence.class, result.statements().get(0)).body();
     }
 
     private static final List<String> SIMPLE = List.of(
@@ -109,7 +119,8 @@ class ProcedureBuilderTest {
 
         assertEquals(List.of("MAIN-START", "MAIN-END"),
                 result.paragraphs().stream().map(ProcedureBuilder.Paragraph::name).toList());
-        assertEquals(1, result.paragraphs().get(0).statements().size());
+        assertEquals(1, result.paragraphs().get(0).statements().size(),
+                "段落の中身は文 1 つである");
     }
 
     @Test
@@ -129,7 +140,8 @@ class ProcedureBuilderTest {
     void aSentenceMayHoldSeveralStatements() {
         ProcedureBuilder.Result result = buildOk(SIMPLE,
                 "MOVE WS-A TO WS-B MOVE WS-B TO WS-A.");
-        assertEquals(2, result.statements().size());
+        assertEquals(1, result.statements().size(), "文 (センテンス) は 1 つである");
+        assertEquals(2, sentence(result).size(), "その中に 2 つ並んでいる");
     }
 
     // ---- 名前の修飾 ----

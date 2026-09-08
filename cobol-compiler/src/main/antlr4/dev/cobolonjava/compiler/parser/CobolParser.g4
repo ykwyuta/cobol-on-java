@@ -418,12 +418,11 @@ subscript
     | qualifiedDataName relativeOffset?
     ;
 
-// 相対指定 (要件 FR-025)。COBOL では 2 項の演算子は前後に空白を置き、単項の符号は
-// 後ろに空白を置かない。したがって「I + 1」は演算子と数字、「I +1」は符号つきの
-// 数字 1 つになる。どちらも同じ意味なので両方読む
+// 相対指定 (要件 FR-025)。演算子は前後に空白を置く決まりなので、
+// 「I + 1」は演算子と数字に切れる。「I +1」は符号つきの数字 1 つであり、
+// これは相対指定ではなく<b>2 つ目の添字</b>である。切れ目がそのまま意味の違いになる
 relativeOffset
     : (PLUS_SIGN | MINUS_SIGN) NUMBER
-    | NUMBER
     ;
 
 // ---- 手続き部 ----
@@ -696,13 +695,19 @@ inspectOperand
 evaluateStatement
     : EVALUATE evaluateSubject (ALSO evaluateSubject)*
       evaluateBranch+
-      (WHEN OTHER statement*)?
+      (WHEN OTHER branchBody)?
       END_EVALUATE?
     ;
 
 // 同じ本体に複数の WHEN を並べられる
 evaluateBranch
-    : (WHEN evaluateObject (ALSO evaluateObject)*)+ statement*
+    : (WHEN evaluateObject (ALSO evaluateObject)*)+ branchBody
+    ;
+
+// 枝の中身。NEXT SENTENCE は「この文の残りを飛ばす」ことであり、文の並びではない
+branchBody
+    : NEXT SENTENCE
+    | statement*
     ;
 
 evaluateSubject
@@ -839,11 +844,11 @@ searchStatement
     ;
 
 atEndPhrase
-    : AT? END statement+
+    : AT? END branchBody
     ;
 
 searchWhen
-    : WHEN condition statement+
+    : WHEN condition branchBody
     ;
 
 // ACCEPT は日付と時刻の特殊レジスタか、端末からの 1 行を受け取る

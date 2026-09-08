@@ -237,6 +237,27 @@ class SearchGenerationTest {
     }
 
     @Test
+    @DisplayName("WHEN と AT END にも NEXT SENTENCE を書ける (FR-061, FR-066)")
+    void searchPhrasesMayBeNextSentence() {
+        // 当たった枝で文の残りを飛ばす。END-SEARCH のあとの DISPLAY は通らない
+        assertEquals("[ ]|", run(
+                List.of("01 WS-T.",
+                        "   05 WS-E OCCURS 3 TIMES INDEXED BY WS-I.",
+                        "      10 WS-KEY  PIC X(3).",
+                        "      10 WS-DATA PIC X(3).",
+                        "01 WS-R PIC X."),
+                procedure(
+                        "    SET WS-I TO 1",
+                        "    SEARCH WS-E",
+                        "        AT END NEXT SENTENCE",
+                        "        WHEN WS-KEY (WS-I) = 'bbb'",
+                        "            NEXT SENTENCE",
+                        "    END-SEARCH",
+                        "    MOVE 'X' TO WS-R.",
+                        "    DISPLAY '[' WS-R ']'.")));
+    }
+
+    @Test
     @DisplayName("指標名へ MOVE はできない (FR-025)")
     void anIndexNameCannotReceiveAMove() {
         CobolCompiler.Result result = compile(TABLE, "MOVE 1 TO WS-I.");

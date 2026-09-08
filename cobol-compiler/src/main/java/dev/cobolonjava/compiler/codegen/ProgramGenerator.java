@@ -364,6 +364,10 @@ public final class ProgramGenerator {
             if (statement instanceof Statement.Sequence sequence) {
                 // 意味解析で展開された文の並び。そのまま並べて出す
                 body.addAll(planStatements(sequence.statements()));
+            } else if (statement instanceof Statement.Sentence sentence) {
+                planSentence(sentence, body);
+            } else if (statement instanceof Statement.NextSentence) {
+                planNextSentence(statement.origin(), body);
             } else if (statement instanceof Statement.Move move) {
                 planMove(move, body);
             } else if (statement instanceof Statement.Arithmetic arithmetic) {
@@ -4518,6 +4522,44 @@ public final class ProgramGenerator {
             run.visitLabel(fallThrough);
         });
     }
+
+    /**
+     * 1 つの文 (センテンス) を出す (要件 FR-061)。
+     *
+     * <p>並べて出すだけだが、<b>終わりに印を打つ</b>。{@code NEXT SENTENCE} はここへ飛ぶ。
+     * 文は入れ子にならないので印は 1 つでよいが、念のため外側のものを退避しておく。
+     */
+    private void planSentence(Statement.Sentence sentence, List<Runnable> body) {
+        List<Runnable> inner = planStatements(sentence.body());
+        body.add(() -> {
+            Label end = new Label();
+            Label outer = sentenceEnd;
+            sentenceEnd = end;
+            inner.forEach(Runnable::run);
+            sentenceEnd = outer;
+            run.visitLabel(end);
+        });
+    }
+
+    /**
+     * {@code NEXT SENTENCE} を出す (要件 FR-061)。
+     *
+     * <p>いまの文の終わりへ飛ぶ。{@code CONTINUE} との違いはここである。
+     * {@code CONTINUE} は何もしないので、囲んでいる {@code IF} の外側にある
+     * 同じ文の続きが実行される。
+     */
+    private void planNextSentence(Origin origin, List<Runnable> body) {
+        body.add(() -> {
+            if (sentenceEnd == null) {
+                report(origin, "NEXT SENTENCE must be written inside a sentence");
+                return;
+            }
+            run.visitJumpInsn(Opcodes.GOTO, sentenceEnd);
+        });
+    }
+
+    /** いま出している文の終わりの印。{@code NEXT SENTENCE} の飛び先である。 */
+    private Label sentenceEnd;
 
     /** 相対指定のずれを、積んである添字へ足す。0 なら何も出さない。 */
     private void addOffset(int offset) {

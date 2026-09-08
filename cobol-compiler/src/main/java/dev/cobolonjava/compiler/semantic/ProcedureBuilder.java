@@ -275,6 +275,9 @@ public final class ProcedureBuilder {
         if (statement instanceof Statement.Sequence sequence) {
             return List.of(sequence.statements());
         }
+        if (statement instanceof Statement.Sentence sentence) {
+            return List.of(sentence.body());
+        }
         if (statement instanceof Statement.If branch) {
             return List.of(branch.onTrue(), branch.onFalse());
         }
@@ -465,15 +468,18 @@ public final class ProcedureBuilder {
         return target.EXTEND() != null ? OpenMode.EXTEND : null;
     }
 
+    /**
+     * 文 (センテンス) の並びを組み立てる。
+     *
+     * <p>1 つの文を {@link Statement.Sentence} で束ねて残す。並べて出すだけなら束ねる
+     * 必要はないが、{@code NEXT SENTENCE} の飛び先が<b>文の終わり</b>だからである。
+     */
     private List<Statement> statementsOf(List<CobolParser.SentenceContext> sentences) {
         List<Statement> statements = new ArrayList<>();
         for (CobolParser.SentenceContext sentence : sentences) {
-            for (CobolParser.StatementContext statement : sentence.statement()) {
-                Statement built = statementOf(statement);
-                if (built != null) {
-                    statements.add(built);
-                }
-            }
+            List<Statement> body = listOf(sentence.statement());
+            statements.add(new Statement.Sentence(body,
+                    ReferenceResolver.originOf(sentence)));
         }
         return statements;
     }
@@ -897,9 +903,11 @@ public final class ProcedureBuilder {
         return new Statement.If(condition, onTrue, onFalse, origin);
     }
 
-    /** {@code NEXT SENTENCE} は「この文の残りを飛ばす」ことであり、いまは空の並びとする。 */
+    /** {@code NEXT SENTENCE} は「この文の残りを飛ばして次の文へ移る」ことである。 */
     private List<Statement> branchOf(CobolParser.IfBranchContext context) {
-        return listOf(context.statement());
+        return context.NEXT() != null
+                ? List.of(new Statement.NextSentence(ReferenceResolver.originOf(context)))
+                : listOf(context.statement());
     }
 
     /**
@@ -956,14 +964,14 @@ public final class ProcedureBuilder {
 
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
-                : listOf(context.atEndPhrase().statement());
+                : bodyOf(context.atEndPhrase().branchBody());
         List<Statement.Search.When> whens = new ArrayList<>();
         for (CobolParser.SearchWhenContext when : context.searchWhen()) {
             Condition condition = conditionOf(when.condition());
             if (condition == null) {
                 return null;
             }
-            whens.add(new Statement.Search.When(condition, listOf(when.statement())));
+            whens.add(new Statement.Search.When(condition, bodyOf(when.branchBody())));
         }
         return new Statement.Search(index, varying, table.occurs(), atEnd, whens, origin);
     }
@@ -1016,9 +1024,9 @@ public final class ProcedureBuilder {
 
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
-                : listOf(context.atEndPhrase().statement());
+                : bodyOf(context.atEndPhrase().branchBody());
         return new Statement.SearchAll(index, table.occurs(), keys, atEnd,
-                listOf(when.statement()), origin);
+                bodyOf(when.branchBody()), origin);
     }
 
     /** 条件を {@code AND} でつないだ等号の並びへ開く。ほかの形が混ざれば偽を返す。 */
@@ -1556,13 +1564,13 @@ public final class ProcedureBuilder {
                 return null;
             }
             conditions.add(condition);
-            bodies.add(listOf(branch.statement()));
+            bodies.add(bodyOf(branch.branchBody()));
         }
 
         // WHEN OTHER の文は、いちばん外側の ELSE になる
         List<Statement> otherwise = context.OTHER() == null
                 ? List.of()
-                : listOf(context.statement());
+                : bodyOf(context.branchBody());
 
         Statement result = null;
         for (int i = conditions.size() - 1; i >= 0; i--) {
@@ -1570,6 +1578,13 @@ public final class ProcedureBuilder {
             result = new Statement.If(conditions.get(i), bodies.get(i), elseBranch, origin);
         }
         return result;
+    }
+
+    /** 枝の中身。{@code NEXT SENTENCE} は「この文の残りを飛ばす」ことである。 */
+    private List<Statement> bodyOf(CobolParser.BranchBodyContext context) {
+        return context.NEXT() != null
+                ? List.of(new Statement.NextSentence(ReferenceResolver.originOf(context)))
+                : listOf(context.statement());
     }
 
     /** 1 つの枝の条件。同じ本体に並べた複数の {@code WHEN} は選言になる。 */
@@ -2579,7 +2594,7 @@ public final class ProcedureBuilder {
         }
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
-                : listOf(context.atEndPhrase().statement());
+                : bodyOf(context.atEndPhrase().branchBody());
         List<Statement> notAtEnd = context.notAtEndPhrase() == null
                 ? List.of()
                 : listOf(context.notAtEndPhrase().statement());
@@ -3069,7 +3084,7 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
-        return new Statement.Return(work, into, listOf(context.atEndPhrase().statement()),
+        return new Statement.Return(work, into, bodyOf(context.atEndPhrase().branchBody()),
                 context.notAtEndPhrase() == null
                         ? List.of()
                         : listOf(context.notAtEndPhrase().statement()),
