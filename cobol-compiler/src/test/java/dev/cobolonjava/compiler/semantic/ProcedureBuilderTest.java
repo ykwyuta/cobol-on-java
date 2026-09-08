@@ -368,10 +368,11 @@ class ProcedureBuilderTest {
     }
 
     @Test
-    @DisplayName("数字編集項目を数値へ戻す指定は誤りとする (FR-060)")
-    void aNumericEditedItemCannotBeMovedBackToANumericItem() {
-        assertTrue(rejectionOf("MOVE WS-EDIT TO WS-INT.").contains("numeric-edited"),
-                rejectionOf("MOVE WS-EDIT TO WS-INT."));
+    @DisplayName("数字編集項目を数値へ戻せる (FR-060、de-editing)")
+    void aNumericEditedItemCanBeMovedBackToANumericItem() {
+        // 編集は「値 → 見せ方」の変換であり、それを逆にたどる道が規格にある。
+        // ここを「誤り」と断っていた
+        assertEquals(MoveRules.Kind.NUMERIC, kindOf("MOVE WS-EDIT TO WS-INT."));
     }
 
     @Test

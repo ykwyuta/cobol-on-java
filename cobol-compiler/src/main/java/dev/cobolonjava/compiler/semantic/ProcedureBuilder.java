@@ -1507,7 +1507,33 @@ public final class ProcedureBuilder {
             }
             return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
         }
+        if (context.ON() != null || context.OFF() != null) {
+            return switchSetOf(context, origin);
+        }
         return indexSetOf(context, origin);
+    }
+
+    /**
+     * {@code SET 呼び名 TO ON} と {@code SET 呼び名 TO OFF} (要件 FR-135)。
+     *
+     * <p>書くのは {@code SPECIAL-NAMES} で切り替えに付けた<b>呼び名</b>であって、
+     * 条件名ではない。切り替えは記憶域を持たないので、転記にはならない。
+     */
+    private Statement switchSetOf(CobolParser.SetStatementContext context, Origin origin) {
+        boolean on = context.ON() != null;
+        List<Statement> moves = new ArrayList<>();
+        for (CobolParser.IdentifierContext identifier : context.identifier()) {
+            String name = identifier.qualifiedDataName().dataName(0).getText()
+                    .toUpperCase(Locale.ROOT);
+            Integer index = specialNames.switchIndexOfMnemonic(name);
+            if (index == null) {
+                report(origin, "SET ... TO ON or OFF needs a switch name declared"
+                        + " in SPECIAL-NAMES: " + name);
+                return null;
+            }
+            moves.add(new Statement.SetSwitch(index, on, origin));
+        }
+        return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
     }
 
     /**
@@ -2125,6 +2151,9 @@ public final class ProcedureBuilder {
                     return null;
                 }
                 term = relation(subject, carried, right, origin);
+            }
+            if (next.NOT() != null) {
+                term = new Condition.Not(term);
             }
             terms.add(term);
             conjunctions.add(next.AND() != null);

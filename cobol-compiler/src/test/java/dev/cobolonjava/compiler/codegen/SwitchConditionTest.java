@@ -96,6 +96,37 @@ class SwitchConditionTest {
     }
 
     @Test
+    @DisplayName("プログラムからも動かせる (FR-135)")
+    void aProgramMayAlsoSetTheSwitch() {
+        CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SETUPSI.",
+                "ENVIRONMENT DIVISION.",
+                "CONFIGURATION SECTION.",
+                "SPECIAL-NAMES.",
+                "    UPSI-0 IS SW-1 ON STATUS IS FIRST-ON.",
+                "DATA DIVISION.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    IF FIRST-ON DISPLAY 'ON' ELSE DISPLAY 'OFF' END-IF",
+                "    SET SW-1 TO ON",
+                "    IF FIRST-ON DISPLAY 'ON' ELSE DISPLAY 'OFF' END-IF",
+                "    STOP RUN."));
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        try {
+            Class<?> type = new GeneratedLoader().define(result.className(), result.classFile());
+            ((CobolProgram) type.getDeclaredConstructor().newInstance())
+                    .runFresh(ProgramContext.capturing(sink));
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot load the generated program", e);
+        }
+
+        assertEquals("OFF|ON|",
+                sink.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "|"));
+    }
+
+    @Test
     @DisplayName("UPSI-0 から UPSI-7 のほかは誤りとして報告する (FR-135)")
     void anUnknownSwitchNameIsReported() {
         CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source(

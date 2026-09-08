@@ -782,7 +782,8 @@ relationCondition
 // 名前 1 個のときにどちらかは<b>名前を引かないと決まらない</b>ので、意味解析で分ける
 abbreviatedRelation
     : (AND | OR) relationalOperator expression
-    | (AND | OR) {!relationAhead()}? expression
+    // 「AND NOT B」は「AND NOT (主語 = B)」である。比較そのものを否定する
+    | (AND | OR) NOT? {!relationAhead()}? expression
     ;
 
 // 符号を問う相手は算術式でよい。「IF 9 ** TWO + (180 - 90) IS NOT POSITIVE」と書ける
@@ -1148,6 +1149,8 @@ initializeCategory
 // SET は条件名を成り立たせる形と、指標名を動かす形の 2 つがある
 setStatement
     : SET identifier+ TO TRUE
+    // 外から立てる切り替えを、プログラムからも動かせる
+    | SET identifier+ TO (ON | OFF)
     | SET identifier+ TO arithmeticOperand
     | SET identifier+ (UP | DOWN) BY arithmeticOperand
     ;

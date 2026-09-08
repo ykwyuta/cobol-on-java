@@ -734,6 +734,15 @@ public sealed interface Statement {
      * そのまま流れ続ける。
      */
     /**
+     * {@code SET 呼び名 TO ON/OFF} (要件 FR-135)。
+     *
+     * <p>外から立てる切り替えを、プログラムからも動かせる。記憶域を持たないので、
+     * 転記ではなく<b>実行時の入口が持つ状態</b>を書き換える。
+     */
+    record SetSwitch(int index, boolean on, Origin origin) implements Statement {
+    }
+
+    /**
      * {@code GO TO} 文 (要件 FR-063)。
      *
      * @param target 飛び先の段落。<b>{@code GO TO.} と書かれていれば {@code null}</b>

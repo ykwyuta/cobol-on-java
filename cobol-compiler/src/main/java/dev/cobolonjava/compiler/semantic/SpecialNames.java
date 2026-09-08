@@ -28,17 +28,19 @@ public final class SpecialNames {
     private final Map<String, byte[]> alphabets;
     private final Map<String, byte[]> classes;
     private final Map<String, SwitchStatus> switches;
+    private final Map<String, Integer> switchNames;
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating) {
-        this(currency, mnemonics, collating, Map.of(), Map.of(), Map.of());
+        this(currency, mnemonics, collating, Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating,
                          Map<String, byte[]> alphabets, Map<String, byte[]> classes,
-                         Map<String, SwitchStatus> switches) {
+                         Map<String, SwitchStatus> switches, Map<String, Integer> switchNames) {
         this.alphabets = Map.copyOf(alphabets);
         this.classes = Map.copyOf(classes);
         this.switches = Map.copyOf(switches);
+        this.switchNames = Map.copyOf(switchNames);
         this.currency = currency;
         this.mnemonics = Map.copyOf(mnemonics);
         this.collating = collating;
@@ -98,6 +100,15 @@ public final class SpecialNames {
      */
     public SwitchStatus switchStatus(String name) {
         return switches.get(name.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * 切り替えに付けた呼び名が指す番号 (要件 FR-135)。{@code SET ... TO ON} が引く。
+     *
+     * @return 呼び名でなければ {@code null}
+     */
+    public Integer switchIndexOfMnemonic(String name) {
+        return switchNames.get(name.toUpperCase(Locale.ROOT));
     }
 
     /** 外から立てられる切り替えの数。参照実装と同じ 8 個である。 */
@@ -165,6 +176,7 @@ public final class SpecialNames {
         Map<String, byte[]> alphabets = new LinkedHashMap<>();
         Map<String, byte[]> classes = new LinkedHashMap<>();
         Map<String, SwitchStatus> switches = new LinkedHashMap<>();
+        Map<String, Integer> switchNames = new LinkedHashMap<>();
 
         CobolParser.SpecialNamesParagraphContext paragraph = paragraphOf(program);
         if (paragraph != null) {
@@ -193,7 +205,7 @@ public final class SpecialNames {
                     continue;
                 }
                 if (entry.switchClause() != null) {
-                    addSwitch(entry.switchClause(), switches, origin, diagnostics);
+                    addSwitch(entry.switchClause(), switches, switchNames, origin, diagnostics);
                     continue;
                 }
                 if (entry.symbolicCharactersClause() != null) {
@@ -206,7 +218,8 @@ public final class SpecialNames {
         }
         byte[] collating = collatingOf(program, alphabets, diagnostics);
         return new Result(
-                new SpecialNames(currency, mnemonics, collating, alphabets, classes, switches),
+                new SpecialNames(currency, mnemonics, collating, alphabets, classes, switches,
+                        switchNames),
                 List.copyOf(diagnostics));
     }
 
@@ -337,7 +350,8 @@ public final class SpecialNames {
      * 参照実装は {@code UPSI-0} から {@code UPSI-7} までの 8 個を持つ。
      */
     private static void addSwitch(CobolParser.SwitchClauseContext clause,
-                                  Map<String, SwitchStatus> switches, Origin origin,
+                                  Map<String, SwitchStatus> switches,
+                                  Map<String, Integer> switchNames, Origin origin,
                                   List<Diagnostic> diagnostics) {
         String device = clause.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
         Integer index = switchIndexOf(device);
@@ -345,6 +359,9 @@ public final class SpecialNames {
             diagnostics.add(new Diagnostic(origin, "unknown switch name: " + device
                     + "; write UPSI-0 through UPSI-" + (SWITCHES - 1)));
             return;
+        }
+        if (clause.IDENTIFIER().size() > 1) {
+            switchNames.put(clause.IDENTIFIER(1).getText().toUpperCase(Locale.ROOT), index);
         }
         for (CobolParser.SwitchStatusContext status : clause.switchStatus()) {
             String name = status.IDENTIFIER().getText().toUpperCase(Locale.ROOT);

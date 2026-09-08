@@ -171,6 +171,18 @@ class AbbreviatedRelationTest {
     }
 
     @Test
+    @DisplayName("省いた比較は NOT で否定できる (FR-046)")
+    void anAbbreviationMayBeNegated() {
+        // 「AND NOT B」は「AND NOT (主語 = B)」である
+        String[] negated = {
+            "    IF WS-A = 5 AND NOT 7",
+            "        DISPLAY 'HIT' ELSE DISPLAY 'MISS' END-IF."};
+
+        assertEquals("HIT", run(5, negated));
+        assertEquals("MISS", run(7, negated));
+    }
+
+    @Test
     @DisplayName("省略しない比較を続けて書いてもよい (FR-046)")
     void aFullRelationMayStillFollow() {
         // 「AND B」の B が名前なら、省略した比較ではなく普通の条件である。

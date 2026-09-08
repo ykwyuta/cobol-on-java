@@ -529,6 +529,14 @@ public final class ProgramGenerator {
                 planGoToDepending(depending, body);
             } else if (statement instanceof Statement.Alter alter) {
                 planAlter(alter, body);
+            } else if (statement instanceof Statement.SetSwitch set) {
+                body.add(() -> {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    push(set.index());
+                    run.visitInsn(set.on() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "setSwitch",
+                            "(" + CONTEXT + "IZ)V", false);
+                });
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
@@ -4648,6 +4656,18 @@ public final class ProgramGenerator {
         if (offset == null || length.isEmpty()) {
             return null;
         }
+        if (DataCategory.of(reference) == DataCategory.NUMERIC_EDITED) {
+            // 数字編集項目からは<b>編集を解いて</b>値を取り出す (de-editing)
+            int scale = reference.item().picture() == null ? 0 : reference.item().picture().scale();
+            return () -> {
+                offset.run();
+                push(length.getAsInt());
+                push(scale);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "deEdit",
+                        "(L" + STORAGE + ";III" + CODE_PAGE + ")" + DECIMAL, false);
+            };
+        }
         if (!DataCategory.of(reference).isNumeric()) {
             // 英数字項目から数値項目への転記。送出側は符号なしの整数として読む
             return () -> {
@@ -4678,8 +4698,25 @@ public final class ProgramGenerator {
                 && figure.constant() == LiteralValue.FigurativeConstant.ZERO) {
             return Decimal.zero(0);
         }
+        if (value instanceof LiteralValue.Text text && isDigits(text.text())) {
+            // 数字だけでできた英数字定数は、<b>符号なしの整数</b>として読む。
+            // 英数字の項目を数値へ移すのと同じ扱いである
+            return Decimal.parse(text.text());
+        }
         report(origin, "a numeric receiver requires a numeric literal");
         return null;
+    }
+
+    private static boolean isDigits(String text) {
+        if (text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) < '0' || text.charAt(i) > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** 定数を受取項目の長さまで広げたバイト列。図形定数と {@code ALL} はここで埋める。 */

@@ -65,7 +65,12 @@ public final class MoveRules {
                     || sender == DataCategory.ALPHANUMERIC
                     || sender == DataCategory.ALPHANUMERIC_EDITED;
             case ALPHANUMERIC, ALPHANUMERIC_EDITED -> sender != DataCategory.NUMERIC_NONINTEGER;
-            case NUMERIC_INTEGER, NUMERIC_NONINTEGER, NUMERIC_EDITED -> sender.isNumeric()
+            // 数字編集項目から数値項目への転記は<b>編集を解く</b> (de-editing)。
+            // 規格が認めている道であり、書いた文字の並びから値を取り出す
+            case NUMERIC_INTEGER, NUMERIC_NONINTEGER -> sender.isNumeric()
+                    || sender == DataCategory.ALPHANUMERIC
+                    || sender == DataCategory.NUMERIC_EDITED;
+            case NUMERIC_EDITED -> sender.isNumeric()
                     || sender == DataCategory.ALPHANUMERIC;
             case GROUP -> true;
         };

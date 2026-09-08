@@ -814,6 +814,44 @@ public final class Ops {
         return status(context, status);
     }
 
+    /**
+     * 数字編集項目の中身から値を取り出す (要件 FR-060、de-editing)。
+     *
+     * <p>編集は「値 → 見せ方」の変換である。それを<b>逆にたどる</b>。通貨記号も
+     * コンマも空白も値には関わらない。符号は {@code CR} / {@code DB} / {@code -} が
+     * 表しており、そこだけを見る。
+     *
+     * <p>小数の桁数は<b>編集した項目の記述から翻訳時に決まる</b>。書かれた小数点の
+     * 位置を数えないのは、浮動する記号や抑制で小数点が消えていることがあるためである。
+     *
+     * @param scale 編集した項目の小数の桁数
+     */
+    public static Decimal deEdit(Storage storage, int offset, int length, int scale,
+                                 CodePage codePage) {
+        String text = codePage.decode(read(storage, offset, length));
+        boolean negative = text.contains("CR") || text.contains("DB") || text.indexOf('-') >= 0;
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= '0' && c <= '9') {
+                digits.append(c);
+            }
+        }
+        if (digits.isEmpty()) {
+            // 空白だけなら 0 である。BLANK WHEN ZERO がそう書く
+            return Decimal.zero(scale);
+        }
+        Decimal value = Decimal.parse(
+                new java.math.BigDecimal(new java.math.BigInteger(digits.toString()), scale)
+                        .toPlainString());
+        return negative ? negate(value) : value;
+    }
+
+    /** 外から立てる切り替えを動かす (要件 FR-135)。 */
+    public static void setSwitch(ProgramContext context, int index, boolean on) {
+        context.switchState(index, on);
+    }
+
     /** 外から立てる切り替えが立っているか (要件 FR-135)。 */
     public static boolean switchState(ProgramContext context, int index) {
         return context.switchState(index);
