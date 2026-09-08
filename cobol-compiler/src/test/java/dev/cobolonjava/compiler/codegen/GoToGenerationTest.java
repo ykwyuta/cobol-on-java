@@ -325,6 +325,59 @@ class GoToGenerationTest {
     }
 
     @Test
+    @DisplayName("同じ段落名が別の節にあれば、節の名前で修飾して選ぶ (FR-061)")
+    void aParagraphNameMayBeQualifiedByItsSection() {
+        // 修飾を落として先頭の名前だけを見ると、<b>別の節の同じ名前へ飛ぶ</b>。
+        // 黙って違うほうへ飛ぶより悪いことはない
+        assertEquals("0020", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SAME-NAME OF SECTION-TWO",
+                "    STOP RUN.",
+                "SECTION-ONE SECTION.",
+                "SAME-NAME.",
+                "    ADD 1 TO WS-N.",
+                "SECTION-TWO SECTION.",
+                "SAME-NAME.",
+                "    ADD 20 TO WS-N."));
+    }
+
+    @Test
+    @DisplayName("修飾が無くても、同じ節の中の段落を先に見る (FR-061)")
+    void anUnqualifiedNameFindsTheOneInItsOwnSection() {
+        assertEquals("0021", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SECTION-TWO",
+                "    STOP RUN.",
+                "SECTION-ONE SECTION.",
+                "SAME-NAME.",
+                "    ADD 1 TO WS-N.",
+                "SECTION-TWO SECTION.",
+                "TWO-START.",
+                "    GO TO SAME-NAME.",
+                "SAME-NAME.",
+                "    ADD 20 TO WS-N",
+                "    PERFORM SAME-NAME OF SECTION-ONE."));
+    }
+
+    @Test
+    @DisplayName("どちらか決まらなければ断る (FR-061)")
+    void anAmbiguousProcedureNameIsRefused() {
+        assertTrue(compile(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SAME-NAME",
+                "    STOP RUN.",
+                "SECTION-ONE SECTION.",
+                "SAME-NAME.",
+                "    ADD 1 TO WS-N.",
+                "SECTION-TWO SECTION.",
+                "SAME-NAME.",
+                "    ADD 20 TO WS-N.").diagnostics().toString().contains("is ambiguous"));
+    }
+
+    @Test
     @DisplayName("行き先を書かない GO TO は ALTER が入れた先へ飛ぶ (FR-063)")
     void aGoToWithNoDestinationTakesTheOneAlterPutsIn() {
         // 「GO TO.」とだけ書いた段落は、行き先が<b>まだ決まっていない</b>場所である。

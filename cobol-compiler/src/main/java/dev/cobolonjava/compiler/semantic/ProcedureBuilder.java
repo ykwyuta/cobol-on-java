@@ -7,6 +7,7 @@ import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.OpenMode;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -445,8 +446,105 @@ public final class ProcedureBuilder {
      * <p>宣言部分は<b>いちばん前に置く</b>。通常の流れはそのうしろから始まるので、
      * 落ちて入ってしまうことがない。
      */
+    /**
+     * 手続き名の置き場 (要件 FR-061)。
+     *
+     * <p>段落名は<b>節の中でだけ一意であればよい</b>。同じ名前の段落が別の節にあれば、
+     * どちらを指すかは書いた側が節の名前で修飾して決める。したがって「名前 → 何番目か」
+     * の表を先に作り、そこから<b>一意の呼び名</b>を決める。
+     *
+     * <p>一意の呼び名は、簡単な名前が 1 つしかなければその名前そのもの、2 つ以上あれば
+     * {@code 名前 OF 節名} である。以後の道 (飛び先の表も生成コードも) は、この呼び名を
+     * ただの文字列として扱えばよい。
+     */
+    private record ProcedureName(String simple, String section) {
+
+        /** ほかに同じ簡単な名前があるかどうかで決まる呼び名。 */
+        String key(boolean unique) {
+            return unique || section == null ? simple : simple + " OF " + section;
+        }
+    }
+
+    /** 書かれた順の手続き名。 */
+    private final List<ProcedureName> procedureNames = new ArrayList<>();
+    /** 簡単な名前が 1 つしかないか。 */
+    private final Map<String, Boolean> uniqueNames = new LinkedHashMap<>();
+
+    /** 段落と節の名前を先に集める。修飾を解く表になる。 */
+    private void collectProcedureNames(CobolParser.ProcedureBodyContext body) {
+        if (body.declarativesPart() != null) {
+            for (CobolParser.DeclarativeSectionContext section
+                    : body.declarativesPart().declarativeSection()) {
+                String name = wordOf(section.sectionHeader().paragraphName());
+                procedureNames.add(new ProcedureName(name, name));
+                for (CobolParser.ParagraphContext paragraph : section.paragraph()) {
+                    procedureNames.add(
+                            new ProcedureName(wordOf(paragraph.paragraphName()), name));
+                }
+            }
+        }
+        for (CobolParser.ParagraphContext paragraph : body.paragraph()) {
+            procedureNames.add(new ProcedureName(wordOf(paragraph.paragraphName()), null));
+        }
+        for (CobolParser.ProcedureSectionContext section : body.procedureSection()) {
+            String name = wordOf(section.sectionHeader().paragraphName());
+            procedureNames.add(new ProcedureName(name, name));
+            for (CobolParser.ParagraphContext paragraph : section.paragraph()) {
+                procedureNames.add(new ProcedureName(wordOf(paragraph.paragraphName()), name));
+            }
+        }
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (ProcedureName one : procedureNames) {
+            counts.merge(one.simple(), 1, Integer::sum);
+        }
+        counts.forEach((name, count) -> uniqueNames.put(name, count == 1));
+    }
+
+    /** 修飾を外した先頭の語。 */
+    private static String wordOf(CobolParser.ParagraphNameContext context) {
+        return context.procedureWord(0).getText().toUpperCase(Locale.ROOT);
+    }
+
+    /** その段落の呼び名。同じ名前がほかにあれば節名で修飾した形になる。 */
+    private String keyOf(String simple, String section) {
+        return new ProcedureName(simple, section)
+                .key(Boolean.TRUE.equals(uniqueNames.get(simple)));
+    }
+
+    /**
+     * 書かれた手続き名を、一意の呼び名へ直す (要件 FR-061)。
+     *
+     * <p>修飾が書かれていればその節のものを選ぶ。書かれていなくても、同じ名前が
+     * 1 つしかなければ決まる。2 つ以上あって修飾も無ければ<b>断る</b> —
+     * どちらかを選ぶと、書いた人の意図と違うほうへ飛びかねない。
+     */
+    private String procedureNameOf(CobolParser.ParagraphNameContext context) {
+        String simple = wordOf(context);
+        String qualifier = context.procedureWord().size() > 1
+                ? context.procedureWord(1).getText().toUpperCase(Locale.ROOT)
+                : null;
+        if (qualifier != null) {
+            return keyOf(simple, qualifier);
+        }
+        if (!Boolean.FALSE.equals(uniqueNames.get(simple))) {
+            return keyOf(simple, null);
+        }
+        // 修飾が無くても、<b>同じ節の中</b>に同じ名前があればそれを指す。規格がそう決めている
+        if (currentSectionName != null
+                && procedureNames.contains(new ProcedureName(simple, currentSectionName))) {
+            return keyOf(simple, currentSectionName);
+        }
+        report(ReferenceResolver.originOf(context),
+                simple + " is ambiguous; qualify it with OF or IN");
+        return keyOf(simple, null);
+    }
+
+    /** いま組み立てている節の名前。修飾の無い手続き名がここを先に見る。 */
+    private String currentSectionName;
+
     private void addBody(CobolParser.ProcedureBodyContext body, List<Paragraph> paragraphs,
                          List<Section> sections, List<Declarative> declaratives) {
+        collectProcedureNames(body);
         if (body.declarativesPart() != null) {
             for (CobolParser.DeclarativeSectionContext section
                     : body.declarativesPart().declarativeSection()) {
@@ -467,27 +565,29 @@ public final class ProcedureBuilder {
     }
 
     private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs,
-                              int segment) {
+                              int segment, String section) {
+        currentSectionName = section;
         paragraphs.add(new Paragraph(
-                paragraph.paragraphName().getText().toUpperCase(Locale.ROOT),
+                keyOf(wordOf(paragraph.paragraphName()), section),
                 statementsOf(paragraph.sentence()), segment,
                 ReferenceResolver.originOf(paragraph)));
     }
 
     private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
-        addParagraph(paragraph, paragraphs, 0);
+        addParagraph(paragraph, paragraphs, 0, null);
     }
 
     private void addSection(CobolParser.ProcedureSectionContext unit, List<Paragraph> paragraphs,
                             List<Section> sections) {
-        String name = unit.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
+        String name = wordOf(unit.sectionHeader().paragraphName());
         int segment = segmentOf(unit.sectionHeader());
-        paragraphs.add(new Paragraph(name, statementsOf(unit.sentence()), segment,
+        currentSectionName = name;
+        paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(unit.sentence()), segment,
                 ReferenceResolver.originOf(unit.sectionHeader())));
         for (CobolParser.ParagraphContext paragraph : unit.paragraph()) {
-            addParagraph(paragraph, paragraphs, segment);
+            addParagraph(paragraph, paragraphs, segment, name);
         }
-        sections.add(new Section(name, name,
+        sections.add(new Section(name, keyOf(name, name),
                 paragraphs.get(paragraphs.size() - 1).name(), false));
     }
 
@@ -533,14 +633,15 @@ public final class ProcedureBuilder {
         if (context.useStatement().debugTarget() != null) {
             return;
         }
-        String name = context.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
+        String name = wordOf(context.sectionHeader().paragraphName());
         Origin origin = ReferenceResolver.originOf(context.sectionHeader());
-        paragraphs.add(new Paragraph(name, statementsOf(context.sentence()), origin));
+        currentSectionName = name;
+        paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(context.sentence()), origin));
         for (CobolParser.ParagraphContext paragraph : context.paragraph()) {
-            addParagraph(paragraph, paragraphs);
+            addParagraph(paragraph, paragraphs, 0, name);
         }
         String last = paragraphs.get(paragraphs.size() - 1).name();
-        sections.add(new Section(name, name, last, true));
+        sections.add(new Section(name, keyOf(name, name), last, true));
 
         CobolParser.UseTargetContext target = context.useStatement().useTarget();
         OpenMode mode = modeOf(target);
@@ -1181,7 +1282,7 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context);
         List<String> targets = new ArrayList<>();
         for (CobolParser.ParagraphNameContext name : context.paragraphName()) {
-            targets.add(name.getText().toUpperCase(Locale.ROOT));
+            targets.add(procedureNameOf(name));
         }
         if (context.DEPENDING() == null) {
             if (targets.size() > 1) {
@@ -1213,8 +1314,8 @@ public final class ProcedureBuilder {
         List<Statement.Alter.Change> changes = new ArrayList<>();
         for (CobolParser.AlterChangeContext change : context.alterChange()) {
             changes.add(new Statement.Alter.Change(
-                    change.paragraphName(0).getText().toUpperCase(Locale.ROOT),
-                    change.paragraphName(1).getText().toUpperCase(Locale.ROOT)));
+                    procedureNameOf(change.paragraphName(0)),
+                    procedureNameOf(change.paragraphName(1))));
         }
         return new Statement.Alter(List.copyOf(changes), origin);
     }
@@ -1603,8 +1704,8 @@ public final class ProcedureBuilder {
         if (context.procedureReference() != null) {
             List<CobolParser.ParagraphNameContext> names =
                     context.procedureReference().paragraphName();
-            target = names.get(0).getText().toUpperCase(Locale.ROOT);
-            through = names.size() > 1 ? names.get(1).getText().toUpperCase(Locale.ROOT) : null;
+            target = procedureNameOf(names.get(0));
+            through = names.size() > 1 ? procedureNameOf(names.get(1)) : null;
         }
 
         Operand times = null;
@@ -1772,6 +1873,22 @@ public final class ProcedureBuilder {
         if (object.ANY() != null) {
             return ALWAYS_TRUE;
         }
+        if (subject.classCondition() != null) {
+            // 主語が条件なら、目的語は TRUE か FALSE である。
+            // 「EVALUATE X NUMERIC / WHEN TRUE」は「IF X IS NUMERIC」と同じことを問う
+            Condition test = classOf(subject.classCondition());
+            if (test == null) {
+                return null;
+            }
+            if (object.TRUE() != null) {
+                return test;
+            }
+            if (object.FALSE() != null) {
+                return new Condition.Not(test);
+            }
+            report(origin, "a class condition subject takes TRUE or FALSE in its WHEN");
+            return null;
+        }
         boolean truthMode = subject.TRUE() != null || subject.FALSE() != null;
         if (truthMode) {
             Condition condition = truthObject(object, origin);
@@ -1804,8 +1921,14 @@ public final class ProcedureBuilder {
                                   CobolParser.EvaluateObjectContext object, Origin origin) {
         Expression left = expressionOf(subject, origin);
         List<Expression> values = valuesOf(object, origin);
-        if (left == null || values == null || values.contains(null)) {
+        // 不変の並びは contains(null) を投げる。1 つずつ見る
+        if (left == null || values == null) {
             return null;
+        }
+        for (Expression value : values) {
+            if (value == null) {
+                return null;
+            }
         }
         Condition test = values.size() == 1
                 ? relation(left, Condition.Comparison.EQUAL, values.get(0), origin)
@@ -2326,7 +2449,7 @@ public final class ProcedureBuilder {
     /** 符号条件はゼロとの比較へ展開する。 */
     private Condition signOf(CobolParser.SignConditionContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        Operand operand = operandOf(context.arithmeticOperand(), origin);
+        Expression operand = expressionOf(context.expression(), origin);
         if (operand == null) {
             return null;
         }
@@ -2345,9 +2468,9 @@ public final class ProcedureBuilder {
         if (context.NOT() != null) {
             comparison = comparison.negate();
         }
-        Operand zero = new Operand.Literal(
-                new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO));
-        return Condition.Relation.of(operand, comparison, zero, true, origin);
+        Expression zero = new Expression.Value(new Operand.Literal(
+                new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO)));
+        return new Condition.Relation(operand, comparison, zero, true, origin);
     }
 
     /**
@@ -3145,7 +3268,7 @@ public final class ProcedureBuilder {
      */
     private Statement writeOf(CobolParser.WriteStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        DataItem record = recordOf(context.IDENTIFIER().getText(), "WRITE", origin);
+        DataItem record = recordOf(context.IDENTIFIER(0).getText(), "WRITE", origin);
         if (record == null) {
             return null;
         }
@@ -3566,12 +3689,10 @@ public final class ProcedureBuilder {
         return out;
     }
 
-    private static Statement.Sort.Procedure procedureOf(
+    private Statement.Sort.Procedure procedureOf(
             List<CobolParser.ParagraphNameContext> names) {
-        String from = names.get(0).getText().toUpperCase(Locale.ROOT);
-        String through = names.size() > 1
-                ? names.get(1).getText().toUpperCase(Locale.ROOT)
-                : null;
+        String from = procedureNameOf(names.get(0));
+        String through = names.size() > 1 ? procedureNameOf(names.get(1)) : null;
         return new Statement.Sort.Procedure(from, through);
     }
 

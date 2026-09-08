@@ -94,7 +94,7 @@ tokens {
     INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
     RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
-    RESERVE, AREA, AREAS, PASSWORD, PADDING,
+    RESERVE, AREA, AREAS, PASSWORD, PADDING, CODE_SET,
     REEL, UNIT, REMOVAL, REWIND, LOCK, REVERSED, END_OF_PAGE, EOP,
     I_O_CONTROL, SAME, SORT_MERGE, MULTIPLE, TAPE, POSITION, RERUN, APPLY, EVERY,
     LINAGE, FOOTING, TOP, BOTTOM,
@@ -379,6 +379,8 @@ fileDescriptionClause
     | DATA (RECORD | RECORDS) (IS | ARE)? IDENTIFIER+
     | IS? GLOBAL
     | IS? EXTERNAL
+    // 装置の文字集合。データセットの文字コードは DD の指定で決まる
+    | CODE_SET IS? IDENTIFIER
     | linageClause
     // VALUE OF は「ラベルに何を書くか」の指定である。規格でも廃要素であり、
     // ラベルを持たないこちらでは読んで捨てる
@@ -650,7 +652,12 @@ paragraph
 
 // 手続き名は<b>数字だけでもよい</b>。データ名と違うところである。
 // 段分けの章は「00 SECTION 00.」のように名前も番号も数字で書かれる
+// 手続き名は<b>節の名前で修飾してよい</b>。同じ段落名が別の節にあってもよいからである
 paragraphName
+    : procedureWord ((OF | IN) procedureWord)?
+    ;
+
+procedureWord
     : IDENTIFIER
     | NUMBER
     ;
@@ -766,8 +773,9 @@ abbreviatedRelation
     | (AND | OR) {!relationAhead()}? expression
     ;
 
+// 符号を問う相手は算術式でよい。「IF 9 ** TWO + (180 - 90) IS NOT POSITIVE」と書ける
 signCondition
-    : arithmeticOperand IS? NOT? (POSITIVE | NEGATIVE | ZERO)
+    : expression IS? NOT? (POSITIVE | NEGATIVE | ZERO)
     ;
 
 conditionNameCondition
@@ -918,10 +926,12 @@ branchBody
     | statement*
     ;
 
-// 主語は算術式でよい。「EVALUATE A ALSO ( TEMP + 96 ) * 2」と書ける
+// 主語は算術式でよい。「EVALUATE A ALSO ( TEMP + 96 ) * 2」と書ける。
+// 級条件を主語に置くこともできる。その形では目的語が TRUE / FALSE になる
 evaluateSubject
     : TRUE
     | FALSE
+    | classCondition
     | expression
     ;
 
@@ -991,7 +1001,7 @@ notInvalidKeyPhrase
     ;
 
 writeStatement
-    : WRITE IDENTIFIER (FROM identifier)?
+    : WRITE IDENTIFIER ((OF | IN) IDENTIFIER)? (FROM identifier)?
       advancingPhrase?
       atEndOfPagePhrase? notAtEndOfPagePhrase?
       invalidKeyPhrase? notInvalidKeyPhrase? END_WRITE?

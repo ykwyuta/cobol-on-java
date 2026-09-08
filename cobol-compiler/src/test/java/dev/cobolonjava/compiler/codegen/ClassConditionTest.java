@@ -150,6 +150,32 @@ class ClassConditionTest {
     }
 
     @Test
+    @DisplayName("級条件は EVALUATE の主語にも置ける (FR-046, FR-047)")
+    void aClassConditionMayBeAnEvaluateSubject() {
+        assertEquals("DIGITS|", run(List.of(),
+                List.of("01 WS-X PIC X(3) VALUE '123'."),
+                "    EVALUATE WS-X NUMERIC",
+                "        WHEN TRUE DISPLAY 'DIGITS'",
+                "        WHEN FALSE DISPLAY 'OTHER'",
+                "    END-EVALUATE."));
+        assertEquals("OTHER|", run(List.of(),
+                List.of("01 WS-X PIC X(3) VALUE 'ABC'."),
+                "    EVALUATE WS-X NUMERIC",
+                "        WHEN TRUE DISPLAY 'DIGITS'",
+                "        WHEN FALSE DISPLAY 'OTHER'",
+                "    END-EVALUATE."));
+    }
+
+    @Test
+    @DisplayName("符号を問う相手は算術式でよい (FR-046)")
+    void aSignConditionMayAskAboutAnExpression() {
+        assertEquals("YES|", run(List.of(),
+                List.of("01 WS-N PIC 9 VALUE 2."),
+                "    IF 3 ** WS-N - 9 IS ZERO DISPLAY 'YES'",
+                "        ELSE DISPLAY 'NO' END-IF."));
+    }
+
+    @Test
     @DisplayName("知らない級の名前は誤りとして報告する (FR-046)")
     void anUndefinedClassNameIsReported() {
         StringBuilder sb = new StringBuilder();
