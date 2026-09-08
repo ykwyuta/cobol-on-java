@@ -64,6 +64,9 @@ public final class NumericEditor {
         int decimalPointIndex = indexOf(cells, Kind.DECIMAL_POINT);
         int suppressEnd = lastSuppressibleBefore(cells, decimalPointIndex);
         int firstFloat = indexOf(cells, Kind.FLOAT);
+        // 抑制される並びが<b>どこから始まるか</b>。その左にある挿入文字は固定挿入で
+        // あり、抑制されない。$**.99 の $ がそれである (NC170A の MPY-TEST-F2-20)
+        int firstSuppressible = firstSuppressible(cells);
 
         int di = 0;
         boolean significant = false;
@@ -101,7 +104,7 @@ public final class NumericEditor {
                     }
                 }
                 case INSERT -> {
-                    if (!significant && i <= suppressEnd) {
+                    if (!significant && i > firstSuppressible && i <= suppressEnd) {
                         suppressed[i] = true;
                         text[i] = String.valueOf(fill);
                     } else {
@@ -197,6 +200,22 @@ public final class NumericEditor {
      * コンマは消えて、その位置に通貨記号が来る (NC105A の EDIT-TEST-F1-124)。
      * 消さないと {@code   $,987.65} になる。
      */
+    /**
+     * 抑制される並びの先頭の位置。無ければ {@link Integer#MAX_VALUE}。
+     *
+     * <p>その左にある挿入文字は<b>固定挿入</b>である。規格は「抑制の並びの中、または
+     * その右にある挿入文字」だけを抑制すると決めている。
+     */
+    private static int firstSuppressible(List<Cell> cells) {
+        for (int i = 0; i < cells.size(); i++) {
+            Kind k = cells.get(i).kind();
+            if (k == Kind.SUPPRESS || k == Kind.FLOAT) {
+                return i;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
     private static int lastSuppressibleBefore(List<Cell> cells, int decimalPointIndex) {
         int last = -1;
         for (int i = 0; i < cells.size(); i++) {
