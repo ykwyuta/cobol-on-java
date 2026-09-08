@@ -89,6 +89,8 @@ public final class ProgramGenerator {
     private static final String STORAGE = Type.getInternalName(Storage.class);
     private static final String CODE_PAGE = Type.getDescriptor(CodePage.class);
     private static final String NUMERIC_ITEM = Type.getDescriptor(NumericItem.class);
+    private static final String CLASS_TEST =
+            Type.getInternalName(dev.cobolonjava.runtime.verb.ClassTest.class);
     private static final String PICTURE = Type.getDescriptor(Picture.class);
     private static final String DECIMAL = Type.getDescriptor(Decimal.class);
     private static final String INTRINSICS = Type.getInternalName(Intrinsics.class);
@@ -2925,7 +2927,64 @@ public final class ProgramGenerator {
             }
             return;
         }
+        if (condition instanceof Condition.ClassTest test) {
+            emitClassTest(test, target, jumpWhenTrue);
+            return;
+        }
         emitRelation((Condition.Relation) condition, target, jumpWhenTrue);
+    }
+
+    /**
+     * 級条件を組み立てる (要件 FR-046)。
+     *
+     * <p>{@code NUMERIC} の見方は<b>項目の書き方で変わる</b>。符号を持つ数値項目では
+     * 符号の場所まで見るので、その項目として読めるかどうかで決める。英数字項目に
+     * 符号は無いので、すべてのバイトが数字かどうかだけを見る。
+     */
+    private void emitClassTest(Condition.ClassTest test, Label target, boolean jumpWhenTrue) {
+        Runnable bytes = planSourceBytes(new Operand.Reference(test.item()), test.origin(), 0);
+        if (bytes == null) {
+            return;
+        }
+        DataItem item = test.item().item();
+        boolean signedNumeric = test.kind() == Condition.ClassTest.Kind.NUMERIC
+                && item.picture() != null && item.picture().isNumeric();
+        String shape = signedNumeric ? numericItemConstant(item, test.origin()) : null;
+        if (signedNumeric && shape == null) {
+            return;
+        }
+        byte[] allowed = test.allowed();
+        Condition.ClassTest.Kind kind = test.kind();
+        bytes.run();
+        switch (kind) {
+            case NUMERIC -> {
+                if (signedNumeric) {
+                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, shape, NUMERIC_ITEM);
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "numeric",
+                            "([B" + NUMERIC_ITEM + CODE_PAGE + ")Z", false);
+                } else {
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "digits",
+                            "([B" + CODE_PAGE + ")Z", false);
+                }
+            }
+            case DEFINED -> {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, bytesConstant(allowed), "[B");
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "member", "([B[B)Z", false);
+            }
+            default -> {
+                loadCodePage();
+                push(switch (kind) {
+                    case ALPHABETIC_LOWER -> 1;
+                    case ALPHABETIC_UPPER -> 2;
+                    default -> 0;
+                });
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "alphabetic",
+                        "([B" + CODE_PAGE + "I)Z", false);
+            }
+        }
+        run.visitJumpInsn(jumpWhenTrue ? Opcodes.IFNE : Opcodes.IFEQ, target);
     }
 
     private void emitRelation(Condition.Relation relation, Label target, boolean jumpWhenTrue) {
@@ -3915,11 +3974,23 @@ public final class ProgramGenerator {
                                 + Type.getDescriptor(CobolRounding.class) + ")" + DECIMAL, false);
             };
         }
+        if (binary.operator() == Expression.Operator.POWER) {
+            return () -> {
+                left.run();
+                right.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "power",
+                        "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+                // 近似が入る答えは桁が伸びる。中間結果の上限まで削る
+                push(scale);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "truncate",
+                        "(" + DECIMAL + "I)" + DECIMAL, false);
+            };
+        }
         String name = switch (binary.operator()) {
             case ADD -> "add";
             case SUBTRACT -> "subtract";
             case MULTIPLY -> "multiply";
-            case DIVIDE -> throw new IllegalStateException("handled above");
+            case DIVIDE, POWER -> throw new IllegalStateException("handled above");
         };
         int natural = naturalScale(binary, digits);
         return () -> {

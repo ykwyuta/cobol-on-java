@@ -21,8 +21,8 @@ public sealed interface Expression {
     record Binary(Operator operator, Expression left, Expression right) implements Expression {
     }
 
-    /** 演算の種類。べき乗はまだ扱わない (暫定判断 P-028)。 */
+    /** 演算の種類。 */
     enum Operator {
-        ADD, SUBTRACT, MULTIPLY, DIVIDE
+        ADD, SUBTRACT, MULTIPLY, DIVIDE, POWER
     }
 }

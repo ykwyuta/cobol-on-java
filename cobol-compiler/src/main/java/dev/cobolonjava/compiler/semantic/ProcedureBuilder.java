@@ -1895,10 +1895,49 @@ public final class ProcedureBuilder {
         if (context.relationCondition() != null) {
             return relationOf(context.relationCondition());
         }
+        if (context.classCondition() != null) {
+            return classOf(context.classCondition());
+        }
         if (context.signCondition() != null) {
             return signOf(context.signCondition());
         }
         return conditionNameOf(context.conditionNameCondition());
+    }
+
+    /**
+     * 級条件を組み立てる (要件 FR-046)。
+     *
+     * <p>{@code NUMERIC} と {@code ALPHABETIC} は組み込みである。ほかの名前は
+     * {@code SPECIAL-NAMES} の {@code CLASS} 句で書いて決めた級を指す。
+     */
+    private Condition classOf(CobolParser.ClassConditionContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        DataReference item = resolver.resolve(context.identifier());
+        if (item == null) {
+            return null;
+        }
+        CobolParser.ClassNameContext name = context.className();
+        Condition.ClassTest.Kind kind;
+        byte[] allowed = null;
+        if (name.NUMERIC() != null) {
+            kind = Condition.ClassTest.Kind.NUMERIC;
+        } else if (name.ALPHABETIC_LOWER() != null) {
+            kind = Condition.ClassTest.Kind.ALPHABETIC_LOWER;
+        } else if (name.ALPHABETIC_UPPER() != null) {
+            kind = Condition.ClassTest.Kind.ALPHABETIC_UPPER;
+        } else if (name.ALPHABETIC() != null) {
+            kind = Condition.ClassTest.Kind.ALPHABETIC;
+        } else {
+            kind = Condition.ClassTest.Kind.DEFINED;
+            allowed = specialNames.classMembers(name.IDENTIFIER().getText());
+            if (allowed == null) {
+                report(origin, "undefined class-name: "
+                        + name.IDENTIFIER().getText().toUpperCase(Locale.ROOT));
+                return null;
+            }
+        }
+        Condition test = new Condition.ClassTest(item, kind, allowed, origin);
+        return context.NOT() == null ? test : new Condition.Not(test);
     }
 
     private Condition relationOf(CobolParser.RelationConditionContext context) {
@@ -2486,9 +2525,13 @@ public final class ProcedureBuilder {
             // 単項の + は何もしない
             return unary.MINUS_SIGN() == null ? inner : new Expression.Negate(inner);
         }
-        if (context instanceof CobolParser.PowerExpressionContext) {
-            report(origin, "exponentiation is not supported yet");
-            return null;
+        if (context instanceof CobolParser.PowerExpressionContext power) {
+            Expression base = expressionOf(power.expression(0), origin);
+            Expression exponent = expressionOf(power.expression(1), origin);
+            if (base == null || exponent == null) {
+                return null;
+            }
+            return new Expression.Binary(Expression.Operator.POWER, base, exponent);
         }
         return binaryOf(context, origin);
     }

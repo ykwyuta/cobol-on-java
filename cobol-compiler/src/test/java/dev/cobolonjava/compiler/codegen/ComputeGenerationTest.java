@@ -219,13 +219,32 @@ class ComputeGenerationTest {
     }
 
     @Test
-    @DisplayName("べき乗はまだ生成できないと報告する (P-028)")
-    void exponentiationIsReportedAsUnsupported() {
-        CobolCompiler.Result result = compile(INTEGER, "COMPUTE WS-R = 2 ** 3.");
+    @DisplayName("整数のべき乗は正確に出る (FR-047)")
+    void anIntegerPowerIsExact() {
+        assertEquals("00008", run(INTEGER, "COMPUTE WS-R = 2 ** 3."));
+        // べき乗は右から結ぶ。2 ** (3 ** 2) = 512
+        assertEquals("00512", run(INTEGER, "COMPUTE WS-R = 2 ** 3 ** 2."));
+        // 0 乗は 1 である
+        assertEquals("00001", run(INTEGER, "COMPUTE WS-R = 7 ** 0."));
+    }
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("exponentiation"),
-                result.diagnostics().toString());
+    @Test
+    @DisplayName("べき乗は掛け算より先に結ばれる (FR-047)")
+    void powerBindsTighterThanMultiply() {
+        assertEquals("00018", run(INTEGER, "COMPUTE WS-R = 2 * 3 ** 2."));
+    }
+
+    @Test
+    @DisplayName("負のべきは逆数になる (FR-047)")
+    void aNegativePowerIsTheReciprocal() {
+        assertEquals("00025", run(SCALED, "COMPUTE WS-R = 2 ** -2."));
+    }
+
+    @Test
+    @DisplayName("小数のべきは近似で出る (FR-047)")
+    void aFractionalPowerIsApproximate() {
+        // 9 の 0.5 乗は 3 である。対数を通るので答えに近似が入る
+        assertEquals("00300", run(SCALED, "COMPUTE WS-R = 9 ** 0.5."));
     }
 
     @Test

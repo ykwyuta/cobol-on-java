@@ -26,14 +26,16 @@ public final class SpecialNames {
     private final Map<String, FunctionName> mnemonics;
     private final byte[] collating;
     private final Map<String, byte[]> alphabets;
+    private final Map<String, byte[]> classes;
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating) {
-        this(currency, mnemonics, collating, Map.of());
+        this(currency, mnemonics, collating, Map.of(), Map.of());
     }
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating,
-                         Map<String, byte[]> alphabets) {
+                         Map<String, byte[]> alphabets, Map<String, byte[]> classes) {
         this.alphabets = Map.copyOf(alphabets);
+        this.classes = Map.copyOf(classes);
         this.currency = currency;
         this.mnemonics = Map.copyOf(mnemonics);
         this.collating = collating;
@@ -65,6 +67,16 @@ public final class SpecialNames {
     public byte[] alphabet(String name) {
         byte[] table = alphabets.get(name.toUpperCase(Locale.ROOT));
         return table == null ? null : table.clone();
+    }
+
+    /**
+     * 書いて決めた級に入るバイト (要件 FR-046)。{@code CLASS} 句が決める。
+     *
+     * @return 知らない名前なら {@code null}
+     */
+    public byte[] classMembers(String name) {
+        byte[] members = classes.get(name.toUpperCase(Locale.ROOT));
+        return members == null ? null : members.clone();
     }
 
     /**
@@ -127,6 +139,7 @@ public final class SpecialNames {
         char currency = DEFAULT_CURRENCY;
         Map<String, FunctionName> mnemonics = new LinkedHashMap<>();
         Map<String, byte[]> alphabets = new LinkedHashMap<>();
+        Map<String, byte[]> classes = new LinkedHashMap<>();
 
         CobolParser.SpecialNamesParagraphContext paragraph = paragraphOf(program);
         if (paragraph != null) {
@@ -150,11 +163,20 @@ public final class SpecialNames {
                     addAlphabet(entry.alphabetClause(), alphabets, origin, diagnostics);
                     continue;
                 }
+                if (entry.classClause() != null) {
+                    addClass(entry.classClause(), classes, origin, diagnostics);
+                    continue;
+                }
+                if (entry.symbolicCharactersClause() != null) {
+                    // 名前を照合順序の位置で決める。値そのものは翻訳の結果に効くが、
+                    // 名前を定数として使う道をまだ持っていない (暫定判断 P-074)
+                    continue;
+                }
                 addMnemonic(entry, mnemonics, origin, diagnostics);
             }
         }
         byte[] collating = collatingOf(program, alphabets, diagnostics);
-        return new Result(new SpecialNames(currency, mnemonics, collating, alphabets),
+        return new Result(new SpecialNames(currency, mnemonics, collating, alphabets, classes),
                 List.copyOf(diagnostics));
     }
 
@@ -199,6 +221,35 @@ public final class SpecialNames {
             }
         }
         return null;
+    }
+
+    /**
+     * {@code CLASS 名前 IS ...} (要件 FR-046)。
+     *
+     * <p>級に入る文字を並べる。{@code THRU} は範囲であり、コードページの並びで数える。
+     * 数字定数は<b>照合順序の何番目か</b>を表す。
+     */
+    private static void addClass(CobolParser.ClassClauseContext clause,
+                                 Map<String, byte[]> classes, Origin origin,
+                                 List<Diagnostic> diagnostics) {
+        String name = clause.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        List<Byte> members = new ArrayList<>();
+        for (CobolParser.ClassMemberContext member : clause.classMember()) {
+            byte[] range = Alphabet.charactersOfMember(member, origin, diagnostics);
+            if (range == null) {
+                return;
+            }
+            for (byte one : range) {
+                members.add(one);
+            }
+        }
+        byte[] bytes = new byte[members.size()];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = members.get(i);
+        }
+        if (classes.putIfAbsent(name, bytes) != null) {
+            diagnostics.add(new Diagnostic(origin, "duplicate class-name: " + name));
+        }
     }
 
     /** {@code ALPHABET 名前 IS ...}。 */

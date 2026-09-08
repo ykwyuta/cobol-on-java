@@ -205,6 +205,43 @@ final class Alphabet {
     }
 
     /**
+     * {@code CLASS} 句の 1 項が表す文字 (要件 FR-046)。
+     *
+     * <p>{@code THRU} なら範囲を広げる。並びの表を作るのと同じ読み方をするので、
+     * ここに置いてある。
+     *
+     * @return 読めなければ {@code null}
+     */
+    public static byte[] charactersOfMember(CobolParser.ClassMemberContext member, Origin origin,
+                                            List<Diagnostic> diagnostics) {
+        List<Byte> out = new ArrayList<>();
+        if (member.THROUGH() == null && member.THRU() == null) {
+            List<Byte> characters = charactersOf(member.literal(0), origin, diagnostics);
+            if (characters == null) {
+                return null;
+            }
+            out.addAll(characters);
+        } else {
+            Byte first = characterOf(member.literal(0), origin, diagnostics);
+            Byte last = characterOf(member.literal(1), origin, diagnostics);
+            if (first == null || last == null) {
+                return null;
+            }
+            int from = first & 0xFF;
+            int to = last & 0xFF;
+            int step = from <= to ? 1 : -1;
+            for (int value = from; value != to + step; value += step) {
+                out.add((byte) value);
+            }
+        }
+        byte[] bytes = new byte[out.size()];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = out.get(i);
+        }
+        return bytes;
+    }
+
+    /**
      * 定数 1 個が表す文字の並び。
      *
      * <p>2 文字以上の定数は<b>その文字すべて</b>である。数字定数と figurative constant は

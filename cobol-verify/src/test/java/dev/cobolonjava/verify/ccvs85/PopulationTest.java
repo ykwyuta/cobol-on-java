@@ -40,8 +40,20 @@ class PopulationTest {
 
         String out = one(Population.plain(CARDS), line);
 
-        // 消さずに注釈にする。何が落ちたのかが原文に残る
-        assertEquals("032700*S   EXIT PROGRAM.", out);
+        // 7 桁目だけを書き換える。中身は消さない
+        assertEquals("032700*    EXIT PROGRAM.", out);
+    }
+
+    @Test
+    @DisplayName("注釈にするとき 8 桁目を潰さない (NFR-040)")
+    void commentingOutDoesNotDestroyColumnEight() {
+        // 8 桁目は A 領域の先頭であり、段落見出しが始まる場所である。
+        // 印をそこへ逃がすと「*APECIAL-NAMES.」になり、道具が原文を壊す
+        String line = "003300ASPECIAL-NAMES.";
+
+        String out = one(Population.plain(CARDS), line);
+
+        assertEquals("003300*SPECIAL-NAMES.", out);
     }
 
     @Test
@@ -72,7 +84,7 @@ class PopulationTest {
                 Ccvs85Archive.Kind.COBOL, "NC101A", List.of("000100C    XXXXX999")));
 
         assertEquals(Set.of(), result.missing());
-        assertTrue(result.text().startsWith("000100*C"), result.text());
+        assertTrue(result.text().startsWith("000100*    XXXXX999"), result.text());
     }
 
     @Test

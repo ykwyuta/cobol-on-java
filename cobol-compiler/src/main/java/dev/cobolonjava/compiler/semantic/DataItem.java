@@ -222,6 +222,18 @@ public final class DataItem {
         return length * occurs;
     }
 
+    /**
+     * 66 レベルの別名かどうか (要件 FR-021)。
+     *
+     * <p>別名は<b>記憶域を持たない</b>。すでにある記述の上に名前を重ねているだけなので、
+     * 初期値を書くときに通ってはならない。通すと、名前を付けた先の初期値を消してしまう。
+     */
+    public boolean isAlias() {
+        return alias;
+    }
+
+    private boolean alias;
+
     /** 下位の項目を持たない項目かどうか。 */
     public boolean isElementary() {
         return children.isEmpty();
@@ -260,6 +272,10 @@ public final class DataItem {
 
     void setInitialValue(LiteralValue value) {
         this.initialValue = value;
+    }
+
+    void markAlias() {
+        this.alias = true;
     }
 
     void addChild(DataItem child) {

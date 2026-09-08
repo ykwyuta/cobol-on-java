@@ -79,8 +79,13 @@ public record Population(Set<Character> options, XCards cards) {
         if (options.contains(indicator)) {
             return replace(line, 7, ' ');
         }
-        // 選ばなかった行は消さずに注釈にする。何が落ちたのかが原文に残る
-        return replace(replace(pad(line, 8), 8, indicator), 7, '*');
+        // 選ばなかった行は消さずに注釈にする。
+        //
+        // <b>7 桁目だけを書き換える。</b>印を 8 桁目へ逃がすと、そこにある文字を
+        // 潰してしまう。8 桁目は A 領域の先頭であり、段落見出しが始まる場所である。
+        // 「ASPECIAL-NAMES.」の A を 8 桁目へ移すと「*APECIAL-NAMES.」になり、
+        // <b>道具が原文を壊す</b>ことになる。
+        return replace(line, 7, '*');
     }
 
     /**

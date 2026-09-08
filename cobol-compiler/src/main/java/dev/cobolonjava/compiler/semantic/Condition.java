@@ -58,6 +58,32 @@ public sealed interface Condition {
         }
     }
 
+    /**
+     * 級条件 (要件 FR-046)。
+     *
+     * <p>比べる相手を持たない。項目の<b>中身が何でできているか</b>を問う条件である。
+     *
+     * @param allowed 書いて決めた級 ({@code CLASS} 句) に入るバイト。
+     *                組み込みの級では {@code null}
+     */
+    record ClassTest(DataReference item, Kind kind, byte[] allowed, Origin origin)
+            implements Condition {
+
+        /** 問う中身。 */
+        public enum Kind {
+            /** 数字。符号を持つ項目では符号の正しさも見る。 */
+            NUMERIC,
+            /** 英字。空白も通る。 */
+            ALPHABETIC,
+            /** 小文字。 */
+            ALPHABETIC_LOWER,
+            /** 大文字。 */
+            ALPHABETIC_UPPER,
+            /** 書いて決めた級。 */
+            DEFINED
+        }
+    }
+
     record Not(Condition inner) implements Condition {
     }
 

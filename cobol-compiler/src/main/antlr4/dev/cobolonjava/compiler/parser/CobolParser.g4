@@ -109,7 +109,7 @@ tokens {
     UPON, NO, ADVANCING, USING, REFERENCE, CONTENT, LINES, PAGE,
     CALL, END_CALL, CANCEL, EXCEPTION,
     INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
-    NUMERIC_EDITED,
+    NUMERIC_EDITED, ALPHABETIC_LOWER, ALPHABETIC_UPPER, CLASS, SYMBOLIC,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
     UP, DOWN, SEARCH, END_SEARCH, AT,
     OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
@@ -303,7 +303,28 @@ specialNamesEntry
     : CURRENCY SIGN? IS? literal
     | DECIMAL_POINT IS? IDENTIFIER
     | alphabetClause
+    | classClause
+    | symbolicCharactersClause
     | IDENTIFIER IS IDENTIFIER
+    ;
+
+// 書いて決める級。「CLASS 名前 IS 文字の並び」で、級条件が引く
+classClause
+    : CLASS IDENTIFIER IS? classMember+
+    ;
+
+classMember
+    : literal ((THROUGH | THRU) literal)?
+    ;
+
+// SYMBOLIC CHARACTERS は名前を「照合順序の何番目か」で決める。
+// 名前は定数として使える
+symbolicCharactersClause
+    : SYMBOLIC CHARACTERS? symbolicCharacter+
+    ;
+
+symbolicCharacter
+    : IDENTIFIER+ (IS | ARE)? NUMBER+ (IN IDENTIFIER)?
     ;
 
 // ALPHABET は照合順序に名前を付ける (要件 FR-054)
@@ -436,8 +457,9 @@ redefinesClause
     : REDEFINES dataName
     ;
 
+// 名前は修飾してよい。「RENAMES AL OF A-GLOB THRU BOB OF A-GLOB」と書ける
 renamesClause
-    : RENAMES dataName ((THRU | THROUGH) dataName)?
+    : RENAMES qualifiedDataName ((THRU | THROUGH) qualifiedDataName)?
     ;
 
 pictureClause
@@ -703,12 +725,26 @@ notCondition
     : NOT? simpleCondition
     ;
 
-// 条件名は「名前だけ」で書かれる。関係条件と符号条件を先に試す
+// 条件名は「名前だけ」で書かれる。関係条件と級条件と符号条件を先に試す
 simpleCondition
     : LPAREN condition RPAREN
     | relationCondition
+    | classCondition
     | signCondition
     | conditionNameCondition
+    ;
+
+// 級条件。中身が何でできているかを問う。比べる相手は無い
+classCondition
+    : identifier IS? NOT? className
+    ;
+
+className
+    : NUMERIC
+    | ALPHABETIC_LOWER
+    | ALPHABETIC_UPPER
+    | ALPHABETIC
+    | IDENTIFIER
     ;
 
 // 両辺は算術式である。IF 1 + (TWO * 3) = 7 と書ける。

@@ -98,6 +98,7 @@ public final class DataDivisionBuilder {
         builder.addIndexItems();
         builder.addLinageCounters(program);
         builder.layoutRecords();
+        builder.applyRenames();
         return new Result(new DataLayout(builder.records, builder.indexes,
                 specialRegisters(), builder.totalLength),
                 Map.copyOf(builder.fileRecords), List.copyOf(builder.diagnostics));
@@ -192,8 +193,9 @@ public final class DataDivisionBuilder {
             return;
         }
         if (level == RENAMES_LEVEL) {
-            // 66 レベルは記憶域を重ねずに名前を付け替える。割り付けの規則が別物なので分けて扱う
-            report(origin, "level 66 RENAMES is not supported yet");
+            // 66 レベルは記憶域を重ねずに名前を付け替える。位置と長さが決まるのは
+            // 割り付けのあとなので、ここでは控えるだけにする
+            addRenames(entry, origin);
             return;
         }
 
@@ -394,6 +396,140 @@ public final class DataDivisionBuilder {
                 item.addIndexName(name.getText().toUpperCase(Locale.ROOT));
             }
         }
+    }
+
+    /**
+     * 66 レベルの控え。位置と長さは割り付けのあとに決まる。
+     *
+     * @param record 直前の 01 レベル。66 はその記述の一部に別名を付ける
+     */
+    private record Renames(String name, DataItem record,
+                           CobolParser.QualifiedDataNameContext from,
+                           CobolParser.QualifiedDataNameContext through, Origin origin) {
+    }
+
+    private final List<Renames> renames = new ArrayList<>();
+
+    /** 66 レベルを控える。 */
+    private void addRenames(CobolParser.DataDescriptionEntryContext entry, Origin origin) {
+        CobolParser.RenamesClauseContext clause = renamesClauseOf(entry);
+        if (clause == null) {
+            report(origin, "level 66 needs a RENAMES clause");
+            return;
+        }
+        if (records.isEmpty()) {
+            report(origin, "level 66 must follow a record description");
+            return;
+        }
+        renames.add(new Renames(nameOf(entry), records.get(records.size() - 1),
+                clause.qualifiedDataName(0),
+                clause.qualifiedDataName().size() > 1 ? clause.qualifiedDataName(1) : null,
+                origin));
+    }
+
+    private static CobolParser.RenamesClauseContext renamesClauseOf(
+            CobolParser.DataDescriptionEntryContext entry) {
+        for (CobolParser.DataClauseContext clause : entry.dataClause()) {
+            if (clause.renamesClause() != null) {
+                return clause.renamesClause();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 66 レベルを記憶域の上へ置く (要件 FR-021)。
+     *
+     * <p>{@code RENAMES} は<b>記憶域を重ねない</b>。すでにある記述の一部に、別の名前と
+     * 別の切り方を与えるだけである。{@code REDEFINES} と違って新しい場所を取らないので、
+     * 割り付けが終わったあとに位置と長さを写せばよい。
+     *
+     * <p>{@code THRU} を書けば、始まりの項目の先頭から<b>終わりの項目の末尾まで</b>が
+     * 1 つの群項目になる。書かなければ、その項目 1 つの別名である。
+     */
+    private void applyRenames() {
+        for (Renames one : renames) {
+            DataItem from = withinRecord(one.record(), one.from(), one.origin());
+            if (from == null) {
+                continue;
+            }
+            DataItem through = one.through() == null
+                    ? from
+                    : withinRecord(one.record(), one.through(), one.origin());
+            if (through == null) {
+                continue;
+            }
+            int start = from.offset();
+            int end = through.offset() + through.totalLength();
+            if (end <= start) {
+                report(one.origin(), "RENAMES must name items in order: " + one.name());
+                continue;
+            }
+            DataItem alias = new DataItem(RENAMES_LEVEL, one.name(), one.origin());
+            alias.markAlias();
+            alias.setOffset(start);
+            alias.setLength(end - start);
+            if (one.through() == null && from.isElementary() && from.picture() != null) {
+                // 1 つの項目の別名は、その項目と同じ書き方を引き継ぐ
+                alias.setPicture(from.picture());
+                alias.setUsage(from.usage());
+                alias.setSignPosition(from.signPosition());
+            } else {
+                // 範囲に名前を付けたものは英数字の群である
+                alias.setPicture(PictureParser.parse("X(" + (end - start) + ")"));
+            }
+            one.record().addChild(alias);
+        }
+    }
+
+    /**
+     * その記述の中から名前で項目を 1 つ選ぶ。
+     *
+     * <p>探す範囲を記述の中に限るのは、{@code RENAMES} が<b>直前の 01 の一部</b>にしか
+     * 名前を付けられないからである。
+     */
+    private DataItem withinRecord(DataItem record, CobolParser.QualifiedDataNameContext context,
+                                  Origin origin) {
+        List<String> names = new ArrayList<>();
+        for (CobolParser.DataNameContext name : context.dataName()) {
+            names.add(name.getText().toUpperCase(Locale.ROOT));
+        }
+        List<DataItem> found = new ArrayList<>();
+        collectNamed(record, names.get(0), found);
+        if (found.isEmpty()) {
+            report(origin, "RENAMES names an item that is not in the record: " + names.get(0));
+            return null;
+        }
+        if (found.size() > 1 && names.size() > 1) {
+            found.removeIf(candidate -> !containedIn(candidate, names.subList(1, names.size())));
+        }
+        if (found.size() != 1) {
+            report(origin, names.get(0) + " is ambiguous; qualify it with OF or IN");
+            return null;
+        }
+        return found.get(0);
+    }
+
+    private static void collectNamed(DataItem item, String name, List<DataItem> found) {
+        for (DataItem child : item.children()) {
+            if (name.equalsIgnoreCase(child.name())) {
+                found.add(child);
+            }
+            collectNamed(child, name, found);
+        }
+    }
+
+    /** 修飾子が、外へ向かう順に祖先として現れるか。 */
+    private static boolean containedIn(DataItem item, List<String> qualifiers) {
+        DataItem parent = item.parent();
+        int at = 0;
+        while (parent != null && at < qualifiers.size()) {
+            if (qualifiers.get(at).equalsIgnoreCase(parent.name())) {
+                at++;
+            }
+            parent = parent.parent();
+        }
+        return at == qualifiers.size();
     }
 
     /**

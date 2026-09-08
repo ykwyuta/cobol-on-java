@@ -128,6 +128,10 @@ public final class InitialImage {
             return image;
         }
         for (DataItem child : item.children()) {
+            if (child.isAlias()) {
+                // 66 レベルは記憶域を持たない。書けば名前を付けた先の初期値を消してしまう
+                continue;
+            }
             if (child.redefinesName() != null) {
                 if (hasInitialValue(child)) {
                     report(child.origin(), "VALUE is not allowed in a REDEFINES item: "

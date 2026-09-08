@@ -117,7 +117,45 @@ public final class IntermediateDigits {
                     left.scale() + right.scale()).capped();
             case DIVIDE -> new Digits(
                     left.integerDigits() + right.scale(), dmax).capped();
+            // べき乗の桁は指数で決まる。整数のべきなら底の桁を掛けた数、
+            // そうでなければ近似が入るので、持てるだけの小数桁を取る
+            case POWER -> powerDigits(left, binary.right());
         };
+    }
+
+    /**
+     * べき乗の桁数 (要件 FR-047)。
+     *
+     * <p>指数が<b>0 以上の整数の定数</b>なら、答えは正確に出せる。底の桁数を指数の回だけ
+     * 重ねたものが上限である。そうでなければ答えに近似が入るので、持てるだけの小数桁を
+     * 取っておく。
+     */
+    private Digits powerDigits(Digits base, Expression exponent) {
+        Integer times = integerExponentOf(exponent);
+        if (times == null || times < 0) {
+            return new Digits(MAX_DIGITS - dmax, dmax).capped();
+        }
+        if (times == 0) {
+            return new Digits(1, 0);
+        }
+        return new Digits(base.integerDigits() * times, base.scale() * times).capped();
+    }
+
+    /** 指数が 0 以上の整数の定数なら、その値。 */
+    private static Integer integerExponentOf(Expression exponent) {
+        if (!(exponent instanceof Expression.Value value)
+                || !(value.operand() instanceof Operand.Literal literal)) {
+            return null;
+        }
+        Decimal number = numberOf(literal.value());
+        if (number == null || number.scale() > 0) {
+            return null;
+        }
+        try {
+            return number.toBigDecimal().intValueExact();
+        } catch (ArithmeticException e) {
+            return null;
+        }
     }
 
     private static Digits digitsOf(Operand operand) {

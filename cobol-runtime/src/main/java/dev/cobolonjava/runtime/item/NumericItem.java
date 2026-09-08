@@ -86,6 +86,11 @@ public final class NumericItem {
         return new NumericItem(picture, usage, signPosition, truncMode, numProcMode, undefinedBehavior, v);
     }
 
+    /** 符号の置き場。 */
+    public SignPosition signPosition() {
+        return signPosition;
+    }
+
     public Picture picture() {
         return picture;
     }

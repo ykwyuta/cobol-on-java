@@ -825,6 +825,58 @@ public final class Ops {
     }
 
     /**
+     * べき乗 (要件 FR-047)。
+     *
+     * <p>指数が<b>整数</b>なら、答えは正確に出る。掛け算を重ねるだけだからである。
+     * 負のべきは逆数になるので、そこで割り切れなければ近似が入る。
+     *
+     * <p>指数が整数でなければ、答えは<b>近似である</b>。対数を通るほかない。
+     * 底が負ならその答えは実数にならないので、そこは誤りとして止める。
+     */
+    public static Decimal power(Decimal base, Decimal exponent) {
+        java.math.BigDecimal value = base.toBigDecimal();
+        java.math.BigDecimal times = exponent.toBigDecimal();
+        if (times.stripTrailingZeros().scale() <= 0) {
+            int whole = times.stripTrailingZeros().intValueExact();
+            if (whole >= 0) {
+                return decimalOf(value.pow(whole));
+            }
+            if (value.signum() == 0) {
+                throw new ArithmeticException("zero cannot be raised to a negative power");
+            }
+            return decimalOf(java.math.BigDecimal.ONE.divide(value.pow(-whole), APPROXIMATE));
+        }
+        if (value.signum() < 0) {
+            throw new ArithmeticException(
+                    "a negative number cannot be raised to a fractional power: " + value);
+        }
+        if (value.signum() == 0) {
+            return Decimal.zero(0);
+        }
+        double result = Math.pow(value.doubleValue(), times.doubleValue());
+        if (!Double.isFinite(result)) {
+            throw new ArithmeticException("the result of exponentiation is not a number");
+        }
+        return decimalOf(new java.math.BigDecimal(result).round(APPROXIMATE));
+    }
+
+    /** {@link java.math.BigDecimal} から {@link Decimal} を作る。 */
+    private static Decimal decimalOf(java.math.BigDecimal value) {
+        java.math.BigDecimal trimmed = value.stripTrailingZeros();
+        return Decimal.parse((trimmed.scale() < 0 ? trimmed.setScale(0) : trimmed)
+                .toPlainString());
+    }
+
+    /**
+     * 近似が入る計算の桁数。
+     *
+     * <p>組み込み関数と同じ 15 桁である。同じ根から出る値が場所によって違う桁数に
+     * なると、突き合わせられなくなる。
+     */
+    private static final java.math.MathContext APPROXIMATE =
+            new java.math.MathContext(15, java.math.RoundingMode.HALF_UP);
+
+    /**
      * ファイル状態コードをバイト列にする。
      *
      * <p>{@code FILE STATUS} の項目は<b>2 文字の英数字</b>である。数値ではない。
