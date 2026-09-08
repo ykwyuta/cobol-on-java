@@ -117,6 +117,7 @@ public final class DataDivisionBuilder {
     public static Result build(CobolParser.ProgramUnitContext program,
                                SpecialNames specialNames) {
         DataDivisionBuilder builder = new DataDivisionBuilder(specialNames);
+        builder.addSameAreas(program);
         builder.addProgramUnit(program);
         builder.addIndexItems();
         builder.addLinageCounters(program);
@@ -1306,6 +1307,49 @@ public final class DataDivisionBuilder {
      * <p>連絡節の項目は<b>記憶域を占めない</b>。記憶域の位置は実行時に渡されるため、
      * 位置は 0 のままにして、その中での位置だけを決める。
      */
+    /**
+     * {@code SAME [RECORD] AREA} で結ばれたファイルの代表 (要件 FR-100)。
+     *
+     * <p>結ばれたファイルの<b>レコード領域は 1 つ</b>である。片方へ読み込めば、
+     * もう片方の記述でそのまま読める。CCVS85 の SG204A / ST131A は
+     * {@code READ FILE3} のあと {@code RELEASE S3} と書いており、間の転記が無い。
+     * 領域を分けて取ると、releases されるのは空白のままの領域になる。
+     */
+    private final Map<String, String> sharedArea = new LinkedHashMap<>();
+
+    /**
+     * {@code I-O-CONTROL} の {@code SAME AREA} を読む。
+     *
+     * <p>{@code SAME AREA} と {@code SAME RECORD AREA} を分けていない。前者は
+     * 記憶域そのものを共有し、後者はレコード領域だけを共有するという違いだが、
+     * <b>プログラムから見えるのはどちらもレコード領域が 1 つであること</b>である。
+     * {@code SAME SORT AREA} は整列の作業域の話であり、レコード領域には効かない。
+     */
+    private void addSameAreas(CobolParser.ProgramUnitContext program) {
+        if (program.environmentDivision() == null
+                || program.environmentDivision().inputOutputSection() == null
+                || program.environmentDivision().inputOutputSection()
+                        .ioControlParagraph() == null) {
+            return;
+        }
+        for (CobolParser.IoControlEntryContext entry : program.environmentDivision()
+                .inputOutputSection().ioControlParagraph().ioControlEntry()) {
+            if (entry.SAME() == null || entry.SORT() != null || entry.SORT_MERGE() != null) {
+                continue;
+            }
+            String first = null;
+            for (org.antlr.v4.runtime.tree.TerminalNode name : entry.IDENTIFIER()) {
+                String written = name.getText().toUpperCase(Locale.ROOT);
+                if (first == null) {
+                    // すでに別の組に入っていれば、その代表へ寄せる。
+                    // SAME を 2 行書いて 1 本を共有させる形があるからである
+                    first = sharedArea.getOrDefault(written, written);
+                }
+                sharedArea.put(written, first);
+            }
+        }
+    }
+
     private void layoutRecords() {
         int base = 0;
         Map<String, Integer> fileBases = new LinkedHashMap<>();
@@ -1317,9 +1361,10 @@ public final class DataDivisionBuilder {
             }
             if (record.section() == DataSection.FILE) {
                 // 同じ FD のレコード記述は重なる。どれも 1 つのバッファの別の切り方である
-                Integer at = fileBases.get(record.fileName());
+                String area = sharedArea.getOrDefault(record.fileName(), record.fileName());
+                Integer at = fileBases.get(area);
                 if (at == null) {
-                    fileBases.put(record.fileName(), base);
+                    fileBases.put(area, base);
                     record.setBase(base);
                     base += record.totalLength();
                 } else {

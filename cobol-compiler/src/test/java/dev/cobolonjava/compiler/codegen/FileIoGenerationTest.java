@@ -584,4 +584,57 @@ class FileIoGenerationTest {
         // 行の切れ目を持たない様式では、空行は空白のレコードである
         assertArrayEquals(ebcdic("   ONE"), bytesOf(directory.resolve("FIXDD")));
     }
+
+    @Test
+    @DisplayName("SAME RECORD AREA で結んだファイルはレコード領域を 1 つ持つ (FR-100)")
+    void filesJoinedBySameRecordAreaShareOneRecordArea(@TempDir Path directory) {
+        // 片方へ読み込めば、もう片方の記述でそのまま読める。CCVS85 の SG204A は
+        // READ FILE3 のあと転記せずに RELEASE S3 と書いている
+        assertEquals("[ABC][ABC]|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SAMEREC.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT ONE-FILE ASSIGN TO ONEDD.",
+                "    SELECT TWO-FILE ASSIGN TO TWODD.",
+                "I-O-CONTROL.",
+                "    SAME RECORD AREA FOR ONE-FILE TWO-FILE.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  ONE-FILE.",
+                "01  ONE-REC PIC X(3).",
+                "FD  TWO-FILE.",
+                "01  TWO-REC PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    MOVE 'ABC' TO ONE-REC.",
+                "    DISPLAY '[' ONE-REC '][' TWO-REC ']'.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("結んでいないファイルのレコード領域は別である (FR-100)")
+    void filesNotJoinedKeepTheirOwnRecordArea(@TempDir Path directory) {
+        assertEquals("[ABC][   ]|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. APART.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT ONE-FILE ASSIGN TO ONEDD.",
+                "    SELECT TWO-FILE ASSIGN TO TWODD.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  ONE-FILE.",
+                "01  ONE-REC PIC X(3).",
+                "FD  TWO-FILE.",
+                "01  TWO-REC PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    MOVE SPACES TO TWO-REC.",
+                "    MOVE 'ABC' TO ONE-REC.",
+                "    DISPLAY '[' ONE-REC '][' TWO-REC ']'.",
+                "    STOP RUN.")));
+    }
 }
