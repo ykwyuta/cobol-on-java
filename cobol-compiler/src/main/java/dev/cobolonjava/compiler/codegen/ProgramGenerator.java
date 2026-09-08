@@ -21,6 +21,7 @@ import dev.cobolonjava.compiler.semantic.Statement;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.Origin;
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.function.Intrinsics;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.codepage.CodePages;
@@ -88,6 +89,7 @@ public final class ProgramGenerator {
     private static final String NUMERIC_ITEM = Type.getDescriptor(NumericItem.class);
     private static final String PICTURE = Type.getDescriptor(Picture.class);
     private static final String DECIMAL = Type.getDescriptor(Decimal.class);
+    private static final String INTRINSICS = Type.getInternalName(Intrinsics.class);
     private static final String CLAUSE = Type.getDescriptor(InspectScan.Clause.class);
     private static final String REGION = Type.getDescriptor(Region.class);
 
@@ -2779,7 +2781,227 @@ public final class ProgramGenerator {
         if (operand instanceof Operand.Reference reference) {
             return reference.reference().constantLength().orElse(0);
         }
+        if (operand instanceof Operand.Function function) {
+            return functionLength(function);
+        }
         return 0;
+    }
+
+    /**
+     * 組み込み関数が返すバイト列の長さ (要件 FR-070)。
+     *
+     * <p>翻訳時に決まっていなければならない。決まらなければ、転記も比較も長さが決まらない。
+     *
+     * @return 数値を返す関数なら {@code 0}
+     */
+    private static int functionLength(Operand.Function function) {
+        return switch (function.intrinsic().returns()) {
+            case ONE_CHARACTER -> 1;
+            case SAME_LENGTH -> alphanumericLength(argument(function, 0));
+            case INTEGER, NUMERIC -> 0;
+        };
+    }
+
+    /** バイト列として見たときの長さ。定数はその綴りの長さである。 */
+    private static int alphanumericLength(Operand operand) {
+        if (operand instanceof Operand.Literal literal
+                && literal.value() instanceof LiteralValue.Text text) {
+            return text.text().length();
+        }
+        return lengthOf(operand);
+    }
+
+    /** 文字を受け取る関数の引数。意味解析が式でないことを確かめてある。 */
+    private static Operand argument(Operand.Function function, int index) {
+        return ((Expression.Value) function.arguments().get(index)).operand();
+    }
+
+    // ---- 組み込み関数 ----
+
+    /**
+     * 組み込み関数の呼び出しを積む命令 (要件 FR-070)。バイト列を返すもの。
+     */
+    private Runnable planFunctionBytes(Operand.Function function) {
+        Origin origin = function.origin();
+        return switch (function.intrinsic()) {
+            case UPPER_CASE -> planLetterMap(function, "upperCase");
+            case LOWER_CASE -> planLetterMap(function, "lowerCase");
+            case REVERSE -> {
+                Runnable value = planAlphanumericArgument(function, 0);
+                yield value == null ? null : () -> {
+                    value.run();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "reverse",
+                            "([B)[B", false);
+                };
+            }
+            case CHAR -> {
+                Runnable ordinal = planNumericArgument(function, 0, origin);
+                yield ordinal == null ? null : () -> {
+                    ordinal.run();
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "charOf",
+                            "(" + DECIMAL + CODE_PAGE + ")[B", false);
+                };
+            }
+            default -> {
+                report(origin, "FUNCTION " + function.intrinsic().spelling()
+                        + " does not return an alphanumeric value");
+                yield null;
+            }
+        };
+    }
+
+    private Runnable planLetterMap(Operand.Function function, String method) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([B" + CODE_PAGE + ")[B", false);
+        };
+    }
+
+    /** 組み込み関数の呼び出しを積む命令。{@link Decimal} を返すもの。 */
+    private Runnable planFunctionDecimal(Operand.Function function) {
+        Origin origin = function.origin();
+        return switch (function.intrinsic()) {
+            // 長さは翻訳時に決まる。実行時に数えるものは何も無い
+            case LENGTH -> planConstantLength(function, origin);
+            case MAX -> planFold(function, "max", origin);
+            case MIN -> planFold(function, "min", origin);
+            case SUM -> planFold(function, "sum", origin);
+            case ORD_MAX -> planFold(function, "ordMax", origin);
+            case ORD_MIN -> planFold(function, "ordMin", origin);
+            case RANGE -> planFold(function, "range", origin);
+            case INTEGER -> planUnary(function, "integer", origin);
+            case INTEGER_PART -> planUnary(function, "integerPart", origin);
+            case FACTORIAL -> planUnary(function, "factorial", origin);
+            case MOD -> planBinary(function, "mod", origin);
+            case REM -> planBinary(function, "rem", origin);
+            case ORD -> planReading(function, "ord");
+            case NUMVAL -> planReading(function, "numval");
+            case NUMVAL_C -> planNumvalC(function);
+            default -> {
+                report(origin, "FUNCTION " + function.intrinsic().spelling()
+                        + " does not return a numeric value");
+                yield null;
+            }
+        };
+    }
+
+    /**
+     * {@code FUNCTION LENGTH}。
+     *
+     * <p>項目の文字位置の数は<b>データ部を読んだ時点で決まっている</b>。実行時に数えると、
+     * 数えるための命令を出すことになるうえ、答えは同じである。
+     */
+    private Runnable planConstantLength(Operand.Function function, Origin origin) {
+        int length = alphanumericLength(argument(function, 0));
+        if (length <= 0) {
+            report(origin, "FUNCTION LENGTH requires an item whose length is known"
+                    + " at compile time");
+            return null;
+        }
+        String field = decimalConstant(Decimal.of(length, 0));
+        return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, DECIMAL);
+    }
+
+    /** 引数をいくつでも取る関数。{@link Decimal} の配列にして渡す。 */
+    private Runnable planFold(Operand.Function function, String method, Origin origin) {
+        List<Runnable> values = new ArrayList<>();
+        for (int i = 0; i < function.arguments().size(); i++) {
+            Runnable value = planNumericArgument(function, i, origin);
+            if (value == null) {
+                return null;
+            }
+            values.add(value);
+        }
+        return () -> {
+            push(values.size());
+            run.visitTypeInsn(Opcodes.ANEWARRAY, Type.getInternalName(Decimal.class));
+            for (int i = 0; i < values.size(); i++) {
+                run.visitInsn(Opcodes.DUP);
+                push(i);
+                values.get(i).run();
+                run.visitInsn(Opcodes.AASTORE);
+            }
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([" + DECIMAL + ")" + DECIMAL, false);
+        };
+    }
+
+    private Runnable planUnary(Operand.Function function, String method, Origin origin) {
+        Runnable value = planNumericArgument(function, 0, origin);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "(" + DECIMAL + ")" + DECIMAL, false);
+        };
+    }
+
+    private Runnable planBinary(Operand.Function function, String method, Origin origin) {
+        Runnable left = planNumericArgument(function, 0, origin);
+        Runnable right = planNumericArgument(function, 1, origin);
+        if (left == null || right == null) {
+            return null;
+        }
+        return () -> {
+            left.run();
+            right.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+        };
+    }
+
+    /** バイト列を読んで数値を返す関数。 */
+    private Runnable planReading(Operand.Function function, String method) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([B" + CODE_PAGE + ")" + DECIMAL, false);
+        };
+    }
+
+    /** {@code FUNCTION NUMVAL-C}。第 2 引数の通貨記号は省ける。 */
+    private Runnable planNumvalC(Operand.Function function) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        Runnable currency = function.arguments().size() > 1
+                ? planAlphanumericArgument(function, 1)
+                : () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal,
+                        bytesConstant(new byte[0]), "[B");
+        if (value == null || currency == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            currency.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "numvalC",
+                    "([B[B" + CODE_PAGE + ")" + DECIMAL, false);
+        };
+    }
+
+    /** 数値の引数。式を書いてもよい。 */
+    private Runnable planNumericArgument(Operand.Function function, int index, Origin origin) {
+        Expression argument = function.arguments().get(index);
+        return planExpression(argument, IntermediateDigits.of(argument, List.of()), origin);
+    }
+
+    /** 文字の引数。式は書けないことを意味解析が確かめてある。 */
+    private Runnable planAlphanumericArgument(Operand.Function function, int index) {
+        Operand operand = argument(function, index);
+        return planSourceBytes(operand, function.origin(), alphanumericLength(operand));
     }
 
     private static int branchOpcode(Condition.Comparison comparison) {
@@ -3836,6 +4058,9 @@ public final class ProgramGenerator {
 
     /** 送出側をバイト列として積む命令。 */
     private Runnable planSourceBytes(Operand source, Origin origin, int targetLength) {
+        if (source instanceof Operand.Function function) {
+            return planFunctionBytes(function);
+        }
         if (source instanceof Operand.Literal literal) {
             byte[] bytes = literalBytes(literal.value(), targetLength);
             String field = bytesConstant(bytes);
@@ -3857,6 +4082,9 @@ public final class ProgramGenerator {
 
     /** 送出側を {@link Decimal} として積む命令。 */
     private Runnable planSourceDecimal(Operand source, Origin origin) {
+        if (source instanceof Operand.Function function) {
+            return planFunctionDecimal(function);
+        }
         if (source instanceof Operand.Literal literal) {
             Decimal value = decimalOf(literal.value(), origin);
             if (value == null) {

@@ -130,6 +130,9 @@ public final class IntermediateDigits {
             int total = value.magnitude().toString().length();
             return new Digits(Math.max(1, total - scale), scale);
         }
+        if (operand instanceof Operand.Function function) {
+            return digitsOf(function);
+        }
         DataReference reference = ((Operand.Reference) operand).reference();
         Picture picture = reference.item().picture();
         if (picture == null || !picture.isNumeric()) {
@@ -137,6 +140,31 @@ public final class IntermediateDigits {
             return new Digits(Math.max(1, reference.constantLength().orElse(1)), 0);
         }
         return new Digits(picture.digits() - picture.scale(), picture.scale());
+    }
+
+    /**
+     * 組み込み関数の結果の桁数 (暫定判断 P-065)。
+     *
+     * <p>整数を返す関数は上限の桁で数え、そうでないものは<b>引数のうちいちばん大きいもの</b>
+     * に合わせる。合計と範囲だけは繰り上がりの分を 1 桁足す。
+     *
+     * <p>ここで決めているのは<b>周りの式をどこで打ち切るか</b>だけである。関数が返す値
+     * そのものは実行時の {@link Decimal} が自分の小数桁を持っている。
+     */
+    private static Digits digitsOf(Operand.Function function) {
+        if (function.intrinsic().returns() == Intrinsic.Result.INTEGER) {
+            return new Digits(MAX_DIGITS, 0);
+        }
+        int integerDigits = 1;
+        int scale = 0;
+        for (Expression argument : function.arguments()) {
+            Digits digits = new IntermediateDigits(0).of(argument);
+            integerDigits = Math.max(integerDigits, digits.integerDigits());
+            scale = Math.max(scale, digits.scale());
+        }
+        boolean accumulates = function.intrinsic() == Intrinsic.SUM
+                || function.intrinsic() == Intrinsic.RANGE;
+        return new Digits(accumulates ? integerDigits + 1 : integerDigits, scale).capped();
     }
 
     private static int scaleOf(Operand operand) {

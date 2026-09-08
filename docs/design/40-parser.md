@@ -149,11 +149,11 @@ PROGRAM-ID. SUB.
 
 データ部の割り付けは[設計 50](50-data-layout.md)、手続き部は[設計 60](60-procedure.md) へ続く。
 
-1. `EXIT PROGRAM` (9 本を止めている)。呼ばれた側から戻る文である。主プログラムでは
-   何もしないという決まりがあり、`GOBACK` と同じにはできない。
-2. `USAGE INDEX` (6 本、暫定判断 P-006 の残り) と `SET` の指標名 (3 本、暫定判断 P-035)。
-3. `PROGRAM COLLATING SEQUENCE` (6 本、暫定判断 P-042)。
-4. 66 レベルの `RENAMES`。
-5. 入れ子プログラム。並べて書く形は読めるようになった。
-6. `I-O-CONTROL` 段落と `DECLARATIVES`。
+1. `PROGRAM COLLATING SEQUENCE` と `SPECIAL-NAMES` の `ALPHABET` 句
+   (6 本、暫定判断 P-042)。
+2. `USE ... FOR DEBUGGING` (5 本)。デバッグ節である。
+3. 66 レベルの `RENAMES`。
+4. 入れ子プログラム (3 本)。並べて書く形は読めるようになった。
+5. `I-O-CONTROL` 段落と `DECLARATIVES`。
+6. 段分け (セグメンテーション、6 本)。
 7. 通信部 (`COMMUNICATION SECTION`、3 本)。

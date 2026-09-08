@@ -60,6 +60,7 @@ tokens {
     STRING, UNSTRING, DELIMITED, DELIMITER, COUNT, OVERFLOW, INTO,
     END_STRING, END_UNSTRING,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
+    FUNCTION,
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
@@ -487,7 +488,8 @@ moveStatement
     ;
 
 moveSource
-    : identifier
+    : functionCall
+    | identifier
     | literal
     ;
 
@@ -992,8 +994,27 @@ notOnSizeErrorPhrase
     ;
 
 arithmeticOperand
-    : identifier
+    : functionCall
+    | identifier
     | literal
+    ;
+
+// 組み込み関数の呼び出し (要件 FR-070)。
+//
+// 引数の区切りのコンマは飾りであり、SourceTokenSource が落としている。
+// 区切っているのは空白のほうである。COBOL では 2 項の演算子は前後に空白を置き、
+// 単項の符号は後ろに空白を置かない。したがって字句の切れ目に差が残り、
+// 「11, -5」は 2 個、「11 - 5」は 1 個の引数になる。
+functionCall
+    : FUNCTION functionName (LPAREN expression+ RPAREN)?
+    ;
+
+// 予約語と綴りが同じ関数名は、ここに並べて拾う
+functionName
+    : IDENTIFIER
+    | RANDOM
+    | DATE
+    | DAY
     ;
 
 // GIVING がなければ受取項目になるため、ROUNDED を書ける

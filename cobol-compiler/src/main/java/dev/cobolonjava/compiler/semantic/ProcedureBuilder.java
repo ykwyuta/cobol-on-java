@@ -1753,8 +1753,57 @@ public final class ProcedureBuilder {
         if (operand instanceof Operand.Reference reference) {
             return DataCategory.of(reference.reference()).isNumeric();
         }
+        if (operand instanceof Operand.Function function) {
+            return function.intrinsic().returns().isNumeric();
+        }
         LiteralValue value = ((Operand.Literal) operand).value();
         return DataCategory.of(value, literalDefault).isNumeric();
+    }
+
+    /**
+     * 組み込み関数の呼び出しを組み立てる (要件 FR-070)。
+     *
+     * <p>知らない関数は<b>断る</b>。近い値を黙って返すより、書けないと言うほうがよい。
+     * 三角関数や対数がここに無いのは、結果の桁数が処理系の決めごとであり、
+     * その仕様をまだ持っていないからである (暫定判断 P-065)。
+     */
+    private Operand functionOf(CobolParser.FunctionCallContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String spelling = context.functionName().getText().toUpperCase(Locale.ROOT);
+        Intrinsic intrinsic = Intrinsic.of(spelling);
+        if (intrinsic == null) {
+            report(origin, "FUNCTION " + spelling + " is not supported yet");
+            return null;
+        }
+        List<Expression> arguments = new ArrayList<>();
+        for (CobolParser.ExpressionContext argument : context.expression()) {
+            Expression built = expressionOf(argument, origin);
+            if (built == null) {
+                return null;
+            }
+            arguments.add(built);
+        }
+        if (!intrinsic.accepts(arguments.size())) {
+            report(origin, "FUNCTION " + intrinsic.spelling() + " takes " + intrinsic.arity()
+                    + " but " + arguments.size() + " were given");
+            return null;
+        }
+        if (intrinsic.takes() != Intrinsic.Argument.NUMERIC && !plainOperands(arguments)) {
+            // 文字を受け取る関数の引数は項目か定数である。式を書いても足す先が無い
+            report(origin, "FUNCTION " + intrinsic.spelling()
+                    + " takes an item or a literal, not an arithmetic expression");
+            return null;
+        }
+        return new Operand.Function(intrinsic, arguments, origin);
+    }
+
+    private static boolean plainOperands(List<Expression> arguments) {
+        for (Expression argument : arguments) {
+            if (!(argument instanceof Expression.Value)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Condition.Comparison comparisonOf(
@@ -2197,6 +2246,9 @@ public final class ProcedureBuilder {
     }
 
     private Operand operandOf(CobolParser.ArithmeticOperandContext context, Origin origin) {
+        if (context.functionCall() != null) {
+            return functionOf(context.functionCall());
+        }
         if (context.literal() != null) {
             try {
                 return new Operand.Literal(LiteralValue.of(context.literal()));
@@ -2383,6 +2435,14 @@ public final class ProcedureBuilder {
         if (source instanceof Operand.Reference reference) {
             return DataCategory.of(reference.reference());
         }
+        if (source instanceof Operand.Function function) {
+            // 関数の値は「数値」か「英数字」のどちらかである。編集はしない
+            return switch (function.intrinsic().returns()) {
+                case INTEGER -> DataCategory.NUMERIC_INTEGER;
+                case NUMERIC -> DataCategory.NUMERIC_NONINTEGER;
+                case SAME_LENGTH, ONE_CHARACTER -> DataCategory.ALPHANUMERIC;
+            };
+        }
         boolean numericReceiver = receiver.isNumeric() || receiver == DataCategory.NUMERIC_EDITED;
         return DataCategory.of(((Operand.Literal) source).value(), numericReceiver);
     }
@@ -2392,6 +2452,9 @@ public final class ProcedureBuilder {
     }
 
     private Operand operandOf(CobolParser.MoveSourceContext context, Origin origin) {
+        if (context.functionCall() != null) {
+            return functionOf(context.functionCall());
+        }
         if (context.literal() != null) {
             try {
                 return new Operand.Literal(LiteralValue.of(context.literal()));
