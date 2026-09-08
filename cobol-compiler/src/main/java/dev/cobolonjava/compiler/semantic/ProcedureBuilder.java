@@ -1300,7 +1300,8 @@ public final class ProcedureBuilder {
             }
             whens.add(new Statement.Search.When(condition, bodyOf(when.branchBody())));
         }
-        return new Statement.Search(index, varying, table.occurs(), atEnd, whens, origin);
+        return new Statement.Search(index, varying, table.occurs(),
+                occursDependingOf(table, origin), atEnd, whens, origin);
     }
 
     /**
@@ -1354,7 +1355,8 @@ public final class ProcedureBuilder {
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
                 : bodyOf(context.atEndPhrase().branchBody());
-        return new Statement.SearchAll(index, table.occurs(), keys, atEnd,
+        return new Statement.SearchAll(index, table.occurs(),
+                occursDependingOf(table, origin), keys, atEnd,
                 bodyOf(when.branchBody()), origin);
     }
 
@@ -2520,6 +2522,29 @@ public final class ProcedureBuilder {
         return parent == null
                 ? null
                 : conditionNameCondition(parent, namedCondition(item, name), origin);
+    }
+
+    /**
+     * {@code OCCURS ... DEPENDING ON} の項目への参照。書かれていなければ {@code null}。
+     *
+     * <p>{@code SEARCH} が端まで走る回数は、書かれた最大の回数ではなく<b>この項目の
+     * いまの値</b>である。最大まで走ると、まだ入っていない場所を読んで
+     * 「見つかった」と言ってしまう (NC235A がそれで落ちていた)。
+     */
+    private DataReference occursDependingOf(DataItem table, Origin origin) {
+        if (table.occursDependingName() == null) {
+            return null;
+        }
+        DataReference reference = resolver.resolveName(table.occursDependingName(), origin);
+        if (reference == null) {
+            return null;
+        }
+        if (!DataCategory.of(reference).isNumeric()) {
+            report(origin, "OCCURS ... DEPENDING ON requires a numeric item: "
+                    + describe(reference));
+            return null;
+        }
+        return reference;
     }
 
     /** 式が名前 1 個なら、その名前。そうでなければ {@code null}。 */

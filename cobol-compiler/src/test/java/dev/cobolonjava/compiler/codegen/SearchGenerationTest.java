@@ -372,6 +372,50 @@ class SearchGenerationTest {
     }
 
     @Test
+    @DisplayName("SEARCH は OCCURS ... DEPENDING ON の値までしか走らない (FR-066)")
+    void searchStopsAtTheDependingCount() {
+        // 記憶域は最大の回数で取ってある。最大まで走ると、まだ入っていない場所を読んで
+        // 「見つかった」と言ってしまう (NC235A の「ENTRY SHOULD NOT BE FOUND」)
+        List<String> storage = List.of(
+                "01 WS-N PIC 9(4) COMP VALUE 2.",
+                "01 WS-T.",
+                "   05 WS-E OCCURS 1 TO 3 TIMES DEPENDING ON WS-N",
+                "      INDEXED BY WS-I.",
+                "      10 WS-KEY PIC X(3).",
+                "01 WS-R PIC X.");
+        assertEquals("[E]|", run(storage,
+                "    MOVE 'aaa' TO WS-KEY (1)",
+                "    MOVE 'bbb' TO WS-KEY (2)",
+                "    MOVE 'ccc' TO WS-KEY (3)",
+                "    SET WS-I TO 1",
+                "    SEARCH WS-E AT END MOVE 'E' TO WS-R",
+                "        WHEN WS-KEY (WS-I) = 'ccc' MOVE 'F' TO WS-R",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-R ']'."));
+    }
+
+    @Test
+    @DisplayName("DEPENDING ON の値を増やせば、その先まで走る (FR-066)")
+    void searchReachesFurtherWhenTheCountGrows() {
+        List<String> storage = List.of(
+                "01 WS-N PIC 9(4) COMP VALUE 3.",
+                "01 WS-T.",
+                "   05 WS-E OCCURS 1 TO 3 TIMES DEPENDING ON WS-N",
+                "      INDEXED BY WS-I.",
+                "      10 WS-KEY PIC X(3).",
+                "01 WS-R PIC X.");
+        assertEquals("[F]|", run(storage,
+                "    MOVE 'aaa' TO WS-KEY (1)",
+                "    MOVE 'bbb' TO WS-KEY (2)",
+                "    MOVE 'ccc' TO WS-KEY (3)",
+                "    SET WS-I TO 1",
+                "    SEARCH WS-E AT END MOVE 'E' TO WS-R",
+                "        WHEN WS-KEY (WS-I) = 'ccc' MOVE 'F' TO WS-R",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-R ']'."));
+    }
+
+    @Test
     @DisplayName("SET ... UP BY の受取側は指標名に限る (FR-025)")
     void setUpByNeedsAnIndexName() {
         // 動かしているのは表の中の位置そのものである

@@ -435,6 +435,11 @@ public final class DataDivisionBuilder {
         } catch (NumberFormatException e) {
             report(origin, "OCCURS requires an integer: " + text);
         }
+        if (clause.qualifiedDataName() != null) {
+            // 記憶域は最大の回数で取る。この名前が決めるのは「いま何個あるか」だけである
+            item.setOccursDependingName(
+                    clause.qualifiedDataName().dataName(0).getText().toUpperCase(Locale.ROOT));
+        }
         for (CobolParser.OccursKeyClauseContext key : clause.occursKeyClause()) {
             boolean ascending = key.ASCENDING() != null;
             for (CobolParser.QualifiedDataNameContext name : key.qualifiedDataName()) {

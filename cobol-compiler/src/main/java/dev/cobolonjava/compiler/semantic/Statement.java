@@ -420,6 +420,7 @@ public sealed interface Statement {
      * @param whens   条件と、成り立ったときの文。書かれた順に試す
      */
     record Search(DataReference index, DataReference varying, int occurs,
+                  DataReference occursDepending,
                   List<Statement> atEnd, List<When> whens, Origin origin) implements Statement {
 
         public Search {
@@ -446,10 +447,12 @@ public sealed interface Statement {
      * <p>書ける条件は<b>鍵と値の等号だけ</b>である。任意の条件を書けないのは、
      * 2 分探索が「大きいか小さいか」で半分を捨てる仕組みだからである。
      *
+     * @param occursDepending {@code OCCURS ... DEPENDING ON} の項目。無ければ {@code null}
      * @param keys  鍵ごとの照合。表に書かれた順に並ぶ
      * @param whenStatements 当たったときの文
      */
-    record SearchAll(DataReference index, int occurs, List<KeyTest> keys,
+    record SearchAll(DataReference index, int occurs, DataReference occursDepending,
+                     List<KeyTest> keys,
                      List<Statement> atEnd, List<Statement> whenStatements, Origin origin)
             implements Statement {
 

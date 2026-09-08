@@ -958,7 +958,9 @@ public final class ProgramGenerator {
         }
         Runnable limit = planSourceDecimal(new Operand.Reference(statement.index()),
                 statement.origin());
-        if (limit == null) {
+        Runnable bound = planOccurs(statement.occurs(), statement.occursDepending(),
+                statement.origin());
+        if (limit == null || bound == null) {
             return;
         }
 
@@ -981,7 +983,7 @@ public final class ProgramGenerator {
             // 指標が回数を超えていたら、そこで終わりである
             limit.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
-            push(statement.occurs());
+            bound.run();
             run.visitJumpInsn(Opcodes.IF_ICMPGT, exhausted);
             for (int i = 0; i < hit.length; i++) {
                 emitCondition(statement.whens().get(i).condition(), hit[i], true);
@@ -1039,6 +1041,11 @@ public final class ProgramGenerator {
             }
             comparisons.add(comparison);
         }
+        Runnable bound = planOccurs(statement.occurs(), statement.occursDepending(),
+                statement.origin());
+        if (bound == null) {
+            return;
+        }
         List<Runnable> atEnd = planStatements(statement.atEnd());
         List<Runnable> matched = planStatements(statement.whenStatements());
 
@@ -1054,7 +1061,7 @@ public final class ProgramGenerator {
 
             run.visitInsn(Opcodes.ICONST_1);
             run.visitVarInsn(Opcodes.ISTORE, low);
-            push(statement.occurs());
+            bound.run();
             run.visitVarInsn(Opcodes.ISTORE, high);
 
             run.visitLabel(top);
@@ -4685,6 +4692,30 @@ public final class ProgramGenerator {
         return () -> {
             push(base);
             variable.forEach(Runnable::run);
+        };
+    }
+
+    /**
+     * 表の回数を積む命令。
+     *
+     * <p>{@code OCCURS ... DEPENDING ON} を書いた表では、いま何個あるかは<b>実行時に
+     * しか決まらない</b>。記憶域は最大の回数で取ってあるので、最大まで走ると
+     * まだ入っていない場所を読んで「見つかった」と言ってしまう (NC235A)。
+     *
+     * @param occurs    書かれた最大の回数
+     * @param depending {@code DEPENDING ON} の項目。無ければ {@code null}
+     */
+    private Runnable planOccurs(int occurs, DataReference depending, Origin origin) {
+        if (depending == null) {
+            return () -> push(occurs);
+        }
+        Runnable value = planSourceDecimal(new Operand.Reference(depending), origin);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
         };
     }
 

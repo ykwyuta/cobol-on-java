@@ -268,6 +268,23 @@ public final class DataItem {
         this.blankWhenZero = value;
     }
 
+    /**
+     * {@code OCCURS ... DEPENDING ON} に書かれた項目の名前。書かれていなければ {@code null}。
+     *
+     * <p>記憶域は<b>最大の回数</b>で取る。実行時に変わるのは「いま何個あるか」だけで
+     * あり、割り付けそのものは動かない。{@code SEARCH} が端まで走る回数と、
+     * この表を含む群の長さが、この項目の値で決まる。
+     */
+    private String occursDependingName;
+
+    public String occursDependingName() {
+        return occursDependingName;
+    }
+
+    void setOccursDependingName(String value) {
+        this.occursDependingName = value;
+    }
+
     void setOccurs(int value) {
         this.occurs = value;
         this.table = true;

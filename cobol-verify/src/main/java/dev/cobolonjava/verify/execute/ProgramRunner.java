@@ -177,6 +177,23 @@ public final class ProgramRunner {
                 TestReport.inspected(report), TestReport.failures(report));
     }
 
+    /**
+     * 外部スイッチを、検査スイートが求める状態にする。
+     *
+     * <p>CCVS85 は<b>流す前にスイッチを合わせておくこと</b>を求めている。NC174A は
+     * 「SWITCH-1 EXPECTED ON」と自分で書いており、UPSI-0 が入・UPSI-1 が切であることを
+     * 前提にしている。合わせずに流すと、道具のほうが処理系の失敗を作る。
+     *
+     * <p>差し込み札 (X-card) と同じ種類の支度である。札を埋めるのと同じく、
+     * <b>検査が要求している環境を用意する</b>ことであって、答えを合わせにいくのではない。
+     */
+    private static void setSwitches(ProgramContext context) {
+        context.switchState(0, true);
+        for (int i = 1; i < 8; i++) {
+            context.switchState(i, false);
+        }
+    }
+
     /** 時間切れを表す番人。例外そのものではないので、取り違えようがない。 */
     private static final Throwable TIMED_OUT = new Throwable("timed out");
 
@@ -196,6 +213,7 @@ public final class ProgramRunner {
                 ProgramContext context = ProgramContext.standard()
                         .withOutput(OutputStream.nullOutputStream())
                         .withCatalog(new DataSetCatalog(directory));
+                setSwitches(context);
                 ((CobolProgram) program.getDeclaredConstructor().newInstance())
                         .runFresh(context);
             } catch (Throwable caught) {
