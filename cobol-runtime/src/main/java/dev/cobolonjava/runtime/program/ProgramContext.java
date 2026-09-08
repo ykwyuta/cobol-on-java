@@ -399,6 +399,26 @@ public final class ProgramContext {
         return endOfPage;
     }
 
+    /**
+     * 外から立てる切り替え (要件 FR-135)。
+     *
+     * <p>ジョブが立てたところをプログラムが読む。実行の全体で 1 つであり、
+     * 初めはすべて切れている。参照実装と同じく 8 個持つ。
+     */
+    private final boolean[] switches = new boolean[8];
+
+    /** 切り替えを立てる、または切る。 */
+    public void switchState(int index, boolean on) {
+        if (index >= 0 && index < switches.length) {
+            switches[index] = on;
+        }
+    }
+
+    /** 切り替えが立っているか。 */
+    public boolean switchState(int index) {
+        return index >= 0 && index < switches.length && switches[index];
+    }
+
     /** 閉じたファイルに錠を掛ける。 */
     public void lockFile(String name) {
         lockedFiles.add(name);

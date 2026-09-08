@@ -225,18 +225,20 @@ class PerformGenerationTest {
     }
 
     @Test
-    @DisplayName("逆順の THRU は誤りとして報告する (FR-061)")
-    void aReversedThruRangeIsReported() {
-        // 書いた人の意図と実行される範囲が食い違う
-        CobolCompiler.Result result = compile(COUNTER,
+    @DisplayName("2 つ目の手続き名が物理的に前にあってもよい (FR-061)")
+    void theSecondProcedureMayComeFirstInTheSource() {
+        // 範囲が終わるのは<b>2 つ目の段落を最後まで流れきったとき</b>であって、
+        // 並び順ではない。GO TO で行き来してそこへ達すればよい。
+        // NIST の検査スイートはこれを「ALL THIS IS LEGAL」と書いている (NC102A)。
+        // ここを「逆順は誤り」と断っていた
+        assertEquals("011", run(COUNTER,
                 "MAIN-START.",
-                "    PERFORM ADD-TEN THRU ADD-ONE.",
+                "    PERFORM ADD-TEN THRU ADD-ONE",
+                "    STOP RUN.",
                 "ADD-ONE.",
                 "    ADD 1 TO WS-N.",
                 "ADD-TEN.",
-                "    ADD 10 TO WS-N.");
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("reverse order"),
-                result.diagnostics().toString());
+                "    ADD 10 TO WS-N",
+                "    GO TO ADD-ONE."));
     }
 }

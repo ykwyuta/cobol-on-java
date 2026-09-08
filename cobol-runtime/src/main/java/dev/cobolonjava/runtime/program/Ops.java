@@ -814,6 +814,11 @@ public final class Ops {
         return status(context, status);
     }
 
+    /** 外から立てる切り替えが立っているか (要件 FR-135)。 */
+    public static boolean switchState(ProgramContext context, int index) {
+        return context.switchState(index);
+    }
+
     /**
      * 行き先を書かない {@code GO TO} を通った (要件 FR-063)。
      *

@@ -49,11 +49,22 @@ class PopulationTest {
     void commentingOutDoesNotDestroyColumnEight() {
         // 8 桁目は A 領域の先頭であり、段落見出しが始まる場所である。
         // 印をそこへ逃がすと「*APECIAL-NAMES.」になり、道具が原文を壊す
-        String line = "003300ASPECIAL-NAMES.";
+        String line = "003300CSPECIAL-NAMES.";
 
         String out = one(Population.plain(CARDS), line);
 
         assertEquals("003300*SPECIAL-NAMES.", out);
+    }
+
+    @Test
+    @DisplayName("支えている機能の行は活きる (NFR-040)")
+    void aSupportedOptionComesAlive() {
+        // 何も選ばないと形が壊れるプログラムがある。選ばなかったせいで構文誤りに
+        // なるのは、道具が処理系の失敗を作っているのと同じである
+        assertEquals("003300 SPECIAL-NAMES.",
+                one(Population.plain(CARDS), "003300ASPECIAL-NAMES."));
+        assertEquals("003300*SPECIAL-NAMES.",
+                one(Population.bare(CARDS), "003300ASPECIAL-NAMES."));
     }
 
     @Test

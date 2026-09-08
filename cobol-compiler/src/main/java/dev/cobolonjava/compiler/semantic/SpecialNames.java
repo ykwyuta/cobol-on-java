@@ -27,15 +27,18 @@ public final class SpecialNames {
     private final byte[] collating;
     private final Map<String, byte[]> alphabets;
     private final Map<String, byte[]> classes;
+    private final Map<String, SwitchStatus> switches;
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating) {
-        this(currency, mnemonics, collating, Map.of(), Map.of());
+        this(currency, mnemonics, collating, Map.of(), Map.of(), Map.of());
     }
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating,
-                         Map<String, byte[]> alphabets, Map<String, byte[]> classes) {
+                         Map<String, byte[]> alphabets, Map<String, byte[]> classes,
+                         Map<String, SwitchStatus> switches) {
         this.alphabets = Map.copyOf(alphabets);
         this.classes = Map.copyOf(classes);
+        this.switches = Map.copyOf(switches);
         this.currency = currency;
         this.mnemonics = Map.copyOf(mnemonics);
         this.collating = collating;
@@ -78,6 +81,27 @@ public final class SpecialNames {
         byte[] members = classes.get(name.toUpperCase(Locale.ROOT));
         return members == null ? null : members.clone();
     }
+
+    /**
+     * 外から立てる切り替えの条件名 (要件 FR-135)。
+     *
+     * @param index  何番目の切り替えか (0 起点)
+     * @param whenOn 立っているときに真になるか
+     */
+    public record SwitchStatus(int index, boolean whenOn) {
+    }
+
+    /**
+     * 条件名が切り替えを問うものなら、その中身。
+     *
+     * @return 切り替えの条件名でなければ {@code null}
+     */
+    public SwitchStatus switchStatus(String name) {
+        return switches.get(name.toUpperCase(Locale.ROOT));
+    }
+
+    /** 外から立てられる切り替えの数。参照実装と同じ 8 個である。 */
+    public static final int SWITCHES = 8;
 
     /**
      * 呼び名が指せる機能名 (要件 FR-135)。
@@ -140,6 +164,7 @@ public final class SpecialNames {
         Map<String, FunctionName> mnemonics = new LinkedHashMap<>();
         Map<String, byte[]> alphabets = new LinkedHashMap<>();
         Map<String, byte[]> classes = new LinkedHashMap<>();
+        Map<String, SwitchStatus> switches = new LinkedHashMap<>();
 
         CobolParser.SpecialNamesParagraphContext paragraph = paragraphOf(program);
         if (paragraph != null) {
@@ -167,6 +192,10 @@ public final class SpecialNames {
                     addClass(entry.classClause(), classes, origin, diagnostics);
                     continue;
                 }
+                if (entry.switchClause() != null) {
+                    addSwitch(entry.switchClause(), switches, origin, diagnostics);
+                    continue;
+                }
                 if (entry.symbolicCharactersClause() != null) {
                     // 名前を照合順序の位置で決める。値そのものは翻訳の結果に効くが、
                     // 名前を定数として使う道をまだ持っていない (暫定判断 P-074)
@@ -176,7 +205,8 @@ public final class SpecialNames {
             }
         }
         byte[] collating = collatingOf(program, alphabets, diagnostics);
-        return new Result(new SpecialNames(currency, mnemonics, collating, alphabets, classes),
+        return new Result(
+                new SpecialNames(currency, mnemonics, collating, alphabets, classes, switches),
                 List.copyOf(diagnostics));
     }
 
@@ -298,6 +328,40 @@ public final class SpecialNames {
             return null;
         }
         return text.text().charAt(0);
+    }
+
+    /**
+     * {@code UPSI-0 IS SW-1 ON STATUS IS ON-1 OFF STATUS IS OFF-1} (要件 FR-135)。
+     *
+     * <p>外から立てる切り替えである。ジョブが立てたところをプログラムが読む。
+     * 参照実装は {@code UPSI-0} から {@code UPSI-7} までの 8 個を持つ。
+     */
+    private static void addSwitch(CobolParser.SwitchClauseContext clause,
+                                  Map<String, SwitchStatus> switches, Origin origin,
+                                  List<Diagnostic> diagnostics) {
+        String device = clause.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
+        Integer index = switchIndexOf(device);
+        if (index == null) {
+            diagnostics.add(new Diagnostic(origin, "unknown switch name: " + device
+                    + "; write UPSI-0 through UPSI-" + (SWITCHES - 1)));
+            return;
+        }
+        for (CobolParser.SwitchStatusContext status : clause.switchStatus()) {
+            String name = status.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+            if (switches.putIfAbsent(name,
+                    new SwitchStatus(index, status.ON() != null)) != null) {
+                diagnostics.add(new Diagnostic(origin, "duplicate condition-name: " + name));
+            }
+        }
+    }
+
+    /** {@code UPSI-n} の n。ほかの綴りなら {@code null}。 */
+    private static Integer switchIndexOf(String device) {
+        if (!device.startsWith("UPSI-") || device.length() != 6) {
+            return null;
+        }
+        char digit = device.charAt(5);
+        return digit >= '0' && digit < '0' + SWITCHES ? digit - '0' : null;
     }
 
     /** {@code 機能名 IS 呼び名}。 */

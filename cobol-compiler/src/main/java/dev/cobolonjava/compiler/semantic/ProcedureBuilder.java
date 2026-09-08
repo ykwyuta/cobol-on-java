@@ -320,11 +320,10 @@ public final class ProcedureBuilder {
         int to = names.indexOf(perform.through());
         if (to < 0) {
             report(perform.origin(), "undefined paragraph: " + perform.through());
-        } else if (to < from) {
-            // 逆順に書かれた THRU は、書いた人の意図と実行される範囲が食い違う
-            report(perform.origin(), "PERFORM THRU names paragraphs in reverse order: "
-                    + perform.target() + " comes after " + perform.through());
         }
+        // 2 つ目の手続き名が<b>物理的に前にあってもよい</b>。範囲が終わるのは
+        // 「2 つ目の段落を最後まで流れきったとき」であって、並び順ではない。
+        // GO TO で行き来してそこへ達すればよく、規格もそれを許している
     }
 
     /**
@@ -2158,6 +2157,10 @@ public final class ProcedureBuilder {
      */
     private Condition conditionNameFor(CobolParser.IdentifierContext context, Origin origin) {
         String name = context.qualifiedDataName().dataName(0).getText().toUpperCase(Locale.ROOT);
+        SpecialNames.SwitchStatus status = specialNames.switchStatus(name);
+        if (status != null) {
+            return new Condition.SwitchTest(status.index(), status.whenOn(), origin);
+        }
         for (DataItem item : layout.all()) {
             for (DataItem.ConditionName conditionName : item.conditionNames()) {
                 if (name.equals(conditionName.name())) {
@@ -2481,6 +2484,10 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context);
         String name = context.identifier().qualifiedDataName().dataName(0).getText()
                 .toUpperCase(Locale.ROOT);
+        SpecialNames.SwitchStatus status = specialNames.switchStatus(name);
+        if (status != null) {
+            return new Condition.SwitchTest(status.index(), status.whenOn(), origin);
+        }
         for (DataItem item : layout.all()) {
             for (DataItem.ConditionName conditionName : item.conditionNames()) {
                 if (name.equals(conditionName.name())) {

@@ -2931,6 +2931,15 @@ public final class ProgramGenerator {
             emitClassTest(test, target, jumpWhenTrue);
             return;
         }
+        if (condition instanceof Condition.SwitchTest test) {
+            // 記憶域を見ない。実行の外から立てられたものを読むだけである
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            push(test.index());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "switchState",
+                    "(" + CONTEXT + "I)Z", false);
+            run.visitJumpInsn(jumpWhenTrue == test.whenOn() ? Opcodes.IFNE : Opcodes.IFEQ, target);
+            return;
+        }
         emitRelation((Condition.Relation) condition, target, jumpWhenTrue);
     }
 

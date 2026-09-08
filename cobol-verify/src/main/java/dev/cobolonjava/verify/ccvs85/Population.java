@@ -46,8 +46,26 @@ import java.util.Set;
  */
 public record Population(Set<Character> options, XCards cards) {
 
-    /** 選べる行を 1 つも選ばない、いちばん素直な起こし方。 */
+    /**
+     * こちらが支えている機能を選んだ起こし方。
+     *
+     * <p>何も選ばないのがいちばん素直だが、それでは<b>形が壊れるプログラムがある</b>。
+     * NC174A は {@code SPECIAL-NAMES.} の見出しごと {@code A} の行に載せているので、
+     * {@code A} を選ばないと、そのあとの {@code CLASS} 句が段落の外に浮いてしまう。
+     * 選ばなかったせいで構文誤りになるのは、<b>道具が処理系の失敗を作っている</b>のと
+     * 同じである。
+     *
+     * <p>{@code A} は外から立てる切り替え ({@code UPSI}) の検査であり、こちらは支えている。
+     */
+    public static final Set<Character> SUPPORTED = Set.of('A');
+
+    /** 支えている機能を選んだ、既定の起こし方。 */
     public static Population plain(XCards cards) {
+        return new Population(SUPPORTED, cards);
+    }
+
+    /** 選べる行を 1 つも選ばない起こし方。 */
+    public static Population bare(XCards cards) {
         return new Population(Set.of(), cards);
     }
 

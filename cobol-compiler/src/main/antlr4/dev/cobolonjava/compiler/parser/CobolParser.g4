@@ -94,7 +94,7 @@ tokens {
     INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
     RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
-    RESERVE, AREA, AREAS, PASSWORD, PADDING, CODE_SET,
+    RESERVE, AREA, AREAS, PASSWORD, PADDING, CODE_SET, OFF,
     REEL, UNIT, REMOVAL, REWIND, LOCK, REVERSED, END_OF_PAGE, EOP,
     I_O_CONTROL, SAME, SORT_MERGE, MULTIPLE, TAPE, POSITION, RERUN, APPLY, EVERY,
     LINAGE, FOOTING, TOP, BOTTOM,
@@ -305,7 +305,19 @@ specialNamesEntry
     | alphabetClause
     | classClause
     | symbolicCharactersClause
+    | switchClause
     | IDENTIFIER IS IDENTIFIER
+    ;
+
+// 外から立てる切り替え (UPSI)。名前を付け、その入・切に条件名を与える。
+// ジョブが立てたところをプログラムが読む。呼び名の指定と形が同じなので、
+// <b>切り替えの状態を書いたときだけ</b>こちらへ来るようにしている
+switchClause
+    : IDENTIFIER (IS IDENTIFIER)? switchStatus+
+    ;
+
+switchStatus
+    : (ON | OFF) STATUS? IS? IDENTIFIER
     ;
 
 // 書いて決める級。「CLASS 名前 IS 文字の並び」で、級条件が引く

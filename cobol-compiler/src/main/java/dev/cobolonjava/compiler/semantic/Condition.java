@@ -84,6 +84,16 @@ public sealed interface Condition {
         }
     }
 
+    /**
+     * 外から立てる切り替えを問う条件 (要件 FR-135)。
+     *
+     * <p>記憶域を見ない。実行の外から立てられたものを読むだけである。
+     *
+     * @param whenOn 立っているときに真になるか
+     */
+    record SwitchTest(int index, boolean whenOn, Origin origin) implements Condition {
+    }
+
     record Not(Condition inner) implements Condition {
     }
 
