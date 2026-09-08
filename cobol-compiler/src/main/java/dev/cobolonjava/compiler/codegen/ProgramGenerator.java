@@ -257,13 +257,15 @@ public final class ProgramGenerator {
             writer.visitSource(sourceName, null);
         }
 
-        emitConstructor(writer, internal);
         emitInitialStorage(image.storage());
         emitStorageMap();
         List<List<Runnable>> paragraphs = planParagraphs(procedure);
         if (!diagnostics.isEmpty()) {
             return new Result(className, null, List.copyOf(diagnostics));
         }
+        // 飛び先の表があるかどうかは、段落を読んでからでないと決まらない
+        emitConstructor(writer, internal);
+        declareAlterTables();
         emitRun(firstNormal, paragraphs.size());
         emitMain();
         if (!paragraphs.isEmpty()) {
@@ -278,14 +280,81 @@ public final class ProgramGenerator {
         return new Result(className, writer.toByteArray(), List.of());
     }
 
-    private static void emitConstructor(ClassWriter writer, String internal) {
+    private void emitConstructor(ClassWriter writer, String internal) {
         MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
         init.visitCode();
         init.visitVarInsn(Opcodes.ALOAD, 0);
         init.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        if (hasAlterable) {
+            // 飛び先の表は実行のたびに書き換えられるので、複製して持つ
+            init.visitVarInsn(Opcodes.ALOAD, 0);
+            init.visitFieldInsn(Opcodes.GETSTATIC, internal, ALTER_INITIAL, "[I");
+            init.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "[I", "clone", "()Ljava/lang/Object;",
+                    false);
+            init.visitTypeInsn(Opcodes.CHECKCAST, "[I");
+            init.visitFieldInsn(Opcodes.PUTFIELD, internal, ALTERED, "[I");
+        }
+        if (hasIndependentSegment && hasAlterable) {
+            init.visitVarInsn(Opcodes.ALOAD, 0);
+            init.visitInsn(Opcodes.ICONST_M1);
+            init.visitFieldInsn(Opcodes.PUTFIELD, internal, CURRENT_SEGMENT, "I");
+        }
         init.visitInsn(Opcodes.RETURN);
         init.visitMaxs(0, 0);
         init.visitEnd();
+    }
+
+    /** 書き換えられたあとの飛び先を持つ表。 */
+    private static final String ALTERED = "altered$";
+    /** 書かれたままの飛び先。 */
+    private static final String ALTER_INITIAL = "ALTER_INITIAL$";
+    /** 段落ごとの段番号。 */
+    private static final String SEGMENTS = "SEGMENTS$";
+    /** いま動いている段の番号。 */
+    private static final String CURRENT_SEGMENT = "segment$";
+
+    /**
+     * {@code ALTER} のための表を出す (要件 FR-063)。
+     *
+     * <p>書き換えられる段落が 1 つも無ければ何も出さない。ふつうのプログラムの
+     * 生成結果は<b>今までと同じ</b>である。
+     */
+    private void declareAlterTables() {
+        if (!hasAlterable) {
+            return;
+        }
+        writer.visitField(Opcodes.ACC_PRIVATE, ALTERED, "[I", null, null).visitEnd();
+        writer.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                ALTER_INITIAL, "[I", null, null).visitEnd();
+        if (hasIndependentSegment) {
+            writer.visitField(Opcodes.ACC_PRIVATE, CURRENT_SEGMENT, "I", null, null).visitEnd();
+            writer.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                    SEGMENTS, "[I", null, null).visitEnd();
+        }
+    }
+
+    /** 飛び先の表をクラスの初期化で組み立てる。 */
+    private void initAlterTables() {
+        if (!hasAlterable) {
+            return;
+        }
+        emitIntArray(ALTER_INITIAL, alterInitial);
+        if (hasIndependentSegment) {
+            emitIntArray(SEGMENTS, segments);
+        }
+    }
+
+    /** クラスの初期化で {@code int} の配列を組み立てる。 */
+    private void emitIntArray(String field, int[] values) {
+        push(clinit, values.length);
+        clinit.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_INT);
+        for (int i = 0; i < values.length; i++) {
+            clinit.visitInsn(Opcodes.DUP);
+            push(clinit, i);
+            push(clinit, values[i]);
+            clinit.visitInsn(Opcodes.IASTORE);
+        }
+        clinit.visitFieldInsn(Opcodes.PUTSTATIC, internal, field, "[I");
     }
 
     /** 初期イメージは複製して返す。実行のたびに書き換えられるためである。 */
@@ -324,6 +393,7 @@ public final class ProgramGenerator {
         for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
             paragraphNames.add(paragraph.name());
         }
+        planAlterable(procedure.paragraphs());
         sections = procedure.sections();
         declaratives = procedure.declaratives();
         firstNormal = procedure.firstNormalParagraph();
@@ -438,6 +508,8 @@ public final class ProgramGenerator {
                 planGoTo(goTo, body);
             } else if (statement instanceof Statement.GoToDepending depending) {
                 planGoToDepending(depending, body);
+            } else if (statement instanceof Statement.Alter alter) {
+                planAlter(alter, body);
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
@@ -3241,6 +3313,20 @@ public final class ProgramGenerator {
             targets[i] = new Label();
         }
         Label fallthrough = new Label();
+        if (hasAlterable && hasIndependentSegment) {
+            // 独立段へ別の段から入るたびに、その段の ALTER を元へ戻す (要件 FR-061)
+            dispatch.visitVarInsn(Opcodes.ALOAD, 0);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 0);
+            dispatch.visitFieldInsn(Opcodes.GETFIELD, internal, ALTERED, "[I");
+            dispatch.visitFieldInsn(Opcodes.GETSTATIC, internal, ALTER_INITIAL, "[I");
+            dispatch.visitFieldInsn(Opcodes.GETSTATIC, internal, SEGMENTS, "[I");
+            dispatch.visitVarInsn(Opcodes.ILOAD, 1);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 0);
+            dispatch.visitFieldInsn(Opcodes.GETFIELD, internal, CURRENT_SEGMENT, "I");
+            dispatch.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "enterParagraph",
+                    "([I[I[III)I", false);
+            dispatch.visitFieldInsn(Opcodes.PUTFIELD, internal, CURRENT_SEGMENT, "I");
+        }
         dispatch.visitVarInsn(Opcodes.ILOAD, 1);
         dispatch.visitTableSwitchInsn(0, paragraphCount - 1, fallthrough, targets);
         for (int i = 0; i < paragraphCount; i++) {
@@ -3356,6 +3442,18 @@ public final class ProgramGenerator {
         run = writer.visitMethod(Opcodes.ACC_PRIVATE, paragraphMethod(index),
                 PARAGRAPH_DESCRIPTOR, null, null);
         run.visitCode();
+        if (alterInitial[index] >= 0) {
+            // 書き換えられる段落は、飛び先を表から読んで返す。
+            // 中身は GO TO 1 つだけなので、これで置き換えてしまってよい
+            run.visitVarInsn(Opcodes.ALOAD, 0);
+            run.visitFieldInsn(Opcodes.GETFIELD, internal, ALTERED, "[I");
+            push(index);
+            run.visitInsn(Opcodes.IALOAD);
+            run.visitInsn(Opcodes.IRETURN);
+            run.visitMaxs(0, 0);
+            run.visitEnd();
+            return;
+        }
         body.forEach(Runnable::run);
         run.visitInsn(Opcodes.ICONST_M1);
         run.visitInsn(Opcodes.IRETURN);
@@ -3374,6 +3472,39 @@ public final class ProgramGenerator {
         run.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "performRange",
                 PERFORM_DESCRIPTOR, false);
     }
+
+    /**
+     * {@code ALTER} で書き換えられる段落と、段分けの段番号を控える (要件 FR-061, FR-063)。
+     *
+     * <p>書き換えられる段落は<b>{@code GO TO} だけを書いた段落</b>である。その段落は
+     * 飛び先を定数で返すのではなく、書き換えられる<b>表から読んで返す</b>ようにする。
+     */
+    private void planAlterable(List<ProcedureBuilder.Paragraph> paragraphs) {
+        alterInitial = new int[paragraphs.size()];
+        segments = new int[paragraphs.size()];
+        hasAlterable = false;
+        hasIndependentSegment = false;
+        for (int i = 0; i < paragraphs.size(); i++) {
+            ProcedureBuilder.Paragraph paragraph = paragraphs.get(i);
+            segments[i] = paragraph.segment();
+            hasIndependentSegment |= paragraph.segment() >= INDEPENDENT_SEGMENT;
+            Statement.GoTo goTo = paragraph.alterableGoTo();
+            alterInitial[i] = goTo == null ? -1 : paragraphNames.indexOf(goTo.target());
+            hasAlterable |= alterInitial[i] >= 0;
+        }
+    }
+
+    /** ここから上が独立段である ({@code Ops.enterParagraph} と対)。 */
+    private static final int INDEPENDENT_SEGMENT = 50;
+
+    /** 段落ごとの、書かれたままの飛び先。書き換えられない段落は {@code -1}。 */
+    private int[] alterInitial = new int[0];
+    /** 段落ごとの段番号。 */
+    private int[] segments = new int[0];
+    /** 書き換えられる段落があるか。無ければ表そのものを出さない。 */
+    private boolean hasAlterable;
+    /** 独立段があるか。 */
+    private boolean hasIndependentSegment;
 
     private static String paragraphMethod(int index) {
         return "paragraph$" + index;
@@ -4558,6 +4689,7 @@ public final class ProgramGenerator {
         clinit.visitMethodInsn(Opcodes.INVOKESTATIC, SUPPORT, "bytes",
                 "(Ljava/lang/String;)[B", false);
         clinit.visitFieldInsn(Opcodes.PUTSTATIC, internal, "INITIAL", "[B");
+        initAlterTables();
 
         for (Constant constant : constants.values()) {
             if (constant.emit() == null) {
@@ -4680,6 +4812,35 @@ public final class ProgramGenerator {
 
     /** いま出している文の終わりの印。{@code NEXT SENTENCE} の飛び先である。 */
     private Label sentenceEnd;
+
+    /**
+     * {@code ALTER} を組み立てる (要件 FR-063)。
+     *
+     * <p>書き換えられる段落は飛び先を表から読んで返すので、ここでするのは
+     * <b>表を書き換えること</b>だけである。
+     */
+    private void planAlter(Statement.Alter statement, List<Runnable> body) {
+        List<int[]> changes = new ArrayList<>();
+        for (Statement.Alter.Change change : statement.changes()) {
+            int from = paragraphNames.indexOf(change.from());
+            int to = paragraphNames.indexOf(change.to());
+            if (from < 0 || to < 0) {
+                report(statement.origin(), "undefined paragraph: "
+                        + (from < 0 ? change.from() : change.to()));
+                return;
+            }
+            changes.add(new int[] {from, to});
+        }
+        body.add(() -> {
+            for (int[] change : changes) {
+                run.visitVarInsn(Opcodes.ALOAD, 0);
+                run.visitFieldInsn(Opcodes.GETFIELD, internal, ALTERED, "[I");
+                push(change[0]);
+                push(change[1]);
+                run.visitInsn(Opcodes.IASTORE);
+            }
+        });
+    }
 
     /** 相対指定のずれを、積んである添字へ足す。0 なら何も出さない。 */
     private void addOffset(int offset) {

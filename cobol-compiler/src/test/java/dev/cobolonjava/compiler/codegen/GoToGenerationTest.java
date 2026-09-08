@@ -301,6 +301,116 @@ class GoToGenerationTest {
     }
 
     @Test
+    @DisplayName("ALTER は GO TO だけの段落の飛び先を書き換える (FR-063)")
+    void alterChangesWhereAGoToLeads() {
+        // 1 回目は B-P へ、書き換えたあとは C-P へ飛ぶ
+        assertEquals("0021", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("PROCEED TO は省略できる (FR-063)")
+    void theProceedToPhraseIsOptional() {
+        assertEquals("0020", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("独立段へ入り直すと ALTER が元へ戻る (FR-061, FR-063)")
+    void anIndependentSegmentForgetsWhatWasAltered() {
+        // 段番号 50 以上は独立段である。別の段から制御が移るたびに初期状態へ戻る。
+        // 「初期状態」とは ALTER で書き換えた飛び先が元へ戻ることである
+        assertEquals("0002", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "INDEPENDENT SECTION 50.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("常駐段なら書き換えは残る (FR-061, FR-063)")
+    void aResidentSegmentKeepsWhatWasAltered() {
+        // 同じ形を段番号 49 で書けば、書き換えは残ったままである
+        assertEquals("0040", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "RESIDENT SECTION 49.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("GO TO だけでない段落は ALTER できない (FR-063)")
+    void onlyAParagraphHoldingASingleGoToMayBeAltered() {
+        CobolCompiler.Result result = compile(COUNTER,
+                "MAIN-START.",
+                "    ALTER OTHER-P TO PROCEED TO LAST-P.",
+                "OTHER-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO LAST-P.",
+                "LAST-P.",
+                "    EXIT.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("a single GO TO"),
+                result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("定義のない段落へ飛んだら誤りとして報告する (FR-061)")
     void anUndefinedTargetIsReported() {
         CobolCompiler.Result result = compile(COUNTER,

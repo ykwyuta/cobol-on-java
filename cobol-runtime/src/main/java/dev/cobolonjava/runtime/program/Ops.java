@@ -285,6 +285,36 @@ public final class Ops {
         return Intrinsics.randomValue(context.nextRandom());
     }
 
+    /**
+     * 段落へ入るところで、段分けの独立段を初期状態へ戻す (要件 FR-061)。
+     *
+     * <p>段番号 50 以上は<b>独立段</b>である。別の段から制御が移るたびに初期状態へ戻る。
+     * 「初期状態」とは <b>{@code ALTER} で書き換えた飛び先が元へ戻る</b>ことであり、
+     * 記憶域の中身は戻らない。したがって {@code ALTER} を実装してはじめて意味を持つ。
+     *
+     * @param altered  いまの飛び先。書き換えられる段落だけが 0 以上を持つ
+     * @param initial  書かれたままの飛び先
+     * @param segment  段落ごとの段番号
+     * @param entering これから動かす段落の番号
+     * @param current  いままで動いていた段の番号。まだ動いていなければ {@code -1}
+     * @return これから動く段の番号
+     */
+    public static int enterParagraph(int[] altered, int[] initial, int[] segment, int entering,
+                                     int current) {
+        int next = segment[entering];
+        if (next >= INDEPENDENT_SEGMENT && next != current) {
+            for (int i = 0; i < altered.length; i++) {
+                if (segment[i] == next && initial[i] >= 0) {
+                    altered[i] = initial[i];
+                }
+            }
+        }
+        return next;
+    }
+
+    /** ここから上が独立段である。 */
+    private static final int INDEPENDENT_SEGMENT = 50;
+
     /** 英数字比較。短いほうは空白で埋めて比べる。 */
     public static int compareAlphanumeric(byte[] left, byte[] right, CodePage codePage) {
         return Compare.alphanumeric(left, right, codePage);

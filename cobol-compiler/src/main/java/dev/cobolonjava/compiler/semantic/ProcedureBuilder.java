@@ -46,10 +46,39 @@ public final class ProcedureBuilder {
      * @param name       段落名。名前のない先頭の並びは {@code null}
      * @param statements 文の並び
      */
-    public record Paragraph(String name, List<Statement> statements, Origin origin) {
+    /**
+     * 段落 1 つ。
+     *
+     * @param segment 段分けの段番号 (要件 FR-061)。50 以上は<b>独立段</b>であり、
+     *                別の段から制御が移るたびに {@code ALTER} の書き換えが元へ戻る
+     */
+    public record Paragraph(String name, List<Statement> statements, int segment,
+                            Origin origin) {
 
         public Paragraph {
             statements = List.copyOf(statements);
+        }
+
+        public Paragraph(String name, List<Statement> statements, Origin origin) {
+            this(name, statements, 0, origin);
+        }
+
+        /**
+         * {@code ALTER} で飛び先を書き換えられる段落かどうか。
+         *
+         * <p>規格は<b>「{@code GO TO} だけを書いた段落」</b>に限っている。行き先が
+         * 1 つでなければ、書き換える先が定まらない。
+         *
+         * @return 書き換えられるなら、その {@code GO TO}。そうでなければ {@code null}
+         */
+        public Statement.GoTo alterableGoTo() {
+            List<Statement> body = statements;
+            if (body.size() == 1 && body.get(0) instanceof Statement.Sentence sentence) {
+                body = sentence.body();
+            }
+            return body.size() == 1 && body.get(0) instanceof Statement.GoTo goTo
+                    ? goTo
+                    : null;
         }
     }
 
@@ -213,9 +242,34 @@ public final class ProcedureBuilder {
         for (Paragraph paragraph : paragraphs) {
             names.add(paragraph.name());
         }
+        alterable = paragraphs;
         for (Paragraph paragraph : paragraphs) {
             for (Statement statement : paragraph.statements()) {
                 checkProcedureTargets(statement, names);
+            }
+        }
+    }
+
+    /** {@code ALTER} が書き換えられる段落かを見るために、段落の並びを覚えておく。 */
+    private List<Paragraph> alterable = List.of();
+
+    /**
+     * {@code ALTER} の書き換え先を確かめる (要件 FR-063)。
+     *
+     * <p>書き換えられるのは<b>{@code GO TO} だけを書いた段落</b>である。行き先が
+     * 1 つでなければ、書き換える先が定まらない。
+     */
+    private void checkAlter(Statement.Alter alter, List<String> names) {
+        for (Statement.Alter.Change change : alter.changes()) {
+            if (!names.contains(change.from()) || !names.contains(change.to())) {
+                report(alter.origin(), "undefined paragraph: "
+                        + (names.contains(change.from()) ? change.to() : change.from()));
+                continue;
+            }
+            Paragraph target = alterable.get(names.indexOf(change.from()));
+            if (target.alterableGoTo() == null) {
+                report(alter.origin(), "ALTER requires a paragraph that holds"
+                        + " a single GO TO: " + change.from());
             }
         }
     }
@@ -236,6 +290,10 @@ public final class ProcedureBuilder {
                     report(depending.origin(), "undefined paragraph: " + target);
                 }
             }
+            return;
+        }
+        if (statement instanceof Statement.Alter alter) {
+            checkAlter(alter, names);
             return;
         }
         if (statement instanceof Statement.Sort sort) {
@@ -405,23 +463,48 @@ public final class ProcedureBuilder {
         }
     }
 
-    private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
+    private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs,
+                              int segment) {
         paragraphs.add(new Paragraph(
                 paragraph.paragraphName().getText().toUpperCase(Locale.ROOT),
-                statementsOf(paragraph.sentence()),
+                statementsOf(paragraph.sentence()), segment,
                 ReferenceResolver.originOf(paragraph)));
+    }
+
+    private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
+        addParagraph(paragraph, paragraphs, 0);
     }
 
     private void addSection(CobolParser.ProcedureUnitContext unit, List<Paragraph> paragraphs,
                             List<Section> sections) {
         String name = unit.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
-        paragraphs.add(new Paragraph(name, statementsOf(unit.sentence()),
+        int segment = segmentOf(unit.sectionHeader());
+        paragraphs.add(new Paragraph(name, statementsOf(unit.sentence()), segment,
                 ReferenceResolver.originOf(unit.sectionHeader())));
         for (CobolParser.ParagraphContext paragraph : unit.paragraph()) {
-            addParagraph(paragraph, paragraphs);
+            addParagraph(paragraph, paragraphs, segment);
         }
         sections.add(new Section(name, name,
                 paragraphs.get(paragraphs.size() - 1).name(), false));
+    }
+
+    /**
+     * 章の段番号 (要件 FR-061)。書かれていなければ 0 である。
+     *
+     * <p>0〜49 は常駐する段であり、ふつうの章と振る舞いが変わらない。50〜99 は
+     * <b>独立段</b>であり、別の段から制御が移るたびに初期状態へ戻る。
+     */
+    private int segmentOf(CobolParser.SectionHeaderContext context) {
+        if (context.NUMBER() == null) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(context.NUMBER().getText());
+        } catch (NumberFormatException e) {
+            report(ReferenceResolver.originOf(context),
+                    "a segment number must be an integer: " + context.NUMBER().getText());
+            return 0;
+        }
     }
 
     /**
@@ -533,6 +616,9 @@ public final class ProcedureBuilder {
         }
         if (context.goToStatement() != null) {
             return goToOf(context.goToStatement());
+        }
+        if (context.alterStatement() != null) {
+            return alterOf(context.alterStatement());
         }
         if (context.searchStatement() != null) {
             return searchOf(context.searchStatement());
@@ -1102,6 +1188,18 @@ public final class ProcedureBuilder {
             return null;
         }
         return new Statement.GoToDepending(List.copyOf(targets), selector, origin);
+    }
+
+    /** {@code ALTER} (要件 FR-063)。 */
+    private Statement alterOf(CobolParser.AlterStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement.Alter.Change> changes = new ArrayList<>();
+        for (CobolParser.AlterChangeContext change : context.alterChange()) {
+            changes.add(new Statement.Alter.Change(
+                    change.paragraphName(0).getText().toUpperCase(Locale.ROOT),
+                    change.paragraphName(1).getText().toUpperCase(Locale.ROOT)));
+        }
+        return new Statement.Alter(List.copyOf(changes), origin);
     }
 
     private static boolean namesItem(Operand operand, String name) {

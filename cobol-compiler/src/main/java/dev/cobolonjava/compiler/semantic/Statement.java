@@ -725,6 +725,20 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code ALTER} (要件 FR-063)。
+     *
+     * <p>{@code GO TO} だけを書いた段落の<b>飛び先を実行時に書き換える</b>。
+     * 規格が書き換えられる段落を「{@code GO TO} だけを書いた段落」に限っているのは、
+     * 行き先が 1 つでなければ書き換える先が定まらないためである。
+     */
+    record Alter(List<Change> changes, Origin origin) implements Statement {
+
+        /** 書き換え 1 つ。{@code from} の段落が {@code to} へ飛ぶようになる。 */
+        public record Change(String from, String to) {
+        }
+    }
+
+    /**
      * {@code GO TO ... DEPENDING ON} (要件 FR-063)。
      *
      * <p>値が 1 なら 1 つ目、2 なら 2 つ目へ飛ぶ。<b>並びの外なら飛ばない</b>。

@@ -61,7 +61,7 @@ tokens {
     STRING, UNSTRING, DELIMITED, DELIMITER, COUNT, OVERFLOW, INTO,
     END_STRING, END_UNSTRING,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
-    FUNCTION,
+    FUNCTION, ALTER, PROCEED,
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
@@ -500,6 +500,7 @@ statement
     | performStatement
     | continueStatement
     | goToStatement
+    | alterStatement
     | exitStatement
     | callStatement
     | cancelStatement
@@ -928,6 +929,15 @@ cancelStatement
     ;
 
 // GO TO は段落の途中から別の段落へ飛ぶ。PERFORM と違い、戻ってこない
+// ALTER は GO TO だけを書いた段落の飛び先を、実行時に書き換える (要件 FR-063)
+alterStatement
+    : ALTER alterChange+
+    ;
+
+alterChange
+    : paragraphName TO (PROCEED TO)? paragraphName
+    ;
+
 // DEPENDING ON があれば、値が何番目かで飛び先が決まる。無ければ 1 つだけ書ける
 goToStatement
     : GO TO? paragraphName+ (DEPENDING ON? identifier)?
