@@ -3655,6 +3655,15 @@ public final class ProgramGenerator {
         perform.visitCode();
         int pc = 6;
         int next = 7;
+        int saved = 8;
+        if (hasAlterable && hasIndependentSegment) {
+            // PERFORM から戻ったら、呼んだ側の段へ戻ったことになる (要件 FR-061)。
+            // 控えておかないと、同じ段落から独立段を 2 度 PERFORM したときに
+            // 「同じ段の中にいる」と見えてしまい、2 度目が初期状態へ戻らない
+            perform.visitVarInsn(Opcodes.ALOAD, 0);
+            perform.visitFieldInsn(Opcodes.GETFIELD, internal, CURRENT_SEGMENT, "I");
+            perform.visitVarInsn(Opcodes.ISTORE, saved);
+        }
         perform.visitVarInsn(Opcodes.ILOAD, 1);
         perform.visitVarInsn(Opcodes.ISTORE, pc);
 
@@ -3696,6 +3705,11 @@ public final class ProgramGenerator {
         perform.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "programReturn", "()V", false);
 
         perform.visitLabel(end);
+        if (hasAlterable && hasIndependentSegment) {
+            perform.visitVarInsn(Opcodes.ALOAD, 0);
+            perform.visitVarInsn(Opcodes.ILOAD, saved);
+            perform.visitFieldInsn(Opcodes.PUTFIELD, internal, CURRENT_SEGMENT, "I");
+        }
         perform.visitInsn(Opcodes.RETURN);
         perform.visitMaxs(0, 0);
         perform.visitEnd();

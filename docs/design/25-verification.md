@@ -415,8 +415,8 @@ CCVS85 のプログラムはどれも自分の結果を印字するので、印�
 
 ```
 合計 390 本 (うち動かさない診断の検査 31 本):
-  全部通った 273 / 落ちた 65 / 翻訳できない 17 / 壊れた 2 / 返らない 2  (合格率 76.0%)
-検査は 8260 件流れて 326 件落ちた (合格率 96.2%)
+  全部通った 276 / 落ちた 62 / 翻訳できない 17 / 壊れた 2 / 返らない 2  (合格率 76.9%)
+検査は 8286 件流れて 301 件落ちた (合格率 96.5%)
 このうち 113 件は<人が紙を見て決める>検査であり、道具は確かめていない
 ```
 
@@ -463,15 +463,16 @@ EITHER THE T"S OR THE U"S SHOULD BE USED EXCLUSIVELY, NOT BOTH.
 
 | 件数 | 機能 | 見るところ |
 | --- | --- | --- |
-| 23 | `SEGMENT-LIMIT` | SG201A。段分けの独立段 |
 | 22 | `FILE CREATE RL-VS1` | RL211A。相対編成の可変長 |
-| 13 | `OCCURS DEPENDING ON` | 可変長の表 |
-| 12 | `SORT, OUTPUT PROC` | 整列の出力手続き |
-| 11 | `NATIVE COLL.SEQUENCE` | 照合順序 |
 | 15 | `DEBUG ON PROC-NAME` | DB 区分。`ALL REFERENCES OF` とファイル名 (暫定 P-079) |
-| 12 | `SORT, OUTPUT PROC` | 整列の出力手続き |
-| 8 | `SWITCH-STATUS` | <b>道具の支度が足りなかった</b>。下を参照 |
-| 8 | `LEVEL 3 TBL HANDLING` | `SEARCH` が `DEPENDING ON` を見ていなかった |
+| 12 | `SORT, OUTPUT PROC` | 整列の出力手続き (SG204A ほか) |
+| 11 | `OCCURS DEPENDING ON` | 可変長の表 |
+| 11 | `NATIVE COLL.SEQUENCE` | 照合順序 |
+| 5 + 5 | `MOVE ALPHA-NUM ITEM` / `MOVE NUMERIC LITERAL` | NC 区分 |
+| 4 | `ADD CORRESPONDING` | NC 区分 |
+
+本ごとに見ると RL211A 22 件、NC105A 19 件、NC223A 18 件、DB201A 16 件、
+NC172A / NC173A 各 16 件である。
 
 組み込み関数 (IF 区分) は<b>この一覧から消えた</b>。17 本・30 件が落ちていたのは
 関数そのものの精度ではなく、<b>中間結果の桁数</b>の 2 つの不具合だった。

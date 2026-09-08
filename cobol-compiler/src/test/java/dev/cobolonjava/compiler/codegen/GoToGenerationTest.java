@@ -464,6 +464,61 @@ class GoToGenerationTest {
     }
 
     @Test
+    @DisplayName("同じ段落から独立段を 2 度呼んでも、2 度目は初期状態である (FR-061)")
+    void callingAnIndependentSegmentTwiceFromOneParagraphRestartsIt() {
+        // 段の中で ALTER する形。1 度目は B-P を通って自分を C-P へ向け直す。
+        // 2 度目も初期状態へ戻るので、また B-P を通る。合計 2 である。
+        //
+        // <b>呼んだ側の段へ戻ることを控えていないと、2 度目は「同じ段の中にいる」と
+        // 見えて初期状態へ戻らない。</b>その場合は 1 + 20 = 21 になる
+        assertEquals("0002", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "INDEPENDENT SECTION 50.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("常駐段を 2 度呼べば、書き換えは 2 度目に効く (FR-061)")
+    void callingAResidentSegmentTwiceKeepsWhatWasAltered() {
+        // 同じ形を段番号 49 で書けば、書き換えは残る。1 + 20 = 21 である。
+        // <b>独立段と常駐段で振る舞いが分かれる形</b>にしてある
+        assertEquals("0021", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "RESIDENT SECTION 49.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
     @DisplayName("常駐段なら書き換えは残る (FR-061, FR-063)")
     void aResidentSegmentKeepsWhatWasAltered() {
         // 同じ形を段番号 49 で書けば、書き換えは残ったままである
