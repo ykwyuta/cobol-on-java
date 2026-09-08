@@ -415,6 +415,7 @@ referenceModifier
 
 subscript
     : NUMBER
+    | ALL
     | qualifiedDataName relativeOffset?
     ;
 
@@ -1054,7 +1055,7 @@ arithmeticOperand
 // 単項の符号は後ろに空白を置かない。したがって字句の切れ目に差が残り、
 // 「11, -5」は 2 個、「11 - 5」は 1 個の引数になる。
 functionCall
-    : FUNCTION functionName (LPAREN expression+ RPAREN)?
+    : FUNCTION functionName (LPAREN expression (COMMA? expression)* RPAREN)?
     ;
 
 // 予約語と綴りが同じ関数名は、ここに並べて拾う

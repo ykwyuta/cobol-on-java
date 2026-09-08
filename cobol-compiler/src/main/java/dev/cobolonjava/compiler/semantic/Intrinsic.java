@@ -28,15 +28,15 @@ public enum Intrinsic {
     /** 文字が照合順序の何番目か。 */
     ORD(1, Argument.ALPHANUMERIC, Result.INTEGER),
     /** 最大値。 */
-    MAX(-1, Argument.NUMERIC, Result.NUMERIC),
+    MAX(-1, Argument.EITHER, Result.NUMERIC),
     /** 最小値。 */
-    MIN(-1, Argument.NUMERIC, Result.NUMERIC),
+    MIN(-1, Argument.EITHER, Result.NUMERIC),
     /** 合計。 */
     SUM(-1, Argument.NUMERIC, Result.NUMERIC),
     /** 何番目の引数が最大か。 */
-    ORD_MAX(-1, Argument.NUMERIC, Result.INTEGER),
+    ORD_MAX(-1, Argument.EITHER, Result.INTEGER),
     /** 何番目の引数が最小か。 */
-    ORD_MIN(-1, Argument.NUMERIC, Result.INTEGER),
+    ORD_MIN(-1, Argument.EITHER, Result.INTEGER),
     /** 最大と最小の差。 */
     RANGE(-1, Argument.NUMERIC, Result.NUMERIC),
     /** 引数を超えない最大の整数。 */
@@ -111,7 +111,9 @@ public enum Intrinsic {
         /** バイト列として読む。 */
         ALPHANUMERIC,
         /** 読まない。項目の長さだけを見る。 */
-        ANY
+        ANY,
+        /** 引数がどちらでもよい。書かれたものを見て決める。 */
+        EITHER
     }
 
     /** 戻り値の分類。 */
@@ -125,7 +127,9 @@ public enum Intrinsic {
         /** 1 バイト。 */
         ONE_CHARACTER,
         /** {@code YYYYMMDDhhmmsscc±hhmm} の 21 文字。 */
-        TIMESTAMP;
+        TIMESTAMP,
+        /** いちばん長い引数と同じ長さのバイト列。 */
+        WIDEST;
 
         /** 数値として使えるか。 */
         public boolean isNumeric() {
@@ -176,6 +180,17 @@ public enum Intrinsic {
     /** ソースに書かれた綴り。ハイフンで綴る。 */
     public String spelling() {
         return name().replace('_', '-');
+    }
+
+    /**
+     * 引数を文字として受け取ったときの戻り値の分類。
+     *
+     * <p>{@code MAX} と {@code MIN} は引数そのものを返すので、いちばん長い引数と同じ
+     * 長さのバイト列になる。{@code ORD-MAX} と {@code ORD-MIN} は何番目かなので整数の
+     * ままである。
+     */
+    public Result textResult() {
+        return returns == Result.INTEGER ? Result.INTEGER : Result.WIDEST;
     }
 
     /**

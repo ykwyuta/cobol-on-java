@@ -3,6 +3,7 @@ package dev.cobolonjava.compiler.codegen;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.semantic.Condition;
 import dev.cobolonjava.compiler.semantic.DataCategory;
+import dev.cobolonjava.compiler.semantic.Intrinsic;
 import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
 import dev.cobolonjava.compiler.semantic.DataLayout;
@@ -2832,12 +2833,22 @@ public final class ProgramGenerator {
      * @return 数値を返す関数なら {@code 0}
      */
     private static int functionLength(Operand.Function function) {
-        return switch (function.intrinsic().returns()) {
+        return switch (function.returns()) {
             case ONE_CHARACTER -> 1;
             case TIMESTAMP -> Intrinsics.TIMESTAMP_LENGTH;
             case SAME_LENGTH -> alphanumericLength(argument(function, 0));
+            case WIDEST -> widestArgument(function);
             case INTEGER, NUMERIC -> 0;
         };
+    }
+
+    /** いちばん長い引数の長さ。{@code MAX} と {@code MIN} は引数そのものを返す。 */
+    private static int widestArgument(Operand.Function function) {
+        int widest = 0;
+        for (int i = 0; i < function.arguments().size(); i++) {
+            widest = Math.max(widest, alphanumericLength(argument(function, i)));
+        }
+        return widest;
     }
 
     /** バイト列として見たときの長さ。定数はその綴りの長さである。 */
@@ -2882,6 +2893,8 @@ public final class ProgramGenerator {
                 String field = bytesConstant(Intrinsics.timestamp(compiledAt, CodePages.DEFAULT));
                 yield () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
             }
+            case MAX -> planTextFold(function, "maxText", "[B");
+            case MIN -> planTextFold(function, "minText", "[B");
             case CHAR -> {
                 Runnable ordinal = planNumericArgument(function, 0, origin);
                 yield ordinal == null ? null : () -> {
@@ -2896,6 +2909,64 @@ public final class ProgramGenerator {
                         + " does not return an alphanumeric value");
                 yield null;
             }
+        };
+    }
+
+    /** 引数を文字として受け取る形かどうか。 */
+    private static boolean takesText(Operand.Function function) {
+        return function.returns() == Intrinsic.Result.WIDEST
+                || (function.intrinsic().takes() == Intrinsic.Argument.EITHER
+                        && function.returns() == Intrinsic.Result.INTEGER
+                        && !allNumericArguments(function));
+    }
+
+    /** 引数がぜんぶ数値として読めるか。 */
+    private static boolean allNumericArguments(Operand.Function function) {
+        for (int i = 0; i < function.arguments().size(); i++) {
+            if (!(function.arguments().get(i) instanceof Expression.Value value)) {
+                return true;
+            }
+            Operand operand = value.operand();
+            if (operand instanceof Operand.Reference reference
+                    && !DataCategory.of(reference.reference()).isNumeric()) {
+                return false;
+            }
+            if (operand instanceof Operand.Literal literal
+                    && literal.value() instanceof LiteralValue.Text) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 引数を<b>バイト列の配列</b>にして渡す関数 (要件 FR-070)。
+     *
+     * <p>{@code MAX} と {@code MIN} は引数が英数字なら照合順序で比べる。したがって
+     * 並びを一緒に渡す。
+     */
+    private Runnable planTextFold(Operand.Function function, String method, String returns) {
+        List<Runnable> values = new ArrayList<>();
+        for (int i = 0; i < function.arguments().size(); i++) {
+            Runnable value = planAlphanumericArgument(function, i);
+            if (value == null) {
+                return null;
+            }
+            values.add(value);
+        }
+        return () -> {
+            push(values.size());
+            run.visitTypeInsn(Opcodes.ANEWARRAY, "[B");
+            for (int i = 0; i < values.size(); i++) {
+                run.visitInsn(Opcodes.DUP);
+                push(i);
+                values.get(i).run();
+                run.visitInsn(Opcodes.AASTORE);
+            }
+            loadCollating();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([[B" + COLLATING + CODE_PAGE + ")" + returns, false);
         };
     }
 
@@ -2921,8 +2992,12 @@ public final class ProgramGenerator {
             case MAX -> planFold(function, "max", origin);
             case MIN -> planFold(function, "min", origin);
             case SUM -> planFold(function, "sum", origin);
-            case ORD_MAX -> planFold(function, "ordMax", origin);
-            case ORD_MIN -> planFold(function, "ordMin", origin);
+            case ORD_MAX -> takesText(function)
+                    ? planTextFold(function, "ordMaxText", DECIMAL)
+                    : planFold(function, "ordMax", origin);
+            case ORD_MIN -> takesText(function)
+                    ? planTextFold(function, "ordMinText", DECIMAL)
+                    : planFold(function, "ordMin", origin);
             case RANGE -> planFold(function, "range", origin);
             case MEDIAN -> planFold(function, "median", origin);
             case MIDRANGE -> planFold(function, "midrange", origin);

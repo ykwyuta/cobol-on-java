@@ -126,7 +126,7 @@ public final class SourceTokenSource implements TokenSource {
      */
     @Override
     public Token nextToken() {
-        while (index < tokens.size() && decorative(tokens.get(index))) {
+        while (index < tokens.size() && decorative(index)) {
             index++;
         }
         if (index >= tokens.size()) {
@@ -136,13 +136,36 @@ public final class SourceTokenSource implements TokenSource {
         return new OriginToken(stream, typeOf(source), source);
     }
 
-    /** 飾りの区切りか。コンマとセミコロンは空白と同じ扱いである。 */
-    private static boolean decorative(SourceToken token) {
+    /**
+     * 飾りの区切りか。コンマとセミコロンは空白と同じ扱いである。
+     *
+     * <h2>括弧の前のコンマだけは残す</h2>
+     * <p>1 か所だけ、コンマを落とすと<b>意味が変わる</b>ところがある。
+     *
+     * <pre>
+     * FUNCTION MAX(A * B, (C + 1) / 2)   引数 2 個
+     * FUNCTION MAX(A * B  (C + 1) / 2)   B を (C + 1) で添字付けした 1 個
+     * </pre>
+     *
+     * <p>データ名のうしろに括弧が来れば添字である。分けているのはコンマだけなので、
+     * <b>次が開き括弧のコンマは落とさない</b>。それ以外の場所に {@code , (} と書ける
+     * ところは COBOL に無いので、残しても他の読みには効かない。
+     */
+    private boolean decorative(int at) {
+        SourceToken token = tokens.get(at);
         if (token.kind() != SourceTokenKind.SEPARATOR) {
             return false;
         }
         char c = token.text().charAt(0);
-        return c == ',' || c == ';';
+        if (c == ';') {
+            return true;
+        }
+        return c == ',' && !opensParentheses(at + 1);
+    }
+
+    /** その位置が開き括弧かどうか。 */
+    private boolean opensParentheses(int at) {
+        return at < tokens.size() && tokens.get(at).text().equals("(");
     }
 
     private Token endOfFile() {

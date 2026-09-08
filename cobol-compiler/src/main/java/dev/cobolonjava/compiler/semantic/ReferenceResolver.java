@@ -39,6 +39,15 @@ public final class ReferenceResolver {
      * 一意名を解決する。解決できなければ誤りを記録して {@code null} を返す。
      */
     public DataReference resolve(CobolParser.IdentifierContext context) {
+        return resolve(context, false);
+    }
+
+    /**
+     * 一意名を解決する。
+     *
+     * @param allowAll {@code ALL} と書いた添字を許すか。組み込み関数の引数だけである
+     */
+    public DataReference resolve(CobolParser.IdentifierContext context, boolean allowAll) {
         Origin origin = originOf(context);
         DataItem item = resolveName(context.qualifiedDataName(), origin);
         if (item == null) {
@@ -47,6 +56,11 @@ public final class ReferenceResolver {
 
         List<DataReference.Subscript> subscripts = subscriptsOf(context, origin);
         if (subscripts == null || !checkSubscripts(item, subscripts, origin)) {
+            return null;
+        }
+        if (!allowAll && subscripts.contains(new DataReference.Subscript.All())) {
+            report(origin, "ALL may be written as a subscript only in an intrinsic"
+                    + " function argument");
             return null;
         }
 
@@ -159,6 +173,9 @@ public final class ReferenceResolver {
 
     private DataReference.Subscript resolveSubscript(CobolParser.SubscriptContext context,
                                                      Origin origin) {
+        if (context.ALL() != null) {
+            return new DataReference.Subscript.All();
+        }
         if (context.NUMBER() != null) {
             try {
                 return new DataReference.Subscript.Constant(

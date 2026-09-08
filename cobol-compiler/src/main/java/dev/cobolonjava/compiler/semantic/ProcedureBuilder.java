@@ -1809,7 +1809,7 @@ public final class ProcedureBuilder {
             return DataCategory.of(reference.reference()).isNumeric();
         }
         if (operand instanceof Operand.Function function) {
-            return function.intrinsic().returns().isNumeric();
+            return function.returns().isNumeric();
         }
         LiteralValue value = ((Operand.Literal) operand).value();
         return DataCategory.of(value, literalDefault).isNumeric();
@@ -1832,24 +1832,151 @@ public final class ProcedureBuilder {
         }
         List<Expression> arguments = new ArrayList<>();
         for (CobolParser.ExpressionContext argument : context.expression()) {
-            Expression built = expressionOf(argument, origin);
-            if (built == null) {
+            List<Expression> expanded = argumentsOf(argument, origin);
+            if (expanded == null) {
                 return null;
             }
-            arguments.add(built);
+            arguments.addAll(expanded);
         }
         if (!intrinsic.accepts(arguments.size())) {
             report(origin, "FUNCTION " + intrinsic.spelling() + " takes " + intrinsic.arity()
                     + " but " + arguments.size() + " were given");
             return null;
         }
-        if (intrinsic.takes() != Intrinsic.Argument.NUMERIC && !plainOperands(arguments)) {
+        Intrinsic.Result returns = intrinsic.returns();
+        if (intrinsic.takes() == Intrinsic.Argument.EITHER) {
+            Boolean text = takesText(arguments, origin);
+            if (text == null) {
+                return null;
+            }
+            returns = text ? intrinsic.textResult() : intrinsic.returns();
+        }
+        boolean numericArguments = intrinsic.takes() == Intrinsic.Argument.NUMERIC
+                || (intrinsic.takes() == Intrinsic.Argument.EITHER
+                        && returns == intrinsic.returns());
+        if (!numericArguments && !plainOperands(arguments)) {
             // 文字を受け取る関数の引数は項目か定数である。式を書いても足す先が無い
             report(origin, "FUNCTION " + intrinsic.spelling()
                     + " takes an item or a literal, not an arithmetic expression");
             return null;
         }
-        return new Operand.Function(intrinsic, arguments, origin);
+        return new Operand.Function(intrinsic, arguments, returns, origin);
+    }
+
+    /**
+     * {@code MAX} や {@code MIN} の引数を<b>文字として</b>比べるかどうか。
+     *
+     * <p>規格は引数の種別をそろえることを求めている。混ぜて書かれたら断る。
+     *
+     * @return 文字なら {@code true}、数値なら {@code false}。混ざっていれば {@code null}
+     */
+    private Boolean takesText(List<Expression> arguments, Origin origin) {
+        boolean text = false;
+        boolean numeric = false;
+        for (Expression argument : arguments) {
+            if (!(argument instanceof Expression.Value value)) {
+                numeric = true;
+                continue;
+            }
+            if (isNumeric(value.operand(), true)) {
+                numeric = true;
+            } else {
+                text = true;
+            }
+        }
+        if (text && numeric) {
+            report(origin, "the arguments of MAX, MIN, ORD-MAX and ORD-MIN must all be"
+                    + " numeric or all be alphanumeric");
+            return null;
+        }
+        return text;
+    }
+
+    /**
+     * 組み込み関数の引数 1 つを組み立てる。
+     *
+     * <p>{@code ALL} と書いた添字があれば、<b>反復の数だけ引数へ展開する</b>。
+     * {@code FUNCTION MAX(IND(ALL))} は {@code FUNCTION MAX(IND(1) … IND(5))} と同じで
+     * ある。次元が 2 つ以上あれば、その組み合わせすべてになる。
+     *
+     * @return 展開した引数。読めなければ {@code null}
+     */
+    private List<Expression> argumentsOf(CobolParser.ExpressionContext context, Origin origin) {
+        CobolParser.IdentifierContext identifier = allSubscriptedIdentifier(context);
+        if (identifier == null) {
+            Expression built = expressionOf(context, origin);
+            return built == null ? null : List.of(built);
+        }
+        DataReference reference = resolver.resolve(identifier, true);
+        if (reference == null) {
+            return null;
+        }
+        return expandAll(reference, origin);
+    }
+
+    /**
+     * {@code ALL} と書いた添字を持つ一意名 1 個だけの式か。
+     *
+     * @return そうでなければ {@code null}
+     */
+    private static CobolParser.IdentifierContext allSubscriptedIdentifier(
+            CobolParser.ExpressionContext context) {
+        if (!(context instanceof CobolParser.OperandExpressionContext operand)
+                || operand.arithmeticOperand().identifier() == null) {
+            return null;
+        }
+        CobolParser.IdentifierContext identifier = operand.arithmeticOperand().identifier();
+        if (identifier.subscripts() == null) {
+            return null;
+        }
+        for (CobolParser.SubscriptContext subscript : identifier.subscripts().subscript()) {
+            if (subscript.ALL() != null) {
+                return identifier;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * {@code ALL} を反復の数だけ広げる。
+     *
+     * <p>反復の数が実行時に決まる表 ({@code OCCURS ... DEPENDING ON}) は広げられない。
+     * 引数の数が翻訳時に決まらないためである。
+     *
+     * @return 広げた引数。広げられなければ {@code null}
+     */
+    private List<Expression> expandAll(DataReference reference, Origin origin) {
+        List<DataItem> tables = DataReference.tableChain(reference.item());
+        List<List<DataReference.Subscript>> rows = new ArrayList<>();
+        rows.add(new ArrayList<>());
+        for (int i = 0; i < tables.size(); i++) {
+            DataReference.Subscript subscript = reference.subscripts().get(i);
+            List<DataReference.Subscript> choices = new ArrayList<>();
+            if (subscript instanceof DataReference.Subscript.All) {
+                // OCCURS ... DEPENDING ON の表では、規格が言う「すべての反復」は
+                // 実行時の個数である。こちらは宣言した最大で広げる (暫定判断 P-068)
+                for (int n = 1; n <= tables.get(i).occurs(); n++) {
+                    choices.add(new DataReference.Subscript.Constant(n));
+                }
+            } else {
+                choices.add(subscript);
+            }
+            List<List<DataReference.Subscript>> grown = new ArrayList<>();
+            for (List<DataReference.Subscript> row : rows) {
+                for (DataReference.Subscript choice : choices) {
+                    List<DataReference.Subscript> next = new ArrayList<>(row);
+                    next.add(choice);
+                    grown.add(next);
+                }
+            }
+            rows = grown;
+        }
+        List<Expression> arguments = new ArrayList<>();
+        for (List<DataReference.Subscript> row : rows) {
+            arguments.add(new Expression.Value(new Operand.Reference(new DataReference(
+                    reference.item(), row, reference.refMod(), origin))));
+        }
+        return arguments;
     }
 
     private static boolean plainOperands(List<Expression> arguments) {
@@ -2492,10 +2619,11 @@ public final class ProcedureBuilder {
         }
         if (source instanceof Operand.Function function) {
             // 関数の値は「数値」か「英数字」のどちらかである。編集はしない
-            return switch (function.intrinsic().returns()) {
+            return switch (function.returns()) {
                 case INTEGER -> DataCategory.NUMERIC_INTEGER;
                 case NUMERIC -> DataCategory.NUMERIC_NONINTEGER;
-                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP -> DataCategory.ALPHANUMERIC;
+                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP, WIDEST ->
+                        DataCategory.ALPHANUMERIC;
             };
         }
         boolean numericReceiver = receiver.isNumeric() || receiver == DataCategory.NUMERIC_EDITED;

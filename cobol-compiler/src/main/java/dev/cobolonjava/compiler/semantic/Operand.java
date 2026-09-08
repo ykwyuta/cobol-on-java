@@ -20,8 +20,11 @@ public sealed interface Operand {
      * <p>被演算子として持つのは、関数が書ける場所が<b>被演算子の書ける場所そのもの</b>
      * だからである。算術式にも条件にも {@code MOVE} の送出側にも書ける。ここへ置けば、
      * 送出側を作る道 1 本を直すだけで全部に効く。
+     *
+     * @param returns 戻り値の分類。{@code MAX} のように引数を見て決まるものがあるので、
+     *                関数そのものではなく<b>この呼び出し</b>が持つ
      */
-    record Function(Intrinsic intrinsic, List<Expression> arguments, Origin origin)
-            implements Operand {
+    record Function(Intrinsic intrinsic, List<Expression> arguments, Intrinsic.Result returns,
+                    Origin origin) implements Operand {
     }
 }

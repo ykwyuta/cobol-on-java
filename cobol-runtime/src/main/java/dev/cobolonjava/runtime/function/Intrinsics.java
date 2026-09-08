@@ -179,6 +179,45 @@ public final class Intrinsics {
         return value.divide(TWO, value.scale() + 1, CobolRounding.TRUNCATION);
     }
 
+    /**
+     * 文字として比べる {@code FUNCTION MAX} (要件 FR-070)。
+     *
+     * <p>引数が英数字なら、比べ方は<b>照合順序</b>になる。返すのは引数そのものである。
+     */
+    public static byte[] maxText(byte[][] values, CollatingSequence order, CodePage codePage) {
+        return values[extreme(values, order, codePage, true)];
+    }
+
+    /** 文字として比べる {@code FUNCTION MIN}。 */
+    public static byte[] minText(byte[][] values, CollatingSequence order, CodePage codePage) {
+        return values[extreme(values, order, codePage, false)];
+    }
+
+    /** 文字として比べる {@code FUNCTION ORD-MAX}。何番目の引数かを返す。 */
+    public static Decimal ordMaxText(byte[][] values, CollatingSequence order,
+                                     CodePage codePage) {
+        return Decimal.of(extreme(values, order, codePage, true) + 1L, 0);
+    }
+
+    /** 文字として比べる {@code FUNCTION ORD-MIN}。 */
+    public static Decimal ordMinText(byte[][] values, CollatingSequence order,
+                                     CodePage codePage) {
+        return Decimal.of(extreme(values, order, codePage, false) + 1L, 0);
+    }
+
+    /** いちばん大きい (小さい) 引数が何番目か。同じ値が並んでいれば先に書いたほうを採る。 */
+    private static int extreme(byte[][] values, CollatingSequence order, CodePage codePage,
+                               boolean largest) {
+        int found = 0;
+        for (int i = 1; i < values.length; i++) {
+            int comparison = order.compare(values[i], values[found], codePage.space());
+            if (largest ? comparison > 0 : comparison < 0) {
+                found = i;
+            }
+        }
+        return found;
+    }
+
     // ---- 近似が入る関数 ----
 
     /**

@@ -322,6 +322,83 @@ class IntrinsicFunctionTest {
     }
 
     @Test
+    @DisplayName("ALL と書いた添字は反復の数だけ引数へ広がる (FR-070)")
+    void anAllSubscriptExpandsToEveryOccurrence() {
+        List<String> table = List.of(
+                "01 WS-T.",
+                "   05 WS-E OCCURS 4 TIMES PIC 9.",
+                "01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0.");
+        assertEquals("+00000900", run(table,
+                "MOVE 3 TO WS-E (1) MOVE 9 TO WS-E (2)",
+                "MOVE 1 TO WS-E (3) MOVE 7 TO WS-E (4)",
+                "COMPUTE WS-N = FUNCTION MAX(WS-E (ALL)).").substring(4));
+        assertEquals("+00002000", run(table,
+                "MOVE 3 TO WS-E (1) MOVE 9 TO WS-E (2)",
+                "MOVE 1 TO WS-E (3) MOVE 7 TO WS-E (4)",
+                "COMPUTE WS-N = FUNCTION SUM(WS-E (ALL)).").substring(4));
+    }
+
+    @Test
+    @DisplayName("次元が 2 つあれば組み合わせすべてに広がる (FR-070)")
+    void anAllSubscriptSpansEveryDimension() {
+        assertEquals("+00000600", run(
+                List.of("01 WS-T.",
+                        "   05 WS-ROW OCCURS 2 TIMES.",
+                        "      10 WS-E OCCURS 3 TIMES PIC 9 VALUE 1.",
+                        "01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = FUNCTION SUM(WS-E (ALL, ALL)).").substring(6),
+                "2 行 3 列で 1 が 6 個である");
+    }
+
+    @Test
+    @DisplayName("ALL は組み込み関数の引数にしか書けない (FR-070)")
+    void anAllSubscriptIsOnlyForFunctionArguments() {
+        CobolCompiler.Result result = compile(
+                List.of("01 WS-T.",
+                        "   05 WS-E OCCURS 4 TIMES PIC 9.",
+                        "01 WS-N PIC 9."),
+                "MOVE WS-E (ALL) TO WS-N.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("ALL may be written"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("MAX と MIN は英数字の引数も取れる (FR-070, FR-054)")
+    void maxAndMinAlsoCompareText() {
+        // 比べ方は照合順序である。返すのは引数そのものである。
+        // EBCDIC では英小文字が英大文字より小さいので、ASCII とは答えが逆になる
+        assertEquals("R  ", moved("FUNCTION MAX(\"R\", \"I\", \"a\")").substring(0, 3));
+        assertEquals("a  ", moved("FUNCTION MIN(\"R\", \"I\", \"a\")").substring(0, 3));
+        assertEquals("+00000100", computed("FUNCTION ORD-MAX(\"R\", \"I\", \"a\")"));
+        assertEquals("+00000300", computed("FUNCTION ORD-MIN(\"R\", \"I\", \"a\")"));
+    }
+
+    @Test
+    @DisplayName("数値と英数字の引数は混ぜられない (FR-070)")
+    void theArgumentsOfMaxMustAllBeOfOneClass() {
+        CobolCompiler.Result result = compile(
+                List.of("01 WS-N PIC S9(6)V99."), "COMPUTE WS-N = FUNCTION MAX(1, \"a\").");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("all be alphanumeric"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("引数を分けているのはコンマである (FR-070)")
+    void aCommaSeparatesArgumentsBeforeAParenthesis() {
+        // 「B, (C + 1)」は 2 個、「B (C + 1)」は B を添字付けした 1 個である。
+        // コンマは飾りだが、開き括弧の前だけは意味を持つ
+        assertEquals("+00000400", run(
+                List.of("01 WS-A PIC 9 VALUE 2.",
+                        "01 WS-B PIC 9 VALUE 3.",
+                        "01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = FUNCTION MAX(WS-A, (WS-B + 5) / 2).").substring(2));
+    }
+
+    @Test
     @DisplayName("知らない関数は断る (FR-070)")
     void anUnknownFunctionIsRefused() {
         // 近い値を黙って返すより、書けないと言うほうがよい
