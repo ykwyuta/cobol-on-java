@@ -124,6 +124,12 @@ public final class NumericItem {
      * 事前に {@link #fits(Decimal)} で判定する (要件 FR-043)。
      */
     public byte[] encode(Decimal value) {
+        // 符号を持たない受取項目には<b>絶対値</b>が入る。規格がそう決めている。
+        // 符号を残すと、-70717 を PIC 9(9) COMP へ移したときに負のまま読み戻される
+        // (NC105A の MOVE-TEST-F1-114「MOVE TO COMP (ABS)」がそこだけを確かめている)
+        if (!signPosition.isSigned() && value.signum() < 0) {
+            value = value.negate();
+        }
         return switch (usage) {
             case DISPLAY -> ZonedDecimal.encode(value, picture.digits(), picture.scale(),
                     signPosition, codePage);
