@@ -25,8 +25,15 @@ public final class SpecialNames {
     private final char currency;
     private final Map<String, FunctionName> mnemonics;
     private final byte[] collating;
+    private final Map<String, byte[]> alphabets;
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating) {
+        this(currency, mnemonics, collating, Map.of());
+    }
+
+    private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating,
+                         Map<String, byte[]> alphabets) {
+        this.alphabets = Map.copyOf(alphabets);
         this.currency = currency;
         this.mnemonics = Map.copyOf(mnemonics);
         this.collating = collating;
@@ -48,6 +55,16 @@ public final class SpecialNames {
      */
     public byte[] collatingSequence() {
         return collating == null ? null : collating.clone();
+    }
+
+    /**
+     * 名前で書いた照合順序 (要件 FR-054)。{@code SORT ... SEQUENCE} が引く。
+     *
+     * @return 256 個の要素からなる「バイト値 → 位置」の表。知らない名前なら {@code null}
+     */
+    public byte[] alphabet(String name) {
+        byte[] table = alphabets.get(name.toUpperCase(Locale.ROOT));
+        return table == null ? null : table.clone();
     }
 
     /**
@@ -137,7 +154,7 @@ public final class SpecialNames {
             }
         }
         byte[] collating = collatingOf(program, alphabets, diagnostics);
-        return new Result(new SpecialNames(currency, mnemonics, collating),
+        return new Result(new SpecialNames(currency, mnemonics, collating, alphabets),
                 List.copyOf(diagnostics));
     }
 

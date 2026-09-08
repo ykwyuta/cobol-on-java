@@ -1,6 +1,7 @@
 package dev.cobolonjava.runtime.sort;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.verb.Compare;
 import java.util.ArrayList;
@@ -31,9 +32,22 @@ public final class SortWork {
     /** 次に返すレコード。 */
     private int position;
 
+    /**
+     * 並べ替えに使う照合順序 (要件 FR-054, FR-120)。
+     *
+     * <p>{@code null} ならコードページのバイト値の並びである。表があれば、英数字の鍵は
+     * その並びで比べる。<b>数値の鍵は表に依らない</b> — 大小は値そのもので決まる。
+     */
+    private final CollatingSequence sequence;
+
     public SortWork(List<SortKey> keys, CodePage codePage) {
+        this(keys, codePage, null);
+    }
+
+    public SortWork(List<SortKey> keys, CodePage codePage, CollatingSequence sequence) {
         this.keys = List.copyOf(keys);
         this.codePage = codePage;
+        this.sequence = sequence;
     }
 
     /** 溜めたレコードの数。 */
@@ -78,13 +92,19 @@ public final class SortWork {
         for (SortKey key : keys) {
             int order = key.value() != null || key.numeric() != null
                     ? compareNumeric(left, right, key)
-                    : Compare.alphanumeric(slice(left, key), slice(right, key), codePage);
+                    : compareText(slice(left, key), slice(right, key));
             if (order != 0) {
                 return key.ascending() ? order : -order;
             }
         }
         // 鍵が等しければ順を変えない。安定であることが規則である
         return 0;
+    }
+
+    private int compareText(byte[] left, byte[] right) {
+        return sequence == null
+                ? Compare.alphanumeric(left, right, codePage)
+                : sequence.compare(left, right, codePage.space());
     }
 
     private int compareNumeric(byte[] left, byte[] right, SortKey key) {

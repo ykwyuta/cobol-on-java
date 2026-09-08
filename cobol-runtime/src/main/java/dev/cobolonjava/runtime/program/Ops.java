@@ -919,6 +919,12 @@ public final class Ops {
         context.sortWork(work, List.of(keys));
     }
 
+    /** 照合順序を決めて用意する (要件 FR-054, FR-120)。 */
+    public static void sortOpen(ProgramContext context, String work, SortKey[] keys,
+                                CollatingSequence sequence) {
+        context.sortWork(work, List.of(keys), sequence);
+    }
+
     /** {@code RELEASE} (要件 FR-120)。レコードを 1 つ渡す。 */
     public static void release(ProgramContext context, String work, Storage storage, int offset,
                                int length) {

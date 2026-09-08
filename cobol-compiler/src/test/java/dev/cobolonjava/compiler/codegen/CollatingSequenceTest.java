@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.cobolonjava.compiler.CobolCompiler;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -202,6 +203,79 @@ class CollatingSequenceTest {
                         "    ALPHABET DIGITS-FIRST IS \"1\" \"2\" \"3\"."),
                 List.of("01 WS-C PIC X."),
                 "MOVE FUNCTION CHAR(1) TO WS-C."));
+    }
+
+    @Test
+    @DisplayName("並べ替えの鍵も照合順序に従う (FR-054, FR-120)")
+    void sortKeysFollowTheCollatingSequence() {
+        // EBCDIC では数字が英字より大きい。数字を先頭へ置いた並びなら逆になる。
+        // ここは「まだ支えていない」と断っていた
+        assertEquals("1|A|", sorted(
+                "    ALPHABET DIGITS-FIRST IS \"123456789\".",
+                "    SORT SORT-WORK ASCENDING KEY S-KEY",
+                "        SEQUENCE DIGITS-FIRST",
+                "        INPUT PROCEDURE IS FEED",
+                "        OUTPUT PROCEDURE IS DRAIN."));
+        // 並べ替えの指定が無ければコードページの並びである
+        assertEquals("A|1|", sorted(
+                "    ALPHABET DIGITS-FIRST IS \"123456789\".",
+                "    SORT SORT-WORK ASCENDING KEY S-KEY",
+                "        INPUT PROCEDURE IS FEED",
+                "        OUTPUT PROCEDURE IS DRAIN."));
+    }
+
+    /** 2 件を並べ替えて、出てきた順に印字する。 */
+    private static String sorted(String alphabet, String... sort) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SORTSEQ.",
+                "ENVIRONMENT DIVISION.",
+                "CONFIGURATION SECTION.",
+                "SPECIAL-NAMES.",
+                alphabet,
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT SORT-WORK ASSIGN TO SORTWK.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "SD  SORT-WORK.",
+                "01  S-REC.",
+                "    05  S-KEY PIC X.",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-DONE PIC X VALUE 'N'.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.")) {
+            sb.append("       ").append(line).append('\n');
+        }
+        for (String line : sort) {
+            sb.append("       ").append(line).append('\n');
+        }
+        for (String line : List.of(
+                "    STOP RUN.",
+                "FEED.",
+                "    MOVE 'A' TO S-KEY RELEASE S-REC",
+                "    MOVE '1' TO S-KEY RELEASE S-REC.",
+                "DRAIN.",
+                "    PERFORM UNTIL WS-DONE = 'Y'",
+                "        RETURN SORT-WORK AT END MOVE 'Y' TO WS-DONE",
+                "            NOT AT END DISPLAY S-KEY END-RETURN",
+                "    END-PERFORM.")) {
+            sb.append("       ").append(line).append('\n');
+        }
+
+        CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, sb.toString());
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+        try {
+            Class<?> type = new GeneratedLoader().define(result.className(), result.classFile());
+            ((CobolProgram) type.getDeclaredConstructor().newInstance())
+                    .runFresh(ProgramContext.capturing(sink));
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot load the generated program", e);
+        }
+        return sink.toString(java.nio.charset.StandardCharsets.UTF_8)
+                .replace(System.lineSeparator(), "|");
     }
 
     @Test

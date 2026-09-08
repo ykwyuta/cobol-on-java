@@ -685,9 +685,12 @@ public sealed interface Statement {
      * @param output  {@code OUTPUT PROCEDURE} の節。{@code GIVING} を書いていれば {@code null}
      * @param merge   {@code MERGE} 文かどうか
      */
+    /**
+     * @param sequence 並べ替えに使う照合順序。既定 (コードページの並び) なら {@code null}
+     */
     record Sort(FileDescription work, List<SortKeySpec> keys, List<FileDescription> using,
                 Procedure input, List<FileDescription> giving, Procedure output, boolean merge,
-                Origin origin) implements Statement {
+                byte[] sequence, Origin origin) implements Statement {
 
         public Sort {
             keys = List.copyOf(keys);

@@ -1892,13 +1892,6 @@ public final class ProgramGenerator {
      */
     private void planSort(Statement.Sort statement, List<Runnable> body) {
         FileDescription work = statement.work();
-        if (collating != null) {
-            // 並べ替えの鍵もプログラムの照合順序に従う。ここだけコードページの並びで
-            // 並べると、同じプログラムの中で場所によって順序が食い違う (暫定判断 P-042)
-            report(statement.origin(), "SORT and MERGE with a PROGRAM COLLATING SEQUENCE"
-                    + " are not supported yet");
-            return;
-        }
         List<Runnable> keys = new ArrayList<>();
         for (Statement.Sort.SortKeySpec key : statement.keys()) {
             Runnable element = planSortKey(key, statement.origin());
@@ -1915,13 +1908,21 @@ public final class ProgramGenerator {
             return;
         }
         String name = work.name();
+        byte[] sequence = statement.sequence();
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);
             run.visitLdcInsn(name);
             emitArray(keys, Type.getInternalName(SortKey.class));
+            // 並べ替えの鍵も、文が指した (なければプログラムの) 照合順序に従う。
+            // ここだけコードページの並びで並べると、同じプログラムの中で
+            // 場所によって順序が食い違う
+            if (sequence != null) {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal,
+                        collatingConstant(sequence), COLLATING);
+            }
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "sortOpen",
                     "(" + CONTEXT + "Ljava/lang/String;[" + Type.getDescriptor(SortKey.class)
-                            + ")V", false);
+                            + (sequence != null ? COLLATING : "") + ")V", false);
             input.run();
             run.visitVarInsn(Opcodes.ALOAD, 2);
             run.visitLdcInsn(name);

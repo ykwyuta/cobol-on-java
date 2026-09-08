@@ -1932,36 +1932,105 @@ public final class ProcedureBuilder {
                                         Condition.Comparison comparison,
                                         CobolParser.RelationConditionContext context,
                                         Origin origin) {
-        Condition condition = first;
+        if (context.abbreviatedRelation().isEmpty()) {
+            return first;
+        }
+        // AND は OR より先に結ぶ。左から順に畳むと「A = 30 OR > 10 AND < 21」の
+        // 答えが変わる。並べてから優先順位で組み直す
+        List<Condition> terms = new ArrayList<>();
+        List<Boolean> conjunctions = new ArrayList<>();
+        terms.add(first);
         Condition.Comparison carried = comparison;
         for (CobolParser.AbbreviatedRelationContext next : context.abbreviatedRelation()) {
             Expression right;
-            if (next.literal() != null) {
-                try {
-                    right = new Expression.Value(
-                            new Operand.Literal(LiteralValue.of(next.literal())));
-                } catch (RuntimeException e) {
-                    report(origin, "invalid literal: " + next.literal().getText());
-                    return null;
-                }
-            } else {
+            if (next.relationalOperator() != null) {
                 carried = comparisonOf(next.relationalOperator());
                 if (carried == null) {
                     report(origin, "unknown relational operator: "
                             + next.relationalOperator().getText());
                     return null;
                 }
+            }
+            Condition term = conditionNameTerm(next, origin);
+            if (term == null) {
                 right = expressionOf(next.expression(), origin);
                 if (right == null) {
                     return null;
                 }
+                term = relation(subject, carried, right, origin);
             }
-            Condition added = relation(subject, carried, right, origin);
-            condition = next.AND() != null
-                    ? new Condition.And(condition, added)
-                    : new Condition.Or(condition, added);
+            terms.add(term);
+            conjunctions.add(next.AND() != null);
         }
-        return condition;
+        return combined(terms, conjunctions);
+    }
+
+    /**
+     * 名前 1 個の項が<b>条件名</b>なら、その条件として読む。
+     *
+     * <p>{@code IF A = B AND SOME-FLAG} の {@code SOME-FLAG} が 88 レベルなら、これは
+     * 省略した比較ではなく条件名条件である。文法では見分けられない — <b>名前を
+     * 引かないと決まらない</b>。
+     *
+     * @return 条件名でなければ {@code null}
+     */
+    private Condition conditionNameTerm(CobolParser.AbbreviatedRelationContext next,
+                                        Origin origin) {
+        if (next.relationalOperator() != null || next.expression() == null) {
+            return null;
+        }
+        CobolParser.IdentifierContext name = soleIdentifierOf(next.expression());
+        return name == null ? null : conditionNameFor(name, origin);
+    }
+
+    /**
+     * 名前が条件名なら、その条件。
+     *
+     * @return 条件名でなければ {@code null}
+     */
+    private Condition conditionNameFor(CobolParser.IdentifierContext context, Origin origin) {
+        String name = context.qualifiedDataName().dataName(0).getText().toUpperCase(Locale.ROOT);
+        for (DataItem item : layout.all()) {
+            for (DataItem.ConditionName conditionName : item.conditionNames()) {
+                if (name.equals(conditionName.name())) {
+                    DataReference parent = resolver.resolveAs(item, context);
+                    return parent == null
+                            ? null
+                            : conditionNameCondition(parent, conditionName, origin);
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 式が名前 1 個なら、その名前。そうでなければ {@code null}。 */
+    private static CobolParser.IdentifierContext soleIdentifierOf(
+            CobolParser.ExpressionContext expression) {
+        if (!(expression instanceof CobolParser.OperandExpressionContext operand)) {
+            return null;
+        }
+        return operand.arithmeticOperand().identifier();
+    }
+
+    /** 項を優先順位どおりに結ぶ。AND を先に結んでから OR で並べる。 */
+    private static Condition combined(List<Condition> terms, List<Boolean> conjunctions) {
+        List<Condition> groups = new ArrayList<>();
+        Condition group = terms.get(0);
+        for (int i = 0; i < conjunctions.size(); i++) {
+            Condition next = terms.get(i + 1);
+            if (conjunctions.get(i)) {
+                group = new Condition.And(group, next);
+                continue;
+            }
+            groups.add(group);
+            group = next;
+        }
+        groups.add(group);
+        Condition result = groups.get(0);
+        for (int i = 1; i < groups.size(); i++) {
+            result = new Condition.Or(result, groups.get(i));
+        }
+        return result;
     }
 
     /**
@@ -3317,7 +3386,11 @@ public final class ProcedureBuilder {
         } else {
             input = procedureOf(context.sortInput().paragraphName());
         }
-        return sorted(work, keys, using, input, context.sortOutput(), false, origin);
+        byte[] sequence = sequenceOf(context.sortSequence(), origin);
+        if (context.sortSequence() != null && sequence == null) {
+            return null;
+        }
+        return sorted(work, keys, using, input, context.sortOutput(), false, sequence, origin);
     }
 
     /** {@code MERGE} を組み立てる (要件 FR-121)。入口はファイルに限られる。 */
@@ -3337,12 +3410,39 @@ public final class ProcedureBuilder {
             report(origin, "MERGE needs at least two USING files");
             return null;
         }
-        return sorted(work, keys, using, null, context.sortOutput(), true, origin);
+        byte[] sequence = sequenceOf(context.sortSequence(), origin);
+        if (context.sortSequence() != null && sequence == null) {
+            return null;
+        }
+        return sorted(work, keys, using, null, context.sortOutput(), true, sequence, origin);
+    }
+
+    /**
+     * {@code SORT ... SEQUENCE} が指す照合順序 (要件 FR-054, FR-120)。
+     *
+     * <p>書かれていなければ、<b>プログラムの照合順序</b>に従う。文が指定したものが
+     * あれば、そちらが勝つ。規格がそう決めている。
+     *
+     * @return 既定の並びでよければ {@code null}
+     */
+    private byte[] sequenceOf(CobolParser.SortSequenceContext context, Origin origin) {
+        if (context == null) {
+            return specialNames.collatingSequence();
+        }
+        String name = context.IDENTIFIER().getText();
+        byte[] table = specialNames.alphabet(name);
+        if (table == null) {
+            report(origin, "undefined alphabet-name: " + name.toUpperCase(Locale.ROOT));
+            return null;
+        }
+        // コードページの並びと同じなら、表を持ち回る意味はない
+        return Alphabet.isNative(table) ? null : table;
     }
 
     private Statement sorted(FileDescription work, List<Statement.Sort.SortKeySpec> keys,
                              List<FileDescription> using, Statement.Sort.Procedure input,
-                             CobolParser.SortOutputContext output, boolean merge, Origin origin) {
+                             CobolParser.SortOutputContext output, boolean merge,
+                             byte[] sequence, Origin origin) {
         List<FileDescription> giving = List.of();
         Statement.Sort.Procedure procedure = null;
         if (output.GIVING() != null) {
@@ -3353,7 +3453,8 @@ public final class ProcedureBuilder {
         } else {
             procedure = procedureOf(output.paragraphName());
         }
-        return new Statement.Sort(work, keys, using, input, giving, procedure, merge, origin);
+        return new Statement.Sort(work, keys, using, input, giving, procedure, merge,
+                sequence, origin);
     }
 
     /**

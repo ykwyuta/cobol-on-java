@@ -38,15 +38,36 @@ class AbbreviatedRelationTest {
 
     /** 値を入れてから条件を試し、通った枝の印を出す。 */
     private static String run(int value, String... condition) {
+        return withStorage(List.of("01 WS-A PIC 9(4) VALUE " + value + "."), condition);
+    }
+
+    /** 2 つ目の項目も置く。 */
+    private static String runWith(int value, int other, String... condition) {
+        return withStorage(List.of(
+                "01 WS-A PIC 9(4) VALUE " + value + ".",
+                "01 WS-B PIC 9(4) VALUE " + other + "."), condition);
+    }
+
+    /** 条件名 (88 レベル) を持つ項目を置く。 */
+    private static String runWithFlag(int value, String... condition) {
+        return withStorage(List.of(
+                "01 WS-A PIC 9(4) VALUE " + value + ".",
+                "    88 A-IS-BIG VALUE 40 THRU 9999."), condition);
+    }
+
+    private static String withStorage(List<String> storage, String... condition) {
         StringBuilder sb = new StringBuilder();
         for (String line : List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. ABBREV.",
                 "DATA DIVISION.",
-                "WORKING-STORAGE SECTION.",
-                "01 WS-A PIC 9(4) VALUE " + value + ".",
-                "PROCEDURE DIVISION.",
-                "MAIN-START.")) {
+                "WORKING-STORAGE SECTION.")) {
+            FixedFormatSource.append(sb, line);
+        }
+        for (String line : storage) {
+            FixedFormatSource.append(sb, line);
+        }
+        for (String line : List.of("PROCEDURE DIVISION.", "MAIN-START.")) {
             FixedFormatSource.append(sb, line);
         }
         for (String line : condition) {
@@ -110,14 +131,43 @@ class AbbreviatedRelationTest {
     @Test
     @DisplayName("AND は OR より先に結ばれる (FR-046)")
     void andBindsTighterThanOr() {
-        // 「= 1 OR > 10 AND < 21」は「(= 1) OR ((> 10) AND (< 21))」である
+        // 「= 30 OR > 10 AND < 21」は「(= 30) OR ((> 10) AND (< 21))」である。
+        // 左から順に畳むと「((= 30 OR > 10) AND < 21)」になり、30 の答えが逆になる。
+        // <b>30 でしか差が出ない</b>ので、この値を選んである
         String[] mixed = {
-            "    IF WS-A = 1 OR > 10 AND < 21",
+            "    IF WS-A = 30 OR > 10 AND < 21",
             "        DISPLAY 'HIT' ELSE DISPLAY 'MISS' END-IF."};
 
-        assertEquals("HIT", run(1, mixed));
+        assertEquals("HIT", run(30, mixed));
         assertEquals("HIT", run(15, mixed));
-        assertEquals("MISS", run(30, mixed));
+        assertEquals("MISS", run(5, mixed));
+        assertEquals("MISS", run(50, mixed));
+    }
+
+    @Test
+    @DisplayName("省いた値は式でもよい (FR-046)")
+    void anAbbreviatedValueMayBeAnExpression() {
+        // 「= 8 OR WS-B - 1」の最後は「= WS-B - 1」である
+        String[] mixed = {
+            "    IF WS-A = 8 OR WS-B - 1",
+            "        DISPLAY 'HIT' ELSE DISPLAY 'MISS' END-IF."};
+
+        assertEquals("HIT", runWith(8, 40, mixed));
+        assertEquals("HIT", runWith(39, 40, mixed));
+        assertEquals("MISS", runWith(40, 40, mixed));
+    }
+
+    @Test
+    @DisplayName("名前 1 個が条件名なら、条件名条件として読む (FR-046)")
+    void aBareNameThatIsAConditionNameStaysACondition() {
+        // 「AND B」の B が 88 レベルなら、省略した比較ではない。
+        // 文法では見分けられず、<b>名前を引かないと決まらない</b>
+        String[] withFlag = {
+            "    IF WS-A > 10 AND A-IS-BIG",
+            "        DISPLAY 'HIT' ELSE DISPLAY 'MISS' END-IF."};
+
+        assertEquals("HIT", runWithFlag(50, withFlag));
+        assertEquals("MISS", runWithFlag(15, withFlag));
     }
 
     @Test

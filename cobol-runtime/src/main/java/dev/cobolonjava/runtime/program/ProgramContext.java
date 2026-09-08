@@ -67,7 +67,13 @@ public final class ProgramContext {
      * なく、{@code SORT} のたびに作り直す。前の整列の中身が残っていてはならない。
      */
     public SortWork sortWork(String name, List<SortKey> keys) {
-        SortWork work = new SortWork(keys, codePage);
+        return sortWork(name, keys, null);
+    }
+
+    /** 照合順序を決めて用意する。{@code null} ならコードページの並びである。 */
+    public SortWork sortWork(String name, List<SortKey> keys,
+                             dev.cobolonjava.runtime.codepage.CollatingSequence sequence) {
+        SortWork work = new SortWork(keys, codePage, sequence);
         sorts.put(name, work);
         return work;
     }

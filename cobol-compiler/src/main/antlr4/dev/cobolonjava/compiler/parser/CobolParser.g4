@@ -10,6 +10,63 @@
 // 宣言していない語は利用者定義語 (IDENTIFIER) として扱う。
 parser grammar CobolParser;
 
+@parser::members {
+    /**
+     * ここから先に<b>関係条件が続いているか</b>を、トークンを覗いて決める。
+     *
+     * <p>省略した比較の「AND B」と、普通の条件の「AND B = C」は、B のところまで
+     * まったく同じ形である。どちらかは<b>そのあとを見ないと決まらない</b>。文法の
+     * 規則だけで書こうとすると ANTLR が全文脈の予測に落ちるので、ここで先を覗く。
+     *
+     * <p>覗くのは次の AND / OR / 終止符までである。そこまでに関係演算子や
+     * {@code IS}、種類を問う語があれば、それは省略した比較ではない。
+     *
+     * @return 関係条件が続いていれば {@code true}
+     */
+    private boolean relationAhead() {
+        int depth = 0;
+        for (int i = 1; i <= 400; i++) {
+            int type = _input.LA(i);
+            if (type == Token.EOF) {
+                return false;
+            }
+            if (type == LPAREN) {
+                depth++;
+                continue;
+            }
+            if (type == RPAREN) {
+                if (depth == 0) {
+                    return false;
+                }
+                depth--;
+                continue;
+            }
+            if (depth != 0) {
+                continue;
+            }
+            switch (type) {
+                case AND: case OR: case PERIOD: case THEN: case ELSE: case END_IF:
+                case WHEN: case UNTIL: case ALSO:
+                    return false;
+                case EQUAL_SIGN: case GREATER_SIGN: case LESS_SIGN:
+                case GREATER_EQUAL_SIGN: case LESS_EQUAL_SIGN: case NOT_EQUAL_SIGN:
+                case GREATER: case LESS: case EQUAL: case IS:
+                case NUMERIC: case ALPHABETIC:
+                    return true;
+                // 符号条件は名前のあとに来る。先頭に来た ZERO は比べる値である
+                case POSITIVE: case NEGATIVE: case ZERO:
+                    if (i > 1) {
+                        return true;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        return false;
+    }
+}
+
 tokens {
     // 区切り文字。コンマとセミコロンは飾りなので SourceTokenSource が落とす。
     // 名前だけ残してあるのは、利用者定義語として引かれないようにするためである
@@ -665,13 +722,12 @@ relationCondition
 
 // 省いた形は 2 つある。演算子だけ書き直すか、値だけを並べるかである。
 //
-// 値だけを並べる形は<b>定数のときだけ</b>受ける。名前を書いた「AND B」は、
-// B が条件名 (88 レベル) なら普通の条件名条件であり、そうでなければ省略した比較である。
-// どちらかは<b>名前を引かないと決まらない</b>ので、文法では分けられない。
-// 定数なら条件名ではありえないので、そこだけを先に取る
+// 値だけを並べる形は、そのあとに関係条件が続いていないときだけ取る (relationAhead)。
+// 「AND B = C」は普通の条件であり、「AND B」は省略した比較か条件名条件である。
+// 名前 1 個のときにどちらかは<b>名前を引かないと決まらない</b>ので、意味解析で分ける
 abbreviatedRelation
     : (AND | OR) relationalOperator expression
-    | (AND | OR) literal
+    | (AND | OR) {!relationAhead()}? expression
     ;
 
 signCondition
@@ -925,11 +981,16 @@ advancingLines
 
 // SORT は溜めて並べ替えて配る。入口と出口はファイルか手続きのどちらかである
 sortStatement
-    : SORT IDENTIFIER sortKeyClause+ sortDuplicates? sortInput sortOutput
+    : SORT IDENTIFIER sortKeyClause+ sortDuplicates? sortSequence? sortInput sortOutput
     ;
 
 mergeStatement
-    : MERGE IDENTIFIER sortKeyClause+ sortDuplicates? sortUsing sortOutput
+    : MERGE IDENTIFIER sortKeyClause+ sortDuplicates? sortSequence? sortUsing sortOutput
+    ;
+
+// 並べ替えに使う照合順序。COLLATING は省いてよい
+sortSequence
+    : COLLATING? SEQUENCE IS? IDENTIFIER
     ;
 
 sortKeyClause
