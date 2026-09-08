@@ -52,6 +52,10 @@ public final class SourceTokenSource implements TokenSource {
     private static final Pattern NUMERIC =
             Pattern.compile("[+-]?(\\d+(\\.\\d+)?|\\.\\d+)([eE][+-]?\\d+)?");
 
+    /** {@code DECIMAL-POINT IS COMMA} のときの数字定数の綴り。 */
+    private static final Pattern NUMERIC_COMMA =
+            Pattern.compile("[+-]?(\\d+(,\\d+)?|,\\d+)([eE][+-]?\\d+)?");
+
     /**
      * 文法が宣言しているが予約語ではない名前。区切り文字、島、そして語の種別そのものである。
      * これらを予約語として引くと、{@code NUMBER} という名前のデータ項目が
@@ -97,8 +101,26 @@ public final class SourceTokenSource implements TokenSource {
     private TokenFactory<?> factory = CommonTokenFactory.DEFAULT;
 
     public SourceTokenSource(List<SourceToken> tokens) {
-        this.tokens = List.copyOf(tokens);
+        this(tokens, false);
     }
+
+    /**
+     * @param commaDecimalPoint {@code DECIMAL-POINT IS COMMA} が書かれているか。
+     *                          書かれていれば、コンマは小数点として読む
+     */
+    public SourceTokenSource(List<SourceToken> tokens, boolean commaDecimalPoint) {
+        this.tokens = List.copyOf(tokens);
+        this.commaDecimalPoint = commaDecimalPoint;
+    }
+
+    /**
+     * コンマが小数点かどうか (要件 FR-054)。
+     *
+     * <p>{@code DECIMAL-POINT IS COMMA} と書けば {@code 1234,56} が数字定数になる。
+     * 語へ切る側は「コンマのあとに空白が無ければ 1 語」としているので、切り方は
+     * 変わらない。<b>変わるのは読み方だけ</b>である。
+     */
+    private final boolean commaDecimalPoint;
 
     /** 文法が宣言した予約語の表。COBOL の綴り (ハイフン) から字句の種別を引く。 */
     private static Map<String, Integer> reservedWords(Vocabulary vocabulary) {
@@ -133,7 +155,12 @@ public final class SourceTokenSource implements TokenSource {
             return endOfFile();
         }
         SourceToken source = tokens.get(index++);
-        return new OriginToken(stream, typeOf(source), source);
+        int type = typeOf(source);
+        if (type == CobolParser.NUMBER && commaDecimalPoint && source.text().indexOf(',') >= 0) {
+            // 以後の道はふつうの綴りだけを知っていればよい。ここで直しておく
+            return new OriginToken(stream, type, source, source.text().replace(',', '.'));
+        }
+        return new OriginToken(stream, type, source);
     }
 
     /**
@@ -174,7 +201,7 @@ public final class SourceTokenSource implements TokenSource {
     }
 
     /** トークンの種別を決める。予約語かどうかの判別はここだけで行う。 */
-    private static int typeOf(SourceToken token) {
+    private int typeOf(SourceToken token) {
         return switch (token.kind()) {
             case LITERAL -> CobolParser.LITERAL;
             case PICTURE_STRING -> CobolParser.PICTURE_STRING;
@@ -196,7 +223,7 @@ public final class SourceTokenSource implements TokenSource {
         };
     }
 
-    private static int wordType(String text) {
+    private int wordType(String text) {
         Integer symbol = OPERATOR_SYMBOLS.get(text);
         if (symbol != null) {
             return symbol;
@@ -205,7 +232,8 @@ public final class SourceTokenSource implements TokenSource {
         if (reserved != null) {
             return reserved;
         }
-        return NUMERIC.matcher(text).matches() ? CobolParser.NUMBER : CobolParser.IDENTIFIER;
+        Pattern numeric = commaDecimalPoint ? NUMERIC_COMMA : NUMERIC;
+        return numeric.matcher(text).matches() ? CobolParser.NUMBER : CobolParser.IDENTIFIER;
     }
 
     // ---- TokenSource の残り。文字の流れを持たないため、位置は OriginToken が担う ----

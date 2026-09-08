@@ -61,7 +61,13 @@ public final class NumericItem {
      * 生成コードは翻訳時の指定をここへ渡す。
      */
     public static NumericItem of(String pictureString, Usage usage, char currency) {
-        Picture p = PictureParser.parse(pictureString, currency);
+        return of(pictureString, usage, currency, PictureParser.DEFAULT_DECIMAL_POINT);
+    }
+
+    /** 小数点の文字まで決めて作る。{@code DECIMAL-POINT IS COMMA} が使う。 */
+    public static NumericItem of(String pictureString, Usage usage, char currency,
+                                 char decimalPoint) {
+        Picture p = PictureParser.parse(pictureString, currency, decimalPoint);
         return new NumericItem(p, usage, p.signPosition(), TruncMode.STD, NumProcMode.NOPFD,
                 UndefinedBehavior.SAFE, CodePages.DEFAULT);
     }

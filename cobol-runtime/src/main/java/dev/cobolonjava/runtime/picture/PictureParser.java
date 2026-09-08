@@ -22,11 +22,26 @@ public final class PictureParser {
     private PictureParser() {
     }
 
+    /** 既定の小数点。{@code DECIMAL-POINT IS COMMA} と書けばコンマになる。 */
+    public static final char DEFAULT_DECIMAL_POINT = '.';
+
     public static Picture parse(String source) {
         return parse(source, DEFAULT_CURRENCY);
     }
 
     public static Picture parse(String source, char currency) {
+        return parse(source, currency, DEFAULT_DECIMAL_POINT);
+    }
+
+    /**
+     * PICTURE を読む (要件 FR-054)。
+     *
+     * <p>{@code decimalPoint} は小数点として書く文字である。{@code DECIMAL-POINT IS COMMA}
+     * と書けばコンマになり、そのとき<b>ピリオドは桁区切り</b>になる。2 つの役目が
+     * 入れ替わるだけで、編集の仕組みは変わらない。区切りの文字はセルが覚えているので、
+     * 出てくるバイトも入れ替わる。
+     */
+    public static Picture parse(String source, char currency, char decimalPoint) {
         if (source == null || source.isBlank()) {
             throw new PictureSyntaxException("PICTURE character-string must not be empty");
         }
@@ -88,22 +103,26 @@ public final class PictureParser {
                     sawV = true;
                     pointIndex = slotStored.size();
                 }
-                case "." -> {
-                    if (pointIndex >= 0) {
-                        throw new PictureSyntaxException("more than one decimal point: " + source);
+                case ".", "," -> {
+                    boolean point = sym.charAt(0) == decimalPoint;
+                    if (point) {
+                        if (pointIndex >= 0) {
+                            throw new PictureSyntaxException(
+                                    "more than one decimal point: " + source);
+                        }
+                        pointIndex = slotStored.size();
+                        cells.add(new Cell(Kind.DECIMAL_POINT, sym.charAt(0), 1));
+                    } else {
+                        cells.add(new Cell(Kind.INSERT, sym.charAt(0), 1));
                     }
-                    pointIndex = slotStored.size();
-                    cells.add(new Cell(Kind.DECIMAL_POINT, '.', 1));
                     size++;
                     anyEditing = true;
                 }
-                case ",", "/", "0" -> {
+                case "/", "0" -> {
                     cells.add(new Cell(Kind.INSERT, sym.charAt(0), 1));
                     size++;
                     anyEditing = true;
-                    if (!sym.equals(",")) {
-                        anyInsertion = true;
-                    }
+                    anyInsertion = true;
                 }
                 case "B" -> {
                     cells.add(new Cell(Kind.INSERT, ' ', 1));

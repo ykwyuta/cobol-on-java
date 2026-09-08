@@ -109,7 +109,9 @@ public final class NumericEditor {
                     }
                 }
                 case DECIMAL_POINT -> {
-                    text[i] = ".";
+                    // 小数点として書かれた文字をそのまま出す。
+                    // DECIMAL-POINT IS COMMA ならコンマである
+                    text[i] = String.valueOf(c.literal());
                     significant = true;
                 }
                 case SIGN -> text[i] = String.valueOf(signChar(c.literal(), negative));

@@ -302,7 +302,7 @@ public final class DataDivisionBuilder {
     private void applyPicture(DataItem item, CobolParser.PictureClauseContext clause, Origin origin) {
         try {
             item.setPicture(PictureParser.parse(clause.PICTURE_STRING().getText(),
-                    specialNames.currency()));
+                    specialNames.currency(), specialNames.decimalPoint()));
         } catch (RuntimeException e) {
             report(origin, "invalid PICTURE character-string: " + e.getMessage());
         }

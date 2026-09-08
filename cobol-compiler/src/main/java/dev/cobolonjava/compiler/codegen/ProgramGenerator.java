@@ -105,6 +105,8 @@ public final class ProgramGenerator {
     private final SpecialNames specialNames;
     /** PICTURE の通貨記号。{@code CURRENCY SIGN IS} で差し替えられる。 */
     private char currency = SpecialNames.DEFAULT_CURRENCY;
+    /** PICTURE の小数点。{@code DECIMAL-POINT IS COMMA} で差し替えられる。 */
+    private char decimalPoint = '.';
 
     /**
      * このプログラムの照合順序 (要件 FR-054)。
@@ -263,6 +265,7 @@ public final class ProgramGenerator {
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
         parameters = procedure.parameters();
         currency = specialNames.currency();
+        decimalPoint = specialNames.decimalPoint();
         collating = specialNames.collatingSequence();
         writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         internal = className.replace('.', '/');
@@ -4758,7 +4761,8 @@ public final class ProgramGenerator {
             return null;
         }
         Usage usage = item.usage() == null ? Usage.DISPLAY : item.usage();
-        String key = "N:" + item.picture().source() + ":" + usage + ":" + item.signPosition();
+        String key = "N:" + item.picture().source() + ":" + usage + ":" + item.signPosition()
+                + ":" + decimalPoint;
         return constants.computeIfAbsent(key, k -> {
             String name = "N" + constants.size();
             return new Constant(name, NUMERIC_ITEM, () -> {
@@ -4767,9 +4771,12 @@ public final class ProgramGenerator {
                         usage.name(), Type.getDescriptor(Usage.class));
                 // 通貨記号は翻訳時に決まる。PICTURE の解釈がこれに依る
                 clinit.visitLdcInsn((int) currency);
+                // 小数点も翻訳時に決まる。ここが食い違うと、実行時に PICTURE が
+                // 別の意味に読まれる
+                clinit.visitLdcInsn((int) decimalPoint);
                 clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
                         Type.getInternalName(NumericItem.class), "of",
-                        "(Ljava/lang/String;" + Type.getDescriptor(Usage.class) + "C)"
+                        "(Ljava/lang/String;" + Type.getDescriptor(Usage.class) + "CC)"
                                 + NUMERIC_ITEM, false);
                 if (item.signPosition() != SignPosition.UNSIGNED) {
                     clinit.visitFieldInsn(Opcodes.GETSTATIC,
@@ -4786,14 +4793,15 @@ public final class ProgramGenerator {
     }
 
     private String pictureConstant(Picture picture) {
-        return constants.computeIfAbsent("P:" + picture.source(), k -> {
+        return constants.computeIfAbsent("P:" + picture.source() + ":" + decimalPoint, k -> {
             String name = "P" + constants.size();
             return new Constant(name, PICTURE, () -> {
                 clinit.visitLdcInsn(picture.source());
                 clinit.visitLdcInsn((int) currency);
+                clinit.visitLdcInsn((int) decimalPoint);
                 clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
                         Type.getInternalName(PictureParser.class), "parse",
-                        "(Ljava/lang/String;C)" + PICTURE, false);
+                        "(Ljava/lang/String;CC)" + PICTURE, false);
             });
         }).name();
     }

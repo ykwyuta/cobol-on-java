@@ -1947,6 +1947,7 @@ public final class ProcedureBuilder {
     private Condition valueObject(CobolParser.ExpressionContext subject,
                                   CobolParser.EvaluateObjectContext object, Origin origin) {
         Expression left = expressionOf(subject, origin);
+        negated = false;
         List<Expression> values = valuesOf(object, origin);
         // 不変の並びは contains(null) を投げる。1 つずつ見る
         if (left == null || values == null) {
@@ -1962,8 +1963,11 @@ public final class ProcedureBuilder {
                 : new Condition.And(
                         relation(left, Condition.Comparison.GREATER_OR_EQUAL, values.get(0), origin),
                         relation(left, Condition.Comparison.LESS_OR_EQUAL, values.get(1), origin));
-        return object.NOT() == null ? test : new Condition.Not(test);
+        return object.NOT() == null && !negated ? test : new Condition.Not(test);
     }
+
+    /** 目的語が「NOT 名前」の形だったか。{@link #valuesOf} が立てる。 */
+    private boolean negated;
 
     /**
      * 目的語から比べる値を取り出す。
@@ -1986,6 +1990,17 @@ public final class ProcedureBuilder {
                     ? null
                     : List.of(new Expression.Value(new Operand.Reference(reference)));
         }
+        // 「WHEN NOT 名前」は<b>その値と等しくない</b>ことを問う。主語が値なので、
+        // 名前は条件名ではなく比べる相手である
+        name = soleNameOf(object.condition(), true);
+        if (name != null) {
+            DataReference reference = resolver.resolve(name);
+            if (reference == null) {
+                return null;
+            }
+            negated = true;
+            return List.of(new Expression.Value(new Operand.Reference(reference)));
+        }
         report(origin, "a WHEN object must be a value when the subject is not TRUE or FALSE");
         return null;
     }
@@ -1993,11 +2008,22 @@ public final class ProcedureBuilder {
     /** 条件が「名前だけ」であれば、その名前を返す。 */
     private static CobolParser.IdentifierContext soleNameOf(
             CobolParser.ConditionContext condition) {
+        return soleNameOf(condition, false);
+    }
+
+    /**
+     * 条件が「名前だけ」であれば、その名前を返す。
+     *
+     * @param negated {@code NOT} が前に付いている形を探すかどうか
+     */
+    private static CobolParser.IdentifierContext soleNameOf(
+            CobolParser.ConditionContext condition, boolean negated) {
         if (condition == null || condition.orCondition().andCondition().size() != 1) {
             return null;
         }
         CobolParser.AndConditionContext and = condition.orCondition().andCondition(0);
-        if (and.notCondition().size() != 1 || and.notCondition(0).NOT() != null) {
+        if (and.notCondition().size() != 1
+                || (and.notCondition(0).NOT() != null) != negated) {
             return null;
         }
         CobolParser.SimpleConditionContext simple = and.notCondition(0).simpleCondition();

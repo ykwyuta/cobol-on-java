@@ -23,6 +23,7 @@ public final class SpecialNames {
     public static final char DEFAULT_CURRENCY = '$';
 
     private final char currency;
+    private final boolean commaDecimalPoint;
     private final Map<String, FunctionName> mnemonics;
     private final byte[] collating;
     private final Map<String, byte[]> alphabets;
@@ -31,12 +32,14 @@ public final class SpecialNames {
     private final Map<String, Integer> switchNames;
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating) {
-        this(currency, mnemonics, collating, Map.of(), Map.of(), Map.of(), Map.of());
+        this(currency, false, mnemonics, collating, Map.of(), Map.of(), Map.of(), Map.of());
     }
 
-    private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating,
+    private SpecialNames(char currency, boolean commaDecimalPoint,
+                         Map<String, FunctionName> mnemonics, byte[] collating,
                          Map<String, byte[]> alphabets, Map<String, byte[]> classes,
                          Map<String, SwitchStatus> switches, Map<String, Integer> switchNames) {
+        this.commaDecimalPoint = commaDecimalPoint;
         this.alphabets = Map.copyOf(alphabets);
         this.classes = Map.copyOf(classes);
         this.switches = Map.copyOf(switches);
@@ -160,6 +163,16 @@ public final class SpecialNames {
     }
 
     /**
+     * 小数点として書く文字 (要件 FR-054)。
+     *
+     * <p>{@code DECIMAL-POINT IS COMMA} と書けばコンマになり、そのとき<b>ピリオドは
+     * 桁区切り</b>になる。PICTURE の解釈と数字定数の綴りの両方に効く。
+     */
+    public char decimalPoint() {
+        return commaDecimalPoint ? ',' : '.';
+    }
+
+    /**
      * 呼び名が指す機能名。
      *
      * @return 書かれていなければ {@code null}
@@ -172,6 +185,7 @@ public final class SpecialNames {
     public static Result build(CobolParser.ProgramUnitContext program) {
         List<Diagnostic> diagnostics = new ArrayList<>();
         char currency = DEFAULT_CURRENCY;
+        boolean commaDecimalPoint = false;
         Map<String, FunctionName> mnemonics = new LinkedHashMap<>();
         Map<String, byte[]> alphabets = new LinkedHashMap<>();
         Map<String, byte[]> classes = new LinkedHashMap<>();
@@ -190,10 +204,12 @@ public final class SpecialNames {
                     continue;
                 }
                 if (entry.DECIMAL_POINT() != null) {
-                    // 小数点の入れ替えは PICTURE だけでなく数字定数の綴りにも効く。
-                    // 字句の切り出しまで遡る必要がある (暫定判断 P-010)
-                    diagnostics.add(new Diagnostic(origin,
-                            "DECIMAL-POINT IS COMMA is not supported yet"));
+                    String written = entry.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
+                    if (!written.equals("COMMA")) {
+                        diagnostics.add(new Diagnostic(origin,
+                                "DECIMAL-POINT IS takes COMMA: " + written));
+                    }
+                    commaDecimalPoint = true;
                     continue;
                 }
                 if (entry.alphabetClause() != null) {
@@ -218,8 +234,8 @@ public final class SpecialNames {
         }
         byte[] collating = collatingOf(program, alphabets, diagnostics);
         return new Result(
-                new SpecialNames(currency, mnemonics, collating, alphabets, classes, switches,
-                        switchNames),
+                new SpecialNames(currency, commaDecimalPoint, mnemonics, collating, alphabets,
+                        classes, switches, switchNames),
                 List.copyOf(diagnostics));
     }
 

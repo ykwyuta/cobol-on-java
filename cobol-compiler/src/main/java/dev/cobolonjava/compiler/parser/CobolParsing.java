@@ -34,12 +34,34 @@ public final class CobolParsing {
 
     /** トークン列を構文解析する。 */
     public static Result parse(List<SourceToken> tokens) {
-        CobolParser parser = new CobolParser(new CommonTokenStream(new SourceTokenSource(tokens)));
+        CobolParser parser = new CobolParser(new CommonTokenStream(
+                new SourceTokenSource(tokens, commaDecimalPoint(tokens))));
         DiagnosticListener listener = new DiagnosticListener();
         parser.removeErrorListeners();
         parser.addErrorListener(listener);
         CobolParser.CompilationUnitContext tree = parser.compilationUnit();
         return new Result(tree, listener.diagnostics());
+    }
+
+    /**
+     * {@code DECIMAL-POINT IS COMMA} が書かれているか (要件 FR-054)。
+     *
+     * <p>字句の読み方が変わるので、<b>構文解析より前に</b>知らなければならない。
+     * 3 語が続いているところを探すだけでよい — この綴びはほかの意味を持たない。
+     */
+    private static boolean commaDecimalPoint(List<SourceToken> tokens) {
+        for (int i = 0; i + 2 < tokens.size(); i++) {
+            if (word(tokens, i, "DECIMAL-POINT") && word(tokens, i + 1, "IS")
+                    && word(tokens, i + 2, "COMMA")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean word(List<SourceToken> tokens, int at, String spelling) {
+        return tokens.get(at).kind() == dev.cobolonjava.compiler.source.SourceTokenKind.WORD
+                && tokens.get(at).text().equalsIgnoreCase(spelling);
     }
 
     /**
