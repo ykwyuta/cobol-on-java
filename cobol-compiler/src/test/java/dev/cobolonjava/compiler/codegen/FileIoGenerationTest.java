@@ -152,6 +152,32 @@ class FileIoGenerationTest {
     }
 
     @Test
+    @DisplayName("巻の扱いを書いた OPEN は、普通に開く (FR-102)")
+    void theReelPhrasesOfOpenAreReadAndDropped(@TempDir Path directory) {
+        // NO REWIND も REVERSED も磁気テープの話であり、翻訳の結果には効かない
+        assertEquals("00|00|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. TAPEOPEN.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO OUTDD",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE.",
+                "01  OUT-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE WITH NO REWIND.",
+                "    DISPLAY WS-STATUS.",
+                "    CLOSE OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+    }
+
+    @Test
     @DisplayName("巻の扱いを書いた CLOSE は、錠を掛けずに閉じる (FR-102)")
     void theReelPhrasesOfCloseDoNotLockTheFile(@TempDir Path directory) {
         assertEquals("00|00|", run(directory, source(

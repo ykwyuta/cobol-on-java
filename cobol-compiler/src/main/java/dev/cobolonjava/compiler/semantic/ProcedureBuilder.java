@@ -598,8 +598,7 @@ public final class ProcedureBuilder {
             return evaluateOf(context.evaluateStatement());
         }
         if (context.stopStatement() != null) {
-            return new Statement.Stop(context.stopStatement().RUN() != null,
-                    ReferenceResolver.originOf(context));
+            return stopOf(context.stopStatement());
         }
         if (context.stringStatement() != null) {
             return stringOf(context.stringStatement());
@@ -1776,7 +1775,7 @@ public final class ProcedureBuilder {
             // EVALUATE FALSE は、当たる枝の条件が成り立たないことを問う
             return subject.FALSE() == null ? condition : new Condition.Not(condition);
         }
-        return valueObject(subject.arithmeticOperand(), object, origin);
+        return valueObject(subject.expression(), object, origin);
     }
 
     /** {@code EVALUATE TRUE} の目的語。条件として読む。 */
@@ -1795,10 +1794,9 @@ public final class ProcedureBuilder {
     }
 
     /** 値を比べる目的語。{@code THRU} なら範囲になる。 */
-    private Condition valueObject(CobolParser.ArithmeticOperandContext subject,
+    private Condition valueObject(CobolParser.ExpressionContext subject,
                                   CobolParser.EvaluateObjectContext object, Origin origin) {
-        Operand operand = operandOf(subject, origin);
-        Expression left = operand == null ? null : new Expression.Value(operand);
+        Expression left = expressionOf(subject, origin);
         List<Expression> values = valuesOf(object, origin);
         if (left == null || values == null || values.contains(null)) {
             return null;
@@ -1916,7 +1914,54 @@ public final class ProcedureBuilder {
                     + context.relationalOperator().getText());
             return null;
         }
-        return relation(left, comparison, right, origin);
+        Condition condition = relation(left, comparison, right, origin);
+        return withAbbreviations(condition, left, comparison, context, origin);
+    }
+
+    /**
+     * 省略した比較を広げる (要件 FR-046)。
+     *
+     * <p>{@code A > 10 AND < 21} は {@code A > 10 AND A < 21} である。<b>主語は
+     * 引き継がれ、演算子は書き直されるまで引き継がれる</b>。書き直した演算子は、
+     * そこから先へも引き継がれる。
+     *
+     * <p>広げた条件を関係条件の中で束ねているので、外側の {@code AND} / {@code OR} より
+     * 先に結ばれる。COBOL の優先順位と同じである。
+     */
+    private Condition withAbbreviations(Condition first, Expression subject,
+                                        Condition.Comparison comparison,
+                                        CobolParser.RelationConditionContext context,
+                                        Origin origin) {
+        Condition condition = first;
+        Condition.Comparison carried = comparison;
+        for (CobolParser.AbbreviatedRelationContext next : context.abbreviatedRelation()) {
+            Expression right;
+            if (next.literal() != null) {
+                try {
+                    right = new Expression.Value(
+                            new Operand.Literal(LiteralValue.of(next.literal())));
+                } catch (RuntimeException e) {
+                    report(origin, "invalid literal: " + next.literal().getText());
+                    return null;
+                }
+            } else {
+                carried = comparisonOf(next.relationalOperator());
+                if (carried == null) {
+                    report(origin, "unknown relational operator: "
+                            + next.relationalOperator().getText());
+                    return null;
+                }
+                right = expressionOf(next.expression(), origin);
+                if (right == null) {
+                    return null;
+                }
+            }
+            Condition added = relation(subject, carried, right, origin);
+            condition = next.AND() != null
+                    ? new Condition.And(condition, added)
+                    : new Condition.Or(condition, added);
+        }
+        return condition;
     }
 
     /**
@@ -2801,13 +2846,36 @@ public final class ProcedureBuilder {
      * <p>1 つの文で開き方の違うファイルを並べられる。{@code OPEN INPUT A OUTPUT B} は
      * 2 つの独立した開き方であり、まとめて 1 つの状態にはならない。
      */
+    /**
+     * {@code STOP} を組み立てる (要件 FR-062)。
+     *
+     * <p>{@code STOP} と定数を書く形は規格の廃要素である。書いた文字を操作員へ見せて
+     * <b>返事があるまで待つ</b>と決められているが、返事をする相手のいない実行では
+     * 待ちようがない。見せて先へ進む (暫定判断 P-073)。<b>止まらない</b>ので、
+     * {@code STOP RUN} とは別の文である。
+     */
+    private Statement stopOf(CobolParser.StopStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        if (context.literal() == null) {
+            return new Statement.Stop(context.RUN() != null, origin);
+        }
+        try {
+            return new Statement.Display(
+                    List.of(new Operand.Literal(LiteralValue.of(context.literal()))),
+                    true, null, origin);
+        } catch (RuntimeException e) {
+            report(origin, "invalid literal: " + context.literal().getText());
+            return null;
+        }
+    }
+
     private Statement openOf(CobolParser.OpenStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
         List<Statement.Open.Opened> opened = new ArrayList<>();
         for (CobolParser.OpenPhraseContext phrase : context.openPhrase()) {
             OpenMode mode = modeOf(phrase);
-            for (org.antlr.v4.runtime.tree.TerminalNode name : phrase.IDENTIFIER()) {
-                FileDescription file = dataFileOf(name.getText(), "OPEN", origin);
+            for (CobolParser.OpenFileContext one : phrase.openFile()) {
+                FileDescription file = dataFileOf(one.IDENTIFIER().getText(), "OPEN", origin);
                 if (file == null) {
                     return null;
                 }

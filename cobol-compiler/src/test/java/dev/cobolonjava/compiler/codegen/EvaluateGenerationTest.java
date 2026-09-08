@@ -59,6 +59,30 @@ class EvaluateGenerationTest {
         return sink.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "|");
     }
 
+    @Test
+    @DisplayName("主語は算術式でよい (FR-047)")
+    void aSubjectMayBeAnArithmeticExpression() {
+        // 「EVALUATE A ALSO ( TEMP + 96 ) * 2」と書ける。被演算子 1 個に縛ると、
+        // 括弧で始まる主語がまるごと読めない
+        assertEquals("BOTH|", output(List.of(
+                        "01 WS-A PIC 9(4) VALUE 10.",
+                        "01 WS-T PIC 9(4) VALUE 2."),
+                "EVALUATE WS-A ALSO ( WS-T + 96 ) * 2",
+                "    WHEN 10 ALSO 196 DISPLAY 'BOTH'",
+                "    WHEN OTHER DISPLAY 'NEITHER'",
+                "END-EVALUATE."));
+    }
+
+    @Test
+    @DisplayName("STOP と定数を書く形は、見せて先へ進む (FR-062)")
+    void stopWithALiteralShowsItAndCarriesOn() {
+        // 規格の廃要素である。操作員の返事を待つと決められているが、返事をする
+        // 相手のいない実行では待ちようがない。<b>止まらない</b>のが STOP RUN との違い
+        assertEquals("PLEASE MOUNT TAPE|AFTER|", output(List.of(),
+                "STOP 'PLEASE MOUNT TAPE'.",
+                "DISPLAY 'AFTER'."));
+    }
+
     /** 主語 1 個の値による分岐。値を変えて通った枝を返す。 */
     private static String branchFor(String value) {
         return output(List.of("01 WS-G PIC X VALUE '" + value + "'."),

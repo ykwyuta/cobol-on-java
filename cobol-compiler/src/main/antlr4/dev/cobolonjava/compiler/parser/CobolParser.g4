@@ -38,7 +38,7 @@ tokens {
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
     RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
     RESERVE, AREA, AREAS, PASSWORD, PADDING,
-    REEL, UNIT, REMOVAL, REWIND, LOCK, END_OF_PAGE, EOP,
+    REEL, UNIT, REMOVAL, REWIND, LOCK, REVERSED, END_OF_PAGE, EOP,
     I_O_CONTROL, SAME, SORT_MERGE, MULTIPLE, TAPE, POSITION, RERUN, APPLY, EVERY,
     LINAGE, FOOTING, TOP, BOTTOM,
 
@@ -328,8 +328,10 @@ linageCount
     ;
 
 // 可変長レコードの長さは DEPENDING ON の項目が持つ
+// FROM も IN SIZE も ON も省いてよい。CCVS85 は
+// 「RECORD VARYING 200 TO 240 DEPENDING REC-LENGTH」と書く
 recordVaryingClause
-    : RECORD IS? VARYING IN? SIZE? (FROM NUMBER)? (TO NUMBER)?
+    : RECORD IS? VARYING IN? SIZE? (FROM? NUMBER)? (TO NUMBER)?
       (CHARACTER | CHARACTERS)? (DEPENDING ON? identifier)?
     ;
 
@@ -652,9 +654,24 @@ simpleCondition
     | conditionNameCondition
     ;
 
-// 両辺は算術式である。IF 1 + (TWO * 3) = 7 と書ける
+// 両辺は算術式である。IF 1 + (TWO * 3) = 7 と書ける。
+//
+// <b>続けて書く比較は、主語や演算子を省いてよい</b> (省略した比較)。
+// 「IF A > 10 AND < 21」は「A > 10 AND A < 21」であり、
+// 「IF A = 1 OR 98」は「A = 1 OR A = 98」である。古い資産がよく使う書き方である。
 relationCondition
-    : expression relationalOperator expression
+    : expression relationalOperator expression abbreviatedRelation*
+    ;
+
+// 省いた形は 2 つある。演算子だけ書き直すか、値だけを並べるかである。
+//
+// 値だけを並べる形は<b>定数のときだけ</b>受ける。名前を書いた「AND B」は、
+// B が条件名 (88 レベル) なら普通の条件名条件であり、そうでなければ省略した比較である。
+// どちらかは<b>名前を引かないと決まらない</b>ので、文法では分けられない。
+// 定数なら条件名ではありえないので、そこだけを先に取る
+abbreviatedRelation
+    : (AND | OR) relationalOperator expression
+    | (AND | OR) literal
     ;
 
 signCondition
@@ -699,8 +716,11 @@ continueStatement
     : CONTINUE
     ;
 
+// STOP と定数を書く形は規格の廃要素である。書いた文字を操作員へ見せて<b>待つ</b>と
+// 決められているが、待つ相手がいない実行では見せて先へ進むほかない
 stopStatement
     : STOP RUN
+    | STOP literal
     | GOBACK
     ;
 
@@ -806,10 +826,11 @@ branchBody
     | statement*
     ;
 
+// 主語は算術式でよい。「EVALUATE A ALSO ( TEMP + 96 ) * 2」と書ける
 evaluateSubject
     : TRUE
     | FALSE
-    | arithmeticOperand
+    | expression
     ;
 
 // 範囲は THRU で見分ける。残りは条件を先に試し、当たらなければ値とする
@@ -834,7 +855,12 @@ openStatement
     ;
 
 openPhrase
-    : (INPUT | OUTPUT | I_O | EXTEND) IDENTIFIER+
+    : (INPUT | OUTPUT | I_O | EXTEND) openFile+
+    ;
+
+// 巻の扱い (NO REWIND / REVERSED) は磁気テープの話であり、翻訳の結果には効かない
+openFile
+    : IDENTIFIER (WITH? NO REWIND | REVERSED)?
     ;
 
 closeStatement

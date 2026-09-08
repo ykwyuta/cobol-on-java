@@ -47,6 +47,7 @@ class EnvironmentClausesTest {
         for (String line : List.of(
                 "WORKING-STORAGE SECTION.",
                 "01 WS-EOF PIC XX VALUE '00'.",
+                "01 WS-LEN PIC 9(4) VALUE 80.",
                 "PROCEDURE DIVISION.",
                 "MAIN-START.",
                 "    DISPLAY 'OK'.")) {
@@ -166,6 +167,16 @@ class EnvironmentClausesTest {
                 "        WITH FOOTING AT 45",
                 "        LINES AT TOP 10",
                 "        LINES AT BOTTOM 6.",
+                "01  IN-REC PIC X(80).")));
+    }
+
+    @Test
+    @DisplayName("RECORD VARYING は FROM も IN SIZE も省いてよい (FR-106)")
+    void recordVaryingMayLeaveOutItsFillerWords() {
+        // CCVS85 は「RECORD VARYING 200 TO 240 DEPENDING REC-LENGTH」と書く
+        accepted(program(List.of("    SELECT IN-FILE ASSIGN TO INDD."), List.of(
+                "FD  IN-FILE",
+                "    RECORD VARYING 4 TO 80 DEPENDING WS-LEN.",
                 "01  IN-REC PIC X(80).")));
     }
 
