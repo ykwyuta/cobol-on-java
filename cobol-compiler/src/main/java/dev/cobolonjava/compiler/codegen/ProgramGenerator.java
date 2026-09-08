@@ -417,11 +417,13 @@ public final class ProgramGenerator {
         }
         planAlterable(procedure.paragraphs());
         debugLineSlot = debugLineSlotOf();
+        debugReasonAt = debugReasonAtOf();
         sections = procedure.sections();
         declaratives = procedure.declaratives();
         firstNormal = procedure.firstNormalParagraph();
         List<List<Runnable>> planned = new ArrayList<>();
         debugEntries = new ArrayList<>();
+        alterableTransfers = new ArrayList<>();
         for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
             nextLocal = FIRST_FREE_LOCAL;
             currentParagraphName = paragraph.name();
@@ -431,6 +433,13 @@ public final class ProgramGenerator {
             planningDebugEntry = true;
             debugEntries.add(planStatements(paragraph.debugEntry()));
             planningDebugEntry = false;
+            // 書き換えられる段落は本体を出さない。その中の GO TO も出ないので、
+            // 行番号と理由をここで控えておく (要件 FR-193)
+            List<Runnable> transfer = new ArrayList<>();
+            if (paragraph.alterableGoTo() != null) {
+                planDebugLine(paragraph.alterableGoTo().origin(), "", transfer);
+            }
+            alterableTransfers.add(transfer);
             planned.add(planStatements(paragraph.statements()));
         }
         return planned;
@@ -2081,9 +2090,9 @@ public final class ProgramGenerator {
             keys.add(element);
         }
         Runnable input = planSortSide(statement.using(), statement.input(), "sortUsing",
-                work, statement.origin());
+                work, statement.merge(), statement.origin());
         Runnable output = planSortSide(statement.giving(), statement.output(), "sortGiving",
-                work, statement.origin());
+                work, statement.merge(), statement.origin());
         if (input == null || output == null) {
             return;
         }
@@ -2159,7 +2168,7 @@ public final class ProgramGenerator {
      */
     private Runnable planSortSide(List<FileDescription> files,
                                   Statement.Sort.Procedure procedure, String entry,
-                                  FileDescription work, Origin origin) {
+                                  FileDescription work, boolean merge, Origin origin) {
         if (procedure != null) {
             int from = paragraphNames.indexOf(procedure.from());
             int through = procedure.through() == null
@@ -2169,7 +2178,14 @@ public final class ProgramGenerator {
                 report(origin, "undefined paragraph: " + procedure.from());
                 return null;
             }
-            return () -> emitPerformRange(from, through);
+            String reason = "sortUsing".equals(entry)
+                    ? "SORT INPUT"
+                    : (merge ? "MERGE OUTPUT" : "SORT OUTPUT");
+            return () -> {
+                // 整列の手続きへ入る (要件 FR-193)
+                emitDebugReason(reason);
+                emitPerformRange(from, through);
+            };
         }
         String name = work.name();
         List<Runnable> calls = new ArrayList<>();
@@ -2403,6 +2419,8 @@ public final class ProgramGenerator {
                 push(mode);
                 run.visitJumpInsn(Opcodes.IF_ICMPNE, skip);
             }
+            // 宣言節へ入る。DEBUG-CONTENTS は USE PROCEDURE である (要件 FR-193)
+            emitDebugReason("USE PROCEDURE");
             emitPerformRange(from, through);
             run.visitLabel(skip);
         };
@@ -2818,9 +2836,16 @@ public final class ProgramGenerator {
      * その場に書いた文か、指定は 1 回・回数・条件のいずれか。組み合わせて出す。
      */
     private void planPerform(Statement.Perform statement, List<Runnable> body) {
-        planDebugLine(statement.origin(), body);
+        // PERFORM で入った手続きの DEBUG-CONTENTS は PERFORM LOOP である (要件 FR-193)。
+        // 繰り返しの 2 周目からではなく<b>1 周目から</b>そうである
+        planDebugLine(statement.origin(), "PERFORM LOOP", body);
         Runnable once = planPerformBody(statement);
         if (once == null) {
+            return;
+        }
+        if (statement.times() == null && statement.until() == null
+                && statement.varying().isEmpty()) {
+            body.add(once);
             return;
         }
         if (statement.times() != null) {
@@ -2831,11 +2856,7 @@ public final class ProgramGenerator {
             planUntil(statement, once, body);
             return;
         }
-        if (!statement.varying().isEmpty()) {
-            planVarying(statement, once, body);
-            return;
-        }
-        body.add(once);
+        planVarying(statement, once, body);
     }
 
     /** 繰り返す中身を 1 回分。 */
@@ -3678,6 +3699,8 @@ public final class ProgramGenerator {
         run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", RUN_DESCRIPTOR, null, null);
         run.visitCode();
         if (paragraphCount > from) {
+            // いちばん最初に入る手続きの DEBUG-CONTENTS である (要件 FR-193)
+            emitDebugReason("START PROGRAM");
             emitPerformRange(from, paragraphCount - 1);
         }
         run.visitInsn(Opcodes.RETURN);
@@ -3785,6 +3808,8 @@ public final class ProgramGenerator {
         perform.visitVarInsn(Opcodes.ILOAD, 2);
         perform.visitJumpInsn(Opcodes.IF_ICMPEQ, end);
         perform.visitIincInsn(pc, 1);
+        // 次の段落へ<b>落ちて</b>入る。移した文があるわけではない (要件 FR-193)
+        emitDebugReason(perform, 3, "FALL THROUGH");
         Label check = new Label();
         perform.visitJumpInsn(Opcodes.GOTO, check);
         perform.visitLabel(jumped);
@@ -3846,6 +3871,8 @@ public final class ProgramGenerator {
         // 書き換えられる段落でもデバッグの節は動く。飛び先を返す前に出す (要件 FR-193)
         debugEntries.get(index).forEach(Runnable::run);
         if (alterInitial[index] != NOT_ALTERABLE) {
+            // 中身の GO TO は出さないが、それが移した文であることは控える
+            alterableTransfers.get(index).forEach(Runnable::run);
             // 書き換えられる段落は、飛び先を表から読んで返す。
             // 中身は GO TO 1 つだけなので、これで置き換えてしまってよい
             run.visitVarInsn(Opcodes.ALOAD, 0);
@@ -3934,6 +3961,9 @@ public final class ProgramGenerator {
 
     /** 段落ごとの、デバッグの節を動かす命令の並び (要件 FR-193)。 */
     private List<List<Runnable>> debugEntries = new ArrayList<>();
+
+    /** 書き換えられる段落が持つ {@code GO TO} の、行番号と理由を控える命令 (要件 FR-193)。 */
+    private List<List<Runnable>> alterableTransfers = new ArrayList<>();
     /** 段落ごとの段番号。 */
     private int[] segments = new int[0];
     /** 書き換えられる段落があるか。無ければ表そのものを出さない。 */
@@ -5493,7 +5523,7 @@ public final class ProgramGenerator {
      * {@code DBG-LINE$} である。デバッグを書いていないプログラムには置き場が無いので、
      * <b>命令はまったく出ない</b>。
      */
-    private void planDebugLine(Origin origin, List<Runnable> body) {
+    private void planDebugLine(Origin origin, String reason, List<Runnable> body) {
         if (planningDebugEntry || origin == null || debugLineSlot == null) {
             return;
         }
@@ -5511,6 +5541,8 @@ public final class ProgramGenerator {
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
                     "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+            // なぜその手続きへ来たか。GO TO は空白、PERFORM は PERFORM LOOP である
+            emitDebugReason(reason);
         });
     }
 
@@ -5527,8 +5559,55 @@ public final class ProgramGenerator {
         return found.isEmpty() ? null : new DataReference(found.get(0), List.of(), null, null);
     }
 
+    /**
+     * {@code DBG-WHY$} の絶対位置 (要件 FR-193)。デバッグを書いていなければ {@code -1}。
+     *
+     * <p>{@code DEBUG-CONTENTS} には<b>なぜその手続きへ来たか</b>が入る。規格が決めている
+     * 文字は {@code START PROGRAM} {@code FALL THROUGH} {@code PERFORM LOOP}
+     * {@code USE PROCEDURE} {@code SORT INPUT} {@code SORT OUTPUT} {@code MERGE OUTPUT}
+     * であり、{@code GO TO} や 1 度目の {@code PERFORM} では空白である。
+     *
+     * <p>来た理由を知っているのは<b>移す側</b>だけなので、そこで控えさせる。控え先は
+     * 記憶域の中なので、どのメソッドからでも書ける。位置は定数である。
+     */
+    private int debugReasonAt = -1;
+
+    private int debugReasonAtOf() {
+        List<DataItem> found = layout.findAll(DataDivisionBuilder.DEBUG_REASON_SLOT);
+        return found.isEmpty()
+                ? -1
+                : new DataReference(found.get(0), List.of(), null, null)
+                        .absoluteOffset().orElse(-1);
+    }
+
+    /** 手続きへ来た理由を控える。{@code storageLocal} はそのメソッドでの記憶域の番号。 */
+    private void emitDebugReason(MethodVisitor into, int storageLocal, String text) {
+        if (debugReasonAt < 0) {
+            return;
+        }
+        int width = DataDivisionBuilder.DEBUG_REASON_SIZE;
+        String padded = text.length() >= width
+                ? text.substring(0, width)
+                : text + " ".repeat(width - text.length());
+        String field = bytesConstant(codePage.encode(padded));
+        into.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+        into.visitVarInsn(Opcodes.ALOAD, storageLocal);
+        push(into, debugReasonAt);
+        push(into, width);
+        into.visitInsn(Opcodes.ICONST_0);
+        into.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CodePages.class), "DEFAULT",
+                CODE_PAGE);
+        into.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
+                "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+    }
+
+    /** 段落のメソッドの中から控える。記憶域は局所変数 1 である。 */
+    private void emitDebugReason(String text) {
+        emitDebugReason(run, 1, text);
+    }
+
     private void planGoTo(Statement.GoTo statement, List<Runnable> body) {
-        planDebugLine(statement.origin(), body);
+        planDebugLine(statement.origin(), "", body);
         if (statement.target() == null) {
             // 行き先の無い GO TO が、書き換えられる段落の外に書かれていた。
             // 書き換えようが無いので、通ったらそこで止める
@@ -5553,7 +5632,7 @@ public final class ProgramGenerator {
      * 飛び先表の外れ道は「何もせず下へ抜ける」になる。誤りにはならない。
      */
     private void planGoToDepending(Statement.GoToDepending statement, List<Runnable> body) {
-        planDebugLine(statement.origin(), body);
+        planDebugLine(statement.origin(), "", body);
         List<Integer> targets = new ArrayList<>();
         for (String name : statement.targets()) {
             int target = paragraphNames.indexOf(name);
@@ -5632,7 +5711,7 @@ public final class ProgramGenerator {
      */
     private void planAlter(Statement.Alter statement, List<Runnable> body) {
         // ALTER も見張られる文である。DEBUG-LINE はこの文の行番号になる (要件 FR-193)
-        planDebugLine(statement.origin(), body);
+        planDebugLine(statement.origin(), "", body);
         List<int[]> changes = new ArrayList<>();
         for (Statement.Alter.Change change : statement.changes()) {
             int from = paragraphNames.indexOf(change.from());

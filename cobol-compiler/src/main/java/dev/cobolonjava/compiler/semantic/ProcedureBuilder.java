@@ -53,6 +53,8 @@ public final class ProcedureBuilder {
     private final List<DebugSection> debugSections = new ArrayList<>();
     /** 宣言部分を読んでいる間は行番号を記録しない。デバッグの節が自分で上書きしてしまう。 */
     private boolean inDeclarative;
+    /** デバッグの節そのものを読んでいる間は、見張りを仕掛けない。際限なく呼び合う。 */
+    private boolean inDebugSection;
     private final ReportLowering reportLowering;
 
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
@@ -617,7 +619,7 @@ public final class ProcedureBuilder {
         currentSectionName = section;
         String simple = wordOf(paragraph.paragraphName());
         Origin origin = ReferenceResolver.originOf(paragraph);
-        List<Statement> entry = inDeclarative ? List.of() : debugEntry(simple, origin);
+        List<Statement> entry = inDebugSection ? List.of() : debugEntry(simple, origin);
         paragraphs.add(new Paragraph(keyOf(simple, section), statementsOf(paragraph.sentence()),
                 segment, entry, origin));
     }
@@ -693,15 +695,21 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context.sectionHeader());
         currentSectionName = name;
         boolean outer = inDeclarative;
+        boolean outerDebug = inDebugSection;
         inDeclarative = true;
+        // 見張られるのは<b>デバッグの節でない</b>宣言節である。USE AFTER ERROR の節は
+        // 手続き名で見張れて、DEBUG-CONTENTS は USE PROCEDURE になる (要件 FR-193)。
+        // デバッグの節そのものを見張ると、際限なく自分を呼ぶことになる
+        inDebugSection = debugging;
         try {
             paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(context.sentence()),
-                    origin));
+                    0, debugging ? List.of() : debugEntry(name, origin), origin));
             for (CobolParser.ParagraphContext paragraph : context.paragraph()) {
                 addParagraph(paragraph, paragraphs, 0, name);
             }
         } finally {
             inDeclarative = outer;
+            inDebugSection = outerDebug;
         }
         String last = paragraphs.get(paragraphs.size() - 1).name();
         sections.add(new Section(name, keyOf(name, name), last, true));
@@ -775,7 +783,7 @@ public final class ProcedureBuilder {
      * @return 見張られていなければ空
      */
     private List<Statement> fileDebugEntry(FileDescription file, boolean read, Origin origin) {
-        if (debugSections.isEmpty() || inDeclarative || file == null) {
+        if (debugSections.isEmpty() || inDebugSection || file == null) {
             return List.of();
         }
         String upper = file.name().toUpperCase(Locale.ROOT);
@@ -852,6 +860,13 @@ public final class ProcedureBuilder {
                     new LiteralValue.Figure(LiteralValue.FigurativeConstant.SPACE)), item, origin));
             body.add(textMove(new Operand.Literal(new LiteralValue.Text(simple)), name, origin));
             body.add(textMove(new Operand.Reference(slot), line, origin));
+            DataReference why = resolver.resolveName(DataDivisionBuilder.DEBUG_REASON_SLOT, origin);
+            DataReference held0 = resolver.resolveName("DEBUG-CONTENTS", origin);
+            if (why == null || held0 == null) {
+                return List.of();
+            }
+            // なぜその手続きへ来たか。移した側が控えたものをそのまま写す (要件 FR-193)
+            body.add(textMove(new Operand.Reference(why), held0, origin));
             if (contents != null) {
                 DataReference held = resolver.resolveName("DEBUG-CONTENTS", origin);
                 if (held == null) {

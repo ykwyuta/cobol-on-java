@@ -358,12 +358,92 @@ class DebuggingGenerationTest {
                 "    CLOSE IN-FILE.",
                 "    STOP RUN.")));
         // ALL PROCEDURES なので段落では動くが、ファイルの入出力では動かない
-        assertEquals(watched("MAIN", "") + "|" + watched("START-P", "") + "|", out);
+        assertEquals(watched("MAIN", "START PROGRAM") + "|"
+                + watched("START-P", "FALL THROUGH") + "|", out);
     }
 
     /** 見張りの節が印字する 1 行。DEBUG-NAME は 30 桁、DEBUG-CONTENTS はレコードの幅。 */
     private static String watched(String name, String contents) {
         return "<" + name + " ".repeat(30 - name.length())
                 + "|" + contents + " ".repeat(30 - contents.length()) + ">";
+    }
+
+    @Test
+    @DisplayName("DEBUG-CONTENTS には、なぜその手続きへ来たかが入る (FR-193)")
+    void theContentsSayWhyTheProcedureWasEntered() {
+        String out = run(source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "ENVIRONMENT DIVISION.",
+                "CONFIGURATION SECTION.",
+                "SOURCE-COMPUTER. JVM WITH DEBUGGING MODE.",
+                "DATA DIVISION.",
+                "PROCEDURE DIVISION.",
+                "DECLARATIVES.",
+                "WATCH SECTION.",
+                "    USE FOR DEBUGGING ON ALL PROCEDURES.",
+                "WATCH-BODY.",
+                "    DISPLAY '[' DEBUG-NAME '|' DEBUG-CONTENTS ']'.",
+                "END DECLARATIVES.",
+                "MAIN SECTION.",
+                "START-P.",
+                "    PERFORM CALLED-P.",
+                "    GO TO JUMPED-P.",
+                "NEVER-P.",
+                "    DISPLAY 'NEVER'.",
+                "JUMPED-P.",
+                "    STOP RUN.",
+                "CALLED-P.",
+                "    CONTINUE.",
+                "NEXT-P.",
+                "    EXIT."));
+        // 章の見出し MAIN は「いちばん最初に入った手続き」であり START PROGRAM。
+        // START-P はそこから落ちたので FALL THROUGH。CALLED-P は PERFORM で
+        // 入ったので PERFORM LOOP。JUMPED-P は GO TO なので空白である。
+        // NEXT-P は PERFORM の範囲の外なので入らない
+        assertEquals(why("MAIN", "START PROGRAM") + "|"
+                + why("START-P", "FALL THROUGH") + "|"
+                + why("CALLED-P", "PERFORM LOOP") + "|"
+                + why("JUMPED-P", "") + "|", out);
+    }
+
+    @Test
+    @DisplayName("書き換えられる段落へ GO TO で入っても、理由は空白である (FR-193)")
+    void anAlteredParagraphIsStillAnExplicitTransfer() {
+        // 中身が GO TO 1 つだけの段落は本体を出さずに飛び先を返す。行番号と理由を
+        // そこで控え損ねると、1 つ前の落ち込みの理由が残ってしまう
+        String out = run(source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "ENVIRONMENT DIVISION.",
+                "CONFIGURATION SECTION.",
+                "SOURCE-COMPUTER. JVM WITH DEBUGGING MODE.",
+                "DATA DIVISION.",
+                "PROCEDURE DIVISION.",
+                "DECLARATIVES.",
+                "WATCH SECTION.",
+                "    USE FOR DEBUGGING ON SWITCH-P.",
+                "WATCH-BODY.",
+                "    DISPLAY '[' DEBUG-NAME '|' DEBUG-CONTENTS ']'.",
+                "END DECLARATIVES.",
+                "MAIN SECTION.",
+                "START-P.",
+                "    ALTER SWITCH-P TO PROCEED TO TARGET-P.",
+                "FALLEN-P.",
+                "    GO TO SWITCH-P.",
+                "SWITCH-P.",
+                "    GO TO NEVER-P.",
+                "NEVER-P.",
+                "    DISPLAY 'NEVER'.",
+                "TARGET-P.",
+                "    STOP RUN."));
+        // ALTER そのものでも 1 度動く。そのときの DEBUG-CONTENTS は書き換え先である
+        assertEquals(why("SWITCH-P", "TARGET-P") + "|" + why("SWITCH-P", "") + "|", out);
+    }
+
+    /** 見張りの節が印字する 1 行。 */
+    private static String why(String name, String contents) {
+        return "[" + name + " ".repeat(30 - name.length())
+                + "|" + contents + " ".repeat(30 - contents.length()) + "]";
     }
 }

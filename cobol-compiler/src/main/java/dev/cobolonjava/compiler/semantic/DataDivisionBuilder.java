@@ -1153,7 +1153,18 @@ public final class DataDivisionBuilder {
         DataItem line = new DataItem(INDEPENDENT_LEVEL, DEBUG_LINE_SLOT, origin);
         line.setPicture(PictureParser.parse("X(6)"));
         records.add(line);
+
+        // <b>なぜその手続きへ来たか</b>の置き場。DEBUG-CONTENTS はここから写す
+        DataItem reason = new DataItem(INDEPENDENT_LEVEL, DEBUG_REASON_SLOT, origin);
+        reason.setPicture(PictureParser.parse("X(" + DEBUG_REASON_SIZE + ")"));
+        records.add(reason);
     }
+
+    /** なぜその手続きへ来たかの置き場の名前 (要件 FR-193)。 */
+    public static final String DEBUG_REASON_SLOT = "DBG-WHY$";
+
+    /** その桁数。いちばん長いのは {@code START PROGRAM} と {@code USE PROCEDURE} である。 */
+    public static final int DEBUG_REASON_SIZE = 13;
 
     /** 制御を移した文の行番号を置く項目の名前 (要件 FR-193)。 */
     public static final String DEBUG_LINE_SLOT = "DBG-LINE$";
