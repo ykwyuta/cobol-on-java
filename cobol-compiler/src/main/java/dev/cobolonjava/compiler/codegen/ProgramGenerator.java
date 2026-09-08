@@ -3504,10 +3504,30 @@ public final class ProgramGenerator {
         };
     }
 
+    /**
+     * いま組み立てている算術文の中間結果の桁数。算術文の外では {@code null}。
+     *
+     * <p>規格の {@code dmax} は<b>文全体</b>から決まる。組み込み関数の引数も文の一部で
+     * あって、その中の除算をどこで打ち切るかは受取項目の小数桁に依る。
+     *
+     * <pre>
+     * 01 WS-NUM PIC S9(5)V9(7).
+     * COMPUTE WS-NUM = FUNCTION SQRT(8 / 2.1).
+     * </pre>
+     *
+     * <p>引数だけを見て {@code dmax} を決めると、被除数 {@code 8} の小数桁は 0 なので
+     * {@code 8 / 2.1} は 3 になり、平方根は 1.732 になる。受取項目の 7 桁を見れば
+     * 3.8095238 となり、1.9518 が出る。IF136A の F-SQRT-16 がそこだけを確かめている。
+     */
+    private IntermediateDigits statementDigits;
+
     /** 数値の引数。式を書いてもよい。 */
     private Runnable planNumericArgument(Operand.Function function, int index, Origin origin) {
         Expression argument = function.arguments().get(index);
-        return planExpression(argument, IntermediateDigits.of(argument, List.of()), origin);
+        IntermediateDigits digits = statementDigits != null
+                ? statementDigits
+                : IntermediateDigits.of(argument, List.of());
+        return planExpression(argument, digits, origin);
     }
 
     /** 文字の引数。式は書けないことを意味解析が確かめてある。 */
@@ -3892,6 +3912,17 @@ public final class ProgramGenerator {
      */
     private void planCompute(Statement.Compute statement, List<Runnable> body) {
         IntermediateDigits digits = IntermediateDigits.of(statement.value(), statement.targets());
+        IntermediateDigits enclosing = statementDigits;
+        statementDigits = digits;
+        try {
+            planCompute(statement, digits, body);
+        } finally {
+            statementDigits = enclosing;
+        }
+    }
+
+    private void planCompute(Statement.Compute statement, IntermediateDigits digits,
+                             List<Runnable> body) {
         Runnable value = planExpression(statement.value(), digits, statement.origin());
         if (value == null) {
             return;
@@ -4104,6 +4135,18 @@ public final class ProgramGenerator {
     }
 
     private void planArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
+        // 被演算子に組み込み関数を書けるので、その引数にも文全体の dmax を渡す
+        IntermediateDigits enclosing = statementDigits;
+        statementDigits = IntermediateDigits.of(
+                new Expression.Value(statement.operands().get(0)), statement.targets());
+        try {
+            planArithmeticBody(statement, body);
+        } finally {
+            statementDigits = enclosing;
+        }
+    }
+
+    private void planArithmeticBody(Statement.Arithmetic statement, List<Runnable> body) {
         if (statement.isChecked()) {
             planCheckedArithmetic(statement, body);
             return;

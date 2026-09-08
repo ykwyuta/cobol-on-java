@@ -28,6 +28,23 @@ public final class IntermediateDigits {
     /** {@code ARITH(COMPAT)} の中間結果の総桁数の上限。 */
     public static final int MAX_DIGITS = 30;
 
+    /**
+     * 整数を返す組み込み関数の整数部の桁数。
+     *
+     * <p>返る値の大きさは引数に依るが、規格の算術は 18 桁までである。上限の 30 桁で
+     * 数えてはならない。総桁数を上限へ収めるときに<b>削るのは小数部だけ</b>なので、
+     * 整数部を大きく見積もると<b>周りの式の小数部が消える</b>。
+     *
+     * <pre>
+     * 01 I    PIC S9(5)V9(5) VALUE 3.4.
+     * COMPUTE TEMP = FUNCTION INTEGER(3.2) + I.
+     * </pre>
+     *
+     * <p>30 桁で数えると、和の節は整数部 31・小数部 5 で 6 桁あふれ、小数部が 0 に
+     * 削られて 6.4 が 6 になる。IF111A の F-INTEGER-20 がそこだけを確かめている。
+     */
+    private static final int INTEGER_RESULT_DIGITS = 18;
+
     private final int dmax;
 
     private IntermediateDigits(int dmax) {
@@ -191,7 +208,7 @@ public final class IntermediateDigits {
      */
     private static Digits digitsOf(Operand.Function function) {
         if (function.intrinsic().returns() == Intrinsic.Result.INTEGER) {
-            return new Digits(MAX_DIGITS, 0);
+            return new Digits(INTEGER_RESULT_DIGITS, 0);
         }
         int integerDigits = 1;
         int scale = 0;

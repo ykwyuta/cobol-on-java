@@ -399,6 +399,30 @@ class IntrinsicFunctionTest {
     }
 
     @Test
+    @DisplayName("引数の中の除算は、文全体の桁数で打ち切る (FR-047, FR-070)")
+    void aDivisionInsideAnArgumentUsesTheStatementScale() {
+        // 引数だけを見て桁数を決めると、被除数 8 の小数桁は 0 なので 8 / 2.1 が 3 になり、
+        // 平方根が 1.732 になる。受取項目の 7 桁を見れば 3.8095238 になり 1.9518 が出る。
+        // IF136A の F-SQRT-16 がそこだけを確かめている
+        // 検査スイートは範囲で見る (1.95172 〜 1.95188)。平方根の桁数は暫定判断 P-075
+        assertEquals("+000019518001",
+                run(List.of("01 WS-N PIC S9(5)V9(7) SIGN IS LEADING SEPARATE VALUE 0."),
+                        "COMPUTE WS-N = FUNCTION SQRT(8 / 2.1)."));
+    }
+
+    @Test
+    @DisplayName("整数を返す関数が、周りの式の小数部を消さない (FR-047, FR-070)")
+    void anIntegerFunctionDoesNotEatTheSurroundingScale() {
+        // 中間結果の総桁数を上限へ収めるとき、削るのは小数部だけである。整数を返す関数を
+        // 上限の 30 桁で数えると、和の節が 6 桁あふれて小数部が消える。
+        // IF111A の F-INTEGER-20 がそこだけを確かめている
+        assertEquals("+000064000000",
+                run(List.of("01 WS-N PIC S9(5)V9(7) SIGN IS LEADING SEPARATE VALUE 0.",
+                            "01 I    PIC S9(5)V9(5) VALUE 3.4."),
+                        "COMPUTE WS-N = FUNCTION INTEGER(3.2) + I.").substring(0, 13));
+    }
+
+    @Test
     @DisplayName("知らない関数は断る (FR-070)")
     void anUnknownFunctionIsRefused() {
         // 近い値を黙って返すより、書けないと言うほうがよい
