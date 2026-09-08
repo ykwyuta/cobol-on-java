@@ -3958,7 +3958,8 @@ public final class ProgramGenerator {
         }
         int widest = target.reference().constantLength()
                 .orElse(target.reference().item().length());
-        Runnable source = planSourceBytes(move.source(), move.origin(), widest);
+        Runnable source = planMoveSourceBytes(move.source(), target.reference(),
+                move.origin(), widest);
         if (source == null) {
             return;
         }
@@ -3985,7 +3986,8 @@ public final class ProgramGenerator {
     private void planAlphanumericEditedMove(Statement.Move move, Statement.Move.Target target,
                                             Runnable offset, List<Runnable> body) {
         Picture picture = target.reference().item().picture();
-        Runnable source = planSourceBytes(move.source(), move.origin(), dataPositions(picture));
+        Runnable source = planMoveSourceBytes(move.source(), target.reference(),
+                move.origin(), dataPositions(picture));
         if (source == null) {
             return;
         }
@@ -3998,6 +4000,47 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumericEdited",
                     "([B" + PICTURE + "L" + STORAGE + ";I" + CODE_PAGE + ")V", false);
         });
+    }
+
+    /**
+     * 転記の送出データを積む命令 (要件 FR-060)。
+     *
+     * <p>{@link #planSourceBytes} との違いは 1 つだけである。<b>符号付きの表示形式の
+     * 項目からは、符号を落とした数字の並びを送る</b>。規格が絶対値を送ると決めている。
+     * そのまま読むと、ゾーンに埋め込んだ符号のせいで最後の桁が英字に見える
+     * (NC105A の MOVE-TEST-F1-92 / -93 がそこだけを確かめている)。
+     *
+     * <p>転記に限る。{@code DISPLAY} や {@code STRING} は記憶域の字面をそのまま送る。
+     */
+    private Runnable planMoveSourceBytes(Operand source, DataReference target, Origin origin,
+                                         int targetLength) {
+        if (!(source instanceof Operand.Reference operand)
+                || DataCategory.of(target) == DataCategory.GROUP) {
+            // 受取側が集団項目なら<b>バイト範囲そのもの</b>への転記であり、変換は起きない。
+            // 符号も落とさない。SQ111A は符号の 1 バイトを FILLER で受けて数える
+            return planSourceBytes(source, origin, targetLength);
+        }
+        DataReference reference = operand.reference();
+        DataItem item = reference.item();
+        if (DataCategory.of(reference) != DataCategory.NUMERIC_INTEGER
+                || (item.usage() != null && item.usage() != Usage.DISPLAY)
+                || item.picture() == null
+                || !item.picture().signPosition().isSigned()) {
+            // 符号は PICTURE の S が決める。SIGN IS 句は<b>持ち方</b>を変えるだけである
+            return planSourceBytes(source, origin, targetLength);
+        }
+        Runnable offset = planAddress(reference, origin);
+        String field = numericItemConstant(item, origin);
+        if (offset == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            offset.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readUnsignedDigits",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE + ")[B", false);
+        };
     }
 
     /** 英数字編集項目の<b>文字位置</b>の数。挿入文字は数えない。 */

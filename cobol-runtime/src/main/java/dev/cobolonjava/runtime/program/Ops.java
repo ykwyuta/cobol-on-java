@@ -77,6 +77,27 @@ public final class Ops {
         Move.toAlphanumericEdited(source, target, storage.view(offset, target.size()), codePage);
     }
 
+    /**
+     * 符号を落とした数字の並びを読む (要件 FR-060)。
+     *
+     * <p>符号付きの表示形式の項目を英数字項目へ転記するとき、規格は<b>絶対値</b>を
+     * 送るものと決めている。ゾーンに埋め込んだ符号も、別に持つ 1 バイトの符号も、
+     * 送出データには入らない。そのまま読むと最後の桁が英字に見える。
+     */
+    public static byte[] readUnsignedDigits(NumericItem source, Storage storage, int offset,
+                                            CodePage codePage) {
+        Decimal value = source.load(storage.view(offset, source.byteLength()));
+        int digits = source.picture().digits();
+        StringBuilder text = new StringBuilder(value.magnitude().toString());
+        while (text.length() < digits) {
+            text.insert(0, '0');
+        }
+        if (text.length() > digits) {
+            text.delete(0, text.length() - digits);
+        }
+        return codePage.encode(text.toString());
+    }
+
     /** 数値項目の読み出し。 */
     public static Decimal readNumeric(NumericItem source, Storage storage, int offset) {
         DataView view = storage.view(offset, source.byteLength());

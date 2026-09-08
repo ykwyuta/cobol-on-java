@@ -120,4 +120,57 @@ class AlphanumericEditedMoveTest {
                 "DISPLAY '[' WS-DATE ']'.",
                 "STOP RUN."));
     }
+
+    @Test
+    @DisplayName("符号付きの表示形式からは、符号を落として送る (FR-060)")
+    void aSignedDisplayItemSendsItsAbsoluteValue() {
+        // ゾーンに埋め込んだ符号をそのまま送ると、最後の桁が英字に見える。
+        // 規格は絶対値を送ると決めている (NC105A の MOVE-TEST-F1-92 / -93)
+        assertEquals("[60666][70717]|", run(
+                List.of("77 WS-POS PIC S9(5) VALUE +60666.",
+                        "77 WS-NEG PIC S9(5) VALUE -70717.",
+                        "77 WS-A   PIC X(5) VALUE SPACE.",
+                        "77 WS-B   PIC X(5) VALUE SPACE."),
+                "MOVE WS-POS TO WS-A.",
+                "MOVE WS-NEG TO WS-B.",
+                "DISPLAY '[' WS-A '][' WS-B ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("符号を別に持つ項目からも、符号は送らない (FR-060)")
+    void aSeparateSignIsNotSentEither() {
+        assertEquals("[60666]|", run(
+                List.of("77 WS-POS PIC S9(5) SIGN IS LEADING SEPARATE VALUE +60666.",
+                        "77 WS-A   PIC X(5) VALUE SPACE."),
+                "MOVE WS-POS TO WS-A.",
+                "DISPLAY '[' WS-A ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("符号を書かない項目はそのまま送る (FR-060)")
+    void anUnsignedItemIsSentAsItStands() {
+        assertEquals("[60666]|", run(
+                List.of("77 WS-POS PIC 9(5) VALUE 60666.",
+                        "77 WS-A   PIC X(5) VALUE SPACE."),
+                "MOVE WS-POS TO WS-A.",
+                "DISPLAY '[' WS-A ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("受取側が集団項目なら符号も落とさない (FR-060)")
+    void aGroupReceiverTakesTheBytesAsTheyStand() {
+        // 集団項目への転記はバイト範囲そのものへの写しであり、変換は一切起きない。
+        // SQ111A は符号の 1 バイトを FILLER で受け、うしろの 5 桁だけを数える
+        assertEquals("[+][60666]|", run(
+                List.of("77 WS-POS PIC S9(5) SIGN IS LEADING SEPARATE VALUE +60666.",
+                        "01 WS-GRP.",
+                        "   02 WS-SIGN PIC X.",
+                        "   02 WS-DIGITS PIC 9(5)."),
+                "MOVE WS-POS TO WS-GRP.",
+                "DISPLAY '[' WS-SIGN '][' WS-DIGITS ']'.",
+                "STOP RUN."));
+    }
 }
