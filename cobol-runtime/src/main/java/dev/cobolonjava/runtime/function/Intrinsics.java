@@ -1,6 +1,7 @@
 package dev.cobolonjava.runtime.function;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import java.math.BigInteger;
@@ -150,23 +151,19 @@ public final class Intrinsics {
     /**
      * {@code FUNCTION CHAR}。照合順序の<b>何番目か</b>から文字を得る。1 から数える。
      *
-     * <p>照合順序はコードページのバイト値そのものである (暫定判断 P-042)。
+     * <p>{@code PROGRAM COLLATING SEQUENCE} を差し替えれば答えが変わる。定義が
+     * 照合順序を指しているためである (要件 FR-054)。
      */
-    public static byte[] charOf(Decimal ordinal, CodePage codePage) {
-        int position = toIndex(ordinal, "CHAR");
-        if (position < 1 || position > 256) {
-            throw new IllegalArgumentException(
-                    "FUNCTION CHAR argument is outside 1..256: " + position);
-        }
-        return new byte[] { (byte) (position - 1) };
+    public static byte[] charOf(Decimal ordinal, CollatingSequence order) {
+        return new byte[] { order.characterAt(toIndex(ordinal, "CHAR")) };
     }
 
     /** {@code FUNCTION ORD}。{@link #charOf} の逆である。 */
-    public static Decimal ord(byte[] value, CodePage codePage) {
+    public static Decimal ord(byte[] value, CollatingSequence order) {
         if (value.length == 0) {
             throw new IllegalArgumentException("FUNCTION ORD requires one character");
         }
-        return Decimal.of((value[0] & 0xFF) + 1L, 0);
+        return Decimal.of(order.positionOf(value[0]), 0);
     }
 
     /** {@code FUNCTION UPPER-CASE}。英小文字だけを大文字にする。長さは変わらない。 */

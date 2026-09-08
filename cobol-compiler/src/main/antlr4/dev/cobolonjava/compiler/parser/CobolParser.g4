@@ -33,6 +33,7 @@ tokens {
     // 環境部
     ENVIRONMENT, CONFIGURATION, SOURCE_COMPUTER, OBJECT_COMPUTER, SPECIAL_NAMES,
     CURRENCY, DECIMAL_POINT,
+    ALPHABET, STANDARD_1, STANDARD_2, NATIVE, EBCDIC,
     INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
     RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
@@ -170,8 +171,19 @@ sourceComputerParagraph
     : SOURCE_COMPUTER PERIOD ~PERIOD* PERIOD
     ;
 
+// 動かす機械の指定そのものは翻訳の結果に効かないので読み飛ばす。
+// PROGRAM COLLATING SEQUENCE だけは効く (要件 FR-054)
 objectComputerParagraph
-    : OBJECT_COMPUTER PERIOD ~PERIOD* PERIOD
+    : OBJECT_COMPUTER PERIOD objectComputerPart* PERIOD
+    ;
+
+objectComputerPart
+    : programCollatingSequence
+    | ~PERIOD
+    ;
+
+programCollatingSequence
+    : PROGRAM COLLATING? SEQUENCE IS? IDENTIFIER
     ;
 
 // SPECIAL-NAMES は段落の最後にピリオドが 1 つ来る。句の区切りは要らない
@@ -182,7 +194,26 @@ specialNamesParagraph
 specialNamesEntry
     : CURRENCY SIGN? IS? literal
     | DECIMAL_POINT IS? IDENTIFIER
+    | alphabetClause
     | IDENTIFIER IS IDENTIFIER
+    ;
+
+// ALPHABET は照合順序に名前を付ける (要件 FR-054)
+alphabetClause
+    : ALPHABET IDENTIFIER IS? alphabetSpecification
+    ;
+
+alphabetSpecification
+    : STANDARD_1
+    | STANDARD_2
+    | NATIVE
+    | EBCDIC
+    | alphabetPosition+
+    ;
+
+// 1 つの位置に置く文字。ALSO で並べたものは同じ位置になる
+alphabetPosition
+    : literal ((THROUGH | THRU) literal | (ALSO literal)+)?
     ;
 
 // ---- データ部 ----

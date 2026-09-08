@@ -24,15 +24,30 @@ public final class SpecialNames {
 
     private final char currency;
     private final Map<String, FunctionName> mnemonics;
+    private final byte[] collating;
 
-    private SpecialNames(char currency, Map<String, FunctionName> mnemonics) {
+    private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating) {
         this.currency = currency;
         this.mnemonics = Map.copyOf(mnemonics);
+        this.collating = collating;
     }
 
     /** 何も書かれていないときの構成。 */
     public static SpecialNames standard() {
-        return new SpecialNames(DEFAULT_CURRENCY, Map.of());
+        return new SpecialNames(DEFAULT_CURRENCY, Map.of(), null);
+    }
+
+    /**
+     * このプログラムの照合順序 (要件 FR-054)。
+     *
+     * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれ、かつそれがコードページのバイト値の
+     * 並びと違うときだけ表を返す。同じ並びなら差し替える意味がないので {@code null} を
+     * 返し、生成コードは既定の比較を使う。
+     *
+     * @return 256 個の要素からなる「バイト値 → 位置」の表。既定でよければ {@code null}
+     */
+    public byte[] collatingSequence() {
+        return collating == null ? null : collating.clone();
     }
 
     /**
@@ -94,12 +109,10 @@ public final class SpecialNames {
         List<Diagnostic> diagnostics = new ArrayList<>();
         char currency = DEFAULT_CURRENCY;
         Map<String, FunctionName> mnemonics = new LinkedHashMap<>();
+        Map<String, byte[]> alphabets = new LinkedHashMap<>();
 
-        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
-            CobolParser.SpecialNamesParagraphContext paragraph = paragraphOf(unit);
-            if (paragraph == null) {
-                continue;
-            }
+        CobolParser.SpecialNamesParagraphContext paragraph = paragraphOf(program);
+        if (paragraph != null) {
             for (CobolParser.SpecialNamesEntryContext entry : paragraph.specialNamesEntry()) {
                 Origin origin = ReferenceResolver.originOf(entry);
                 if (entry.CURRENCY() != null) {
@@ -116,10 +129,73 @@ public final class SpecialNames {
                             "DECIMAL-POINT IS COMMA is not supported yet"));
                     continue;
                 }
+                if (entry.alphabetClause() != null) {
+                    addAlphabet(entry.alphabetClause(), alphabets, origin, diagnostics);
+                    continue;
+                }
                 addMnemonic(entry, mnemonics, origin, diagnostics);
             }
         }
-        return new Result(new SpecialNames(currency, mnemonics), List.copyOf(diagnostics));
+        byte[] collating = collatingOf(program, alphabets, diagnostics);
+        return new Result(new SpecialNames(currency, mnemonics, collating),
+                List.copyOf(diagnostics));
+    }
+
+    /**
+     * {@code OBJECT-COMPUTER} の {@code PROGRAM COLLATING SEQUENCE} を読む (要件 FR-054)。
+     *
+     * @return コードページの並びと同じなら {@code null}
+     */
+    private static byte[] collatingOf(CobolParser.ProgramUnitContext program,
+                                      Map<String, byte[]> alphabets,
+                                      List<Diagnostic> diagnostics) {
+        CobolParser.ProgramCollatingSequenceContext clause = collatingClauseOf(program);
+        if (clause == null) {
+            return null;
+        }
+        Origin origin = ReferenceResolver.originOf(clause);
+        String name = clause.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        byte[] table = alphabets.get(name);
+        if (table == null) {
+            diagnostics.add(new Diagnostic(origin, "undefined alphabet-name: " + name));
+            return null;
+        }
+        return Alphabet.isNative(table) ? null : table;
+    }
+
+    private static CobolParser.ProgramCollatingSequenceContext collatingClauseOf(
+            CobolParser.ProgramUnitContext unit) {
+        if (unit.environmentDivision() == null
+                || unit.environmentDivision().configurationSection() == null) {
+            return null;
+        }
+        for (CobolParser.ConfigurationParagraphContext paragraph
+                : unit.environmentDivision().configurationSection().configurationParagraph()) {
+            if (paragraph.objectComputerParagraph() == null) {
+                continue;
+            }
+            for (CobolParser.ObjectComputerPartContext part
+                    : paragraph.objectComputerParagraph().objectComputerPart()) {
+                if (part.programCollatingSequence() != null) {
+                    return part.programCollatingSequence();
+                }
+            }
+        }
+        return null;
+    }
+
+    /** {@code ALPHABET 名前 IS ...}。 */
+    private static void addAlphabet(CobolParser.AlphabetClauseContext clause,
+                                    Map<String, byte[]> alphabets, Origin origin,
+                                    List<Diagnostic> diagnostics) {
+        String name = clause.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        byte[] table = Alphabet.of(clause.alphabetSpecification(), origin, diagnostics);
+        if (table == null) {
+            return;
+        }
+        if (alphabets.putIfAbsent(name, table) != null) {
+            diagnostics.add(new Diagnostic(origin, "duplicate alphabet-name: " + name));
+        }
     }
 
     private static CobolParser.SpecialNamesParagraphContext paragraphOf(

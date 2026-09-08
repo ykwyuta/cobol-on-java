@@ -149,9 +149,8 @@ PROGRAM-ID. SUB.
 
 データ部の割り付けは[設計 50](50-data-layout.md)、手続き部は[設計 60](60-procedure.md) へ続く。
 
-1. `PROGRAM COLLATING SEQUENCE` と `SPECIAL-NAMES` の `ALPHABET` 句
-   (6 本、暫定判断 P-042)。
-2. `USE ... FOR DEBUGGING` (5 本)。デバッグ節である。
+1. `USE ... FOR DEBUGGING` (5 本)。デバッグ節である。
+2. `OPEN` の先で止まっているもの (5 本)。1 本ずつ見るしかない。
 3. 66 レベルの `RENAMES`。
 4. 入れ子プログラム (3 本)。並べて書く形は読めるようになった。
 5. `I-O-CONTROL` 段落と `DECLARATIVES`。

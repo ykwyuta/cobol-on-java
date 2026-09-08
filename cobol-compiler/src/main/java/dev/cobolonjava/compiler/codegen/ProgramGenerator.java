@@ -25,6 +25,7 @@ import dev.cobolonjava.runtime.function.Intrinsics;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.codepage.CodePages;
+import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.decimal.DecimalDivideException;
 import dev.cobolonjava.runtime.file.OpenMode;
@@ -90,6 +91,7 @@ public final class ProgramGenerator {
     private static final String PICTURE = Type.getDescriptor(Picture.class);
     private static final String DECIMAL = Type.getDescriptor(Decimal.class);
     private static final String INTRINSICS = Type.getInternalName(Intrinsics.class);
+    private static final String COLLATING = Type.getDescriptor(CollatingSequence.class);
     private static final String CLAUSE = Type.getDescriptor(InspectScan.Clause.class);
     private static final String REGION = Type.getDescriptor(Region.class);
 
@@ -100,6 +102,14 @@ public final class ProgramGenerator {
     private final SpecialNames specialNames;
     /** PICTURE の通貨記号。{@code CURRENCY SIGN IS} で差し替えられる。 */
     private char currency = SpecialNames.DEFAULT_CURRENCY;
+
+    /**
+     * このプログラムの照合順序 (要件 FR-054)。
+     *
+     * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれ、それがコードページのバイト値の
+     * 並びと違うときだけ表が入る。{@code null} なら既定の比較を出す。
+     */
+    private byte[] collating;
     /** {@code PROCEDURE DIVISION USING} に並べた 01 レベル。連絡節の位置決めに使う。 */
     private List<DataItem> parameters = List.of();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
@@ -227,6 +237,7 @@ public final class ProgramGenerator {
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
         parameters = procedure.parameters();
         currency = specialNames.currency();
+        collating = specialNames.collatingSequence();
         writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         internal = className.replace('.', '/');
         writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER,
@@ -1697,6 +1708,13 @@ public final class ProgramGenerator {
      */
     private void planSort(Statement.Sort statement, List<Runnable> body) {
         FileDescription work = statement.work();
+        if (collating != null) {
+            // 並べ替えの鍵もプログラムの照合順序に従う。ここだけコードページの並びで
+            // 並べると、同じプログラムの中で場所によって順序が食い違う (暫定判断 P-042)
+            report(statement.origin(), "SORT and MERGE with a PROGRAM COLLATING SEQUENCE"
+                    + " are not supported yet");
+            return;
+        }
         List<Runnable> keys = new ArrayList<>();
         for (Statement.Sort.SortKeySpec key : statement.keys()) {
             Runnable element = planSortKey(key, statement.origin());
@@ -2763,10 +2781,16 @@ public final class ProgramGenerator {
             if (relation.numeric()) {
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareNumeric",
                         "(" + DECIMAL + DECIMAL + ")I", false);
-            } else {
+            } else if (collating == null) {
                 loadCodePage();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
                         "([B[B" + CODE_PAGE + ")I", false);
+            } else {
+                // 照合順序を差し替えたプログラムでは、位置で比べる (要件 FR-054)
+                loadCollating();
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
+                        "([B[B" + COLLATING + CODE_PAGE + ")I", false);
             }
         };
     }
@@ -2838,9 +2862,9 @@ public final class ProgramGenerator {
                 Runnable ordinal = planNumericArgument(function, 0, origin);
                 yield ordinal == null ? null : () -> {
                     ordinal.run();
-                    loadCodePage();
+                    loadCollating();
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "charOf",
-                            "(" + DECIMAL + CODE_PAGE + ")[B", false);
+                            "(" + DECIMAL + COLLATING + ")[B", false);
                 };
             }
             default -> {
@@ -2881,7 +2905,7 @@ public final class ProgramGenerator {
             case FACTORIAL -> planUnary(function, "factorial", origin);
             case MOD -> planBinary(function, "mod", origin);
             case REM -> planBinary(function, "rem", origin);
-            case ORD -> planReading(function, "ord");
+            case ORD -> planOrd(function);
             case NUMVAL -> planReading(function, "numval");
             case NUMVAL_C -> planNumvalC(function);
             default -> {
@@ -2970,6 +2994,20 @@ public final class ProgramGenerator {
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
                     "([B" + CODE_PAGE + ")" + DECIMAL, false);
+        };
+    }
+
+    /** {@code FUNCTION ORD}。答えは<b>照合順序の何番目か</b>である。 */
+    private Runnable planOrd(Operand.Function function) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            loadCollating();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "ord",
+                    "([B" + COLLATING + ")" + DECIMAL, false);
         };
     }
 
@@ -4222,6 +4260,40 @@ public final class ProgramGenerator {
                         "(Ljava/lang/String;)[B", false);
             });
         }).name();
+    }
+
+    /**
+     * 照合順序を組み立てる定数 (要件 FR-054)。
+     *
+     * <p>256 バイトの表を定数として持ち、クラスの初期化で
+     * {@link CollatingSequence} に包む。表そのものは翻訳時に決まっている。
+     */
+    private String collatingConstant(byte[] table) {
+        String bytes = bytesConstant(table);
+        return constants.computeIfAbsent("C:" + bytes, k -> {
+            String name = "C" + constants.size();
+            return new Constant(name, COLLATING, () -> {
+                clinit.visitFieldInsn(Opcodes.GETSTATIC, internal, bytes, "[B");
+                clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        Type.getInternalName(CollatingSequence.class), "of",
+                        "([B)" + COLLATING, false);
+            });
+        }).name();
+    }
+
+    /** このプログラムの照合順序を積む。既定なら恒等の並びを積む。 */
+    private void loadCollating() {
+        if (collating == null) {
+            String field = constants.computeIfAbsent("C:native", k -> {
+                String name = "C" + constants.size();
+                return new Constant(name, COLLATING, () -> clinit.visitMethodInsn(
+                        Opcodes.INVOKESTATIC, Type.getInternalName(CollatingSequence.class),
+                        "nativeOrder", "()" + COLLATING, false));
+            }).name();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, COLLATING);
+            return;
+        }
+        run.visitFieldInsn(Opcodes.GETSTATIC, internal, collatingConstant(collating), COLLATING);
     }
 
     private String decimalConstant(Decimal value) {

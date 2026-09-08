@@ -3,6 +3,7 @@ package dev.cobolonjava.runtime.program;
 import dev.cobolonjava.runtime.abend.Abend;
 import dev.cobolonjava.runtime.abend.AbendCode;
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.data.NumProcMode;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.data.ZonedDecimal;
@@ -260,6 +261,17 @@ public final class Ops {
     /** 英数字比較。短いほうは空白で埋めて比べる。 */
     public static int compareAlphanumeric(byte[] left, byte[] right, CodePage codePage) {
         return Compare.alphanumeric(left, right, codePage);
+    }
+
+    /**
+     * 照合順序を差し替えた英数字比較 (要件 FR-054)。
+     *
+     * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれているときだけこちらを通る。
+     * 書かれていなければコードページのバイト値がそのまま並びなので、上の形でよい。
+     */
+    public static int compareAlphanumeric(byte[] left, byte[] right, CollatingSequence order,
+                                          CodePage codePage) {
+        return order.compare(left, right, codePage.space());
     }
 
     // ---- ファイル入出力 ----
