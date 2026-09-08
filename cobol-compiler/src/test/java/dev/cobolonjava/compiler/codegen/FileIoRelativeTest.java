@@ -426,25 +426,51 @@ class FileIoRelativeTest {
     }
 
     @Test
-    @DisplayName("相対編成に可変長レコードは置けない (FR-100)")
-    void aRelativeFileHasFixedSlots() {
-        assertTrue(diagnostics(source(
+    @DisplayName("相対編成でも可変長のレコードを持てる。スロットは固定である (FR-100, FR-101)")
+    void aRelativeFileMayHoldVaryingRecords(@TempDir Path directory) {
+        // 番号が住所である以上、スロットの大きさは変えられない。宣言した最大で取り、
+        // 先頭 4 バイトに実際の長さを置く。ホストの可変長 RRDS と同じ形である。
+        // ここを「可変長は置けない」と断っていた
+        String varying = source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. VARSLOT.",
                 "ENVIRONMENT DIVISION.",
                 "INPUT-OUTPUT SECTION.",
                 "FILE-CONTROL.",
                 "    SELECT R-FILE ASSIGN TO RELDD",
-                "        ORGANIZATION IS RELATIVE.",
+                "        ORGANIZATION IS RELATIVE",
+                "        ACCESS MODE IS RANDOM",
+                "        RELATIVE KEY IS WS-RRN",
+                "        FILE STATUS IS WS-STATUS.",
                 "DATA DIVISION.",
                 "FILE SECTION.",
                 "FD  R-FILE",
-                "    RECORD IS VARYING IN SIZE FROM 1 TO 3 DEPENDING ON WS-LEN.",
-                "01  R-REC PIC X(3).",
+                "    RECORD IS VARYING IN SIZE FROM 1 TO 5 DEPENDING ON WS-LEN.",
+                "01  R-REC PIC X(5).",
                 "WORKING-STORAGE SECTION.",
+                "01  WS-RRN PIC 9(3) COMP.",
                 "01  WS-LEN PIC 9(3) COMP.",
+                "01  WS-STATUS PIC XX.",
                 "PROCEDURE DIVISION.",
-                "    STOP RUN.")).toString().contains("cannot have variable-length records"));
+                "    OPEN OUTPUT R-FILE.",
+                "    MOVE 'ab' TO R-REC MOVE 2 TO WS-LEN MOVE 1 TO WS-RRN.",
+                "    WRITE R-REC.",
+                "    MOVE 'cdefg' TO R-REC MOVE 5 TO WS-LEN MOVE 3 TO WS-RRN.",
+                "    WRITE R-REC.",
+                "    CLOSE R-FILE.",
+                "    OPEN INPUT R-FILE.",
+                "    MOVE 3 TO WS-RRN.",
+                "    READ R-FILE INVALID KEY DISPLAY 'NONE'",
+                "        NOT INVALID KEY DISPLAY R-REC END-READ.",
+                "    MOVE 1 TO WS-RRN.",
+                "    READ R-FILE INVALID KEY DISPLAY 'NONE'",
+                "        NOT INVALID KEY DISPLAY R-REC END-READ.",
+                "    CLOSE R-FILE.",
+                "    STOP RUN.");
+
+        // 2 番は書いていないので空きスロットのまま残る
+        assertEquals("cdefg|ab   |", run(directory, varying));
+        assertEquals(27, bytesOf(directory.resolve("RELDD")).length);
     }
 
     @Test

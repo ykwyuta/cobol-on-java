@@ -336,17 +336,6 @@ public record FileDescription(String name, String ddName, Organization organizat
                 format = recordingOf(recording, format, one.origin(), diagnostics);
             }
             Varying varying = varyingOf(entry, length, resolver, diagnostics);
-            if (one.organization() == Organization.RELATIVE && format == RecordFormat.VARIABLE) {
-                diagnostics.add(new Diagnostic(one.origin(),
-                        "a RELATIVE file cannot have variable-length records"));
-                continue;
-            }
-            if (varying != null && one.organization() == Organization.RELATIVE) {
-                // 相対編成のスロットは固定長である。長さが違えば番号が住所にならない
-                diagnostics.add(new Diagnostic(one.origin(),
-                        "a RELATIVE file cannot have variable-length records"));
-                continue;
-            }
             if (varying != null) {
                 // RECORD IS VARYING と書けば、様式は可変長である
                 format = RecordFormat.VARIABLE;

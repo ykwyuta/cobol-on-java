@@ -23,6 +23,11 @@ import java.util.List;
  * <p>消したスロットと空白だけのレコードは同じバイトになる。VSAM は制御情報として持っており、
  * レコードのバイト列の外にある。ここではサイドカーに持つ (暫定判断 P-039)。データ本体は
  * 移行したままの固定長スロットの並びである。
+ *
+ * <h2>可変長でもスロットは固定である</h2>
+ * <p>相対編成は可変長のレコードを持てる。<b>番号が住所である</b>以上、スロットの大きさまで
+ * 変えるわけにはいかない。スロットは宣言した最大の長さで取り、その先頭 4 バイトに
+ * 実際の長さ ({@code RDW}) を置く。ホストの可変長 RRDS と同じ形である。
  */
 public final class RelativeDataSet implements KeyedDataSet {
 
@@ -144,6 +149,19 @@ public final class RelativeDataSet implements KeyedDataSet {
         return FileStatus.OK;
     }
 
+    /** 可変長のスロットが先頭に置く長さの札 ({@code RDW}) の大きさ。 */
+    private static final int PREFIX = 4;
+
+    /** 可変長かどうか。 */
+    private boolean varying() {
+        return attributes.format() == RecordFormat.VARIABLE;
+    }
+
+    /** スロット 1 つが占めるバイト数。可変長では長さの札のぶんだけ大きい。 */
+    private int slotLength() {
+        return varying() ? attributes.recordLength() + PREFIX : attributes.recordLength();
+    }
+
     private List<byte[]> load() {
         byte[] bytes;
         try {
@@ -151,9 +169,16 @@ public final class RelativeDataSet implements KeyedDataSet {
         } catch (IOException e) {
             throw new UncheckedIOException("cannot read " + path, e);
         }
-        RecordFraming.Framed framed = RecordFraming.fixed(bytes, attributes.recordLength());
+        RecordFraming.Framed framed = RecordFraming.fixed(bytes, slotLength());
         damagedAt = framed.damagedAt();
-        List<byte[]> out = new ArrayList<>(framed.records());
+        List<byte[]> out = new ArrayList<>();
+        for (byte[] slot : framed.records()) {
+            out.add(varying() ? trimmed(slot) : slot);
+        }
+        if (damagedAt < 0 && out.contains(null)) {
+            // 長さの札が壊れている。そこから先はスロットの切れ目が信用できない
+            damagedAt = out.indexOf(null);
+        }
         for (int slot : attributes.emptySlots()) {
             if (slot >= 1 && slot <= out.size()) {
                 out.set(slot - 1, null);
@@ -162,8 +187,21 @@ public final class RelativeDataSet implements KeyedDataSet {
         return out;
     }
 
+    /**
+     * 長さの札を読んで、書いた分だけを取り出す。
+     *
+     * @return 札が壊れていれば {@code null}
+     */
+    private byte[] trimmed(byte[] slot) {
+        int declared = ((slot[0] & 0xFF) << 8) | (slot[1] & 0xFF);
+        if (declared < PREFIX || declared > slot.length) {
+            return null;
+        }
+        return Arrays.copyOfRange(slot, PREFIX, declared);
+    }
+
     private void save() {
-        int length = attributes.recordLength();
+        int length = slotLength();
         byte[] out = new byte[slots.size() * length];
         Arrays.fill(out, attributes.codePage().space());
         List<Integer> empty = new ArrayList<>();
@@ -174,7 +212,17 @@ public final class RelativeDataSet implements KeyedDataSet {
                 empty.add(i + 1);
                 continue;
             }
-            System.arraycopy(record, 0, out, i * length, Math.min(record.length, length));
+            int at = i * length;
+            if (varying()) {
+                int declared = Math.min(record.length, attributes.recordLength()) + PREFIX;
+                out[at] = (byte) (declared >>> 8);
+                out[at + 1] = (byte) declared;
+                out[at + 2] = 0;
+                out[at + 3] = 0;
+                at += PREFIX;
+            }
+            System.arraycopy(record, 0, out, at,
+                    Math.min(record.length, attributes.recordLength()));
         }
         try {
             Files.write(path, out, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
@@ -251,6 +299,12 @@ public final class RelativeDataSet implements KeyedDataSet {
         System.arraycopy(record, 0, into, 0, length);
         Arrays.fill(into, length, into.length, attributes.codePage().space());
         lastLength = length;
+        if (varying()) {
+            // 可変長では長さが違うのが当たり前である。入れ物に収まれば誤りではない
+            return record.length <= into.length
+                    ? FileStatus.OK
+                    : FileStatus.LENGTH_MISMATCH;
+        }
         return record.length == into.length ? FileStatus.OK : FileStatus.LENGTH_MISMATCH;
     }
 
@@ -405,7 +459,7 @@ public final class RelativeDataSet implements KeyedDataSet {
      * 鍵で引く編成ではこれになる。
      */
     private boolean outOfSpace(int slot) {
-        long length = attributes.recordLength();
+        long length = slotLength();
         return allocation.exceeded(slots.size() * length, (slot + 1L - slots.size()) * length);
     }
 
