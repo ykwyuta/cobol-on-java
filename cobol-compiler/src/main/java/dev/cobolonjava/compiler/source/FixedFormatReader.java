@@ -181,7 +181,11 @@ public final class FixedFormatReader implements SourceReader {
         // 直前の行が文字定数の途中で終わっているか。継続の扱いを分ける
         char openQuote = 0;
 
-        for (SourceLine line : lines) {
+        // 直前の行の 72 桁目が「2 個 1 組の引用符」の 1 個目だったか
+        boolean splitQuote = false;
+
+        for (int at = 0; at < lines.size(); at++) {
+            SourceLine line = lines.get(at);
             switch (line.indicator()) {
                 case COMMENT, EJECT -> {
                     continue;
@@ -196,13 +200,23 @@ public final class FixedFormatReader implements SourceReader {
             }
 
             if (line.indicator() == LineIndicator.CONTINUATION) {
-                openQuote = appendContinuation(out, line, openQuote);
+                openQuote = appendContinuation(out, line, openQuote, splitQuote);
+                splitQuote = false;
             } else {
                 if (openQuote != 0) {
                     throw new SourceFormatException(new Origin(line.fileName(), line.lineNumber(), 1), "a non-numeric literal is left unclosed and the next line is not a"
                             + " continuation line");
                 }
                 openQuote = appendNormal(out, line);
+                splitQuote = false;
+                if (openQuote == 0 && splitQuoteFollows(lines, at)) {
+                    char closed = closedAtMargin(line);
+                    if (closed != 0) {
+                        // 72 桁目の引用符は組の 1 個目である。定数はまだ閉じていない
+                        openQuote = closed;
+                        splitQuote = true;
+                    }
+                }
             }
         }
 
@@ -210,6 +224,44 @@ public final class FixedFormatReader implements SourceReader {
             throw new SourceFormatException("a non-numeric literal is left unclosed at end of source");
         }
         return out.build();
+    }
+
+    /**
+     * 72 桁目の引用符が<b>2 個 1 組の片割れ</b>かどうか (要件 FR-011)。
+     *
+     * <p>定数の中の引用符は 2 個並べて書く。その 2 個が行の境目で分かれることがある。
+     * CCVS85 の NC215A がそう書いている。
+     *
+     * <pre>
+     * 004900     THE-BIG-OL-LITERAL-ALPHABET IS "A+0B-1C*2D/3E=4Fl5G,6H;7I.8J"
+     * 005000-    ""9K(L)M&gt;N&lt;O PQRSTUVWXYZ".
+     * </pre>
+     *
+     * <p>72 桁目の {@code "} を「定数を閉じた」と読むと、次の行が<b>宙に浮く</b>。
+     * 正しくは 72 桁目が組の 1 個目、継続行の B 領域の 1 個目が<b>再開の印</b>、
+     * 2 個目が組の 2 個目である。3 個で 1 文字の {@code "} を表している。
+     *
+     * <p>行 1 本だけを見て決めることはできない。<b>次の行が継続行で、その B 領域が
+     * 同じ引用符で始まっているとき</b>にかぎり、片割れと読む (暫定判断 P-084)。
+     *
+     * @param at いま見ている行の位置
+     */
+    private static boolean splitQuoteFollows(List<SourceLine> lines, int at) {
+        for (int next = at + 1; next < lines.size(); next++) {
+            SourceLine line = lines.get(next);
+            if (line.indicator() == LineIndicator.COMMENT
+                    || line.indicator() == LineIndicator.EJECT) {
+                continue;
+            }
+            if (line.indicator() != LineIndicator.CONTINUATION) {
+                return false;
+            }
+            String content = line.content();
+            int first = SourceText.countLeadingSpaces(content);
+            return first < content.length()
+                    && (content.charAt(first) == '\'' || content.charAt(first) == '"');
+        }
+        return false;
     }
 
     /** 通常の行を、区切りの空白を挟んで連結する。 */
@@ -235,12 +287,38 @@ public final class FixedFormatReader implements SourceReader {
     }
 
     /**
+     * 定数を<b>ちょうど 72 桁目の引用符で</b>閉じているか。
+     *
+     * <p>閉じているなら、その引用符を返す。閉じていない、あるいは 72 桁目より手前で
+     * 閉じているなら {@code 0} を返す。
+     */
+    private static char closedAtMargin(SourceLine line) {
+        String padded = line.contentPaddedToMargin();
+        String trimmed = SourceText.stripTrailing(padded);
+        if (trimmed.length() != padded.length() || trimmed.isEmpty()) {
+            // 72 桁目が空白なら、そこで定数が閉じているはずがない
+            return 0;
+        }
+        char last = trimmed.charAt(trimmed.length() - 1);
+        if (last != '\'' && last != '"') {
+            return 0;
+        }
+        // 最後の 1 文字を落とせば定数が開いたままになるなら、それが閉じた引用符である
+        return SourceText.openQuoteAtEnd(trimmed.substring(0, trimmed.length() - 1), (char) 0)
+                == last ? last : 0;
+    }
+
+    /**
      * 継続行を連結する。
      *
-     * @param openQuote 直前の行で開いたままの引用符。0 なら定数の外
+     * @param openQuote  直前の行で開いたままの引用符。0 なら定数の外
+     * @param splitQuote 直前の行の 72 桁目が「2 個 1 組の引用符」の 1 個目だったか。
+     *                   そうなら、再開の印を外した先頭の 1 文字が<b>組の 2 個目</b>で
+     *                   あり、定数を閉じる引用符ではない (要件 FR-011、暫定判断 P-084)
      * @return この行の末尾で開いたままの引用符
      */
-    private char appendContinuation(NormalizedSource.Builder out, SourceLine line, char openQuote) {
+    private char appendContinuation(NormalizedSource.Builder out, SourceLine line, char openQuote,
+                                    boolean splitQuote) {
         String content = line.content();
         int first = SourceText.countLeadingSpaces(content);
         if (first >= content.length()) {
@@ -258,7 +336,12 @@ public final class FixedFormatReader implements SourceReader {
         }
 
         String rest = SourceText.stripInlineComment(content.substring(start), openQuote);
-        char resulting = SourceText.openQuoteAtEnd(rest, openQuote);
+        // 組の 2 個目は定数の中の 1 文字である。数えるときだけ読み飛ばす
+        // (出す文字列には残す。2 個並んだまま渡せば、字句解析が 1 文字へ畳む)
+        boolean pairing = splitQuote && !rest.isEmpty() && rest.charAt(0) == openQuote;
+        char resulting = pairing
+                ? SourceText.openQuoteAtEnd(rest.substring(1), openQuote)
+                : SourceText.openQuoteAtEnd(rest, openQuote);
         if (resulting != 0) {
             // まだ閉じていないので、この行も 72 桁まで定数の一部になる
             rest = line.contentPaddedToMargin().substring(start);

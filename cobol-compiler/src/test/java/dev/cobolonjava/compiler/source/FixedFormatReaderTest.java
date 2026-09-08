@@ -100,6 +100,31 @@ class FixedFormatReaderTest {
     }
 
     @Test
+    @DisplayName("2 個 1 組の引用符は行の境目で分かれることがある (FR-003)")
+    void adoubledQuoteCanBeSplitAcrossTheLineBoundary() {
+        // CCVS85 の NC215A がこう書いている。72 桁目の引用符を「定数を閉じた」と
+        // 読むと次の行が宙に浮く。正しくは 72 桁目が組の 1 個目、継続行の B 領域の
+        // 1 個目が<b>再開の印</b>、2 個目が組の 2 個目である。3 個で 1 文字を表す
+        String body = "A".repeat(54);
+        // 本文 65 桁ちょうど。最後の引用符が 72 桁目に来る
+        String first = "    MOVE '" + body + "'";
+        assertEquals(65, first.length());
+        assertEquals("MOVE '" + body + "''CD' TO X.", normalize(
+                line(' ', first),
+                line('-', "    ''CD' TO X.")));
+    }
+
+    @Test
+    @DisplayName("72 桁目より手前で閉じていれば、継続行は次の定数を始める (FR-003)")
+    void aliteralClosedBeforeTheMarginIsNotContinued() {
+        // 組の片割れと読むのは<b>ちょうど 72 桁目</b>のときだけである。手前で
+        // 閉じていれば普通に閉じた定数であり、継続行は語を継ぐだけになる
+        assertEquals("MOVE 'AB' TO X.'CD' TO Y.", normalize(
+                line(' ', "    MOVE 'AB' TO X."),
+                line('-', "    'CD' TO Y.")));
+    }
+
+    @Test
     @DisplayName("継続行が引用符で再開しなければ誤りとする (FR-003)")
     void continuationMustResumeWithAQuote() {
         SourceFormatException e = assertThrows(SourceFormatException.class, () -> normalize(
