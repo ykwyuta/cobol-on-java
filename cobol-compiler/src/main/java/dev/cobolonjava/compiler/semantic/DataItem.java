@@ -285,6 +285,24 @@ public final class DataItem {
         this.occursDependingName = value;
     }
 
+    /**
+     * {@code OCCURS ... DEPENDING ON} に書かれた項目そのもの。名前を引き当てて結び付ける。
+     *
+     * <p>名前だけでは<b>群の長さを実行時に数えられない</b>。数えるのは翻訳の後ろの段
+     * (符号生成) であり、そこには名前を引く道具が無い。データ部を読み終えた時点で
+     * 引き当てておく。引き当てられない名前はここでは<b>黙って残す</b>。誤りとして
+     * 報せるのは手続き部を読む側の役目であり、二重に言うと診断が散る。
+     */
+    private DataItem occursDepending;
+
+    public DataItem occursDepending() {
+        return occursDepending;
+    }
+
+    void setOccursDepending(DataItem value) {
+        this.occursDepending = value;
+    }
+
     void setOccurs(int value) {
         this.occurs = value;
         this.table = true;

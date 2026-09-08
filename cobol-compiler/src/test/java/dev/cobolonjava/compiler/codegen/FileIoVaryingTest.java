@@ -544,4 +544,45 @@ class FileIoVaryingTest {
                 "    CLOSE IN-FILE.",
                 "    STOP RUN.")));
     }
+
+    @Test
+    @DisplayName("DEPENDING ON を書かなければ、レコード記述がレコード長を決める (FR-106)")
+    void withoutADependingPhraseTheRecordDescriptionDecidesTheLength(@TempDir Path directory) {
+        // RECORD IS VARYING だけを書いたときのレコード長は、レコード記述に書かれた
+        // OCCURS ... DEPENDING ON の<b>いまの値</b>で決まる。RL211A がこの形である
+        assertEquals("00|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. ODOWRIT.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO ODOUT",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE",
+                "    RECORD IS VARYING.",
+                "01  OUT-REC.",
+                "    02  OUT-HEAD PIC X(2).",
+                "    02  OUT-LEN  PIC 9.",
+                "    02  OUT-TAIL PIC X OCCURS 1 TO 5 DEPENDING ON OUT-LEN.",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE.",
+                "    MOVE 'AB' TO OUT-HEAD.",
+                "    MOVE 1 TO OUT-LEN.",
+                "    MOVE 'P' TO OUT-TAIL (1).",
+                "    WRITE OUT-REC.",
+                "    MOVE 5 TO OUT-LEN.",
+                "    MOVE 'V' TO OUT-TAIL (5).",
+                "    WRITE OUT-REC.",
+                "    CLOSE OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+        // 1 個ぶんなら 2 + 1 + 1 = 4 バイト、5 個ぶんなら 2 + 1 + 5 = 8 バイト。
+        // 最大の 8 バイトを 2 本書いていたら、この突き合わせで落ちる
+        assertArrayEquals(concat(rdw("AB1P"), rdw("AB5P   V")),
+                bytesOf(directory.resolve("ODOUT")));
+    }
 }

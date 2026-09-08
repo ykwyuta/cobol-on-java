@@ -1865,10 +1865,16 @@ public final class ProgramGenerator {
      */
     private Runnable planWrittenLength(FileDescription file, DataItem record, Origin origin) {
         FileDescription.Varying varying = file.varying();
-        if (varying == null || varying.depending() == null) {
-            // DEPENDING ON がなければ、書いたレコード記述の長さがそのままレコード長である
+        if (varying == null) {
+            // 固定長。書いたレコード記述の長さがそのままレコード長である
             int length = record.totalLength();
             return () -> push(length);
+        }
+        if (varying.depending() == null) {
+            // RECORD IS VARYING に DEPENDING ON を書かなければ、レコード長は
+            // <b>レコード記述そのもの</b>が決める。OCCURS ... DEPENDING ON が
+            // あればその値ぶんだけ短くなる (要件 FR-106)
+            return planDescribedLength(record, origin);
         }
         Runnable address = planAddress(varying.depending(), origin);
         String field = numericItemConstant(varying.depending().item(), origin);
@@ -1881,6 +1887,80 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
                     "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
         };
+    }
+
+    /**
+     * レコード記述そのものから、いまのレコード長を積む (要件 FR-106)。
+     *
+     * <p>記憶域は<b>最大の回数</b>で取ってある。実行時に変わるのは「いま何個あるか」
+     * だけなので、割り付けた長さから<b>使っていない分</b>を引けばよい。
+     *
+     * <pre>
+     * レコード長 = 割り付けた長さ - Σ (最大回数 - いまの回数) × 1 個分の長さ
+     * </pre>
+     *
+     * <p>この形でよいのは、規格が {@code OCCURS ... DEPENDING ON} の項目を<b>その群の
+     * 最後</b>に限っているからである。うしろに何も来ないので、余りは末尾に固まる。
+     */
+    private Runnable planDescribedLength(DataItem record, Origin origin) {
+        List<DataItem> tables = new ArrayList<>();
+        collectDependingTables(record, tables, false);
+        int whole = record.totalLength();
+        if (tables.isEmpty()) {
+            return () -> push(whole);
+        }
+        List<Runnable> parts = new ArrayList<>();
+        for (DataItem table : tables) {
+            DataItem counter = table.occursDepending();
+            String field = numericItemConstant(counter, origin);
+            Runnable address = planAddress(
+                    new DataReference(counter, List.of(), null, origin), origin);
+            if (field == null || address == null) {
+                return null;
+            }
+            int max = table.occurs();
+            int element = table.length();
+            parts.add(() -> {
+                // (最大回数 - いまの回数) × 1 個分
+                push(max);
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+                address.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
+                        "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
+                run.visitInsn(Opcodes.ISUB);
+                push(element);
+                run.visitInsn(Opcodes.IMUL);
+                run.visitInsn(Opcodes.ISUB);
+            });
+        }
+        return () -> {
+            push(whole);
+            parts.forEach(Runnable::run);
+        };
+    }
+
+    /**
+     * レコードの中の {@code OCCURS ... DEPENDING ON} の表を集める。
+     *
+     * <p>入れ子になった表 (可変長の表の中の可変長の表) は数えない。1 個分の長さ自体が
+     * 変わるので、上の引き算では足りないからである。<b>黙って近い値を返さない</b>ため、
+     * 見つけたら告げて最大の長さのままにする。
+     */
+    private void collectDependingTables(DataItem item, List<DataItem> tables, boolean inside) {
+        boolean depending = item.occursDepending() != null;
+        if (depending) {
+            if (inside) {
+                diagnostics.add(Diagnostic.warning(item.origin(),
+                        "a variable-length table inside another variable-length table is not"
+                                + " measured yet; the record is written at its maximum length: "
+                                + item.name()));
+                return;
+            }
+            tables.add(item);
+        }
+        for (DataItem child : item.children()) {
+            collectDependingTables(child, tables, inside || depending);
+        }
     }
 
     /**

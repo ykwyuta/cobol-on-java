@@ -122,8 +122,11 @@ public final class DataDivisionBuilder {
         builder.addDebugItem(program);
         builder.layoutRecords();
         builder.applyRenames();
-        return new Result(new DataLayout(builder.records, builder.indexes,
-                specialRegisters(), builder.totalLength),
+        DataLayout layout = new DataLayout(builder.records, builder.indexes,
+                specialRegisters(), builder.totalLength);
+        // 回数を決める項目は表よりあとに書かれていてもよい。読み終えてから結び付ける
+        layout.linkOccursDepending();
+        return new Result(layout,
                 Map.copyOf(builder.fileRecords), List.copyOf(builder.reports),
                 List.copyOf(builder.diagnostics));
     }
