@@ -165,7 +165,7 @@ public final class CobolCompiler {
         warnings.addAll(declared.diagnostics());
 
         List<Diagnostic> diagnostics = new ArrayList<>();
-        InitialImage.Result image = InitialImage.build(data.layout());
+        InitialImage.Result image = InitialImage.build(data.layout(), specialNames);
         diagnostics.addAll(image.diagnostics());
         ProcedureBuilder.Result procedure = ProcedureBuilder.build(program, data.layout(),
                 specialNames, declared.files(), data.reports());

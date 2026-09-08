@@ -36,12 +36,18 @@ public final class InitialImage {
     private final CodePage codePage;
     private final char quoteCharacter;
     private final byte fill;
+    /** 図形定数 {@code HIGH-VALUE} / {@code LOW-VALUE} が表すバイト (要件 FR-054)。 */
+    private final byte highValue;
+    private final byte lowValue;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
-    private InitialImage(CodePage codePage, char quoteCharacter, byte fill) {
+    private InitialImage(CodePage codePage, char quoteCharacter, byte fill,
+                         byte highValue, byte lowValue) {
         this.codePage = codePage;
         this.quoteCharacter = quoteCharacter;
         this.fill = fill;
+        this.highValue = highValue;
+        this.lowValue = lowValue;
     }
 
     /**
@@ -81,12 +87,35 @@ public final class InitialImage {
     }
 
     /**
+     * 照合順序を差し替えたうえで組み立てる (要件 FR-054)。
+     *
+     * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれていれば、{@code VALUE HIGH-VALUE} の
+     * 表すバイトが変わる。<b>並びのいちばん後ろに来る文字</b>だからである。
+     */
+    public static Result build(DataLayout layout, SpecialNames specialNames) {
+        return build(layout, CodePages.DEFAULT, '"',
+                specialNames.highValue(), specialNames.lowValue());
+    }
+
+    /**
      * 初期イメージを組み立てる。
      *
      * @param quoteCharacter 図形定数 {@code QUOTE} が表す文字。{@code APOST} 指定では {@code '}
      */
     public static Result build(DataLayout layout, CodePage codePage, char quoteCharacter) {
-        InitialImage builder = new InitialImage(codePage, quoteCharacter, codePage.space());
+        return build(layout, codePage, quoteCharacter, (byte) 0xFF, (byte) 0x00);
+    }
+
+    /**
+     * 初期イメージを組み立てる。
+     *
+     * @param highValue 図形定数 {@code HIGH-VALUE} が表すバイト (要件 FR-054)
+     * @param lowValue  図形定数 {@code LOW-VALUE} が表すバイト
+     */
+    public static Result build(DataLayout layout, CodePage codePage, char quoteCharacter,
+                               byte highValue, byte lowValue) {
+        InitialImage builder = new InitialImage(codePage, quoteCharacter, codePage.space(),
+                highValue, lowValue);
         List<RecordImage> images = new ArrayList<>();
         byte[] storage = new byte[layout.totalLength()];
         Arrays.fill(storage, codePage.space());
@@ -303,8 +332,10 @@ public final class InitialImage {
         return switch (constant) {
             case ZERO -> codePage.digit(0);
             case SPACE -> codePage.space();
-            case HIGH_VALUE -> (byte) 0xFF;
-            case LOW_VALUE, NULL -> (byte) 0x00;
+            case HIGH_VALUE -> highValue;
+            case LOW_VALUE -> lowValue;
+            // NULL は「あて先を持たない」を表すものであり、照合順序とは関わらない
+            case NULL -> (byte) 0x00;
             case QUOTE -> codePage.ch(quoteCharacter);
         };
     }

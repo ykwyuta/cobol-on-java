@@ -183,6 +183,85 @@ class CollatingSequenceTest {
                 "IF WS-A = WS-B MOVE 'T' TO WS-R ELSE MOVE 'F' TO WS-R END-IF.").substring(2));
     }
 
+    /** 図形定数と比べた結果を {@code WS-R} に残す。72 桁を越えないよう 3 行に割る。 */
+    private static String[] compareWith(String left, String constant) {
+        return new String[] {
+            "IF " + left + " = " + constant,
+            "    MOVE 'T' TO WS-R",
+            "ELSE MOVE 'F' TO WS-R END-IF."};
+    }
+
+    private static final List<String> ONE_LETTER_AND_RESULT = List.of(
+            "01 WS-A PIC X.",
+            "01 WS-R PIC X.");
+
+    private static final List<String> DIGITS_FIRST = List.of("OBJECT-COMPUTER.",
+            "    COBOL-ON-JAVA",
+            "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+            "SPECIAL-NAMES.",
+            "    ALPHABET DIGITS-FIRST IS \"1\" \"2\" \"3\".");
+
+    /**
+     * NC219A の並び。{@code 0xFF} と {@code 0x00} を {@code ALSO} で {@code "N"} の位置へ
+     * 動かしている。並びのいちばん後ろに来るのは、もう {@code 0xFF} ではない。
+     */
+    private static final List<String> NC219A_ALPHABET = List.of("OBJECT-COMPUTER.",
+            "    COBOL-ON-JAVA",
+            "    PROGRAM COLLATING SEQUENCE IS COLLATING-SEQ-1.",
+            "SPECIAL-NAMES.",
+            "    ALPHABET COLLATING-SEQ-1 IS \"F\" \"U\" \"N\"",
+            "        ALSO HIGH-VALUE",
+            "        ALSO LOW-VALUE",
+            "        \"Y\".");
+
+    @Test
+    @DisplayName("LOW-VALUE は差し替えた並びの<b>先頭に来る文字</b>である (FR-054)")
+    void lowValueIsTheFirstCharacterOfTheProgramCollatingSequence() {
+        // 規格は図形定数を「並びの端に来る文字」と決めている。バイト値 0x00 ではない
+        assertEquals("T", run(DIGITS_FIRST,
+                List.of("01 WS-A PIC X VALUE '1'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "LOW-VALUE")).substring(1));
+        // VALUE 句にも効く。並びの先頭の文字がそのまま入る
+        assertEquals("1", run(DIGITS_FIRST,
+                List.of("01 WS-L PIC X VALUE LOW-VALUE."), "CONTINUE."));
+    }
+
+    @Test
+    @DisplayName("ALSO で端から動かした文字は、もう図形定数ではない (FR-054)")
+    void aCharacterMovedByAlsoIsNoLongerTheFigurativeConstant() {
+        // CCVS85 の NC219A が見ているところである。HIGH-VALUE をバイト値 0xFF のままに
+        // していると N = HIGH-VALUE が真になり、「並びの端に来る文字」という定義が壊れる
+        assertEquals("F", run(NC219A_ALPHABET,
+                List.of("01 WS-A PIC X VALUE 'N'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "HIGH-VALUE")).substring(1));
+        // 先頭に置いた "F" が LOW-VALUE である
+        assertEquals("T", run(NC219A_ALPHABET,
+                List.of("01 WS-A PIC X VALUE 'F'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "LOW-VALUE")).substring(1));
+        // 端どうしを比べれば、後ろのほうが大きい
+        assertEquals("F", run(NC219A_ALPHABET, ONE_LETTER_AND_RESULT,
+                compareWith("HIGH-VALUE", "LOW-VALUE")).substring(1));
+        assertEquals("T", run(NC219A_ALPHABET, ONE_LETTER_AND_RESULT,
+                "IF HIGH-VALUE > LOW-VALUE",
+                "    MOVE 'T' TO WS-R",
+                "ELSE MOVE 'F' TO WS-R END-IF.").substring(1));
+    }
+
+    @Test
+    @DisplayName("並びを選んでいなければ、同じ ALPHABET を書いても図形定数は動かない (FR-054)")
+    void anAlphabetThatIsNotSelectedDoesNotMoveTheFigurativeConstants() {
+        // 図形定数を動かすのは PROGRAM COLLATING SEQUENCE である。ALPHABET 句を書いた
+        // だけでは動かない。書いただけの並びは SORT ... SEQUENCE が引くためのものである
+        List<String> declaredOnly = List.of("SPECIAL-NAMES.",
+                "    ALPHABET COLLATING-SEQ-1 IS \"F\" \"U\" \"N\"",
+                "        ALSO HIGH-VALUE",
+                "        ALSO LOW-VALUE",
+                "        \"Y\".");
+        assertEquals("F", run(declaredOnly,
+                List.of("01 WS-A PIC X VALUE 'F'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "LOW-VALUE")).substring(1));
+    }
+
     @Test
     @DisplayName("CHAR と ORD は差し替えた並びの位置で答える (FR-054, FR-070)")
     void charAndOrdFollowTheProgramCollatingSequence() {

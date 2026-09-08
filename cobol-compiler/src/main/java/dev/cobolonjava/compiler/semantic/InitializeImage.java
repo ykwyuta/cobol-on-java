@@ -41,10 +41,17 @@ public final class InitializeImage {
     private final List<Replacing> replacing;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
-    private InitializeImage(CodePage codePage, boolean withFiller, List<Replacing> replacing) {
+    /** 図形定数 {@code HIGH-VALUE} / {@code LOW-VALUE} が表すバイト (要件 FR-054)。 */
+    private final byte highValue;
+    private final byte lowValue;
+
+    private InitializeImage(CodePage codePage, boolean withFiller, List<Replacing> replacing,
+                            byte highValue, byte lowValue) {
         this.codePage = codePage;
         this.withFiller = withFiller;
         this.replacing = List.copyOf(replacing);
+        this.highValue = highValue;
+        this.lowValue = lowValue;
     }
 
     /**
@@ -101,7 +108,19 @@ public final class InitializeImage {
      */
     public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
                                CodePage codePage) {
-        InitializeImage builder = new InitializeImage(codePage, withFiller, replacing);
+        return build(item, withFiller, replacing, codePage, (byte) 0xFF, (byte) 0x00);
+    }
+
+    /**
+     * 照合順序を差し替えたうえで組み立てる (要件 FR-054)。
+     *
+     * @param highValue 図形定数 {@code HIGH-VALUE} が表すバイト
+     * @param lowValue  図形定数 {@code LOW-VALUE} が表すバイト
+     */
+    public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
+                               CodePage codePage, byte highValue, byte lowValue) {
+        InitializeImage builder = new InitializeImage(codePage, withFiller, replacing,
+                highValue, lowValue);
         // 書かれた項目そのものは 1 回分である。表なら添字で 1 つに絞られている
         int length = item.length();
         byte[] image = new byte[length];
@@ -288,8 +307,10 @@ public final class InitializeImage {
         return switch (constant) {
             case ZERO -> codePage.digit(0);
             case SPACE -> codePage.space();
-            case HIGH_VALUE -> (byte) 0xFF;
-            case LOW_VALUE, NULL -> (byte) 0x00;
+            case HIGH_VALUE -> highValue;
+            case LOW_VALUE -> lowValue;
+            // NULL は「あて先を持たない」を表すものであり、照合順序とは関わらない
+            case NULL -> (byte) 0x00;
             case QUOTE -> codePage.encode("\"")[0];
         };
     }

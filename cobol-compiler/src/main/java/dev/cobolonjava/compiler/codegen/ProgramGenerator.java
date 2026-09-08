@@ -1273,7 +1273,8 @@ public final class ProgramGenerator {
             return;
         }
         InitializeImage.Result image = InitializeImage.build(statement.target().item(),
-                statement.withFiller(), statement.replacing(), codePage);
+                statement.withFiller(), statement.replacing(), codePage,
+                specialNames.highValue(), specialNames.lowValue());
         diagnostics.addAll(image.diagnostics());
         if (!image.succeeded()) {
             return;
@@ -3353,10 +3354,20 @@ public final class ProgramGenerator {
                 : planExpression(side, IntermediateDigits.of(side, List.of()), origin);
     }
 
-    /** 図形定数を広げる長さ。相手の項目の長さに合わせる。 */
+    /**
+     * 図形定数を広げる長さ。相手の項目の長さに合わせる。
+     *
+     * <p>どちらも図形定数なら合わせる相手がいない。<b>1 文字とする</b>。長さ 0 にすると
+     * 両辺が空のバイト列になり、{@code IF HIGH-VALUE = LOW-VALUE} が<b>常に真</b>に
+     * なってしまう。図形定数は 1 文字を並べたものなので、1 文字どうしで比べる。
+     */
     private static int comparisonLength(Condition.Relation relation) {
         int length = lengthOf(Condition.Relation.operandOf(relation.left()));
-        return length > 0 ? length : lengthOf(Condition.Relation.operandOf(relation.right()));
+        if (length > 0) {
+            return length;
+        }
+        length = lengthOf(Condition.Relation.operandOf(relation.right()));
+        return length > 0 ? length : 1;
     }
 
     private static int lengthOf(Operand operand) {
@@ -5353,12 +5364,20 @@ public final class ProgramGenerator {
         return out;
     }
 
+    /**
+     * 図形定数 1 個が表すバイト。
+     *
+     * <p>{@code HIGH-VALUE} と {@code LOW-VALUE} は<b>照合順序の端に来る文字</b>で
+     * ある。{@code PROGRAM COLLATING SEQUENCE} を書けば変わる (要件 FR-054)。
+     * {@code NULL} は「あて先を持たない」を表すものであり、照合順序とは関わらない。
+     */
     private byte figureByte(LiteralValue.FigurativeConstant constant) {
         return switch (constant) {
             case ZERO -> codePage.digit(0);
             case SPACE -> codePage.space();
-            case HIGH_VALUE -> (byte) 0xFF;
-            case LOW_VALUE, NULL -> (byte) 0x00;
+            case HIGH_VALUE -> specialNames.highValue();
+            case LOW_VALUE -> specialNames.lowValue();
+            case NULL -> (byte) 0x00;
             case QUOTE -> codePage.ch('"');
         };
     }

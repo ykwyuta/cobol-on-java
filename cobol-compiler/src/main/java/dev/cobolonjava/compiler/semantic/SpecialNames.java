@@ -72,6 +72,50 @@ public final class SpecialNames {
     }
 
     /**
+     * 図形定数 {@code HIGH-VALUE} が表すバイト (要件 FR-054)。
+     *
+     * <p>規格は「<b>照合順序でいちばん後ろに来る文字</b>」と決めている。並びを差し替えて
+     * いなければコードページのいちばん大きいバイト値、つまり {@code 0xFF} である。
+     * 差し替えていれば別の文字になる — {@code 0xFF} を {@code ALSO} で途中の位置へ
+     * 動かしたなら、いちばん後ろに来るのは<b>ほかの文字</b>である。
+     *
+     * <p>CCVS85 の NC219A がここを見ている。{@code "F" "U" "N" ALSO HIGH-VALUE ALSO
+     * LOW-VALUE "Y"} と書くと、{@code N} と {@code 0xFF} と {@code 0x00} が同じ位置に
+     * 並ぶ。このとき {@code N = HIGH-VALUE} は<b>偽</b>でなければならない。
+     */
+    public byte highValue() {
+        return collating == null ? (byte) 0xFF : extremeOf(collating, true);
+    }
+
+    /**
+     * 図形定数 {@code LOW-VALUE} が表すバイト (要件 FR-054)。
+     *
+     * <p>{@link #highValue()} の裏返しで、<b>照合順序でいちばん前に来る文字</b>である。
+     */
+    public byte lowValue() {
+        return collating == null ? (byte) 0x00 : extremeOf(collating, false);
+    }
+
+    /**
+     * 並びの端に来る文字を探す。
+     *
+     * <p>同じ位置に複数の文字が並んでいたら、<b>バイト値の小さいほう</b>を採る。
+     * {@code CollatingSequence} が位置から文字を引くときと同じ決め方である。
+     */
+    private static byte extremeOf(byte[] table, boolean highest) {
+        int found = 0;
+        int extreme = table[0] & 0xFF;
+        for (int value = 1; value < table.length; value++) {
+            int position = table[value] & 0xFF;
+            if (highest ? position > extreme : position < extreme) {
+                extreme = position;
+                found = value;
+            }
+        }
+        return (byte) found;
+    }
+
+    /**
      * 名前で書いた照合順序 (要件 FR-054)。{@code SORT ... SEQUENCE} が引く。
      *
      * @return 256 個の要素からなる「バイト値 → 位置」の表。知らない名前なら {@code null}
