@@ -366,6 +366,25 @@ public final class ProgramContext {
      */
     private java.util.Random random;
 
+    /**
+     * {@code CLOSE ... WITH LOCK} で閉じたファイル (要件 FR-102)。
+     *
+     * <p>閉じたあと、この実行単位では<b>二度と開けない</b>。実行の全体で 1 つ持つのは、
+     * 規格が「実行単位のあいだ」と決めているからである。副プログラムから開き直しても
+     * 同じく断る。
+     */
+    private final java.util.Set<String> lockedFiles = new java.util.HashSet<>();
+
+    /** 閉じたファイルに錠を掛ける。 */
+    public void lockFile(String name) {
+        lockedFiles.add(name);
+    }
+
+    /** 錠が掛かっているか。掛かっていれば {@code OPEN} は状態コード 38 になる。 */
+    public boolean isFileLocked(String name) {
+        return lockedFiles.contains(name);
+    }
+
     /** 種を決めて数列を作り直す。 */
     public void seedRandom(long seed) {
         random = new java.util.Random(seed);

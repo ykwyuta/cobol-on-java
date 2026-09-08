@@ -340,6 +340,9 @@ public final class Ops {
      */
     public static byte[] open(ProgramContext context, String name, String ddName, int mode,
                               int organization, int format, int recordLength, boolean optional) {
+        if (context.isFileLocked(name)) {
+            return status(context, FileStatus.CLOSED_WITH_LOCK);
+        }
         Organization kind = Organization.values()[organization];
         return status(context, context.file(name, ddName, kind,
                 RecordFormat.values()[format], recordLength)
@@ -518,6 +521,9 @@ public final class Ops {
      */
     public static byte[] openIndexed(ProgramContext context, String name, String ddName, int mode,
                                      int format, int recordLength, boolean optional, int[] keys) {
+        if (context.isFileLocked(name)) {
+            return status(context, FileStatus.CLOSED_WITH_LOCK);
+        }
         List<IndexedDataSet.Key> described = new java.util.ArrayList<>();
         for (int at = 0; at + 2 < keys.length; at += 3) {
             described.add(new IndexedDataSet.Key(keys[at], keys[at + 1], keys[at + 2] != 0));
@@ -671,7 +677,32 @@ public final class Ops {
 
     /** {@code CLOSE} (要件 FR-102)。 */
     public static byte[] close(ProgramContext context, String name, String ddName) {
-        return status(context, context.file(name, ddName).close());
+        return close(context, name, ddName, false);
+    }
+
+    /**
+     * 閉じる (要件 FR-102)。
+     *
+     * @param lock {@code WITH LOCK} と書かれたか。書かれていれば、この実行単位では
+     *             <b>二度と開けない</b>。次に開こうとすると状態コード 38 が立つ
+     */
+    public static byte[] close(ProgramContext context, String name, String ddName,
+                               boolean lock) {
+        String status = context.file(name, ddName).close();
+        if (lock) {
+            context.lockFile(name);
+        }
+        return status(context, status);
+    }
+
+    /**
+     * 行き先を書かない {@code GO TO} を通った (要件 FR-063)。
+     *
+     * <p>投げる例外を<b>返す</b>のは、呼ぶ側が {@code athrow} で投げるためである。
+     * こちらで投げると、生成した命令列のあとが到達不能だと検証器に伝わらない。
+     */
+    public static RuntimeException unalteredGoTo(String paragraph) {
+        return new UnalteredGoToException(paragraph);
     }
 
     /**

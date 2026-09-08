@@ -529,11 +529,25 @@ public sealed interface Statement {
         }
     }
 
-    /** {@code CLOSE} 文 (要件 FR-102)。 */
-    record Close(List<FileDescription> files, Origin origin) implements Statement {
+    /**
+     * {@code CLOSE} 文 (要件 FR-102)。
+     *
+     * <p>巻の扱い ({@code REEL} / {@code UNIT} / {@code NO REWIND}) は磁気テープの話で
+     * あり、ここには残さない。残すのは {@code WITH LOCK} だけである — 錠を掛けた
+     * ファイルは<b>この実行単位では二度と開けない</b>という、観測できる違いを持つ。
+     */
+    record Close(List<Closed> files, Origin origin) implements Statement {
 
         public Close {
             files = List.copyOf(files);
+        }
+
+        /**
+         * 閉じるファイル 1 個と、錠を掛けるかどうか。
+         *
+         * @param lock {@code WITH LOCK} と書かれたか
+         */
+        public record Closed(FileDescription file, boolean lock) {
         }
     }
 
@@ -701,6 +715,12 @@ public sealed interface Statement {
      *
      * <p>{@code PERFORM} と違い<b>戻ってこない</b>。段落の途中から別の段落へ移り、
      * そのまま流れ続ける。
+     */
+    /**
+     * {@code GO TO} 文 (要件 FR-063)。
+     *
+     * @param target 飛び先の段落。<b>{@code GO TO.} と書かれていれば {@code null}</b>
+     *               であり、{@code ALTER} が書き込むまで通ってはならない場所を表す
      */
     record GoTo(String target, Origin origin) implements Statement {
     }

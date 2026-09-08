@@ -2,11 +2,13 @@ package dev.cobolonjava.compiler.codegen;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.compiler.CobolCompiler;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.UnalteredGoToException;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -320,6 +322,46 @@ class GoToGenerationTest {
                 "    ADD 20 TO WS-N.",
                 "AFTER-P.",
                 "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("行き先を書かない GO TO は ALTER が入れた先へ飛ぶ (FR-063)")
+    void aGoToWithNoDestinationTakesTheOneAlterPutsIn() {
+        // 「GO TO.」とだけ書いた段落は、行き先が<b>まだ決まっていない</b>場所である。
+        // 規格の廃要素だが、古い資産には残っている
+        assertEquals("0020", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("行き先を書かない GO TO を ALTER の前に通ったら止める (FR-063)")
+    void anUnalteredGoToStopsTheProgram() {
+        // 規格はここを未定義としている。未定義のまま次の段落へ流すと、そのあとの
+        // 結果が何を意味するのか分からなくなる。黙って進めるより、そこで止める
+        UnalteredGoToException stopped = assertThrows(UnalteredGoToException.class, () -> run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO.",
+                "AFTER-P.",
+                "    EXIT."));
+
+        assertTrue(stopped.getMessage().contains("SWITCH-P"), stopped.getMessage());
     }
 
     @Test

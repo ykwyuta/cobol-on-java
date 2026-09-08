@@ -279,6 +279,10 @@ public final class ProcedureBuilder {
             nested.forEach(s -> checkProcedureTargets(s, names));
         }
         if (statement instanceof Statement.GoTo goTo) {
+            if (goTo.target() == null) {
+                // 行き先が無いのは書かれたとおりである。ALTER が入れる
+                return;
+            }
             if (!names.contains(goTo.target())) {
                 report(goTo.origin(), "undefined paragraph: " + goTo.target());
             }
@@ -1189,7 +1193,12 @@ public final class ProcedureBuilder {
                 report(origin, "GO TO takes one procedure name unless DEPENDING ON is written");
                 return null;
             }
-            return new Statement.GoTo(targets.get(0), origin);
+            // 行き先を書かない GO TO は、ALTER が書き込むまで通ってはならない場所である
+            return new Statement.GoTo(targets.isEmpty() ? null : targets.get(0), origin);
+        }
+        if (targets.isEmpty()) {
+            report(origin, "GO TO ... DEPENDING ON needs at least one procedure name");
+            return null;
         }
         DataReference selector = resolver.resolve(context.identifier());
         if (selector == null) {
@@ -2817,13 +2826,15 @@ public final class ProcedureBuilder {
 
     private Statement closeOf(CobolParser.CloseStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        List<FileDescription> closed = new ArrayList<>();
-        for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
-            FileDescription file = dataFileOf(name.getText(), "CLOSE", origin);
+        List<Statement.Close.Closed> closed = new ArrayList<>();
+        for (CobolParser.CloseFileContext one : context.closeFile()) {
+            FileDescription file = dataFileOf(one.IDENTIFIER().getText(), "CLOSE", origin);
             if (file == null) {
                 return null;
             }
-            closed.add(file);
+            CobolParser.CloseOptionContext option = one.closeOption();
+            closed.add(new Statement.Close.Closed(file,
+                    option != null && option.LOCK() != null));
         }
         return new Statement.Close(closed, origin);
     }
@@ -2944,6 +2955,12 @@ public final class ProcedureBuilder {
         }
         Statement.Advancing advancing = advancingOf(context.advancingPhrase(), origin);
         if (context.advancingPhrase() != null && advancing == null) {
+            return null;
+        }
+        if (context.atEndOfPagePhrase() != null || context.notAtEndOfPagePhrase() != null) {
+            // 頁の終わりは LINAGE が決める。まだ行数を数えていないので、
+            // 分岐を黙って通さないことにする (通さないと結果が変わる)
+            report(origin, "WRITE ... AT END-OF-PAGE needs LINAGE, which is not supported yet");
             return null;
         }
         return new Statement.Write(file, record, from, keyCheck, advancing, origin);

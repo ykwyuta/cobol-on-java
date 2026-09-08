@@ -31,6 +31,8 @@ public final class FileStatus {
     public static final String NOT_FOUND = "35";
     /** 開き方が編成に合わない。 */
     public static final String OPEN_CONFLICT = "37";
+    /** {@code CLOSE ... WITH LOCK} で閉じたファイルを、もう一度開こうとした。 */
+    public static final String CLOSED_WITH_LOCK = "38";
     /** すでに開いている。 */
     public static final String ALREADY_OPEN = "41";
     /** 開いていない。 */

@@ -161,6 +161,22 @@ public final class ProgramGenerator {
     /** 作業場所の割り付け。異常終了の覚え書きが項目名で書けるようにする (要件 FR-142)。 */
     private DataLayout layout;
     private List<String> paragraphNames = new ArrayList<>();
+
+    /** いま組み立てている段落の名前。行き先の無い {@code GO TO} の文面に使う。 */
+    private String currentParagraphName = "";
+
+    /**
+     * 行き先の無い {@code GO TO} を通ったときに止める命令を出す。
+     *
+     * <p>例外を<b>返して</b>もらってから投げるのは、投げたあとが到達不能だと
+     * 検証器に伝わるようにするためである。
+     */
+    private void emitUnalteredGoTo(String paragraph) {
+        run.visitLdcInsn(paragraph == null ? "" : paragraph);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "unalteredGoTo",
+                "(Ljava/lang/String;)Ljava/lang/RuntimeException;", false);
+        run.visitInsn(Opcodes.ATHROW);
+    }
     private List<ProcedureBuilder.Section> sections = List.of();
     private List<ProcedureBuilder.Declarative> declaratives = List.of();
     /** 通常の流れが始まる段落の番号。宣言部分はそれより前にある。 */
@@ -400,6 +416,7 @@ public final class ProgramGenerator {
         List<List<Runnable>> planned = new ArrayList<>();
         for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
             nextLocal = FIRST_FREE_LOCAL;
+            currentParagraphName = paragraph.name();
             planned.add(planStatements(paragraph.statements()));
         }
         return planned;
@@ -1264,7 +1281,8 @@ public final class ProgramGenerator {
 
     /** {@code CLOSE} を組み立てる (要件 FR-102)。 */
     private void planClose(Statement.Close statement, List<Runnable> body) {
-        for (FileDescription file : statement.files()) {
+        for (Statement.Close.Closed closed : statement.files()) {
+            FileDescription file = closed.file();
             int slot = nextLocal++;
             Runnable status = planFileStatus(file, statement.origin(), slot, false, false);
             if (status == null) {
@@ -1272,8 +1290,9 @@ public final class ProgramGenerator {
             }
             body.add(() -> {
                 emitFileName(file);
+                push(closed.lock() ? 1 : 0);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "close",
-                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;Z)[B", false);
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
             });
@@ -3460,13 +3479,22 @@ public final class ProgramGenerator {
         run = writer.visitMethod(Opcodes.ACC_PRIVATE, paragraphMethod(index),
                 PARAGRAPH_DESCRIPTOR, null, null);
         run.visitCode();
-        if (alterInitial[index] >= 0) {
+        if (alterInitial[index] != NOT_ALTERABLE) {
             // 書き換えられる段落は、飛び先を表から読んで返す。
             // 中身は GO TO 1 つだけなので、これで置き換えてしまってよい
             run.visitVarInsn(Opcodes.ALOAD, 0);
             run.visitFieldInsn(Opcodes.GETFIELD, internal, ALTERED, "[I");
             push(index);
             run.visitInsn(Opcodes.IALOAD);
+            if (alterInitial[index] == ALTER_UNSET) {
+                // 行き先を持たずに書かれた段落。ALTER される前に通ったら止める
+                Label decided = new Label();
+                run.visitInsn(Opcodes.DUP);
+                run.visitJumpInsn(Opcodes.IFGE, decided);
+                run.visitInsn(Opcodes.POP);
+                emitUnalteredGoTo(paragraphNames.get(index));
+                run.visitLabel(decided);
+            }
             run.visitInsn(Opcodes.IRETURN);
             run.visitMaxs(0, 0);
             run.visitEnd();
@@ -3507,10 +3535,30 @@ public final class ProgramGenerator {
             segments[i] = paragraph.segment();
             hasIndependentSegment |= paragraph.segment() >= INDEPENDENT_SEGMENT;
             Statement.GoTo goTo = paragraph.alterableGoTo();
-            alterInitial[i] = goTo == null ? -1 : paragraphNames.indexOf(goTo.target());
-            hasAlterable |= alterInitial[i] >= 0;
+            alterInitial[i] = alterInitialOf(goTo);
+            hasAlterable |= alterInitial[i] != NOT_ALTERABLE;
         }
     }
+
+    /**
+     * 書かれたままの飛び先。
+     *
+     * <p>3 通りある。<b>書き換えられない段落</b> ({@link #NOT_ALTERABLE})、
+     * 書き換えられて<b>初めの行き先を持つ</b>段落 (0 以上)、そして書き換えられるが
+     * <b>行き先をまだ持たない</b>段落 ({@link #ALTER_UNSET}) である。3 つ目は
+     * {@code GO TO.} とだけ書いた段落で、{@code ALTER} が書き込むまで通ってはならない。
+     */
+    private int alterInitialOf(Statement.GoTo goTo) {
+        if (goTo == null) {
+            return NOT_ALTERABLE;
+        }
+        return goTo.target() == null ? ALTER_UNSET : paragraphNames.indexOf(goTo.target());
+    }
+
+    /** 書き換えられない段落。 */
+    private static final int NOT_ALTERABLE = -1;
+    /** 書き換えられるが、行き先をまだ持たない段落。 */
+    private static final int ALTER_UNSET = -2;
 
     /** ここから上が独立段である ({@code Ops.enterParagraph} と対)。 */
     private static final int INDEPENDENT_SEGMENT = 50;
@@ -4743,6 +4791,12 @@ public final class ProgramGenerator {
      * これが段落を別々のメソッドにしている構えの効いているところである。
      */
     private void planGoTo(Statement.GoTo statement, List<Runnable> body) {
+        if (statement.target() == null) {
+            // 行き先の無い GO TO が、書き換えられる段落の外に書かれていた。
+            // 書き換えようが無いので、通ったらそこで止める
+            body.add(() -> emitUnalteredGoTo(currentParagraphName));
+            return;
+        }
         int target = paragraphNames.indexOf(statement.target());
         if (target < 0) {
             report(statement.origin(), "undefined paragraph: " + statement.target());

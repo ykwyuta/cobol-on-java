@@ -124,6 +124,60 @@ class FileIoGenerationTest {
             "    STOP RUN.");
 
     @Test
+    @DisplayName("CLOSE WITH LOCK で閉じたファイルは二度と開けない (FR-102)")
+    void aFileClosedWithLockCannotBeOpenedAgain(@TempDir Path directory) {
+        // 巻の扱い (REEL / NO REWIND) は装置の話であり、翻訳の結果には効かない。
+        // LOCK だけは効く。開き直そうとすると状態コード 38 が立つ
+        assertEquals("00|38|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. LOCKER.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO OUTDD",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE.",
+                "01  OUT-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    CLOSE OUT-FILE WITH LOCK.",
+                "    OPEN INPUT OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("巻の扱いを書いた CLOSE は、錠を掛けずに閉じる (FR-102)")
+    void theReelPhrasesOfCloseDoNotLockTheFile(@TempDir Path directory) {
+        assertEquals("00|00|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. NOREWIND.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO OUTDD",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE.",
+                "01  OUT-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE.",
+                "    CLOSE OUT-FILE WITH NO REWIND.",
+                "    DISPLAY WS-STATUS.",
+                "    OPEN INPUT OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+    }
+
+    @Test
     @DisplayName("WRITE したレコードは固定長で並ぶ (FR-102, FR-110)")
     void writtenRecordsAreFixedLength(@TempDir Path directory) {
         assertEquals("00|00|", run(directory, WRITER));

@@ -38,6 +38,7 @@ tokens {
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
     RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
     RESERVE, AREA, AREAS, PASSWORD, PADDING,
+    REEL, UNIT, REMOVAL, REWIND, LOCK, END_OF_PAGE, EOP,
     I_O_CONTROL, SAME, SORT_MERGE, MULTIPLE, TAPE, POSITION, RERUN, APPLY, EVERY,
     LINAGE, FOOTING, TOP, BOTTOM,
 
@@ -100,7 +101,7 @@ programUnit
       environmentDivision?
       dataDivision?
       procedureDivision?
-      endProgramStatement?
+      endProgramStatement*
     ;
 
 // ---- 見出し部 ----
@@ -837,7 +838,19 @@ openPhrase
     ;
 
 closeStatement
-    : CLOSE IDENTIFIER+
+    : CLOSE closeFile+
+    ;
+
+closeFile
+    : IDENTIFIER closeOption?
+    ;
+
+// 巻の扱い (REEL / UNIT / NO REWIND) は磁気テープの話であり、翻訳の結果には効かない。
+// LOCK だけは効く — 閉じたあと<b>この実行単位では二度と開けない</b>
+closeOption
+    : (REEL | UNIT) (FOR? REMOVAL)?
+    | WITH? NO REWIND
+    | WITH? LOCK
     ;
 
 // AT END はファイルの終わりに来たときだけ通る
@@ -862,7 +875,17 @@ notInvalidKeyPhrase
 writeStatement
     : WRITE IDENTIFIER (FROM identifier)?
       advancingPhrase?
+      atEndOfPagePhrase? notAtEndOfPagePhrase?
       invalidKeyPhrase? notInvalidKeyPhrase? END_WRITE?
+    ;
+
+// 用紙の終わりに来たときだけ通る (要件 FR-113)。LINAGE を書いたファイルだけが使える
+atEndOfPagePhrase
+    : AT? (END_OF_PAGE | EOP) branchBody
+    ;
+
+notAtEndOfPagePhrase
+    : NOT AT? (END_OF_PAGE | EOP) branchBody
     ;
 
 // 印字するファイルへの行送り。AFTER は送ってから書き、BEFORE は書いてから送る
@@ -1029,8 +1052,10 @@ alterChange
     ;
 
 // DEPENDING ON があれば、値が何番目かで飛び先が決まる。無ければ 1 つだけ書ける
+// 行き先を書かない GO TO は、<b>ALTER で書き換えられるまで実行してはならない</b>
+// 場所である。規格の廃要素だが、古い資産には残っている
 goToStatement
-    : GO TO? paragraphName+ (DEPENDING ON? identifier)?
+    : GO TO? paragraphName* (DEPENDING ON? identifier)?
     ;
 
 // EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある。
