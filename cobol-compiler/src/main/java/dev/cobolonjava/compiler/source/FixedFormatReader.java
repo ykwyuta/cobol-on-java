@@ -57,6 +57,11 @@ public final class FixedFormatReader implements SourceReader {
         return new FixedFormatReader(false);
     }
 
+    @Override
+    public SourceReader withDebuggingMode() {
+        return debuggingMode ? this : new FixedFormatReader(true);
+    }
+
     /** 物理行の並びをカラムで分解する。 */
     public List<SourceLine> split(String fileName, String source) {
         List<SourceLine> lines = new ArrayList<>();

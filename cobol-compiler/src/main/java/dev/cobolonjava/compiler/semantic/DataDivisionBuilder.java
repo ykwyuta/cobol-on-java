@@ -119,6 +119,7 @@ public final class DataDivisionBuilder {
         builder.addIndexItems();
         builder.addLinageCounters(program);
         builder.addReports(program);
+        builder.addDebugItem(program);
         builder.layoutRecords();
         builder.applyRenames();
         return new Result(new DataLayout(builder.records, builder.indexes,
@@ -1098,6 +1099,85 @@ public final class DataDivisionBuilder {
         slot.setUsage(Usage.COMP);
         records.add(slot);
         return slot;
+    }
+
+    /**
+     * {@code DEBUG-ITEM} の実体を作る (要件 FR-193)。
+     *
+     * <p>データ部のどこにも書かれないが、{@code WITH DEBUGGING MODE} を書いて
+     * デバッグの節を置けば存在する。桁割りは規格が決めている。
+     *
+     * <pre>
+     * 01 DEBUG-ITEM.
+     *    02 DEBUG-LINE     PIC X(6).
+     *    02 FILLER         PIC X.
+     *    02 DEBUG-NAME     PIC X(30).
+     *    02 FILLER         PIC X.
+     *    02 DEBUG-SUB-1    PIC S9(4) SIGN LEADING SEPARATE.
+     *    02 FILLER         PIC X.
+     *    02 DEBUG-SUB-2    PIC S9(4) SIGN LEADING SEPARATE.
+     *    02 FILLER         PIC X.
+     *    02 DEBUG-SUB-3    PIC S9(4) SIGN LEADING SEPARATE.
+     *    02 FILLER         PIC X.
+     *    02 DEBUG-CONTENTS PIC X(n).
+     * </pre>
+     *
+     * <p>{@code DEBUG-CONTENTS} の長さは規格が決めていない。参照実装に合わせて
+     * 見ていないので、印字して読めるだけの幅として 30 桁を採った (暫定判断 P-079)。
+     */
+    private void addDebugItem(CobolParser.ProgramUnitContext program) {
+        if (!specialNames.debuggingMode() || !hasDebuggingDeclarative(program)) {
+            return;
+        }
+        Origin origin = originOf(program);
+        DataItem item = new DataItem(1, "DEBUG-ITEM", origin);
+        addDebugField(item, "DEBUG-LINE", "X(6)", origin);
+        addDebugField(item, null, "X", origin);
+        addDebugField(item, "DEBUG-NAME", "X(30)", origin);
+        addDebugField(item, null, "X", origin);
+        for (int i = 1; i <= 3; i++) {
+            DataItem sub = addDebugField(item, "DEBUG-SUB-" + i, "S9(4)", origin);
+            sub.setSignPosition(SignPosition.LEADING_SEPARATE);
+            addDebugField(item, null, "X", origin);
+        }
+        addDebugField(item, "DEBUG-CONTENTS", "X(" + DEBUG_CONTENTS_SIZE + ")", origin);
+        records.add(item);
+
+        // 制御を移した文の行番号の置き場。DEBUG-LINE はここから写す。
+        // 名前に $ を含むので、書かれた名前とはぶつからない
+        DataItem line = new DataItem(INDEPENDENT_LEVEL, DEBUG_LINE_SLOT, origin);
+        line.setPicture(PictureParser.parse("X(6)"));
+        records.add(line);
+    }
+
+    /** 制御を移した文の行番号を置く項目の名前 (要件 FR-193)。 */
+    public static final String DEBUG_LINE_SLOT = "DBG-LINE$";
+
+    /** {@code DEBUG-CONTENTS} の桁数 (暫定判断 P-079)。 */
+    private static final int DEBUG_CONTENTS_SIZE = 30;
+
+    private DataItem addDebugField(DataItem parent, String name, String picture, Origin origin) {
+        DataItem field = new DataItem(2, name, origin);
+        field.setPicture(PictureParser.parse(picture));
+        parent.addChild(field);
+        return field;
+    }
+
+    /** デバッグの節が書かれているか。 */
+    private static boolean hasDebuggingDeclarative(CobolParser.ProgramUnitContext program) {
+        if (program.procedureDivision() == null
+                || program.procedureDivision().procedureBody() == null
+                || program.procedureDivision().procedureBody().declarativesPart() == null) {
+            return false;
+        }
+        for (CobolParser.DeclarativeSectionContext section
+                : program.procedureDivision().procedureBody().declarativesPart()
+                        .declarativeSection()) {
+            if (section.useStatement().debugTarget() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean hasLinageClause(CobolParser.FileDescriptionEntryContext fd) {

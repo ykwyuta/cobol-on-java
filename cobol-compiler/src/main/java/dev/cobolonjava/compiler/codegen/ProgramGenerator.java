@@ -3,6 +3,7 @@ package dev.cobolonjava.compiler.codegen;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.semantic.Condition;
 import dev.cobolonjava.compiler.semantic.DataCategory;
+import dev.cobolonjava.compiler.semantic.DataDivisionBuilder;
 import dev.cobolonjava.compiler.semantic.Intrinsic;
 import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
@@ -415,13 +416,21 @@ public final class ProgramGenerator {
             paragraphNames.add(paragraph.name());
         }
         planAlterable(procedure.paragraphs());
+        debugLineSlot = debugLineSlotOf();
         sections = procedure.sections();
         declaratives = procedure.declaratives();
         firstNormal = procedure.firstNormalParagraph();
         List<List<Runnable>> planned = new ArrayList<>();
+        debugEntries = new ArrayList<>();
         for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
             nextLocal = FIRST_FREE_LOCAL;
             currentParagraphName = paragraph.name();
+            // デバッグの節を動かす文は、書かれた文と<b>別に持つ</b> (要件 FR-193)。
+            // 一緒にすると ALTER で書き換えられる段落かどうかの判定が狂うし、
+            // 書き換えられる段落は本体を出さずに飛び先を返すので、そこでも落ちてしまう
+            planningDebugEntry = true;
+            debugEntries.add(planStatements(paragraph.debugEntry()));
+            planningDebugEntry = false;
             planned.add(planStatements(paragraph.statements()));
         }
         return planned;
@@ -2711,6 +2720,7 @@ public final class ProgramGenerator {
      * その場に書いた文か、指定は 1 回・回数・条件のいずれか。組み合わせて出す。
      */
     private void planPerform(Statement.Perform statement, List<Runnable> body) {
+        planDebugLine(statement.origin(), body);
         Runnable once = planPerformBody(statement);
         if (once == null) {
             return;
@@ -3721,6 +3731,8 @@ public final class ProgramGenerator {
         run = writer.visitMethod(Opcodes.ACC_PRIVATE, paragraphMethod(index),
                 PARAGRAPH_DESCRIPTOR, null, null);
         run.visitCode();
+        // 書き換えられる段落でもデバッグの節は動く。飛び先を返す前に出す (要件 FR-193)
+        debugEntries.get(index).forEach(Runnable::run);
         if (alterInitial[index] != NOT_ALTERABLE) {
             // 書き換えられる段落は、飛び先を表から読んで返す。
             // 中身は GO TO 1 つだけなので、これで置き換えてしまってよい
@@ -3807,6 +3819,9 @@ public final class ProgramGenerator {
 
     /** 段落ごとの、書かれたままの飛び先。書き換えられない段落は {@code -1}。 */
     private int[] alterInitial = new int[0];
+
+    /** 段落ごとの、デバッグの節を動かす命令の並び (要件 FR-193)。 */
+    private List<List<Runnable>> debugEntries = new ArrayList<>();
     /** 段落ごとの段番号。 */
     private int[] segments = new int[0];
     /** 書き換えられる段落があるか。無ければ表そのものを出さない。 */
@@ -5245,7 +5260,56 @@ public final class ProgramGenerator {
      * 入れ子の {@code IF} や {@code PERFORM} の中でも、その場で {@code return} できる。
      * これが段落を別々のメソッドにしている構えの効いているところである。
      */
+    /** デバッグの節を動かす文を組み立てている間は、行番号を控えない。 */
+    private boolean planningDebugEntry;
+
+    /**
+     * 制御を移す文の行番号を控える (要件 FR-193)。
+     *
+     * <p>{@code DEBUG-LINE} は<b>制御を移した文</b>の行番号である。入られた手続きの
+     * ほうからは分からないので、移す側に控えさせる。控え先は意味解析が置いた
+     * {@code DBG-LINE$} である。デバッグを書いていないプログラムには置き場が無いので、
+     * <b>命令はまったく出ない</b>。
+     */
+    private void planDebugLine(Origin origin, List<Runnable> body) {
+        if (planningDebugEntry || origin == null || debugLineSlot == null) {
+            return;
+        }
+        Runnable offset = planAddress(debugLineSlot, origin);
+        if (offset == null) {
+            return;
+        }
+        String field = bytesConstant(codePage.encode(lineText(origin)));
+        int length = debugLineSlot.item().length();
+        body.add(() -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+            offset.run();
+            push(length);
+            run.visitInsn(Opcodes.ICONST_0);
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
+                    "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+        });
+    }
+
+    /** 行番号を 6 桁の文字にする。{@code DEBUG-LINE} の桁割りである。 */
+    private static String lineText(Origin origin) {
+        String text = Integer.toString(origin.line());
+        return text.length() >= 6
+                ? text.substring(text.length() - 6)
+                : " ".repeat(6 - text.length()) + text;
+    }
+
+    /** {@code DBG-LINE$} への参照。デバッグを書いていなければ {@code null}。 */
+    private DataReference debugLineSlot;
+
+    private DataReference debugLineSlotOf() {
+        List<DataItem> found = layout.findAll(DataDivisionBuilder.DEBUG_LINE_SLOT);
+        return found.isEmpty() ? null : new DataReference(found.get(0), List.of(), null, null);
+    }
+
     private void planGoTo(Statement.GoTo statement, List<Runnable> body) {
+        planDebugLine(statement.origin(), body);
         if (statement.target() == null) {
             // 行き先の無い GO TO が、書き換えられる段落の外に書かれていた。
             // 書き換えようが無いので、通ったらそこで止める
@@ -5270,6 +5334,7 @@ public final class ProgramGenerator {
      * 飛び先表の外れ道は「何もせず下へ抜ける」になる。誤りにはならない。
      */
     private void planGoToDepending(Statement.GoToDepending statement, List<Runnable> body) {
+        planDebugLine(statement.origin(), body);
         List<Integer> targets = new ArrayList<>();
         for (String name : statement.targets()) {
             int target = paragraphNames.indexOf(name);
@@ -5347,6 +5412,8 @@ public final class ProgramGenerator {
      * <b>表を書き換えること</b>だけである。
      */
     private void planAlter(Statement.Alter statement, List<Runnable> body) {
+        // ALTER も見張られる文である。DEBUG-LINE はこの文の行番号になる (要件 FR-193)
+        planDebugLine(statement.origin(), body);
         List<int[]> changes = new ArrayList<>();
         for (Statement.Alter.Change change : statement.changes()) {
             int from = paragraphNames.indexOf(change.from());

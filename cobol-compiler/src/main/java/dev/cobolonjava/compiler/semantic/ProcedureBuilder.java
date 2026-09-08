@@ -10,7 +10,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
 
 /**
@@ -34,6 +36,21 @@ public final class ProcedureBuilder {
 
     /** 報告書の記述。{@code INITIATE} / {@code GENERATE} / {@code TERMINATE} が引く。 */
     private final List<ReportDescription> reports;
+
+    /**
+     * デバッグの節 (要件 FR-193)。手続きへ制御が移るたびに、この節が先に動く。
+     *
+     * @param first     節の最初の段落の呼び名
+     * @param last      節の最後の段落の呼び名
+     * @param all       {@code ALL PROCEDURES} が書かれていたか
+     * @param names     見張る手続きの名前 (書かれたとおり)
+     */
+    private record DebugSection(String first, String last, boolean all, Set<String> names) {
+    }
+
+    private final List<DebugSection> debugSections = new ArrayList<>();
+    /** 宣言部分を読んでいる間は行番号を記録しない。デバッグの節が自分で上書きしてしまう。 */
+    private boolean inDeclarative;
     private final ReportLowering reportLowering;
 
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
@@ -61,14 +78,29 @@ public final class ProcedureBuilder {
      *                別の段から制御が移るたびに {@code ALTER} の書き換えが元へ戻る
      */
     public record Paragraph(String name, List<Statement> statements, int segment,
-                            Origin origin) {
+                            List<Statement> debugEntry, Origin origin) {
 
         public Paragraph {
             statements = List.copyOf(statements);
+            debugEntry = List.copyOf(debugEntry);
+        }
+
+        public Paragraph(String name, List<Statement> statements, int segment, Origin origin) {
+            this(name, statements, segment, List.of(), origin);
         }
 
         public Paragraph(String name, List<Statement> statements, Origin origin) {
-            this(name, statements, 0, origin);
+            this(name, statements, 0, List.of(), origin);
+        }
+
+        /**
+         * この段落へ入るときに先に動く文 (要件 FR-193)。
+         *
+         * <p>書かれた文とは<b>別に持つ</b>。混ぜると、{@code ALTER} が書き換えられる
+         * 段落かどうかの判定 (「{@code GO TO} だけを書いた段落」) が狂う。
+         */
+        public boolean hasDebugEntry() {
+            return !debugEntry.isEmpty();
         }
 
         /**
@@ -581,10 +613,11 @@ public final class ProcedureBuilder {
     private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs,
                               int segment, String section) {
         currentSectionName = section;
-        paragraphs.add(new Paragraph(
-                keyOf(wordOf(paragraph.paragraphName()), section),
-                statementsOf(paragraph.sentence()), segment,
-                ReferenceResolver.originOf(paragraph)));
+        String simple = wordOf(paragraph.paragraphName());
+        Origin origin = ReferenceResolver.originOf(paragraph);
+        List<Statement> entry = inDeclarative ? List.of() : debugEntry(simple, origin);
+        paragraphs.add(new Paragraph(keyOf(simple, section), statementsOf(paragraph.sentence()),
+                segment, entry, origin));
     }
 
     private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
@@ -596,8 +629,11 @@ public final class ProcedureBuilder {
         String name = wordOf(unit.sectionHeader().paragraphName());
         int segment = segmentOf(unit.sectionHeader());
         currentSectionName = name;
+        Origin at = ReferenceResolver.originOf(unit.sectionHeader());
+        // 章へ入ると、章の名前と最初の段落の名前で<b>2 度</b>デバッグの節が動く。
+        // 章の見出しそのものが 1 つの段落になっているので、そのまま 2 度になる
         paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(unit.sentence()), segment,
-                ReferenceResolver.originOf(unit.sectionHeader())));
+                debugEntry(name, at), at));
         for (CobolParser.ParagraphContext paragraph : unit.paragraph()) {
             addParagraph(paragraph, paragraphs, segment, name);
         }
@@ -644,18 +680,33 @@ public final class ProcedureBuilder {
     private void addDeclarative(CobolParser.DeclarativeSectionContext context,
                                 List<Paragraph> paragraphs, List<Section> sections,
                                 List<Declarative> declaratives) {
-        if (context.useStatement().debugTarget() != null) {
+        boolean debugging = context.useStatement().debugTarget() != null;
+        if (debugging && !specialNames.debuggingMode()) {
+            // WITH DEBUGGING MODE を書かなければ、この節は注釈と同じである。
+            // 本体を組み立てないのが肝である。組み立てると、その中の DEBUG-ITEM を
+            // 「宣言されていない」と言うことになる
             return;
         }
         String name = wordOf(context.sectionHeader().paragraphName());
         Origin origin = ReferenceResolver.originOf(context.sectionHeader());
         currentSectionName = name;
-        paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(context.sentence()), origin));
-        for (CobolParser.ParagraphContext paragraph : context.paragraph()) {
-            addParagraph(paragraph, paragraphs, 0, name);
+        boolean outer = inDeclarative;
+        inDeclarative = true;
+        try {
+            paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(context.sentence()),
+                    origin));
+            for (CobolParser.ParagraphContext paragraph : context.paragraph()) {
+                addParagraph(paragraph, paragraphs, 0, name);
+            }
+        } finally {
+            inDeclarative = outer;
         }
         String last = paragraphs.get(paragraphs.size() - 1).name();
         sections.add(new Section(name, keyOf(name, name), last, true));
+        if (debugging) {
+            addDebugSection(context, keyOf(name, name), last, origin);
+            return;
+        }
 
         CobolParser.UseTargetContext target = context.useStatement().useTarget();
         OpenMode mode = modeOf(target);
@@ -668,6 +719,106 @@ public final class ProcedureBuilder {
             named.add(file);
         }
         declaratives.add(new Declarative(name, name, last, named, mode, origin));
+    }
+
+    /**
+     * デバッグの節が何を見張るかを控える (要件 FR-193)。
+     *
+     * <p>いま支えているのは<b>手続き名</b>と {@code ALL PROCEDURES} だけである。
+     * {@code ALL REFERENCES OF 項目} とファイル名は、まだ動かせない。
+     * 断らずに<b>告げて通す</b> — 節が動かないだけで、残りの翻訳は正しいからである
+     * (暫定判断 P-079)。
+     */
+    private void addDebugSection(CobolParser.DeclarativeSectionContext context,
+                                 String first, String last, Origin origin) {
+        boolean all = false;
+        Set<String> names = new LinkedHashSet<>();
+        for (CobolParser.DebugItemContext item
+                : context.useStatement().debugTarget().debugItem()) {
+            if (item.PROCEDURES() != null) {
+                all = true;
+                continue;
+            }
+            if (item.identifier() != null) {
+                diagnostics.add(Diagnostic.warning(origin,
+                        "USE FOR DEBUGGING ON ALL REFERENCES OF is not supported yet;"
+                                + " the debugging section will not run for "
+                                + item.identifier().getText()));
+                continue;
+            }
+            String written = item.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+            if (files.containsKey(written)) {
+                diagnostics.add(Diagnostic.warning(origin,
+                        "USE FOR DEBUGGING on a file name is not supported yet;"
+                                + " the debugging section will not run for " + written));
+                continue;
+            }
+            names.add(written);
+        }
+        if (all || !names.isEmpty()) {
+            debugSections.add(new DebugSection(first, last, all, names));
+        }
+    }
+
+    /**
+     * 手続きへ入るときに、デバッグの節を動かす文の並び (要件 FR-193)。
+     *
+     * <p>まず {@code DEBUG-ITEM} を空白で埋め、名前と行番号を入れてから節を実行する。
+     * 全体を空白にするので、{@code DEBUG-SUB-1} から {@code -3} と
+     * {@code DEBUG-CONTENTS} は空白になる。手続き名の参照では規格もそう決めている。
+     *
+     * @param simple 書かれたとおりの手続き名
+     * @return 見張られていなければ空
+     */
+    private List<Statement> debugEntry(String simple, Origin origin) {
+        return debugEntry(simple, null, origin);
+    }
+
+    /**
+     * デバッグの節を動かす文を組み立てる。
+     *
+     * @param contents {@code DEBUG-CONTENTS} に入れる文字列。無ければ空白のまま
+     */
+    private List<Statement> debugEntry(String simple, String contents, Origin origin) {
+        if (debugSections.isEmpty() || simple == null) {
+            return List.of();
+        }
+        String upper = simple.toUpperCase(Locale.ROOT);
+        List<Statement> body = new ArrayList<>();
+        for (DebugSection section : debugSections) {
+            if (!section.all() && !section.names().contains(upper)) {
+                continue;
+            }
+            DataReference item = resolver.resolveName("DEBUG-ITEM", origin);
+            DataReference name = resolver.resolveName("DEBUG-NAME", origin);
+            DataReference line = resolver.resolveName("DEBUG-LINE", origin);
+            DataReference slot = resolver.resolveName(
+                    DataDivisionBuilder.DEBUG_LINE_SLOT, origin);
+            if (item == null || name == null || line == null || slot == null) {
+                return List.of();
+            }
+            body.add(textMove(new Operand.Literal(
+                    new LiteralValue.Figure(LiteralValue.FigurativeConstant.SPACE)), item, origin));
+            body.add(textMove(new Operand.Literal(new LiteralValue.Text(simple)), name, origin));
+            body.add(textMove(new Operand.Reference(slot), line, origin));
+            if (contents != null) {
+                DataReference held = resolver.resolveName("DEBUG-CONTENTS", origin);
+                if (held == null) {
+                    return List.of();
+                }
+                body.add(textMove(new Operand.Literal(new LiteralValue.Text(contents)),
+                        held, origin));
+            }
+            body.add(new Statement.Perform(section.first(), section.last(), null, null,
+                    false, List.of(), List.of(), origin));
+        }
+        return body;
+    }
+
+    private static Statement textMove(Operand source, DataReference target, Origin origin) {
+        return new Statement.Move(source,
+                List.of(new Statement.Move.Target(target, MoveRules.Kind.ALPHANUMERIC)),
+                false, origin);
     }
 
     private static OpenMode modeOf(CobolParser.UseTargetContext target) {
@@ -1447,7 +1598,19 @@ public final class ProcedureBuilder {
                     procedureNameOf(change.paragraphName(0)),
                     procedureNameOf(change.paragraphName(1))));
         }
-        return new Statement.Alter(List.copyOf(changes), origin);
+        Statement.Alter alter = new Statement.Alter(List.copyOf(changes), origin);
+        if (inDeclarative) {
+            return alter;
+        }
+        // ALTER に書かれた手続き名も<b>見張られている</b>。規格は「ALTER を実行した
+        // 直後」と決めており、DEBUG-CONTENTS には書き換え先の手続き名が入る
+        List<Statement> body = new ArrayList<>();
+        body.add(alter);
+        for (int i = 0; i < changes.size(); i++) {
+            body.addAll(debugEntry(wordOf(context.alterChange(i).paragraphName(0)),
+                    wordOf(context.alterChange(i).paragraphName(1)), origin));
+        }
+        return body.size() == 1 ? alter : new Statement.Sequence(List.copyOf(body), origin);
     }
 
     private static boolean namesItem(Expression side, String name) {

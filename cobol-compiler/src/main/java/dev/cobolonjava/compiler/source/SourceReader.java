@@ -18,4 +18,15 @@ public interface SourceReader {
 
     /** この読み取り器が読む参照形式。 */
     SourceFormat format();
+
+    /**
+     * デバッグ行を生かす同じ読み取り器 (要件 FR-193)。
+     *
+     * <p>7 桁目の {@code D} は {@code WITH DEBUGGING MODE} が書かれているときだけ
+     * 行として読まれる。書かれていなければ注釈と同じである。自由形式には
+     * デバッグ行という概念がないので、既定は<b>そのまま自分を返す</b>。
+     */
+    default SourceReader withDebuggingMode() {
+        return this;
+    }
 }

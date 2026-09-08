@@ -30,15 +30,19 @@ public final class SpecialNames {
     private final Map<String, byte[]> classes;
     private final Map<String, SwitchStatus> switches;
     private final Map<String, Integer> switchNames;
+    /** {@code WITH DEBUGGING MODE} が書かれていたか (要件 FR-193)。 */
+    private final boolean debuggingMode;
 
     private SpecialNames(char currency, Map<String, FunctionName> mnemonics, byte[] collating) {
-        this(currency, false, mnemonics, collating, Map.of(), Map.of(), Map.of(), Map.of());
+        this(currency, false, mnemonics, collating, Map.of(), Map.of(), Map.of(), Map.of(), false);
     }
 
     private SpecialNames(char currency, boolean commaDecimalPoint,
                          Map<String, FunctionName> mnemonics, byte[] collating,
                          Map<String, byte[]> alphabets, Map<String, byte[]> classes,
-                         Map<String, SwitchStatus> switches, Map<String, Integer> switchNames) {
+                         Map<String, SwitchStatus> switches, Map<String, Integer> switchNames,
+                         boolean debuggingMode) {
+        this.debuggingMode = debuggingMode;
         this.commaDecimalPoint = commaDecimalPoint;
         this.alphabets = Map.copyOf(alphabets);
         this.classes = Map.copyOf(classes);
@@ -157,6 +161,15 @@ public final class SpecialNames {
         }
     }
 
+    /**
+     * {@code WITH DEBUGGING MODE} が書かれていたか (要件 FR-193)。
+     *
+     * <p>書かれていなければ、デバッグの節も 7 桁目の {@code D} の行も注釈と同じである。
+     */
+    public boolean debuggingMode() {
+        return debuggingMode;
+    }
+
     /** PICTURE の通貨記号。指定がなければ {@code $}。 */
     public char currency() {
         return currency;
@@ -235,7 +248,7 @@ public final class SpecialNames {
         byte[] collating = collatingOf(program, alphabets, diagnostics);
         return new Result(
                 new SpecialNames(currency, commaDecimalPoint, mnemonics, collating, alphabets,
-                        classes, switches, switchNames),
+                        classes, switches, switchNames, debuggingModeOf(program)),
                 List.copyOf(diagnostics));
     }
 
@@ -323,6 +336,34 @@ public final class SpecialNames {
         if (alphabets.putIfAbsent(name, table) != null) {
             diagnostics.add(new Diagnostic(origin, "duplicate alphabet-name: " + name));
         }
+    }
+
+    /**
+     * {@code WITH DEBUGGING MODE} が書かれているか (要件 FR-193)。
+     *
+     * <p>これが書かれていなければ、{@code USE FOR DEBUGGING} の節も 7 桁目の {@code D} の
+     * 行も<b>注釈と同じ</b>である。手加減ではなく規格の決まりである。
+     *
+     * <p>{@code SOURCE-COMPUTER} 段落は翻訳の結果に効かないので文法では読み飛ばして
+     * いる。ここだけは効くので、読み飛ばした語を見る。
+     */
+    private static boolean debuggingModeOf(CobolParser.ProgramUnitContext unit) {
+        if (unit.environmentDivision() == null
+                || unit.environmentDivision().configurationSection() == null) {
+            return false;
+        }
+        for (CobolParser.ConfigurationParagraphContext paragraph
+                : unit.environmentDivision().configurationSection().configurationParagraph()) {
+            if (paragraph.sourceComputerParagraph() == null) {
+                continue;
+            }
+            String written = paragraph.sourceComputerParagraph().getText()
+                    .toUpperCase(Locale.ROOT);
+            if (written.contains("WITHDEBUGGINGMODE")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static CobolParser.SpecialNamesParagraphContext paragraphOf(
