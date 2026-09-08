@@ -476,8 +476,11 @@ paragraph
     : paragraphName PERIOD sentence*
     ;
 
+// 手続き名は<b>数字だけでもよい</b>。データ名と違うところである。
+// 段分けの章は「00 SECTION 00.」のように名前も番号も数字で書かれる
 paragraphName
     : IDENTIFIER
+    | NUMBER
     ;
 
 sentence

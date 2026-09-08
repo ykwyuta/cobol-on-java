@@ -150,7 +150,7 @@ PROGRAM-ID. SUB.
 データ部の割り付けは[設計 50](50-data-layout.md)、手続き部は[設計 60](60-procedure.md) へ続く。
 
 1. `USE ... FOR DEBUGGING` (5 本)。デバッグ節である。
-2. 段分け (セグメンテーション、6 本、暫定判断 P-066)。`章名 SECTION n.` の段番号である。
+2. `ALTER`。飛び先を実行時に書き換える文である。
 3. 66 レベルの `RENAMES`。
 4. 入れ子プログラム (3 本)。並べて書く形は読めるようになった。
 5. `I-O-CONTROL` 段落と `DECLARATIVES`。

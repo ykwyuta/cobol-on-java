@@ -39,22 +39,8 @@ class SearchGenerationTest {
     }
 
     private static CobolCompiler.Result compile(List<String> storage, String... procedure) {
-        StringBuilder sb = new StringBuilder();
-        for (String line : List.of(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. HELLO.",
-                "DATA DIVISION.",
-                "WORKING-STORAGE SECTION.")) {
-            sb.append("       ").append(line).append('\n');
-        }
-        for (String line : storage) {
-            sb.append("       ").append(line).append('\n');
-        }
-        sb.append("       PROCEDURE DIVISION.\n");
-        for (String line : procedure) {
-            sb.append("       ").append(line).append('\n');
-        }
-        return CobolCompiler.standard().compile(FILE, sb.toString());
+        return CobolCompiler.standard().compile(FILE,
+                FixedFormatSource.program(storage, procedure));
     }
 
     /** 翻訳して実行し、DISPLAY の出力を返す。 */
@@ -255,6 +241,49 @@ class SearchGenerationTest {
                         "    END-SEARCH",
                         "    MOVE 'X' TO WS-R.",
                         "    DISPLAY '[' WS-R ']'.")));
+    }
+
+    @Test
+    @DisplayName("表の中の表も SEARCH できる (FR-066)")
+    void anInnerTableCanBeSearched() {
+        // 外側の何番目を見るかは、外側の指標のいまの値が決める。
+        // SEARCH 自身が動かすのは内側の指標だけである
+        assertEquals("[bbb]|", run(
+                List.of("01 WS-T.",
+                        "   05 WS-ROW OCCURS 2 TIMES INDEXED BY WS-R.",
+                        "      10 WS-E OCCURS 3 TIMES INDEXED BY WS-I.",
+                        "         15 WS-KEY PIC X(3).",
+                        "01 WS-OUT PIC X(3)."),
+                "    MOVE 'zzz' TO WS-KEY (1, 1)",
+                "    MOVE 'aaa' TO WS-KEY (2, 1)",
+                "    MOVE 'bbb' TO WS-KEY (2, 2)",
+                "    MOVE 'ccc' TO WS-KEY (2, 3)",
+                "    SET WS-R TO 2",
+                "    SET WS-I TO 1",
+                "    SEARCH WS-E",
+                "        WHEN WS-KEY (WS-R, WS-I) = 'bbb'",
+                "            MOVE WS-KEY (WS-R, WS-I) TO WS-OUT",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-OUT ']'."));
+    }
+
+    @Test
+    @DisplayName("表の中の表は SEARCH ALL できない (FR-066)")
+    void anInnerTableCannotBeBinarySearchedYet() {
+        // 2 分探索は鍵の位置を自分で計算するので、外側の添字を受け取る道が要る
+        CobolCompiler.Result result = compile(
+                List.of("01 WS-T.",
+                        "   05 WS-ROW OCCURS 2 TIMES INDEXED BY WS-R.",
+                        "      10 WS-E OCCURS 3 TIMES",
+                        "         ASCENDING KEY IS WS-KEY INDEXED BY WS-I.",
+                        "         15 WS-KEY PIC X(3)."),
+                "SEARCH ALL WS-E",
+                "    WHEN WS-KEY (WS-R, WS-I) = 'bbb' CONTINUE",
+                "END-SEARCH.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("SEARCH ALL on a table inside"),
+                result.diagnostics().toString());
     }
 
     @Test

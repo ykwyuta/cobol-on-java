@@ -36,22 +36,8 @@ class GoToGenerationTest {
     }
 
     private static CobolCompiler.Result compile(List<String> storage, String... procedure) {
-        StringBuilder sb = new StringBuilder();
-        for (String line : List.of(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. HELLO.",
-                "DATA DIVISION.",
-                "WORKING-STORAGE SECTION.")) {
-            sb.append("       ").append(line).append('\n');
-        }
-        for (String line : storage) {
-            sb.append("       ").append(line).append('\n');
-        }
-        sb.append("       PROCEDURE DIVISION.\n");
-        for (String line : procedure) {
-            sb.append("       ").append(line).append('\n');
-        }
-        return CobolCompiler.standard().compile(FILE, sb.toString());
+        return CobolCompiler.standard().compile(FILE,
+                FixedFormatSource.program(storage, procedure));
     }
 
     private static String run(List<String> storage, String... procedure) {
@@ -282,6 +268,36 @@ class GoToGenerationTest {
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("one procedure name"),
                 result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("手続き名は数字だけでもよい (FR-061)")
+    void aProcedureNameMayBeAllDigits() {
+        // データ名と違うところである。段分けの章は「00 SECTION 00.」と書かれる
+        assertEquals("101", run(COUNTER,
+                "MAIN-START.",
+                "    ADD 1 TO WS-N",
+                "    GO TO 50.",
+                "20.",
+                "    ADD 10 TO WS-N.",
+                "50.",
+                "    ADD 100 TO WS-N."));
+    }
+
+    @Test
+    @DisplayName("章に段番号を書ける (FR-061, 暫定判断 P-066)")
+    void aSectionMayCarryASegmentNumber() {
+        assertEquals("101", run(COUNTER,
+                "MAIN-START SECTION 00.",
+                "FIRST-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO THIRD-P.",
+                "SECOND-S SECTION 50.",
+                "SECOND-P.",
+                "    ADD 10 TO WS-N.",
+                "THIRD-S SECTION 99.",
+                "THIRD-P.",
+                "    ADD 100 TO WS-N."));
     }
 
     @Test

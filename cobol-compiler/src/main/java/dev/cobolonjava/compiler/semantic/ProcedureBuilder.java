@@ -933,10 +933,6 @@ public final class ProcedureBuilder {
             report(origin, "SEARCH requires INDEXED BY on " + name);
             return null;
         }
-        if (DataReference.tableChain(table).size() != 1) {
-            report(origin, "SEARCH on a table inside another table is not supported yet: " + name);
-            return null;
-        }
         if (tableName.subscripts() != null) {
             report(origin, "SEARCH takes the table itself, not one occurrence: " + name);
             return null;
@@ -988,6 +984,12 @@ public final class ProcedureBuilder {
      */
     private Statement searchAllOf(CobolParser.SearchStatementContext context, DataItem table,
                                   DataReference index, Origin origin) {
+        if (DataReference.tableChain(table).size() != 1) {
+            // 2 分探索は鍵の位置を自分で計算する。外側の添字を受け取る道がまだない
+            report(origin, "SEARCH ALL on a table inside another table is not supported yet: "
+                    + table.name());
+            return null;
+        }
         if (table.searchKeys().isEmpty()) {
             report(origin, "SEARCH ALL requires ASCENDING or DESCENDING KEY on " + table.name());
             return null;

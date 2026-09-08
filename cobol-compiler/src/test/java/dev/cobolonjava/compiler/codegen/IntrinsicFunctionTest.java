@@ -40,26 +40,8 @@ class IntrinsicFunctionTest {
     }
 
     private static CobolCompiler.Result compile(List<String> storage, String... procedure) {
-        StringBuilder sb = new StringBuilder();
-        for (String line : List.of(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. HELLO.",
-                "DATA DIVISION.",
-                "WORKING-STORAGE SECTION.")) {
-            sb.append("       ").append(line).append('\n');
-        }
-        for (String line : storage) {
-            sb.append("       ").append(line).append('\n');
-        }
-        sb.append("       PROCEDURE DIVISION.\n");
-        for (String line : procedure) {
-            // 固定形式は 72 桁で切れる。長すぎる行を黙って詰めると、
-            // 試験が処理系の失敗を作ってしまう
-            assertTrue(line.length() <= 65,
-                    () -> "the test source runs past column 72: " + line);
-            sb.append("       ").append(line).append('\n');
-        }
-        return CobolCompiler.standard().compile(FILE, sb.toString());
+        return CobolCompiler.standard().compile(FILE,
+                FixedFormatSource.program(storage, procedure));
     }
 
     /** 時計を固定する。実行のたびに変わる値は試験に書けない (要件 FR-204)。 */
