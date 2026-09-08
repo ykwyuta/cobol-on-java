@@ -4,6 +4,7 @@ import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.item.NumericItem;
+import dev.cobolonjava.runtime.picture.AlphanumericEditor;
 import dev.cobolonjava.runtime.picture.NumericEditor;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -58,6 +59,26 @@ public final class Move {
     public static void toNumericEdited(Decimal source, Picture target, DataView view,
                                        CodePage codePage) {
         byte[] edited = NumericEditor.edit(source, target, codePage);
+        if (edited.length != view.length()) {
+            throw new IllegalArgumentException(
+                    "view length " + view.length() + " does not match the edited picture size "
+                            + edited.length);
+        }
+        view.setBytes(edited);
+    }
+
+    /**
+     * 英数字編集項目への転記 (要件 FR-030)。
+     *
+     * <p>送出データは<b>文字位置の数だけ</b>採り、挿入文字 ({@code B} {@code 0}
+     * {@code /}) はその場所に置く。送出データが足りなければ空白で埋め、多ければ切る。
+     * 英数字転記の規則がそのまま文字位置に適用される。
+     *
+     * @throws IllegalArgumentException 受取項目が英数字編集項目でない場合
+     */
+    public static void toAlphanumericEdited(byte[] source, Picture target, DataView view,
+                                            CodePage codePage) {
+        byte[] edited = AlphanumericEditor.edit(source, target, codePage);
         if (edited.length != view.length()) {
             throw new IllegalArgumentException(
                     "view length " + view.length() + " does not match the edited picture size "

@@ -3937,6 +3937,8 @@ public final class ProgramGenerator {
                 case ALPHANUMERIC -> planAlphanumericMove(move, target, offset, body);
                 case NUMERIC -> planNumericMove(move, target, offset, body);
                 case NUMERIC_EDITED -> planEditedMove(move, target, offset, body);
+                case ALPHANUMERIC_EDITED ->
+                        planAlphanumericEditedMove(move, target, offset, body);
             }
         }
     }
@@ -3970,6 +3972,43 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
                     "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
         });
+    }
+
+    /**
+     * 英数字編集転記 (要件 FR-030)。
+     *
+     * <p>受取側の文字位置 ({@code A} と {@code X}) の数だけ送出データを採り、挿入文字
+     * ({@code B} {@code 0} {@code /}) をその場所に置く。<b>広げる長さは項目の長さでは
+     * なく文字位置の数</b>である。図形定数を項目の長さぶん広げてしまうと、挿入文字が
+     * 入る分だけ多く採ってしまい、うしろがずれる。
+     */
+    private void planAlphanumericEditedMove(Statement.Move move, Statement.Move.Target target,
+                                            Runnable offset, List<Runnable> body) {
+        Picture picture = target.reference().item().picture();
+        Runnable source = planSourceBytes(move.source(), move.origin(), dataPositions(picture));
+        if (source == null) {
+            return;
+        }
+        String field = pictureConstant(picture);
+        body.add(() -> {
+            source.run();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, PICTURE);
+            offset.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumericEdited",
+                    "([B" + PICTURE + "L" + STORAGE + ";I" + CODE_PAGE + ")V", false);
+        });
+    }
+
+    /** 英数字編集項目の<b>文字位置</b>の数。挿入文字は数えない。 */
+    private static int dataPositions(Picture picture) {
+        int count = 0;
+        for (Picture.Cell cell : picture.cells()) {
+            if (cell.kind() != Picture.Kind.INSERT) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private void planNumericMove(Statement.Move move, Statement.Move.Target target,

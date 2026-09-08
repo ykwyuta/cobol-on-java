@@ -35,7 +35,9 @@ public final class MoveRules {
         /** {@code Move.numeric}。小数点で位置を合わせる。 */
         NUMERIC,
         /** {@code Move.toNumericEdited}。編集結果を書き込む。 */
-        NUMERIC_EDITED
+        NUMERIC_EDITED,
+        /** {@code Move.toAlphanumericEdited}。挿入文字を置きながら詰める。 */
+        ALPHANUMERIC_EDITED
     }
 
     /** 分類の組み合わせから転記の種類を決める。 */
@@ -46,7 +48,13 @@ public final class MoveRules {
         if (receiver.isNumeric()) {
             return Kind.NUMERIC;
         }
-        return receiver == DataCategory.NUMERIC_EDITED ? Kind.NUMERIC_EDITED : Kind.ALPHANUMERIC;
+        if (receiver == DataCategory.NUMERIC_EDITED) {
+            return Kind.NUMERIC_EDITED;
+        }
+        // 英数字編集は挿入文字を置く。ただのバイト詰めでは B と 0 と / が消える
+        return receiver == DataCategory.ALPHANUMERIC_EDITED
+                ? Kind.ALPHANUMERIC_EDITED
+                : Kind.ALPHANUMERIC;
     }
 
     /**

@@ -71,6 +71,12 @@ public final class Ops {
         Move.toNumericEdited(value, target, storage.view(offset, target.size()), codePage);
     }
 
+    /** 英数字編集項目への転記。 */
+    public static void moveAlphanumericEdited(byte[] source, Picture target, Storage storage,
+                                              int offset, CodePage codePage) {
+        Move.toAlphanumericEdited(source, target, storage.view(offset, target.size()), codePage);
+    }
+
     /** 数値項目の読み出し。 */
     public static Decimal readNumeric(NumericItem source, Storage storage, int offset) {
         DataView view = storage.view(offset, source.byteLength());
