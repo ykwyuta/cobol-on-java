@@ -63,6 +63,30 @@ class ExecutionReportTest {
     }
 
     @Test
+    @DisplayName("人が見る検査を抱えたまま通っている本を数に出す (P-062)")
+    void unverifiedProgramsAreCountedApart() {
+        // 落ちた検査に数えないので「通った」に入るが、道具は確かめていない。
+        // 甘さの大きさが読めるように、数を表に出す
+        ExecutionReport report = new ExecutionReport(List.of(
+                RunOutcome.reported("SQ101M", "SQ", 57, 57, 0, 0, 57, List.of()),
+                RunOutcome.reported("NC101A", "NC", 93, 93, 0, 0, 0, List.of())));
+        assertEquals(2, report.passed());
+        assertEquals(1, report.unverifiedPrograms());
+        assertEquals(57, report.unverifiedChecks());
+        assertTrue(report.text("題").contains("確かめていない"));
+    }
+
+    @Test
+    @DisplayName("落ちた本は、人が見る検査を持っていても確かめていない側に数えない (P-062)")
+    void aFailingProgramIsNotCountedAsUnverified() {
+        // すでに落ちているのだから、甘い数え方の話ではない
+        ExecutionReport report = new ExecutionReport(List.of(
+                RunOutcome.reported("DB201A", "DB", 7, 24, 17, 45, 3, List.of())));
+        assertEquals(0, report.unverifiedPrograms());
+        assertEquals(3, report.inspectedChecks());
+    }
+
+    @Test
     @DisplayName("落ちた検査を機能ごとに数える (P-062)")
     void failuresAreCountedByFeature() {
         // 本数で数えると「1 本が全滅」までしか分からない。機能で数えると

@@ -77,9 +77,33 @@ public record ExecutionReport(List<RunOutcome> outcomes) {
         return outcomes.stream().mapToInt(RunOutcome::deleted).sum();
     }
 
-    /** 人が見て判断する検査の総数。 */
+    /**
+     * 人が見て判断する検査の総数。<b>この道具は確かめていない</b>。
+     *
+     * <p>検査スイート自身が「紙を見て決めろ」と言っている検査である。落ちた検査には
+     * 数えないので、これを持つ本も「通った」に入る。<b>その分だけ合格率は甘い</b>。
+     * 甘さの大きさが読めるように、数を表に出す。
+     */
     public int inspectedChecks() {
         return outcomes.stream().mapToInt(RunOutcome::inspected).sum();
+    }
+
+    /** 人が見なければ決まらない検査を抱えたまま「通った」に入っている本。 */
+    public List<RunOutcome> unverified() {
+        return outcomes.stream()
+                .filter(o -> o.status() == RunOutcome.Status.PASSED && o.inspected() > 0)
+                .sorted((a, b) -> Integer.compare(b.inspected(), a.inspected()))
+                .toList();
+    }
+
+    /** その本数。 */
+    public long unverifiedPrograms() {
+        return unverified().size();
+    }
+
+    /** その検査の数。 */
+    public int unverifiedChecks() {
+        return unverified().stream().mapToInt(RunOutcome::inspected).sum();
     }
 
     /** 検査ごとの合格率 (百分率)。流れた検査が無ければ 0 である。 */
@@ -161,9 +185,15 @@ public record ExecutionReport(List<RunOutcome> outcomes) {
                 crashed(), timedOut(), rate()));
         out.append(String.format(
                 "検査は %d 件流れて %d 件落ちた (合格率 %.1f%%)。"
-                        + "流さなかったもの %d 件、人が見るもの %d 件%n",
-                executedChecks(), failedChecks(), checkRate(),
-                deletedChecks(), inspectedChecks()));
+                        + "検査スイートが流さなかったもの %d 件%n",
+                executedChecks(), failedChecks(), checkRate(), deletedChecks()));
+        if (inspectedChecks() > 0) {
+            out.append(String.format(
+                    "このうち %d 件は<人が紙を見て決める>検査であり、道具は確かめていない。"
+                            + "落ちた検査に数えていないので、%d 本が「通った」に入っている。"
+                            + "その分だけ合格率は甘い%n",
+                    inspectedChecks(), unverifiedPrograms()));
+        }
         out.append('\n');
         out.append(String.format("%-8s %6s %6s %6s %6s %6s %6s %6s  %s%n",
                 "区分", "本数", "診断", "通", "落", "未翻訳", "壊", "検査落", "合格率"));
@@ -185,6 +215,13 @@ public record ExecutionReport(List<RunOutcome> outcomes) {
             out.append("\n落ちた検査を機能ごとに数えたもの (多い順)\n");
             for (Map.Entry<String, Long> feature : features) {
                 out.append(String.format("%6d  %s%n", feature.getValue(), feature.getKey()));
+            }
+        }
+        List<RunOutcome> unverified = unverified();
+        if (!unverified.isEmpty()) {
+            out.append("\n確かめていない検査を抱えたまま通っている本 (人が紙を見る)\n");
+            for (RunOutcome outcome : unverified) {
+                out.append(String.format("%6d  %s%n", outcome.inspected(), outcome.name()));
             }
         }
         List<RunOutcome> broken = notRun();
