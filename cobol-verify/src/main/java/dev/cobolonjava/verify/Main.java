@@ -6,6 +6,8 @@ import dev.cobolonjava.verify.ccvs85.XCards;
 import dev.cobolonjava.verify.corpus.CorpusReport;
 import dev.cobolonjava.verify.corpus.CorpusRunner;
 import dev.cobolonjava.verify.corpus.SourceDirectory;
+import dev.cobolonjava.verify.execute.ExecutionReport;
+import dev.cobolonjava.verify.execute.ProgramRunner;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -18,8 +20,9 @@ import java.util.Map;
  * 検証基盤の起動口 (要件 NFR-040, NFR-042)。
  *
  * <pre>
- * verify ccvs85 &lt;newcob.val&gt; [-x 差し込み札] [-o 出力先]
- * verify corpus &lt;置き場&gt;      [-o 出力先]
+ * verify ccvs85     &lt;newcob.val&gt; [-x 差し込み札] [-o 出力先]   翻訳が通るかを数える
+ * verify ccvs85-run &lt;newcob.val&gt; [-x 差し込み札] [-o 出力先]   動かして合否を数える
+ * verify corpus     &lt;置き場&gt;      [-o 出力先]
  * </pre>
  *
  * <p>どちらも<b>数だけ</b>を出す。コーパスの中身は出さないし、同梱もしない
@@ -40,14 +43,16 @@ public final class Main {
         System.setOut(out);
         System.setErr(new PrintStream(System.err, true, StandardCharsets.UTF_8));
         if (args.length < 2) {
-            System.err.println("usage: verify ccvs85 <newcob.val> [-x x-cards] [-o out]");
-            System.err.println("       verify corpus <directory> [-o out]");
+            System.err.println("usage: verify ccvs85     <newcob.val> [-x x-cards] [-o out]");
+            System.err.println("       verify ccvs85-run <newcob.val> [-x x-cards] [-o out]");
+            System.err.println("       verify corpus     <directory> [-o out]");
             System.exit(2);
             return;
         }
         Path written = option(args, "-o");
         String text = switch (args[0]) {
             case "ccvs85" -> ccvs85(Path.of(args[1]), option(args, "-x"));
+            case "ccvs85-run" -> ccvs85Run(Path.of(args[1]), option(args, "-x"));
             case "corpus" -> corpus(Path.of(args[1]));
             default -> null;
         };
@@ -88,6 +93,35 @@ public final class Main {
                     + "札が無いまま流すと、処理系の失敗を道具が作ることになる\n");
         }
         return body.toString();
+    }
+
+    /**
+     * CCVS85 を<b>動かして</b>合否を数える (暫定判断 P-062)。
+     *
+     * <p>検査プログラムは自分で答え合わせをして印字する。その紙を読めば、
+     * 翻訳が通るかではなく<b>規格どおりに動くか</b>まで測れる。
+     */
+    private static String ccvs85Run(Path archive, Path cards) {
+        Ccvs85Suite.Prepared prepared = prepare(archive, cards);
+        ExecutionReport report = ProgramRunner.with(prepared.resolver())
+                .run(prepared.sources());
+
+        StringBuilder body = new StringBuilder();
+        body.append(report.text("CCVS85 を動かした結果"));
+        body.append('\n');
+        body.append(report.only(Ccvs85Suite.NON_IO)
+                .text("CCVS85 入出力以外 (要件 13 章の受け入れ基準)"));
+        return body.toString();
+    }
+
+    private static Ccvs85Suite.Prepared prepare(Path archive, Path cards) {
+        if (!Files.isReadable(archive)) {
+            System.err.println("CCVS85 の配布物が読めない: " + archive);
+            System.err.println("tools/verify/fetch-ccvs85.sh で取ってくること");
+            System.exit(1);
+        }
+        XCards xcards = cards == null ? XCards.defaults() : XCards.defaults().and(cards);
+        return Ccvs85Suite.prepare(archive, Population.plain(xcards));
     }
 
     /** 資産の置き場を流す。 */

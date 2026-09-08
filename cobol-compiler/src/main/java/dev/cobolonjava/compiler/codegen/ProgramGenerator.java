@@ -4497,6 +4497,43 @@ public final class ProgramGenerator {
      * <p>連絡節の項目は記憶域を持たない。呼ぶ側から渡された領域が実体であり、
      * 記憶域も位置もその領域から取る。
      */
+    /**
+     * 連絡節の 01 レベルが、渡された引数の何番目か。
+     *
+     * <p>{@code REDEFINES} で重ねた 01 は {@code USING} に並ばない。<b>重ねる先が
+     * 同じ領域を指している</b>ので、その引数を使う (IC237A が
+     * 「01 L-A1 REDEFINES L-A」と書いている)。重ねた項目をさらに重ねることもできるので、
+     * 名前をたどる。
+     *
+     * @return 見つからなければ {@code -1}
+     */
+    private int parameterIndexOf(DataItem record) {
+        for (DataItem current = record; current != null; current = redefined(current)) {
+            int index = parameters.indexOf(current);
+            if (index >= 0) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private DataItem redefined(DataItem item) {
+        if (item.redefinesName() == null) {
+            return null;
+        }
+        for (DataItem candidate : parameters) {
+            if (item.redefinesName().equals(candidate.name())) {
+                return candidate;
+            }
+        }
+        for (DataItem candidate : layout.all()) {
+            if (candidate.record() == candidate && item.redefinesName().equals(candidate.name())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     private Runnable planAddress(DataReference reference, Origin origin) {
         Runnable offset = planOffset(reference, origin);
         if (offset == null) {
@@ -4519,7 +4556,7 @@ public final class ProgramGenerator {
                 offset.run();
             };
         }
-        int index = parameters.indexOf(record);
+        int index = parameterIndexOf(record);
         if (index < 0) {
             report(origin, "a LINKAGE SECTION item is not listed in PROCEDURE DIVISION USING: "
                     + describe(record));
