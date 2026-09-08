@@ -706,6 +706,16 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code GO TO ... DEPENDING ON} (要件 FR-063)。
+     *
+     * <p>値が 1 なら 1 つ目、2 なら 2 つ目へ飛ぶ。<b>並びの外なら飛ばない</b>。
+     * 誤りにはならず、次の文へ進む。規格がそう決めている。
+     */
+    record GoToDepending(List<String> targets, DataReference selector, Origin origin)
+            implements Statement {
+    }
+
+    /**
      * {@code PERFORM} 文。
      *
      * <p>繰り返しの指定と、繰り返す中身の 2 つからなる。中身は<b>段落を呼ぶか、

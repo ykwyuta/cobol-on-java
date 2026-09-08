@@ -117,18 +117,19 @@ class CorpusRunnerTest {
     }
 
     @Test
-    @DisplayName("長い引用は頭だけ残して刈り込む (NFR-042)")
-    void aLongQuotationIsTrimmed() {
+    @DisplayName("長い引用は尻だけ残して刈り込む (NFR-042)")
+    void aLongQuotationKeepsItsTail() {
         // 構文解析の道具は、詰まった規則の先頭から拾えた語をぜんぶ並べることがある。
-        // そのままでは 1 本ごとに違う理由になり、数がばらける
+        // 引用が長いのは「そこまで読めた」ためであり、知りたいのは詰まった側の端である。
+        // 頭を残すと、同じところで詰まった 2 本が別々の理由になって散る
         CorpusRunner runner = new CorpusRunner((name, text) ->
-                refused("no viable alternative at input 'OPEN-FILES.OPENOUTPUTPRINT-FILE."
-                        + name + "'"));
+                refused("no viable alternative at input '" + name
+                        + ".OPEN-FILES.OPENOUTPUTPRINT-FILE.GOTO50'"));
 
         CorpusReport report = runner.run(List.of(source("A.cbl"), source("B.cbl")));
 
         assertEquals(List.of(Map.entry("no viable alternative at input "
-                + "'OPEN-FILES.OPENOUTPUTPRI…'", 2L)), report.reasons(5));
+                + "'…NOUTPUTPRINT-FILE.GOTO50'", 2L)), report.reasons(5));
     }
 
     @Test

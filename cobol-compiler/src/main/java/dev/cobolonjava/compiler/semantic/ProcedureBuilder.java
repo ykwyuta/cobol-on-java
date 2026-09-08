@@ -230,6 +230,14 @@ public final class ProcedureBuilder {
             }
             return;
         }
+        if (statement instanceof Statement.GoToDepending depending) {
+            for (String target : depending.targets()) {
+                if (!names.contains(target)) {
+                    report(depending.origin(), "undefined paragraph: " + target);
+                }
+            }
+            return;
+        }
         if (statement instanceof Statement.Sort sort) {
             checkSortProcedure(sort.input(), names, sort.origin());
             checkSortProcedure(sort.output(), names, sort.origin());
@@ -518,9 +526,7 @@ public final class ProcedureBuilder {
             return computeOf(context.computeStatement());
         }
         if (context.goToStatement() != null) {
-            CobolParser.GoToStatementContext goTo = context.goToStatement();
-            return new Statement.GoTo(goTo.paragraphName().getText().toUpperCase(Locale.ROOT),
-                    ReferenceResolver.originOf(goTo));
+            return goToOf(context.goToStatement());
         }
         if (context.searchStatement() != null) {
             return searchOf(context.searchStatement());
@@ -1057,6 +1063,37 @@ public final class ProcedureBuilder {
         return ordered;
     }
 
+    /**
+     * {@code GO TO} (要件 FR-063)。
+     *
+     * <p>{@code DEPENDING ON} があれば、値が<b>何番目か</b>で飛び先が決まる。
+     * 無ければ飛び先は 1 つだけである。
+     */
+    private Statement goToOf(CobolParser.GoToStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<String> targets = new ArrayList<>();
+        for (CobolParser.ParagraphNameContext name : context.paragraphName()) {
+            targets.add(name.getText().toUpperCase(Locale.ROOT));
+        }
+        if (context.DEPENDING() == null) {
+            if (targets.size() > 1) {
+                report(origin, "GO TO takes one procedure name unless DEPENDING ON is written");
+                return null;
+            }
+            return new Statement.GoTo(targets.get(0), origin);
+        }
+        DataReference selector = resolver.resolve(context.identifier());
+        if (selector == null) {
+            return null;
+        }
+        if (!DataCategory.of(selector).isNumeric()) {
+            report(origin, "GO TO ... DEPENDING ON requires an integer item: "
+                    + describe(selector));
+            return null;
+        }
+        return new Statement.GoToDepending(List.copyOf(targets), selector, origin);
+    }
+
     private static boolean namesItem(Operand operand, String name) {
         return operand instanceof Operand.Reference reference
                 && name.equals(reference.reference().item().name());
@@ -1068,6 +1105,7 @@ public final class ProcedureBuilder {
                 ((Operand.Reference) operand).reference().subscripts();
         return subscripts.size() == 1
                 && subscripts.get(0) instanceof DataReference.Subscript.Variable variable
+                && variable.offset() == 0
                 && variable.reference().item() == index.item();
     }
 

@@ -29,6 +29,25 @@ class SubscriptGenerationTest {
         }
     }
 
+    private static CobolCompiler.Result compile(List<String> storage, String... procedure) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. HELLO.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.")) {
+            sb.append("       ").append(line).append('\n');
+        }
+        for (String line : storage) {
+            sb.append("       ").append(line).append('\n');
+        }
+        sb.append("       PROCEDURE DIVISION.\n");
+        for (String line : procedure) {
+            sb.append("       ").append(line).append('\n');
+        }
+        return CobolCompiler.standard().compile(FILE, sb.toString());
+    }
+
     private static String run(List<String> storage, String... procedure) {
         StringBuilder sb = new StringBuilder();
         for (String line : List.of(
@@ -106,6 +125,37 @@ class SubscriptGenerationTest {
                         "   05 WS-ROW OCCURS 2 TIMES.",
                         "      10 WS-CELL OCCURS 3 TIMES PIC X VALUE '-'."),
                 "MOVE 'X' TO WS-CELL (WS-I, WS-J).").substring(4));
+    }
+
+    @Test
+    @DisplayName("添字に相対指定を書ける (FR-024, FR-025)")
+    void aSubscriptMayBeRelative() {
+        assertEquals("---X-", run(TABLE,
+                "MOVE 3 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I + 1).").substring(2));
+        assertEquals("-X---", run(TABLE,
+                "MOVE 3 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I - 1).").substring(2));
+    }
+
+    @Test
+    @DisplayName("符号を数字にくっつけて書いてもよい (FR-024, FR-025)")
+    void theSignMayBeAttachedToTheNumber() {
+        // COBOL では単項の符号は後ろに空白を置かない。字句の切れ目が変わるだけで
+        // 意味は同じである
+        assertEquals("---X-", run(TABLE,
+                "MOVE 3 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I +1).").substring(2));
+    }
+
+    @Test
+    @DisplayName("相対指定でも範囲は確かめる (FR-024, FR-140)")
+    void arelativeSubscriptIsRangeCheckedToo() {
+        // 確かめるのは<b>足したあとの値</b>である
+        CobolCompiler.Result result = compile(TABLE,
+                "MOVE 5 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I + 1).");
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
     }
 
     @Test

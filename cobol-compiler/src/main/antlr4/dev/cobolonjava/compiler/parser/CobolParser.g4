@@ -415,7 +415,15 @@ referenceModifier
 
 subscript
     : NUMBER
-    | qualifiedDataName
+    | qualifiedDataName relativeOffset?
+    ;
+
+// 相対指定 (要件 FR-025)。COBOL では 2 項の演算子は前後に空白を置き、単項の符号は
+// 後ろに空白を置かない。したがって「I + 1」は演算子と数字、「I +1」は符号つきの
+// 数字 1 つになる。どちらも同じ意味なので両方読む
+relativeOffset
+    : (PLUS_SIGN | MINUS_SIGN) NUMBER
+    | NUMBER
     ;
 
 // ---- 手続き部 ----
@@ -911,8 +919,9 @@ cancelStatement
     ;
 
 // GO TO は段落の途中から別の段落へ飛ぶ。PERFORM と違い、戻ってこない
+// DEPENDING ON があれば、値が何番目かで飛び先が決まる。無ければ 1 つだけ書ける
 goToStatement
-    : GO TO? paragraphName
+    : GO TO? paragraphName+ (DEPENDING ON? identifier)?
     ;
 
 // EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある。

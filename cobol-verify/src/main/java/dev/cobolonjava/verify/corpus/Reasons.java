@@ -48,8 +48,14 @@ final class Reasons {
      * <p>引用符の中には<b>どの語で詰まったか</b>が入っている。これは残したい。
      * {@code no viable alternative at input '…'} だけでは、何を書けばよいのか分からない。
      *
-     * <p>ところが構文解析の道具は、詰まった規則の先頭から拾えた語をぜんぶ並べることが
-     * ある。長い引用は 1 本ごとに違うものになり、数がばらける。頭だけ残して刈り込む。
+     * <p>ところが構文解析の道具は、詰まった規則の<b>先頭から拾えた語をぜんぶ</b>並べる
+     * ことがある。長い引用は 1 本ごとに違うものになり、数がばらける。
+     *
+     * <p>刈り込むのは<b>頭のほう</b>である。引用が長いのは「そこまで読めた」ためであり、
+     * 知りたいのは<b>詰まった側の端</b>だからである。頭を残すと段落名から始まる何百字が
+     * 並び、同じ原因が別々の理由として散る。実際、はじめは頭を残していて、
+     * 段分けと {@code ALTER} と相対添字という<b>3 つの別の原因</b>が 1 件ずつの理由に
+     * 散らばって見えていた。
      */
     private static String shortened(String text) {
         StringBuilder out = new StringBuilder();
@@ -58,7 +64,7 @@ final class Reasons {
             String inside = quoted.group(1) != null ? quoted.group(1) : quoted.group(2);
             char mark = quoted.group(1) != null ? '\'' : '"';
             String kept = inside.length() <= KEPT ? inside
-                    : inside.substring(0, KEPT) + "…";
+                    : "…" + inside.substring(inside.length() - KEPT);
             quoted.appendReplacement(out, Matcher.quoteReplacement(mark + kept + mark));
         }
         quoted.appendTail(out);

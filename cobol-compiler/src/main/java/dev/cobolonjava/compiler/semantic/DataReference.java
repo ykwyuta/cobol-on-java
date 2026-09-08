@@ -32,8 +32,12 @@ public record DataReference(DataItem item, List<Subscript> subscripts, RefMod re
         record Constant(int value) implements Subscript {
         }
 
-        /** データ項目で指定した添字。値は実行時に決まる。 */
-        record Variable(DataReference reference) implements Subscript {
+        /**
+         * データ項目で指定した添字。値は実行時に決まる。
+         *
+         * @param offset 相対指定 {@code 項目 (I + 1)} のずれ。書かれていなければ 0
+         */
+        record Variable(DataReference reference, int offset) implements Subscript {
         }
     }
 

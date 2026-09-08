@@ -172,8 +172,33 @@ public final class ReferenceResolver {
         if (item == null) {
             return null;
         }
+        Integer offset = offsetOf(context.relativeOffset(), origin);
+        if (offset == null) {
+            return null;
+        }
         return new DataReference.Subscript.Variable(
-                new DataReference(item, List.of(), null, origin));
+                new DataReference(item, List.of(), null, origin), offset);
+    }
+
+    /**
+     * 相対指定のずれを読む (要件 FR-025)。
+     *
+     * @return 書かれていなければ 0。読めなければ {@code null}
+     */
+    private Integer offsetOf(CobolParser.RelativeOffsetContext context, Origin origin) {
+        if (context == null) {
+            return 0;
+        }
+        String text = context.NUMBER().getText();
+        boolean minus = context.MINUS_SIGN() != null || text.startsWith("-");
+        try {
+            int magnitude = Integer.parseInt(text.startsWith("+") || text.startsWith("-")
+                    ? text.substring(1) : text);
+            return minus ? -magnitude : magnitude;
+        } catch (NumberFormatException e) {
+            report(origin, "a relative subscript must be an integer: " + context.getText());
+            return null;
+        }
     }
 
     private boolean checkSubscripts(DataItem item, List<DataReference.Subscript> subscripts,

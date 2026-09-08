@@ -431,6 +431,8 @@ public final class ProgramGenerator {
                 planReturn(returned, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
+            } else if (statement instanceof Statement.GoToDepending depending) {
+                planGoToDepending(depending, body);
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
@@ -4009,8 +4011,9 @@ public final class ProgramGenerator {
                 fixed += (value.value() - 1) * unit;
                 continue;
             }
-            DataReference inner = ((DataReference.Subscript.Variable) subscript).reference();
-            Runnable push = planSourceDecimal(new Operand.Reference(inner), origin);
+            DataReference.Subscript.Variable given =
+                    (DataReference.Subscript.Variable) subscript;
+            Runnable push = planSourceDecimal(new Operand.Reference(given.reference()), origin);
             if (push == null) {
                 return null;
             }
@@ -4018,6 +4021,8 @@ public final class ProgramGenerator {
             variable.add(() -> {
                 push.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+                // 相対指定のずれは、範囲を確かめる前に足す。確かめるのは足したあとの値である
+                addOffset(given.offset());
                 emitSubscriptCheck(table);
                 run.visitInsn(Opcodes.ICONST_1);
                 run.visitInsn(Opcodes.ISUB);
@@ -4087,15 +4092,16 @@ public final class ProgramGenerator {
         if (reference.refMod().leftmost() instanceof DataReference.Subscript.Constant) {
             return () -> { };
         }
-        DataReference inner = ((DataReference.Subscript.Variable)
-                reference.refMod().leftmost()).reference();
-        Runnable push = planSourceDecimal(new Operand.Reference(inner), origin);
+        DataReference.Subscript.Variable given =
+                (DataReference.Subscript.Variable) reference.refMod().leftmost();
+        Runnable push = planSourceDecimal(new Operand.Reference(given.reference()), origin);
         if (push == null) {
             return null;
         }
         return () -> {
             push.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            addOffset(given.offset());
             emitRefModCheck(reference, origin);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitInsn(Opcodes.ISUB);
@@ -4472,6 +4478,54 @@ public final class ProgramGenerator {
             push(target);
             run.visitInsn(Opcodes.IRETURN);
         });
+    }
+
+    /**
+     * {@code GO TO ... DEPENDING ON} を組み立てる (要件 FR-063)。
+     *
+     * <p>値が 1 なら 1 つ目、2 なら 2 つ目へ飛ぶ。<b>並びの外なら飛ばない</b>ので、
+     * 飛び先表の外れ道は「何もせず下へ抜ける」になる。誤りにはならない。
+     */
+    private void planGoToDepending(Statement.GoToDepending statement, List<Runnable> body) {
+        List<Integer> targets = new ArrayList<>();
+        for (String name : statement.targets()) {
+            int target = paragraphNames.indexOf(name);
+            if (target < 0) {
+                report(statement.origin(), "undefined paragraph: " + name);
+                return;
+            }
+            targets.add(target);
+        }
+        Runnable selector = planSourceDecimal(new Operand.Reference(statement.selector()),
+                statement.origin());
+        if (selector == null) {
+            return;
+        }
+        body.add(() -> {
+            Label fallThrough = new Label();
+            Label[] cases = new Label[targets.size()];
+            for (int i = 0; i < cases.length; i++) {
+                cases[i] = new Label();
+            }
+            selector.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            run.visitTableSwitchInsn(1, targets.size(), fallThrough, cases);
+            for (int i = 0; i < cases.length; i++) {
+                run.visitLabel(cases[i]);
+                push(targets.get(i));
+                run.visitInsn(Opcodes.IRETURN);
+            }
+            run.visitLabel(fallThrough);
+        });
+    }
+
+    /** 相対指定のずれを、積んである添字へ足す。0 なら何も出さない。 */
+    private void addOffset(int offset) {
+        if (offset == 0) {
+            return;
+        }
+        push(offset);
+        run.visitInsn(Opcodes.IADD);
     }
 
     private void report(Origin origin, String message) {
