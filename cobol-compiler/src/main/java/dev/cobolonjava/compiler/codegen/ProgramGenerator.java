@@ -1344,6 +1344,13 @@ public final class ProgramGenerator {
                         "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;II"
                                 + (indexed ? "" : "I") + "IZ" + (indexed ? "[I" : "") + ")[B",
                         false);
+                if (opened.noRewind()) {
+                    // 巻き戻さないという指示は、巻を持たない媒体では行いようがない。
+                    // 開けたことは変わらないので、成功したときだけ 07 に置き換える
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "nonReel",
+                            "([B" + CONTEXT + ")[B", false);
+                }
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
                 // 開けば頁は初めからである。形を読み直し、行数を 0 に戻す

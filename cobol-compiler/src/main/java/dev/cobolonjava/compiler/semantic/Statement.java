@@ -544,16 +544,19 @@ public sealed interface Statement {
         /**
          * 開くファイル 1 個と、その開き方。
          *
-         * @param debug ファイル名が見張られているときに、開いたあとで動かす文 (要件 FR-193)
+         * @param noRewind {@code WITH NO REWIND} と書かれたか。巻を持たない媒体では
+         *                 巻き戻しようがないので、成功しても状態コードは {@code 07} になる
+         * @param debug    ファイル名が見張られているときに、開いたあとで動かす文 (要件 FR-193)
          */
-        public record Opened(FileDescription file, OpenMode mode, List<Statement> debug) {
+        public record Opened(FileDescription file, OpenMode mode, boolean noRewind,
+                             List<Statement> debug) {
 
             public Opened {
                 debug = List.copyOf(debug);
             }
 
             public Opened(FileDescription file, OpenMode mode) {
-                this(file, mode, List.of());
+                this(file, mode, false, List.of());
             }
         }
     }

@@ -1099,7 +1099,8 @@ openPhrase
     : (INPUT | OUTPUT | I_O | EXTEND) openFile+
     ;
 
-// 巻の扱い (NO REWIND / REVERSED) は磁気テープの話であり、翻訳の結果には効かない
+// NO REWIND は巻き戻さないという指示である。巻を持たない媒体では行いようがないので、
+// 開けても状態コードは 07 になる。REVERSED (逆から読む) はまだ実装していない
 openFile
     : IDENTIFIER (WITH? NO REWIND | REVERSED)?
     ;

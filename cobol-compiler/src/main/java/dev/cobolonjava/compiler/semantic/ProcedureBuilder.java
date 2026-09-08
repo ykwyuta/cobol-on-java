@@ -4086,7 +4086,14 @@ public final class ProcedureBuilder {
                 if (file == null) {
                     return null;
                 }
-                opened.add(new Statement.Open.Opened(file, mode,
+                if (one.REVERSED() != null) {
+                    // 逆から読むという指示である。黙って順に読めば<b>違う答えを返す</b>。
+                    // 巻の扱いのように「何も起きなかった」で済む話ではないので、断る
+                    report(ReferenceResolver.originOf(one),
+                            "OPEN ... REVERSED is not supported yet");
+                    continue;
+                }
+                opened.add(new Statement.Open.Opened(file, mode, one.REWIND() != null,
                         fileDebugEntry(file, false, origin)));
             }
         }

@@ -2,6 +2,7 @@ package dev.cobolonjava.compiler.codegen;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -151,10 +152,11 @@ class FileIoGenerationTest {
     }
 
     @Test
-    @DisplayName("巻の扱いを書いた OPEN は、普通に開く (FR-102)")
-    void theReelPhrasesOfOpenAreReadAndDropped(@TempDir Path directory) {
-        // NO REWIND も REVERSED も磁気テープの話であり、翻訳の結果には効かない
-        assertEquals("00|00|", run(directory, source(
+    @DisplayName("OPEN ... NO REWIND は開くが、巻が無いので 07 が立つ (FR-102)")
+    void openWithNoRewindReportsSevenO7(@TempDir Path directory) {
+        // 巻き戻さないという指示は、巻を持たない媒体では行いようがない。開けたことは
+        // 変わらないので 07 だけが違う。閉じるほうはふつうの CLOSE なので 00 である
+        assertEquals("07|00|", run(directory, source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. TAPEOPEN.",
                 "ENVIRONMENT DIVISION.",
@@ -172,6 +174,56 @@ class FileIoGenerationTest {
                 "    OPEN OUTPUT OUT-FILE WITH NO REWIND.",
                 "    DISPLAY WS-STATUS.",
                 "    CLOSE OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("OPEN INPUT ... REVERSED は断る (FR-102)")
+    void openReversedIsRejected() {
+        // 逆から読むという指示である。黙って順に読めば違う答えを返す。巻の扱いのように
+        // 「何も起きなかった」で済む話ではないので、近いことをするより断るのが正しい
+        CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. BACKWARD.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT IN-FILE ASSIGN TO INDD.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  IN-FILE.",
+                "01  IN-REC PIC X(8).",
+                "PROCEDURE DIVISION.",
+                "    OPEN INPUT IN-FILE REVERSED.",
+                "    STOP RUN."));
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("REVERSED"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("開けなかった OPEN ... NO REWIND は、07 ではなく誤りを伝える (FR-102, FR-103)")
+    void openWithNoRewindKeepsTheFailureStatus(@TempDir Path directory) {
+        // 07 に置き換えるのは成功したときだけである。無いファイルを読もうとしたことの
+        // ほうが、巻き戻さなかったことより伝えるべきことである
+        assertEquals("35|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. NOFILE.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT IN-FILE ASSIGN TO INDD",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  IN-FILE.",
+                "01  IN-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN INPUT IN-FILE WITH NO REWIND.",
                 "    DISPLAY WS-STATUS.",
                 "    STOP RUN.")));
     }

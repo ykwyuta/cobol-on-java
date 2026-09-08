@@ -419,6 +419,19 @@ public final class Ops {
     }
 
     /**
+     * 巻の操作が行われなかったことを状態コードに映す (要件 FR-102, FR-103)。
+     *
+     * <p>{@code OPEN ... WITH NO REWIND} である。開くこと自体は変わらないので、
+     * <b>成功したときだけ</b> {@code 00} を {@code 07} に置き換える。誤ったなら
+     * 誤りのほうが伝えるべきことである (85 規格 VII-38, 4.2.4(3)F)。
+     */
+    public static byte[] nonReel(byte[] status, ProgramContext context) {
+        return FileStatus.OK.equals(context.codePage().decode(status))
+                ? status(context, FileStatus.NON_REEL)
+                : status;
+    }
+
+    /**
      * 実際に開く向き (要件 FR-133)。
      *
      * <p>ふつうはプログラムが書いたとおりである。ジョブが {@code DISP=MOD} と言っている
