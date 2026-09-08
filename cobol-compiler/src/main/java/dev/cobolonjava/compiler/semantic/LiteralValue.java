@@ -16,8 +16,21 @@ public sealed interface LiteralValue {
     record Text(String text) implements LiteralValue {
     }
 
-    /** 数字定数。 */
-    record Number(Decimal value) implements LiteralValue {
+    /**
+     * 数字定数。
+     *
+     * <p>値のほかに<b>原文の綴り</b>を持つ。英数字の受取項目へ数字定数を転記するとき、
+     * 規格はそれを<b>英数字定数として扱う</b>と決めている。値に直してから書き戻すと
+     * {@code 0123456789} の先頭の {@code 0} が消えてしまう (要件 FR-061)。
+     *
+     * @param source 原文に書かれたとおりの綴り
+     */
+    record Number(Decimal value, String source) implements LiteralValue {
+
+        /** 翻訳系が組み立てた数字定数。原文の綴りを持たないので値から作る。 */
+        public Number(Decimal value) {
+            this(value, value.toBigDecimal().toPlainString());
+        }
     }
 
     /** 図形定数。項目の長さいっぱいまで埋める。 */
@@ -43,7 +56,8 @@ public sealed interface LiteralValue {
             return new Text(unquote(context.LITERAL().getText()));
         }
         if (context.NUMBER() != null) {
-            return new Number(Decimal.parse(context.NUMBER().getText()));
+            String spelling = context.NUMBER().getText();
+            return new Number(Decimal.parse(spelling), spelling);
         }
         CobolParser.FigurativeConstantContext figurative = context.figurativeConstant();
         if (figurative.LITERAL() != null) {

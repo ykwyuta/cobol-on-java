@@ -5357,7 +5357,10 @@ public final class ProgramGenerator {
             return out;
         }
         if (value instanceof LiteralValue.Number number) {
-            return codePage.encode(number.value().toBigDecimal().toPlainString());
+            // 規格は英数字の受取項目に対する数字定数を<b>英数字定数として扱う</b>と
+            // 決めている。値に直してから書き戻すと 0123456789 の先頭の 0 が消える
+            // (CCVS85 の NC105A / NC202A)
+            return codePage.encode(number.source());
         }
         byte[] out = new byte[targetLength];
         Arrays.fill(out, figureByte(((LiteralValue.Figure) value).constant()));

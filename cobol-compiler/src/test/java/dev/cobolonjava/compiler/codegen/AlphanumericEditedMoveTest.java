@@ -199,6 +199,57 @@ class AlphanumericEditedMoveTest {
     }
 
     @Test
+    @DisplayName("英数字の受取項目へ入れる数字定数は<b>原文の綴り</b>である (FR-061)")
+    void aNumericLiteralMovedToAnAlphanumericItemKeepsItsSpelling() {
+        // 規格は英数字の受取項目に対する数字定数を「英数字定数として扱う」と決めている。
+        // 値に直してから書き戻すと 0123456789 の先頭の 0 が消え、右へ 1 桁ずれる。
+        // CCVS85 の NC105A (MOVE-TEST-F1-38/82/84) と NC202A (ADD CORRESPONDING) が
+        // どちらもここで落ちていた
+        assertEquals("[0123456789]|", run(
+                List.of("01 WS-X PIC X(10) VALUE SPACES."),
+                "MOVE 0123456789 TO WS-X.",
+                "DISPLAY '[' WS-X ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("群項目へ入れる数字定数も原文の綴りのまま並ぶ (FR-061)")
+    void aNumericLiteralMovedToAGroupKeepsItsSpelling() {
+        // 群への転記は英数字転記である。桁を配ってから足し込む ADD CORRESPONDING は、
+        // ここが 1 桁ずれると<b>すべての組がずれる</b> (NC202A の ADD-TEST-F3-7)
+        assertEquals("[06][08][20]|", run(
+                List.of("01 WS-G.",
+                        "   03 WS-A PIC 99 VALUE ZERO.",
+                        "   03 WS-B PIC 99 VALUE ZERO.",
+                        "   03 WS-C PIC 99 VALUE ZERO."),
+                "MOVE 060820 TO WS-G.",
+                "DISPLAY '[' WS-A '][' WS-B '][' WS-C ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("英数字編集項目でも綴りのまま桁が配られる (FR-061)")
+    void aNumericLiteralMovedToAnEditedItemKeepsItsSpelling() {
+        // NC105A の MOVE-TEST-F1-84 である。019823 を XX0XXBXXX へ入れる
+        assertEquals("[01098 23 ]|", run(
+                List.of("01 WS-EDIT PIC XX0XXBXXX."),
+                "MOVE 019823 TO WS-EDIT.",
+                "DISPLAY '[' WS-EDIT ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("数字の受取項目では値である。綴りは関わらない (FR-061)")
+    void aNumericLiteralMovedToANumericItemIsStillItsValue() {
+        // 綴りを使うのは英数字の受取項目だけである。数字項目では小数点で位置が合う
+        assertEquals("[00123]|", run(
+                List.of("01 WS-N PIC 9(5)."),
+                "MOVE 0123 TO WS-N.",
+                "DISPLAY '[' WS-N ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
     @DisplayName("添字を書けば 1 個分である (FR-020)")
     void asubscriptedReferenceIsOneOccurrence() {
         // 表そのものを添字なしで指したときだけ、いま何個あるかで長さが決まる

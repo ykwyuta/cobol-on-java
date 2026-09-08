@@ -289,7 +289,8 @@ public final class InitializeImage {
             return codePage.encode(text.text());
         }
         if (value instanceof LiteralValue.Number number) {
-            return codePage.encode(number.value().toBigDecimal().toPlainString());
+            // 英数字の受取項目では<b>英数字定数として扱う</b>。値に直すと先頭の 0 が消える
+            return codePage.encode(number.source());
         }
         byte[] out = new byte[length];
         if (value instanceof LiteralValue.Repeated repeated) {
