@@ -320,11 +320,28 @@ class FileIoRelativeTest {
     // ---- 組み合わせの検査 ----
 
     @Test
-    @DisplayName("READ ... NEXT は動的アクセスだけである (FR-101)")
-    void readNextNeedsDynamicAccess() {
-        assertTrue(diagnostics(program("SEQUENTIAL",
+    @DisplayName("順アクセスでも NEXT と書いてよい。意味は変わらない (FR-101)")
+    void sequentialAccessMayAlsoSayNext(@TempDir Path directory) {
+        // 順アクセスの READ はもともと次のレコードを読む。NEXT は<b>印であって
+        // 指定ではない</b>。動的アクセスでだけ、鍵で読むのか順に読むのかを分ける。
+        // ここを「動的アクセスだけ」と狭く決めていて、正しいプログラムを断っていた
+        seed(directory);
+        assertEquals("aaa|ddd|", run(directory, program("SEQUENTIAL",
+                "    OPEN INPUT R-FILE.",
+                "    READ R-FILE NEXT AT END DISPLAY 'END'",
+                "        NOT AT END DISPLAY R-REC END-READ.",
+                "    READ R-FILE AT END DISPLAY 'END'",
+                "        NOT AT END DISPLAY R-REC END-READ.",
+                "    CLOSE R-FILE.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("乱アクセスに「次」は無い (FR-101)")
+    void randomAccessHasNoNextRecord() {
+        assertTrue(diagnostics(program("RANDOM",
                 "    READ R-FILE NEXT AT END CONTINUE END-READ.",
-                "    STOP RUN.")).toString().contains("ACCESS MODE IS DYNAMIC"));
+                "    STOP RUN.")).toString().contains("ACCESS MODE IS RANDOM"));
     }
 
     @Test

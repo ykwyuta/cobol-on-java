@@ -367,16 +367,19 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (checked != null && !FileStatus.NOT_READABLE.equals(checked)) {
             return checked;
         }
-        ByteKey wanted = new ByteKey(key.clone());
+        int declared = keyIndex == 0 ? primary.length() : alternates.get(keyIndex - 1).length();
+        if (key.length > declared) {
+            return FileStatus.NO_RECORD;
+        }
         if (keyIndex == 0) {
-            ByteKey found = locate(records.navigableKeySet(), wanted, relation);
+            ByteKey found = locate(records.navigableKeySet(), key, declared, relation);
             if (found == null) {
                 return FileStatus.NO_RECORD;
             }
             nextPrimary = found;
         } else {
             TreeMap<ByteKey, List<ByteKey>> index = indexes.get(keyIndex - 1);
-            ByteKey found = locate(index.navigableKeySet(), wanted, relation);
+            ByteKey found = locate(index.navigableKeySet(), key, declared, relation);
             if (found == null) {
                 return FileStatus.NO_RECORD;
             }
@@ -389,16 +392,43 @@ public final class IndexedDataSet implements KeyedDataSet {
         return FileStatus.OK;
     }
 
-    /** 関係を満たす鍵。小さいほうを探す関係では、満たす最後のものが位置になる。 */
-    private static ByteKey locate(java.util.NavigableSet<ByteKey> keys, ByteKey wanted,
-                                  KeyRelation relation) {
+    /**
+     * 関係を満たす鍵 (要件 FR-101)。
+     *
+     * <h2>短い鍵は「先頭が一致するもの」を指す</h2>
+     * <p>{@code START} に書く項目は、鍵と<b>同じ位置から始まって短くてよい</b>。
+     * 規格がそう決めている。短く書けば「先頭 n 文字が一致するレコード」を指す
+     * (総称鍵)。値そのものではなく<b>範囲</b>を指すことになる。
+     *
+     * <p>範囲は、書かれた値の後ろを {@code 0x00} で埋めた下端と {@code 0xFF} で埋めた
+     * 上端で表せる。あとは端から探すだけで、木の性質をそのまま使える。
+     * 端を作らずに 1 件ずつ先頭を比べると、鍵の多いファイルで遅くなる。
+     *
+     * @param wanted   書かれた値。宣言した鍵より短くてよい
+     * @param declared 宣言した鍵の長さ
+     */
+    private static ByteKey locate(java.util.NavigableSet<ByteKey> keys, byte[] wanted,
+                                  int declared, KeyRelation relation) {
+        ByteKey low = new ByteKey(padded(wanted, declared, (byte) 0x00));
+        ByteKey high = new ByteKey(padded(wanted, declared, (byte) 0xFF));
         return switch (relation) {
-            case EQUAL -> keys.contains(wanted) ? wanted : null;
-            case GREATER -> keys.higher(wanted);
-            case NOT_LESS -> keys.ceiling(wanted);
-            case LESS -> keys.lower(wanted);
-            case NOT_GREATER -> keys.floor(wanted);
+            case EQUAL -> {
+                ByteKey found = keys.ceiling(low);
+                yield found != null && found.compareTo(high) <= 0 ? found : null;
+            }
+            case GREATER -> keys.higher(high);
+            case NOT_LESS -> keys.ceiling(low);
+            case LESS -> keys.lower(low);
+            case NOT_GREATER -> keys.floor(high);
         };
+    }
+
+    /** 書かれた値の後ろを埋めて、宣言した鍵の長さに合わせる。 */
+    private static byte[] padded(byte[] wanted, int length, byte filler) {
+        byte[] out = new byte[length];
+        System.arraycopy(wanted, 0, out, 0, Math.min(wanted.length, length));
+        java.util.Arrays.fill(out, Math.min(wanted.length, length), length, filler);
+        return out;
     }
 
     // ---- 書く ----

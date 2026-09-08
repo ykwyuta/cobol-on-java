@@ -1458,6 +1458,20 @@ public final class ProgramGenerator {
         };
     }
 
+    /** 項目のバイト列を、番地と長さの組として積む。 */
+    private Runnable planKeyBytes(DataReference key, Origin origin) {
+        Runnable address = planAddress(key, origin);
+        OptionalInt length = lengthOf(key, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        int size = length.getAsInt();
+        return () -> {
+            address.run();
+            push(size);
+        };
+    }
+
     /** 数値項目の値を {@code int} として積む。相対レコード番号とレコード長に使う。 */
     private Runnable planKeyValue(DataReference key, Origin origin) {
         Runnable address = planAddress(key, origin);
@@ -1689,8 +1703,9 @@ public final class ProgramGenerator {
         Runnable status = planFileStatus(file, statement.origin(), slot, false,
                 statement.keyCheck() != null);
         boolean indexed = file.organization() == Organization.INDEXED;
+        // 索引編成では<b>書かれた項目</b>を渡す。鍵より短ければ総称鍵になる
         Runnable key = indexed
-                ? planRecordKey(file, statement.keyIndex(), statement.origin())
+                ? planKeyBytes(statement.key(), statement.origin())
                 : planKeyValue(statement.key(), statement.origin());
         if (status == null || key == null) {
             return;

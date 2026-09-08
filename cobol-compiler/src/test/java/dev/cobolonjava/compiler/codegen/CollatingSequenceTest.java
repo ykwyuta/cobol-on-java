@@ -133,6 +133,43 @@ class CollatingSequenceTest {
     }
 
     @Test
+    @DisplayName("2 文字以上の定数は 1 文字ずつが別の位置になる (FR-054)")
+    void aLiteralOfSeveralCharactersSpreadsOverThatManyPositions() {
+        // "123" は "1" "2" "3" と並べたのと同じである。1 つの位置へまとめると
+        // 照合順序が丸ごとずれる。ここを「1 文字でなければ誤り」と断っていた
+        assertEquals("F", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET DIGITS-FIRST IS \"123\"."),
+                TWO_LETTERS, COMPARE).substring(2));
+        // 1 文字ずつ別の位置なので、"2" は "1" より大きい
+        assertEquals("+00000200", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET DIGITS-FIRST IS \"123\"."),
+                List.of("01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = FUNCTION ORD(\"2\")."));
+    }
+
+    @Test
+    @DisplayName("THRU の範囲も 1 文字ずつが別の位置になる (FR-054)")
+    void aThruRangeSpreadsOverItsCharacters() {
+        // "A" THRU "C" は "A" "B" "C" と並べたのと同じである
+        assertEquals("+00000300", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS LETTERS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET LETTERS-FIRST IS \"A\" THRU \"C\"."),
+                List.of("01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = FUNCTION ORD(\"C\")."));
+    }
+
+    @Test
     @DisplayName("ALSO で並べた文字は同じ位置になる (FR-054)")
     void charactersJoinedByAlsoCompareEqual() {
         assertEquals("T", run(

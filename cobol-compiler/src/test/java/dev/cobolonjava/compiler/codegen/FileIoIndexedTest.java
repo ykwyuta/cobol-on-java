@@ -112,7 +112,9 @@ class FileIoIndexedTest {
             "FILE SECTION.",
             "FD  K-FILE.",
             "01  K-REC.",
-            "    05  K-ID   PIC X(3).",
+            "    05  K-ID.",
+            "        10  K-ID-HEAD PIC XX.",
+            "        10  K-ID-TAIL PIC X.",
             "    05  K-DEPT PIC XX.",
             "    05  K-NAME PIC XXX.",
             "WORKING-STORAGE SECTION.",
@@ -379,6 +381,47 @@ class FileIoIndexedTest {
                 "    05  S-ID PIC X(3).",
                 "PROCEDURE DIVISION.",
                 "    STOP RUN.")).toString().contains("requires ORGANIZATION IS INDEXED"));
+    }
+
+    @Test
+    @DisplayName("START の鍵は、先頭が同じなら短くてよい (FR-101)")
+    void startTakesAGenericKey(@TempDir Path directory) {
+        // 鍵と<b>同じ位置から始まって短い</b>項目は総称鍵であり、
+        // 「先頭 n 文字が一致するレコード」を指す。ここを「鍵そのものだけ」と
+        // 狭く決めていて、正しいプログラムを断っていた
+        seed(directory);
+        assertEquals("BBBY1two|CCCX1thr|", run(directory, program("DYNAMIC", NO_EXTRA,
+                "    OPEN INPUT K-FILE.",
+                "    MOVE 'BB' TO K-ID-HEAD.",
+                "    START K-FILE KEY IS NOT LESS THAN K-ID-HEAD",
+                "        INVALID KEY DISPLAY 'NONE'",
+                "    END-START.",
+                "    PERFORM UNTIL WS-DONE = 'Y'",
+                "        READ K-FILE NEXT",
+                "            AT END MOVE 'Y' TO WS-DONE",
+                "            NOT AT END DISPLAY K-REC",
+                "        END-READ",
+                "    END-PERFORM.",
+                "    CLOSE K-FILE.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("総称鍵の EQUAL は、先頭が一致する最初のレコードを指す (FR-101)")
+    void aGenericKeyOfEqualFindsTheFirstMatch(@TempDir Path directory) {
+        seed(directory);
+        assertEquals("BBBY1two|", run(directory, program("DYNAMIC", NO_EXTRA,
+                "    OPEN INPUT K-FILE.",
+                "    MOVE 'BB' TO K-ID-HEAD.",
+                "    START K-FILE KEY IS EQUAL TO K-ID-HEAD",
+                "        INVALID KEY DISPLAY 'NONE'",
+                "    END-START.",
+                "    READ K-FILE NEXT",
+                "        AT END DISPLAY 'END'",
+                "        NOT AT END DISPLAY K-REC",
+                "    END-READ.",
+                "    CLOSE K-FILE.",
+                "    STOP RUN.")));
     }
 
     @Test

@@ -113,21 +113,23 @@ final class Alphabet {
         boolean[] placed = new boolean[SIZE];
         int position = 0;
         for (CobolParser.AlphabetPositionContext entry : context.alphabetPosition()) {
-            List<Byte> characters = charactersOf(entry, origin, diagnostics);
-            if (characters == null) {
+            List<List<Byte>> positions = positionsOf(entry, origin, diagnostics);
+            if (positions == null) {
                 return null;
             }
-            for (byte character : characters) {
-                int value = character & 0xFF;
-                if (placed[value]) {
-                    diagnostics.add(new Diagnostic(origin,
-                            "a character appears twice in the alphabet"));
-                    return null;
+            for (List<Byte> sharing : positions) {
+                for (byte character : sharing) {
+                    int value = character & 0xFF;
+                    if (placed[value]) {
+                        diagnostics.add(new Diagnostic(origin,
+                                "a character appears twice in the alphabet"));
+                        return null;
+                    }
+                    placed[value] = true;
+                    table[value] = position;
                 }
-                placed[value] = true;
-                table[value] = position;
+                position++;
             }
-            position++;
         }
         // 書かれなかった文字は、コードページの並びのまま後ろへ続く
         for (int value = 0; value < SIZE; value++) {
@@ -148,42 +150,86 @@ final class Alphabet {
     }
 
     /**
-     * 1 つの位置に置く文字。{@code ALSO} で並べたものと {@code THRU} の範囲を展開する。
+     * 書かれた 1 項が取る位置の並び (要件 FR-054)。
+     *
+     * <p>1 項が<b>いくつの位置を取るか</b>は書き方で変わる。ここを取り違えると、
+     * 照合順序が丸ごとずれる。
+     *
+     * <ul>
+     *   <li>{@code "A" THRU "D"} — 範囲の 1 文字ずつが<b>別の位置</b>を取る</li>
+     *   <li>{@code "A" ALSO "a"} — 並べた文字が<b>1 つの位置を分け合う</b>。
+     *       等しいものとして比べられる</li>
+     *   <li>{@code "ABCD"} — 2 文字以上の定数は、1 文字ずつが<b>別の位置</b>を取る。
+     *       {@code "A" "B" "C" "D"} と並べたのと同じである</li>
+     * </ul>
+     *
+     * @return 位置ごとの文字の並び。読めなければ {@code null}
+     */
+    private static List<List<Byte>> positionsOf(CobolParser.AlphabetPositionContext entry,
+                                                Origin origin, List<Diagnostic> diagnostics) {
+        List<List<Byte>> positions = new ArrayList<>();
+        if (entry.THROUGH() != null || entry.THRU() != null) {
+            Byte first = characterOf(entry.literal(0), origin, diagnostics);
+            Byte last = characterOf(entry.literal(1), origin, diagnostics);
+            if (first == null || last == null) {
+                return null;
+            }
+            int from = first & 0xFF;
+            int to = last & 0xFF;
+            int step = from <= to ? 1 : -1;
+            for (int value = from; value != to + step; value += step) {
+                positions.add(List.of((byte) value));
+            }
+            return positions;
+        }
+        if (entry.literal().size() > 1) {
+            List<Byte> sharing = new ArrayList<>();
+            for (CobolParser.LiteralContext literal : entry.literal()) {
+                List<Byte> characters = charactersOf(literal, origin, diagnostics);
+                if (characters == null) {
+                    return null;
+                }
+                sharing.addAll(characters);
+            }
+            positions.add(sharing);
+            return positions;
+        }
+        List<Byte> characters = charactersOf(entry.literal(0), origin, diagnostics);
+        if (characters == null) {
+            return null;
+        }
+        for (byte character : characters) {
+            positions.add(List.of(character));
+        }
+        return positions;
+    }
+
+    /**
+     * 定数 1 個が表す文字の並び。
+     *
+     * <p>2 文字以上の定数は<b>その文字すべて</b>である。数字定数と figurative constant は
+     * 1 文字である。
      *
      * @return 読めなければ {@code null}
      */
-    private static List<Byte> charactersOf(CobolParser.AlphabetPositionContext entry,
-                                           Origin origin, List<Diagnostic> diagnostics) {
-        List<Byte> characters = new ArrayList<>();
-        Byte first = characterOf(entry.literal(0), origin, diagnostics);
-        if (first == null) {
+    private static List<Byte> charactersOf(CobolParser.LiteralContext context, Origin origin,
+                                           List<Diagnostic> diagnostics) {
+        LiteralValue value;
+        try {
+            value = LiteralValue.of(context);
+        } catch (RuntimeException e) {
+            diagnostics.add(new Diagnostic(origin, "invalid literal: " + context.getText()));
             return null;
         }
-        if (entry.THROUGH() == null && entry.THRU() == null) {
-            characters.add(first);
-            for (int i = 1; i < entry.literal().size(); i++) {
-                // ALSO で並べた文字はこの位置を分け合う
-                Byte also = characterOf(entry.literal(i), origin, diagnostics);
-                if (also == null) {
-                    return null;
-                }
-                characters.add(also);
+        if (value instanceof LiteralValue.Text text && text.text().length() > 1) {
+            List<Byte> characters = new ArrayList<>();
+            for (int i = 0; i < text.text().length(); i++) {
+                characters.add(CODE_PAGE.ch(text.text().charAt(i)));
             }
             return characters;
         }
-        Byte last = characterOf(entry.literal(1), origin, diagnostics);
-        if (last == null) {
-            return null;
-        }
-        // 範囲はコードページの並びで数える。THRU の 1 文字ずつが別の位置を取る形は
-        // 呼ぶ側が展開できないので、ここでは 1 つの位置にまとめず順に返す
-        int from = first & 0xFF;
-        int to = last & 0xFF;
-        int step = from <= to ? 1 : -1;
-        for (int value = from; value != to + step; value += step) {
-            characters.add((byte) value);
-        }
-        return characters;
+        Byte one = characterOf(context, origin, diagnostics);
+        return one == null ? null : List.of(one);
     }
 
     /**

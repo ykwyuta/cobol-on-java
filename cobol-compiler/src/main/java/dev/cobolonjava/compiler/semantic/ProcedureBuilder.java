@@ -2862,11 +2862,15 @@ public final class ProcedureBuilder {
             }
         }
         boolean next = context.NEXT() != null;
-        if (next && file.access() != FileDescription.Access.DYNAMIC) {
-            // NEXT と書けるのは動的アクセスだけである。ほかの様式では意味が決まっている
-            report(origin, "READ ... NEXT requires ACCESS MODE IS DYNAMIC");
+        if (next && file.access() == FileDescription.Access.RANDOM) {
+            // 乱アクセスに「次」は無い。読む相手は鍵が決めている
+            report(origin, "READ ... NEXT cannot be used with ACCESS MODE IS RANDOM: "
+                    + file.name());
             return null;
         }
+        // 順アクセスでも NEXT と書いてよい。<b>書いても意味は変わらない</b> —
+        // 順アクセスの READ はもともと次のレコードを読む。動的アクセスでだけ、
+        // 鍵で読むのか順に読むのかを分ける印になる
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
                 : bodyOf(context.atEndPhrase().branchBody());
@@ -2908,13 +2912,34 @@ public final class ProcedureBuilder {
         }
         List<FileDescription.RecordKey> keys = file.keys();
         for (int i = 0; i < keys.size(); i++) {
-            if (keys.get(i).reference().item() == reference.item()) {
+            if (matchesKey(keys.get(i), reference)) {
                 return i;
             }
         }
         report(origin, "not a RECORD KEY or ALTERNATE RECORD KEY of " + file.name() + ": "
                 + reference.item().name());
         return -1;
+    }
+
+    /**
+     * 書かれた項目が鍵を指しているか (要件 FR-101)。
+     *
+     * <p>鍵そのものでなくてもよい。<b>同じ位置から始まって、鍵より短ければ</b>それは
+     * 総称鍵であり、「先頭 n 文字が一致するレコード」を指す。規格がそう決めている。
+     * 検査スイートは鍵の前半だけを別名で切り出して {@code START} に書く。
+     */
+    private static boolean matchesKey(FileDescription.RecordKey key, DataReference written) {
+        if (key.reference().item() == written.item()) {
+            return true;
+        }
+        java.util.OptionalInt offset = written.absoluteOffset();
+        java.util.OptionalInt length = written.constantLength();
+        if (offset.isEmpty() || length.isEmpty()) {
+            return false;
+        }
+        java.util.OptionalInt keyOffset = key.reference().absoluteOffset();
+        return keyOffset.isPresent() && keyOffset.getAsInt() == offset.getAsInt()
+                && length.getAsInt() <= key.length();
     }
 
     /** その {@code READ} が鍵で引く形かどうか。動的アクセスでは {@code NEXT} の有無で決まる。 */
@@ -3092,7 +3117,8 @@ public final class ProcedureBuilder {
                 if (keyIndex < 0) {
                     return null;
                 }
-                key = file.keys().get(keyIndex).reference();
+                // 書かれた項目をそのまま渡す。鍵より短ければ総称鍵になる
+                key = resolver.resolve(context.identifier());
             } else {
                 key = resolver.resolve(context.identifier());
             }
