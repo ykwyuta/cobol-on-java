@@ -83,8 +83,17 @@ public record Population(Set<Character> options, XCards cards) {
         return replace(replace(pad(line, 8), 8, indicator), 7, '*');
     }
 
-    /** 12 桁目からの差し込み札を埋める。 */
+    /**
+     * 12 桁目からの差し込み札を埋める。
+     *
+     * <p><b>注釈になった行の札は要らない。</b>7 桁目の印で落とした行に札が載っていても、
+     * その行は動かないのだから埋めるものが無い。ここを見落として「札が足りない」と
+     * 数えると、<b>流せるプログラムを流さなくなる</b>。
+     */
     private String substituted(String line, Set<Integer> missing) {
+        if (at(line, 7) == '*' || at(line, 7) == '/') {
+            return line;
+        }
         if (!"XXXX".equals(range(line, 12, 15)) || at(line, 16) != 'X') {
             return line;
         }

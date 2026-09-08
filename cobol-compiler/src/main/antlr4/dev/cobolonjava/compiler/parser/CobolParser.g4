@@ -439,8 +439,14 @@ procedureParameter
 
 // 段落名を持たない文が先に来ることがある
 // 宣言部分は手続き部の先頭にあり、通常の流れでは通らない
+//
+// <b>章が始まったら、あとはすべて章の中である。</b>段落と章を混ぜて並べられる形
+// (procedureUnit* のような書き方) にすると、章の中の paragraph* を続けるか抜けるかが
+// 外側の繰り返しと区別できず、ANTLR が全文脈の予測に落ちる。CCVS85 の大きな
+// プログラムでは<b>それが指数時間になって返ってこなくなった</b>。規格でも
+// 手続き部の本体は「段落の並び」か「章の並び」のどちらかであり、混ざらない。
 procedureBody
-    : declarativesPart? sentence* procedureUnit*
+    : declarativesPart? sentence* paragraph* procedureSection*
     ;
 
 declarativesPart
@@ -464,9 +470,8 @@ useTarget
     | IDENTIFIER+
     ;
 
-procedureUnit
+procedureSection
     : sectionHeader sentence* paragraph*
-    | paragraph
     ;
 
 sectionHeader

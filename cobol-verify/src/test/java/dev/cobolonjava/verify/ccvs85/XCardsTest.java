@@ -36,9 +36,8 @@ class XCardsTest {
     @Test
     @DisplayName("用意していない番号は null である (NFR-040)")
     void anUnknownCardIsNotInvented() {
-        // 入出力のモジュールが使うファイルの札はまだ書いていない。
-        // 適当な値を返すと、処理系の失敗を道具が作ることになる
-        assertNull(XCards.defaults().text(14));
+        // 配布物に出てこない番号。適当な値を返すと、処理系の失敗を道具が作ることになる
+        assertNull(XCards.defaults().text(999));
     }
 
     @Test

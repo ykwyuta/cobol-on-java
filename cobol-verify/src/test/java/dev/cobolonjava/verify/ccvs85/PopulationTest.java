@@ -64,6 +64,18 @@ class PopulationTest {
     }
 
     @Test
+    @DisplayName("注釈になった行の札は要らない (NFR-040)")
+    void aCardOnACommentedOutLineIsNotNeeded() {
+        // 7 桁目の印で落とした行に札が載っていても、その行は動かない。
+        // 数えてしまうと、流せるプログラムを流さなくなる
+        Population.Result result = Population.plain(CARDS).apply(new Ccvs85Archive.Member(
+                Ccvs85Archive.Kind.COBOL, "NC101A", List.of("000100C    XXXXX999")));
+
+        assertEquals(Set.of(), result.missing());
+        assertTrue(result.text().startsWith("000100*C"), result.text());
+    }
+
+    @Test
     @DisplayName("注釈と継続はそのまま通す (NFR-040)")
     void commentsAndContinuationsAreLeftAlone() {
         assertEquals("032700* COMMENT", one(Population.plain(CARDS), "032700* COMMENT"));

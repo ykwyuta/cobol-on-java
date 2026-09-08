@@ -6,6 +6,9 @@ import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * ソースの束を翻訳にかけて、通ったかどうかを数える (要件 NFR-042)。
@@ -36,10 +39,31 @@ public final class CorpusRunner {
         CobolCompiler.Result compile(String fileName, String source);
     }
 
+    /**
+     * 1 本にかけてよい時間 (秒)。
+     *
+     * <p>翻訳は必ず終わらなければならない。終わらないものがあれば、それは<b>数え上げの
+     * 対象ではなく不具合</b>である。ここで待ち切って先へ進まないと、1 本の無限ループが
+     * 残り全部の測定を奪う。実際に、手続き部の文法が曖昧だったころ CCVS85 の大きな
+     * プログラム 1 本が返らず、測定が丸ごと止まった。
+     */
+    public static final long LIMIT_SECONDS = 60;
+
     private final Compilation compilation;
+    private final long limitSeconds;
 
     public CorpusRunner(Compilation compilation) {
+        this(compilation, LIMIT_SECONDS);
+    }
+
+    public CorpusRunner(Compilation compilation, long limitSeconds) {
         this.compilation = compilation;
+        this.limitSeconds = limitSeconds;
+    }
+
+    /** 時間の限りを変えた同じ道具。 */
+    public CorpusRunner withLimit(long seconds) {
+        return new CorpusRunner(compilation, seconds);
     }
 
     /** 写し句を持たない、素の処理系で流す。 */
@@ -60,15 +84,17 @@ public final class CorpusRunner {
     public record Source(String name, String group, String text) {
     }
 
-    /** 1 本を翻訳にかける。 */
+    /** 1 本を翻訳にかける。時間の限りを超えたら待つのをやめる。 */
     public CompileOutcome run(Source source) {
-        CobolCompiler.Result result;
-        try {
-            result = compilation.compile(source.name(), source.text());
-        } catch (RuntimeException | StackOverflowError | AssertionError thrown) {
+        Object outcome = awaited(source);
+        if (outcome == null) {
+            return CompileOutcome.timedOut(source.name(), source.group(), limitSeconds);
+        }
+        if (outcome instanceof Throwable thrown) {
             // 診断を出す道を通らずに外へ出た。これは処理系の欠陥である
             return CompileOutcome.crashed(source.name(), source.group(), thrown);
         }
+        CobolCompiler.Result result = (CobolCompiler.Result) outcome;
         if (result.succeeded()) {
             return CompileOutcome.compiled(source.name(), source.group());
         }
@@ -77,6 +103,39 @@ public final class CorpusRunner {
             diagnostics.add(diagnostic.toString());
         }
         return CompileOutcome.rejected(source.name(), source.group(), diagnostics);
+    }
+
+    /**
+     * 別の走脈で翻訳し、時間の限りまで待つ。
+     *
+     * @return 翻訳の結果、外へ出た例外、または時間切れなら {@code null}
+     */
+    private Object awaited(Source source) {
+        BlockingQueue<Object> done = new ArrayBlockingQueue<>(1);
+        Thread worker = new Thread(() -> {
+            Object outcome;
+            try {
+                outcome = compilation.compile(source.name(), source.text());
+            } catch (RuntimeException | StackOverflowError | AssertionError thrown) {
+                outcome = thrown;
+            }
+            done.offer(outcome);
+        }, "compile-" + source.name());
+        // 見捨てる走脈が処理系全体を道連れにしないよう、番人にはしない
+        worker.setDaemon(true);
+        worker.start();
+        try {
+            Object outcome = done.poll(limitSeconds, TimeUnit.SECONDS);
+            if (outcome == null) {
+                // 止まらない翻訳は割り込みでは止まらない。見捨てて次へ進む
+                worker.interrupt();
+            }
+            return outcome;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            worker.interrupt();
+            return null;
+        }
     }
 
     /** 束を流して数える。 */

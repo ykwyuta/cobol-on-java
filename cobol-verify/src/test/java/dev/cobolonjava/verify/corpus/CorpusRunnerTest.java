@@ -45,6 +45,26 @@ class CorpusRunnerTest {
     }
 
     @Test
+    @DisplayName("返ってこない翻訳は待ち切って壊れたと数える (NFR-042)")
+    void aCompilerThatNeverReturnsDoesNotStopTheCount() throws InterruptedException {
+        // 1 本が返らないだけで残り全部の測定が消える。待つのをやめて先へ進めなければ
+        // ならない。返ってこない翻訳は、断ることも通ることもできていないのだから壊れている
+        CorpusRunner runner = new CorpusRunner((name, text) -> {
+            try {
+                Thread.sleep(60_000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return ok();
+        }, 1);
+
+        CompileOutcome outcome = runner.run(source("SLOW.cbl"));
+
+        assertEquals(CompileOutcome.Status.CRASHED, outcome.status());
+        assertTrue(outcome.failure().contains("did not finish"), outcome.failure());
+    }
+
+    @Test
     @DisplayName("断ったものと壊れたものを分けて数える (NFR-042)")
     void refusingAndCrashingAreDifferent() {
         // 断ったのは「まだ書いていない機能」の一覧であり、壊れたのは「いま直す不具合」で

@@ -45,6 +45,17 @@ public record CompileOutcome(String name, String group, Status status,
         return new CompileOutcome(name, group, Status.REJECTED, List.copyOf(diagnostics), null);
     }
 
+    /**
+     * 返ってこなかった。
+     *
+     * <p>翻訳が時間切れになった。断りもせず通りもしないのだから、これは<b>壊れた</b>と
+     * 同じ扱いである。返ってこない翻訳系は、間違った答えを出す翻訳系より悪い。
+     */
+    public static CompileOutcome timedOut(String name, String group, long seconds) {
+        return new CompileOutcome(name, group, Status.CRASHED, List.of(),
+                "the compiler did not finish within " + seconds + " seconds");
+    }
+
     /** 壊れた。 */
     public static CompileOutcome crashed(String name, String group, Throwable thrown) {
         String failure = thrown.getClass().getSimpleName()

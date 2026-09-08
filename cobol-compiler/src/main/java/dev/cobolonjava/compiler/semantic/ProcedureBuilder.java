@@ -454,12 +454,11 @@ public final class ProcedureBuilder {
         if (!leading.isEmpty()) {
             paragraphs.add(new Paragraph(null, leading, leading.get(0).origin()));
         }
-        for (CobolParser.ProcedureUnitContext unit : body.procedureUnit()) {
-            if (unit.sectionHeader() != null) {
-                addSection(unit, paragraphs, sections);
-                continue;
-            }
-            addParagraph(unit.paragraph(0), paragraphs);
+        for (CobolParser.ParagraphContext paragraph : body.paragraph()) {
+            addParagraph(paragraph, paragraphs);
+        }
+        for (CobolParser.ProcedureSectionContext section : body.procedureSection()) {
+            addSection(section, paragraphs, sections);
         }
     }
 
@@ -475,7 +474,7 @@ public final class ProcedureBuilder {
         addParagraph(paragraph, paragraphs, 0);
     }
 
-    private void addSection(CobolParser.ProcedureUnitContext unit, List<Paragraph> paragraphs,
+    private void addSection(CobolParser.ProcedureSectionContext unit, List<Paragraph> paragraphs,
                             List<Section> sections) {
         String name = unit.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
         int segment = segmentOf(unit.sectionHeader());
