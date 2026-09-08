@@ -226,14 +226,9 @@ public final class ReferenceResolver {
         if (context.ALL() != null) {
             return new DataReference.Subscript.All();
         }
-        if (context.NUMBER() != null) {
-            try {
-                return new DataReference.Subscript.Constant(
-                        Integer.parseInt(context.NUMBER().getText()));
-            } catch (NumberFormatException e) {
-                report(origin, "a subscript must be an integer: " + context.NUMBER().getText());
-                return null;
-            }
+        if (!context.NUMBER().isEmpty()) {
+            Integer value = foldedConstant(context, origin);
+            return value == null ? null : new DataReference.Subscript.Constant(value);
         }
         DataItem item = resolveName(context.qualifiedDataName(), origin);
         if (item == null) {
@@ -252,6 +247,38 @@ public final class ReferenceResolver {
      *
      * @return 書かれていなければ 0。読めなければ {@code null}
      */
+    /**
+     * 定数どうしの足し引きを畳む。
+     *
+     * <p>{@code TEST-1-DATA (10 - 7: 6 + 2 - 5)} のように、添字と部分参照には
+     * 算術式を書ける (NC224A)。値が翻訳時に決まるなら、畳んで 1 つの数にしてしまえば
+     * <b>ここから先の道は何も変わらない</b>。
+     *
+     * @return 畳めなければ {@code null}
+     */
+    private Integer foldedConstant(CobolParser.SubscriptContext context, Origin origin) {
+        // 演算子の種類ごとに数えると「+ のあとの -」を取り違える。子を書かれた順に見る
+        int value = 0;
+        boolean subtract = false;
+        boolean first = true;
+        try {
+            for (int i = 0; i < context.getChildCount(); i++) {
+                String text = context.getChild(i).getText();
+                if (text.equals("+") || text.equals("-")) {
+                    subtract = text.equals("-");
+                    continue;
+                }
+                int next = Integer.parseInt(text);
+                value = first ? next : (subtract ? value - next : value + next);
+                first = false;
+            }
+        } catch (NumberFormatException e) {
+            report(origin, "a subscript must be an integer: " + context.getText());
+            return null;
+        }
+        return value;
+    }
+
     private Integer offsetOf(CobolParser.RelativeOffsetContext context, Origin origin) {
         if (context == null) {
             return 0;

@@ -676,8 +676,11 @@ referenceModifier
     : LPAREN subscript COLON subscript? RPAREN
     ;
 
+// 定数どうしの足し引きを書ける。NC224A は「TEST-1-DATA (10 - 7: 6 + 2 - 5)」と書く。
+// 値は翻訳時に決まるので、畳んで 1 つの数にする。掛け算と割り算は<b>まだ読まない</b> —
+// 左から畳むだけでは優先順位が合わないからである
 subscript
-    : NUMBER
+    : NUMBER ((PLUS_SIGN | MINUS_SIGN) NUMBER)*
     | ALL
     | qualifiedDataName relativeOffset?
     ;
@@ -1005,9 +1008,15 @@ tallyingCounter
     : identifier FOR tallyingSpec+
     ;
 
+// ALL / LEADING は<b>そのあとの被演算子すべてに効く</b>。書き直さなくてよい。
+// NC216A は「FOR LEADING "S" AFTER WS-Y "S" AFTER "U" ...」と 4 組を並べている
 tallyingSpec
     : CHARACTERS inspectRegion*
-    | (ALL | LEADING) inspectOperand inspectRegion*
+    | (ALL | LEADING) tallyingOperand+
+    ;
+
+tallyingOperand
+    : inspectOperand inspectRegion*
     ;
 
 replacingPhrase
@@ -1016,7 +1025,11 @@ replacingPhrase
 
 replacingSpec
     : CHARACTERS BY inspectOperand inspectRegion*
-    | (ALL | LEADING | FIRST) inspectOperand BY inspectOperand inspectRegion*
+    | (ALL | LEADING | FIRST) replacingOperand+
+    ;
+
+replacingOperand
+    : inspectOperand BY inspectOperand inspectRegion*
     ;
 
 convertingPhrase

@@ -188,6 +188,25 @@ class InspectGenerationTest {
     }
 
     @Test
+    @DisplayName("ALL / LEADING は、そのあとの被演算子すべてに効く (FR-065)")
+    void allAndLeadingCarryOverToLaterOperands() {
+        // NC216A が「FOR LEADING "S" AFTER WS-Y "S" AFTER "U" ...」と 4 組を並べている。
+        // ここでは A と B を 1 つの ALL で並べる。数えるのは 3 個 (A A B) である
+        assertEquals("AABAA03", run(
+                List.of("01 WS-D PIC X(5) VALUE 'AABAA'.",
+                        "01 WS-N PIC 9(2) VALUE 0."),
+                "INSPECT WS-D TALLYING WS-N FOR ALL 'A' BEFORE 'B' 'B'."));
+    }
+
+    @Test
+    @DisplayName("REPLACING でも指定は後ろへ効く (FR-065)")
+    void replacingCarriesOverToLaterOperands() {
+        assertEquals("XXYXX", run(
+                List.of("01 WS-D PIC X(5) VALUE 'AABAA'."),
+                "INSPECT WS-D REPLACING ALL 'A' BY 'X' 'B' BY 'Y'."));
+    }
+
+    @Test
     @DisplayName("数値でない計数は誤りとして報告する (FR-065)")
     void aNonNumericCounterIsReported() {
         CobolCompiler.Result result = compile(

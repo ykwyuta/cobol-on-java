@@ -201,6 +201,28 @@ class SubscriptGenerationTest {
     }
 
     @Test
+    @DisplayName("添字と部分参照に定数の足し引きを書ける (FR-024, FR-025)")
+    void constantArithmeticIsFoldedInASubscript() {
+        // NC224A は「TEST-1-DATA (10 - 7: 6 + 2 - 5)」と書く。3 桁目から 3 文字である。
+        // 足し引きの順は左からで、「6 + 2 - 5」は 3 になる
+        assertEquals("CDE", run(
+                List.of("01 WS-A PIC X(8) VALUE 'ABCDEFGH'.",
+                        "01 WS-R PIC X(3)."),
+                "MOVE WS-A (10 - 7: 6 + 2 - 5) TO WS-R.").substring(8));
+    }
+
+    @Test
+    @DisplayName("表の添字にも定数の足し引きを書ける (FR-024)")
+    void constantArithmeticIsFoldedInATableSubscript() {
+        assertEquals("C", run(
+                List.of("01 WS-T.",
+                        "   05 WS-E OCCURS 4 TIMES PIC X.",
+                        "01 WS-R PIC X."),
+                "MOVE 'ABCD' TO WS-T",
+                "MOVE WS-E (1 + 3 - 1) TO WS-R.").substring(4));
+    }
+
+    @Test
     @DisplayName("条件の中でも添字が使える (FR-024, FR-046)")
     void aSubscriptWorksInsideACondition() {
         assertEquals("T", run(

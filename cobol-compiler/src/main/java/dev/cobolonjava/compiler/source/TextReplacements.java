@@ -64,7 +64,18 @@ public final class TextReplacements {
     }
 
     /**
-     * 置換の被演算子を読む。擬似テキスト {@code ==...==} は語の列、それ以外は 1 語である。
+     * 置換の被演算子を読む。
+     *
+     * <p>擬似テキスト {@code ==...==} は語の列である。それ以外は<b>一意名 1 個</b>で
+     * あって、1 語とは限らない。規格は修飾 ({@code OF} / {@code IN}) と添字を許している。
+     *
+     * <pre>
+     * REPLACING FALSE-DATA-1 BY TRUE-Q-04 OF TRUE-Q-03 IN TRUE-Q-02
+     *           FALSE-DATA-3 BY Z (2, 1, 1)
+     * </pre>
+     *
+     * <p>1 語しか読まないと、続く {@code OF} を次の被演算子と読んでしまい
+     * 「{@code BY} が無い」と断ってしまう (SM202A / SM206A がそれで落ちていた)。
      *
      * @param start 被演算子の開始位置
      * @return 読み取った語の列と、被演算子の最後の語の位置
@@ -74,7 +85,7 @@ public final class TextReplacements {
             throw new SourceFormatException(origin, "a replacement operand is missing");
         }
         if (words.get(start).kind() != TextWordKind.PSEUDO_DELIMITER) {
-            return new Operand(List.of(words.get(start)), start);
+            return readName(words, start, origin);
         }
         List<TextWord> collected = new ArrayList<>();
         int i = start + 1;
@@ -86,6 +97,40 @@ public final class TextReplacements {
             throw new SourceFormatException(origin, "pseudo-text is not terminated by ==");
         }
         return new Operand(collected, i);
+    }
+
+    /** 修飾と添字を含む一意名 1 個を読む。 */
+    private static Operand readName(List<TextWord> words, int start, Origin origin) {
+        List<TextWord> collected = new ArrayList<>();
+        collected.add(words.get(start));
+        int i = start + 1;
+        while (i + 1 < words.size()
+                && (words.get(i).isWord("OF") || words.get(i).isWord("IN"))) {
+            collected.add(words.get(i));
+            collected.add(words.get(i + 1));
+            i += 2;
+        }
+        if (i < words.size() && words.get(i).isSeparator('(')) {
+            int depth = 0;
+            while (i < words.size()) {
+                TextWord word = words.get(i);
+                collected.add(word);
+                i++;
+                if (word.isSeparator('(')) {
+                    depth++;
+                } else if (word.isSeparator(')')) {
+                    depth--;
+                    if (depth == 0) {
+                        break;
+                    }
+                }
+            }
+            if (depth != 0) {
+                throw new SourceFormatException(origin,
+                        "a replacement operand has an unclosed subscript");
+            }
+        }
+        return new Operand(collected, i - 1);
     }
 
     /**

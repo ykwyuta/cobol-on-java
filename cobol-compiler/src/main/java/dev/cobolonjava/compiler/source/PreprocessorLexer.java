@@ -73,11 +73,32 @@ public final class PreprocessorLexer {
 
     private static boolean isWordCharacter(String text, int i) {
         char c = text.charAt(i);
+        if (insideNumber(text, i)) {
+            return true;
+        }
         if (c == ' ' || c == '\'' || c == '"' || SEPARATOR_CHARS.indexOf(c) >= 0) {
             return false;
         }
         // 擬似テキストの区切りは語の一部にしない
         return !(c == '=' && i + 1 < text.length() && text.charAt(i + 1) == '=');
+    }
+
+    /**
+     * 数の途中の小数点 (と、小数点として使うコンマ) か。
+     *
+     * <p>規格は「終止符・コンマ・セミコロンは<b>すぐあとに空白が続くとき</b>区切りである」
+     * と決めている。{@code +000004.99} の中の点は数の一部であり、区切りではない。
+     * 切ってしまうと、残った {@code .99} が<b>次の文へ紛れ込む</b>
+     * (SM202A の COPY REPLACING がそれで壊れていた)。
+     *
+     * <p>数字に挟まれているかどうかで見分ける。文の終止符が数字のすぐ後ろに来ることは
+     * あるが、そのときは<b>後ろが数字ではない</b>ので区切りのままである。
+     */
+    private static boolean insideNumber(String text, int i) {
+        char c = text.charAt(i);
+        return (c == '.' || c == ',')
+                && i > 0 && Character.isDigit(text.charAt(i - 1))
+                && i + 1 < text.length() && Character.isDigit(text.charAt(i + 1));
     }
 
     private static int scanLiteral(String text, int start, char quote, NormalizedSource source) {

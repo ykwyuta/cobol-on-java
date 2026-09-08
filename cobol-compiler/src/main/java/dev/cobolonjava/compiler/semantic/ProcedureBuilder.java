@@ -1094,21 +1094,23 @@ public final class ProcedureBuilder {
                     return null;
                 }
                 for (CobolParser.TallyingSpecContext spec : counter.tallyingSpec()) {
-                    Statement.Inspect.InspectClause clause = tallyingSpecOf(spec, into, origin);
-                    if (clause == null) {
+                    List<Statement.Inspect.InspectClause> found =
+                            tallyingSpecOf(spec, into, origin);
+                    if (found == null) {
                         return null;
                     }
-                    clauses.add(clause);
+                    clauses.addAll(found);
                 }
             }
         }
         if (context.replacingPhrase() != null) {
-            for (CobolParser.ReplacingSpecContext spec : context.replacingPhrase().replacingSpec()) {
-                Statement.Inspect.InspectClause clause = replacingSpecOf(spec, origin);
-                if (clause == null) {
+            for (CobolParser.ReplacingSpecContext spec
+                    : context.replacingPhrase().replacingSpec()) {
+                List<Statement.Inspect.InspectClause> found = replacingSpecOf(spec, origin);
+                if (found == null) {
                     return null;
                 }
-                clauses.add(clause);
+                clauses.addAll(found);
             }
         }
 
@@ -1126,42 +1128,43 @@ public final class ProcedureBuilder {
         return new Statement.Inspect(target, clauses, converting, origin);
     }
 
-    private Statement.Inspect.InspectClause tallyingSpecOf(CobolParser.TallyingSpecContext context,
-                                                           DataReference counter, Origin origin) {
-        Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
-        if (region == null) {
-            return null;
-        }
+    /**
+     * {@code TALLYING} の 1 節。
+     *
+     * <p>{@code ALL} / {@code LEADING} は<b>そのあとの被演算子すべてに効く</b>。
+     * 被演算子ごとに書き直す必要はない (NC216A)。だから節 1 つから数え方が複数出る。
+     */
+    private List<Statement.Inspect.InspectClause> tallyingSpecOf(
+            CobolParser.TallyingSpecContext context, DataReference counter, Origin origin) {
         if (context.CHARACTERS() != null) {
-            return new Statement.Inspect.InspectClause(
-                    Statement.Inspect.Kind.CHARACTERS, null, null, counter, region);
-        }
-        Operand pattern = inspectOperandOf(context.inspectOperand(), origin);
-        if (pattern == null) {
-            return null;
+            Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
+            return region == null ? null : List.of(new Statement.Inspect.InspectClause(
+                    Statement.Inspect.Kind.CHARACTERS, null, null, counter, region));
         }
         Statement.Inspect.Kind kind = context.ALL() != null
                 ? Statement.Inspect.Kind.ALL
                 : Statement.Inspect.Kind.LEADING;
-        return new Statement.Inspect.InspectClause(kind, pattern, null, counter, region);
+        List<Statement.Inspect.InspectClause> clauses = new ArrayList<>();
+        for (CobolParser.TallyingOperandContext operand : context.tallyingOperand()) {
+            Statement.Inspect.RegionSpec region = regionOf(operand.inspectRegion(), origin);
+            Operand pattern = inspectOperandOf(operand.inspectOperand(), origin);
+            if (region == null || pattern == null) {
+                return null;
+            }
+            clauses.add(new Statement.Inspect.InspectClause(kind, pattern, null, counter, region));
+        }
+        return clauses;
     }
 
-    private Statement.Inspect.InspectClause replacingSpecOf(
+    /** {@code REPLACING} の 1 節。{@code TALLYING} と同じく指定が後ろへ効く。 */
+    private List<Statement.Inspect.InspectClause> replacingSpecOf(
             CobolParser.ReplacingSpecContext context, Origin origin) {
-        Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
-        if (region == null) {
-            return null;
-        }
-        List<CobolParser.InspectOperandContext> operands = context.inspectOperand();
         if (context.CHARACTERS() != null) {
-            Operand to = inspectOperandOf(operands.get(0), origin);
-            return to == null ? null : new Statement.Inspect.InspectClause(
-                    Statement.Inspect.Kind.CHARACTERS, null, to, null, region);
-        }
-        Operand pattern = inspectOperandOf(operands.get(0), origin);
-        Operand to = inspectOperandOf(operands.get(1), origin);
-        if (pattern == null || to == null) {
-            return null;
+            Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
+            Operand to = inspectOperandOf(context.inspectOperand(), origin);
+            return region == null || to == null ? null : List.of(
+                    new Statement.Inspect.InspectClause(
+                            Statement.Inspect.Kind.CHARACTERS, null, to, null, region));
         }
         Statement.Inspect.Kind kind;
         if (context.ALL() != null) {
@@ -1171,7 +1174,17 @@ public final class ProcedureBuilder {
         } else {
             kind = Statement.Inspect.Kind.FIRST;
         }
-        return new Statement.Inspect.InspectClause(kind, pattern, to, null, region);
+        List<Statement.Inspect.InspectClause> clauses = new ArrayList<>();
+        for (CobolParser.ReplacingOperandContext operand : context.replacingOperand()) {
+            Statement.Inspect.RegionSpec region = regionOf(operand.inspectRegion(), origin);
+            Operand pattern = inspectOperandOf(operand.inspectOperand(0), origin);
+            Operand to = inspectOperandOf(operand.inspectOperand(1), origin);
+            if (region == null || pattern == null || to == null) {
+                return null;
+            }
+            clauses.add(new Statement.Inspect.InspectClause(kind, pattern, to, null, region));
+        }
+        return clauses;
     }
 
     /** {@code BEFORE} / {@code AFTER} の指定。書かれていなければ項目の全体になる。 */

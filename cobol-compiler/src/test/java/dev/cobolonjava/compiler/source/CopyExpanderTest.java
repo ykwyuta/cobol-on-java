@@ -74,6 +74,42 @@ class CopyExpanderTest {
     }
 
     @Test
+    @DisplayName("置換の相手は修飾できる (FR-090)")
+    void aReplacementOperandMayBeQualified() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("MOVE FALSE-DATA TO AREA-1."));
+
+        // 一意名は 1 語とは限らない。1 語しか読まないと続く OF を次の相手と読んでしまい、
+        // 「BY が無い」と断ってしまう (SM202A)
+        assertEquals("MOVE TRUE-Q-04 OF TRUE-Q-03 IN TRUE-Q-02 TO AREA-1.",
+                expand(resolver,
+                        "COPY REC REPLACING FALSE-DATA BY TRUE-Q-04 OF TRUE-Q-03",
+                        "   IN TRUE-Q-02.").text());
+    }
+
+    @Test
+    @DisplayName("置換の相手に添字を書ける (FR-090)")
+    void aReplacementOperandMayBeSubscripted() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("MOVE FALSE-DATA TO AREA-3."));
+
+        assertEquals("MOVE Z (2, 1, 1) TO AREA-3.",
+                expand(resolver, "COPY REC REPLACING FALSE-DATA BY Z (2, 1, 1).").text());
+    }
+
+    @Test
+    @DisplayName("数の途中の小数点は区切りではない (FR-090)")
+    void aDecimalPointInsideANumberIsNotASeparator() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("MOVE FALSE-DATA TO AREA-4. GO TO NEXT-PARA."));
+
+        // 「+000004.99.」の最初の点は数の一部である。切ってしまうと残った「.99」が
+        // 次の文へ紛れ込む (SM202A がそれで壊れていた)
+        assertEquals("MOVE +000004.99 TO AREA-4. GO TO NEXT-PARA.",
+                expand(resolver, "COPY REC REPLACING FALSE-DATA BY +000004.99.").text());
+    }
+
+    @Test
     @DisplayName("擬似テキストは語の並びを指定する (FR-090)")
     void pseudoTextMatchesASequenceOfWords() {
         MapCopyBookResolver resolver = new MapCopyBookResolver()
