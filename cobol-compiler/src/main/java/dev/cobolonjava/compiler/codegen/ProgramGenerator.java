@@ -1228,8 +1228,10 @@ public final class ProgramGenerator {
                 }
                 : () -> {
                     run.visitVarInsn(Opcodes.ALOAD, 2);
+                    // 受取項目が 1 レコードに収まらなければ、収まるまで読む (要件 FR-090)
+                    push(length.getAsInt());
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "acceptLine",
-                            "(" + Type.getDescriptor(ProgramContext.class) + ")[B", false);
+                            "(" + Type.getDescriptor(ProgramContext.class) + "I)[B", false);
                 };
 
         if (statement.kind() == MoveRules.Kind.ALPHANUMERIC) {

@@ -1288,13 +1288,49 @@ public final class Ops {
     }
 
     /**
-     * {@code ACCEPT} が端末から読む 1 行 (要件 FR-060)。
+     * {@code ACCEPT} の送出側の 1 レコードの桁数 (要件 FR-090)。
      *
-     * <p>読んだ文字を実行時のコードページのバイト列へ直す。受け取る項目への詰め方は
-     * 普通の転記と同じである。
+     * <p>ホストの {@code SYSIN} は 80 桁のレコードの並びである。読んだ 1 行はここまで
+     * 空白で埋め、超えた分は切り捨てる。
+     *
+     * <p>この桁数は<b>検査スイートが証拠を出している</b>。NC204M の ACC-TEST-F1-13 は
+     * 200 桁の項目を 1 回の {@code ACCEPT} で埋め、期待する中身の 0 桁目・80 桁目・
+     * 160 桁目に {@code D} を置いている。3 本のレコードの<b>先頭</b>である。
      */
-    public static byte[] acceptLine(ProgramContext context) {
-        return context.codePage().encode(context.readLine());
+    public static final int ACCEPT_RECORD = 80;
+
+    /**
+     * {@code ACCEPT} が読む送出データ (要件 FR-060, FR-090)。
+     *
+     * <p>受取項目が 1 レコードに収まらなければ、<b>収まるまでレコードを読む</b>。
+     * 200 桁の項目なら 80 桁を 3 本読む。読んだ文字は実行時のコードページのバイト列へ
+     * 直す。受け取る項目への詰め方は普通の転記と同じである。
+     *
+     * <p>入力が尽きたらそこで止める。1 本も読めなければ長さ 0 のバイト列になり、
+     * 英数字なら空白で埋まり、数字なら {@code 0} になる (暫定判断 P-083)。
+     *
+     * @param length 受取項目のバイト長
+     */
+    public static byte[] acceptLine(ProgramContext context, int length) {
+        if (length <= ACCEPT_RECORD) {
+            return context.codePage().encode(context.readLine());
+        }
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        for (int taken = 0; taken < length; taken += ACCEPT_RECORD) {
+            String line = context.readLine();
+            if (line.isEmpty()) {
+                break;
+            }
+            byte[] record = new byte[ACCEPT_RECORD];
+            // 短い札は<b>コードページの空白</b>で埋める。0x00 で埋めると、次の札が
+            // 81 桁目から始まるところまでは合っていても中身が別物になる
+            Arrays.fill(record, context.codePage().space());
+            byte[] typed = context.codePage().encode(line);
+            System.arraycopy(typed, 0, record, 0,
+                    Math.min(typed.length, ACCEPT_RECORD));
+            out.write(record, 0, ACCEPT_RECORD);
+        }
+        return out.toByteArray();
     }
 
     /**
