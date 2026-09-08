@@ -280,4 +280,22 @@ class InitializeGenerationTest {
                         "   05 WS-M PIC 9(3)."),
                 "INITIALIZE WS-R REPLACING NUMERIC DATA BY WS-N."));
     }
+
+    @Test
+    @DisplayName("英数字編集項目の挿入文字は INITIALIZE でも残る (FR-060)")
+    void anAlphanumericEditedItemKeepsItsInsertionCharacters() {
+        // 空白を入れるだけに見えて、挿入文字はその場所に残る。
+        // XXBXX/XX なら "     /  " である (NC223A の INI-TEST-GF-1-4)
+        assertEquals("     /  ", run(
+                List.of("01 WS-G.", "   03 WS-E PIC XXBXX/XX."),
+                "INITIALIZE WS-G."));
+    }
+
+    @Test
+    @DisplayName("REPLACING ALPHANUMERIC-EDITED でも挿入文字は残る (FR-060)")
+    void replacingAnAlphanumericEditedItemStillInserts() {
+        assertEquals("AB CD/EF", run(
+                List.of("01 WS-G.", "   03 WS-E PIC XXBXX/XX."),
+                "INITIALIZE WS-G REPLACING ALPHANUMERIC-EDITED BY 'ABCDEF'."));
+    }
 }

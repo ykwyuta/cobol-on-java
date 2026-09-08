@@ -7,6 +7,7 @@ import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
+import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.ArrayList;
@@ -211,6 +212,10 @@ public final class InitializeImage {
             DataCategory category = DataCategory.of(item);
             if (category == DataCategory.NUMERIC_EDITED) {
                 Ops.moveNumericEdited(numberOf(item, value), item.picture(), scratch, 0, codePage);
+            } else if (category == DataCategory.ALPHANUMERIC_EDITED) {
+                // 挿入文字はそのまま残る。SPACES を入れても XXBXX/XX は "     /  " である
+                Ops.moveAlphanumericEdited(textOf(value, dataPositions(item.picture())),
+                        item.picture(), scratch, 0, codePage);
             } else if (category.isNumeric()) {
                 Ops.moveNumeric(numberOf(item, value), numericItemOf(item), scratch, 0);
             } else {
@@ -225,6 +230,17 @@ public final class InitializeImage {
         for (int i = 0; i < length; i++) {
             written[at + i] = true;
         }
+    }
+
+    /** 英数字編集項目の<b>文字位置</b>の数。挿入文字は数えない。 */
+    private static int dataPositions(Picture picture) {
+        int count = 0;
+        for (Picture.Cell cell : picture.cells()) {
+            if (cell.kind() != Picture.Kind.INSERT) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private NumericItem numericItemOf(DataItem item) {
