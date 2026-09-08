@@ -2939,15 +2939,19 @@ public final class ProgramGenerator {
      * {@code WITH TEST AFTER} なら中身を 1 度実行してから条件を見る。
      */
     private void planUntil(Statement.Perform statement, Runnable once, List<Runnable> body) {
+        // 条件を見るたびに、そこで指した名前を指し直したことになる (要件 FR-193)
+        List<Runnable> watched = planStatements(statement.debug());
         body.add(() -> {
             Label top = new Label();
             Label end = new Label();
             run.visitLabel(top);
             if (!statement.testAfter()) {
+                watched.forEach(Runnable::run);
                 emitCondition(statement.until(), end, true);
             }
             once.run();
             if (statement.testAfter()) {
+                watched.forEach(Runnable::run);
                 emitCondition(statement.until(), end, true);
             }
             run.visitJumpInsn(Opcodes.GOTO, top);
@@ -2969,30 +2973,53 @@ public final class ProgramGenerator {
         List<Statement.Perform.Varying> levels = statement.varying();
         List<Runnable> set = new ArrayList<>();
         List<Runnable> step = new ArrayList<>();
+        List<List<Runnable>> tests = new ArrayList<>();
         for (Statement.Perform.Varying level : levels) {
+            tests.add(planStatements(level.debugTest()));
             Runnable initialize = planStore(level.target(),
                     planSourceDecimal(level.from(), statement.origin()), statement.origin());
             Runnable increment = planIncrement(level, statement.origin());
             if (initialize == null || increment == null) {
                 return;
             }
-            set.add(initialize);
-            step.add(increment);
+            // その段で指した名前は<b>置き直すたび</b>に指し直したことになる (要件 FR-193)
+            List<Runnable> watched = planStatements(level.debug());
+            if (watched.isEmpty()) {
+                set.add(initialize);
+                step.add(increment);
+            } else {
+                set.add(() -> {
+                    initialize.run();
+                    watched.forEach(Runnable::run);
+                });
+                step.add(() -> {
+                    increment.run();
+                    watched.forEach(Runnable::run);
+                });
+            }
         }
 
         int depth = levels.size();
         body.add(() -> {
             set.forEach(Runnable::run);
             if (statement.testAfter()) {
-                emitVaryingTestAfter(levels, set, step, once);
+                emitVaryingTestAfter(levels, set, step, tests, once);
             } else {
-                emitVaryingTestBefore(levels, set, step, once, depth);
+                emitVaryingTestBefore(levels, set, step, tests, once, depth);
             }
         });
     }
 
+    /** 段の条件を見る。見るたびに、そこで指した名前を指し直したことになる (要件 FR-193)。 */
+    private void emitVaryingTest(Statement.Perform.Varying level, List<Runnable> watched,
+                                 Label exhausted) {
+        watched.forEach(Runnable::run);
+        emitCondition(level.until(), exhausted, true);
+    }
+
     private void emitVaryingTestBefore(List<Statement.Perform.Varying> levels, List<Runnable> set,
-                                       List<Runnable> step, Runnable once, int depth) {
+                                       List<Runnable> step, List<List<Runnable>> tests,
+                                       Runnable once, int depth) {
         Label end = new Label();
         Label[] test = new Label[depth];
         Label[] exhausted = new Label[depth];
@@ -3003,7 +3030,7 @@ public final class ProgramGenerator {
         }
         for (int k = 0; k < depth; k++) {
             run.visitLabel(test[k]);
-            emitCondition(levels.get(k).until(), exhausted[k], true);
+            emitVaryingTest(levels.get(k), tests.get(k), exhausted[k]);
         }
         once.run();
         step.get(depth - 1).run();
@@ -3018,13 +3045,14 @@ public final class ProgramGenerator {
     }
 
     private void emitVaryingTestAfter(List<Statement.Perform.Varying> levels, List<Runnable> set,
-                                      List<Runnable> step, Runnable once) {
+                                      List<Runnable> step, List<List<Runnable>> tests,
+                                      Runnable once) {
         Label top = new Label();
         run.visitLabel(top);
         once.run();
         for (int k = levels.size() - 1; k >= 0; k--) {
             Label exhausted = new Label();
-            emitCondition(levels.get(k).until(), exhausted, true);
+            emitVaryingTest(levels.get(k), tests.get(k), exhausted);
             step.get(k).run();
             run.visitJumpInsn(Opcodes.GOTO, top);
             run.visitLabel(exhausted);

@@ -891,12 +891,20 @@ public sealed interface Statement {
      * @param body      その場に書いた文。段落を呼ぶ形では空
      */
     record Perform(String target, String through, Operand times, Condition until,
-                   boolean testAfter, List<Varying> varying, List<Statement> body, Origin origin)
+                   boolean testAfter, List<Varying> varying, List<Statement> body,
+                   List<Statement> debug, Origin origin)
             implements Statement {
+
+        public Perform(String target, String through, Operand times, Condition until,
+                       boolean testAfter, List<Varying> varying, List<Statement> body,
+                       Origin origin) {
+            this(target, through, times, until, testAfter, varying, body, List.of(), origin);
+        }
 
         public Perform {
             varying = List.copyOf(varying);
             body = List.copyOf(body);
+            debug = List.copyOf(debug);
         }
 
         /** 段落を呼ぶ形かどうか。 */
@@ -915,7 +923,17 @@ public sealed interface Statement {
          * @param by     1 回ごとに足す値
          * @param until  やめる条件
          */
-        public record Varying(DataReference target, Operand from, Operand by, Condition until) {
+        public record Varying(DataReference target, Operand from, Operand by, Condition until,
+                              List<Statement> debug, List<Statement> debugTest) {
+
+            public Varying {
+                debug = List.copyOf(debug);
+                debugTest = List.copyOf(debugTest);
+            }
+
+            public Varying(DataReference target, Operand from, Operand by, Condition until) {
+                this(target, from, by, until, List.of(), List.of());
+            }
         }
     }
 }

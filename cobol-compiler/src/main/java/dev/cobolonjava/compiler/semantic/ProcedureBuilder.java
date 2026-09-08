@@ -3,6 +3,7 @@ package dev.cobolonjava.compiler.semantic;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.OpenMode;
@@ -47,7 +48,7 @@ public final class ProcedureBuilder {
      * @param files     見張るファイルの名前 (書かれたとおり)
      */
     private record DebugSection(String first, String last, boolean all, Set<String> names,
-                                Set<String> files) {
+                                Set<String> files, Set<DataItem> items, Set<DataItem> allRefs) {
     }
 
     private final List<DebugSection> debugSections = new ArrayList<>();
@@ -747,6 +748,8 @@ public final class ProcedureBuilder {
         boolean all = false;
         Set<String> names = new LinkedHashSet<>();
         Set<String> watchedFiles = new LinkedHashSet<>();
+        Set<DataItem> items = new LinkedHashSet<>();
+        Set<DataItem> allRefs = new LinkedHashSet<>();
         for (CobolParser.DebugItemContext item
                 : context.useStatement().debugTarget().debugItem()) {
             if (item.PROCEDURES() != null) {
@@ -754,10 +757,13 @@ public final class ProcedureBuilder {
                 continue;
             }
             if (item.identifier() != null) {
-                diagnostics.add(Diagnostic.warning(origin,
-                        "USE FOR DEBUGGING ON ALL REFERENCES OF is not supported yet;"
-                                + " the debugging section will not run for "
-                                + item.identifier().getText()));
+                // ALL REFERENCES OF 一意名。修飾を書けるので、解決して項目そのものを持つ。
+                // <b>添字は書かない</b>。表の 1 個ではなく、その名前そのものを見張る
+                DataItem watched = resolver.resolveName(item.identifier().qualifiedDataName(),
+                        ReferenceResolver.originOf(item.identifier()));
+                if (watched != null) {
+                    allRefs.add(watched);
+                }
                 continue;
             }
             String written = item.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
@@ -765,11 +771,269 @@ public final class ProcedureBuilder {
                 watchedFiles.add(written);
                 continue;
             }
+            List<DataItem> found = layout.findAll(written);
+            if (found.size() == 1) {
+                // 修飾を書かない一意名。受け取る側になったときだけ動く
+                items.add(found.get(0));
+                continue;
+            }
             names.add(written);
         }
-        if (all || !names.isEmpty() || !watchedFiles.isEmpty()) {
-            debugSections.add(new DebugSection(first, last, all, names, watchedFiles));
+        if (all || !names.isEmpty() || !watchedFiles.isEmpty()
+                || !items.isEmpty() || !allRefs.isEmpty()) {
+            debugSections.add(new DebugSection(first, last, all, names, watchedFiles,
+                    items, allRefs));
         }
+    }
+
+    /**
+     * 節を動かす文を作る。
+     *
+     * @param receiving 中身が書き換わる参照。{@code null} なら<b>どれも書き換わる扱い</b>
+     *                  にする。{@code PERFORM} の {@code VARYING} / {@code UNTIL} が
+     *                  そうで、条件に書いただけの名前でも見張りが動く
+     *                  (DB201A の {@code PERFORM-UNTIL-1})
+     * @param only      その段に現れる項目だけに絞る。{@code null} なら絞らない
+     */
+    private List<Statement> entriesFor(List<ReferenceResolver.Traced> referenced,
+                                       Set<DataReference> receiving, Origin origin,
+                                       Set<DataItem> only) {
+        // 受け取る側かどうかは<b>項目で</b>照らす。ADD ID-1 ID-1 TO ID-1 では、
+        // 送出側として書かれた ID-1 も同じ項目である (DB201A の ADD-TEST-4)
+        Set<DataItem> receivingItems = new LinkedHashSet<>();
+        if (receiving != null) {
+            receiving.forEach(r -> receivingItems.add(r.item()));
+        }
+        List<Statement> out = new ArrayList<>();
+        Set<DataItem> done = new LinkedHashSet<>();
+        for (ReferenceResolver.Traced traced : referenced) {
+            DataItem item = traced.reference().item();
+            if ((only != null && !only.contains(item)) || !done.add(item)) {
+                continue;
+            }
+            for (DebugSection section : debugSections) {
+                if (section.allRefs().contains(item)
+                        || (section.items().contains(item)
+                                && (receiving == null || receivingItems.contains(item)))) {
+                    out.addAll(itemDebugEntry(section, traced, origin));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 見張られた一意名を指した文のあとに継ぐ、節を動かす文 (要件 FR-193)。
+     *
+     * <p>{@code ALL REFERENCES OF} を書けば<b>指したたび</b>に動く。書かなければ
+     * <b>受け取る側になったとき</b>だけ動く。書かれた順に並べる。
+     *
+     * @param referenced その文が書いたとおりに指した一意名 (解決した順)
+     */
+    private List<Statement> itemDebugEntries(Statement built,
+                                             List<ReferenceResolver.Traced> referenced,
+                                             Origin origin) {
+        if (referenced.isEmpty()) {
+            return List.of();
+        }
+        Set<DataReference> receiving = receivingOf(built);
+        List<ReferenceResolver.Traced> ordered = new ArrayList<>(referenced);
+        // 書かれた順に並べ直す。添字は一意名より<b>あとに</b>解決されるので、
+        // 控えた順のままだと「X (I)」の I が先に来てしまう
+        ordered.sort((a, b) -> {
+            int line = Integer.compare(a.reference().origin().line(),
+                    b.reference().origin().line());
+            return line != 0 ? line : Integer.compare(a.reference().origin().column(),
+                    b.reference().origin().column());
+        });
+        // <b>指した回数ではなく、指された名前の数だけ</b>動く。
+        // ADD ID-2 ID-2 ID-2 ID-2 TO ID-3 で動くのは 1 度である (DB201A の ADD-TEST-1)
+        return entriesFor(ordered, receiving, origin, null);
+    }
+
+    /** 一意名 1 個ぶんの、節を動かす文。 */
+    private List<Statement> itemDebugEntry(DebugSection section, ReferenceResolver.Traced traced,
+                                           Origin origin) {
+        DataReference reference = traced.reference();
+        DataReference item = resolver.resolveName("DEBUG-ITEM", origin);
+        DataReference name = resolver.resolveName("DEBUG-NAME", origin);
+        DataReference line = resolver.resolveName("DEBUG-LINE", origin);
+        DataReference held = resolver.resolveName("DEBUG-CONTENTS", origin);
+        if (item == null || name == null || line == null || held == null) {
+            return List.of();
+        }
+        List<Statement> body = new ArrayList<>();
+        body.add(textMove(new Operand.Literal(
+                new LiteralValue.Figure(LiteralValue.FigurativeConstant.SPACE)), item, origin));
+        body.add(textMove(new Operand.Literal(new LiteralValue.Text(traced.written())),
+                name, origin));
+        body.add(textMove(new Operand.Literal(
+                new LiteralValue.Text(DataDivisionBuilder.debugLine(origin))), line, origin));
+        for (int i = 0; i < reference.subscripts().size() && i < 3; i++) {
+            Statement move = subscriptMove(reference.subscripts().get(i), i + 1, origin);
+            if (move == null) {
+                return List.of();
+            }
+            body.add(move);
+        }
+        // DEBUG-CONTENTS は<b>文が終わったあとの</b>中身である。継いだ位置がそのまま
+        // 「あと」なので、ここで写せばよい
+        body.add(textMove(new Operand.Reference(reference), held, origin));
+        body.add(new Statement.Perform(section.first(), section.last(), null, null,
+                false, List.of(), List.of(), origin));
+        return wrapped(body, origin);
+    }
+
+    /**
+     * その文が<b>中身を書き換える</b>一意名 (要件 FR-193)。
+     *
+     * <p>{@code ALL REFERENCES OF} を書かない見張りは、ここに挙がったものにだけ効く。
+     * 参照の同一性で照らす。手続き部を組み立てたときの参照そのものが意味木に入って
+     * いるので、名前で照らすより確かである。
+     *
+     * <p>挙げていない文もある。挙げ落としは<b>節が動かない</b>ほうへ倒れるので、
+     * 誤って動かすより安全である (暫定判断 P-081)。
+     */
+    private Set<DataReference> receivingOf(Statement statement) {
+        Set<DataReference> out = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<>());
+        if (statement instanceof Statement.Move move) {
+            move.targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Arithmetic arithmetic) {
+            arithmetic.targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Compute compute) {
+            compute.targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.DivideRemainder divide) {
+            out.add(divide.quotient().reference());
+            out.add(divide.remainder().reference());
+        } else if (statement instanceof Statement.Initialize initialize) {
+            out.add(initialize.target());
+        } else if (statement instanceof Statement.Accept accept) {
+            out.add(accept.target());
+        } else if (statement instanceof Statement.Inspect inspect) {
+            inspect.clauses().stream().filter(c -> c.counter() != null)
+                    .forEach(c -> out.add(c.counter()));
+            if (inspect.converting() != null
+                    || inspect.clauses().stream().anyMatch(c -> c.to() != null)) {
+                out.add(inspect.target());
+            }
+        } else if (statement instanceof Statement.StringStatement text) {
+            out.add(text.target());
+        } else if (statement instanceof Statement.Unstring unstring) {
+            unstring.targets().forEach(t -> out.add(t.field()));
+        } else if (statement instanceof Statement.Read read && read.into() != null) {
+            read.into().targets().forEach(t -> out.add(t.reference()));
+        }
+        // レコード名は書き換わる側である。FROM を書けば転記され、書かなくても
+        // 出力の対象そのものである
+        DataItem record = null;
+        if (statement instanceof Statement.Write write) {
+            record = write.record();
+        } else if (statement instanceof Statement.Rewrite rewrite) {
+            record = rewrite.record();
+        } else if (statement instanceof Statement.Release release) {
+            record = release.record();
+        }
+        if (record != null && writtenRecords.containsKey(record)) {
+            out.add(writtenRecords.get(record));
+        }
+        return out;
+    }
+
+    private static LiteralValue numberOf(int value) {
+        return new LiteralValue.Number(
+                Decimal.of(java.math.BigInteger.valueOf(Math.abs(value)), 0,
+                        value < 0 ? -1 : 1));
+    }
+
+    /** 添字 1 個を {@code DEBUG-SUB-n} へ入れる文。 */
+    private Statement subscriptMove(DataReference.Subscript subscript, int index, Origin origin) {
+        DataReference target = resolver.resolveName("DEBUG-SUB-" + index, origin);
+        if (target == null) {
+            return null;
+        }
+        if (subscript instanceof DataReference.Subscript.Constant constant) {
+            return new Statement.Move(new Operand.Literal(numberOf(constant.value())),
+                    List.of(new Statement.Move.Target(target, MoveRules.Kind.NUMERIC)),
+                    false, origin);
+        }
+        if (!(subscript instanceof DataReference.Subscript.Variable variable)) {
+            return null;
+        }
+        // 指標そのものを写す。相対指定のずれは足してから写す
+        Operand source = new Operand.Reference(variable.reference());
+        if (variable.offset() == 0) {
+            return new Statement.Move(source,
+                    List.of(new Statement.Move.Target(target, MoveRules.Kind.NUMERIC)),
+                    false, origin);
+        }
+        return new Statement.Arithmetic(Statement.Arithmetic.Operator.ADD,
+                List.of(source, new Operand.Literal(numberOf(variable.offset()))),
+                null,
+                List.of(new Statement.Arithmetic.Target(target, false)),
+                null, origin);
+    }
+
+    /**
+     * 入出力の文の<b>中</b>へ見張りを入れる (要件 FR-193)。
+     *
+     * <p>入出力そのものの直後、{@code INVALID KEY} や {@code AT END} の枝へ飛ぶ前に
+     * 動かす。うしろに継ぐだけでは、飛んでしまって間に合わない。
+     *
+     * @return 入れられなければ {@code null}
+     */
+    private static Statement withInnerDebug(Statement built, List<Statement> entries) {
+        if (built instanceof Statement.Write write) {
+            return new Statement.Write(write.file(), write.record(), write.from(),
+                    write.keyCheck(), write.advancing(), write.pageCheck(),
+                    joined(write.debug(), entries), write.origin());
+        }
+        if (built instanceof Statement.Rewrite rewrite) {
+            return new Statement.Rewrite(rewrite.file(), rewrite.record(), rewrite.from(),
+                    rewrite.keyCheck(), joined(rewrite.debug(), entries), rewrite.origin());
+        }
+        if (built instanceof Statement.Delete delete) {
+            return new Statement.Delete(delete.file(), delete.keyCheck(),
+                    joined(delete.debug(), entries), delete.origin());
+        }
+        if (built instanceof Statement.Start start) {
+            return new Statement.Start(start.file(), start.keyIndex(), start.key(),
+                    start.relation(), start.keyCheck(), joined(start.debug(), entries),
+                    start.origin());
+        }
+        return null;
+    }
+
+    private static List<Statement> joined(List<Statement> first, List<Statement> second) {
+        List<Statement> out = new ArrayList<>(first);
+        out.addAll(second);
+        return List.copyOf(out);
+    }
+
+    /**
+     * {@code WRITE} / {@code REWRITE} / {@code RELEASE} のレコード名を控える (要件 FR-193)。
+     *
+     * <p>名前から項目を直に引いているので解決するところを通らない。見張りから見れば
+     * <b>書いたとおりに指した名前</b>であり、しかも<b>中身が書き換わる</b>側である。
+     */
+    private void traceRecord(DataItem record, Origin origin) {
+        DataReference reference = new DataReference(record, List.of(), null, origin);
+        resolver.trace(reference);
+        writtenRecords.put(record, reference);
+    }
+
+    /** 控えたレコード名の参照。受け取る側かどうかを見るときに引く。 */
+    private final java.util.Map<DataItem, DataReference> writtenRecords =
+            new java.util.IdentityHashMap<>();
+
+    /** 見張られている一意名があるか。無ければ文を包む支度そのものを省く。 */
+    private boolean watchesItems() {
+        for (DebugSection section : debugSections) {
+            if (!section.items().isEmpty() || !section.allRefs().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -929,7 +1193,55 @@ public final class ProcedureBuilder {
         return statements;
     }
 
+    /**
+     * 文 1 つを組み立てる。見張られた一意名を指していれば、そのあとに節を動かす文を継ぐ
+     * (要件 FR-193)。
+     *
+     * <p>控え帳を<b>文ごとに積む</b>。{@code IF} の条件で指した名前はその {@code IF} の
+     * ものであり、中に書いた文のものではない。
+     */
     private Statement statementOf(CobolParser.StatementContext context) {
+        if (inDebugSection || !watchesItems()) {
+            return builtStatementOf(context);
+        }
+        resolver.pushTrace();
+        Statement built;
+        List<ReferenceResolver.Traced> referenced;
+        try {
+            built = builtStatementOf(context);
+        } finally {
+            referenced = resolver.popTrace();
+        }
+        if (built == null) {
+            return null;
+        }
+        Origin at = ReferenceResolver.originOf(context);
+        List<Statement> entries = itemDebugEntries(built, referenced, at);
+        if (entries.isEmpty()) {
+            return built;
+        }
+        // 入出力の文は<b>例外の枝へ飛ぶ前</b>に動かす。飛んだ先で DEBUG-ITEM を読む
+        // 試験がある (DB203A の REWRITE-TEST-2)。文の中に持たせる場所がある
+        Statement inside = withInnerDebug(built, entries);
+        if (inside != null) {
+            return inside;
+        }
+        List<Statement> body = new ArrayList<>();
+        // 制御を移す文は<b>移す前</b>に動かす。移したあとでは戻ってこない
+        // (DB201A の G-T-D-2 は飛び先で見張りが動いたことを確かめる)
+        boolean transfers = built instanceof Statement.GoTo
+                || built instanceof Statement.GoToDepending;
+        if (transfers) {
+            body.addAll(entries);
+            body.add(built);
+        } else {
+            body.add(built);
+            body.addAll(entries);
+        }
+        return new Statement.Sequence(List.copyOf(body), at);
+    }
+
+    private Statement builtStatementOf(CobolParser.StatementContext context) {
         if (context.moveStatement() != null) {
             return moveOf(context.moveStatement());
         }
@@ -2247,6 +2559,7 @@ public final class ProcedureBuilder {
 
         Operand times = null;
         Condition until = null;
+        List<ReferenceResolver.Traced> untilTrace = List.of();
         boolean testAfter = false;
         List<Statement.Perform.Varying> varying = List.of();
         CobolParser.PerformPhraseContext phrase = context.performPhrase();
@@ -2263,7 +2576,13 @@ public final class ProcedureBuilder {
                     return null;
                 }
             } else {
+                // UNTIL は条件を見るたびに指し直したことになる (要件 FR-193)
+                boolean watching = watchesItems() && !inDebugSection;
+                if (watching) {
+                    resolver.pushTrace();
+                }
                 until = conditionOf(phrase.condition());
+                untilTrace = watching ? resolver.popTrace() : List.of();
                 if (until == null) {
                     return null;
                 }
@@ -2278,7 +2597,7 @@ public final class ProcedureBuilder {
             }
         }
         return new Statement.Perform(target, through, times, until, testAfter, varying, body,
-                origin);
+                entriesFor(untilTrace, null, origin, null), origin);
     }
 
     /**
@@ -2296,16 +2615,32 @@ public final class ProcedureBuilder {
             specs.add(after.varyingSpec());
         }
 
+        boolean watching = watchesItems() && !inDebugSection;
         List<Statement.Perform.Varying> varying = new ArrayList<>();
         for (CobolParser.VaryingSpecContext spec : specs) {
+            // 段ごとに控え帳を分ける。その段で指した名前は<b>その段が動くたび</b>に
+            // 指し直したことになる (要件 FR-193)
+            if (watching) {
+                resolver.pushTrace();
+            }
             DataReference target = resolver.resolve(spec.identifier());
             Operand from = operandOf(spec.arithmeticOperand(0), origin);
             Operand by = operandOf(spec.arithmeticOperand(1), origin);
+            List<ReferenceResolver.Traced> stepTrace = watching ? resolver.popTrace() : List.of();
+            // 条件は<b>別に</b>控える。変える項目を置くのと条件を見るのは別々に数える。
+            // VARYING ID-1 ... UNTIL ID-1 > 5 は 6 + 6 = 12 度である
+            // (DB201A の PERFORM-VARY-2)
+            if (watching) {
+                resolver.pushTrace();
+            }
             Condition until = conditionOf(spec.condition());
+            List<ReferenceResolver.Traced> testTrace = watching ? resolver.popTrace() : List.of();
             if (target == null || from == null || by == null || until == null) {
                 return null;
             }
-            varying.add(new Statement.Perform.Varying(target, from, by, until));
+            varying.add(new Statement.Perform.Varying(target, from, by, until,
+                    entriesFor(stepTrace, null, origin, null),
+                    entriesFor(testTrace, null, origin, null)));
         }
         return varying;
     }
@@ -3906,6 +4241,7 @@ public final class ProcedureBuilder {
         if (record == null) {
             return null;
         }
+        traceRecord(record, origin);
         Statement.Move from = null;
         if (context.identifier() != null) {
             from = recordMove(record, context.identifier(), origin);
@@ -3942,8 +4278,10 @@ public final class ProcedureBuilder {
                     bodyOf(context.notAtEndOfPagePhrase() == null
                             ? null : context.notAtEndOfPagePhrase().branchBody()));
         }
+        // WRITE はレコード名を書く。<b>ファイル名を書いたことにはならない</b>ので、
+        // ファイル名の見張りは動かない (DB202A の WRITE-TEST-3 は 0 度である)
         return new Statement.Write(file, record, from, keyCheck, advancing, pageCheck,
-                fileDebugEntry(file, false, origin), origin);
+                List.of(), origin);
     }
 
     /**
@@ -3999,6 +4337,7 @@ public final class ProcedureBuilder {
         if (record == null) {
             return null;
         }
+        traceRecord(record, origin);
         Statement.Move from = null;
         if (context.identifier() != null) {
             from = recordMove(record, context.identifier(), origin);
@@ -4016,8 +4355,8 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Rewrite(file, record, from, keyCheck,
-                fileDebugEntry(file, false, origin), origin);
+        // REWRITE も書くのはレコード名である
+        return new Statement.Rewrite(file, record, from, keyCheck, List.of(), origin);
     }
 
     /**
@@ -4346,6 +4685,7 @@ public final class ProcedureBuilder {
         if (record == null) {
             return null;
         }
+        traceRecord(record, origin);
         FileDescription work = files.get(record.fileName());
         if (!work.sort()) {
             report(origin, "RELEASE names a record of a sort-merge file (SD): "

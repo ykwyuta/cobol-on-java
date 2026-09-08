@@ -91,16 +91,24 @@ public final class Ops {
      */
     public static byte[] readUnsignedDigits(NumericItem source, Storage storage, int offset,
                                             CodePage codePage) {
-        Decimal value = source.load(storage.view(offset, source.byteLength()));
-        int digits = source.picture().digits();
-        StringBuilder text = new StringBuilder(value.magnitude().toString());
-        while (text.length() < digits) {
-            text.insert(0, '0');
+        byte[] raw = storage.view(offset, source.byteLength()).toByteArray();
+        SignPosition sign = source.signPosition();
+        if (!sign.isSigned()) {
+            return raw;
         }
-        if (text.length() > digits) {
-            text.delete(0, text.length() - digits);
+        if (sign.isSeparate()) {
+            // 符号だけの 1 バイトを落とす
+            return sign.isLeading()
+                    ? Arrays.copyOfRange(raw, 1, raw.length)
+                    : Arrays.copyOfRange(raw, 0, raw.length - 1);
         }
-        return codePage.encode(text.toString());
+        // ゾーンに埋め込んだ符号は、数字のゾーンへ戻す。
+        // <b>値としては読まない。</b>読むと、数字が入っていない項目で止まってしまう。
+        // 参照実装も 1 命令でゾーンを塗り替えるだけであり、中身を確かめはしない
+        int at = sign.isLeading() ? 0 : raw.length - 1;
+        byte[] out = raw.clone();
+        out[at] = (byte) ((codePage.zoneNibble() << 4) | (out[at] & 0x0F));
+        return out;
     }
 
     /** 数値項目の読み出し。 */

@@ -74,7 +74,64 @@ public final class ReferenceResolver {
 
         DataReference reference = new DataReference(item, subscripts, refMod, origin);
         checkReferenceModification(reference, origin);
+        if (!traces.isEmpty()) {
+            traces.peek().add(new Traced(reference, writtenName(context.qualifiedDataName())));
+        }
         return reference;
+    }
+
+    /**
+     * 控えた一意名 1 個。
+     *
+     * @param written 書かれたとおりの名前。修飾は {@code OF} でつなぐ (要件 FR-193)
+     */
+    public record Traced(DataReference reference, String written) {
+    }
+
+    /** 修飾を {@code OF} でつないだ、書かれたとおりの名前。 */
+    public static String writtenName(CobolParser.QualifiedDataNameContext context) {
+        StringBuilder text = new StringBuilder();
+        for (CobolParser.DataNameContext name : context.dataName()) {
+            if (!text.isEmpty()) {
+                text.append(" OF ");
+            }
+            text.append(name.getText().toUpperCase(Locale.ROOT));
+        }
+        return text.toString();
+    }
+
+    /**
+     * 文 1 つが<b>書いたとおりに指した</b>一意名を控える (要件 FR-193)。
+     *
+     * <p>{@code USE FOR DEBUGGING ON 一意名} は、その名前を指した文のあとで節を動かす。
+     * どの名前を指したかを知っているのは<b>解決するところ</b>だけなので、ここで控える。
+     *
+     * <p>入れ子の文は自分の控え帳を積む。{@code IF} の条件はその {@code IF} のもので
+     * あり、中に書いた文のものではない。名前で照らし合わせると取り違えるので、
+     * 積み重ねで分ける。
+     */
+    private final java.util.Deque<List<Traced>> traces = new java.util.ArrayDeque<>();
+
+    /** 控え帳を 1 枚積む。 */
+    public void pushTrace() {
+        traces.push(new ArrayList<>());
+    }
+
+    /** 積んだ控え帳を降ろす。 */
+    public List<Traced> popTrace() {
+        return traces.pop();
+    }
+
+    /**
+     * 一意名として書かれたが、ここを通らずに引き当てたものを控える。
+     *
+     * <p>{@code WRITE レコード名} のように、名前から項目を直に引くところがある。
+     * 見張りから見れば<b>書いたとおりに指した名前</b>なので、控え帳へ入れる。
+     */
+    public void trace(DataReference reference) {
+        if (!traces.isEmpty()) {
+            traces.peek().add(new Traced(reference, reference.item().name()));
+        }
     }
 
     /**

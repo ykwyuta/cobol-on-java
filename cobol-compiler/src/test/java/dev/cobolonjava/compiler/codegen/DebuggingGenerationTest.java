@@ -481,4 +481,153 @@ class DebuggingGenerationTest {
         // 切ると節だけが止まる。7 桁目の D の行は動いたままである
         assertEquals("A|D|", run(null, text, false));
     }
+
+    /** 一意名を見張るプログラムの見出し。{@code target} が見張りの書き方である。 */
+    private static String[] itemWatcher(String target) {
+        return new String[] {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. MAIN.",
+            "ENVIRONMENT DIVISION.",
+            "CONFIGURATION SECTION.",
+            "SOURCE-COMPUTER. JVM WITH DEBUGGING MODE.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-A PIC 99 VALUE 0.",
+            "01  WS-B PIC 99 VALUE 0.",
+            "01  WS-T.",
+            "    02 WS-E PIC X OCCURS 5.",
+            "PROCEDURE DIVISION.",
+            "DECLARATIVES.",
+            "WATCH SECTION.",
+            "    USE FOR DEBUGGING ON " + target + ".",
+            "WATCH-BODY.",
+            "    DISPLAY '<' DEBUG-NAME '|' DEBUG-CONTENTS '>'.",
+            "END DECLARATIVES.",
+        };
+    }
+
+    /** 見張りの節が印字する 1 行。 */
+    private static String saw(String name, String contents) {
+        return "<" + name + " ".repeat(30 - name.length())
+                + "|" + contents + " ".repeat(30 - contents.length()) + ">";
+    }
+
+    @Test
+    @DisplayName("ALL REFERENCES OF は指した文のたびに動く (FR-193)")
+    void allReferencesFiresOnEveryStatementThatNamesTheItem() {
+        String out = run(source(join(itemWatcher("ALL REFERENCES OF WS-A"),
+                "MAIN SECTION.",
+                "START-P.",
+                "    MOVE 5 TO WS-A.",
+                "    MOVE WS-A TO WS-B.",
+                "    MOVE 7 TO WS-B.",
+                "    STOP RUN.")));
+        // 3 つ目は WS-A を指していないので動かない
+        assertEquals(saw("WS-A", "05") + "|" + saw("WS-A", "05") + "|", out);
+    }
+
+    @Test
+    @DisplayName("ALL REFERENCES OF を書かなければ、受け取る側のときだけ動く (FR-193)")
+    void aPlainWatchFiresOnlyWhenTheItemReceives() {
+        String out = run(source(join(itemWatcher("WS-A"),
+                "MAIN SECTION.",
+                "START-P.",
+                "    MOVE 5 TO WS-A.",
+                "    MOVE WS-A TO WS-B.",
+                "    STOP RUN.")));
+        assertEquals(saw("WS-A", "05") + "|", out);
+    }
+
+    @Test
+    @DisplayName("同じ名前を何度書いても、1 つの文では 1 度である (FR-193)")
+    void oneStatementFiresOnceEvenWithSeveralReferences() {
+        // ADD WS-A WS-A WS-A TO WS-B は 1 度である (DB201A の ADD-TEST-1)
+        String out = run(source(join(itemWatcher("ALL REFERENCES OF WS-A"),
+                "MAIN SECTION.",
+                "START-P.",
+                "    MOVE 1 TO WS-A.",
+                "    ADD WS-A WS-A WS-A TO WS-B.",
+                "    STOP RUN.")));
+        assertEquals(saw("WS-A", "01") + "|" + saw("WS-A", "01") + "|", out);
+    }
+
+    @Test
+    @DisplayName("添字は DEBUG-SUB-1 へ入る (FR-193)")
+    void theSubscriptGoesIntoDebugSubOne() {
+        String out = run(source(join(new String[] {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. MAIN.",
+            "ENVIRONMENT DIVISION.",
+            "CONFIGURATION SECTION.",
+            "SOURCE-COMPUTER. JVM WITH DEBUGGING MODE.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-I PIC 9 VALUE 3.",
+            "01  WS-T.",
+            "    02 WS-E PIC X OCCURS 5.",
+            "PROCEDURE DIVISION.",
+            "DECLARATIVES.",
+            "WATCH SECTION.",
+            "    USE FOR DEBUGGING ON WS-E.",
+            "WATCH-BODY.",
+            "    DISPLAY '<' DEBUG-NAME '|' DEBUG-SUB-1 '>'.",
+            "END DECLARATIVES.",
+        },
+                "MAIN SECTION.",
+                "START-P.",
+                "    MOVE 'Z' TO WS-E (WS-I).",
+                "    STOP RUN.")));
+        assertEquals("<WS-E" + " ".repeat(26) + "|+0003>|", out);
+    }
+
+    @Test
+    @DisplayName("PERFORM VARYING は置くたび・見るたびに動く (FR-193)")
+    void aVaryingPerformFiresOnEveryStepAndTest() {
+        // VARYING WS-A ... UNTIL WS-A > 3 は 4 + 4 = 8 度である
+        // (DB201A の PERFORM-VARY-2)
+        String out = run(source(join(itemWatcher("WS-A"),
+                "MAIN SECTION.",
+                "START-P.",
+                "    PERFORM DO-NOTHING VARYING WS-A FROM 1 BY 1",
+                "        UNTIL WS-A IS GREATER THAN 3.",
+                "    STOP RUN.",
+                "DO-NOTHING SECTION.",
+                "DO-NOTHING-P.",
+                "    CONTINUE.")));
+        // 置いてから見る、を 4 周。02 で始まらないのは、置いた直後に動くからである
+        assertEquals(saw("WS-A", "01") + "|" + saw("WS-A", "01") + "|"
+                + saw("WS-A", "02") + "|" + saw("WS-A", "02") + "|"
+                + saw("WS-A", "03") + "|" + saw("WS-A", "03") + "|"
+                + saw("WS-A", "04") + "|" + saw("WS-A", "04") + "|", out);
+    }
+
+    @Test
+    @DisplayName("修飾を書けば DEBUG-NAME にも入る (FR-193)")
+    void aQualifiedNameIsShownQualified() {
+        String out = run(source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "ENVIRONMENT DIVISION.",
+                "CONFIGURATION SECTION.",
+                "SOURCE-COMPUTER. JVM WITH DEBUGGING MODE.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01  G-ONE.",
+                "    02 WS-X PIC XX.",
+                "01  G-TWO.",
+                "    02 WS-X PIC XX.",
+                "PROCEDURE DIVISION.",
+                "DECLARATIVES.",
+                "WATCH SECTION.",
+                "    USE FOR DEBUGGING ON ALL REFERENCES OF WS-X OF G-TWO.",
+                "WATCH-BODY.",
+                "    DISPLAY '<' DEBUG-NAME '>'.",
+                "END DECLARATIVES.",
+                "MAIN SECTION.",
+                "START-P.",
+                "    MOVE 'AB' TO WS-X OF G-ONE.",
+                "    MOVE 'CD' TO WS-X OF G-TWO.",
+                "    STOP RUN."));
+        assertEquals("<WS-X OF G-TWO" + " ".repeat(17) + ">|", out);
+    }
 }
