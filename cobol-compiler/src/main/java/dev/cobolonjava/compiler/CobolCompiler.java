@@ -85,7 +85,7 @@ public final class CobolCompiler {
         }
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 
@@ -116,35 +116,43 @@ public final class CobolCompiler {
             return failed(null, parsed.diagnostics());
         }
         List<Compiled> programs = new ArrayList<>();
+        // 告げるだけの診断は翻訳を止めない。積んでおいて結果に載せる (要件 FR-183)
+        List<Diagnostic> warnings = new ArrayList<>(parsed.diagnostics());
         for (CobolParser.ProgramUnitContext unit : parsed.tree().programUnit()) {
             Result one = compile(unit, fileName, effective);
             if (!one.succeeded()) {
                 return one;
             }
+            warnings.addAll(one.diagnostics());
             programs.add(new Compiled(one.className(), one.classFile(), one.layout()));
         }
         if (programs.isEmpty()) {
             return failed(null, List.of(new Diagnostic(null, "no program unit in " + fileName)));
         }
         Compiled first = programs.get(0);
-        return new Result(first.className(), first.classFile(), first.layout(), List.of(),
-                List.copyOf(programs));
+        return new Result(first.className(), first.classFile(), first.layout(),
+                List.copyOf(warnings), List.copyOf(programs));
     }
 
     /** プログラム 1 本を翻訳する。 */
     private Result compile(CobolParser.ProgramUnitContext program, String fileName,
                            CompilerOptions effective) {
+        // 告げるだけの診断は段をまたいで積む。止めるものが出たところで打ち切る
+        List<Diagnostic> warnings = new ArrayList<>();
+
         // 環境部を先に読む。PICTURE の解釈が通貨記号に依るためである
         SpecialNames.Result environment = SpecialNames.build(program);
         if (!environment.succeeded()) {
             return failed(null, environment.diagnostics());
         }
+        warnings.addAll(environment.diagnostics());
         SpecialNames specialNames = environment.specialNames();
 
         DataDivisionBuilder.Result data = DataDivisionBuilder.build(program, specialNames);
         if (!data.succeeded()) {
             return failed(data.layout(), data.diagnostics());
         }
+        warnings.addAll(data.diagnostics());
 
         // SELECT と FD は離れて書かれる。両方を読み終えてから突き合わせる
         List<Diagnostic> fileDiagnostics = new ArrayList<>();
@@ -154,6 +162,7 @@ public final class CobolCompiler {
         if (!declared.succeeded()) {
             return failed(data.layout(), declared.diagnostics());
         }
+        warnings.addAll(declared.diagnostics());
 
         List<Diagnostic> diagnostics = new ArrayList<>();
         InitialImage.Result image = InitialImage.build(data.layout());
@@ -161,9 +170,10 @@ public final class CobolCompiler {
         ProcedureBuilder.Result procedure = ProcedureBuilder.build(program, data.layout(),
                 specialNames, declared.files(), data.reports());
         diagnostics.addAll(procedure.diagnostics());
-        if (!diagnostics.isEmpty()) {
+        if (Diagnostic.blocking(diagnostics)) {
             return failed(data.layout(), diagnostics);
         }
+        warnings.addAll(diagnostics);
 
         ProgramGenerator.Result generated = ProgramGenerator.generate(
                 programNameOf(program), fileName, procedure, image, data.layout(),
@@ -171,7 +181,9 @@ public final class CobolCompiler {
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
         }
-        return new Result(generated.className(), generated.classFile(), data.layout(), List.of());
+        warnings.addAll(generated.diagnostics());
+        return new Result(generated.className(), generated.classFile(), data.layout(),
+                List.copyOf(warnings));
     }
 
     private static Result failed(DataLayout layout, List<Diagnostic> diagnostics) {

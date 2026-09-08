@@ -130,7 +130,7 @@ public final class ProcedureBuilder {
                          List<DataItem> parameters, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
 
         /** すべての段落の文を、書かれた順に並べたもの。 */

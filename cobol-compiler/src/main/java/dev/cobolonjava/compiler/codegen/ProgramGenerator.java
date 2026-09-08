@@ -212,7 +212,7 @@ public final class ProgramGenerator {
     public record Result(String className, byte[] classFile, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 

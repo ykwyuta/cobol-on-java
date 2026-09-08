@@ -153,7 +153,7 @@ public final class SpecialNames {
     public record Result(SpecialNames specialNames, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 

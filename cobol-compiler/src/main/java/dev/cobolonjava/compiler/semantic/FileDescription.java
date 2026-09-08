@@ -166,7 +166,7 @@ public record FileDescription(String name, String ddName, Organization organizat
     public record Result(Map<String, FileDescription> files, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 
@@ -671,10 +671,13 @@ public record FileDescription(String name, String ddName, Organization organizat
                 return null;
             }
             if (maximum > area) {
-                // 領域より長いレコードは受け取れない。読めば領域の外へはみ出す
-                diagnostics.add(new Diagnostic(origin, "RECORD VARYING maximum of " + maximum
-                        + " exceeds the record area of " + area + " bytes"));
-                return null;
+                // 規格に沿わないが、意味は決まる。レコード領域はレコード記述が決めるので、
+                // そこまでで頭打ちにする。黙って切らずに<b>告げて通す</b> (要件 FR-183)。
+                // 止めてしまうと、その先にある本当の誤りが見えなくなる (IX401M)
+                diagnostics.add(Diagnostic.warning(origin, "RECORD VARYING maximum of " + maximum
+                        + " exceeds the record area of " + area + " bytes;"
+                        + " the record area is used"));
+                maximum = area;
             }
             DataReference depending = varying.identifier() == null
                     ? null

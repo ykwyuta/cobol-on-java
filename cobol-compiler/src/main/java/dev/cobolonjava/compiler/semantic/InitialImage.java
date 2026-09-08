@@ -61,7 +61,7 @@ public final class InitialImage {
     public record Result(List<RecordImage> records, byte[] storage, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
 
         /** 名前で初期イメージを探す。 */

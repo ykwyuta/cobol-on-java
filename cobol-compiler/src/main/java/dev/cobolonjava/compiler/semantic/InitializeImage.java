@@ -84,7 +84,7 @@ public final class InitializeImage {
     public record Result(List<Run> runs, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 

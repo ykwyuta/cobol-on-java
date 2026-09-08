@@ -78,7 +78,7 @@ public final class DataDivisionBuilder {
                          List<ReportDescription> reports, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
 
         public ReportDescription report(String name) {

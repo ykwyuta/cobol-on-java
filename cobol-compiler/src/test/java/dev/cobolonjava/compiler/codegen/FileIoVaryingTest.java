@@ -485,8 +485,8 @@ class FileIoVaryingTest {
     }
 
     @Test
-    @DisplayName("上限がレコード領域より長い指定は誤りである (FR-106)")
-    void theMaximumCannotExceedTheRecordArea() {
+    @DisplayName("上限がレコード領域より長い指定は、告げて通す (FR-106, FR-183)")
+    void theMaximumBeyondTheRecordAreaIsWarnedAbout() {
         CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. TOOBIG.",
@@ -503,6 +503,10 @@ class FileIoVaryingTest {
                 "01  WS-LEN PIC 9(3) COMP.",
                 "PROCEDURE DIVISION.",
                 "    STOP RUN."));
+        // 規格に沿わないが意味は決まる。止めてしまうと、その先の本当の誤りが見えなくなる
+        assertTrue(result.succeeded(), result.diagnostics().toString());
+        assertEquals(1, result.diagnostics().size(), result.diagnostics().toString());
+        assertTrue(result.diagnostics().get(0).isWarning(), result.diagnostics().toString());
         assertTrue(result.diagnostics().toString().contains("exceeds the record area"),
                 result.diagnostics().toString());
     }

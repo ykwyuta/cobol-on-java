@@ -28,7 +28,7 @@ public final class CobolParsing {
     public record Result(CobolParser.CompilationUnitContext tree, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 
