@@ -1086,12 +1086,8 @@ public final class ProcedureBuilder {
      */
     private Statement searchAllOf(CobolParser.SearchStatementContext context, DataItem table,
                                   DataReference index, Origin origin) {
-        if (DataReference.tableChain(table).size() != 1) {
-            // 2 分探索は鍵の位置を自分で計算する。外側の添字を受け取る道がまだない
-            report(origin, "SEARCH ALL on a table inside another table is not supported yet: "
-                    + table.name());
-            return null;
-        }
+        // 表が別の表の中にあってもよい。外側の添字は<b>WHEN に書かれた鍵の参照</b>が
+        // 持っている。2 分探索が動かすのは自分の指標だけであり、外側は動かさない
         if (table.searchKeys().isEmpty()) {
             report(origin, "SEARCH ALL requires ASCENDING or DESCENDING KEY on " + table.name());
             return null;
@@ -1229,11 +1225,21 @@ public final class ProcedureBuilder {
     }
 
     /** 参照の添字が、探索の指標そのものかどうか。 */
+    /**
+     * 鍵が探索の指標で引かれているか。
+     *
+     * <p>見るのは<b>いちばん内側の添字</b>である。表が別の表の中にあれば、外側の添字が
+     * 先に並ぶ。2 分探索が動かすのは自分の指標だけなので、外側は何であってもよい —
+     * 動かさない添字は、探索のあいだ変わらない。
+     */
     private static boolean subscriptedBy(Expression side, DataReference index) {
         List<DataReference.Subscript> subscripts = ((Operand.Reference)
                 Condition.Relation.operandOf(side)).reference().subscripts();
-        return subscripts.size() == 1
-                && subscripts.get(0) instanceof DataReference.Subscript.Variable variable
+        if (subscripts.isEmpty()) {
+            return false;
+        }
+        return subscripts.get(subscripts.size() - 1)
+                        instanceof DataReference.Subscript.Variable variable
                 && variable.offset() == 0
                 && variable.reference().item() == index.item();
     }

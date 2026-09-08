@@ -268,22 +268,31 @@ class SearchGenerationTest {
     }
 
     @Test
-    @DisplayName("表の中の表は SEARCH ALL できない (FR-066)")
-    void anInnerTableCannotBeBinarySearchedYet() {
-        // 2 分探索は鍵の位置を自分で計算するので、外側の添字を受け取る道が要る
-        CobolCompiler.Result result = compile(
+    @DisplayName("表の中の表も SEARCH ALL できる (FR-066)")
+    void anInnerTableCanBeBinarySearched() {
+        // 2 分探索が動かすのは<b>自分の指標だけ</b>である。外側の添字は WHEN に
+        // 書かれた鍵の参照が持っており、探索のあいだ変わらない。
+        // ここを「表の中の表はできない」と断っていた
+        assertEquals("[eee]|", run(
                 List.of("01 WS-T.",
                         "   05 WS-ROW OCCURS 2 TIMES INDEXED BY WS-R.",
                         "      10 WS-E OCCURS 3 TIMES",
                         "         ASCENDING KEY IS WS-KEY INDEXED BY WS-I.",
-                        "         15 WS-KEY PIC X(3)."),
-                "SEARCH ALL WS-E",
-                "    WHEN WS-KEY (WS-R, WS-I) = 'bbb' CONTINUE",
-                "END-SEARCH.");
-
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("SEARCH ALL on a table inside"),
-                result.diagnostics().toString());
+                        "         15 WS-KEY PIC X(3).",
+                        "01 WS-OUT PIC X(3) VALUE SPACE."),
+                "    MOVE 'aaa' TO WS-KEY (1, 1)",
+                "    MOVE 'bbb' TO WS-KEY (1, 2)",
+                "    MOVE 'ccc' TO WS-KEY (1, 3)",
+                "    MOVE 'ddd' TO WS-KEY (2, 1)",
+                "    MOVE 'eee' TO WS-KEY (2, 2)",
+                "    MOVE 'fff' TO WS-KEY (2, 3)",
+                "    SET WS-R TO 2",
+                "    SEARCH ALL WS-E",
+                "        AT END MOVE 'xxx' TO WS-OUT",
+                "        WHEN WS-KEY (WS-R, WS-I) = 'eee'",
+                "            MOVE WS-KEY (WS-R, WS-I) TO WS-OUT",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-OUT ']'."));
     }
 
     @Test
