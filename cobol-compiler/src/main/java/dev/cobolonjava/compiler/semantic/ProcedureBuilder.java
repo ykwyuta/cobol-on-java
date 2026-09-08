@@ -44,8 +44,10 @@ public final class ProcedureBuilder {
      * @param last      節の最後の段落の呼び名
      * @param all       {@code ALL PROCEDURES} が書かれていたか
      * @param names     見張る手続きの名前 (書かれたとおり)
+     * @param files     見張るファイルの名前 (書かれたとおり)
      */
-    private record DebugSection(String first, String last, boolean all, Set<String> names) {
+    private record DebugSection(String first, String last, boolean all, Set<String> names,
+                                Set<String> files) {
     }
 
     private final List<DebugSection> debugSections = new ArrayList<>();
@@ -733,6 +735,7 @@ public final class ProcedureBuilder {
                                  String first, String last, Origin origin) {
         boolean all = false;
         Set<String> names = new LinkedHashSet<>();
+        Set<String> watchedFiles = new LinkedHashSet<>();
         for (CobolParser.DebugItemContext item
                 : context.useStatement().debugTarget().debugItem()) {
             if (item.PROCEDURES() != null) {
@@ -748,16 +751,64 @@ public final class ProcedureBuilder {
             }
             String written = item.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
             if (files.containsKey(written)) {
-                diagnostics.add(Diagnostic.warning(origin,
-                        "USE FOR DEBUGGING on a file name is not supported yet;"
-                                + " the debugging section will not run for " + written));
+                watchedFiles.add(written);
                 continue;
             }
             names.add(written);
         }
-        if (all || !names.isEmpty()) {
-            debugSections.add(new DebugSection(first, last, all, names));
+        if (all || !names.isEmpty() || !watchedFiles.isEmpty()) {
+            debugSections.add(new DebugSection(first, last, all, names, watchedFiles));
         }
+    }
+
+    /**
+     * ファイル名を見張るデバッグの節を動かす文 (要件 FR-193)。
+     *
+     * <p>そのファイルを名指した入出力文の<b>直後</b>に動く。{@code DEBUG-NAME} には
+     * ファイルの名前が入り、{@code DEBUG-CONTENTS} には
+     * <b>{@code READ} なら読んだレコード</b>、それ以外なら空白が入る。規格がそう決めている。
+     *
+     * <p>{@code DEBUG-LINE} はその入出力文の行である。手続き名の見張りと違って
+     * 「移した側」が別にいるわけではないので、<b>組み立てるときに文字にして埋める</b>。
+     *
+     * @param read {@code READ} なら {@code true}。レコードを {@code DEBUG-CONTENTS} へ入れる
+     * @return 見張られていなければ空
+     */
+    private List<Statement> fileDebugEntry(FileDescription file, boolean read, Origin origin) {
+        if (debugSections.isEmpty() || inDeclarative || file == null) {
+            return List.of();
+        }
+        String upper = file.name().toUpperCase(Locale.ROOT);
+        List<Statement> body = new ArrayList<>();
+        for (DebugSection section : debugSections) {
+            if (!section.files().contains(upper)) {
+                continue;
+            }
+            DataReference item = resolver.resolveName("DEBUG-ITEM", origin);
+            DataReference name = resolver.resolveName("DEBUG-NAME", origin);
+            DataReference line = resolver.resolveName("DEBUG-LINE", origin);
+            if (item == null || name == null || line == null) {
+                return List.of();
+            }
+            body.add(textMove(new Operand.Literal(
+                    new LiteralValue.Figure(LiteralValue.FigurativeConstant.SPACE)), item, origin));
+            body.add(textMove(new Operand.Literal(new LiteralValue.Text(file.name())),
+                    name, origin));
+            body.add(textMove(new Operand.Literal(
+                    new LiteralValue.Text(DataDivisionBuilder.debugLine(origin))), line, origin));
+            if (read && !file.records().isEmpty()) {
+                DataReference held = resolver.resolveName("DEBUG-CONTENTS", origin);
+                if (held == null) {
+                    return List.of();
+                }
+                DataReference area =
+                        new DataReference(file.records().get(0), List.of(), null, origin);
+                body.add(textMove(new Operand.Reference(area), held, origin));
+            }
+            body.add(new Statement.Perform(section.first(), section.last(), null, null,
+                    false, List.of(), List.of(), origin));
+        }
+        return body;
     }
 
     /**
@@ -3672,7 +3723,8 @@ public final class ProcedureBuilder {
                 if (file == null) {
                     return null;
                 }
-                opened.add(new Statement.Open.Opened(file, mode));
+                opened.add(new Statement.Open.Opened(file, mode,
+                        fileDebugEntry(file, false, origin)));
             }
         }
         return new Statement.Open(opened, origin);
@@ -3698,7 +3750,8 @@ public final class ProcedureBuilder {
             }
             CobolParser.CloseOptionContext option = one.closeOption();
             closed.add(new Statement.Close.Closed(file,
-                    option != null && option.LOCK() != null));
+                    option != null && option.LOCK() != null,
+                    fileDebugEntry(file, false, origin)));
         }
         return new Statement.Close(closed, origin);
     }
@@ -3755,7 +3808,8 @@ public final class ProcedureBuilder {
             return null;
         }
         // listOf は組み立てられなかった文を落とす。誤りは診断として残っている
-        return new Statement.Read(file, next, keyIndex, into, atEnd, notAtEnd, keyCheck, origin);
+        return new Statement.Read(file, next, keyIndex, into, atEnd, notAtEnd, keyCheck,
+                fileDebugEntry(file, true, origin), origin);
     }
 
     /**
@@ -3860,7 +3914,8 @@ public final class ProcedureBuilder {
                     bodyOf(context.notAtEndOfPagePhrase() == null
                             ? null : context.notAtEndOfPagePhrase().branchBody()));
         }
-        return new Statement.Write(file, record, from, keyCheck, advancing, pageCheck, origin);
+        return new Statement.Write(file, record, from, keyCheck, advancing, pageCheck,
+                fileDebugEntry(file, false, origin), origin);
     }
 
     /**
@@ -3933,7 +3988,8 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Rewrite(file, record, from, keyCheck, origin);
+        return new Statement.Rewrite(file, record, from, keyCheck,
+                fileDebugEntry(file, false, origin), origin);
     }
 
     /**
@@ -3956,7 +4012,7 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Delete(file, keyCheck, origin);
+        return new Statement.Delete(file, keyCheck, fileDebugEntry(file, false, origin), origin);
     }
 
     /**
@@ -4006,7 +4062,8 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Start(file, keyIndex, key, relation, keyCheck, origin);
+        return new Statement.Start(file, keyIndex, key, relation, keyCheck,
+                fileDebugEntry(file, false, origin), origin);
     }
 
     /** {@code KEY IS} の関係。等しくないものは探せない。範囲の端が決まらないからである。 */

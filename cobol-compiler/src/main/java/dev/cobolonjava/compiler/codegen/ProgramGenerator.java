@@ -1285,6 +1285,7 @@ public final class ProgramGenerator {
             int length = file.recordLength();
             boolean optional = file.optional();
             boolean indexed = file.organization() == Organization.INDEXED;
+            List<Runnable> watched = planStatements(opened.debug());
             body.add(() -> {
                 emitFileName(file);
                 push(mode);
@@ -1308,6 +1309,7 @@ public final class ProgramGenerator {
                 if (file.linage() != null) {
                     emitLinageSetup(file.linage(), statement.origin());
                 }
+                watched.forEach(Runnable::run);
             });
         }
     }
@@ -1321,6 +1323,7 @@ public final class ProgramGenerator {
             if (status == null) {
                 return;
             }
+            List<Runnable> watched = planStatements(closed.debug());
             body.add(() -> {
                 emitFileName(file);
                 push(closed.lock() ? 1 : 0);
@@ -1328,6 +1331,7 @@ public final class ProgramGenerator {
                         "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;Z)[B", false);
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
+                watched.forEach(Runnable::run);
             });
         }
     }
@@ -1381,6 +1385,11 @@ public final class ProgramGenerator {
         List<Runnable> notAtEnd = planStatements(statement.notAtEnd());
         List<Runnable> onInvalid = planStatements(onInvalidOf(statement.keyCheck(), true));
         List<Runnable> otherwise = planStatements(onInvalidOf(statement.keyCheck(), false));
+        // ファイル名を見張るデバッグの節は、<b>レコードが渡ったときだけ</b>動く
+        // (要件 FR-193)。AT END や INVALID KEY では動かない。読めていないのだから
+        // DEBUG-CONTENTS に入れるものが無い。DB203A の READ-TEST-2 がそこを見ている。
+        // ほかの入出力文は成否によらず動くので、そちらとは置き場所が違う
+        List<Runnable> watched = planStatements(statement.debug());
         int length = file.recordLength();
         Runnable keyArguments = key;
         Runnable offset = recordOffset;
@@ -1421,6 +1430,7 @@ public final class ProgramGenerator {
             if (depending != null) {
                 depending.run();
             }
+            watched.forEach(Runnable::run);
             into.forEach(Runnable::run);
             notAtEnd.forEach(Runnable::run);
             otherwise.forEach(Runnable::run);
@@ -1538,7 +1548,8 @@ public final class ProgramGenerator {
      */
     private void planWrite(Statement.Write statement, List<Runnable> body) {
         planRecordOutput(statement.file(), statement.record(), statement.from(),
-                statement.keyCheck(), "write", statement.advancing(), statement.origin(), body);
+                statement.keyCheck(), "write", statement.advancing(), statement.debug(),
+                statement.origin(), body);
         planPageCheck(statement.pageCheck(), body);
     }
 
@@ -1577,7 +1588,8 @@ public final class ProgramGenerator {
      */
     private void planRewrite(Statement.Rewrite statement, List<Runnable> body) {
         planRecordOutput(statement.file(), statement.record(), statement.from(),
-                statement.keyCheck(), "rewrite", null, statement.origin(), body);
+                statement.keyCheck(), "rewrite", null, statement.debug(),
+                statement.origin(), body);
     }
 
     /**
@@ -1588,8 +1600,8 @@ public final class ProgramGenerator {
      */
     private void planRecordOutput(FileDescription file, DataItem record, Statement.Move from,
                                   Statement.KeyCheck keyCheck, String verb,
-                                  Statement.Advancing advancing, Origin origin,
-                                  List<Runnable> body) {
+                                  Statement.Advancing advancing, List<Statement> debug,
+                                  Origin origin, List<Runnable> body) {
         int slot = nextLocal++;
         Runnable status = planFileStatus(file, origin, slot, false, keyCheck != null);
         Runnable area = planAddress(new DataReference(record, List.of(), null, origin), origin);
@@ -1660,7 +1672,7 @@ public final class ProgramGenerator {
                             + (linage != null || advance != null ? "IZ" : "")
                             + (linage != null ? "IIIII" : "") + ")[B", false);
         };
-        planKeyedCall(call, status, slot, keyCheck, body);
+        planKeyedCall(call, status, slot, keyCheck, debug, body);
     }
 
     /**
@@ -1771,7 +1783,7 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, entry,
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + arguments + ")[B",
                     false);
-        }, status, slot, statement.keyCheck(), body);
+        }, status, slot, statement.keyCheck(), statement.debug(), body);
     }
 
     /**
@@ -1804,7 +1816,7 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, indexed ? "startKey" : "start",
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
                             + (indexed ? "IL" + STORAGE + ";III" : "II") + ")[B", false);
-        }, status, slot, statement.keyCheck(), body);
+        }, status, slot, statement.keyCheck(), statement.debug(), body);
     }
 
     /**
@@ -1813,12 +1825,17 @@ public final class ProgramGenerator {
      * @param call 状態コードのバイト列を積む命令
      */
     private void planKeyedCall(Runnable call, Runnable status, int slot,
-                               Statement.KeyCheck keyCheck, List<Runnable> body) {
+                               Statement.KeyCheck keyCheck, List<Statement> debug,
+                               List<Runnable> body) {
+        // ファイル名を見張るデバッグの節は<b>入出力の直後</b>に動く (要件 FR-193)。
+        // INVALID KEY で飛ぶ前でなければならない。飛んだ先で DEBUG-ITEM を読む試験がある
+        List<Runnable> watched = planStatements(debug);
         if (keyCheck == null) {
             body.add(() -> {
                 call.run();
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
+                watched.forEach(Runnable::run);
             });
             return;
         }
@@ -1828,6 +1845,7 @@ public final class ProgramGenerator {
             call.run();
             run.visitVarInsn(Opcodes.ASTORE, slot);
             status.run();
+            watched.forEach(Runnable::run);
 
             Label invalid = new Label();
             Label end = new Label();
@@ -5498,10 +5516,7 @@ public final class ProgramGenerator {
 
     /** 行番号を 6 桁の文字にする。{@code DEBUG-LINE} の桁割りである。 */
     private static String lineText(Origin origin) {
-        String text = Integer.toString(origin.line());
-        return text.length() >= 6
-                ? text.substring(text.length() - 6)
-                : " ".repeat(6 - text.length()) + text;
+        return DataDivisionBuilder.debugLine(origin);
     }
 
     /** {@code DBG-LINE$} への参照。デバッグを書いていなければ {@code null}。 */

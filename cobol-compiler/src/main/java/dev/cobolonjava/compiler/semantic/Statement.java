@@ -527,8 +527,20 @@ public sealed interface Statement {
             files = List.copyOf(files);
         }
 
-        /** 開くファイル 1 個と、その開き方。 */
-        public record Opened(FileDescription file, OpenMode mode) {
+        /**
+         * 開くファイル 1 個と、その開き方。
+         *
+         * @param debug ファイル名が見張られているときに、開いたあとで動かす文 (要件 FR-193)
+         */
+        public record Opened(FileDescription file, OpenMode mode, List<Statement> debug) {
+
+            public Opened {
+                debug = List.copyOf(debug);
+            }
+
+            public Opened(FileDescription file, OpenMode mode) {
+                this(file, mode, List.of());
+            }
         }
     }
 
@@ -550,7 +562,15 @@ public sealed interface Statement {
          *
          * @param lock {@code WITH LOCK} と書かれたか
          */
-        public record Closed(FileDescription file, boolean lock) {
+        public record Closed(FileDescription file, boolean lock, List<Statement> debug) {
+
+            public Closed {
+                debug = List.copyOf(debug);
+            }
+
+            public Closed(FileDescription file, boolean lock) {
+                this(file, lock, List.of());
+            }
         }
     }
 
@@ -565,12 +585,20 @@ public sealed interface Statement {
      * @param notAtEnd {@code NOT AT END} の文。指定がなければ空
      */
     record Read(FileDescription file, boolean next, int keyIndex, Move into,
-                List<Statement> atEnd, List<Statement> notAtEnd, KeyCheck keyCheck, Origin origin)
+                List<Statement> atEnd, List<Statement> notAtEnd, KeyCheck keyCheck,
+                List<Statement> debug, Origin origin)
             implements Statement {
+
+        public Read(FileDescription file, boolean next, int keyIndex, Move into,
+                    List<Statement> atEnd, List<Statement> notAtEnd, KeyCheck keyCheck,
+                    Origin origin) {
+            this(file, next, keyIndex, into, atEnd, notAtEnd, keyCheck, List.of(), origin);
+        }
 
         public Read {
             atEnd = List.copyOf(atEnd);
             notAtEnd = List.copyOf(notAtEnd);
+            debug = List.copyOf(debug);
         }
     }
 
@@ -598,7 +626,17 @@ public sealed interface Statement {
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
     record Write(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
-                 Advancing advancing, PageCheck pageCheck, Origin origin) implements Statement {
+                 Advancing advancing, PageCheck pageCheck, List<Statement> debug, Origin origin)
+            implements Statement {
+
+        public Write {
+            debug = List.copyOf(debug);
+        }
+
+        public Write(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
+                     Advancing advancing, PageCheck pageCheck, Origin origin) {
+            this(file, record, from, keyCheck, advancing, pageCheck, List.of(), origin);
+        }
     }
 
     /**
@@ -647,7 +685,16 @@ public sealed interface Statement {
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
     record Rewrite(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
-                   Origin origin) implements Statement {
+                   List<Statement> debug, Origin origin) implements Statement {
+
+        public Rewrite {
+            debug = List.copyOf(debug);
+        }
+
+        public Rewrite(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
+                       Origin origin) {
+            this(file, record, from, keyCheck, List.of(), origin);
+        }
     }
 
     /**
@@ -656,7 +703,16 @@ public sealed interface Statement {
      * <p>消す相手は、順アクセスなら<b>直前に読んだレコード</b>、乱アクセスなら<b>鍵の指す
      * レコード</b>である。文に書くのはファイル名だけであり、どちらかはアクセス様式で決まる。
      */
-    record Delete(FileDescription file, KeyCheck keyCheck, Origin origin) implements Statement {
+    record Delete(FileDescription file, KeyCheck keyCheck, List<Statement> debug, Origin origin)
+            implements Statement {
+
+        public Delete {
+            debug = List.copyOf(debug);
+        }
+
+        public Delete(FileDescription file, KeyCheck keyCheck, Origin origin) {
+            this(file, keyCheck, List.of(), origin);
+        }
     }
 
     /**
@@ -670,7 +726,16 @@ public sealed interface Statement {
      * @param relation {@code KEY IS} に書いた関係。省略時は等号
      */
     record Start(FileDescription file, int keyIndex, DataReference key, KeyRelation relation,
-                 KeyCheck keyCheck, Origin origin) implements Statement {
+                 KeyCheck keyCheck, List<Statement> debug, Origin origin) implements Statement {
+
+        public Start {
+            debug = List.copyOf(debug);
+        }
+
+        public Start(FileDescription file, int keyIndex, DataReference key, KeyRelation relation,
+                     KeyCheck keyCheck, Origin origin) {
+            this(file, keyIndex, key, relation, keyCheck, List.of(), origin);
+        }
     }
 
     /**

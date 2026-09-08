@@ -6,11 +6,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.cobolonjava.compiler.CobolCompiler;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
+import dev.cobolonjava.runtime.codepage.CodePages;
+import dev.cobolonjava.runtime.file.DataSetCatalog;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * {@code USE FOR DEBUGGING} (要件 FR-193、設計 80)。
@@ -44,17 +51,63 @@ class DebuggingGenerationTest {
     }
 
     private static String run(String source) {
+        return run(null, source);
+    }
+
+    private static String run(Path directory, String source) {
         CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source);
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        ProgramContext context = ProgramContext.capturing(sink);
+        if (directory != null) {
+            context = context.withCatalog(new DataSetCatalog(directory));
+        }
         try {
             Class<?> type = new GeneratedLoader().define(result.className(), result.classFile());
             CobolProgram program = (CobolProgram) type.getDeclaredConstructor().newInstance();
-            program.runFresh(ProgramContext.capturing(sink));
+            program.runFresh(context);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("cannot run the generated program", e);
         }
         return sink.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "|");
+    }
+
+    /** 3 バイトのレコードを持つ順編成のファイルを置く。 */
+    private static void seed(Path directory, String content) {
+        try {
+            Files.write(directory.resolve("INDD"), CodePages.DEFAULT.encode(content));
+            Files.write(directory.resolve("INDD.meta"),
+                    "recfm=F\nlrecl=3\ncodepage=IBM-1047\n".getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** ファイル名を見張るプログラム。 */
+    private static String[] fileWatcher() {
+        return new String[] {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. MAIN.",
+            "ENVIRONMENT DIVISION.",
+            "CONFIGURATION SECTION.",
+            "SOURCE-COMPUTER. JVM WITH DEBUGGING MODE.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT IN-FILE ASSIGN TO INDD.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  IN-FILE.",
+            "01  IN-REC PIC X(3).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-EOF PIC X VALUE 'N'.",
+            "PROCEDURE DIVISION.",
+            "DECLARATIVES.",
+            "WATCH SECTION.",
+            "    USE FOR DEBUGGING ON IN-FILE.",
+            "WATCH-BODY.",
+            "    DISPLAY '<' DEBUG-NAME '|' DEBUG-CONTENTS '>'.",
+            "END DECLARATIVES.",
+        };
     }
 
     /** 見出しから宣言までを組み立てる。{@code mode} が {@code true} ならデバッグを有効にする。 */
@@ -246,5 +299,71 @@ class DebuggingGenerationTest {
                 "      D    DISPLAY \"D\".",
                 "           STOP RUN.") + "\n");
         assertEquals("A|", out);
+    }
+
+    @Test
+    @DisplayName("ファイル名を見張ると、その入出力文のあとで節が動く (FR-193)")
+    void watchingAFileRunsTheSectionAfterEachIoStatement(@TempDir Path directory) {
+        seed(directory, "ABCDEF");
+        String out = run(directory, source(join(fileWatcher(),
+                "MAIN SECTION.",
+                "START-P.",
+                "    OPEN INPUT IN-FILE.",
+                "    READ IN-FILE AT END MOVE 'Y' TO WS-EOF.",
+                "    CLOSE IN-FILE.",
+                "    STOP RUN.")));
+        // OPEN と CLOSE では DEBUG-CONTENTS は空白、READ では読んだレコードが入る
+        assertEquals(watched("IN-FILE", "") + "|"
+                + watched("IN-FILE", "ABC") + "|"
+                + watched("IN-FILE", "") + "|", out);
+    }
+
+    @Test
+    @DisplayName("読めなかった READ では節は動かない (FR-193)")
+    void anUnsuccessfulReadDoesNotRunTheSection() {
+        // AT END は「レコードが渡らなかった」ということである。DEBUG-CONTENTS に
+        // 入れるものが無い (DB203A の READ-TEST-2)
+        String out = runWithEmptyFile();
+        assertEquals(watched("IN-FILE", "") + "|"
+                + "AT END|"
+                + watched("IN-FILE", "") + "|", out);
+    }
+
+    private static String runWithEmptyFile() {
+        try {
+            Path directory = Files.createTempDirectory("debug-empty");
+            seed(directory, "");
+            return run(directory, source(join(fileWatcher(),
+                    "MAIN SECTION.",
+                    "START-P.",
+                    "    OPEN INPUT IN-FILE.",
+                    "    READ IN-FILE AT END DISPLAY 'AT END'.",
+                    "    CLOSE IN-FILE.",
+                    "    STOP RUN.")));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    @DisplayName("見張られていないファイルでは動かない (FR-193)")
+    void anUnwatchedFileDoesNotRunTheSection(@TempDir Path directory) {
+        seed(directory, "ABC");
+        String[] head = fileWatcher();
+        head[17] = "    USE FOR DEBUGGING ON ALL PROCEDURES.";
+        String out = run(directory, source(join(head,
+                "MAIN SECTION.",
+                "START-P.",
+                "    OPEN INPUT IN-FILE.",
+                "    CLOSE IN-FILE.",
+                "    STOP RUN.")));
+        // ALL PROCEDURES なので段落では動くが、ファイルの入出力では動かない
+        assertEquals(watched("MAIN", "") + "|" + watched("START-P", "") + "|", out);
+    }
+
+    /** 見張りの節が印字する 1 行。DEBUG-NAME は 30 桁、DEBUG-CONTENTS はレコードの幅。 */
+    private static String watched(String name, String contents) {
+        return "<" + name + " ".repeat(30 - name.length())
+                + "|" + contents + " ".repeat(30 - contents.length()) + ">";
     }
 }

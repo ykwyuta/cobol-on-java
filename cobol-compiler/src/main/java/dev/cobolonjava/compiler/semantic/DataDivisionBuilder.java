@@ -16,7 +16,9 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 
@@ -1143,7 +1145,7 @@ public final class DataDivisionBuilder {
             sub.setSignPosition(SignPosition.LEADING_SEPARATE);
             addDebugField(item, null, "X", origin);
         }
-        addDebugField(item, "DEBUG-CONTENTS", "X(" + DEBUG_CONTENTS_SIZE + ")", origin);
+        addDebugField(item, "DEBUG-CONTENTS", "X(" + debugContentsSize(program) + ")", origin);
         records.add(item);
 
         // 制御を移した文の行番号の置き場。DEBUG-LINE はここから写す。
@@ -1156,8 +1158,78 @@ public final class DataDivisionBuilder {
     /** 制御を移した文の行番号を置く項目の名前 (要件 FR-193)。 */
     public static final String DEBUG_LINE_SLOT = "DBG-LINE$";
 
-    /** {@code DEBUG-CONTENTS} の桁数 (暫定判断 P-079)。 */
+    /** {@code DEBUG-CONTENTS} の最小の桁数 (暫定判断 P-079)。 */
     private static final int DEBUG_CONTENTS_SIZE = 30;
+
+    /**
+     * {@code DEBUG-LINE} に入れる 6 桁の行番号 (要件 FR-193)。
+     *
+     * <p>規格は中身を「その文の識別子」としか決めていない。翻訳系が数えた原文の行を
+     * 右詰めで入れる (暫定判断 P-080)。
+     */
+    public static String debugLine(Origin origin) {
+        String text = Integer.toString(origin.line());
+        return text.length() >= 6
+                ? text.substring(text.length() - 6)
+                : " ".repeat(6 - text.length()) + text;
+    }
+
+    /**
+     * {@code DEBUG-CONTENTS} の桁数を決める (要件 FR-193)。
+     *
+     * <p>規格は桁数を決めていない。決めるのは翻訳系である。<b>そこへ入りうるいちばん
+     * 大きいもの</b>が入る幅にする。ファイル名を見張れば {@code READ} のたびに読んだ
+     * レコードが入るので、そのファイルのレコード領域が下限になる。
+     *
+     * <p>レコードの長さは割り付けを済ませないと分からない。ここで一度割り付けるが、
+     * <b>そのとき出た診断は捨てる</b>。本番の割り付けで同じことをもう一度言うからである。
+     */
+    private int debugContentsSize(CobolParser.ProgramUnitContext program) {
+        int size = DEBUG_CONTENTS_SIZE;
+        for (String name : watchedFileNames(program)) {
+            List<DataItem> area = fileRecords.get(name);
+            if (area == null) {
+                continue;
+            }
+            for (DataItem record : area) {
+                int before = diagnostics.size();
+                inheritUsage(record, null, false);
+                size = Math.max(size, layout(record, 0));
+                while (diagnostics.size() > before) {
+                    diagnostics.remove(diagnostics.size() - 1);
+                }
+            }
+        }
+        return size;
+    }
+
+    /** {@code USE FOR DEBUGGING ON} に書かれた名前のうち、ファイルのもの。 */
+    private Set<String> watchedFileNames(CobolParser.ProgramUnitContext program) {
+        Set<String> found = new LinkedHashSet<>();
+        if (program.procedureDivision() == null
+                || program.procedureDivision().procedureBody() == null
+                || program.procedureDivision().procedureBody().declarativesPart() == null) {
+            return found;
+        }
+        for (CobolParser.DeclarativeSectionContext section
+                : program.procedureDivision().procedureBody().declarativesPart()
+                        .declarativeSection()) {
+            if (section.useStatement().debugTarget() == null) {
+                continue;
+            }
+            for (CobolParser.DebugItemContext item : section.useStatement().debugTarget()
+                    .debugItem()) {
+                if (item.PROCEDURES() != null || item.identifier() != null) {
+                    continue;
+                }
+                String written = item.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+                if (fileRecords.containsKey(written)) {
+                    found.add(written);
+                }
+            }
+        }
+        return found;
+    }
 
     private DataItem addDebugField(DataItem parent, String name, String picture, Origin origin) {
         DataItem field = new DataItem(2, name, origin);
