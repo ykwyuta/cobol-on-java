@@ -1,6 +1,7 @@
 package dev.cobolonjava.runtime.sort;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.verb.Compare;
 import java.util.ArrayList;
@@ -31,9 +32,22 @@ public final class SortWork {
     /** 次に返すレコード。 */
     private int position;
 
+    /**
+     * 並べ替えに使う照合順序 (要件 FR-054, FR-120)。
+     *
+     * <p>{@code null} ならコードページのバイト値の並びである。表があれば、英数字の鍵は
+     * その並びで比べる。<b>数値の鍵は表に依らない</b> — 大小は値そのもので決まる。
+     */
+    private final CollatingSequence sequence;
+
     public SortWork(List<SortKey> keys, CodePage codePage) {
+        this(keys, codePage, null);
+    }
+
+    public SortWork(List<SortKey> keys, CodePage codePage, CollatingSequence sequence) {
         this.keys = List.copyOf(keys);
         this.codePage = codePage;
+        this.sequence = sequence;
     }
 
     /** 溜めたレコードの数。 */
@@ -58,6 +72,16 @@ public final class SortWork {
      * @param into 受け取る領域。足りなければ空白で埋め、あふれれば切り捨てる
      * @return 返すものがなければ {@code false}
      */
+    /**
+     * 取り出し位置を先頭へ戻す (要件 FR-120)。
+     *
+     * <p>{@code GIVING} に複数のファイルを書けば、<b>どのファイルにも同じレコードが
+     * 全部入る</b>。1 つ目で読み切ったままにすると、2 つ目から先が空になる。
+     */
+    public void rewind() {
+        position = 0;
+    }
+
     public boolean next(byte[] into) {
         if (position >= records.size()) {
             return false;
@@ -76,9 +100,9 @@ public final class SortWork {
 
     private int compare(byte[] left, byte[] right) {
         for (SortKey key : keys) {
-            int order = key.numeric() == null
-                    ? Compare.alphanumeric(slice(left, key), slice(right, key), codePage)
-                    : compareNumeric(left, right, key);
+            int order = key.value() != null || key.numeric() != null
+                    ? compareNumeric(left, right, key)
+                    : compareText(slice(left, key), slice(right, key));
             if (order != 0) {
                 return key.ascending() ? order : -order;
             }
@@ -87,10 +111,20 @@ public final class SortWork {
         return 0;
     }
 
+    private int compareText(byte[] left, byte[] right) {
+        return sequence == null
+                ? Compare.alphanumeric(left, right, codePage)
+                : sequence.compare(left, right, codePage.space());
+    }
+
     private int compareNumeric(byte[] left, byte[] right, SortKey key) {
-        Decimal a = key.numeric().decode(slice(left, key));
-        Decimal b = key.numeric().decode(slice(right, key));
-        return a.compareTo(b);
+        return number(left, key).compareTo(number(right, key));
+    }
+
+    /** 鍵の場所を数として読む。項目で言い表せない形は {@link SortValue} が読む。 */
+    private Decimal number(byte[] record, SortKey key) {
+        byte[] bytes = slice(record, key);
+        return key.value() != null ? key.value().read(bytes) : key.numeric().decode(bytes);
     }
 
     private static byte[] slice(byte[] record, SortKey key) {

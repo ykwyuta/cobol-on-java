@@ -154,6 +154,23 @@ class SortGenerationTest {
     }
 
     @Test
+    @DisplayName("GIVING を 2 つ書けば、どちらにも全部入る (FR-120)")
+    void everyGivingFileGetsAllTheRecords(@TempDir Path directory) {
+        // 1 つ目で読み切ったままにすると、2 つ目が空になる (ST147A がこの形)
+        seed(directory, "INDD", "CCxxxAAyyyBBzzz");
+        run(directory, program(
+                "MAIN-SECT SECTION.",
+                "MAIN-PARA.",
+                "    SORT WORK-FILE",
+                "        ON ASCENDING KEY WK-KEY",
+                "        USING IN-FILE",
+                "        GIVING OUT-FILE IN2-FILE.",
+                "    STOP RUN."));
+        assertArrayEquals(ebcdic("AAyyyBBzzzCCxxx"), bytesOf(directory.resolve("OUTDD")));
+        assertArrayEquals(ebcdic("AAyyyBBzzzCCxxx"), bytesOf(directory.resolve("IN2DD")));
+    }
+
+    @Test
     @DisplayName("降順の鍵で並べ替える (FR-120)")
     void sortingDescending(@TempDir Path directory) {
         seed(directory, "INDD", "AAyyyCCxxxBBzzz");

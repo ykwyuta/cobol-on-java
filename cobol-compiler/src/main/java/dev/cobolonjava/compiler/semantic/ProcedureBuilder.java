@@ -3,13 +3,17 @@ package dev.cobolonjava.compiler.semantic;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.OpenMode;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
 
 /**
@@ -31,13 +35,39 @@ public final class ProcedureBuilder {
     /** 通常の流れが始まる段落の番号。宣言部分はそれより前にある。 */
     private int firstNormal;
 
+    /** 報告書の記述。{@code INITIATE} / {@code GENERATE} / {@code TERMINATE} が引く。 */
+    private final List<ReportDescription> reports;
+
+    /**
+     * デバッグの節 (要件 FR-193)。手続きへ制御が移るたびに、この節が先に動く。
+     *
+     * @param first     節の最初の段落の呼び名
+     * @param last      節の最後の段落の呼び名
+     * @param all       {@code ALL PROCEDURES} が書かれていたか
+     * @param names     見張る手続きの名前 (書かれたとおり)
+     * @param files     見張るファイルの名前 (書かれたとおり)
+     */
+    private record DebugSection(String first, String last, boolean all, Set<String> names,
+                                Set<String> files, Set<DataItem> items, Set<DataItem> allRefs) {
+    }
+
+    private final List<DebugSection> debugSections = new ArrayList<>();
+    /** 宣言部分を読んでいる間は行番号を記録しない。デバッグの節が自分で上書きしてしまう。 */
+    private boolean inDeclarative;
+    /** デバッグの節そのものを読んでいる間は、見張りを仕掛けない。際限なく呼び合う。 */
+    private boolean inDebugSection;
+    private final ReportLowering reportLowering;
+
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
-                             SpecialNames specialNames, Map<String, FileDescription> files) {
+                             SpecialNames specialNames, Map<String, FileDescription> files,
+                             List<ReportDescription> reports) {
         this.resolver = new ReferenceResolver(layout, diagnostics);
         this.layout = layout;
         this.diagnostics = diagnostics;
         this.specialNames = specialNames;
         this.files = files;
+        this.reports = reports;
+        this.reportLowering = new ReportLowering(this.resolver, diagnostics);
     }
 
     /**
@@ -46,10 +76,54 @@ public final class ProcedureBuilder {
      * @param name       段落名。名前のない先頭の並びは {@code null}
      * @param statements 文の並び
      */
-    public record Paragraph(String name, List<Statement> statements, Origin origin) {
+    /**
+     * 段落 1 つ。
+     *
+     * @param segment 段分けの段番号 (要件 FR-061)。50 以上は<b>独立段</b>であり、
+     *                別の段から制御が移るたびに {@code ALTER} の書き換えが元へ戻る
+     */
+    public record Paragraph(String name, List<Statement> statements, int segment,
+                            List<Statement> debugEntry, Origin origin) {
 
         public Paragraph {
             statements = List.copyOf(statements);
+            debugEntry = List.copyOf(debugEntry);
+        }
+
+        public Paragraph(String name, List<Statement> statements, int segment, Origin origin) {
+            this(name, statements, segment, List.of(), origin);
+        }
+
+        public Paragraph(String name, List<Statement> statements, Origin origin) {
+            this(name, statements, 0, List.of(), origin);
+        }
+
+        /**
+         * この段落へ入るときに先に動く文 (要件 FR-193)。
+         *
+         * <p>書かれた文とは<b>別に持つ</b>。混ぜると、{@code ALTER} が書き換えられる
+         * 段落かどうかの判定 (「{@code GO TO} だけを書いた段落」) が狂う。
+         */
+        public boolean hasDebugEntry() {
+            return !debugEntry.isEmpty();
+        }
+
+        /**
+         * {@code ALTER} で飛び先を書き換えられる段落かどうか。
+         *
+         * <p>規格は<b>「{@code GO TO} だけを書いた段落」</b>に限っている。行き先が
+         * 1 つでなければ、書き換える先が定まらない。
+         *
+         * @return 書き換えられるなら、その {@code GO TO}。そうでなければ {@code null}
+         */
+        public Statement.GoTo alterableGoTo() {
+            List<Statement> body = statements;
+            if (body.size() == 1 && body.get(0) instanceof Statement.Sentence sentence) {
+                body = sentence.body();
+            }
+            return body.size() == 1 && body.get(0) instanceof Statement.GoTo goTo
+                    ? goTo
+                    : null;
         }
     }
 
@@ -76,9 +150,30 @@ public final class ProcedureBuilder {
      * @param mode  開き方で指定したもの。ファイル名で指定していれば {@code null}
      */
     public record Declarative(String section, String first, String last,
-                              List<FileDescription> files, OpenMode mode, Origin origin) {
+                              List<FileDescription> files, OpenMode mode, boolean global,
+                              Origin origin) {
 
         public Declarative {
+            files = List.copyOf(files);
+        }
+    }
+
+    /**
+     * 囲む側が書いた {@code USE GLOBAL} 宣言節 1 つ (要件 FR-091)。
+     *
+     * <p>囲まれたプログラムから動かすので、<b>誰のどの段落か</b>を持つ。段落の番号は
+     * 囲む側の並びでの番号である。
+     *
+     * @param owner 書いたプログラムの名前
+     * @param from  最初の段落の番号 (囲む側の並びでの番号)
+     * @param through 最後の段落の番号
+     * @param files 受け持つファイルの名前。開き方で受け持つ節では空
+     * @param mode  受け持つ開き方。ファイル名で受け持つ節では {@code null}
+     */
+    public record GlobalDeclarative(String owner, int from, int through,
+                                    List<String> files, OpenMode mode) {
+
+        public GlobalDeclarative {
             files = List.copyOf(files);
         }
     }
@@ -93,7 +188,7 @@ public final class ProcedureBuilder {
                          List<DataItem> parameters, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
 
         /** すべての段落の文を、書かれた順に並べたもの。 */
@@ -107,26 +202,34 @@ public final class ProcedureBuilder {
     }
 
     /** 構文木の手続き部から文の並びを作る。 */
-    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout) {
-        return build(tree, layout, SpecialNames.standard());
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout) {
+        return build(program, layout, SpecialNames.standard());
     }
 
     /** 環境部の指定を踏まえて手続き部から文の並びを作る。 */
-    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout,
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
                                SpecialNames specialNames) {
-        return build(tree, layout, specialNames, Map.of());
+        return build(program, layout, specialNames, Map.of());
     }
 
     /** ファイルの宣言も踏まえて手続き部から文の並びを作る。 */
-    public static Result build(CobolParser.CompilationUnitContext tree, DataLayout layout,
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
                                SpecialNames specialNames, Map<String, FileDescription> files) {
+        return build(program, layout, specialNames, files, List.of());
+    }
+
+    /** 報告書の記述も踏まえて手続き部から文の並びを作る。 */
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
+                               SpecialNames specialNames, Map<String, FileDescription> files,
+                               List<ReportDescription> reports) {
         List<Diagnostic> diagnostics = new ArrayList<>();
-        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files);
+        ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files,
+                reports);
         List<Paragraph> paragraphs = new ArrayList<>();
         List<Section> sections = new ArrayList<>();
         List<Declarative> declaratives = new ArrayList<>();
         List<DataItem> parameters = new ArrayList<>();
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
+        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             if (unit.procedureDivision() != null) {
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs, sections,
@@ -213,9 +316,34 @@ public final class ProcedureBuilder {
         for (Paragraph paragraph : paragraphs) {
             names.add(paragraph.name());
         }
+        alterable = paragraphs;
         for (Paragraph paragraph : paragraphs) {
             for (Statement statement : paragraph.statements()) {
                 checkProcedureTargets(statement, names);
+            }
+        }
+    }
+
+    /** {@code ALTER} が書き換えられる段落かを見るために、段落の並びを覚えておく。 */
+    private List<Paragraph> alterable = List.of();
+
+    /**
+     * {@code ALTER} の書き換え先を確かめる (要件 FR-063)。
+     *
+     * <p>書き換えられるのは<b>{@code GO TO} だけを書いた段落</b>である。行き先が
+     * 1 つでなければ、書き換える先が定まらない。
+     */
+    private void checkAlter(Statement.Alter alter, List<String> names) {
+        for (Statement.Alter.Change change : alter.changes()) {
+            if (!names.contains(change.from()) || !names.contains(change.to())) {
+                report(alter.origin(), "undefined paragraph: "
+                        + (names.contains(change.from()) ? change.to() : change.from()));
+                continue;
+            }
+            Paragraph target = alterable.get(names.indexOf(change.from()));
+            if (target.alterableGoTo() == null) {
+                report(alter.origin(), "ALTER requires a paragraph that holds"
+                        + " a single GO TO: " + change.from());
             }
         }
     }
@@ -225,9 +353,25 @@ public final class ProcedureBuilder {
             nested.forEach(s -> checkProcedureTargets(s, names));
         }
         if (statement instanceof Statement.GoTo goTo) {
+            if (goTo.target() == null) {
+                // 行き先が無いのは書かれたとおりである。ALTER が入れる
+                return;
+            }
             if (!names.contains(goTo.target())) {
                 report(goTo.origin(), "undefined paragraph: " + goTo.target());
             }
+            return;
+        }
+        if (statement instanceof Statement.GoToDepending depending) {
+            for (String target : depending.targets()) {
+                if (!names.contains(target)) {
+                    report(depending.origin(), "undefined paragraph: " + target);
+                }
+            }
+            return;
+        }
+        if (statement instanceof Statement.Alter alter) {
+            checkAlter(alter, names);
             return;
         }
         if (statement instanceof Statement.Sort sort) {
@@ -249,11 +393,10 @@ public final class ProcedureBuilder {
         int to = names.indexOf(perform.through());
         if (to < 0) {
             report(perform.origin(), "undefined paragraph: " + perform.through());
-        } else if (to < from) {
-            // 逆順に書かれた THRU は、書いた人の意図と実行される範囲が食い違う
-            report(perform.origin(), "PERFORM THRU names paragraphs in reverse order: "
-                    + perform.target() + " comes after " + perform.through());
         }
+        // 2 つ目の手続き名が<b>物理的に前にあってもよい</b>。範囲が終わるのは
+        // 「2 つ目の段落を最後まで流れきったとき」であって、並び順ではない。
+        // GO TO で行き来してそこへ達すればよく、規格もそれを許している
     }
 
     /**
@@ -266,6 +409,12 @@ public final class ProcedureBuilder {
     private static List<List<Statement>> nestedStatements(Statement statement) {
         if (statement instanceof Statement.Sequence sequence) {
             return List.of(sequence.statements());
+        }
+        if (statement instanceof Statement.DebugEntry entry) {
+            return List.of(entry.body());
+        }
+        if (statement instanceof Statement.Sentence sentence) {
+            return List.of(sentence.body());
         }
         if (statement instanceof Statement.If branch) {
             return List.of(branch.onTrue(), branch.onFalse());
@@ -372,8 +521,105 @@ public final class ProcedureBuilder {
      * <p>宣言部分は<b>いちばん前に置く</b>。通常の流れはそのうしろから始まるので、
      * 落ちて入ってしまうことがない。
      */
+    /**
+     * 手続き名の置き場 (要件 FR-061)。
+     *
+     * <p>段落名は<b>節の中でだけ一意であればよい</b>。同じ名前の段落が別の節にあれば、
+     * どちらを指すかは書いた側が節の名前で修飾して決める。したがって「名前 → 何番目か」
+     * の表を先に作り、そこから<b>一意の呼び名</b>を決める。
+     *
+     * <p>一意の呼び名は、簡単な名前が 1 つしかなければその名前そのもの、2 つ以上あれば
+     * {@code 名前 OF 節名} である。以後の道 (飛び先の表も生成コードも) は、この呼び名を
+     * ただの文字列として扱えばよい。
+     */
+    private record ProcedureName(String simple, String section) {
+
+        /** ほかに同じ簡単な名前があるかどうかで決まる呼び名。 */
+        String key(boolean unique) {
+            return unique || section == null ? simple : simple + " OF " + section;
+        }
+    }
+
+    /** 書かれた順の手続き名。 */
+    private final List<ProcedureName> procedureNames = new ArrayList<>();
+    /** 簡単な名前が 1 つしかないか。 */
+    private final Map<String, Boolean> uniqueNames = new LinkedHashMap<>();
+
+    /** 段落と節の名前を先に集める。修飾を解く表になる。 */
+    private void collectProcedureNames(CobolParser.ProcedureBodyContext body) {
+        if (body.declarativesPart() != null) {
+            for (CobolParser.DeclarativeSectionContext section
+                    : body.declarativesPart().declarativeSection()) {
+                String name = wordOf(section.sectionHeader().paragraphName());
+                procedureNames.add(new ProcedureName(name, name));
+                for (CobolParser.ParagraphContext paragraph : section.paragraph()) {
+                    procedureNames.add(
+                            new ProcedureName(wordOf(paragraph.paragraphName()), name));
+                }
+            }
+        }
+        for (CobolParser.ParagraphContext paragraph : body.paragraph()) {
+            procedureNames.add(new ProcedureName(wordOf(paragraph.paragraphName()), null));
+        }
+        for (CobolParser.ProcedureSectionContext section : body.procedureSection()) {
+            String name = wordOf(section.sectionHeader().paragraphName());
+            procedureNames.add(new ProcedureName(name, name));
+            for (CobolParser.ParagraphContext paragraph : section.paragraph()) {
+                procedureNames.add(new ProcedureName(wordOf(paragraph.paragraphName()), name));
+            }
+        }
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (ProcedureName one : procedureNames) {
+            counts.merge(one.simple(), 1, Integer::sum);
+        }
+        counts.forEach((name, count) -> uniqueNames.put(name, count == 1));
+    }
+
+    /** 修飾を外した先頭の語。 */
+    private static String wordOf(CobolParser.ParagraphNameContext context) {
+        return context.procedureWord(0).getText().toUpperCase(Locale.ROOT);
+    }
+
+    /** その段落の呼び名。同じ名前がほかにあれば節名で修飾した形になる。 */
+    private String keyOf(String simple, String section) {
+        return new ProcedureName(simple, section)
+                .key(Boolean.TRUE.equals(uniqueNames.get(simple)));
+    }
+
+    /**
+     * 書かれた手続き名を、一意の呼び名へ直す (要件 FR-061)。
+     *
+     * <p>修飾が書かれていればその節のものを選ぶ。書かれていなくても、同じ名前が
+     * 1 つしかなければ決まる。2 つ以上あって修飾も無ければ<b>断る</b> —
+     * どちらかを選ぶと、書いた人の意図と違うほうへ飛びかねない。
+     */
+    private String procedureNameOf(CobolParser.ParagraphNameContext context) {
+        String simple = wordOf(context);
+        String qualifier = context.procedureWord().size() > 1
+                ? context.procedureWord(1).getText().toUpperCase(Locale.ROOT)
+                : null;
+        if (qualifier != null) {
+            return keyOf(simple, qualifier);
+        }
+        if (!Boolean.FALSE.equals(uniqueNames.get(simple))) {
+            return keyOf(simple, null);
+        }
+        // 修飾が無くても、<b>同じ節の中</b>に同じ名前があればそれを指す。規格がそう決めている
+        if (currentSectionName != null
+                && procedureNames.contains(new ProcedureName(simple, currentSectionName))) {
+            return keyOf(simple, currentSectionName);
+        }
+        report(ReferenceResolver.originOf(context),
+                simple + " is ambiguous; qualify it with OF or IN");
+        return keyOf(simple, null);
+    }
+
+    /** いま組み立てている節の名前。修飾の無い手続き名がここを先に見る。 */
+    private String currentSectionName;
+
     private void addBody(CobolParser.ProcedureBodyContext body, List<Paragraph> paragraphs,
                          List<Section> sections, List<Declarative> declaratives) {
+        collectProcedureNames(body);
         if (body.declarativesPart() != null) {
             for (CobolParser.DeclarativeSectionContext section
                     : body.declarativesPart().declarativeSection()) {
@@ -385,32 +631,62 @@ public final class ProcedureBuilder {
         if (!leading.isEmpty()) {
             paragraphs.add(new Paragraph(null, leading, leading.get(0).origin()));
         }
-        for (CobolParser.ProcedureUnitContext unit : body.procedureUnit()) {
-            if (unit.sectionHeader() != null) {
-                addSection(unit, paragraphs, sections);
-                continue;
-            }
-            addParagraph(unit.paragraph(0), paragraphs);
+        for (CobolParser.ParagraphContext paragraph : body.paragraph()) {
+            addParagraph(paragraph, paragraphs);
         }
+        for (CobolParser.ProcedureSectionContext section : body.procedureSection()) {
+            addSection(section, paragraphs, sections);
+        }
+    }
+
+    private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs,
+                              int segment, String section) {
+        currentSectionName = section;
+        String simple = wordOf(paragraph.paragraphName());
+        Origin origin = ReferenceResolver.originOf(paragraph);
+        List<Statement> entry = inDebugSection ? List.of() : debugEntry(simple, origin);
+        paragraphs.add(new Paragraph(keyOf(simple, section), statementsOf(paragraph.sentence()),
+                segment, entry, origin));
     }
 
     private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
-        paragraphs.add(new Paragraph(
-                paragraph.paragraphName().getText().toUpperCase(Locale.ROOT),
-                statementsOf(paragraph.sentence()),
-                ReferenceResolver.originOf(paragraph)));
+        addParagraph(paragraph, paragraphs, 0, null);
     }
 
-    private void addSection(CobolParser.ProcedureUnitContext unit, List<Paragraph> paragraphs,
+    private void addSection(CobolParser.ProcedureSectionContext unit, List<Paragraph> paragraphs,
                             List<Section> sections) {
-        String name = unit.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
-        paragraphs.add(new Paragraph(name, statementsOf(unit.sentence()),
-                ReferenceResolver.originOf(unit.sectionHeader())));
+        String name = wordOf(unit.sectionHeader().paragraphName());
+        int segment = segmentOf(unit.sectionHeader());
+        currentSectionName = name;
+        Origin at = ReferenceResolver.originOf(unit.sectionHeader());
+        // 章へ入ると、章の名前と最初の段落の名前で<b>2 度</b>デバッグの節が動く。
+        // 章の見出しそのものが 1 つの段落になっているので、そのまま 2 度になる
+        paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(unit.sentence()), segment,
+                debugEntry(name, at), at));
         for (CobolParser.ParagraphContext paragraph : unit.paragraph()) {
-            addParagraph(paragraph, paragraphs);
+            addParagraph(paragraph, paragraphs, segment, name);
         }
-        sections.add(new Section(name, name,
+        sections.add(new Section(name, keyOf(name, name),
                 paragraphs.get(paragraphs.size() - 1).name(), false));
+    }
+
+    /**
+     * 章の段番号 (要件 FR-061)。書かれていなければ 0 である。
+     *
+     * <p>0〜49 は常駐する段であり、ふつうの章と振る舞いが変わらない。50〜99 は
+     * <b>独立段</b>であり、別の段から制御が移るたびに初期状態へ戻る。
+     */
+    private int segmentOf(CobolParser.SectionHeaderContext context) {
+        if (context.NUMBER() == null) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(context.NUMBER().getText());
+        } catch (NumberFormatException e) {
+            report(ReferenceResolver.originOf(context),
+                    "a segment number must be an integer: " + context.NUMBER().getText());
+            return 0;
+        }
     }
 
     /**
@@ -418,18 +694,54 @@ public final class ProcedureBuilder {
      *
      * <p>{@code USE AFTER STANDARD ERROR PROCEDURE} は文ではない。その節が<b>いつ動くか</b>の
      * 宣言であり、入出力で異常が起きたときに呼ばれて、終われば元の場所へ戻る。
+     *
+     * <h2>デバッグの節は読み捨てる (要件 FR-193)</h2>
+     * <p>{@code USE FOR DEBUGGING} の節は、{@code WITH DEBUGGING MODE} が書かれて
+     * <b>いなければ注釈と同じ</b>である。これは手加減ではなく規格の決まりであり、
+     * 7 桁目の {@code D} を落とすのと同じ扱いをここでもする。いまの翻訳系は
+     * デバッグを有効にする道を持っていない ({@code FixedFormatReader.standard()}) ので、
+     * 節はいつも注釈になる。
+     *
+     * <p>本体を<b>組み立てない</b>のが肝である。組み立てると、その中の
+     * {@code DEBUG-ITEM} のような特殊レジスタを「宣言されていない」と言うことになる。
+     * 注釈なのだから、読まないのが正しい。
      */
     private void addDeclarative(CobolParser.DeclarativeSectionContext context,
                                 List<Paragraph> paragraphs, List<Section> sections,
                                 List<Declarative> declaratives) {
-        String name = context.sectionHeader().paragraphName().getText().toUpperCase(Locale.ROOT);
+        boolean debugging = context.useStatement().debugTarget() != null;
+        if (debugging && !specialNames.debuggingMode()) {
+            // WITH DEBUGGING MODE を書かなければ、この節は注釈と同じである。
+            // 本体を組み立てないのが肝である。組み立てると、その中の DEBUG-ITEM を
+            // 「宣言されていない」と言うことになる
+            return;
+        }
+        String name = wordOf(context.sectionHeader().paragraphName());
         Origin origin = ReferenceResolver.originOf(context.sectionHeader());
-        paragraphs.add(new Paragraph(name, statementsOf(context.sentence()), origin));
-        for (CobolParser.ParagraphContext paragraph : context.paragraph()) {
-            addParagraph(paragraph, paragraphs);
+        currentSectionName = name;
+        boolean outer = inDeclarative;
+        boolean outerDebug = inDebugSection;
+        inDeclarative = true;
+        // 見張られるのは<b>デバッグの節でない</b>宣言節である。USE AFTER ERROR の節は
+        // 手続き名で見張れて、DEBUG-CONTENTS は USE PROCEDURE になる (要件 FR-193)。
+        // デバッグの節そのものを見張ると、際限なく自分を呼ぶことになる
+        inDebugSection = debugging;
+        try {
+            paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(context.sentence()),
+                    0, debugging ? List.of() : debugEntry(name, origin), origin));
+            for (CobolParser.ParagraphContext paragraph : context.paragraph()) {
+                addParagraph(paragraph, paragraphs, 0, name);
+            }
+        } finally {
+            inDeclarative = outer;
+            inDebugSection = outerDebug;
         }
         String last = paragraphs.get(paragraphs.size() - 1).name();
-        sections.add(new Section(name, name, last, true));
+        sections.add(new Section(name, keyOf(name, name), last, true));
+        if (debugging) {
+            addDebugSection(context, keyOf(name, name), last, origin);
+            return;
+        }
 
         CobolParser.UseTargetContext target = context.useStatement().useTarget();
         OpenMode mode = modeOf(target);
@@ -441,7 +753,438 @@ public final class ProcedureBuilder {
             }
             named.add(file);
         }
-        declaratives.add(new Declarative(name, name, last, named, mode, origin));
+        // USE GLOBAL は<b>囲まれたプログラムの入出力でも</b>動く (要件 FR-091)
+        boolean global = context.useStatement().GLOBAL() != null;
+        declaratives.add(new Declarative(name, name, last, named, mode, global, origin));
+    }
+
+    /**
+     * デバッグの節が何を見張るかを控える (要件 FR-193)。
+     *
+     * <p>いま支えているのは<b>手続き名</b>と {@code ALL PROCEDURES} だけである。
+     * {@code ALL REFERENCES OF 項目} とファイル名は、まだ動かせない。
+     * 断らずに<b>告げて通す</b> — 節が動かないだけで、残りの翻訳は正しいからである
+     * (暫定判断 P-079)。
+     */
+    private void addDebugSection(CobolParser.DeclarativeSectionContext context,
+                                 String first, String last, Origin origin) {
+        boolean all = false;
+        Set<String> names = new LinkedHashSet<>();
+        Set<String> watchedFiles = new LinkedHashSet<>();
+        Set<DataItem> items = new LinkedHashSet<>();
+        Set<DataItem> allRefs = new LinkedHashSet<>();
+        for (CobolParser.DebugItemContext item
+                : context.useStatement().debugTarget().debugItem()) {
+            if (item.PROCEDURES() != null) {
+                all = true;
+                continue;
+            }
+            if (item.identifier() != null) {
+                // ALL REFERENCES OF 一意名。修飾を書けるので、解決して項目そのものを持つ。
+                // <b>添字は書かない</b>。表の 1 個ではなく、その名前そのものを見張る
+                DataItem watched = resolver.resolveName(item.identifier().qualifiedDataName(),
+                        ReferenceResolver.originOf(item.identifier()));
+                if (watched != null) {
+                    allRefs.add(watched);
+                }
+                continue;
+            }
+            String written = item.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+            if (files.containsKey(written)) {
+                watchedFiles.add(written);
+                continue;
+            }
+            List<DataItem> found = layout.findAll(written);
+            if (found.size() == 1) {
+                // 修飾を書かない一意名。受け取る側になったときだけ動く
+                items.add(found.get(0));
+                continue;
+            }
+            names.add(written);
+        }
+        if (all || !names.isEmpty() || !watchedFiles.isEmpty()
+                || !items.isEmpty() || !allRefs.isEmpty()) {
+            debugSections.add(new DebugSection(first, last, all, names, watchedFiles,
+                    items, allRefs));
+        }
+    }
+
+    /**
+     * 節を動かす文を作る。
+     *
+     * @param receiving 中身が書き換わる参照。{@code null} なら<b>どれも書き換わる扱い</b>
+     *                  にする。{@code PERFORM} の {@code VARYING} / {@code UNTIL} が
+     *                  そうで、条件に書いただけの名前でも見張りが動く
+     *                  (DB201A の {@code PERFORM-UNTIL-1})
+     * @param only      その段に現れる項目だけに絞る。{@code null} なら絞らない
+     */
+    private List<Statement> entriesFor(List<ReferenceResolver.Traced> referenced,
+                                       Set<DataReference> receiving, Origin origin,
+                                       Set<DataItem> only) {
+        // 受け取る側かどうかは<b>項目で</b>照らす。ADD ID-1 ID-1 TO ID-1 では、
+        // 送出側として書かれた ID-1 も同じ項目である (DB201A の ADD-TEST-4)
+        Set<DataItem> receivingItems = new LinkedHashSet<>();
+        if (receiving != null) {
+            receiving.forEach(r -> receivingItems.add(r.item()));
+        }
+        List<Statement> out = new ArrayList<>();
+        Set<DataItem> done = new LinkedHashSet<>();
+        for (ReferenceResolver.Traced traced : referenced) {
+            DataItem item = traced.reference().item();
+            if ((only != null && !only.contains(item)) || !done.add(item)) {
+                continue;
+            }
+            for (DebugSection section : debugSections) {
+                if (section.allRefs().contains(item)
+                        || (section.items().contains(item)
+                                && (receiving == null || receivingItems.contains(item)))) {
+                    out.addAll(itemDebugEntry(section, traced, origin));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 見張られた一意名を指した文のあとに継ぐ、節を動かす文 (要件 FR-193)。
+     *
+     * <p>{@code ALL REFERENCES OF} を書けば<b>指したたび</b>に動く。書かなければ
+     * <b>受け取る側になったとき</b>だけ動く。書かれた順に並べる。
+     *
+     * @param referenced その文が書いたとおりに指した一意名 (解決した順)
+     */
+    private List<Statement> itemDebugEntries(Statement built,
+                                             List<ReferenceResolver.Traced> referenced,
+                                             Origin origin) {
+        if (referenced.isEmpty()) {
+            return List.of();
+        }
+        Set<DataReference> receiving = receivingOf(built);
+        List<ReferenceResolver.Traced> ordered = new ArrayList<>(referenced);
+        // 書かれた順に並べ直す。添字は一意名より<b>あとに</b>解決されるので、
+        // 控えた順のままだと「X (I)」の I が先に来てしまう
+        ordered.sort((a, b) -> {
+            int line = Integer.compare(a.reference().origin().line(),
+                    b.reference().origin().line());
+            return line != 0 ? line : Integer.compare(a.reference().origin().column(),
+                    b.reference().origin().column());
+        });
+        // <b>指した回数ではなく、指された名前の数だけ</b>動く。
+        // ADD ID-2 ID-2 ID-2 ID-2 TO ID-3 で動くのは 1 度である (DB201A の ADD-TEST-1)
+        return entriesFor(ordered, receiving, origin, null);
+    }
+
+    /** 一意名 1 個ぶんの、節を動かす文。 */
+    private List<Statement> itemDebugEntry(DebugSection section, ReferenceResolver.Traced traced,
+                                           Origin origin) {
+        DataReference reference = traced.reference();
+        DataReference item = resolver.resolveName("DEBUG-ITEM", origin);
+        DataReference name = resolver.resolveName("DEBUG-NAME", origin);
+        DataReference line = resolver.resolveName("DEBUG-LINE", origin);
+        DataReference held = resolver.resolveName("DEBUG-CONTENTS", origin);
+        if (item == null || name == null || line == null || held == null) {
+            return List.of();
+        }
+        List<Statement> body = new ArrayList<>();
+        body.add(textMove(new Operand.Literal(
+                new LiteralValue.Figure(LiteralValue.FigurativeConstant.SPACE)), item, origin));
+        body.add(textMove(new Operand.Literal(new LiteralValue.Text(traced.written())),
+                name, origin));
+        body.add(textMove(new Operand.Literal(
+                new LiteralValue.Text(DataDivisionBuilder.debugLine(origin))), line, origin));
+        for (int i = 0; i < reference.subscripts().size() && i < 3; i++) {
+            Statement move = subscriptMove(reference.subscripts().get(i), i + 1, origin);
+            if (move == null) {
+                return List.of();
+            }
+            body.add(move);
+        }
+        // DEBUG-CONTENTS は<b>文が終わったあとの</b>中身である。継いだ位置がそのまま
+        // 「あと」なので、ここで写せばよい
+        body.add(textMove(new Operand.Reference(reference), held, origin));
+        body.add(new Statement.Perform(section.first(), section.last(), null, null,
+                false, List.of(), List.of(), origin));
+        return wrapped(body, origin);
+    }
+
+    /**
+     * その文が<b>中身を書き換える</b>一意名 (要件 FR-193)。
+     *
+     * <p>{@code ALL REFERENCES OF} を書かない見張りは、ここに挙がったものにだけ効く。
+     * 参照の同一性で照らす。手続き部を組み立てたときの参照そのものが意味木に入って
+     * いるので、名前で照らすより確かである。
+     *
+     * <p>挙げていない文もある。挙げ落としは<b>節が動かない</b>ほうへ倒れるので、
+     * 誤って動かすより安全である (暫定判断 P-081)。
+     */
+    private Set<DataReference> receivingOf(Statement statement) {
+        Set<DataReference> out = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<>());
+        if (statement instanceof Statement.Move move) {
+            move.targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Arithmetic arithmetic) {
+            arithmetic.targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Compute compute) {
+            compute.targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.DivideRemainder divide) {
+            out.add(divide.quotient().reference());
+            out.add(divide.remainder().reference());
+        } else if (statement instanceof Statement.Initialize initialize) {
+            out.add(initialize.target());
+        } else if (statement instanceof Statement.Accept accept) {
+            out.add(accept.target());
+        } else if (statement instanceof Statement.Inspect inspect) {
+            inspect.clauses().stream().filter(c -> c.counter() != null)
+                    .forEach(c -> out.add(c.counter()));
+            if (inspect.converting() != null
+                    || inspect.clauses().stream().anyMatch(c -> c.to() != null)) {
+                out.add(inspect.target());
+            }
+        } else if (statement instanceof Statement.StringStatement text) {
+            out.add(text.target());
+        } else if (statement instanceof Statement.Unstring unstring) {
+            unstring.targets().forEach(t -> out.add(t.field()));
+        } else if (statement instanceof Statement.Read read && read.into() != null) {
+            read.into().targets().forEach(t -> out.add(t.reference()));
+        }
+        // レコード名は書き換わる側である。FROM を書けば転記され、書かなくても
+        // 出力の対象そのものである
+        DataItem record = null;
+        if (statement instanceof Statement.Write write) {
+            record = write.record();
+        } else if (statement instanceof Statement.Rewrite rewrite) {
+            record = rewrite.record();
+        } else if (statement instanceof Statement.Release release) {
+            record = release.record();
+        }
+        if (record != null && writtenRecords.containsKey(record)) {
+            out.add(writtenRecords.get(record));
+        }
+        return out;
+    }
+
+    private static LiteralValue numberOf(int value) {
+        return new LiteralValue.Number(
+                Decimal.of(java.math.BigInteger.valueOf(Math.abs(value)), 0,
+                        value < 0 ? -1 : 1));
+    }
+
+    /** 添字 1 個を {@code DEBUG-SUB-n} へ入れる文。 */
+    private Statement subscriptMove(DataReference.Subscript subscript, int index, Origin origin) {
+        DataReference target = resolver.resolveName("DEBUG-SUB-" + index, origin);
+        if (target == null) {
+            return null;
+        }
+        if (subscript instanceof DataReference.Subscript.Constant constant) {
+            return new Statement.Move(new Operand.Literal(numberOf(constant.value())),
+                    List.of(new Statement.Move.Target(target, MoveRules.Kind.NUMERIC)),
+                    false, origin);
+        }
+        if (!(subscript instanceof DataReference.Subscript.Variable variable)) {
+            return null;
+        }
+        // 指標そのものを写す。相対指定のずれは足してから写す
+        Operand source = new Operand.Reference(variable.reference());
+        if (variable.offset() == 0) {
+            return new Statement.Move(source,
+                    List.of(new Statement.Move.Target(target, MoveRules.Kind.NUMERIC)),
+                    false, origin);
+        }
+        return new Statement.Arithmetic(Statement.Arithmetic.Operator.ADD,
+                List.of(source, new Operand.Literal(numberOf(variable.offset()))),
+                null,
+                List.of(new Statement.Arithmetic.Target(target, false)),
+                null, origin);
+    }
+
+    /**
+     * 入出力の文の<b>中</b>へ見張りを入れる (要件 FR-193)。
+     *
+     * <p>入出力そのものの直後、{@code INVALID KEY} や {@code AT END} の枝へ飛ぶ前に
+     * 動かす。うしろに継ぐだけでは、飛んでしまって間に合わない。
+     *
+     * @return 入れられなければ {@code null}
+     */
+    private static Statement withInnerDebug(Statement built, List<Statement> entries) {
+        if (built instanceof Statement.Write write) {
+            return new Statement.Write(write.file(), write.record(), write.from(),
+                    write.keyCheck(), write.advancing(), write.pageCheck(),
+                    joined(write.debug(), entries), write.origin());
+        }
+        if (built instanceof Statement.Rewrite rewrite) {
+            return new Statement.Rewrite(rewrite.file(), rewrite.record(), rewrite.from(),
+                    rewrite.keyCheck(), joined(rewrite.debug(), entries), rewrite.origin());
+        }
+        if (built instanceof Statement.Delete delete) {
+            return new Statement.Delete(delete.file(), delete.keyCheck(),
+                    joined(delete.debug(), entries), delete.origin());
+        }
+        if (built instanceof Statement.Start start) {
+            return new Statement.Start(start.file(), start.keyIndex(), start.key(),
+                    start.relation(), start.keyCheck(), joined(start.debug(), entries),
+                    start.origin());
+        }
+        return null;
+    }
+
+    private static List<Statement> joined(List<Statement> first, List<Statement> second) {
+        List<Statement> out = new ArrayList<>(first);
+        out.addAll(second);
+        return List.copyOf(out);
+    }
+
+    /**
+     * {@code WRITE} / {@code REWRITE} / {@code RELEASE} のレコード名を控える (要件 FR-193)。
+     *
+     * <p>名前から項目を直に引いているので解決するところを通らない。見張りから見れば
+     * <b>書いたとおりに指した名前</b>であり、しかも<b>中身が書き換わる</b>側である。
+     */
+    private void traceRecord(DataItem record, Origin origin) {
+        DataReference reference = new DataReference(record, List.of(), null, origin);
+        resolver.trace(reference);
+        writtenRecords.put(record, reference);
+    }
+
+    /** 控えたレコード名の参照。受け取る側かどうかを見るときに引く。 */
+    private final java.util.Map<DataItem, DataReference> writtenRecords =
+            new java.util.IdentityHashMap<>();
+
+    /** 見張られている一意名があるか。無ければ文を包む支度そのものを省く。 */
+    private boolean watchesItems() {
+        for (DebugSection section : debugSections) {
+            if (!section.items().isEmpty() || !section.allRefs().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * ファイル名を見張るデバッグの節を動かす文 (要件 FR-193)。
+     *
+     * <p>そのファイルを名指した入出力文の<b>直後</b>に動く。{@code DEBUG-NAME} には
+     * ファイルの名前が入り、{@code DEBUG-CONTENTS} には
+     * <b>{@code READ} なら読んだレコード</b>、それ以外なら空白が入る。規格がそう決めている。
+     *
+     * <p>{@code DEBUG-LINE} はその入出力文の行である。手続き名の見張りと違って
+     * 「移した側」が別にいるわけではないので、<b>組み立てるときに文字にして埋める</b>。
+     *
+     * @param read {@code READ} なら {@code true}。レコードを {@code DEBUG-CONTENTS} へ入れる
+     * @return 見張られていなければ空
+     */
+    private List<Statement> fileDebugEntry(FileDescription file, boolean read, Origin origin) {
+        if (debugSections.isEmpty() || inDebugSection || file == null) {
+            return List.of();
+        }
+        String upper = file.name().toUpperCase(Locale.ROOT);
+        List<Statement> body = new ArrayList<>();
+        for (DebugSection section : debugSections) {
+            if (!section.files().contains(upper)) {
+                continue;
+            }
+            DataReference item = resolver.resolveName("DEBUG-ITEM", origin);
+            DataReference name = resolver.resolveName("DEBUG-NAME", origin);
+            DataReference line = resolver.resolveName("DEBUG-LINE", origin);
+            if (item == null || name == null || line == null) {
+                return List.of();
+            }
+            body.add(textMove(new Operand.Literal(
+                    new LiteralValue.Figure(LiteralValue.FigurativeConstant.SPACE)), item, origin));
+            body.add(textMove(new Operand.Literal(new LiteralValue.Text(file.name())),
+                    name, origin));
+            body.add(textMove(new Operand.Literal(
+                    new LiteralValue.Text(DataDivisionBuilder.debugLine(origin))), line, origin));
+            if (read && !file.records().isEmpty()) {
+                DataReference held = resolver.resolveName("DEBUG-CONTENTS", origin);
+                if (held == null) {
+                    return List.of();
+                }
+                DataReference area =
+                        new DataReference(file.records().get(0), List.of(), null, origin);
+                body.add(textMove(new Operand.Reference(area), held, origin));
+            }
+            body.add(new Statement.Perform(section.first(), section.last(), null, null,
+                    false, List.of(), List.of(), origin));
+        }
+        return wrapped(body, origin);
+    }
+
+    /**
+     * 手続きへ入るときに、デバッグの節を動かす文の並び (要件 FR-193)。
+     *
+     * <p>まず {@code DEBUG-ITEM} を空白で埋め、名前と行番号を入れてから節を実行する。
+     * 全体を空白にするので、{@code DEBUG-SUB-1} から {@code -3} と
+     * {@code DEBUG-CONTENTS} は空白になる。手続き名の参照では規格もそう決めている。
+     *
+     * @param simple 書かれたとおりの手続き名
+     * @return 見張られていなければ空
+     */
+    private List<Statement> debugEntry(String simple, Origin origin) {
+        return debugEntry(simple, null, origin);
+    }
+
+    /**
+     * デバッグの節を動かす文を組み立てる。
+     *
+     * @param contents {@code DEBUG-CONTENTS} に入れる文字列。無ければ空白のまま
+     */
+    private List<Statement> debugEntry(String simple, String contents, Origin origin) {
+        if (debugSections.isEmpty() || simple == null) {
+            return List.of();
+        }
+        String upper = simple.toUpperCase(Locale.ROOT);
+        List<Statement> body = new ArrayList<>();
+        for (DebugSection section : debugSections) {
+            if (!section.all() && !section.names().contains(upper)) {
+                continue;
+            }
+            DataReference item = resolver.resolveName("DEBUG-ITEM", origin);
+            DataReference name = resolver.resolveName("DEBUG-NAME", origin);
+            DataReference line = resolver.resolveName("DEBUG-LINE", origin);
+            DataReference slot = resolver.resolveName(
+                    DataDivisionBuilder.DEBUG_LINE_SLOT, origin);
+            if (item == null || name == null || line == null || slot == null) {
+                return List.of();
+            }
+            body.add(textMove(new Operand.Literal(
+                    new LiteralValue.Figure(LiteralValue.FigurativeConstant.SPACE)), item, origin));
+            body.add(textMove(new Operand.Literal(new LiteralValue.Text(simple)), name, origin));
+            body.add(textMove(new Operand.Reference(slot), line, origin));
+            DataReference why = resolver.resolveName(DataDivisionBuilder.DEBUG_REASON_SLOT, origin);
+            DataReference held0 = resolver.resolveName("DEBUG-CONTENTS", origin);
+            if (why == null || held0 == null) {
+                return List.of();
+            }
+            // なぜその手続きへ来たか。移した側が控えたものをそのまま写す (要件 FR-193)
+            body.add(textMove(new Operand.Reference(why), held0, origin));
+            if (contents != null) {
+                DataReference held = resolver.resolveName("DEBUG-CONTENTS", origin);
+                if (held == null) {
+                    return List.of();
+                }
+                body.add(textMove(new Operand.Literal(new LiteralValue.Text(contents)),
+                        held, origin));
+            }
+            body.add(new Statement.Perform(section.first(), section.last(), null, null,
+                    false, List.of(), List.of(), origin));
+        }
+        return wrapped(body, origin);
+    }
+
+    /**
+     * 実行時の切り替えで止められるように包む (要件 FR-193)。
+     *
+     * <p>空のままなら包まない。デバッグを書いていないプログラムには<b>命令が
+     * まったく出ない</b>という性質を保つためである。
+     */
+    private static List<Statement> wrapped(List<Statement> body, Origin origin) {
+        return body.isEmpty() ? List.of() : List.of(new Statement.DebugEntry(body, origin));
+    }
+
+    private static Statement textMove(Operand source, DataReference target, Origin origin) {
+        return new Statement.Move(source,
+                List.of(new Statement.Move.Target(target, MoveRules.Kind.ALPHANUMERIC)),
+                false, origin);
     }
 
     private static OpenMode modeOf(CobolParser.UseTargetContext target) {
@@ -457,20 +1200,71 @@ public final class ProcedureBuilder {
         return target.EXTEND() != null ? OpenMode.EXTEND : null;
     }
 
+    /**
+     * 文 (センテンス) の並びを組み立てる。
+     *
+     * <p>1 つの文を {@link Statement.Sentence} で束ねて残す。並べて出すだけなら束ねる
+     * 必要はないが、{@code NEXT SENTENCE} の飛び先が<b>文の終わり</b>だからである。
+     */
     private List<Statement> statementsOf(List<CobolParser.SentenceContext> sentences) {
         List<Statement> statements = new ArrayList<>();
         for (CobolParser.SentenceContext sentence : sentences) {
-            for (CobolParser.StatementContext statement : sentence.statement()) {
-                Statement built = statementOf(statement);
-                if (built != null) {
-                    statements.add(built);
-                }
-            }
+            List<Statement> body = listOf(sentence.statement());
+            statements.add(new Statement.Sentence(body,
+                    ReferenceResolver.originOf(sentence)));
         }
         return statements;
     }
 
+    /**
+     * 文 1 つを組み立てる。見張られた一意名を指していれば、そのあとに節を動かす文を継ぐ
+     * (要件 FR-193)。
+     *
+     * <p>控え帳を<b>文ごとに積む</b>。{@code IF} の条件で指した名前はその {@code IF} の
+     * ものであり、中に書いた文のものではない。
+     */
     private Statement statementOf(CobolParser.StatementContext context) {
+        if (inDebugSection || !watchesItems()) {
+            return builtStatementOf(context);
+        }
+        resolver.pushTrace();
+        Statement built;
+        List<ReferenceResolver.Traced> referenced;
+        try {
+            built = builtStatementOf(context);
+        } finally {
+            referenced = resolver.popTrace();
+        }
+        if (built == null) {
+            return null;
+        }
+        Origin at = ReferenceResolver.originOf(context);
+        List<Statement> entries = itemDebugEntries(built, referenced, at);
+        if (entries.isEmpty()) {
+            return built;
+        }
+        // 入出力の文は<b>例外の枝へ飛ぶ前</b>に動かす。飛んだ先で DEBUG-ITEM を読む
+        // 試験がある (DB203A の REWRITE-TEST-2)。文の中に持たせる場所がある
+        Statement inside = withInnerDebug(built, entries);
+        if (inside != null) {
+            return inside;
+        }
+        List<Statement> body = new ArrayList<>();
+        // 制御を移す文は<b>移す前</b>に動かす。移したあとでは戻ってこない
+        // (DB201A の G-T-D-2 は飛び先で見張りが動いたことを確かめる)
+        boolean transfers = built instanceof Statement.GoTo
+                || built instanceof Statement.GoToDepending;
+        if (transfers) {
+            body.addAll(entries);
+            body.add(built);
+        } else {
+            body.add(built);
+            body.addAll(entries);
+        }
+        return new Statement.Sequence(List.copyOf(body), at);
+    }
+
+    private Statement builtStatementOf(CobolParser.StatementContext context) {
         if (context.moveStatement() != null) {
             return moveOf(context.moveStatement());
         }
@@ -484,8 +1278,7 @@ public final class ProcedureBuilder {
             return evaluateOf(context.evaluateStatement());
         }
         if (context.stopStatement() != null) {
-            return new Statement.Stop(context.stopStatement().RUN() != null,
-                    ReferenceResolver.originOf(context));
+            return stopOf(context.stopStatement());
         }
         if (context.stringStatement() != null) {
             return stringOf(context.stringStatement());
@@ -517,10 +1310,20 @@ public final class ProcedureBuilder {
         if (context.computeStatement() != null) {
             return computeOf(context.computeStatement());
         }
+        if (context.initiateStatement() != null) {
+            return initiateOf(context.initiateStatement());
+        }
+        if (context.generateStatement() != null) {
+            return generateOf(context.generateStatement());
+        }
+        if (context.terminateStatement() != null) {
+            return terminateOf(context.terminateStatement());
+        }
         if (context.goToStatement() != null) {
-            CobolParser.GoToStatementContext goTo = context.goToStatement();
-            return new Statement.GoTo(goTo.paragraphName().getText().toUpperCase(Locale.ROOT),
-                    ReferenceResolver.originOf(goTo));
+            return goToOf(context.goToStatement());
+        }
+        if (context.alterStatement() != null) {
+            return alterOf(context.alterStatement());
         }
         if (context.searchStatement() != null) {
             return searchOf(context.searchStatement());
@@ -574,10 +1377,106 @@ public final class ProcedureBuilder {
             return returnOf(context.returnStatement());
         }
         if (context.exitStatement() != null) {
-            // EXIT は何もしない。CONTINUE と同じ扱いでよい
-            return new Statement.Continue(ReferenceResolver.originOf(context.exitStatement()));
+            Origin at = ReferenceResolver.originOf(context.exitStatement());
+            if (context.exitStatement().PROGRAM() != null) {
+                return new Statement.ExitProgram(at);
+            }
+            // EXIT だけなら何もしない。PERFORM ... THRU の終わりに置く段落のためにある
+            return new Statement.Continue(at);
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
+        return null;
+    }
+
+    // ---- 報告書の文 (要件 FR-214) ----
+
+    /**
+     * {@code INITIATE}。
+     *
+     * <p>報告書ごとに数え札を初期値へ戻すだけである。紙にはまだ何も置かない。
+     */
+    private Statement initiateOf(CobolParser.InitiateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement> body = new ArrayList<>();
+        for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
+            ReportDescription report = reportNamed(name.getText(), origin);
+            if (report == null) {
+                return null;
+            }
+            body.add(reportLowering.initiate(report, origin));
+        }
+        return new Statement.Sequence(body, origin);
+    }
+
+    /**
+     * {@code GENERATE}。
+     *
+     * <p>引数は本文の報告集団の名前である。報告書の名前を書く形 (集計だけの報告) は
+     * 制御の切れ目を伴うので、まだ書けない。
+     */
+    private Statement generateOf(CobolParser.GenerateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String name = context.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        for (ReportDescription report : reports) {
+            ReportGroup group = report.group(name);
+            if (group == null) {
+                continue;
+            }
+            if (!group.type().isBody()) {
+                report(origin, "GENERATE names a report group that is not a DETAIL group: "
+                        + name);
+                return null;
+            }
+            FileDescription file = files.get(report.file());
+            if (file == null) {
+                report(origin, "the report file is not declared: " + report.file());
+                return null;
+            }
+            return reportLowering.generate(report, group, file, origin);
+        }
+        if (reportNamed(name, null) != null) {
+            report(origin, "GENERATE of a whole report needs CONTROL breaks,"
+                    + " which are not supported yet: " + name);
+            return null;
+        }
+        report(origin, "undefined report group: " + name);
+        return null;
+    }
+
+    /**
+     * {@code TERMINATE}。
+     *
+     * <p>残りの脚注を置いて終える。{@code GENERATE} が一度も動いていなければ何もしない。
+     */
+    private Statement terminateOf(CobolParser.TerminateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement> body = new ArrayList<>();
+        for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
+            ReportDescription report = reportNamed(name.getText(), origin);
+            if (report == null) {
+                return null;
+            }
+            FileDescription file = files.get(report.file());
+            if (file == null) {
+                report(origin, "the report file is not declared: " + report.file());
+                return null;
+            }
+            body.add(reportLowering.terminate(report, file, origin));
+        }
+        return new Statement.Sequence(body, origin);
+    }
+
+    /** 名前で報告書を引く。{@code origin} が {@code null} なら誤りを記録しない。 */
+    private ReportDescription reportNamed(String written, Origin origin) {
+        String name = written.toUpperCase(Locale.ROOT);
+        for (ReportDescription report : reports) {
+            if (report.name().equals(name)) {
+                return report;
+            }
+        }
+        if (origin != null) {
+            report(origin, "undefined report: " + name);
+        }
         return null;
     }
 
@@ -760,21 +1659,23 @@ public final class ProcedureBuilder {
                     return null;
                 }
                 for (CobolParser.TallyingSpecContext spec : counter.tallyingSpec()) {
-                    Statement.Inspect.InspectClause clause = tallyingSpecOf(spec, into, origin);
-                    if (clause == null) {
+                    List<Statement.Inspect.InspectClause> found =
+                            tallyingSpecOf(spec, into, origin);
+                    if (found == null) {
                         return null;
                     }
-                    clauses.add(clause);
+                    clauses.addAll(found);
                 }
             }
         }
         if (context.replacingPhrase() != null) {
-            for (CobolParser.ReplacingSpecContext spec : context.replacingPhrase().replacingSpec()) {
-                Statement.Inspect.InspectClause clause = replacingSpecOf(spec, origin);
-                if (clause == null) {
+            for (CobolParser.ReplacingSpecContext spec
+                    : context.replacingPhrase().replacingSpec()) {
+                List<Statement.Inspect.InspectClause> found = replacingSpecOf(spec, origin);
+                if (found == null) {
                     return null;
                 }
-                clauses.add(clause);
+                clauses.addAll(found);
             }
         }
 
@@ -792,42 +1693,43 @@ public final class ProcedureBuilder {
         return new Statement.Inspect(target, clauses, converting, origin);
     }
 
-    private Statement.Inspect.InspectClause tallyingSpecOf(CobolParser.TallyingSpecContext context,
-                                                           DataReference counter, Origin origin) {
-        Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
-        if (region == null) {
-            return null;
-        }
+    /**
+     * {@code TALLYING} の 1 節。
+     *
+     * <p>{@code ALL} / {@code LEADING} は<b>そのあとの被演算子すべてに効く</b>。
+     * 被演算子ごとに書き直す必要はない (NC216A)。だから節 1 つから数え方が複数出る。
+     */
+    private List<Statement.Inspect.InspectClause> tallyingSpecOf(
+            CobolParser.TallyingSpecContext context, DataReference counter, Origin origin) {
         if (context.CHARACTERS() != null) {
-            return new Statement.Inspect.InspectClause(
-                    Statement.Inspect.Kind.CHARACTERS, null, null, counter, region);
-        }
-        Operand pattern = inspectOperandOf(context.inspectOperand(), origin);
-        if (pattern == null) {
-            return null;
+            Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
+            return region == null ? null : List.of(new Statement.Inspect.InspectClause(
+                    Statement.Inspect.Kind.CHARACTERS, null, null, counter, region));
         }
         Statement.Inspect.Kind kind = context.ALL() != null
                 ? Statement.Inspect.Kind.ALL
                 : Statement.Inspect.Kind.LEADING;
-        return new Statement.Inspect.InspectClause(kind, pattern, null, counter, region);
+        List<Statement.Inspect.InspectClause> clauses = new ArrayList<>();
+        for (CobolParser.TallyingOperandContext operand : context.tallyingOperand()) {
+            Statement.Inspect.RegionSpec region = regionOf(operand.inspectRegion(), origin);
+            Operand pattern = inspectOperandOf(operand.inspectOperand(), origin);
+            if (region == null || pattern == null) {
+                return null;
+            }
+            clauses.add(new Statement.Inspect.InspectClause(kind, pattern, null, counter, region));
+        }
+        return clauses;
     }
 
-    private Statement.Inspect.InspectClause replacingSpecOf(
+    /** {@code REPLACING} の 1 節。{@code TALLYING} と同じく指定が後ろへ効く。 */
+    private List<Statement.Inspect.InspectClause> replacingSpecOf(
             CobolParser.ReplacingSpecContext context, Origin origin) {
-        Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
-        if (region == null) {
-            return null;
-        }
-        List<CobolParser.InspectOperandContext> operands = context.inspectOperand();
         if (context.CHARACTERS() != null) {
-            Operand to = inspectOperandOf(operands.get(0), origin);
-            return to == null ? null : new Statement.Inspect.InspectClause(
-                    Statement.Inspect.Kind.CHARACTERS, null, to, null, region);
-        }
-        Operand pattern = inspectOperandOf(operands.get(0), origin);
-        Operand to = inspectOperandOf(operands.get(1), origin);
-        if (pattern == null || to == null) {
-            return null;
+            Statement.Inspect.RegionSpec region = regionOf(context.inspectRegion(), origin);
+            Operand to = inspectOperandOf(context.inspectOperand(), origin);
+            return region == null || to == null ? null : List.of(
+                    new Statement.Inspect.InspectClause(
+                            Statement.Inspect.Kind.CHARACTERS, null, to, null, region));
         }
         Statement.Inspect.Kind kind;
         if (context.ALL() != null) {
@@ -837,7 +1739,17 @@ public final class ProcedureBuilder {
         } else {
             kind = Statement.Inspect.Kind.FIRST;
         }
-        return new Statement.Inspect.InspectClause(kind, pattern, to, null, region);
+        List<Statement.Inspect.InspectClause> clauses = new ArrayList<>();
+        for (CobolParser.ReplacingOperandContext operand : context.replacingOperand()) {
+            Statement.Inspect.RegionSpec region = regionOf(operand.inspectRegion(), origin);
+            Operand pattern = inspectOperandOf(operand.inspectOperand(0), origin);
+            Operand to = inspectOperandOf(operand.inspectOperand(1), origin);
+            if (region == null || pattern == null || to == null) {
+                return null;
+            }
+            clauses.add(new Statement.Inspect.InspectClause(kind, pattern, to, null, region));
+        }
+        return clauses;
     }
 
     /** {@code BEFORE} / {@code AFTER} の指定。書かれていなければ項目の全体になる。 */
@@ -860,11 +1772,11 @@ public final class ProcedureBuilder {
     }
 
     private Operand inspectOperandOf(CobolParser.InspectOperandContext context, Origin origin) {
-        if (context.literal() != null) {
+        if (context.inspectLiteral() != null) {
             try {
-                return new Operand.Literal(LiteralValue.of(context.literal()));
+                return new Operand.Literal(LiteralValue.of(context.inspectLiteral()));
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + context.literal().getText());
+                report(origin, "invalid literal: " + context.inspectLiteral().getText());
                 return null;
             }
         }
@@ -887,9 +1799,11 @@ public final class ProcedureBuilder {
         return new Statement.If(condition, onTrue, onFalse, origin);
     }
 
-    /** {@code NEXT SENTENCE} は「この文の残りを飛ばす」ことであり、いまは空の並びとする。 */
+    /** {@code NEXT SENTENCE} は「この文の残りを飛ばして次の文へ移る」ことである。 */
     private List<Statement> branchOf(CobolParser.IfBranchContext context) {
-        return listOf(context.statement());
+        return context.NEXT() != null
+                ? List.of(new Statement.NextSentence(ReferenceResolver.originOf(context)))
+                : listOf(context.statement());
     }
 
     /**
@@ -913,10 +1827,6 @@ public final class ProcedureBuilder {
         }
         if (table.indexNames().isEmpty()) {
             report(origin, "SEARCH requires INDEXED BY on " + name);
-            return null;
-        }
-        if (DataReference.tableChain(table).size() != 1) {
-            report(origin, "SEARCH on a table inside another table is not supported yet: " + name);
             return null;
         }
         if (tableName.subscripts() != null) {
@@ -946,16 +1856,17 @@ public final class ProcedureBuilder {
 
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
-                : listOf(context.atEndPhrase().statement());
+                : bodyOf(context.atEndPhrase().branchBody());
         List<Statement.Search.When> whens = new ArrayList<>();
         for (CobolParser.SearchWhenContext when : context.searchWhen()) {
             Condition condition = conditionOf(when.condition());
             if (condition == null) {
                 return null;
             }
-            whens.add(new Statement.Search.When(condition, listOf(when.statement())));
+            whens.add(new Statement.Search.When(condition, bodyOf(when.branchBody())));
         }
-        return new Statement.Search(index, varying, table.occurs(), atEnd, whens, origin);
+        return new Statement.Search(index, varying, table.occurs(),
+                occursDependingOf(table, origin), atEnd, whens, origin);
     }
 
     /**
@@ -970,6 +1881,8 @@ public final class ProcedureBuilder {
      */
     private Statement searchAllOf(CobolParser.SearchStatementContext context, DataItem table,
                                   DataReference index, Origin origin) {
+        // 表が別の表の中にあってもよい。外側の添字は<b>WHEN に書かれた鍵の参照</b>が
+        // 持っている。2 分探索が動かすのは自分の指標だけであり、外側は動かさない
         if (table.searchKeys().isEmpty()) {
             report(origin, "SEARCH ALL requires ASCENDING or DESCENDING KEY on " + table.name());
             return null;
@@ -1006,9 +1919,10 @@ public final class ProcedureBuilder {
 
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
-                : listOf(context.atEndPhrase().statement());
-        return new Statement.SearchAll(index, table.occurs(), keys, atEnd,
-                listOf(when.statement()), origin);
+                : bodyOf(context.atEndPhrase().branchBody());
+        return new Statement.SearchAll(index, table.occurs(),
+                occursDependingOf(table, origin), keys, atEnd,
+                bodyOf(when.branchBody()), origin);
     }
 
     /** 条件を {@code AND} でつないだ等号の並びへ開く。ほかの形が混ざれば偽を返す。 */
@@ -1053,17 +1967,88 @@ public final class ProcedureBuilder {
         return ordered;
     }
 
-    private static boolean namesItem(Operand operand, String name) {
-        return operand instanceof Operand.Reference reference
+    /**
+     * {@code GO TO} (要件 FR-063)。
+     *
+     * <p>{@code DEPENDING ON} があれば、値が<b>何番目か</b>で飛び先が決まる。
+     * 無ければ飛び先は 1 つだけである。
+     */
+    private Statement goToOf(CobolParser.GoToStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<String> targets = new ArrayList<>();
+        for (CobolParser.ParagraphNameContext name : context.paragraphName()) {
+            targets.add(procedureNameOf(name));
+        }
+        if (context.DEPENDING() == null) {
+            if (targets.size() > 1) {
+                report(origin, "GO TO takes one procedure name unless DEPENDING ON is written");
+                return null;
+            }
+            // 行き先を書かない GO TO は、ALTER が書き込むまで通ってはならない場所である
+            return new Statement.GoTo(targets.isEmpty() ? null : targets.get(0), origin);
+        }
+        if (targets.isEmpty()) {
+            report(origin, "GO TO ... DEPENDING ON needs at least one procedure name");
+            return null;
+        }
+        DataReference selector = resolver.resolve(context.identifier());
+        if (selector == null) {
+            return null;
+        }
+        if (!DataCategory.of(selector).isNumeric()) {
+            report(origin, "GO TO ... DEPENDING ON requires an integer item: "
+                    + describe(selector));
+            return null;
+        }
+        return new Statement.GoToDepending(List.copyOf(targets), selector, origin);
+    }
+
+    /** {@code ALTER} (要件 FR-063)。 */
+    private Statement alterOf(CobolParser.AlterStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        List<Statement.Alter.Change> changes = new ArrayList<>();
+        for (CobolParser.AlterChangeContext change : context.alterChange()) {
+            changes.add(new Statement.Alter.Change(
+                    procedureNameOf(change.paragraphName(0)),
+                    procedureNameOf(change.paragraphName(1))));
+        }
+        Statement.Alter alter = new Statement.Alter(List.copyOf(changes), origin);
+        if (inDeclarative) {
+            return alter;
+        }
+        // ALTER に書かれた手続き名も<b>見張られている</b>。規格は「ALTER を実行した
+        // 直後」と決めており、DEBUG-CONTENTS には書き換え先の手続き名が入る
+        List<Statement> body = new ArrayList<>();
+        body.add(alter);
+        for (int i = 0; i < changes.size(); i++) {
+            body.addAll(debugEntry(wordOf(context.alterChange(i).paragraphName(0)),
+                    wordOf(context.alterChange(i).paragraphName(1)), origin));
+        }
+        return body.size() == 1 ? alter : new Statement.Sequence(List.copyOf(body), origin);
+    }
+
+    private static boolean namesItem(Expression side, String name) {
+        return Condition.Relation.operandOf(side) instanceof Operand.Reference reference
                 && name.equals(reference.reference().item().name());
     }
 
     /** 参照の添字が、探索の指標そのものかどうか。 */
-    private static boolean subscriptedBy(Operand operand, DataReference index) {
-        List<DataReference.Subscript> subscripts =
-                ((Operand.Reference) operand).reference().subscripts();
-        return subscripts.size() == 1
-                && subscripts.get(0) instanceof DataReference.Subscript.Variable variable
+    /**
+     * 鍵が探索の指標で引かれているか。
+     *
+     * <p>見るのは<b>いちばん内側の添字</b>である。表が別の表の中にあれば、外側の添字が
+     * 先に並ぶ。2 分探索が動かすのは自分の指標だけなので、外側は何であってもよい —
+     * 動かさない添字は、探索のあいだ変わらない。
+     */
+    private static boolean subscriptedBy(Expression side, DataReference index) {
+        List<DataReference.Subscript> subscripts = ((Operand.Reference)
+                Condition.Relation.operandOf(side)).reference().subscripts();
+        if (subscripts.isEmpty()) {
+            return false;
+        }
+        return subscripts.get(subscripts.size() - 1)
+                        instanceof DataReference.Subscript.Variable variable
+                && variable.offset() == 0
                 && variable.reference().item() == index.item();
     }
 
@@ -1071,10 +2056,20 @@ public final class ProcedureBuilder {
         return new DataReference(layout.findIndex(name), List.of(), null, origin);
     }
 
-    /** 指標の実体から、書かれていた指標名へ戻す。 */
+    /**
+     * 指標の実体から、書かれていた指標名へ戻す。
+     *
+     * <p>{@code INDEXED BY} が作る隠しデータ項目には印が付いている。
+     * {@code USAGE IS INDEX} と書かれた指標データ項目には付かないので、
+     * <b>そのときは書かれた名前がそのまま名前である</b>。
+     */
     private static String indexNameOf(DataItem item) {
-        return item.name().substring("IDX$".length());
+        String name = item.name();
+        return name.startsWith(INDEX_MARK) ? name.substring(INDEX_MARK.length()) : name;
     }
+
+    /** {@code INDEXED BY} が作る隠しデータ項目に付く印 ({@code DataDivisionBuilder} と対) 。 */
+    private static final String INDEX_MARK = "IDX$";
 
     /**
      * {@code ACCEPT} (要件 FR-060、テスト時の固定は FR-204)。
@@ -1148,13 +2143,20 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context);
         boolean withFiller = context.FILLER() != null;
         List<InitializeImage.Replacing> replacing = new ArrayList<>();
+        List<ItemReplacing> fromItems = new ArrayList<>();
         for (CobolParser.InitializeReplacingContext rule : context.initializeReplacing()) {
-            if (rule.identifier() != null) {
-                // 値が実行時に決まる形は、反復の数だけ転記が並ぶことになる
-                report(origin, "INITIALIZE ... REPLACING BY a data item is not supported yet");
-                return null;
-            }
             InitializeImage.Category category = categoryOf(rule.initializeCategory());
+            if (rule.identifier() != null) {
+                DataReference source = resolver.resolve(rule.identifier());
+                if (source == null) {
+                    return null;
+                }
+                // 値が実行時に決まるので、まとめて 1 回では書けない。
+                // 値を持たない指定として並べておくと、画像はここを飛ばす
+                replacing.add(new InitializeImage.Replacing(category, null));
+                fromItems.add(new ItemReplacing(category, source));
+                continue;
+            }
             try {
                 replacing.add(new InitializeImage.Replacing(category,
                         LiteralValue.of(rule.literal())));
@@ -1175,11 +2177,109 @@ public final class ProcedureBuilder {
                         + describe(target));
                 return null;
             }
-            statements.add(new Statement.Initialize(target, withFiller, replacing, origin));
+            // 指定が値の決まらないものだけなら、まとめて書く分は何も残らない
+            if (fromItems.size() < replacing.size() || replacing.isEmpty()) {
+                statements.add(new Statement.Initialize(target, withFiller, replacing, origin));
+            }
+            if (!fromItems.isEmpty()
+                    && !addItemReplacements(target, withFiller, fromItems, statements, origin)) {
+                return null;
+            }
         }
         return statements.size() == 1
                 ? statements.get(0)
                 : new Statement.Sequence(statements, origin);
+    }
+
+    /** {@code REPLACING 分類 DATA BY 項目} の指定 1 個。値は実行時に決まる。 */
+    private record ItemReplacing(InitializeImage.Category category, DataReference source) {
+    }
+
+    /**
+     * 一度に並べてよい転記の数。
+     *
+     * <p>{@code OCCURS} の大きい表に対して値の決まらない {@code INITIALIZE} を書くと、
+     * 反復の数だけ転記が並ぶ。<b>翻訳できないほど並ぶくらいなら断る</b>。
+     */
+    private static final int REPLACEMENT_LIMIT = 4096;
+
+    /**
+     * 値がデータ項目で書かれた {@code REPLACING} を、基本項目ごとの転記へ展開する。
+     *
+     * <p>定数なら書き込むバイト列が翻訳時に決まるので 1 回で書ける ({@link InitializeImage})。
+     * データ項目ではそれができない。<b>反復のある項目は 1 回ずつ</b>転記を並べる。
+     *
+     * @return 展開できたら {@code true}
+     */
+    private boolean addItemReplacements(DataReference target, boolean withFiller,
+                                        List<ItemReplacing> rules, List<Statement> out,
+                                        Origin origin) {
+        List<Statement> moves = new ArrayList<>();
+        // 書かれた項目そのものは 1 回分である。表なら添字で 1 つに絞られている
+        if (!replaceOnce(target.item(), target.subscripts(), withFiller, rules, moves, origin)) {
+            return false;
+        }
+        out.addAll(moves);
+        return true;
+    }
+
+    /** 反復のある項目は、すべての回を辿る。 */
+    private boolean replaceAll(DataItem item, List<DataReference.Subscript> subscripts,
+                               boolean withFiller, List<ItemReplacing> rules,
+                               List<Statement> out, Origin origin) {
+        if (item.redefinesName() != null) {
+            // 重ねた項目は初期化しない。重ねる先が同じ場所を持っている
+            return true;
+        }
+        if (!item.isTable()) {
+            return replaceOnce(item, subscripts, withFiller, rules, out, origin);
+        }
+        for (int i = 1; i <= item.occurs(); i++) {
+            List<DataReference.Subscript> here = new ArrayList<>(subscripts);
+            here.add(new DataReference.Subscript.Constant(i));
+            if (!replaceOnce(item, here, withFiller, rules, out, origin)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean replaceOnce(DataItem item, List<DataReference.Subscript> subscripts,
+                                boolean withFiller, List<ItemReplacing> rules,
+                                List<Statement> out, Origin origin) {
+        if (!item.isElementary()) {
+            for (DataItem child : item.children()) {
+                if (!replaceAll(child, subscripts, withFiller, rules, out, origin)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (item.name() == null && !withFiller) {
+            // FILLER は初期化の対象外である
+            return true;
+        }
+        DataCategory category = DataCategory.of(item);
+        for (ItemReplacing rule : rules) {
+            if (!rule.category().matches(category)) {
+                continue;
+            }
+            if (out.size() >= REPLACEMENT_LIMIT) {
+                report(origin, "INITIALIZE ... REPLACING BY a data item would expand into more"
+                        + " than " + REPLACEMENT_LIMIT + " moves");
+                return false;
+            }
+            DataReference into = new DataReference(item, subscripts, null, origin);
+            Statement.Move.Target checked = checkMove(
+                    new Operand.Reference(rule.source()), into, origin);
+            if (checked == null) {
+                return false;
+            }
+            out.add(new Statement.Move(new Operand.Reference(rule.source()),
+                    List.of(checked), false, origin));
+            return true;
+        }
+        return true;
     }
 
     private static InitializeImage.Category categoryOf(
@@ -1212,7 +2312,7 @@ public final class ProcedureBuilder {
             for (CobolParser.IdentifierContext identifier : context.identifier()) {
                 String name = identifier.qualifiedDataName().dataName(0).getText()
                         .toUpperCase(Locale.ROOT);
-                Statement move = conditionNameMove(name, origin);
+                Statement move = conditionNameMove(identifier, name, origin);
                 if (move == null) {
                     return null;
                 }
@@ -1220,7 +2320,35 @@ public final class ProcedureBuilder {
             }
             return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
         }
+        if (!context.switchSetting().isEmpty()) {
+            return switchSetOf(context, origin);
+        }
         return indexSetOf(context, origin);
+    }
+
+    /**
+     * {@code SET 呼び名 TO ON} と {@code SET 呼び名 TO OFF} (要件 FR-135)。
+     *
+     * <p>書くのは {@code SPECIAL-NAMES} で切り替えに付けた<b>呼び名</b>であって、
+     * 条件名ではない。切り替えは記憶域を持たないので、転記にはならない。
+     */
+    private Statement switchSetOf(CobolParser.SetStatementContext context, Origin origin) {
+        List<Statement> moves = new ArrayList<>();
+        for (CobolParser.SwitchSettingContext setting : context.switchSetting()) {
+            boolean on = setting.ON() != null;
+            for (CobolParser.IdentifierContext identifier : setting.identifier()) {
+                String name = identifier.qualifiedDataName().dataName(0).getText()
+                        .toUpperCase(Locale.ROOT);
+                Integer index = specialNames.switchIndexOfMnemonic(name);
+                if (index == null) {
+                    report(origin, "SET ... TO ON or OFF needs a switch name declared"
+                            + " in SPECIAL-NAMES: " + name);
+                    return null;
+                }
+                moves.add(new Statement.SetSwitch(index, on, origin));
+            }
+        }
+        return moves.size() == 1 ? moves.get(0) : new Statement.Sequence(moves, origin);
     }
 
     /**
@@ -1229,22 +2357,34 @@ public final class ProcedureBuilder {
      * <p>指標名が持つのは<b>何番目か</b>である。したがって {@code TO} は転記、
      * {@code UP BY} と {@code DOWN BY} は加算と減算になる。
      *
-     * <p>受取側は指標名でなければならない。普通のデータ項目を動かすなら
-     * {@code MOVE} と算術文を書く。
+     * <p>{@code TO} の受取側は<b>指標名でなくてもよい</b>。整数の項目でもよく、そのときは
+     * 「何番目か」がそこへ入る。規格がそう決めており、実資産も
+     * {@code SET WS-COUNT TO IDX-1} と書く。ここが指標名に限られていると、
+     * <b>表の何番目にいるかを取り出す手立てが無くなる</b>。
+     *
+     * <p>{@code UP BY} と {@code DOWN BY} の受取側は指標名に限る。動かしているのは
+     * 表の中の位置そのものだからである。
      */
     private Statement indexSetOf(CobolParser.SetStatementContext context, Origin origin) {
         Operand value = operandOf(context.arithmeticOperand(), origin);
         if (value == null) {
             return null;
         }
+        boolean stepping = context.TO() == null;
         List<Statement.Arithmetic.Target> targets = new ArrayList<>();
         for (CobolParser.IdentifierContext identifier : context.identifier()) {
             DataReference reference = resolver.resolve(identifier);
             if (reference == null) {
                 return null;
             }
-            if (!reference.item().isIndex()) {
-                report(origin, "SET requires an index name: " + describe(reference));
+            if (stepping && !reference.item().isIndex()) {
+                report(origin, "SET UP/DOWN BY requires an index name: " + describe(reference));
+                return null;
+            }
+            if (!stepping && !reference.item().isIndex()
+                    && !DataCategory.of(reference).isNumeric()) {
+                report(origin, "SET TO requires an index name or an integer item: "
+                        + describe(reference));
                 return null;
             }
             targets.add(new Statement.Arithmetic.Target(reference, false));
@@ -1269,25 +2409,61 @@ public final class ProcedureBuilder {
                 operator, targets, null, origin);
     }
 
-    private Statement conditionNameMove(String name, Origin origin) {
+    private Statement conditionNameMove(CobolParser.IdentifierContext context, String name,
+                                        Origin origin) {
+        DataItem item = conditionNameOwner(context, name);
+        if (item == null) {
+            report(origin, "undefined condition-name: " + name);
+            return null;
+        }
+        DataItem.ConditionName conditionName = namedCondition(item, name);
+        if (conditionName.values().isEmpty()) {
+            report(origin, "condition-name has no value: " + name);
+            return null;
+        }
+        Operand source = new Operand.Literal(conditionName.values().get(0).from());
+        DataReference target = resolver.resolveAs(item, context);
+        if (target == null) {
+            return null;
+        }
+        Statement.Move.Target checked = checkMove(source, target, origin);
+        return checked == null
+                ? null
+                : new Statement.Move(source, List.of(checked), false, origin);
+    }
+
+    /**
+     * 条件名を持つ条件変数を、修飾で絞って引く。
+     *
+     * <p>同じ条件名を複数の表に書ける。修飾を見ないでいちばん先に見つかったものを
+     * 使うと、<b>別の表の添字の数で数えてしまう</b> (NC246A がそれで落ちていた)。
+     *
+     * @return 1 個に絞れなければ {@code null}
+     */
+    private DataItem conditionNameOwner(CobolParser.IdentifierContext context, String name) {
+        DataItem found = null;
         for (DataItem item : layout.all()) {
-            for (DataItem.ConditionName conditionName : item.conditionNames()) {
-                if (!name.equals(conditionName.name())) {
-                    continue;
-                }
-                if (conditionName.values().isEmpty()) {
-                    report(origin, "condition-name has no value: " + name);
-                    return null;
-                }
-                Operand source = new Operand.Literal(conditionName.values().get(0).from());
-                DataReference target = new DataReference(item, List.of(), null, origin);
-                Statement.Move.Target checked = checkMove(source, target, origin);
-                return checked == null
-                        ? null
-                        : new Statement.Move(source, List.of(checked), false, origin);
+            if (namedCondition(item, name) == null) {
+                continue;
+            }
+            if (!ReferenceResolver.conditionQualifiersMatch(item, context.qualifiedDataName())) {
+                continue;
+            }
+            if (found != null) {
+                // どれか 1 個を選ぶと、書いた人の意図と違う表を黙って使うことになる
+                return null;
+            }
+            found = item;
+        }
+        return found;
+    }
+
+    private static DataItem.ConditionName namedCondition(DataItem item, String name) {
+        for (DataItem.ConditionName conditionName : item.conditionNames()) {
+            if (name.equals(conditionName.name())) {
+                return conditionName;
             }
         }
-        report(origin, "undefined condition-name: " + name);
         return null;
     }
 
@@ -1400,12 +2576,13 @@ public final class ProcedureBuilder {
         if (context.procedureReference() != null) {
             List<CobolParser.ParagraphNameContext> names =
                     context.procedureReference().paragraphName();
-            target = names.get(0).getText().toUpperCase(Locale.ROOT);
-            through = names.size() > 1 ? names.get(1).getText().toUpperCase(Locale.ROOT) : null;
+            target = procedureNameOf(names.get(0));
+            through = names.size() > 1 ? procedureNameOf(names.get(1)) : null;
         }
 
         Operand times = null;
         Condition until = null;
+        List<ReferenceResolver.Traced> untilTrace = List.of();
         boolean testAfter = false;
         List<Statement.Perform.Varying> varying = List.of();
         CobolParser.PerformPhraseContext phrase = context.performPhrase();
@@ -1422,7 +2599,13 @@ public final class ProcedureBuilder {
                     return null;
                 }
             } else {
+                // UNTIL は条件を見るたびに指し直したことになる (要件 FR-193)
+                boolean watching = watchesItems() && !inDebugSection;
+                if (watching) {
+                    resolver.pushTrace();
+                }
                 until = conditionOf(phrase.condition());
+                untilTrace = watching ? resolver.popTrace() : List.of();
                 if (until == null) {
                     return null;
                 }
@@ -1437,7 +2620,7 @@ public final class ProcedureBuilder {
             }
         }
         return new Statement.Perform(target, through, times, until, testAfter, varying, body,
-                origin);
+                entriesFor(untilTrace, null, origin, null), origin);
     }
 
     /**
@@ -1455,16 +2638,32 @@ public final class ProcedureBuilder {
             specs.add(after.varyingSpec());
         }
 
+        boolean watching = watchesItems() && !inDebugSection;
         List<Statement.Perform.Varying> varying = new ArrayList<>();
         for (CobolParser.VaryingSpecContext spec : specs) {
+            // 段ごとに控え帳を分ける。その段で指した名前は<b>その段が動くたび</b>に
+            // 指し直したことになる (要件 FR-193)
+            if (watching) {
+                resolver.pushTrace();
+            }
             DataReference target = resolver.resolve(spec.identifier());
             Operand from = operandOf(spec.arithmeticOperand(0), origin);
             Operand by = operandOf(spec.arithmeticOperand(1), origin);
+            List<ReferenceResolver.Traced> stepTrace = watching ? resolver.popTrace() : List.of();
+            // 条件は<b>別に</b>控える。変える項目を置くのと条件を見るのは別々に数える。
+            // VARYING ID-1 ... UNTIL ID-1 > 5 は 6 + 6 = 12 度である
+            // (DB201A の PERFORM-VARY-2)
+            if (watching) {
+                resolver.pushTrace();
+            }
             Condition until = conditionOf(spec.condition());
+            List<ReferenceResolver.Traced> testTrace = watching ? resolver.popTrace() : List.of();
             if (target == null || from == null || by == null || until == null) {
                 return null;
             }
-            varying.add(new Statement.Perform.Varying(target, from, by, until));
+            varying.add(new Statement.Perform.Varying(target, from, by, until,
+                    entriesFor(stepTrace, null, origin, null),
+                    entriesFor(testTrace, null, origin, null)));
         }
         return varying;
     }
@@ -1488,13 +2687,13 @@ public final class ProcedureBuilder {
                 return null;
             }
             conditions.add(condition);
-            bodies.add(listOf(branch.statement()));
+            bodies.add(bodyOf(branch.branchBody()));
         }
 
         // WHEN OTHER の文は、いちばん外側の ELSE になる
         List<Statement> otherwise = context.OTHER() == null
                 ? List.of()
-                : listOf(context.statement());
+                : bodyOf(context.branchBody());
 
         Statement result = null;
         for (int i = conditions.size() - 1; i >= 0; i--) {
@@ -1502,6 +2701,16 @@ public final class ProcedureBuilder {
             result = new Statement.If(conditions.get(i), bodies.get(i), elseBranch, origin);
         }
         return result;
+    }
+
+    /** 枝の中身。{@code NEXT SENTENCE} は「この文の残りを飛ばす」ことである。 */
+    private List<Statement> bodyOf(CobolParser.BranchBodyContext context) {
+        if (context == null) {
+            return List.of();
+        }
+        return context.NEXT() != null
+                ? List.of(new Statement.NextSentence(ReferenceResolver.originOf(context)))
+                : listOf(context.statement());
     }
 
     /** 1 つの枝の条件。同じ本体に並べた複数の {@code WHEN} は選言になる。 */
@@ -1545,7 +2754,7 @@ public final class ProcedureBuilder {
     private static Condition alwaysTrue(Origin origin) {
         Operand zero = new Operand.Literal(
                 new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO));
-        return new Condition.Relation(zero, Condition.Comparison.EQUAL, zero, true, origin);
+        return Condition.Relation.of(zero, Condition.Comparison.EQUAL, zero, true, origin);
     }
 
     /**
@@ -1559,6 +2768,35 @@ public final class ProcedureBuilder {
         if (object.ANY() != null) {
             return ALWAYS_TRUE;
         }
+        if (subject.classCondition() != null) {
+            // 主語が条件なら、目的語は TRUE か FALSE である。
+            // 「EVALUATE X NUMERIC / WHEN TRUE」は「IF X IS NUMERIC」と同じことを問う
+            Condition test = classOf(subject.classCondition());
+            if (test == null) {
+                return null;
+            }
+            if (object.TRUE() != null) {
+                return test;
+            }
+            if (object.FALSE() != null) {
+                return new Condition.Not(test);
+            }
+            report(origin, "a class condition subject takes TRUE or FALSE in its WHEN");
+            return null;
+        }
+        Condition named = subjectConditionName(subject, origin);
+        if (named != null) {
+            // 規格は EVALUATE の主語に「条件式」を許している。条件名は条件式である。
+            // 文法では名前 1 個の式と見分けが付かないので、ここで読み替える (NC225A)
+            if (object.TRUE() != null) {
+                return named;
+            }
+            if (object.FALSE() != null) {
+                return new Condition.Not(named);
+            }
+            report(origin, "a condition-name subject takes TRUE or FALSE in its WHEN");
+            return null;
+        }
         boolean truthMode = subject.TRUE() != null || subject.FALSE() != null;
         if (truthMode) {
             Condition condition = truthObject(object, origin);
@@ -1568,7 +2806,22 @@ public final class ProcedureBuilder {
             // EVALUATE FALSE は、当たる枝の条件が成り立たないことを問う
             return subject.FALSE() == null ? condition : new Condition.Not(condition);
         }
-        return valueObject(subject.arithmeticOperand(), object, origin);
+        return valueObject(subject.expression(), object, origin);
+    }
+
+    /**
+     * 主語が条件名なら、その条件。そうでなければ {@code null}。
+     *
+     * <p>{@code EVALUATE ... ALSO IT-IS-81} のように、主語の位置に 88 レベルの
+     * 条件名を書ける。式として読むと「そんな項目は無い」になってしまう。
+     */
+    private Condition subjectConditionName(CobolParser.EvaluateSubjectContext subject,
+                                           Origin origin) {
+        if (subject.expression() == null) {
+            return null;
+        }
+        CobolParser.IdentifierContext name = soleIdentifierOf(subject.expression());
+        return name == null ? null : conditionNameFor(name, origin);
     }
 
     /** {@code EVALUATE TRUE} の目的語。条件として読む。 */
@@ -1587,20 +2840,30 @@ public final class ProcedureBuilder {
     }
 
     /** 値を比べる目的語。{@code THRU} なら範囲になる。 */
-    private Condition valueObject(CobolParser.ArithmeticOperandContext subject,
+    private Condition valueObject(CobolParser.ExpressionContext subject,
                                   CobolParser.EvaluateObjectContext object, Origin origin) {
-        Operand left = operandOf(subject, origin);
-        List<Operand> values = valuesOf(object, origin);
-        if (left == null || values == null || values.contains(null)) {
+        Expression left = expressionOf(subject, origin);
+        negated = false;
+        List<Expression> values = valuesOf(object, origin);
+        // 不変の並びは contains(null) を投げる。1 つずつ見る
+        if (left == null || values == null) {
             return null;
+        }
+        for (Expression value : values) {
+            if (value == null) {
+                return null;
+            }
         }
         Condition test = values.size() == 1
                 ? relation(left, Condition.Comparison.EQUAL, values.get(0), origin)
                 : new Condition.And(
                         relation(left, Condition.Comparison.GREATER_OR_EQUAL, values.get(0), origin),
                         relation(left, Condition.Comparison.LESS_OR_EQUAL, values.get(1), origin));
-        return object.NOT() == null ? test : new Condition.Not(test);
+        return object.NOT() == null && !negated ? test : new Condition.Not(test);
     }
+
+    /** 目的語が「NOT 名前」の形だったか。{@link #valuesOf} が立てる。 */
+    private boolean negated;
 
     /**
      * 目的語から比べる値を取り出す。
@@ -1608,18 +2871,31 @@ public final class ProcedureBuilder {
      * <p>主語が {@code TRUE} でない場合、名前だけの目的語は<b>条件名ではなく値</b>である。
      * 文法だけでは見分けられないため、ここで読み替える。
      */
-    private List<Operand> valuesOf(CobolParser.EvaluateObjectContext object, Origin origin) {
-        if (!object.arithmeticOperand().isEmpty()) {
-            List<Operand> values = new ArrayList<>();
-            for (CobolParser.ArithmeticOperandContext value : object.arithmeticOperand()) {
-                values.add(operandOf(value, origin));
+    private List<Expression> valuesOf(CobolParser.EvaluateObjectContext object, Origin origin) {
+        if (!object.expression().isEmpty()) {
+            List<Expression> values = new ArrayList<>();
+            for (CobolParser.ExpressionContext value : object.expression()) {
+                values.add(expressionOf(value, origin));
             }
             return values;
         }
         CobolParser.IdentifierContext name = soleNameOf(object.condition());
         if (name != null) {
             DataReference reference = resolver.resolve(name);
-            return reference == null ? null : List.of(new Operand.Reference(reference));
+            return reference == null
+                    ? null
+                    : List.of(new Expression.Value(new Operand.Reference(reference)));
+        }
+        // 「WHEN NOT 名前」は<b>その値と等しくない</b>ことを問う。主語が値なので、
+        // 名前は条件名ではなく比べる相手である
+        name = soleNameOf(object.condition(), true);
+        if (name != null) {
+            DataReference reference = resolver.resolve(name);
+            if (reference == null) {
+                return null;
+            }
+            negated = true;
+            return List.of(new Expression.Value(new Operand.Reference(reference)));
         }
         report(origin, "a WHEN object must be a value when the subject is not TRUE or FALSE");
         return null;
@@ -1628,11 +2904,22 @@ public final class ProcedureBuilder {
     /** 条件が「名前だけ」であれば、その名前を返す。 */
     private static CobolParser.IdentifierContext soleNameOf(
             CobolParser.ConditionContext condition) {
+        return soleNameOf(condition, false);
+    }
+
+    /**
+     * 条件が「名前だけ」であれば、その名前を返す。
+     *
+     * @param negated {@code NOT} が前に付いている形を探すかどうか
+     */
+    private static CobolParser.IdentifierContext soleNameOf(
+            CobolParser.ConditionContext condition, boolean negated) {
         if (condition == null || condition.orCondition().andCondition().size() != 1) {
             return null;
         }
         CobolParser.AndConditionContext and = condition.orCondition().andCondition(0);
-        if (and.notCondition().size() != 1 || and.notCondition(0).NOT() != null) {
+        if (and.notCondition().size() != 1
+                || (and.notCondition(0).NOT() != null) != negated) {
             return null;
         }
         CobolParser.SimpleConditionContext simple = and.notCondition(0).simpleCondition();
@@ -1647,36 +2934,73 @@ public final class ProcedureBuilder {
         return orOf(context.orCondition());
     }
 
+    /**
+     * 論理結合を<b>平らに並べてから</b>優先順位で組み直す (要件 FR-046)。
+     *
+     * <p>省略した比較は「主語と演算子を補った関係条件」であり、書かれた位置に
+     * <b>独立した項として並ぶ</b>。関係条件の中で先に束ねてしまってはならない。
+     *
+     * <pre>
+     * IF X = 1 AND Y = 2 OR 3   →   ((X = 1) AND (Y = 2)) OR (Y = 3)
+     * </pre>
+     *
+     * <p>関係条件の中で束ねると {@code (X = 1) AND ((Y = 2) OR (Y = 3))} になり、
+     * 答えが変わる (NC211A CC--TEST-GF-38)。だから項と結合子を平らに集めて、
+     * 最後に {@code AND} を先に結ぶ。
+     */
     private Condition orOf(CobolParser.OrConditionContext context) {
-        Condition result = null;
-        for (CobolParser.AndConditionContext operand : context.andCondition()) {
-            Condition next = andOf(operand);
-            if (next == null) {
+        List<Condition> terms = new ArrayList<>();
+        List<Boolean> conjunctions = new ArrayList<>();
+        for (int i = 0; i < context.andCondition().size(); i++) {
+            if (i > 0) {
+                conjunctions.add(false);
+            }
+            if (!collectAnd(context.andCondition(i), terms, conjunctions)) {
                 return null;
             }
-            result = result == null ? next : new Condition.Or(result, next);
         }
-        return result;
+        return combined(terms, conjunctions);
     }
 
-    private Condition andOf(CobolParser.AndConditionContext context) {
-        Condition result = null;
-        for (CobolParser.NotConditionContext operand : context.notCondition()) {
-            Condition next = notOf(operand);
-            if (next == null) {
-                return null;
+    private boolean collectAnd(CobolParser.AndConditionContext context, List<Condition> terms,
+                               List<Boolean> conjunctions) {
+        for (int i = 0; i < context.notCondition().size(); i++) {
+            if (i > 0) {
+                conjunctions.add(true);
             }
-            result = result == null ? next : new Condition.And(result, next);
+            if (!collectNot(context.notCondition(i), terms, conjunctions)) {
+                return false;
+            }
         }
-        return result;
+        return true;
     }
 
-    private Condition notOf(CobolParser.NotConditionContext context) {
-        Condition inner = simpleOf(context.simpleCondition());
+    /**
+     * {@code NOT} を付けた条件 (要件 FR-046)。
+     *
+     * <p>関係条件に前置した {@code NOT} が及ぶのは、<b>そこに書かれた関係だけ</b>である。
+     * うしろに省略した比較が続いていても、それは独立した項として {@code NOT} の外に並ぶ。
+     *
+     * <pre>
+     * IF NOT ONE &lt; AZE OR TWO   →   (NOT (ONE &lt; AZE)) OR (ONE &lt; TWO)
+     * </pre>
+     *
+     * <p>まとめて否定すると {@code NOT ((ONE < AZE) OR (ONE < TWO))} になり、
+     * <b>答えが変わる</b> (NC211A CC--TEST-GF-38)。
+     */
+    private boolean collectNot(CobolParser.NotConditionContext context, List<Condition> terms,
+                               List<Boolean> conjunctions) {
+        boolean negated = context.NOT() != null;
+        CobolParser.SimpleConditionContext simple = context.simpleCondition();
+        if (simple.relationCondition() != null) {
+            return collectRelation(simple.relationCondition(), negated, terms, conjunctions);
+        }
+        Condition inner = simpleOf(simple);
         if (inner == null) {
-            return null;
+            return false;
         }
-        return context.NOT() == null ? inner : new Condition.Not(inner);
+        terms.add(negated ? new Condition.Not(inner) : inner);
+        return true;
     }
 
     private Condition simpleOf(CobolParser.SimpleConditionContext context) {
@@ -1686,26 +3010,216 @@ public final class ProcedureBuilder {
         if (context.relationCondition() != null) {
             return relationOf(context.relationCondition());
         }
+        if (context.classCondition() != null) {
+            return classOf(context.classCondition());
+        }
         if (context.signCondition() != null) {
             return signOf(context.signCondition());
         }
         return conditionNameOf(context.conditionNameCondition());
     }
 
-    private Condition relationOf(CobolParser.RelationConditionContext context) {
+    /**
+     * 級条件を組み立てる (要件 FR-046)。
+     *
+     * <p>{@code NUMERIC} と {@code ALPHABETIC} は組み込みである。ほかの名前は
+     * {@code SPECIAL-NAMES} の {@code CLASS} 句で書いて決めた級を指す。
+     */
+    private Condition classOf(CobolParser.ClassConditionContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        Operand left = operandOf(context.arithmeticOperand(0), origin);
-        Operand right = operandOf(context.arithmeticOperand(1), origin);
-        if (left == null || right == null) {
+        DataReference item = resolver.resolve(context.identifier());
+        if (item == null) {
             return null;
+        }
+        CobolParser.ClassNameContext name = context.className();
+        Condition.ClassTest.Kind kind;
+        byte[] allowed = null;
+        if (name.NUMERIC() != null) {
+            kind = Condition.ClassTest.Kind.NUMERIC;
+        } else if (name.ALPHABETIC_LOWER() != null) {
+            kind = Condition.ClassTest.Kind.ALPHABETIC_LOWER;
+        } else if (name.ALPHABETIC_UPPER() != null) {
+            kind = Condition.ClassTest.Kind.ALPHABETIC_UPPER;
+        } else if (name.ALPHABETIC() != null) {
+            kind = Condition.ClassTest.Kind.ALPHABETIC;
+        } else {
+            kind = Condition.ClassTest.Kind.DEFINED;
+            allowed = specialNames.classMembers(name.IDENTIFIER().getText());
+            if (allowed == null) {
+                report(origin, "undefined class-name: "
+                        + name.IDENTIFIER().getText().toUpperCase(Locale.ROOT));
+                return null;
+            }
+        }
+        Condition test = new Condition.ClassTest(item, kind, allowed, origin);
+        return context.NOT() == null ? test : new Condition.Not(test);
+    }
+
+    private Condition relationOf(CobolParser.RelationConditionContext context) {
+        List<Condition> terms = new ArrayList<>();
+        List<Boolean> conjunctions = new ArrayList<>();
+        return collectRelation(context, false, terms, conjunctions)
+                ? combined(terms, conjunctions)
+                : null;
+    }
+
+    /**
+     * 関係条件と、それに続く省略した比較を項として並べる。
+     *
+     * @param negated 前に {@code NOT} が書かれていたか。及ぶのは<b>書かれた関係だけ</b>で
+     *                あり、省略した比較は否定の外に出る
+     */
+    private boolean collectRelation(CobolParser.RelationConditionContext context, boolean negated,
+                                    List<Condition> terms, List<Boolean> conjunctions) {
+        Origin origin = ReferenceResolver.originOf(context);
+        Expression left = expressionOf(context.expression(0), origin);
+        Expression right = expressionOf(context.expression(1), origin);
+        if (left == null || right == null) {
+            return false;
         }
         Condition.Comparison comparison = comparisonOf(context.relationalOperator());
         if (comparison == null) {
             report(origin, "unknown relational operator: "
                     + context.relationalOperator().getText());
+            return false;
+        }
+        Condition condition = relation(left, comparison, right, origin);
+        terms.add(negated ? new Condition.Not(condition) : condition);
+        return collectAbbreviations(left, comparison, context, origin, terms, conjunctions);
+    }
+
+    /**
+     * 省略した比較を項として並べる (要件 FR-046)。
+     *
+     * <p>{@code A > 10 AND < 21} は {@code A > 10 AND A < 21} である。<b>主語は
+     * 引き継がれ、演算子は書き直されるまで引き継がれる</b>。書き直した演算子は、
+     * そこから先へも引き継がれる。
+     *
+     * <p>広げた項は<b>囲む条件と同じ高さ</b>に並ぶ。関係条件の中で束ねてしまうと、
+     * 外側の {@code AND} / {@code OR} との優先順位が変わってしまう。
+     */
+    private boolean collectAbbreviations(Expression subject, Condition.Comparison comparison,
+                                         CobolParser.RelationConditionContext context,
+                                         Origin origin, List<Condition> terms,
+                                         List<Boolean> conjunctions) {
+        Condition.Comparison carried = comparison;
+        for (CobolParser.AbbreviatedRelationContext next : context.abbreviatedRelation()) {
+            Expression right;
+            if (next.relationalOperator() != null) {
+                carried = comparisonOf(next.relationalOperator());
+                if (carried == null) {
+                    report(origin, "unknown relational operator: "
+                            + next.relationalOperator().getText());
+                    return false;
+                }
+            }
+            Condition term = conditionNameTerm(next, origin);
+            if (term == null) {
+                right = expressionOf(next.expression(), origin);
+                if (right == null) {
+                    return false;
+                }
+                term = relation(subject, carried, right, origin);
+            }
+            if (next.NOT() != null) {
+                term = new Condition.Not(term);
+            }
+            conjunctions.add(next.AND() != null);
+            terms.add(term);
+        }
+        return true;
+    }
+
+    /**
+     * 名前 1 個の項が<b>条件名</b>なら、その条件として読む。
+     *
+     * <p>{@code IF A = B AND SOME-FLAG} の {@code SOME-FLAG} が 88 レベルなら、これは
+     * 省略した比較ではなく条件名条件である。文法では見分けられない — <b>名前を
+     * 引かないと決まらない</b>。
+     *
+     * @return 条件名でなければ {@code null}
+     */
+    private Condition conditionNameTerm(CobolParser.AbbreviatedRelationContext next,
+                                        Origin origin) {
+        if (next.relationalOperator() != null || next.expression() == null) {
             return null;
         }
-        return relation(left, comparison, right, origin);
+        CobolParser.IdentifierContext name = soleIdentifierOf(next.expression());
+        return name == null ? null : conditionNameFor(name, origin);
+    }
+
+    /**
+     * 名前が条件名なら、その条件。
+     *
+     * @return 条件名でなければ {@code null}
+     */
+    private Condition conditionNameFor(CobolParser.IdentifierContext context, Origin origin) {
+        String name = context.qualifiedDataName().dataName(0).getText().toUpperCase(Locale.ROOT);
+        SpecialNames.SwitchStatus status = specialNames.switchStatus(name);
+        if (status != null) {
+            return new Condition.SwitchTest(status.index(), status.whenOn(), origin);
+        }
+        DataItem item = conditionNameOwner(context, name);
+        if (item == null) {
+            return null;
+        }
+        DataReference parent = resolver.resolveAs(item, context);
+        return parent == null
+                ? null
+                : conditionNameCondition(parent, namedCondition(item, name), origin);
+    }
+
+    /**
+     * {@code OCCURS ... DEPENDING ON} の項目への参照。書かれていなければ {@code null}。
+     *
+     * <p>{@code SEARCH} が端まで走る回数は、書かれた最大の回数ではなく<b>この項目の
+     * いまの値</b>である。最大まで走ると、まだ入っていない場所を読んで
+     * 「見つかった」と言ってしまう (NC235A がそれで落ちていた)。
+     */
+    private DataReference occursDependingOf(DataItem table, Origin origin) {
+        if (table.occursDependingName() == null) {
+            return null;
+        }
+        DataReference reference = resolver.resolveName(table.occursDependingName(), origin);
+        if (reference == null) {
+            return null;
+        }
+        if (!DataCategory.of(reference).isNumeric()) {
+            report(origin, "OCCURS ... DEPENDING ON requires a numeric item: "
+                    + describe(reference));
+            return null;
+        }
+        return reference;
+    }
+
+    /** 式が名前 1 個なら、その名前。そうでなければ {@code null}。 */
+    private static CobolParser.IdentifierContext soleIdentifierOf(
+            CobolParser.ExpressionContext expression) {
+        if (!(expression instanceof CobolParser.OperandExpressionContext operand)) {
+            return null;
+        }
+        return operand.arithmeticOperand().identifier();
+    }
+
+    /** 項を優先順位どおりに結ぶ。AND を先に結んでから OR で並べる。 */
+    private static Condition combined(List<Condition> terms, List<Boolean> conjunctions) {
+        List<Condition> groups = new ArrayList<>();
+        Condition group = terms.get(0);
+        for (int i = 0; i < conjunctions.size(); i++) {
+            Condition next = terms.get(i + 1);
+            if (conjunctions.get(i)) {
+                group = new Condition.And(group, next);
+                continue;
+            }
+            groups.add(group);
+            group = next;
+        }
+        groups.add(group);
+        Condition result = groups.get(0);
+        for (int i = 1; i < groups.size(); i++) {
+            result = new Condition.Or(result, groups.get(i));
+        }
+        return result;
     }
 
     /**
@@ -1715,7 +3229,24 @@ public final class ProcedureBuilder {
     private Condition relation(Operand left, Condition.Comparison comparison, Operand right,
                                Origin origin) {
         boolean numeric = isNumeric(left, true) && isNumeric(right, true);
+        return Condition.Relation.of(left, comparison, right, numeric, origin);
+    }
+
+    /**
+     * 式どうしの関係条件を組み立てる。
+     *
+     * <p>式が被演算子 1 個でなければ<b>必ず数値</b>である。四則の相手は数値しかない。
+     */
+    private Condition relation(Expression left, Condition.Comparison comparison, Expression right,
+                               Origin origin) {
+        boolean numeric = isNumeric(left, true) && isNumeric(right, true);
         return new Condition.Relation(left, comparison, right, numeric, origin);
+    }
+
+    /** 式が数値として扱われるか。 */
+    private static boolean isNumeric(Expression expression, boolean literalDefault) {
+        Operand operand = Condition.Relation.operandOf(expression);
+        return operand == null || isNumeric(operand, literalDefault);
     }
 
     /** 被演算子が数値として扱われるか。定数は受取側に合わせるので、既定の見方を渡す。 */
@@ -1723,8 +3254,184 @@ public final class ProcedureBuilder {
         if (operand instanceof Operand.Reference reference) {
             return DataCategory.of(reference.reference()).isNumeric();
         }
+        if (operand instanceof Operand.Function function) {
+            return function.returns().isNumeric();
+        }
         LiteralValue value = ((Operand.Literal) operand).value();
         return DataCategory.of(value, literalDefault).isNumeric();
+    }
+
+    /**
+     * 組み込み関数の呼び出しを組み立てる (要件 FR-070)。
+     *
+     * <p>知らない関数は<b>断る</b>。近い値を黙って返すより、書けないと言うほうがよい。
+     * 三角関数や対数がここに無いのは、結果の桁数が処理系の決めごとであり、
+     * その仕様をまだ持っていないからである (暫定判断 P-065)。
+     */
+    private Operand functionOf(CobolParser.FunctionCallContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String spelling = context.functionName().getText().toUpperCase(Locale.ROOT);
+        Intrinsic intrinsic = Intrinsic.of(spelling);
+        if (intrinsic == null) {
+            report(origin, "FUNCTION " + spelling + " is not supported yet");
+            return null;
+        }
+        List<Expression> arguments = new ArrayList<>();
+        for (CobolParser.ExpressionContext argument : context.expression()) {
+            List<Expression> expanded = argumentsOf(argument, origin);
+            if (expanded == null) {
+                return null;
+            }
+            arguments.addAll(expanded);
+        }
+        if (!intrinsic.accepts(arguments.size())) {
+            report(origin, "FUNCTION " + intrinsic.spelling() + " takes " + intrinsic.arity()
+                    + " but " + arguments.size() + " were given");
+            return null;
+        }
+        Intrinsic.Result returns = intrinsic.returns();
+        if (intrinsic.takes() == Intrinsic.Argument.EITHER) {
+            Boolean text = takesText(arguments, origin);
+            if (text == null) {
+                return null;
+            }
+            returns = text ? intrinsic.textResult() : intrinsic.returns();
+        }
+        boolean numericArguments = intrinsic.takes() == Intrinsic.Argument.NUMERIC
+                || (intrinsic.takes() == Intrinsic.Argument.EITHER
+                        && returns == intrinsic.returns());
+        if (!numericArguments && !plainOperands(arguments)) {
+            // 文字を受け取る関数の引数は項目か定数である。式を書いても足す先が無い
+            report(origin, "FUNCTION " + intrinsic.spelling()
+                    + " takes an item or a literal, not an arithmetic expression");
+            return null;
+        }
+        return new Operand.Function(intrinsic, arguments, returns, origin);
+    }
+
+    /**
+     * {@code MAX} や {@code MIN} の引数を<b>文字として</b>比べるかどうか。
+     *
+     * <p>規格は引数の種別をそろえることを求めている。混ぜて書かれたら断る。
+     *
+     * @return 文字なら {@code true}、数値なら {@code false}。混ざっていれば {@code null}
+     */
+    private Boolean takesText(List<Expression> arguments, Origin origin) {
+        boolean text = false;
+        boolean numeric = false;
+        for (Expression argument : arguments) {
+            if (!(argument instanceof Expression.Value value)) {
+                numeric = true;
+                continue;
+            }
+            if (isNumeric(value.operand(), true)) {
+                numeric = true;
+            } else {
+                text = true;
+            }
+        }
+        if (text && numeric) {
+            report(origin, "the arguments of MAX, MIN, ORD-MAX and ORD-MIN must all be"
+                    + " numeric or all be alphanumeric");
+            return null;
+        }
+        return text;
+    }
+
+    /**
+     * 組み込み関数の引数 1 つを組み立てる。
+     *
+     * <p>{@code ALL} と書いた添字があれば、<b>反復の数だけ引数へ展開する</b>。
+     * {@code FUNCTION MAX(IND(ALL))} は {@code FUNCTION MAX(IND(1) … IND(5))} と同じで
+     * ある。次元が 2 つ以上あれば、その組み合わせすべてになる。
+     *
+     * @return 展開した引数。読めなければ {@code null}
+     */
+    private List<Expression> argumentsOf(CobolParser.ExpressionContext context, Origin origin) {
+        CobolParser.IdentifierContext identifier = allSubscriptedIdentifier(context);
+        if (identifier == null) {
+            Expression built = expressionOf(context, origin);
+            return built == null ? null : List.of(built);
+        }
+        DataReference reference = resolver.resolve(identifier, true);
+        if (reference == null) {
+            return null;
+        }
+        return expandAll(reference, origin);
+    }
+
+    /**
+     * {@code ALL} と書いた添字を持つ一意名 1 個だけの式か。
+     *
+     * @return そうでなければ {@code null}
+     */
+    private static CobolParser.IdentifierContext allSubscriptedIdentifier(
+            CobolParser.ExpressionContext context) {
+        if (!(context instanceof CobolParser.OperandExpressionContext operand)
+                || operand.arithmeticOperand().identifier() == null) {
+            return null;
+        }
+        CobolParser.IdentifierContext identifier = operand.arithmeticOperand().identifier();
+        if (identifier.subscripts() == null) {
+            return null;
+        }
+        for (CobolParser.SubscriptContext subscript : identifier.subscripts().subscript()) {
+            if (subscript.ALL() != null) {
+                return identifier;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * {@code ALL} を反復の数だけ広げる。
+     *
+     * <p>反復の数が実行時に決まる表 ({@code OCCURS ... DEPENDING ON}) は広げられない。
+     * 引数の数が翻訳時に決まらないためである。
+     *
+     * @return 広げた引数。広げられなければ {@code null}
+     */
+    private List<Expression> expandAll(DataReference reference, Origin origin) {
+        List<DataItem> tables = DataReference.tableChain(reference.item());
+        List<List<DataReference.Subscript>> rows = new ArrayList<>();
+        rows.add(new ArrayList<>());
+        for (int i = 0; i < tables.size(); i++) {
+            DataReference.Subscript subscript = reference.subscripts().get(i);
+            List<DataReference.Subscript> choices = new ArrayList<>();
+            if (subscript instanceof DataReference.Subscript.All) {
+                // OCCURS ... DEPENDING ON の表では、規格が言う「すべての反復」は
+                // 実行時の個数である。こちらは宣言した最大で広げる (暫定判断 P-068)
+                for (int n = 1; n <= tables.get(i).occurs(); n++) {
+                    choices.add(new DataReference.Subscript.Constant(n));
+                }
+            } else {
+                choices.add(subscript);
+            }
+            List<List<DataReference.Subscript>> grown = new ArrayList<>();
+            for (List<DataReference.Subscript> row : rows) {
+                for (DataReference.Subscript choice : choices) {
+                    List<DataReference.Subscript> next = new ArrayList<>(row);
+                    next.add(choice);
+                    grown.add(next);
+                }
+            }
+            rows = grown;
+        }
+        List<Expression> arguments = new ArrayList<>();
+        for (List<DataReference.Subscript> row : rows) {
+            arguments.add(new Expression.Value(new Operand.Reference(new DataReference(
+                    reference.item(), row, reference.refMod(), origin))));
+        }
+        return arguments;
+    }
+
+    private static boolean plainOperands(List<Expression> arguments) {
+        for (Expression argument : arguments) {
+            if (!(argument instanceof Expression.Value)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Condition.Comparison comparisonOf(
@@ -1763,7 +3470,7 @@ public final class ProcedureBuilder {
     /** 符号条件はゼロとの比較へ展開する。 */
     private Condition signOf(CobolParser.SignConditionContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        Operand operand = operandOf(context.arithmeticOperand(), origin);
+        Expression operand = expressionOf(context.expression(), origin);
         if (operand == null) {
             return null;
         }
@@ -1782,8 +3489,8 @@ public final class ProcedureBuilder {
         if (context.NOT() != null) {
             comparison = comparison.negate();
         }
-        Operand zero = new Operand.Literal(
-                new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO));
+        Expression zero = new Expression.Value(new Operand.Literal(
+                new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO)));
         return new Condition.Relation(operand, comparison, zero, true, origin);
     }
 
@@ -1795,21 +3502,38 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context);
         String name = context.identifier().qualifiedDataName().dataName(0).getText()
                 .toUpperCase(Locale.ROOT);
-        for (DataItem item : layout.all()) {
-            for (DataItem.ConditionName conditionName : item.conditionNames()) {
-                if (name.equals(conditionName.name())) {
-                    return conditionNameCondition(item, conditionName, origin);
-                }
-            }
+        SpecialNames.SwitchStatus status = specialNames.switchStatus(name);
+        if (status != null) {
+            return new Condition.SwitchTest(status.index(), status.whenOn(), origin);
         }
-        report(origin, "undefined condition-name: " + name);
-        return null;
+        DataItem item = conditionNameOwner(context.identifier(), name);
+        if (item == null) {
+            report(origin, hasConditionName(name)
+                    ? "condition-name " + name + " is ambiguous; qualify it with OF or IN"
+                    : "undefined condition-name: " + name);
+            return null;
+        }
+        // 添字は条件名のほうに書かれる。親が表なら、それを親への参照へ移す
+        DataReference parent = resolver.resolveAs(item, context.identifier());
+        return parent == null
+                ? null
+                : conditionNameCondition(parent, namedCondition(item, name), origin);
     }
 
-    private Condition conditionNameCondition(DataItem item, DataItem.ConditionName conditionName,
+    /** その名前の条件名がどこかに書かれているか。誤りの文面を選ぶためだけに使う。 */
+    private boolean hasConditionName(String name) {
+        for (DataItem item : layout.all()) {
+            if (namedCondition(item, name) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Condition conditionNameCondition(DataReference reference,
+                                             DataItem.ConditionName conditionName,
                                              Origin origin) {
-        Operand subject = new Operand.Reference(
-                new DataReference(item, List.of(), null, origin));
+        Operand subject = new Operand.Reference(reference);
         Condition result = null;
         for (DataItem.ValueRange range : conditionName.values()) {
             Condition test;
@@ -1848,12 +3572,13 @@ public final class ProcedureBuilder {
                 return null;
             }
             return arithmetic(Statement.Arithmetic.Operator.ADD, operands,
-                    Statement.Arithmetic.Operator.ADD, targetsOf(context.roundedOperand(), origin),
+                    Statement.Arithmetic.Operator.ADD,
+                    targetsOf(context.roundedOperand(), origin), false,
                     context.sizeErrorPhrases(), origin);
         }
         operands.addAll(operandsOf(context.roundedOperand(), origin));
         return arithmetic(Statement.Arithmetic.Operator.ADD, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -1872,12 +3597,13 @@ public final class ProcedureBuilder {
             // 引く側をまず足し合わせ、その和を受取項目から引く
             return arithmetic(Statement.Arithmetic.Operator.ADD, subtrahends,
                     Statement.Arithmetic.Operator.SUBTRACT,
-                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
+                    targetsOf(context.roundedOperand(), origin), false,
+                    context.sizeErrorPhrases(), origin);
         }
         List<Operand> operands = operandsOf(context.roundedOperand(), origin);
         operands.addAll(subtrahends);
         return arithmetic(Statement.Arithmetic.Operator.SUBTRACT, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     private Statement multiplyOf(CobolParser.MultiplyStatementContext context) {
@@ -1886,12 +3612,13 @@ public final class ProcedureBuilder {
         if (context.GIVING() == null) {
             return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, multiplier,
                     Statement.Arithmetic.Operator.MULTIPLY,
-                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
+                    targetsOf(context.roundedOperand(), origin), false,
+                    context.sizeErrorPhrases(), origin);
         }
         List<Operand> operands = new ArrayList<>(multiplier);
         operands.addAll(operandsOf(context.roundedOperand(), origin));
         return arithmetic(Statement.Arithmetic.Operator.MULTIPLY, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -1911,7 +3638,8 @@ public final class ProcedureBuilder {
             }
             return arithmetic(Statement.Arithmetic.Operator.DIVIDE, first,
                     Statement.Arithmetic.Operator.DIVIDE,
-                    targetsOf(context.roundedOperand(), origin), context.sizeErrorPhrases(), origin);
+                    targetsOf(context.roundedOperand(), origin), false,
+                    context.sizeErrorPhrases(), origin);
         }
         List<Operand> second = operandsOf(context.roundedOperand(), origin);
         List<Operand> operands = new ArrayList<>();
@@ -1919,7 +3647,7 @@ public final class ProcedureBuilder {
         operands.addAll(into ? second : first);
         operands.addAll(into ? first : second);
         return arithmetic(Statement.Arithmetic.Operator.DIVIDE, operands, null,
-                targetsOf(context.roundedTarget()), context.sizeErrorPhrases(), origin);
+                targetsOf(context.roundedTarget()), true, context.sizeErrorPhrases(), origin);
     }
 
     /**
@@ -1932,12 +3660,8 @@ public final class ProcedureBuilder {
         if (value == null || targets.contains(null) || targets.isEmpty()) {
             return null;
         }
-        for (Statement.Arithmetic.Target target : targets) {
-            if (!DataCategory.of(target.reference()).isNumeric()) {
-                report(origin, "an arithmetic statement requires a numeric receiver: "
-                        + describe(target.reference()));
-                return null;
-            }
+        if (!checkReceivers(targets, true, origin)) {
+            return null;
         }
         return new Statement.Compute(value, targets, sizeErrorOf(context.sizeErrorPhrases()),
                 origin);
@@ -1964,9 +3688,13 @@ public final class ProcedureBuilder {
             // 単項の + は何もしない
             return unary.MINUS_SIGN() == null ? inner : new Expression.Negate(inner);
         }
-        if (context instanceof CobolParser.PowerExpressionContext) {
-            report(origin, "exponentiation is not supported yet");
-            return null;
+        if (context instanceof CobolParser.PowerExpressionContext power) {
+            Expression base = expressionOf(power.expression(0), origin);
+            Expression exponent = expressionOf(power.expression(1), origin);
+            if (base == null || exponent == null) {
+                return null;
+            }
+            return new Expression.Binary(Expression.Operator.POWER, base, exponent);
         }
         return binaryOf(context, origin);
     }
@@ -2036,9 +3764,10 @@ public final class ProcedureBuilder {
                     List.of(new Statement.Arithmetic.Target(to, rounded)), null, origin));
         }
         if (operations.isEmpty()) {
-            report(origin, "CORRESPONDING found no numeric elementary pairs between "
-                    + describe(source) + " and " + describe(target));
-            return null;
+            // 移す組が無いのと同じで、書き間違いとは限らない。告げて通す
+            warn(origin, "CORRESPONDING found no numeric elementary pairs between "
+                    + describe(source) + " and " + describe(target) + "; nothing is computed");
+            return new Statement.Sequence(List.of(), origin);
         }
         return new Statement.ArithmeticGroup(operations, sizeErrorOf(phrases), origin);
     }
@@ -2061,12 +3790,9 @@ public final class ProcedureBuilder {
         if (first == null || second == null || quotient == null || remainder == null) {
             return null;
         }
-        for (Statement.Arithmetic.Target target : List.of(quotient, remainder)) {
-            if (!DataCategory.of(target.reference()).isNumeric()) {
-                report(origin, "an arithmetic statement requires a numeric receiver: "
-                        + describe(target.reference()));
-                return null;
-            }
+        // 商も剰余も GIVING の右である。どちらも数字編集項目でよい
+        if (!checkReceivers(List.of(quotient, remainder), true, origin)) {
+            return null;
         }
         boolean into = context.INTO() != null;
         return new Statement.DivideRemainder(into ? second : first, into ? first : second,
@@ -2082,21 +3808,45 @@ public final class ProcedureBuilder {
 
     private Statement arithmetic(Statement.Arithmetic.Operator fold, List<Operand> operands,
                                  Statement.Arithmetic.Operator accumulate,
-                                 List<Statement.Arithmetic.Target> targets,
+                                 List<Statement.Arithmetic.Target> targets, boolean giving,
                                  CobolParser.SizeErrorPhrasesContext phrases, Origin origin) {
         if (operands.contains(null) || targets.contains(null) || targets.isEmpty()) {
             // 解決できなかった参照は報告済みである
             return null;
         }
-        for (Statement.Arithmetic.Target target : targets) {
-            if (!DataCategory.of(target.reference()).isNumeric()) {
-                report(origin, "an arithmetic statement requires a numeric receiver: "
-                        + describe(target.reference()));
-                return null;
-            }
+        if (!checkReceivers(targets, giving, origin)) {
+            return null;
         }
         return new Statement.Arithmetic(fold, operands, accumulate, targets,
                 sizeErrorOf(phrases), origin);
+    }
+
+    /**
+     * 算術文の受取項目が受け取れる形かどうか (要件 FR-041)。
+     *
+     * <p>{@code GIVING} の右に書かれた受取項目は<b>数字編集項目でもよい</b>。
+     * {@code DIVIDE ... GIVING 編集項目 REMAINDER 編集項目} も書ける。
+     * {@code GIVING} を書かない形の受取項目は<b>計算に加わる</b>ので、数値でなければならない。
+     * 編集した文字列を読み戻して足すことはできない。
+     */
+    private boolean checkReceivers(List<Statement.Arithmetic.Target> targets, boolean giving,
+                                   Origin origin) {
+        for (Statement.Arithmetic.Target target : targets) {
+            if (!receives(target.reference(), giving)) {
+                report(origin, giving
+                        ? "an arithmetic statement requires a numeric or numeric-edited receiver: "
+                                + describe(target.reference())
+                        : "an arithmetic statement requires a numeric receiver: "
+                                + describe(target.reference()));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean receives(DataReference reference, boolean giving) {
+        DataCategory category = DataCategory.of(reference);
+        return category.isNumeric() || (giving && category == DataCategory.NUMERIC_EDITED);
     }
 
     /**
@@ -2142,6 +3892,9 @@ public final class ProcedureBuilder {
     }
 
     private Operand operandOf(CobolParser.ArithmeticOperandContext context, Origin origin) {
+        if (context.functionCall() != null) {
+            return functionOf(context.functionCall());
+        }
         if (context.literal() != null) {
             try {
                 return new Operand.Literal(LiteralValue.of(context.literal()));
@@ -2275,10 +4028,14 @@ public final class ProcedureBuilder {
         List<Correspondence.Pair> pairs =
                 Correspondence.of(source.item(), target.item());
         if (pairs.isEmpty()) {
-            // 何も移さない MOVE は書き間違いである。黙って通さない
-            report(origin, "MOVE CORRESPONDING found no corresponding items between "
-                    + describe(source) + " and " + describe(target));
-            return null;
+            // 組が 1 つも無いのは<b>書き間違いとは限らない</b>。名前が同じでも修飾が
+            // 違えば対応しないので、そう書いて「何も移らないこと」を確かめる原文が
+            // ある。CCVS85 の NC209A がまさにそれで、原文に
+            // 「NOTE NO MOVES SHOULD TAKE PLACE.」と書いてある。
+            // 断らずに<b>告げて通す</b> — 何も出さないのが正しい訳である
+            warn(origin, "MOVE CORRESPONDING found no corresponding items between "
+                    + describe(source) + " and " + describe(target) + "; nothing is moved");
+            return List.of();
         }
         List<Statement> moves = new ArrayList<>();
         for (Correspondence.Pair pair : pairs) {
@@ -2328,6 +4085,15 @@ public final class ProcedureBuilder {
         if (source instanceof Operand.Reference reference) {
             return DataCategory.of(reference.reference());
         }
+        if (source instanceof Operand.Function function) {
+            // 関数の値は「数値」か「英数字」のどちらかである。編集はしない
+            return switch (function.returns()) {
+                case INTEGER -> DataCategory.NUMERIC_INTEGER;
+                case NUMERIC -> DataCategory.NUMERIC_NONINTEGER;
+                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP, WIDEST ->
+                        DataCategory.ALPHANUMERIC;
+            };
+        }
         boolean numericReceiver = receiver.isNumeric() || receiver == DataCategory.NUMERIC_EDITED;
         return DataCategory.of(((Operand.Literal) source).value(), numericReceiver);
     }
@@ -2337,6 +4103,9 @@ public final class ProcedureBuilder {
     }
 
     private Operand operandOf(CobolParser.MoveSourceContext context, Origin origin) {
+        if (context.functionCall() != null) {
+            return functionOf(context.functionCall());
+        }
         if (context.literal() != null) {
             try {
                 return new Operand.Literal(LiteralValue.of(context.literal()));
@@ -2357,17 +4126,48 @@ public final class ProcedureBuilder {
      * <p>1 つの文で開き方の違うファイルを並べられる。{@code OPEN INPUT A OUTPUT B} は
      * 2 つの独立した開き方であり、まとめて 1 つの状態にはならない。
      */
+    /**
+     * {@code STOP} を組み立てる (要件 FR-062)。
+     *
+     * <p>{@code STOP} と定数を書く形は規格の廃要素である。書いた文字を操作員へ見せて
+     * <b>返事があるまで待つ</b>と決められているが、返事をする相手のいない実行では
+     * 待ちようがない。見せて先へ進む (暫定判断 P-073)。<b>止まらない</b>ので、
+     * {@code STOP RUN} とは別の文である。
+     */
+    private Statement stopOf(CobolParser.StopStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        if (context.literal() == null) {
+            return new Statement.Stop(context.RUN() != null, origin);
+        }
+        try {
+            return new Statement.Display(
+                    List.of(new Operand.Literal(LiteralValue.of(context.literal()))),
+                    true, null, origin);
+        } catch (RuntimeException e) {
+            report(origin, "invalid literal: " + context.literal().getText());
+            return null;
+        }
+    }
+
     private Statement openOf(CobolParser.OpenStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
         List<Statement.Open.Opened> opened = new ArrayList<>();
         for (CobolParser.OpenPhraseContext phrase : context.openPhrase()) {
             OpenMode mode = modeOf(phrase);
-            for (org.antlr.v4.runtime.tree.TerminalNode name : phrase.IDENTIFIER()) {
-                FileDescription file = dataFileOf(name.getText(), "OPEN", origin);
+            for (CobolParser.OpenFileContext one : phrase.openFile()) {
+                FileDescription file = dataFileOf(one.IDENTIFIER().getText(), "OPEN", origin);
                 if (file == null) {
                     return null;
                 }
-                opened.add(new Statement.Open.Opened(file, mode));
+                if (one.REVERSED() != null) {
+                    // 逆から読むという指示である。黙って順に読めば<b>違う答えを返す</b>。
+                    // 巻の扱いのように「何も起きなかった」で済む話ではないので、断る
+                    report(ReferenceResolver.originOf(one),
+                            "OPEN ... REVERSED is not supported yet");
+                    continue;
+                }
+                opened.add(new Statement.Open.Opened(file, mode, one.REWIND() != null,
+                        fileDebugEntry(file, false, origin)));
             }
         }
         return new Statement.Open(opened, origin);
@@ -2385,15 +4185,37 @@ public final class ProcedureBuilder {
 
     private Statement closeOf(CobolParser.CloseStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        List<FileDescription> closed = new ArrayList<>();
-        for (org.antlr.v4.runtime.tree.TerminalNode name : context.IDENTIFIER()) {
-            FileDescription file = dataFileOf(name.getText(), "CLOSE", origin);
+        List<Statement.Close.Closed> closed = new ArrayList<>();
+        for (CobolParser.CloseFileContext one : context.closeFile()) {
+            FileDescription file = dataFileOf(one.IDENTIFIER().getText(), "CLOSE", origin);
             if (file == null) {
                 return null;
             }
-            closed.add(file);
+            CobolParser.CloseOptionContext option = one.closeOption();
+            closed.add(new Statement.Close.Closed(file,
+                    option != null && option.LOCK() != null,
+                    volumeOf(option),
+                    fileDebugEntry(file, false, origin)));
         }
         return new Statement.Close(closed, origin);
+    }
+
+    /**
+     * {@code CLOSE} に書かれた巻の扱いを読む (要件 FR-102)。
+     *
+     * <p>{@code REEL} / {@code UNIT} は<b>閉じない</b>。次の巻へ移るだけなので、
+     * ファイルは開いたままである。{@code NO REWIND} は閉じるが巻き戻さない。
+     */
+    private Statement.Close.Volume volumeOf(CobolParser.CloseOptionContext option) {
+        if (option == null) {
+            return Statement.Close.Volume.NONE;
+        }
+        if (option.REEL() != null || option.UNIT() != null) {
+            return Statement.Close.Volume.REEL;
+        }
+        return option.REWIND() != null
+                ? Statement.Close.Volume.NO_REWIND
+                : Statement.Close.Volume.NONE;
     }
 
     /**
@@ -2416,14 +4238,18 @@ public final class ProcedureBuilder {
             }
         }
         boolean next = context.NEXT() != null;
-        if (next && file.access() != FileDescription.Access.DYNAMIC) {
-            // NEXT と書けるのは動的アクセスだけである。ほかの様式では意味が決まっている
-            report(origin, "READ ... NEXT requires ACCESS MODE IS DYNAMIC");
+        if (next && file.access() == FileDescription.Access.RANDOM) {
+            // 乱アクセスに「次」は無い。読む相手は鍵が決めている
+            report(origin, "READ ... NEXT cannot be used with ACCESS MODE IS RANDOM: "
+                    + file.name());
             return null;
         }
+        // 順アクセスでも NEXT と書いてよい。<b>書いても意味は変わらない</b> —
+        // 順アクセスの READ はもともと次のレコードを読む。動的アクセスでだけ、
+        // 鍵で読むのか順に読むのかを分ける印になる
         List<Statement> atEnd = context.atEndPhrase() == null
                 ? List.of()
-                : listOf(context.atEndPhrase().statement());
+                : bodyOf(context.atEndPhrase().branchBody());
         List<Statement> notAtEnd = context.notAtEndPhrase() == null
                 ? List.of()
                 : listOf(context.notAtEndPhrase().statement());
@@ -2444,7 +4270,8 @@ public final class ProcedureBuilder {
             return null;
         }
         // listOf は組み立てられなかった文を落とす。誤りは診断として残っている
-        return new Statement.Read(file, next, keyIndex, into, atEnd, notAtEnd, keyCheck, origin);
+        return new Statement.Read(file, next, keyIndex, into, atEnd, notAtEnd, keyCheck,
+                fileDebugEntry(file, true, origin), origin);
     }
 
     /**
@@ -2462,13 +4289,34 @@ public final class ProcedureBuilder {
         }
         List<FileDescription.RecordKey> keys = file.keys();
         for (int i = 0; i < keys.size(); i++) {
-            if (keys.get(i).reference().item() == reference.item()) {
+            if (matchesKey(keys.get(i), reference)) {
                 return i;
             }
         }
         report(origin, "not a RECORD KEY or ALTERNATE RECORD KEY of " + file.name() + ": "
                 + reference.item().name());
         return -1;
+    }
+
+    /**
+     * 書かれた項目が鍵を指しているか (要件 FR-101)。
+     *
+     * <p>鍵そのものでなくてもよい。<b>同じ位置から始まって、鍵より短ければ</b>それは
+     * 総称鍵であり、「先頭 n 文字が一致するレコード」を指す。規格がそう決めている。
+     * 検査スイートは鍵の前半だけを別名で切り出して {@code START} に書く。
+     */
+    private static boolean matchesKey(FileDescription.RecordKey key, DataReference written) {
+        if (key.reference().item() == written.item()) {
+            return true;
+        }
+        java.util.OptionalInt offset = written.absoluteOffset();
+        java.util.OptionalInt length = written.constantLength();
+        if (offset.isEmpty() || length.isEmpty()) {
+            return false;
+        }
+        java.util.OptionalInt keyOffset = key.reference().absoluteOffset();
+        return keyOffset.isPresent() && keyOffset.getAsInt() == offset.getAsInt()
+                && length.getAsInt() <= key.length();
     }
 
     /** その {@code READ} が鍵で引く形かどうか。動的アクセスでは {@code NEXT} の有無で決まる。 */
@@ -2488,10 +4336,11 @@ public final class ProcedureBuilder {
      */
     private Statement writeOf(CobolParser.WriteStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        DataItem record = recordOf(context.IDENTIFIER().getText(), "WRITE", origin);
+        DataItem record = recordOf(context.IDENTIFIER(0).getText(), "WRITE", origin);
         if (record == null) {
             return null;
         }
+        traceRecord(record, origin);
         Statement.Move from = null;
         if (context.identifier() != null) {
             from = recordMove(record, context.identifier(), origin);
@@ -2510,7 +4359,69 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Write(file, record, from, keyCheck, origin);
+        Statement.Advancing advancing = advancingOf(context.advancingPhrase(), origin);
+        if (context.advancingPhrase() != null && advancing == null) {
+            return null;
+        }
+        Statement.PageCheck pageCheck = null;
+        if (context.atEndOfPagePhrase() != null || context.notAtEndOfPagePhrase() != null) {
+            if (file.linage() == null) {
+                // 頁の終わりを決めるのは LINAGE である。書いていなければ、
+                // 分岐がいつ通るのかを誰も決めていない
+                report(origin, "AT END-OF-PAGE needs a LINAGE clause on " + file.name());
+                return null;
+            }
+            pageCheck = new Statement.PageCheck(
+                    bodyOf(context.atEndOfPagePhrase() == null
+                            ? null : context.atEndOfPagePhrase().branchBody()),
+                    bodyOf(context.notAtEndOfPagePhrase() == null
+                            ? null : context.notAtEndOfPagePhrase().branchBody()));
+        }
+        // WRITE はレコード名を書く。<b>ファイル名を書いたことにはならない</b>ので、
+        // ファイル名の見張りは動かない (DB202A の WRITE-TEST-3 は 0 度である)
+        return new Statement.Write(file, record, from, keyCheck, advancing, pageCheck,
+                List.of(), origin);
+    }
+
+    /**
+     * {@code WRITE} の行送りを読む (要件 FR-102)。
+     *
+     * <p>{@code AFTER} は送ってから書き、{@code BEFORE} は書いてから送る。送る量は
+     * 書かれた数か、実行時に決まるデータ項目である。
+     *
+     * @return 書かれていなければ {@code null}。読めなければ診断を残して {@code null}
+     */
+    private Statement.Advancing advancingOf(CobolParser.AdvancingPhraseContext context,
+                                            Origin origin) {
+        if (context == null) {
+            return null;
+        }
+        boolean before = context.BEFORE() != null;
+        if (context.PAGE() != null) {
+            return new Statement.Advancing(null, null, true, before);
+        }
+        CobolParser.AdvancingLinesContext lines = context.advancingLines();
+        if (lines.identifier() != null) {
+            String name = lines.identifier().qualifiedDataName().dataName(0).getText();
+            if (specialNames.mnemonic(name) != null) {
+                // 呼び名を書けば、その装置が決めた送りである。紙送りの通路のうち
+                // ほとんどの資産が使うのは「頁の先頭へ」だけなので、そう読む (P-076)
+                return new Statement.Advancing(null, null, true, before);
+            }
+            DataReference count = resolver.resolve(lines.identifier());
+            return count == null ? null : new Statement.Advancing(null, count, false, before);
+        }
+        if (lines.NUMBER() == null) {
+            // ZERO と綴られていれば 0 行である
+            return new Statement.Advancing(0, null, false, before);
+        }
+        String written = lines.NUMBER().getText();
+        try {
+            return new Statement.Advancing(Integer.parseInt(written), null, false, before);
+        } catch (NumberFormatException e) {
+            report(origin, "ADVANCING requires an integer number of lines: " + written);
+            return null;
+        }
     }
 
     /**
@@ -2525,6 +4436,7 @@ public final class ProcedureBuilder {
         if (record == null) {
             return null;
         }
+        traceRecord(record, origin);
         Statement.Move from = null;
         if (context.identifier() != null) {
             from = recordMove(record, context.identifier(), origin);
@@ -2542,7 +4454,8 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Rewrite(file, record, from, keyCheck, origin);
+        // REWRITE も書くのはレコード名である
+        return new Statement.Rewrite(file, record, from, keyCheck, List.of(), origin);
     }
 
     /**
@@ -2565,7 +4478,7 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Delete(file, keyCheck, origin);
+        return new Statement.Delete(file, keyCheck, fileDebugEntry(file, false, origin), origin);
     }
 
     /**
@@ -2593,7 +4506,8 @@ public final class ProcedureBuilder {
                 if (keyIndex < 0) {
                     return null;
                 }
-                key = file.keys().get(keyIndex).reference();
+                // 書かれた項目をそのまま渡す。鍵より短ければ総称鍵になる
+                key = resolver.resolve(context.identifier());
             } else {
                 key = resolver.resolve(context.identifier());
             }
@@ -2614,7 +4528,8 @@ public final class ProcedureBuilder {
         if (keyCheck == null && context.invalidKeyPhrase() != null) {
             return null;
         }
-        return new Statement.Start(file, keyIndex, key, relation, keyCheck, origin);
+        return new Statement.Start(file, keyIndex, key, relation, keyCheck,
+                fileDebugEntry(file, false, origin), origin);
     }
 
     /** {@code KEY IS} の関係。等しくないものは探せない。範囲の端が決まらないからである。 */
@@ -2724,7 +4639,11 @@ public final class ProcedureBuilder {
         } else {
             input = procedureOf(context.sortInput().paragraphName());
         }
-        return sorted(work, keys, using, input, context.sortOutput(), false, origin);
+        byte[] sequence = sequenceOf(context.sortSequence(), origin);
+        if (context.sortSequence() != null && sequence == null) {
+            return null;
+        }
+        return sorted(work, keys, using, input, context.sortOutput(), false, sequence, origin);
     }
 
     /** {@code MERGE} を組み立てる (要件 FR-121)。入口はファイルに限られる。 */
@@ -2744,12 +4663,39 @@ public final class ProcedureBuilder {
             report(origin, "MERGE needs at least two USING files");
             return null;
         }
-        return sorted(work, keys, using, null, context.sortOutput(), true, origin);
+        byte[] sequence = sequenceOf(context.sortSequence(), origin);
+        if (context.sortSequence() != null && sequence == null) {
+            return null;
+        }
+        return sorted(work, keys, using, null, context.sortOutput(), true, sequence, origin);
+    }
+
+    /**
+     * {@code SORT ... SEQUENCE} が指す照合順序 (要件 FR-054, FR-120)。
+     *
+     * <p>書かれていなければ、<b>プログラムの照合順序</b>に従う。文が指定したものが
+     * あれば、そちらが勝つ。規格がそう決めている。
+     *
+     * @return 既定の並びでよければ {@code null}
+     */
+    private byte[] sequenceOf(CobolParser.SortSequenceContext context, Origin origin) {
+        if (context == null) {
+            return specialNames.collatingSequence();
+        }
+        String name = context.IDENTIFIER().getText();
+        byte[] table = specialNames.alphabet(name);
+        if (table == null) {
+            report(origin, "undefined alphabet-name: " + name.toUpperCase(Locale.ROOT));
+            return null;
+        }
+        // コードページの並びと同じなら、表を持ち回る意味はない
+        return Alphabet.isNative(table) ? null : table;
     }
 
     private Statement sorted(FileDescription work, List<Statement.Sort.SortKeySpec> keys,
                              List<FileDescription> using, Statement.Sort.Procedure input,
-                             CobolParser.SortOutputContext output, boolean merge, Origin origin) {
+                             CobolParser.SortOutputContext output, boolean merge,
+                             byte[] sequence, Origin origin) {
         List<FileDescription> giving = List.of();
         Statement.Sort.Procedure procedure = null;
         if (output.GIVING() != null) {
@@ -2760,7 +4706,8 @@ public final class ProcedureBuilder {
         } else {
             procedure = procedureOf(output.paragraphName());
         }
-        return new Statement.Sort(work, keys, using, input, giving, procedure, merge, origin);
+        return new Statement.Sort(work, keys, using, input, giving, procedure, merge,
+                sequence, origin);
     }
 
     /**
@@ -2823,12 +4770,10 @@ public final class ProcedureBuilder {
         return out;
     }
 
-    private static Statement.Sort.Procedure procedureOf(
+    private Statement.Sort.Procedure procedureOf(
             List<CobolParser.ParagraphNameContext> names) {
-        String from = names.get(0).getText().toUpperCase(Locale.ROOT);
-        String through = names.size() > 1
-                ? names.get(1).getText().toUpperCase(Locale.ROOT)
-                : null;
+        String from = procedureNameOf(names.get(0));
+        String through = names.size() > 1 ? procedureNameOf(names.get(1)) : null;
         return new Statement.Sort.Procedure(from, through);
     }
 
@@ -2839,6 +4784,7 @@ public final class ProcedureBuilder {
         if (record == null) {
             return null;
         }
+        traceRecord(record, origin);
         FileDescription work = files.get(record.fileName());
         if (!work.sort()) {
             report(origin, "RELEASE names a record of a sort-merge file (SD): "
@@ -2874,7 +4820,7 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
-        return new Statement.Return(work, into, listOf(context.atEndPhrase().statement()),
+        return new Statement.Return(work, into, bodyOf(context.atEndPhrase().branchBody()),
                 context.notAtEndPhrase() == null
                         ? List.of()
                         : listOf(context.notAtEndPhrase().statement()),
@@ -2923,5 +4869,10 @@ public final class ProcedureBuilder {
 
     private void report(Origin origin, String message) {
         diagnostics.add(new Diagnostic(origin, message));
+    }
+
+    /** 告げるだけで翻訳を続ける診断 (要件 FR-183)。 */
+    private void warn(Origin origin, String message) {
+        diagnostics.add(Diagnostic.warning(origin, message));
     }
 }

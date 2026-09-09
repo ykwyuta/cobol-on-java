@@ -215,15 +215,26 @@ class CorrespondingGenerationTest {
     }
 
     @Test
-    @DisplayName("名前の合う項目が 1 つもなければ誤りとして報告する (FR-060)")
-    void anEmptyCorrespondenceIsReported() {
-        // 何も移さない MOVE は書き間違いである
+    @DisplayName("名前の合う項目が 1 つもなければ、告げて通す (FR-060, FR-183)")
+    void anEmptyCorrespondenceIsWarnedAboutAndNothingIsMoved() {
+        // 組が 1 つも無いのは<b>書き間違いとは限らない</b>。名前が同じでも修飾が違えば
+        // 対応しないので、そう書いて「何も移らないこと」を確かめる原文がある。
+        // CCVS85 の NC209A は原文に「NOTE NO MOVES SHOULD TAKE PLACE.」と書いている
         CobolCompiler.Result result = compile(
                 List.of("01 WS-A.", "   05 A PIC X.", "01 WS-B.", "   05 Z PIC X."),
                 "MOVE CORRESPONDING WS-A TO WS-B.");
 
-        assertFalse(result.succeeded());
+        assertTrue(result.succeeded(), result.diagnostics().toString());
         assertTrue(result.diagnostics().get(0).message().contains("no corresponding items"),
                 result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("組が 1 つも無ければ、受取項目は変わらない (FR-060)")
+    void anEmptyCorrespondenceLeavesTheTargetAlone() {
+        assertEquals("aZ", run(
+                List.of("01 WS-A.", "   05 A PIC X VALUE 'a'.",
+                        "01 WS-B.", "   05 Z PIC X VALUE 'Z'."),
+                "MOVE CORRESPONDING WS-A TO WS-B."));
     }
 }

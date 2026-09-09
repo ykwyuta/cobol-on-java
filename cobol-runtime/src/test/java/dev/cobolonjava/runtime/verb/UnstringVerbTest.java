@@ -35,7 +35,7 @@ class UnstringVerbTest {
     @DisplayName("区切り文字で分割し、受取項目へ順に転記する (FR-065)")
     void splitsByDelimiter() {
         UnstringVerb.Result r = run("A,B,C", List.of(UnstringVerb.Delimiter.of(b(","))), 3, 3, 3);
-        assertEquals(List.of("A  ", "B  ", "C  "), texts(r));
+        assertEquals(List.of("A", "B", "C"), texts(r));
         assertEquals(List.of(1, 1, 1), r.counts());
         assertEquals(3, r.tallying());
         assertEquals(6, r.pointer());
@@ -43,10 +43,12 @@ class UnstringVerbTest {
     }
 
     @Test
-    @DisplayName("受取項目への転記は英数字転記の規則に従う。左詰めで空白で埋める (FR-060, FR-065)")
-    void receivingFieldsFollowAlphanumericMoveRules() {
+    @DisplayName("切り出したものは<b>そのまま</b>返る。詰めるのは呼ぶ側である (FR-065)")
+    void theExtractedContentIsReturnedAsItStands() {
+        // 受取項目へ入れるのは呼ぶ側の仕事である。数字項目なら小数点で位置を合わせ、
+        // JUSTIFIED なら右へ寄せる。ここで英数字として詰めると、その区別が消える
         UnstringVerb.Result r = run("ABCDE,X", List.of(UnstringVerb.Delimiter.of(b(","))), 3, 3);
-        assertEquals(List.of("ABC", "X  "), texts(r), "あふれた右側は切り捨てられる");
+        assertEquals(List.of("ABCDE", "X"), texts(r));
         assertEquals(List.of(5, 1), r.counts(), "COUNT IN は切り捨て前の文字数を受け取る");
     }
 
@@ -54,12 +56,12 @@ class UnstringVerbTest {
     @DisplayName("ALL は連続する区切り文字を 1 個として扱う (FR-065)")
     void allTreatsConsecutiveDelimitersAsOne() {
         UnstringVerb.Result withAll = run("A,,B", List.of(UnstringVerb.Delimiter.all(b(","))), 3, 3);
-        assertEquals(List.of("A  ", "B  "), texts(withAll));
+        assertEquals(List.of("A", "B"), texts(withAll));
         assertFalse(withAll.overflow());
 
         // ALL がなければ 2 個目の区切りで空の項目が生じる
         UnstringVerb.Result withoutAll = run("A,,B", List.of(UnstringVerb.Delimiter.of(b(","))), 3, 3);
-        assertEquals(List.of("A  ", "   "), texts(withoutAll));
+        assertEquals(List.of("A", ""), texts(withoutAll));
         assertTrue(withoutAll.overflow(), "B が残るのでオーバーフローになる");
     }
 
@@ -68,7 +70,7 @@ class UnstringVerbTest {
     void earliestDelimiterWins() {
         UnstringVerb.Result r = run("A;B,C",
                 List.of(UnstringVerb.Delimiter.of(b(",")), UnstringVerb.Delimiter.of(b(";"))), 3, 3, 3);
-        assertEquals(List.of("A  ", "B  ", "C  "), texts(r));
+        assertEquals(List.of("A", "B", "C"), texts(r));
         assertEquals(List.of(";", ",", ""), r.delimiters().stream().map(CP::decode).toList(),
                 "DELIMITER IN は実際に見つかった区切り文字を受け取る");
     }
@@ -77,7 +79,7 @@ class UnstringVerbTest {
     @DisplayName("受取項目が足りなければオーバーフローになる (FR-065)")
     void tooFewReceivingFieldsOverflows() {
         UnstringVerb.Result r = run("A,B,C", List.of(UnstringVerb.Delimiter.of(b(","))), 3, 3);
-        assertEquals(List.of("A  ", "B  "), texts(r));
+        assertEquals(List.of("A", "B"), texts(r));
         assertTrue(r.overflow());
         assertEquals(5, r.pointer(), "次に走査する位置が残る");
     }
@@ -104,11 +106,9 @@ class UnstringVerbTest {
     }
 
     @Test
-    @DisplayName("JUSTIFIED RIGHT の受取項目は右詰めになる (FR-060)")
-    void justifiedRight() {
-        UnstringVerb.Result r = UnstringVerb.unstring(b("A,B"),
-                1, List.of(UnstringVerb.Delimiter.of(b(","))),
-                List.of(new UnstringVerb.Field(3, true), new UnstringVerb.Field(3, true)), CP);
-        assertEquals(List.of("  A", "  B"), texts(r));
+    @DisplayName("DELIMITED BY を書かないときだけ、受取項目の長さが切れ目を決める (FR-065)")
+    void withoutDelimitersTheFieldLengthDecidesTheCut() {
+        UnstringVerb.Result r = run("ABCDEF", List.of(), 4, 2);
+        assertEquals(List.of("ABCD", "EF"), texts(r));
     }
 }

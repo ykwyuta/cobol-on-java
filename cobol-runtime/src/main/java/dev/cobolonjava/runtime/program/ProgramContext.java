@@ -1,5 +1,7 @@
 package dev.cobolonjava.runtime.program;
 
+import dev.cobolonjava.runtime.abend.DumpLevel;
+import dev.cobolonjava.runtime.abend.StorageMap;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.io.BufferedReader;
@@ -65,7 +67,13 @@ public final class ProgramContext {
      * なく、{@code SORT} のたびに作り直す。前の整列の中身が残っていてはならない。
      */
     public SortWork sortWork(String name, List<SortKey> keys) {
-        SortWork work = new SortWork(keys, codePage);
+        return sortWork(name, keys, null);
+    }
+
+    /** 照合順序を決めて用意する。{@code null} ならコードページの並びである。 */
+    public SortWork sortWork(String name, List<SortKey> keys,
+                             dev.cobolonjava.runtime.codepage.CollatingSequence sequence) {
+        SortWork work = new SortWork(keys, codePage, sequence);
         sorts.put(name, work);
         return work;
     }
@@ -79,12 +87,202 @@ public final class ProgramContext {
         return work;
     }
 
+    /**
+     * 開いたままのファイルを閉じる (要件 FR-102, FR-141)。
+     *
+     * <p>実行が終わったのに閉じていないファイルは、<b>書いたものがまだ置き場に届いていない</b>。
+     * ホストでは実行の終了処理がデータセットを閉じるので、途中で異常終了しても
+     * そこまでに書いたレコードは残る。残ったものを見て何が起きたのかを調べられることと、
+     * 処置 ({@code DISP}) が「作りかけのものを消す」という形で効くことの両方がこれに拠る。
+     *
+     * <p>閉じるときの誤りは伝えない。すでに異常終了しているかもしれず、そこへ別の誤りを
+     * かぶせると<b>最初に起きたことが分からなくなる</b>。
+     */
+    public void closeFiles() {
+        for (DataSet file : files.values()) {
+            if (file.mode() != null) {
+                try {
+                    file.close();
+                } catch (RuntimeException ignored) {
+                    // 閉じられなかったファイルのために、閉じられるファイルを諦めない
+                }
+            }
+        }
+        files.clear();
+    }
+
     /** DD 名から実際のファイルを探す目録。 */
     private final DataSetCatalog catalog;
     /** 開いているファイル。ファイル名から引く。 */
     private final Map<String, DataSet> files;
     /** 整列作業ファイル。{@code SORT} の間だけ存在する。 */
     private final Map<String, SortWork> sorts = new HashMap<>();
+    /**
+     * いま動いているプログラム。内側が先頭である (要件 FR-142)。
+     *
+     * <p>異常終了の覚え書きが、止まったところの記憶域を見るために要る。呼び出し履歴だけなら
+     * JVM の呼び出し履歴で足りるが、<b>それぞれの作業場所の中身</b>は積んでおかないと
+     * 取り出せない。
+     */
+    private final java.util.Deque<Active> active = new java.util.ArrayDeque<>();
+    /** 診断出力の細かさ (要件 FR-143)。 */
+    private DumpLevel dumpLevel = DumpLevel.TRACE;
+
+    /**
+     * 動いているプログラム 1 個。
+     *
+     * @param name    プログラム名
+     * @param storage その作業場所
+     * @param map     作業場所の割り付け。持たないプログラムでは空 (要件 FR-142)
+     */
+    public record Active(String name, Storage storage, StorageMap map) {
+
+        /** 割り付けを持たないプログラム。手で書いたものがこれである。 */
+        public Active(String name, Storage storage) {
+            this(name, storage, StorageMap.EMPTY);
+        }
+    }
+
+    /**
+     * プログラムへ入ったことを記録する。
+     *
+     * <p>抜けるときに {@link #leave()} を呼ぶのは<b>正常に戻ったときだけ</b>である。
+     * 異常終了で抜けたプログラムは積まれたまま残り、覚え書きがその中身を見られる。
+     */
+    public void enter(String name, Storage storage) {
+        enter(name, storage, StorageMap.EMPTY, null);
+    }
+
+    /** 割り付けまで添えてプログラムへ入ったことを記録する (要件 FR-142)。 */
+    public void enter(String name, Storage storage, StorageMap map) {
+        enter(name, storage, map, null);
+    }
+
+    /**
+     * {@code EXTERNAL} の領域まで添えてプログラムへ入ったことを記録する
+     * (要件 FR-014, FR-142)。
+     *
+     * <p>入る前に<b>いま動いている側の中身を実行単位の写しへ書き戻す</b>。そのうえで
+     * 入る側へ読み込む。{@code CALL} は呼ぶ側が書いた値を呼ばれた側が見なければ
+     * ならないので、この順でなければならない。
+     */
+    public void enter(String name, Storage storage, StorageMap map, CobolProgram program) {
+        flushExternals();
+        active.push(new Active(name, storage, map));
+        externalFrames.push(new ExternalFrame(name, storage, program));
+        loadExternals();
+    }
+
+    /**
+     * プログラムから正常に戻ったことを記録する。
+     *
+     * <p>抜ける側の {@code EXTERNAL} を書き戻してから、呼んだ側へ読み込み直す。
+     * 呼ばれた側が書き換えた値は<b>戻ったところで見えていなければならない</b>。
+     */
+    public void leave() {
+        flushExternals();
+        active.poll();
+        externalFrames.poll();
+        loadExternals();
+    }
+
+    // ---- EXTERNAL (要件 FR-014) ----
+
+    /** 実行単位で 1 つずつ持つ {@code EXTERNAL} の中身。データ名で引く。 */
+    private final Map<String, byte[]> externals = new java.util.HashMap<>();
+    /** 積まれたプログラムの記憶域と、その {@code EXTERNAL} の位置。 */
+    private final java.util.Deque<ExternalFrame> externalFrames = new java.util.ArrayDeque<>();
+
+    private record ExternalFrame(String name, Storage storage, CobolProgram program) {
+
+        CobolProgram.ExternalRegion[] regions() {
+            return program == null ? CobolProgram.NO_EXTERNAL_REGIONS : program.externalRegions();
+        }
+    }
+
+    /**
+     * 囲む側の宣言節を、その記憶域で動かす (要件 FR-091, FR-105)。
+     *
+     * <p>{@code USE GLOBAL AFTER ERROR PROCEDURE} である。囲まれたプログラムで入出力の
+     * 異常が起きたとき、動かすのは囲む側の節であり、<b>囲む側の記憶域</b>で動かす。
+     * 節の中身は囲む側の段落と項目を指しているからである。
+     *
+     * <p>囲む側は積まれた中にいる。{@code CALL} で入ったので、下のほうにいるはずである。
+     * いなければ何もしない — 呼ばれ方が規格の想定と違うということであり、黙って
+     * 別のプログラムの節を動かすよりは何もしないほうがよい。
+     *
+     * @param owner 宣言節を書いたプログラムの名前
+     */
+    public void performGlobal(String owner, int from, int through) {
+        ExternalFrame current = externalFrames.peek();
+        for (ExternalFrame frame : externalFrames) {
+            if (frame.program() == null || !owner.equalsIgnoreCase(frame.name())) {
+                continue;
+            }
+            // 節はよそのプログラムの記憶域で動く。<b>入って出るのと同じ</b>形に
+            // 分け合っているものを合わせる。そうしないと、戻ったところで
+            // 呼んだ側の古い写しが書き戻され、節の書いた値が消える
+            flush(current);
+            load(frame);
+            frame.program().performGlobalRange(from, through, frame.storage(), this);
+            flush(frame);
+            load(current);
+            return;
+        }
+    }
+
+    /** いま動いている側の {@code EXTERNAL} を実行単位の写しへ書き戻す。 */
+    private void flushExternals() {
+        flush(externalFrames.peek());
+    }
+
+    private void flush(ExternalFrame frame) {
+        if (frame == null) {
+            return;
+        }
+        for (CobolProgram.ExternalRegion region : frame.regions()) {
+            externals.put(region.name(),
+                    frame.storage().view(region.offset(), region.length()).toByteArray());
+        }
+    }
+
+    /**
+     * 実行単位の写しを、いま動いている側へ読み込む。
+     *
+     * <p>まだ写しが無ければ何もしない。<b>そのプログラムの持っている中身が最初の値</b>で
+     * ある。規格は {@code EXTERNAL} に {@code VALUE} を書くことを許していないので、
+     * どのプログラムから見ても同じ初期状態から始まる。
+     */
+    private void loadExternals() {
+        load(externalFrames.peek());
+    }
+
+    private void load(ExternalFrame frame) {
+        if (frame == null) {
+            return;
+        }
+        for (CobolProgram.ExternalRegion region : frame.regions()) {
+            byte[] shared = externals.get(region.name());
+            if (shared != null && shared.length == region.length()) {
+                frame.storage().view(region.offset(), region.length()).setBytes(shared);
+            }
+        }
+    }
+
+    /** いま動いているプログラム。内側が先頭に並ぶ。 */
+    public List<Active> active() {
+        return List.copyOf(active);
+    }
+
+    /** 診断出力の細かさ (要件 FR-143)。 */
+    public DumpLevel dumpLevel() {
+        return dumpLevel;
+    }
+
+    /** 診断出力の細かさを差し替える。ジョブが {@code CEEOPTS} で指定する。 */
+    public void setDumpLevel(DumpLevel value) {
+        this.dumpLevel = value == null ? DumpLevel.TRACE : value;
+    }
 
     private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
@@ -112,7 +310,8 @@ public final class ProgramContext {
      * @param ddName {@code ASSIGN TO} に書かれた DD 名
      */
     public DataSet file(String name, String ddName) {
-        return files.computeIfAbsent(name, k -> SequentialDataSet.at(catalog.resolve(ddName)));
+        return files.computeIfAbsent(name,
+                k -> allocated(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
     }
 
     /**
@@ -129,10 +328,26 @@ public final class ProgramContext {
         return files.computeIfAbsent(name, k -> {
             DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage);
             Path path = catalog.resolve(ddName);
-            return organization == Organization.RELATIVE
+            return allocated(organization == Organization.RELATIVE
                     ? RelativeDataSet.at(path, declared)
-                    : SequentialDataSet.at(path, declared);
+                    : SequentialDataSet.at(path, declared), ddName);
         });
+    }
+
+    /**
+     * 割当てが決めたことをファイルへ渡す (要件 FR-113, FR-141)。
+     *
+     * <p>プログラムからは見えないことである。取った領域の大きさも、指しているのが
+     * 区分データセットのメンバかどうかも、<b>ジョブが決めてプログラムは知らない</b>。
+     * 渡さなければ、実機では止まるジョブがここでは通ってしまう。
+     *
+     * <p>編成によらず渡す。どの編成かでホストとの合い方が変わるのがいちばん困る形だからで
+     * ある (暫定判断 P-053)。
+     */
+    private DataSet allocated(DataSet file, String ddName) {
+        file.limit(catalog.limitOf(ddName));
+        file.member(catalog.isMemberOfLibrary(ddName));
+        return file;
     }
 
     /**
@@ -145,9 +360,9 @@ public final class ProgramContext {
      */
     public DataSet file(String name, String ddName, RecordFormat format, int recordLength,
                         List<IndexedDataSet.Key> keys) {
-        return files.computeIfAbsent(name, k -> IndexedDataSet.at(catalog.resolve(ddName),
-                new DataSetAttributes(format, recordLength, codePage),
-                keys.get(0), keys.subList(1, keys.size())));
+        return files.computeIfAbsent(name, k -> allocated(IndexedDataSet.at(
+                catalog.resolve(ddName), new DataSetAttributes(format, recordLength, codePage),
+                keys.get(0), keys.subList(1, keys.size())), ddName));
     }
 
     /** DD 名から実際のファイルを探す目録。 */
@@ -253,6 +468,112 @@ public final class ProgramContext {
     /** 日付と時刻の特殊レジスタが見る時計。 */
     public Clock clock() {
         return clock;
+    }
+
+    /**
+     * {@code FUNCTION RANDOM} の乱数列 (要件 FR-070、テスト時の固定は FR-204)。
+     *
+     * <p>種を与えれば<b>そこから決まる同じ並び</b>が出る。規格がそう決めている。
+     * 実行の全体で 1 つ持つのは、種を与えない呼び出しが<b>前の続き</b>を返すためである。
+     */
+    private java.util.Random random;
+
+    /**
+     * {@code CLOSE ... WITH LOCK} で閉じたファイル (要件 FR-102)。
+     *
+     * <p>閉じたあと、この実行単位では<b>二度と開けない</b>。実行の全体で 1 つ持つのは、
+     * 規格が「実行単位のあいだ」と決めているからである。副プログラムから開き直しても
+     * 同じく断る。
+     */
+    private final java.util.Set<String> lockedFiles = new java.util.HashSet<>();
+
+    /**
+     * 直前の {@code WRITE} が頁の終わりに達したか (要件 FR-113)。
+     *
+     * <p>{@code AT END-OF-PAGE} の分岐に使う。文の結果を持ち回るのに記憶域を使わないのは、
+     * <b>プログラムから見えてはならない</b>値だからである。
+     */
+    private boolean endOfPage;
+
+    /** 頁の終わりに達したかを記録する。 */
+    public void setEndOfPage(boolean reached) {
+        endOfPage = reached;
+    }
+
+    /** 直前の {@code WRITE} が頁の終わりに達したか。 */
+    public boolean endOfPage() {
+        return endOfPage;
+    }
+
+    /**
+     * 外から立てる切り替え (要件 FR-135)。
+     *
+     * <p>ジョブが立てたところをプログラムが読む。実行の全体で 1 つであり、
+     * 初めはすべて切れている。参照実装と同じく 8 個持つ。
+     */
+    private final boolean[] switches = new boolean[8];
+
+    /** 切り替えを立てる、または切る。 */
+    public void switchState(int index, boolean on) {
+        if (index >= 0 && index < switches.length) {
+            switches[index] = on;
+        }
+    }
+
+    /** 切り替えが立っているか。 */
+    public boolean switchState(int index) {
+        return index >= 0 && index < switches.length && switches[index];
+    }
+
+    /**
+     * 実行時のデバッグの切り替え (要件 FR-193)。
+     *
+     * <p>{@code WITH DEBUGGING MODE} は<b>翻訳のとき</b>の切り替えであり、これは
+     * <b>実行のとき</b>の切り替えである。切ると、7 桁目の {@code D} の行は動いたまま
+     * <b>デバッグの節だけが動かなくなる</b>。参照実装ではジョブの指定で切る。
+     *
+     * <p>初めは立っている。翻訳したのに何も起きないほうが分かりにくいからである。
+     */
+    private boolean debuggingProcedures = true;
+
+    /** デバッグの節を動かすかどうかを決める。 */
+    public ProgramContext withDebuggingProcedures(boolean value) {
+        this.debuggingProcedures = value;
+        return this;
+    }
+
+    /** デバッグの節を動かすか。 */
+    public boolean debuggingProcedures() {
+        return debuggingProcedures;
+    }
+
+    /** 閉じたファイルに錠を掛ける。 */
+    public void lockFile(String name) {
+        lockedFiles.add(name);
+    }
+
+    /** 錠が掛かっているか。掛かっていれば {@code OPEN} は状態コード 38 になる。 */
+    public boolean isFileLocked(String name) {
+        return lockedFiles.contains(name);
+    }
+
+    /** 種を決めて数列を作り直す。 */
+    public void seedRandom(long seed) {
+        random = new java.util.Random(seed);
+    }
+
+    /**
+     * 次の乱数。
+     *
+     * @return 0 以上 1 未満
+     */
+    public double nextRandom() {
+        if (random == null) {
+            // 種を与えずに呼ばれたときの並びは処理系が決めてよい。
+            // 実行のたびに変わらないほうが試験に書けるので、固定の種から始める
+            random = new java.util.Random(0);
+        }
+        return random.nextDouble();
     }
 
     /**

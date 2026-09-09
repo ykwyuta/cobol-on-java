@@ -188,6 +188,81 @@ class InspectGenerationTest {
     }
 
     @Test
+    @DisplayName("ALL / LEADING は、そのあとの被演算子すべてに効く (FR-065)")
+    void allAndLeadingCarryOverToLaterOperands() {
+        // NC216A が「FOR LEADING "S" AFTER WS-Y "S" AFTER "U" ...」と 4 組を並べている。
+        // ここでは A と B を 1 つの ALL で並べる。数えるのは 3 個 (A A B) である
+        assertEquals("AABAA03", run(
+                List.of("01 WS-D PIC X(5) VALUE 'AABAA'.",
+                        "01 WS-N PIC 9(2) VALUE 0."),
+                "INSPECT WS-D TALLYING WS-N FOR ALL 'A' BEFORE 'B' 'B'."));
+    }
+
+    @Test
+    @DisplayName("REPLACING でも指定は後ろへ効く (FR-065)")
+    void replacingCarriesOverToLaterOperands() {
+        assertEquals("XXYXX", run(
+                List.of("01 WS-D PIC X(5) VALUE 'AABAA'."),
+                "INSPECT WS-D REPLACING ALL 'A' BY 'X' 'B' BY 'Y'."));
+    }
+
+    @Test
+    @DisplayName("ALL は句の始まりであって図形定数ではない (FR-065)")
+    void allBeginsAClauseInsteadOfNamingAFigurativeConstant() {
+        // ALL を「ALL 定数」の図形定数として読むと、直前の LEADING が
+        // 2 つめの被演算子として飲み込んでしまい、最後の句が消える。
+        // そのときの答えは OOBAA である (NC216A INS-TEST-F3-20)
+        assertEquals("OOYAA", run(
+                List.of("01 WS-D PIC X(5) VALUE 'AABAA'."),
+                "INSPECT WS-D REPLACING LEADING 'AA' BY 'OO' ALL 'B' BY 'Y'."));
+    }
+
+    @Test
+    @DisplayName("符号つきの数字項目は符号を落として数える (FR-065)")
+    void aSignedNumericItemIsTalliedWithoutItsSign() {
+        // -12345 の記憶像は末尾に符号を埋めた F1F2F3F4D5 である。
+        // そのまま照合すると "5" が当たらない (NC216A INS-TEST-F1-23-2)
+        assertEquals(1, tallyOf("S9(5)", "-12345", "'5'"));
+    }
+
+    @Test
+    @DisplayName("符号を落として数えるので、符号の文字は数に入らない (FR-065)")
+    void theSignItselfIsNotCounted() {
+        assertEquals(0, tallyOf("S9(5)", "-12345", "'-'"));
+    }
+
+    @Test
+    @DisplayName("符号を別に持つ書き方でも符号を落として数える (FR-065)")
+    void aSeparateSignIsAlsoRemovedBeforeTallying() {
+        assertEquals(0, tallyOf("S9(5) SIGN IS LEADING SEPARATE", "-12345", "'-'"));
+    }
+
+    @Test
+    @DisplayName("符号のない数字項目は今までどおり記憶像を数える (FR-065)")
+    void anUnsignedNumericItemIsScannedAsStored() {
+        assertEquals(1, tallyOf("9(5)", "12345", "'5'"));
+    }
+
+    /** 数字項目を検査して、計数だけを取り出す。 */
+    private static int tallyOf(String picture, String value, String pattern) {
+        String storage = run(
+                List.of("01 WS-N PIC 9(2) VALUE 0.",
+                        "01 WS-D PIC " + picture + " VALUE " + value + "."),
+                "INSPECT WS-D TALLYING WS-N FOR ALL " + pattern + ".");
+        return Integer.parseInt(storage.substring(0, 2));
+    }
+
+    @Test
+    @DisplayName("符号つきの数字項目を置き換えると符号は残らない (FR-065)")
+    void replacingASignedNumericItemLeavesItUnsigned() {
+        // 規格は「同じ長さの符号なし項目へ移したもの」を検査すると決めている。
+        // 検査したのは符号のない像なので、書き戻る像にも符号はない
+        assertEquals("12347", run(
+                List.of("01 WS-D PIC S9(5) VALUE -12345."),
+                "INSPECT WS-D REPLACING ALL '5' BY '7'."));
+    }
+
+    @Test
     @DisplayName("数値でない計数は誤りとして報告する (FR-065)")
     void aNonNumericCounterIsReported() {
         CobolCompiler.Result result = compile(

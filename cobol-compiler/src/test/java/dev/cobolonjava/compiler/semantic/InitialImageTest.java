@@ -38,7 +38,7 @@ class InitialImageTest {
         CobolParsing.Result parsed =
                 CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE, sb.toString());
         assertTrue(parsed.succeeded(), () -> "syntax errors: " + parsed.diagnostics());
-        DataDivisionBuilder.Result built = DataDivisionBuilder.build(parsed.tree());
+        DataDivisionBuilder.Result built = DataDivisionBuilder.build(parsed.tree().programUnit(0));
         assertTrue(built.succeeded(), () -> "layout errors: " + built.diagnostics());
         return InitialImage.build(built.layout());
     }
@@ -56,9 +56,28 @@ class InitialImageTest {
     }
 
     @Test
-    @DisplayName("JUSTIFIED RIGHT では右寄せになる (FR-013)")
-    void justifiedRightMovesTheValueToTheEnd() {
-        assertEquals("4040C1C2", hex("WS-A", "01 WS-A PIC X(4) JUSTIFIED RIGHT VALUE 'AB'."));
+    @DisplayName("JUSTIFIED RIGHT は<b>初期値には効かない</b> (FR-013)")
+    void justifiedRightDoesNotAffectTheInitialValue() {
+        // 規格がそう決めている (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは
+        // 実行時の転記だけである。CCVS85 の NC107A は X(3) JUST VALUE "XY" が
+        // "XY " になることを確かめている
+        assertEquals("C1C24040", hex("WS-A", "01 WS-A PIC X(4) JUSTIFIED RIGHT VALUE 'AB'."));
+    }
+
+    @Test
+    @DisplayName("01 レベルの REDEFINES は、長ければ記憶域を広げる (FR-021)")
+    void alargerRedefinitionAtLevel01ExtendsTheArea() {
+        // 01 レベルでファイル節の外なら、重ねる先より<b>長くてよい</b>。長ければ
+        // そのぶん記憶域を広げなければならない。広げないと次の 01 レベルが重なり、
+        // そちらへ書いたつもりのない値が<b>黙って壊れる</b>
+        // (CCVS85 の NC107A: MOVE SPACE TO REDEF12 が次の 01 レベルを潰していた)
+        InitialImage.Result image = imageOf(
+                "01 WS-A PIC X(2).",
+                "01 WS-B REDEFINES WS-A PIC X(8).",
+                "01 WS-C PIC X(3) VALUE 'AAA'.");
+        assertTrue(image.succeeded(), () -> image.diagnostics().toString());
+        // WS-B が 8 バイトあるので、WS-C は 8 バイト目から始まる
+        assertEquals(11, image.storage().length);
     }
 
     @Test
@@ -131,6 +150,30 @@ class InitialImageTest {
                 "   05 WS-R REDEFINES WS-D.",
                 "      10 WS-R1 PIC X(2).",
                 "      10 WS-R2 PIC X(2)."));
+    }
+
+    @Test
+    @DisplayName("01 レベルの REDEFINES も初期値を塗り潰さない (FR-013, FR-021)")
+    void aRedefiningRecordDoesNotEraseTheValueBeneathIt() {
+        // 記憶域そのものを見る。01 どうしは同じ位置に重なるので、値の無い側を
+        // 書くと重ねる先の初期値が空白になる (NC116A がそれで S0C7 で落ちていた)
+        InitialImage.Result result = imageOf(
+                "01 WS-D PIC S9(4) VALUE +1234.",
+                "01 WS-R REDEFINES WS-D PIC X(4).");
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertEquals("F1F2F3C4",
+                HexFormat.of().withUpperCase().formatHex(result.storage()));
+    }
+
+    @Test
+    @DisplayName("01 レベルの REDEFINES の中の VALUE は誤りとして報告する (FR-013, FR-021)")
+    void aValueInARedefiningRecordIsReported() {
+        InitialImage.Result result = imageOf(
+                "01 WS-D PIC X(4) VALUE 'ABCD'.",
+                "01 WS-R REDEFINES WS-D PIC X(4) VALUE 'WXYZ'.");
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("REDEFINES"),
+                result.diagnostics().toString());
     }
 
     @Test

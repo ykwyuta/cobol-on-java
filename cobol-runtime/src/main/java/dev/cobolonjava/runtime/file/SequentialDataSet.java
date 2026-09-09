@@ -1,7 +1,6 @@
 package dev.cobolonjava.runtime.file;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -22,8 +21,13 @@ import java.util.List;
  *
  * <h2>いちどに読み込む</h2>
  * <p>いまの段では、開いたときにファイル全体を読み、閉じるときに書き出す。順に読む使い方では
- * 差が出ず、レコードの切り出しに集中できる。大きなデータセットを流す形は、
- * 相対編成と索引編成を実装する段で改める (暫定判断 P-038)。
+ * 差が出ず、レコードの切り出しに集中できる。大きなデータセットを流す形は
+ * 未解決である (暫定判断 P-038)。
+ *
+ * <h2>割当てが決めることは別に持つ</h2>
+ * <p>取った領域の大きさと、指しているのが区分データセットのメンバかどうかは、
+ * <b>編成によらず同じこと</b>である。{@link DataSetAllocation} に置いて、
+ * 相対編成・索引編成と分け合う (暫定判断 P-053 の解消)。
  */
 public final class SequentialDataSet implements DataSet {
 
@@ -43,6 +47,17 @@ public final class SequentialDataSet implements DataSet {
      */
     private int current = -1;
     private int lastLength;
+    /**
+     * 形が壊れている位置。{@code -1} は壊れていないことを表す。
+     *
+     * <p>開いたときにバイト列を切り分けると、途中で<b>それ以上切れない</b>ことがある。
+     * 固定長で長さが割り切れない、可変長で {@code RDW} がつながらない、という形である。
+     * 壊れた場所まで読み進めたときに初めて誤りにするのは、そこまでのレコードは
+     * 実際に読めているからである。ホストも同じで、装置の誤りは読んだ時点で立つ。
+     */
+    private int damagedAt = -1;
+    /** ジョブが割り当てで決めたこと (要件 FR-113, FR-141)。 */
+    private final DataSetAllocation allocation = new DataSetAllocation();
 
     public SequentialDataSet(Path path, DataSetAttributes attributes) {
         this.path = path;
@@ -65,6 +80,16 @@ public final class SequentialDataSet implements DataSet {
 
     public DataSetAttributes attributes() {
         return attributes;
+    }
+
+    @Override
+    public void limit(long bytes) {
+        allocation.limit(bytes);
+    }
+
+    @Override
+    public void member(boolean value) {
+        allocation.member(value);
     }
 
     /** 開いているかどうか。 */
@@ -95,6 +120,11 @@ public final class SequentialDataSet implements DataSet {
      * {@code 05} を返す。黙って空のファイルを作ると、入力を取り違えたジョブが
      * 「0 件処理した」と言って正常終了してしまう。
      *
+     * <p>区分データセットのメンバだけは<b>状態コードにならない</b> (要件 FR-113)。
+     * 割当ては通っている — データセットはあるのだから — のにメンバが無い、というのは
+     * この {@code OPEN} 文の失敗ではなく、開くという操作の失敗である。
+     * {@link DataSetOpenException} で止める。
+     *
      * @param optional {@code SELECT OPTIONAL} と書かれているか
      * @return ファイル状態コード
      */
@@ -102,16 +132,24 @@ public final class SequentialDataSet implements DataSet {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
-        boolean missing = !Files.isReadable(path);
-        if (missing && requested != OpenMode.OUTPUT && !optional) {
-            return FileStatus.NOT_FOUND;
+        String refused = allocation.opening(path, requested, optional, attributes.codePage());
+        if (refused != null) {
+            return refused;
         }
-        try {
-            records = requested == OpenMode.OUTPUT || missing
-                    ? new ArrayList<>()
-                    : split(Files.readAllBytes(path));
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot read " + path, e);
+        boolean missing = !Files.isReadable(path);
+        damagedAt = -1;
+        if (requested == OpenMode.OUTPUT || missing) {
+            records = new ArrayList<>();
+        } else {
+            byte[] bytes;
+            try {
+                bytes = Files.readAllBytes(path);
+            } catch (IOException e) {
+                throw new DataSetIoException("read", path, e);
+            }
+            RecordFraming.Framed framed = RecordFraming.split(bytes, attributes, false);
+            records = new ArrayList<>(framed.records());
+            damagedAt = framed.damagedAt();
         }
         mode = requested;
         // EXTEND は末尾から書き足す。ほかは先頭から
@@ -131,18 +169,30 @@ public final class SequentialDataSet implements DataSet {
      * @return ファイル状態コード
      */
     public String read(byte[] into) {
-        if (mode == null) {
-            return FileStatus.NOT_OPEN;
-        }
-        if (!mode.canRead()) {
+        if (mode == null || !mode.canRead()) {
+            // 開いていないのは「読める開き方ではない」に含まれる。規格の 47 は
+            // 「INPUT でも I-O でもないファイルへの READ」であり、閉じたファイルも
+            // そこに入る (85 規格 VII-5, 1.3.5(4)F)。42 は CLOSE のための番号である
+            current = -1;
             return FileStatus.READ_NOT_ALLOWED;
         }
+        // 読めなかったら、直前に読んだレコードは<b>もう現在のものではない</b>。
+        // 規格は REWRITE の前の入出力文が「成功した READ」であることを求めている
+        // (85 規格 VII-51, 4.6.4(5))。消しておかないと、終わりまで読んだあとの
+        // REWRITE が 1 本前のレコードを書き換えてしまう
         if (atEnd) {
             // 終わりまで読んだあとにまた読むのは、位置が定まっていない
+            current = -1;
             return FileStatus.NOT_READABLE;
+        }
+        if (position == damagedAt) {
+            // 切り分けが途中で行き詰まった場所である。ここから先は読めない
+            current = -1;
+            return FileStatus.IO_ERROR;
         }
         if (position >= records.size()) {
             atEnd = true;
+            current = -1;
             return FileStatus.AT_END;
         }
         byte[] record = records.get(position++);
@@ -174,11 +224,14 @@ public final class SequentialDataSet implements DataSet {
      * @return ファイル状態コード
      */
     public String write(byte[] from) {
-        if (mode == null) {
-            return FileStatus.NOT_OPEN;
-        }
-        if (!mode.canWrite()) {
+        // 順編成の WRITE は OUTPUT か EXTEND だけである。I-O で開いたファイルへは
+        // 書けない——読みながら書き戻すのは REWRITE の仕事だからである。
+        // 開いていないのも同じ番号に入る (85 規格 VII-5, 1.3.5(4)G)
+        if (mode != OpenMode.OUTPUT && mode != OpenMode.EXTEND) {
             return FileStatus.WRITE_NOT_ALLOWED;
+        }
+        if (allocation.exceeded(written(), sizeOf(from))) {
+            return FileStatus.NO_SPACE;
         }
         records.add(from.clone());
         position = records.size();
@@ -206,9 +259,11 @@ public final class SequentialDataSet implements DataSet {
         if (current < 0) {
             return FileStatus.NO_CURRENT_RECORD;
         }
-        if (attributes.format() == RecordFormat.FIXED
-                && from.length != records.get(current).length) {
-            // 固定長では長さを変えられない。あとのレコードの位置がずれてしまう
+        if (from.length != records.get(current).length) {
+            // 順編成では<b>長さを変えられない</b>。あとのレコードの位置がずれてしまう。
+            // 可変長でも同じである——規格は「書き換えるレコードの文字位置の数は、
+            // 置き換えられるレコードの文字位置の数と等しくなければならない」と決めて
+            // いる (85 規格 VII-48)。CCVS85 の SQ227A / SQ228A がここを見ている
             return FileStatus.REWRITE_LENGTH;
         }
         records.set(current, from.clone());
@@ -232,7 +287,7 @@ public final class SequentialDataSet implements DataSet {
                         StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
                 attributes.write(path);
             } catch (IOException e) {
-                throw new UncheckedIOException("cannot write " + path, e);
+                throw new DataSetIoException("write", path, e);
             }
         }
         mode = null;
@@ -241,57 +296,30 @@ public final class SequentialDataSet implements DataSet {
         return FileStatus.OK;
     }
 
-    // ---- レコードの切り出し ----
+    // ---- 領域の勘定 ----
 
-    /** バイト列をレコードへ切る。切り方は様式で決まる。 */
-    private List<byte[]> split(byte[] bytes) {
+    /** いま書き出したとしたら何バイトになるか。 */
+    private long written() {
+        long total = 0;
+        for (byte[] record : records) {
+            total += sizeOf(record);
+        }
+        return total;
+    }
+
+    /**
+     * レコード 1 つが占める大きさ。
+     *
+     * <p>様式によって、レコードの中身のほかに付くものが違う。可変長なら {@code RDW} の
+     * 4 バイト、行順なら区切りの 1 バイトである。固定長は中身の長さによらず
+     * <b>つねにレコード長</b>を占める。
+     */
+    private long sizeOf(byte[] record) {
         return switch (attributes.format()) {
-            case FIXED -> splitFixed(bytes);
-            case VARIABLE -> splitVariable(bytes);
-            case LINE -> splitLines(bytes);
+            case FIXED -> attributes.recordLength();
+            case VARIABLE -> record.length + 4L;
+            case LINE -> record.length + 1L;
         };
-    }
-
-    private List<byte[]> splitFixed(byte[] bytes) {
-        List<byte[]> out = new ArrayList<>();
-        int length = attributes.recordLength();
-        for (int at = 0; at < bytes.length; at += length) {
-            out.add(Arrays.copyOfRange(bytes, at, Math.min(at + length, bytes.length)));
-        }
-        return out;
-    }
-
-    /** 可変長は 4 バイトの RDW が先頭に付く。最初の 2 バイトが RDW を含む長さである。 */
-    private static List<byte[]> splitVariable(byte[] bytes) {
-        List<byte[]> out = new ArrayList<>();
-        int at = 0;
-        while (at + 4 <= bytes.length) {
-            int length = ((bytes[at] & 0xFF) << 8) | (bytes[at + 1] & 0xFF);
-            if (length < 4 || at + length > bytes.length) {
-                break;
-            }
-            out.add(Arrays.copyOfRange(bytes, at + 4, at + length));
-            at += length;
-        }
-        return out;
-    }
-
-    /** 行順は改行までが 1 レコードである。改行はコードページのものを使う。 */
-    private List<byte[]> splitLines(byte[] bytes) {
-        byte newline = newline();
-        List<byte[]> out = new ArrayList<>();
-        int start = 0;
-        for (int i = 0; i < bytes.length; i++) {
-            if (bytes[i] == newline) {
-                out.add(Arrays.copyOfRange(bytes, start, i));
-                start = i + 1;
-            }
-        }
-        if (start < bytes.length) {
-            // 最後の改行がなければ、残りも 1 レコードである
-            out.add(Arrays.copyOfRange(bytes, start, bytes.length));
-        }
-        return out;
     }
 
     /** レコードをバイト列へ戻す。 */

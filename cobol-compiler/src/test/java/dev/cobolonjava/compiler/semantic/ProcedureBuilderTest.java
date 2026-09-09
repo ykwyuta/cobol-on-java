@@ -40,9 +40,9 @@ class ProcedureBuilderTest {
         CobolParsing.Result parsed =
                 CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE, sb.toString());
         assertTrue(parsed.succeeded(), () -> "syntax errors: " + parsed.diagnostics());
-        DataDivisionBuilder.Result data = DataDivisionBuilder.build(parsed.tree());
+        DataDivisionBuilder.Result data = DataDivisionBuilder.build(parsed.tree().programUnit(0));
         assertTrue(data.succeeded(), () -> "layout errors: " + data.diagnostics());
-        return ProcedureBuilder.build(parsed.tree(), data.layout());
+        return ProcedureBuilder.build(parsed.tree().programUnit(0), data.layout());
     }
 
     private static ProcedureBuilder.Result buildOk(List<String> storage, String... procedure) {
@@ -52,7 +52,17 @@ class ProcedureBuilderTest {
     }
 
     private static Statement.Move firstMove(ProcedureBuilder.Result result) {
-        return assertInstanceOf(Statement.Move.class, result.statements().get(0));
+        return assertInstanceOf(Statement.Move.class, sentence(result).get(0));
+    }
+
+    /**
+     * 最初の文 (センテンス) の中身。
+     *
+     * <p>段落が持っているのは<b>文の並び</b>である。{@code NEXT SENTENCE} の飛び先を
+     * 決めるのに区切りが要るので、1 つの文は {@link Statement.Sentence} で束ねてある。
+     */
+    private static List<Statement> sentence(ProcedureBuilder.Result result) {
+        return assertInstanceOf(Statement.Sentence.class, result.statements().get(0)).body();
     }
 
     private static final List<String> SIMPLE = List.of(
@@ -109,7 +119,8 @@ class ProcedureBuilderTest {
 
         assertEquals(List.of("MAIN-START", "MAIN-END"),
                 result.paragraphs().stream().map(ProcedureBuilder.Paragraph::name).toList());
-        assertEquals(1, result.paragraphs().get(0).statements().size());
+        assertEquals(1, result.paragraphs().get(0).statements().size(),
+                "段落の中身は文 1 つである");
     }
 
     @Test
@@ -129,7 +140,8 @@ class ProcedureBuilderTest {
     void aSentenceMayHoldSeveralStatements() {
         ProcedureBuilder.Result result = buildOk(SIMPLE,
                 "MOVE WS-A TO WS-B MOVE WS-B TO WS-A.");
-        assertEquals(2, result.statements().size());
+        assertEquals(1, result.statements().size(), "文 (センテンス) は 1 つである");
+        assertEquals(2, sentence(result).size(), "その中に 2 つ並んでいる");
     }
 
     // ---- 名前の修飾 ----
@@ -356,10 +368,11 @@ class ProcedureBuilderTest {
     }
 
     @Test
-    @DisplayName("数字編集項目を数値へ戻す指定は誤りとする (FR-060)")
-    void aNumericEditedItemCannotBeMovedBackToANumericItem() {
-        assertTrue(rejectionOf("MOVE WS-EDIT TO WS-INT.").contains("numeric-edited"),
-                rejectionOf("MOVE WS-EDIT TO WS-INT."));
+    @DisplayName("数字編集項目を数値へ戻せる (FR-060、de-editing)")
+    void aNumericEditedItemCanBeMovedBackToANumericItem() {
+        // 編集は「値 → 見せ方」の変換であり、それを逆にたどる道が規格にある。
+        // ここを「誤り」と断っていた
+        assertEquals(MoveRules.Kind.NUMERIC, kindOf("MOVE WS-EDIT TO WS-INT."));
     }
 
     @Test

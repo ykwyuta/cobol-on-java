@@ -2,11 +2,11 @@ package dev.cobolonjava.job;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.job.jcl.Jcl;
 import dev.cobolonjava.runtime.codepage.CodePages;
-import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -21,16 +21,14 @@ import org.junit.jupiter.api.Test;
 @Tag("V1")
 class JclTest {
 
-    private static final Path BASE = Path.of("data");
-
     private static Job job(String... cards) {
-        Jcl.Result result = Jcl.read(String.join("\n", cards), BASE);
+        Jcl.Result result = Jcl.read(String.join("\n", cards));
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         return result.job();
     }
 
     private static String diagnostics(String... cards) {
-        return Jcl.read(String.join("\n", cards), BASE).diagnostics().toString();
+        return Jcl.read(String.join("\n", cards)).diagnostics().toString();
     }
 
     @Test
@@ -115,8 +113,8 @@ class JclTest {
         assertEquals(3, step.dd().size());
         DdTarget.DataSet dataSet =
                 assertInstanceOf(DdTarget.DataSet.class, step.dd().get(0).target());
-        assertEquals(BASE.resolve("PAY.MASTER"), dataSet.path());
-        assertEquals(Disposition.SHR, dataSet.disposition());
+        assertEquals("PAY.MASTER", dataSet.name());
+        assertEquals(Disposition.Status.SHR, dataSet.disposition().status());
         assertInstanceOf(DdTarget.Sysout.class, step.dd().get(1).target());
         assertInstanceOf(DdTarget.Dummy.class, step.dd().get(2).target());
     }
@@ -129,8 +127,77 @@ class JclTest {
                 "//CHECK    EXEC PGM=PAYCHK",
                 "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG,DELETE)");
 
-        assertEquals(Disposition.NEW, assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).disposition());
+        assertEquals(Disposition.Status.NEW, assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).disposition().status());
+    }
+
+    // ---- SPACE (FR-141) ----
+
+    @Test
+    @DisplayName("SPACE はブロック長かける一次割当を書ける大きさにする (FR-141)")
+    void spaceLimitsWhatCanBeWritten() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG),SPACE=(80,(100))");
+
+        assertEquals(8000L, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("二次割当があれば限りなしになる (FR-141)")
+    void aSecondaryAllocationMeansNoLimit() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG),SPACE=(80,(100,20))");
+
+        // 使い切っても伸ばせる。止まらないのだから限りを設けても意味がない
+        assertEquals(DdAssignment.UNLIMITED, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("TRK と CYL は 3390 の大きさで数える (FR-141)")
+    void trackAndCylinderUnitsAreConverted() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//A        DD   DSN=A,DISP=(NEW,CATLG),SPACE=(TRK,(1))",
+                "//B        DD   DSN=B,DISP=(NEW,CATLG),SPACE=(CYL,(1))");
+
+        assertEquals(56664L, job.steps().get(0).dd().get(0).space());
+        assertEquals(56664L * 15, job.steps().get(0).dd().get(1).space());
+    }
+
+    @Test
+    @DisplayName("大きさを書かない SPACE は限りを設けない (FR-141)")
+    void spaceWithoutAnAmountSetsNoLimit() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG),SPACE=(TRK)");
+
+        assertEquals(DdAssignment.UNLIMITED, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("知らない SPACE の単位は誤りである (FR-131, FR-141)")
+    void anUnknownSpaceUnitIsAnError() {
+        assertTrue(diagnostics(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,SPACE=(REEL,(1))").contains("unknown SPACE unit"));
+    }
+
+    @Test
+    @DisplayName("SPACE を書かなければ限りなしである (FR-141)")
+    void noSpaceMeansNoLimit() {
+        Job job = job(
+                "//PAYROLL  JOB  (ACCT)",
+                "//CHECK    EXEC PGM=PAYCHK",
+                "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG)");
+
+        assertEquals(DdAssignment.UNLIMITED, job.steps().get(0).dd().get(0).space());
     }
 
     @Test
@@ -322,7 +389,7 @@ class JclTest {
         JobScript.Result script = JobScript.read(String.join("\n", List.of(
                 "JOB PAYROLL",
                 "STEP CHECK PGM=PAYCHK",
-                "  DD PAYIN DSN=data/pay.dat",
+                "  DD PAYIN DSN=pay.dat DISP=SHR",
                 "  DD SYSOUT SYSOUT",
                 "STEP REPORT PGM=PAYRPT PARM=202609",
                 "  WHEN NOT RC CHECK > 4",
@@ -330,5 +397,106 @@ class JclTest {
         assertTrue(script.succeeded(), () -> script.diagnostics().toString());
 
         assertEquals(script.job(), fromJcl);
+    }
+
+    // ---- 名前と場所 (要件 FR-113, FR-131、暫定判断 P-045 の解消) ----
+
+    @Test
+    @DisplayName("DSN= は名前であって場所ではない (FR-131)")
+    void aDsnIsANameNotAPlace() {
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//IN       DD   DSN=PAY.MASTER,DISP=SHR");
+
+        // どこにあるかを引くのは目録の仕事である。JCL は置き場を知らない
+        DdTarget.DataSet dataSet = assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target());
+        assertEquals("PAY.MASTER", dataSet.name());
+        assertNull(dataSet.member());
+        assertNull(dataSet.serial());
+    }
+
+    @Test
+    @DisplayName("DSN=ライブラリ(メンバ) を読む (FR-113)")
+    void aMemberIsReadFromTheDsn() {
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//LIB      DD   DSN=SYS1.PROCLIB(PAYPROC),DISP=SHR");
+
+        DdTarget.DataSet dataSet = assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target());
+        assertEquals("SYS1.PROCLIB", dataSet.name());
+        assertEquals("PAYPROC", dataSet.member());
+        assertTrue(dataSet.partitioned());
+    }
+
+    @Test
+    @DisplayName("VOL=SER= を読む (FR-131)")
+    void aVolumeSerialIsRead() {
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//IN       DD   DSN=PAY.WORK,DISP=SHR,VOL=SER=WORK01",
+                // 括弧で囲んだ書き方でも、読むのは SER= だけである
+                "//IN2      DD   DSN=PAY.OLD,DISP=SHR,VOL=(PRIVATE,,,SER=(WORK02))");
+
+        assertEquals("WORK01", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).serial());
+        assertEquals("WORK02", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(1).target()).serial());
+    }
+
+    @Test
+    @DisplayName("SER= の無い VOL= は誤りである (FR-131)")
+    void aVolumeWithoutASerialIsAnError() {
+        assertTrue(diagnostics(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//IN       DD   DSN=PAY.WORK,DISP=SHR,VOL=REF=*.OTHER")
+                .contains("VOL=REF is not supported yet"));
+    }
+
+    @Test
+    @DisplayName("世代番号はメンバ名ではない (FR-113, FR-114)")
+    void aGenerationDataGroupIsNotAMember() {
+        // メンバ名として扱うと、(+1) という名前のメンバを作ってしまう
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//IN       DD   DSN=PAY.HISTORY(+1),DISP=(NEW,CATLG)");
+
+        DdTarget.DataSet target = assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target());
+        assertEquals("PAY.HISTORY", target.name());
+        assertNull(target.member());
+        assertEquals(1, target.generation());
+    }
+
+    @Test
+    @DisplayName("相対世代は読む段では直さない (FR-114)")
+    void aRelativeGenerationIsKeptRelative() {
+        // 絶対名へ直すのはジョブの初めである。読む段では目録が見えない
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//OLD      DD   DSN=PAY.HISTORY(0),DISP=SHR",
+                "//BACK     DD   DSN=PAY.HISTORY(-2),DISP=SHR");
+
+        assertEquals(0, ((DdTarget.DataSet) job.steps().get(0).dd().get(0).target()).generation());
+        assertEquals(-2, ((DdTarget.DataSet) job.steps().get(0).dd().get(1).target()).generation());
+    }
+
+    @Test
+    @DisplayName("桁の多すぎる数字はメンバ名として弾かれる (FR-113, FR-114)")
+    void tooManyDigitsIsNotAGeneration() {
+        // ホストが数えるのは ±255 までである。それより長ければメンバ名として見るが、
+        // メンバ名は数字で始まれないので、どちらに転んでも通らない
+        assertTrue(diagnostics(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=P",
+                "//IN       DD   DSN=PAY.HISTORY(12345),DISP=SHR")
+                .contains("invalid member name"));
     }
 }

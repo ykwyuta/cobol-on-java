@@ -39,23 +39,28 @@ public final class ReferenceResolver {
      * 一意名を解決する。解決できなければ誤りを記録して {@code null} を返す。
      */
     public DataReference resolve(CobolParser.IdentifierContext context) {
+        return resolve(context, false);
+    }
+
+    /**
+     * 一意名を解決する。
+     *
+     * @param allowAll {@code ALL} と書いた添字を許すか。組み込み関数の引数だけである
+     */
+    public DataReference resolve(CobolParser.IdentifierContext context, boolean allowAll) {
         Origin origin = originOf(context);
         DataItem item = resolveName(context.qualifiedDataName(), origin);
         if (item == null) {
             return null;
         }
 
-        List<DataReference.Subscript> subscripts = new ArrayList<>();
-        if (context.subscripts() != null) {
-            for (CobolParser.SubscriptContext subscript : context.subscripts().subscript()) {
-                DataReference.Subscript resolved = resolveSubscript(subscript, origin);
-                if (resolved == null) {
-                    return null;
-                }
-                subscripts.add(resolved);
-            }
+        List<DataReference.Subscript> subscripts = subscriptsOf(context, origin);
+        if (subscripts == null || !checkSubscripts(item, subscripts, origin)) {
+            return null;
         }
-        if (!checkSubscripts(item, subscripts, origin)) {
+        if (!allowAll && subscripts.contains(new DataReference.Subscript.All())) {
+            report(origin, "ALL may be written as a subscript only in an intrinsic"
+                    + " function argument");
             return null;
         }
 
@@ -69,7 +74,122 @@ public final class ReferenceResolver {
 
         DataReference reference = new DataReference(item, subscripts, refMod, origin);
         checkReferenceModification(reference, origin);
+        if (!traces.isEmpty()) {
+            traces.peek().add(new Traced(reference, writtenName(context.qualifiedDataName())));
+        }
         return reference;
+    }
+
+    /**
+     * 控えた一意名 1 個。
+     *
+     * @param written 書かれたとおりの名前。修飾は {@code OF} でつなぐ (要件 FR-193)
+     */
+    public record Traced(DataReference reference, String written) {
+    }
+
+    /** 修飾を {@code OF} でつないだ、書かれたとおりの名前。 */
+    public static String writtenName(CobolParser.QualifiedDataNameContext context) {
+        StringBuilder text = new StringBuilder();
+        for (CobolParser.DataNameContext name : context.dataName()) {
+            if (!text.isEmpty()) {
+                text.append(" OF ");
+            }
+            text.append(name.getText().toUpperCase(Locale.ROOT));
+        }
+        return text.toString();
+    }
+
+    /**
+     * 文 1 つが<b>書いたとおりに指した</b>一意名を控える (要件 FR-193)。
+     *
+     * <p>{@code USE FOR DEBUGGING ON 一意名} は、その名前を指した文のあとで節を動かす。
+     * どの名前を指したかを知っているのは<b>解決するところ</b>だけなので、ここで控える。
+     *
+     * <p>入れ子の文は自分の控え帳を積む。{@code IF} の条件はその {@code IF} のもので
+     * あり、中に書いた文のものではない。名前で照らし合わせると取り違えるので、
+     * 積み重ねで分ける。
+     */
+    private final java.util.Deque<List<Traced>> traces = new java.util.ArrayDeque<>();
+
+    /** 控え帳を 1 枚積む。 */
+    public void pushTrace() {
+        traces.push(new ArrayList<>());
+    }
+
+    /** 積んだ控え帳を降ろす。 */
+    public List<Traced> popTrace() {
+        return traces.pop();
+    }
+
+    /**
+     * 一意名として書かれたが、ここを通らずに引き当てたものを控える。
+     *
+     * <p>{@code WRITE レコード名} のように、名前から項目を直に引くところがある。
+     * 見張りから見れば<b>書いたとおりに指した名前</b>なので、控え帳へ入れる。
+     */
+    public void trace(DataReference reference) {
+        if (!traces.isEmpty()) {
+            traces.peek().add(new Traced(reference, reference.item().name()));
+        }
+    }
+
+    /**
+     * 名前で引けない項目への参照を、書かれた添字と合わせて作る。
+     *
+     * <p>条件名 (88 レベル) が使う。条件名そのものは記憶域を持たないので
+     * {@link #resolveName} では引けないが、<b>添字は条件名のほうに書かれる</b>。
+     * {@code IF CN1 (1)} の {@code (1)} は親の表への添字である。
+     *
+     * @return 添字の数や範囲が合わなければ {@code null}
+     */
+    public DataReference resolveAs(DataItem item, CobolParser.IdentifierContext context) {
+        Origin origin = originOf(context);
+        List<DataReference.Subscript> subscripts = subscriptsOf(context, origin);
+        if (subscripts == null || !checkSubscripts(item, subscripts, origin)) {
+            return null;
+        }
+        return new DataReference(item, subscripts, null, origin);
+    }
+
+    /**
+     * 書かれた添字を解く。
+     *
+     * @return 1 つでも解けなければ {@code null}
+     */
+    private List<DataReference.Subscript> subscriptsOf(CobolParser.IdentifierContext context,
+                                                       Origin origin) {
+        List<DataReference.Subscript> subscripts = new ArrayList<>();
+        if (context.subscripts() != null) {
+            for (CobolParser.SubscriptContext subscript : context.subscripts().subscript()) {
+                DataReference.Subscript resolved = resolveSubscript(subscript, origin);
+                if (resolved == null) {
+                    return null;
+                }
+                subscripts.add(resolved);
+            }
+        }
+        return subscripts;
+    }
+
+    /**
+     * 名前だけで項目 1 個を引く。
+     *
+     * <p>ソースに書かれない名前を引くためにある。{@code LINAGE-COUNTER} は
+     * {@code FD} に {@code LINAGE} を書いた副作用として存在する項目であり、
+     * データ部のどこにも書かれていない。
+     */
+    public DataReference resolveName(String name, Origin origin) {
+        List<DataItem> found = layout.findAll(name);
+        if (found.isEmpty()) {
+            report(origin, "undefined data item: " + name);
+            return null;
+        }
+        if (found.size() > 1) {
+            report(origin, name + " is ambiguous; qualify it with OF or IN");
+            return null;
+        }
+        return new DataReference(found.get(0), List.of(), null, origin);
     }
 
     /** 修飾された名前から項目 1 個を決める。 */
@@ -113,6 +233,36 @@ public final class ReferenceResolver {
         return found.get(0);
     }
 
+    /**
+     * 条件名の修飾子が、条件変数から外へ向かって現れるか。
+     *
+     * <p>データ名の修飾と違い、<b>条件変数そのものから数える</b>。
+     * {@code EQUALS-M OF TABLE-ITEM} の {@code TABLE-ITEM} は条件変数の名前であり、
+     * その祖先ではないからである。{@code EQUALS-M OF TABLE-LEVEL-5} のように
+     * 祖先で修飾することもでき、途中のレベルは飛ばしてよい。
+     *
+     * <p>同じ条件名を複数の表に書ける (NC246A は 4 つの表に同じ 88 を書いている)。
+     * 修飾で絞らないと、いちばん先に見つかった表を黙って使ってしまう。
+     */
+    public static boolean conditionQualifiersMatch(DataItem owner,
+                                                   CobolParser.QualifiedDataNameContext context) {
+        List<String> qualifiers = new ArrayList<>();
+        for (int i = 1; i < context.dataName().size(); i++) {
+            qualifiers.add(context.dataName(i).getText().toUpperCase(Locale.ROOT));
+        }
+        DataItem current = owner;
+        for (String qualifier : qualifiers) {
+            while (current != null && !qualifier.equals(current.name())) {
+                current = current.parent();
+            }
+            if (current == null) {
+                return false;
+            }
+            current = current.parent();
+        }
+        return true;
+    }
+
     /** 修飾子が、外へ向かう順に祖先として現れるか。途中のレベルは飛ばしてよい。 */
     private static boolean qualifiersMatch(DataItem item, List<String> qualifiers) {
         DataItem current = item.parent();
@@ -130,21 +280,73 @@ public final class ReferenceResolver {
 
     private DataReference.Subscript resolveSubscript(CobolParser.SubscriptContext context,
                                                      Origin origin) {
-        if (context.NUMBER() != null) {
-            try {
-                return new DataReference.Subscript.Constant(
-                        Integer.parseInt(context.NUMBER().getText()));
-            } catch (NumberFormatException e) {
-                report(origin, "a subscript must be an integer: " + context.NUMBER().getText());
-                return null;
-            }
+        if (context.ALL() != null) {
+            return new DataReference.Subscript.All();
+        }
+        if (!context.NUMBER().isEmpty()) {
+            Integer value = foldedConstant(context, origin);
+            return value == null ? null : new DataReference.Subscript.Constant(value);
         }
         DataItem item = resolveName(context.qualifiedDataName(), origin);
         if (item == null) {
             return null;
         }
+        Integer offset = offsetOf(context.relativeOffset(), origin);
+        if (offset == null) {
+            return null;
+        }
         return new DataReference.Subscript.Variable(
-                new DataReference(item, List.of(), null, origin));
+                new DataReference(item, List.of(), null, origin), offset);
+    }
+
+    /**
+     * 相対指定のずれを読む (要件 FR-025)。
+     *
+     * @return 書かれていなければ 0。読めなければ {@code null}
+     */
+    /**
+     * 定数どうしの足し引きを畳む。
+     *
+     * <p>{@code TEST-1-DATA (10 - 7: 6 + 2 - 5)} のように、添字と部分参照には
+     * 算術式を書ける (NC224A)。値が翻訳時に決まるなら、畳んで 1 つの数にしてしまえば
+     * <b>ここから先の道は何も変わらない</b>。
+     *
+     * @return 畳めなければ {@code null}
+     */
+    private Integer foldedConstant(CobolParser.SubscriptContext context, Origin origin) {
+        // 演算子の種類ごとに数えると「+ のあとの -」を取り違える。子を書かれた順に見る
+        int value = 0;
+        boolean subtract = false;
+        boolean first = true;
+        try {
+            for (int i = 0; i < context.getChildCount(); i++) {
+                String text = context.getChild(i).getText();
+                if (text.equals("+") || text.equals("-")) {
+                    subtract = text.equals("-");
+                    continue;
+                }
+                int next = Integer.parseInt(text);
+                value = first ? next : (subtract ? value - next : value + next);
+                first = false;
+            }
+        } catch (NumberFormatException e) {
+            report(origin, "a subscript must be an integer: " + context.getText());
+            return null;
+        }
+        return value;
+    }
+
+    private Integer offsetOf(CobolParser.RelativeOffsetContext context, Origin origin) {
+        if (context == null) {
+            return 0;
+        }
+        try {
+            int magnitude = Integer.parseInt(context.NUMBER().getText());
+            return context.MINUS_SIGN() != null ? -magnitude : magnitude;
+        } catch (NumberFormatException e) {
+            report(origin, "a relative subscript must be an integer: " + context.getText());
+            return null;
+        }
     }
 
     private boolean checkSubscripts(DataItem item, List<DataReference.Subscript> subscripts,

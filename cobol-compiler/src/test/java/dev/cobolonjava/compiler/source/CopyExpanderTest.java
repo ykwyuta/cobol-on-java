@@ -74,6 +74,42 @@ class CopyExpanderTest {
     }
 
     @Test
+    @DisplayName("置換の相手は修飾できる (FR-090)")
+    void aReplacementOperandMayBeQualified() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("MOVE FALSE-DATA TO AREA-1."));
+
+        // 一意名は 1 語とは限らない。1 語しか読まないと続く OF を次の相手と読んでしまい、
+        // 「BY が無い」と断ってしまう (SM202A)
+        assertEquals("MOVE TRUE-Q-04 OF TRUE-Q-03 IN TRUE-Q-02 TO AREA-1.",
+                expand(resolver,
+                        "COPY REC REPLACING FALSE-DATA BY TRUE-Q-04 OF TRUE-Q-03",
+                        "   IN TRUE-Q-02.").text());
+    }
+
+    @Test
+    @DisplayName("置換の相手に添字を書ける (FR-090)")
+    void aReplacementOperandMayBeSubscripted() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("MOVE FALSE-DATA TO AREA-3."));
+
+        assertEquals("MOVE Z (2, 1, 1) TO AREA-3.",
+                expand(resolver, "COPY REC REPLACING FALSE-DATA BY Z (2, 1, 1).").text());
+    }
+
+    @Test
+    @DisplayName("数の途中の小数点は区切りではない (FR-090)")
+    void aDecimalPointInsideANumberIsNotASeparator() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("REC", source("MOVE FALSE-DATA TO AREA-4. GO TO NEXT-PARA."));
+
+        // 「+000004.99.」の最初の点は数の一部である。切ってしまうと残った「.99」が
+        // 次の文へ紛れ込む (SM202A がそれで壊れていた)
+        assertEquals("MOVE +000004.99 TO AREA-4. GO TO NEXT-PARA.",
+                expand(resolver, "COPY REC REPLACING FALSE-DATA BY +000004.99.").text());
+    }
+
+    @Test
     @DisplayName("擬似テキストは語の並びを指定する (FR-090)")
     void pseudoTextMatchesASequenceOfWords() {
         MapCopyBookResolver resolver = new MapCopyBookResolver()
@@ -216,6 +252,56 @@ class CopyExpanderTest {
                 .put("CUSTREC", source("01 OLD-REC."));
         assertEquals("01 NEW-REC.", expand(resolver,
                 "COPY CUSTREC SUPPRESS REPLACING ==OLD-REC== BY ==NEW-REC==.").text());
+    }
+
+    /** 7 桁目に {@code D} を置いたデバッグ行。 */
+    private static String debugLine(String content) {
+        return "      D" + content;
+    }
+
+    @Test
+    @DisplayName("原本のデバッグ行の語も置換の照合に加わる (FR-090, FR-193)")
+    void wordsOnADebugLineTakePartInTheMatching() {
+        // 85 規格 XII 2.4 は「7 桁目の D が無いものとして照合に参加する」と決めている。
+        // 注釈行 (PST-TEST-007) とは扱いが違う (SM206A PST-TEST-009)
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("KP008",
+                line("PERFORM FAIL.") + "\n"
+                + debugLine("    THIS IS GARBAGE.") + "\n"
+                + line("SUBTRACT 1 FROM ERROR-COUNTER.") + "\n");
+
+        assertEquals("PERFORM PASS.", expand(resolver,
+                "COPY KP008 REPLACING",
+                "==FAIL. THIS IS GARBAGE. SUBTRACT 1 FROM ERROR-COUNTER. ==",
+                "BY ==PASS. ==.").text());
+    }
+
+    @Test
+    @DisplayName("置換で消えなかったデバッグ行は落とす (FR-090, FR-193)")
+    void aDebugLineThatSurvivesTheReplacementIsDropped() {
+        // 照合のあいだだけ生かしておく。WITH DEBUGGING MODE が書かれていなければ
+        // デバッグ行は注釈と同じであり、ふつうの文としてプログラムへ入ってはならない
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("KP008",
+                line("PERFORM FAIL.") + "\n"
+                + debugLine("    THIS IS GARBAGE.") + "\n"
+                + line("SUBTRACT 1 FROM ERROR-COUNTER.") + "\n");
+
+        assertEquals("PERFORM FAIL. SUBTRACT 1 FROM ERROR-COUNTER.",
+                expand(resolver, "COPY KP008.").text());
+    }
+
+    @Test
+    @DisplayName("注釈行の語は照合に加わらない (FR-090)")
+    void wordsOnACommentLineDoNotTakePartInTheMatching() {
+        // KP007 がこれを試している (SM206A PST-TEST-007)
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("KP007",
+                line("PERFORM FAIL.") + "\n"
+                + "      *    THIS COMMENT SHOULD NOT AFFECT MATCHING." + "\n"
+                + line("SUBTRACT 1 FROM ERROR-COUNTER.") + "\n");
+
+        assertEquals("PERFORM PASS.", expand(resolver,
+                "COPY KP007 REPLACING",
+                "==FAIL. SUBTRACT 1 FROM ERROR-COUNTER. ==",
+                "BY ==PASS. ==.").text());
     }
 
     @Test

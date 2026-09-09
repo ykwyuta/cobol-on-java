@@ -64,6 +64,9 @@ public final class NumericEditor {
         int decimalPointIndex = indexOf(cells, Kind.DECIMAL_POINT);
         int suppressEnd = lastSuppressibleBefore(cells, decimalPointIndex);
         int firstFloat = indexOf(cells, Kind.FLOAT);
+        // 抑制される並びが<b>どこから始まるか</b>。その左にある挿入文字は固定挿入で
+        // あり、抑制されない。$**.99 の $ がそれである (NC170A の MPY-TEST-F2-20)
+        int firstSuppressible = firstSuppressible(cells);
 
         int di = 0;
         boolean significant = false;
@@ -101,7 +104,7 @@ public final class NumericEditor {
                     }
                 }
                 case INSERT -> {
-                    if (!significant && i < suppressEnd) {
+                    if (!significant && i > firstSuppressible && i <= suppressEnd) {
                         suppressed[i] = true;
                         text[i] = String.valueOf(fill);
                     } else {
@@ -109,7 +112,9 @@ public final class NumericEditor {
                     }
                 }
                 case DECIMAL_POINT -> {
-                    text[i] = ".";
+                    // 小数点として書かれた文字をそのまま出す。
+                    // DECIMAL-POINT IS COMMA ならコンマである
+                    text[i] = String.valueOf(c.literal());
                     significant = true;
                 }
                 case SIGN -> text[i] = String.valueOf(signChar(c.literal(), negative));
@@ -120,17 +125,22 @@ public final class NumericEditor {
             }
         }
 
-        // 浮動挿入記号は、抑制された浮動位置のうち最も右に置く
+        // 浮動挿入記号は、抑制された位置のうち最も右に置く。
+        // <b>浮動の並びのすぐ右にある挿入文字も置き場になる</b> ($$$,999.99 の コンマ)
         if (firstFloat >= 0) {
             int pos = -1;
-            for (int i = 0; i < n; i++) {
-                Cell c = cells.get(i);
-                if (c.kind() == Kind.FLOAT && suppressed[i]) {
+            for (int i = firstFloat; i < n && i <= suppressEnd; i++) {
+                Kind kind = cells.get(i).kind();
+                if (suppressed[i] && (kind == Kind.FLOAT || kind == Kind.INSERT)) {
                     pos = i;
                 }
             }
             if (pos >= 0) {
-                text[pos] = String.valueOf(signChar(cells.get(pos).literal(), negative));
+                // 置き場が挿入文字なら、浮動の記号そのものを出す
+                char symbol = cells.get(pos).kind() == Kind.FLOAT
+                        ? cells.get(pos).literal()
+                        : cells.get(firstFloat).literal();
+                text[pos] = String.valueOf(signChar(symbol, negative));
             }
         }
 
@@ -181,7 +191,31 @@ public final class NumericEditor {
         return -1;
     }
 
-    /** 抑制の対象となる最後のセルの位置。抑制は小数点を越えない。 */
+    /**
+     * 抑制の対象となる最後のセルの位置。抑制は小数点を越えない。
+     *
+     * <p><b>抑制の並びのすぐ右にある挿入文字も、抑制の対象である</b>。規格は
+     * 「浮動挿入の並びの中、またはそのすぐ右にある単純挿入文字は、その並びの一部である」
+     * と決めている。{@code $$$,999.99} に 987.65 を入れると {@code    $987.65} になり、
+     * コンマは消えて、その位置に通貨記号が来る (NC105A の EDIT-TEST-F1-124)。
+     * 消さないと {@code   $,987.65} になる。
+     */
+    /**
+     * 抑制される並びの先頭の位置。無ければ {@link Integer#MAX_VALUE}。
+     *
+     * <p>その左にある挿入文字は<b>固定挿入</b>である。規格は「抑制の並びの中、または
+     * その右にある挿入文字」だけを抑制すると決めている。
+     */
+    private static int firstSuppressible(List<Cell> cells) {
+        for (int i = 0; i < cells.size(); i++) {
+            Kind k = cells.get(i).kind();
+            if (k == Kind.SUPPRESS || k == Kind.FLOAT) {
+                return i;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
     private static int lastSuppressibleBefore(List<Cell> cells, int decimalPointIndex) {
         int last = -1;
         for (int i = 0; i < cells.size(); i++) {
@@ -192,6 +226,18 @@ public final class NumericEditor {
             if (k == Kind.SUPPRESS || k == Kind.FLOAT) {
                 last = i;
             }
+        }
+        if (last < 0) {
+            return last;
+        }
+        for (int i = last + 1; i < cells.size(); i++) {
+            if (decimalPointIndex >= 0 && i >= decimalPointIndex) {
+                break;
+            }
+            if (cells.get(i).kind() != Kind.INSERT) {
+                break;
+            }
+            last = i;
         }
         return last;
     }

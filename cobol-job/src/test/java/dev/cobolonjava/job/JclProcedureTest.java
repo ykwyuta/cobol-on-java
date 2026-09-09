@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.cobolonjava.job.jcl.Jcl;
 import dev.cobolonjava.job.jcl.JclLibrary;
 import dev.cobolonjava.runtime.codepage.CodePages;
-import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -22,8 +21,6 @@ import org.junit.jupiter.api.Test;
  */
 @Tag("V1")
 class JclProcedureTest {
-
-    private static final Path BASE = Path.of("data");
 
     private static final JclLibrary LIBRARY = JclLibrary.of(Map.of(
             "COPYPROC", String.join("\n", List.of(
@@ -46,13 +43,13 @@ class JclProcedureTest {
                     "//SYSUDUMP DD   DUMMY"))));
 
     private static Job job(String... cards) {
-        Jcl.Result result = Jcl.read(String.join("\n", cards), BASE, LIBRARY);
+        Jcl.Result result = Jcl.read(String.join("\n", cards), LIBRARY);
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         return result.job();
     }
 
     private static String diagnostics(String... cards) {
-        return Jcl.read(String.join("\n", cards), BASE, LIBRARY).diagnostics().toString();
+        return Jcl.read(String.join("\n", cards), LIBRARY).diagnostics().toString();
     }
 
     @Test
@@ -66,8 +63,8 @@ class JclProcedureTest {
         Step step = job.steps().get(0);
         assertEquals("STEP1", step.name());
         assertEquals("IEBGENER", step.program());
-        assertEquals(BASE.resolve("PAY.IN"),
-                assertInstanceOf(DdTarget.DataSet.class, step.dd().get(0).target()).path());
+        assertEquals("PAY.IN",
+                assertInstanceOf(DdTarget.DataSet.class, step.dd().get(0).target()).name());
     }
 
     @Test
@@ -87,8 +84,8 @@ class JclProcedureTest {
                 "//PAYROLL  JOB  (ACCT)",
                 "//STEP1    EXEC COPYPROC");
 
-        assertEquals(BASE.resolve("DEFAULT"), assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).path());
+        assertEquals("DEFAULT", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).name());
     }
 
     @Test
@@ -128,8 +125,8 @@ class JclProcedureTest {
                 "//         SET  MEMBER=SET.VALUE",
                 "//STEP1    EXEC COPYPROC");
 
-        assertEquals(BASE.resolve("SET.VALUE"), assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).path());
+        assertEquals("SET.VALUE", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).name());
     }
 
     @Test
@@ -140,8 +137,8 @@ class JclProcedureTest {
                 "//         SET  MEMBER=SET.VALUE",
                 "//STEP1    EXEC COPYPROC,MEMBER=CALL.VALUE");
 
-        assertEquals(BASE.resolve("CALL.VALUE"), assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).path());
+        assertEquals("CALL.VALUE", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).name());
     }
 
     @Test
@@ -153,20 +150,21 @@ class JclProcedureTest {
                 "//STEP1    EXEC PGM=P",
                 "//IN       DD   DSN=&PREFIX..MASTER,DISP=SHR");
 
-        assertEquals(BASE.resolve("PAY.MASTER"), assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).path());
+        assertEquals("PAY.MASTER", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).name());
     }
 
     @Test
-    @DisplayName("&& は 1 つの & を表す (FR-131)")
-    void doubledAmpersandsAreLiteral() {
+    @DisplayName("&& はシンボリックではなく一時データセットになる (FR-131, FR-133)")
+    void doubledAmpersandsMakeATemporaryDataSet() {
         Job job = job(
                 "//PAYROLL  JOB  (ACCT)",
                 "//STEP1    EXEC PGM=P",
                 "//WORK     DD   DSN=&&TEMP,DISP=NEW");
 
-        assertEquals(BASE.resolve("&TEMP"), assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(0).dd().get(0).target()).path());
+        // && は展開の段で 1 つの & になり、先頭の & が一時データセットを表す
+        assertEquals("TEMP", assertInstanceOf(DdTarget.Temporary.class,
+                job.steps().get(0).dd().get(0).target()).name());
     }
 
     @Test
@@ -180,8 +178,8 @@ class JclProcedureTest {
         Step step = job.steps().get(0);
         assertEquals(2, step.dd().size());
         assertEquals("SYSUT2", step.dd().get(1).name());
-        assertEquals(BASE.resolve("PAY.OUT"),
-                assertInstanceOf(DdTarget.DataSet.class, step.dd().get(1).target()).path());
+        assertEquals("PAY.OUT",
+                assertInstanceOf(DdTarget.DataSet.class, step.dd().get(1).target()).name());
     }
 
     @Test
@@ -210,8 +208,8 @@ class JclProcedureTest {
                 "//SECOND.OUT  DD DSN=ONLY.SECOND,DISP=SHR");
 
         assertInstanceOf(DdTarget.Sysout.class, job.steps().get(0).dd().get(0).target());
-        assertEquals(BASE.resolve("ONLY.SECOND"), assertInstanceOf(DdTarget.DataSet.class,
-                job.steps().get(1).dd().get(0).target()).path());
+        assertEquals("ONLY.SECOND", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(1).dd().get(0).target()).name());
     }
 
     @Test

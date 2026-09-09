@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.source;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -99,6 +100,31 @@ class FixedFormatReaderTest {
     }
 
     @Test
+    @DisplayName("2 個 1 組の引用符は行の境目で分かれることがある (FR-003)")
+    void adoubledQuoteCanBeSplitAcrossTheLineBoundary() {
+        // CCVS85 の NC215A がこう書いている。72 桁目の引用符を「定数を閉じた」と
+        // 読むと次の行が宙に浮く。正しくは 72 桁目が組の 1 個目、継続行の B 領域の
+        // 1 個目が<b>再開の印</b>、2 個目が組の 2 個目である。3 個で 1 文字を表す
+        String body = "A".repeat(54);
+        // 本文 65 桁ちょうど。最後の引用符が 72 桁目に来る
+        String first = "    MOVE '" + body + "'";
+        assertEquals(65, first.length());
+        assertEquals("MOVE '" + body + "''CD' TO X.", normalize(
+                line(' ', first),
+                line('-', "    ''CD' TO X.")));
+    }
+
+    @Test
+    @DisplayName("72 桁目より手前で閉じていれば、継続行は次の定数を始める (FR-003)")
+    void aliteralClosedBeforeTheMarginIsNotContinued() {
+        // 組の片割れと読むのは<b>ちょうど 72 桁目</b>のときだけである。手前で
+        // 閉じていれば普通に閉じた定数であり、継続行は語を継ぐだけになる
+        assertEquals("MOVE 'AB' TO X.'CD' TO Y.", normalize(
+                line(' ', "    MOVE 'AB' TO X."),
+                line('-', "    'CD' TO Y.")));
+    }
+
+    @Test
     @DisplayName("継続行が引用符で再開しなければ誤りとする (FR-003)")
     void continuationMustResumeWithAQuote() {
         SourceFormatException e = assertThrows(SourceFormatException.class, () -> normalize(
@@ -164,5 +190,48 @@ class FixedFormatReaderTest {
     void aCommentIndicatorInsideALiteralIsNotAComment() {
         // 落としてしまうと、黙って別のソースになる
         assertEquals("MOVE '*>' TO B.", normalize(line(' ', "    MOVE '*>' TO B.")));
+    }
+
+    // ---- 見出し部の注記段落 (FR-002、暫定判断 P-064) ----
+
+    @Test
+    @DisplayName("注記段落は中身ごと落ちる (FR-002)")
+    void aCommentEntryParagraphIsDropped() {
+        // AUTHOR などの 5 つは COBOL の決まりで注記である。中身に文法は無い
+        NormalizedSource source = new FixedFormatReader(false).normalize("MAIN.cbl", String.join("\n",
+                "000100 IDENTIFICATION DIVISION.",
+                "000200 PROGRAM-ID. MAIN.",
+                "000300 AUTHOR.",
+                "000400     FEDERAL COMPILER TESTING CENTER.",
+                "000500 ENVIRONMENT DIVISION."));
+
+        assertFalse(source.text().contains("AUTHOR"), source.text());
+        assertFalse(source.text().contains("FEDERAL"), source.text());
+        assertTrue(source.text().contains("ENVIRONMENT DIVISION"), source.text());
+    }
+
+    @Test
+    @DisplayName("注記の終わりを決めるのは語ではなく桁である (FR-002)")
+    void theEntryEndsWhereAreaAStarts() {
+        // 注記の中に DATA と書いてあっても、それは部の見出しではない。
+        // B 領域に書かれている限り注記の続きである
+        NormalizedSource source = new FixedFormatReader(false).normalize("MAIN.cbl", String.join("\n",
+                "000100 INSTALLATION.",
+                "000200     GENERAL SERVICES ADMINISTRATION",
+                "000300     AUTOMATED DATA AND TELECOMMUNICATION SERVICE.",
+                "000400 DATA DIVISION."));
+
+        assertFalse(source.text().contains("TELECOMMUNICATION"), source.text());
+        assertTrue(source.text().contains("DATA DIVISION"), source.text());
+    }
+
+    @Test
+    @DisplayName("注記でない段落は落とさない (FR-002)")
+    void anOrdinaryParagraphSurvives() {
+        NormalizedSource source = new FixedFormatReader(false).normalize("MAIN.cbl", String.join("\n",
+                "000100 PROGRAM-ID. MAIN.",
+                "000200     DISPLAY \"X\"."));
+
+        assertTrue(source.text().contains("PROGRAM-ID"), source.text());
     }
 }

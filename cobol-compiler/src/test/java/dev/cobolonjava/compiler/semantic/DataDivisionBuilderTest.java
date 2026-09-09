@@ -37,7 +37,7 @@ class DataDivisionBuilderTest {
         CobolParsing.Result parsed =
                 CobolParsing.parse(Preprocessor.withoutCopybooks(), FILE, sb.toString());
         assertTrue(parsed.succeeded(), () -> "syntax errors: " + parsed.diagnostics());
-        return DataDivisionBuilder.build(parsed.tree());
+        return DataDivisionBuilder.build(parsed.tree().programUnit(0));
     }
 
     private static DataLayout layoutOf(String... entries) {
@@ -178,6 +178,42 @@ class DataDivisionBuilderTest {
     }
 
     @Test
+    @DisplayName("群項目に書いた SIGN は下位へ効く (FR-031)")
+    void aSignClauseOnAGroupReachesItsSubordinates() {
+        DataLayout layout = layoutOf(
+                "01 WS-REC SIGN IS LEADING SEPARATE.",
+                "   05 WS-A PIC S9(5).",
+                "   05 WS-B PIC 9(5).",
+                "   05 WS-C PIC X(5).");
+
+        assertEquals(6, item(layout, "WS-A").length());
+        assertEquals(SignPosition.LEADING_SEPARATE, item(layout, "WS-A").signPosition());
+        // 符号なしの数字項目と英数字項目には効かない
+        assertEquals(5, item(layout, "WS-B").length());
+        assertEquals(SignPosition.UNSIGNED, item(layout, "WS-B").signPosition());
+        assertEquals(5, item(layout, "WS-C").length());
+    }
+
+    @Test
+    @DisplayName("内側に書いた SIGN が外側より勝つ (FR-031)")
+    void anInnerSignClauseOverridesTheOuterOne() {
+        // NC116A SIG-TEST-GF-17 が入れ子の群項目でこれを試している (85 規格 5.12.4 GR2)
+        DataLayout layout = layoutOf(
+                "01 WS-REC SIGN IS TRAILING.",
+                "   05 WS-A PIC S9(4).",
+                "   05 WS-GROUP SIGN IS LEADING SEPARATE.",
+                "      10 WS-C PIC S9(4).",
+                "   05 WS-D PIC S9(4) SIGN IS TRAILING SEPARATE.");
+
+        assertEquals(4, item(layout, "WS-A").length());
+        assertEquals(SignPosition.TRAILING, item(layout, "WS-A").signPosition());
+        assertEquals(5, item(layout, "WS-C").length());
+        assertEquals(SignPosition.LEADING_SEPARATE, item(layout, "WS-C").signPosition());
+        assertEquals(5, item(layout, "WS-D").length());
+        assertEquals(SignPosition.TRAILING_SEPARATE, item(layout, "WS-D").signPosition());
+    }
+
+    @Test
     @DisplayName("PICTURE を持たない浮動小数点項目は 4 / 8 バイトである (FR-032)")
     void floatingPointItemsHaveAFixedLength() {
         DataLayout layout = layoutOf(
@@ -291,5 +327,61 @@ class DataDivisionBuilderTest {
         Diagnostic first = result.diagnostics().get(0);
         assertEquals(FILE, first.origin().fileName());
         assertEquals(7, first.origin().line(), "決まり文句 4 行のあとの 3 行目");
+    }
+
+    // ---- USAGE INDEX (FR-025、暫定判断 P-035) ----
+
+    @Test
+    @DisplayName("USAGE INDEX は 4 バイトの指標データ項目になる (FR-025, 暫定判断 P-035)")
+    void anIndexDataItemIsFourBytes() {
+        // PICTURE を持たない項目である。大きさは処理系が決める決まりであり、
+        // ここでは指標名と同じ持ち方にしてある
+        DataItem item = item(layoutOf(
+                "01 WS-REC.",
+                "   05 WS-IDX USAGE IS INDEX."), "WS-IDX");
+        assertTrue(item.isIndex(), "not an index item");
+        assertEquals(4, item.length());
+    }
+
+    @Test
+    @DisplayName("USAGE INDEX に PICTURE は書けない (FR-025)")
+    void anIndexDataItemCannotHaveAPicture() {
+        // 黙って通すと、書いた人の思った大きさと違う項目ができる
+        DataDivisionBuilder.Result result = build(
+                "01 WS-REC.",
+                "   05 WS-IDX PIC 9(4) USAGE IS INDEX.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("PICTURE"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("群に書いた USAGE は配下の基本項目に効く (FR-020)")
+    void aUsageOnAGroupReachesItsElementaryItems() {
+        // 群項目そのものは記憶域の切り方を持たない。効くのは下だけである。
+        // 配らないと、詰め 10 進と書いた項目が表示形のまま並ぶ
+        DataLayout layout = layoutOf(
+                "01 WS-G USAGE IS COMP-3.",
+                "   05 WS-A PIC 9(5).",
+                "   05 WS-B PIC 9(3).");
+
+        assertEquals(Usage.COMP_3, layout.findAll("WS-A").get(0).usage());
+        assertEquals(3, layout.findAll("WS-A").get(0).length());
+        assertEquals(2, layout.findAll("WS-B").get(0).length());
+    }
+
+    @Test
+    @DisplayName("群に書いた USAGE IS INDEX は配下を指標データ項目にする (FR-025)")
+    void aGroupMayBeDeclaredAsIndexItems() {
+        // 指標データ項目は PICTURE を書いてはならない。書かれていないのが正しい
+        DataLayout layout = layoutOf(
+                "01 WS-NAMES USAGE IS INDEX.",
+                "   05 WS-K1.",
+                "   05 WS-K2.");
+
+        assertTrue(layout.findAll("WS-K1").get(0).isIndex());
+        assertEquals(4, layout.findAll("WS-K1").get(0).length());
+        assertEquals(8, layout.findAll("WS-NAMES").get(0).length());
     }
 }

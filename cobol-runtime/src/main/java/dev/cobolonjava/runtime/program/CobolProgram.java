@@ -1,5 +1,6 @@
 package dev.cobolonjava.runtime.program;
 
+import dev.cobolonjava.runtime.abend.StorageMap;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 
@@ -44,12 +45,80 @@ public interface CobolProgram {
      */
     default Storage runFresh(ProgramContext context, DataView... arguments) {
         Storage storage = Storage.wrap(initialStorage());
+        context.enter(name(), storage, storageMap(), this);
         try {
             run(storage, context, arguments);
         } catch (ProgramStop | ProgramReturn end) {
             // 実行が終わっただけであり、誤りではない
         }
+        // 異常終了で抜けたときは積まれたまま残す。覚え書きが中身を見る (要件 FR-142)
+        context.leave();
         return storage;
+    }
+
+    /**
+     * プログラム名 (要件 FR-142)。
+     *
+     * <p>生成クラスの名前がそのままプログラム名である。異常終了の覚え書きに書く。
+     */
+    default String name() {
+        return getClass().getSimpleName();
+    }
+
+    /**
+     * 作業場所の割り付け (要件 FR-142)。
+     *
+     * <p>どのバイトがどの項目かを知っているのは翻訳の側である。生成クラスがこれを返し、
+     * 異常終了の覚え書きが<b>項目名と値</b>を書けるようにする。手で書いたプログラムは
+     * 空のままでよい。
+     */
+    default StorageMap storageMap() {
+        return StorageMap.EMPTY;
+    }
+
+    /** {@code EXTERNAL} を書いた 01 レベルを 1 つも持たないプログラム。 */
+    ExternalRegion[] NO_EXTERNAL_REGIONS = new ExternalRegion[0];
+
+    /**
+     * {@code EXTERNAL} を書いた 01 レベルの領域 (要件 FR-014)。
+     *
+     * <p>{@code EXTERNAL} と書いた 01 レベルの領域は<b>実行単位で 1 つ</b>である。
+     * 同じ名前で書いたどのプログラムからも同じ中身が見える。
+     *
+     * <p>生成コードは項目をふつうに自分の記憶域へ割り付ける。実行単位の写しと
+     * 突き合わせるのは<b>プログラムの境目</b>だけである — 入るとき、抜けるとき、
+     * そして {@code CALL} の前後である。1 度に動くプログラムは 1 つなので、
+     * これで「実体が 1 つある」のと見分けが付かない。
+     *
+     * @return 01 レベルごとの名前と、自分の記憶域での位置
+     */
+    default ExternalRegion[] externalRegions() {
+        return NO_EXTERNAL_REGIONS;
+    }
+
+    /**
+     * 段落の範囲を、このプログラムの記憶域で実行する (要件 FR-091, FR-105)。
+     *
+     * <p>{@code USE GLOBAL AFTER ERROR PROCEDURE} のためにある。囲まれたプログラムで
+     * 入出力の異常が起きたとき、動かすのは<b>囲む側の宣言節</b>である。節の中身は
+     * 囲む側の段落と項目を指しているので、囲む側の記憶域で動かさなければならない。
+     *
+     * <p>手で書いたプログラムは宣言節を持たない。
+     */
+    default void performGlobalRange(int from, int through, Storage storage,
+                                    ProgramContext context) {
+        throw new UnsupportedOperationException(
+                name() + " has no procedure division to run a range of");
+    }
+
+    /**
+     * {@code EXTERNAL} の領域 1 個。
+     *
+     * @param name   データ名。実行単位でこの名前が同じものは同じ領域である
+     * @param offset このプログラムの記憶域での位置
+     * @param length バイト長
+     */
+    record ExternalRegion(String name, int offset, int length) {
     }
 
     /** 出力を端末へ出して実行する。 */

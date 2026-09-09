@@ -1,12 +1,16 @@
 package dev.cobolonjava.runtime.program;
 
+import dev.cobolonjava.runtime.abend.Abend;
+import dev.cobolonjava.runtime.abend.AbendCode;
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.data.NumProcMode;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.data.ZonedDecimal;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.DataSet;
+import dev.cobolonjava.runtime.function.Intrinsics;
 import dev.cobolonjava.runtime.file.FileStatus;
 import dev.cobolonjava.runtime.file.IndexedDataSet;
 import dev.cobolonjava.runtime.file.KeyRelation;
@@ -44,6 +48,11 @@ public final class Ops {
     private Ops() {
     }
 
+    /** デバッグの節を動かすか (要件 FR-193)。実行時の切り替えである。 */
+    public static boolean debuggingProcedures(ProgramContext context) {
+        return context.debuggingProcedures();
+    }
+
     /** 記憶域の一部を取り出す。 */
     public static byte[] read(Storage storage, int offset, int length) {
         return storage.view(offset, length).toByteArray();
@@ -65,6 +74,41 @@ public final class Ops {
     public static void moveNumericEdited(Decimal value, Picture target, Storage storage, int offset,
                                          CodePage codePage) {
         Move.toNumericEdited(value, target, storage.view(offset, target.size()), codePage);
+    }
+
+    /** 英数字編集項目への転記。 */
+    public static void moveAlphanumericEdited(byte[] source, Picture target, Storage storage,
+                                              int offset, CodePage codePage) {
+        Move.toAlphanumericEdited(source, target, storage.view(offset, target.size()), codePage);
+    }
+
+    /**
+     * 符号を落とした数字の並びを読む (要件 FR-060)。
+     *
+     * <p>符号付きの表示形式の項目を英数字項目へ転記するとき、規格は<b>絶対値</b>を
+     * 送るものと決めている。ゾーンに埋め込んだ符号も、別に持つ 1 バイトの符号も、
+     * 送出データには入らない。そのまま読むと最後の桁が英字に見える。
+     */
+    public static byte[] readUnsignedDigits(NumericItem source, Storage storage, int offset,
+                                            CodePage codePage) {
+        byte[] raw = storage.view(offset, source.byteLength()).toByteArray();
+        SignPosition sign = source.signPosition();
+        if (!sign.isSigned()) {
+            return raw;
+        }
+        if (sign.isSeparate()) {
+            // 符号だけの 1 バイトを落とす
+            return sign.isLeading()
+                    ? Arrays.copyOfRange(raw, 1, raw.length)
+                    : Arrays.copyOfRange(raw, 0, raw.length - 1);
+        }
+        // ゾーンに埋め込んだ符号は、数字のゾーンへ戻す。
+        // <b>値としては読まない。</b>読むと、数字が入っていない項目で止まってしまう。
+        // 参照実装も 1 命令でゾーンを塗り替えるだけであり、中身を確かめはしない
+        int at = sign.isLeading() ? 0 : raw.length - 1;
+        byte[] out = raw.clone();
+        out[at] = (byte) ((codePage.zoneNibble() << 4) | (out[at] & 0x0F));
+        return out;
     }
 
     /** 数値項目の読み出し。 */
@@ -102,6 +146,25 @@ public final class Ops {
      */
     public static void programReturn() {
         throw new ProgramReturn();
+    }
+
+    /**
+     * {@code EXIT PROGRAM} (要件 FR-067)。
+     *
+     * <p>呼ばれていれば呼んだ側へ戻る。<b>主プログラムなら何もしない</b>。COBOL の
+     * 決まりがそうなっており、次の文へ進む。
+     *
+     * <p>{@code GOBACK} との違いはここだけである。{@code GOBACK} は主プログラムなら
+     * 実行を終える。同じプログラムが呼ばれることも主として動くこともあるので、
+     * <b>どちらの意味になるかは実行時にしか分からない</b>。
+     *
+     * <p>積まれているプログラムが 1 つなら主である。{@code CALL} は積むので、
+     * 呼ばれていれば 2 つ以上になる。
+     */
+    public static void exitProgram(ProgramContext context) {
+        if (context.active().size() > 1) {
+            throw new ProgramReturn();
+        }
     }
 
     // ---- 表示 ----
@@ -155,9 +218,38 @@ public final class Ops {
 
     /** {@code UNSTRING} の受取項目 1 個。転記が行われなかった項目は変えない。 */
     public static void storeUnstringField(UnstringVerb.Result result, int index, Storage storage,
-                                          int offset, int length) {
+                                          int offset, int length, boolean justifiedRight,
+                                          CodePage codePage) {
         if (index < result.fields().size()) {
-            storage.view(offset, length).setBytes(result.fields().get(index));
+            moveAlphanumeric(result.fields().get(index), storage, offset, length,
+                    justifiedRight, codePage);
+        }
+    }
+
+    /**
+     * {@code UNSTRING} の受取項目が数字項目のとき (要件 FR-060)。
+     *
+     * <p>切り出したものを<b>符号なし整数</b>として読み、小数点で位置を合わせて入れる。
+     * 英数字として左から詰めると、桁があふれたときに<b>上の桁</b>が残ってしまう。
+     * "12" を {@code PIC 9} へ入れると 2 である (NC218A の UST-TEST-GF-5)。
+     */
+    /**
+     * 数を<b>足し込む</b> (要件 FR-060)。
+     *
+     * <p>{@code UNSTRING ... TALLYING} は、受取項目のいまの値に「入れた項目の数」を
+     * 足す。入れ替えるのではない。規格がそう決めている (NC218A の UST-TEST-GF-20)。
+     */
+    public static void addInteger(int value, NumericItem target, Storage storage, int offset) {
+        DataView view = storage.view(offset, target.byteLength());
+        target.store(view, target.load(view).add(Decimal.of(
+                java.math.BigInteger.valueOf(Math.abs(value)), 0, value < 0 ? -1 : 1)));
+    }
+
+    public static void storeUnstringNumeric(UnstringVerb.Result result, int index,
+                                            NumericItem target, Storage storage, int offset,
+                                            CodePage codePage) {
+        if (index < result.fields().size()) {
+            moveNumeric(asInteger(result.fields().get(index), codePage), target, storage, offset);
         }
     }
 
@@ -215,6 +307,49 @@ public final class Ops {
                 .setBytes(InspectScan.replace(read(storage, offset, length), clauses));
     }
 
+    /**
+     * 符号つきの数字項目を数える走査 (85 規格 6.19.4 一般規則 2c)。
+     *
+     * <p>規格は「同じ長さの符号なし項目へ移し、英数字として見直したもの」を検査すると
+     * 決めている。{@code PIC S9(5)} に {@code -12345} を入れると末尾は {@code 0xD5} で
+     * あり、{@code '5'} として照合しても当たらない。符号を落とした像を作ってから数える。
+     */
+    public static int[] tallyUnsigned(NumericItem item, Storage storage, int offset,
+                                      CodePage codePage, InspectScan.Clause... clauses) {
+        return InspectScan.tally(readUnsignedDigits(item, storage, offset, codePage), clauses);
+    }
+
+    /**
+     * 符号つきの数字項目を置き換える走査 (85 規格 6.19.4 一般規則 2c)。
+     *
+     * <p>検査するのは符号を落とした像である。ゾーンに符号を埋めた書き方では像の長さが
+     * 項目と同じなので、そのまま書き戻す。<b>符号は消える。</b>規格が「符号なし項目へ
+     * 移したもの」を検査すると決めている以上、書き戻る像にも符号はない。
+     *
+     * <p>符号を別のバイトに持つ書き方 ({@code SIGN IS SEPARATE}) では、像は符号の
+     * 1 バイトぶん短い。検査していない符号のバイトには触れない。
+     */
+    public static void replaceUnsigned(NumericItem item, Storage storage, int offset,
+                                       CodePage codePage, InspectScan.Clause... clauses) {
+        byte[] replaced = InspectScan.replace(
+                readUnsignedDigits(item, storage, offset, codePage), clauses);
+        storage.view(digitsOffset(item, offset), replaced.length).setBytes(replaced);
+    }
+
+    /** 符号つきの数字項目の {@code CONVERTING}。数える走査と同じ理由で符号を落とす。 */
+    public static void convertUnsigned(NumericItem item, Storage storage, int offset,
+                                       CodePage codePage, byte[] from, byte[] to, Region region) {
+        byte[] converted = Inspect.convert(
+                readUnsignedDigits(item, storage, offset, codePage), from, to, region);
+        storage.view(digitsOffset(item, offset), converted.length).setBytes(converted);
+    }
+
+    /** 符号を落とした像が始まる位置。前置きの符号を別に持つときだけ 1 バイトずれる。 */
+    private static int digitsOffset(NumericItem item, int offset) {
+        SignPosition sign = item.signPosition();
+        return sign.isSigned() && sign.isSeparate() && sign.isLeading() ? offset + 1 : offset;
+    }
+
     /** {@code CONVERTING}。1 バイトずつの読み替えである。 */
     public static void convert(Storage storage, int offset, int length, byte[] from, byte[] to,
                                Region region) {
@@ -236,9 +371,76 @@ public final class Ops {
         return Compare.numeric(left, right);
     }
 
+    /**
+     * {@code FUNCTION CURRENT-DATE} (要件 FR-070、テスト時の固定は FR-204)。
+     *
+     * <p>時計は {@link ProgramContext} が持っている。実行のたびに変わる値を試験に
+     * 書けるようにするためである。
+     */
+    public static byte[] currentDate(ProgramContext context) {
+        return Intrinsics.timestamp(java.time.ZonedDateTime.now(context.clock()),
+                context.codePage());
+    }
+
+    /**
+     * {@code FUNCTION RANDOM} (要件 FR-070)。
+     *
+     * <p>0 以上 1 未満を返す。並びは {@link ProgramContext} が持っている。
+     */
+    public static Decimal random(ProgramContext context) {
+        return Intrinsics.randomValue(context.nextRandom());
+    }
+
+    /** {@code FUNCTION RANDOM(種)}。種を決めてから最初の 1 つを返す。 */
+    public static Decimal random(Decimal seed, ProgramContext context) {
+        context.seedRandom(seed.toBigDecimal().longValue());
+        return Intrinsics.randomValue(context.nextRandom());
+    }
+
+    /**
+     * 段落へ入るところで、段分けの独立段を初期状態へ戻す (要件 FR-061)。
+     *
+     * <p>段番号 50 以上は<b>独立段</b>である。別の段から制御が移るたびに初期状態へ戻る。
+     * 「初期状態」とは <b>{@code ALTER} で書き換えた飛び先が元へ戻る</b>ことであり、
+     * 記憶域の中身は戻らない。したがって {@code ALTER} を実装してはじめて意味を持つ。
+     *
+     * @param altered  いまの飛び先。書き換えられる段落だけが 0 以上を持つ
+     * @param initial  書かれたままの飛び先
+     * @param segment  段落ごとの段番号
+     * @param entering これから動かす段落の番号
+     * @param current  いままで動いていた段の番号。まだ動いていなければ {@code -1}
+     * @return これから動く段の番号
+     */
+    public static int enterParagraph(int[] altered, int[] initial, int[] segment, int entering,
+                                     int current) {
+        int next = segment[entering];
+        if (next >= INDEPENDENT_SEGMENT && next != current) {
+            for (int i = 0; i < altered.length; i++) {
+                if (segment[i] == next && initial[i] >= 0) {
+                    altered[i] = initial[i];
+                }
+            }
+        }
+        return next;
+    }
+
+    /** ここから上が独立段である。 */
+    private static final int INDEPENDENT_SEGMENT = 50;
+
     /** 英数字比較。短いほうは空白で埋めて比べる。 */
     public static int compareAlphanumeric(byte[] left, byte[] right, CodePage codePage) {
         return Compare.alphanumeric(left, right, codePage);
+    }
+
+    /**
+     * 照合順序を差し替えた英数字比較 (要件 FR-054)。
+     *
+     * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれているときだけこちらを通る。
+     * 書かれていなければコードページのバイト値がそのまま並びなので、上の形でよい。
+     */
+    public static int compareAlphanumeric(byte[] left, byte[] right, CollatingSequence order,
+                                          CodePage codePage) {
+        return order.compare(left, right, codePage.space());
     }
 
     // ---- ファイル入出力 ----
@@ -250,9 +452,42 @@ public final class Ops {
      */
     public static byte[] open(ProgramContext context, String name, String ddName, int mode,
                               int organization, int format, int recordLength, boolean optional) {
-        return status(context, context.file(name, ddName,
-                Organization.values()[organization], RecordFormat.values()[format], recordLength)
-                .open(OpenMode.values()[mode], optional));
+        if (context.isFileLocked(name)) {
+            return status(context, FileStatus.CLOSED_WITH_LOCK);
+        }
+        Organization kind = Organization.values()[organization];
+        return status(context, context.file(name, ddName, kind,
+                RecordFormat.values()[format], recordLength)
+                .open(requested(context, ddName, OpenMode.values()[mode], kind), optional));
+    }
+
+    /**
+     * 巻の操作が行われなかったことを状態コードに映す (要件 FR-102, FR-103)。
+     *
+     * <p>{@code OPEN ... WITH NO REWIND} である。開くこと自体は変わらないので、
+     * <b>成功したときだけ</b> {@code 00} を {@code 07} に置き換える。誤ったなら
+     * 誤りのほうが伝えるべきことである (85 規格 VII-38, 4.2.4(3)F)。
+     */
+    public static byte[] nonReel(byte[] status, ProgramContext context) {
+        return FileStatus.OK.equals(context.codePage().decode(status))
+                ? status(context, FileStatus.NON_REEL)
+                : status;
+    }
+
+    /**
+     * 実際に開く向き (要件 FR-133)。
+     *
+     * <p>ふつうはプログラムが書いたとおりである。ジョブが {@code DISP=MOD} と言っている
+     * ときだけ、{@code OUTPUT} が<b>末尾への書き足し</b>になる。ジョブの指定がプログラムの
+     * 書いたことを覆す数少ない場所であり、順編成にしか意味がない。
+     */
+    private static OpenMode requested(ProgramContext context, String ddName, OpenMode mode,
+                                      Organization organization) {
+        boolean sequential = organization == Organization.SEQUENTIAL
+                || organization == Organization.LINE_SEQUENTIAL;
+        return mode == OpenMode.OUTPUT && sequential && context.catalog().appends(ddName)
+                ? OpenMode.EXTEND
+                : mode;
     }
 
     /**
@@ -286,9 +521,245 @@ public final class Ops {
     public static byte[] write(ProgramContext context, String name, String ddName,
                                Storage storage, int offset, int length, int minimum,
                                int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 context.file(name, ddName).write(read(storage, offset, actual)), actual, length));
+    }
+
+    /** 頁の先頭へ送ることを表す行数。行数と同じ引数に載せるための負の値である。 */
+    public static final int PAGE = -1;
+
+    /**
+     * 行送りを伴う {@code WRITE} (要件 FR-102)。
+     *
+     * <p>印字するファイルは<b>行を送ってから書く</b>か、<b>書いてから送る</b>。
+     * {@code AFTER ADVANCING 2 LINES} なら 1 行空けてから書く。2 行送って印字するとき、
+     * 実際に文字が乗るのは<b>最後の 1 行だけ</b>だからである。
+     *
+     * <h2>行送りは空のレコードで表す</h2>
+     * <p>ホストの印字ファイルはレコードの先頭に紙送りの制御文字を持つ。その形を真似れば
+     * バイト列まで合うが、桁の取り方を実機で確かめていない。確かめないまま 1 バイト
+     * 増やすと<b>レコードの長さが全部ずれる</b>ので、いまは空のレコードを足すほうを
+     * 採った (暫定判断 P-063)。
+     *
+     * @param lines 送る行数。{@link #PAGE} なら頁の先頭へ送る
+     * @param before 書いてから送るか。{@code false} なら送ってから書く
+     * @return ファイル状態コード
+     */
+    public static byte[] writeLine(ProgramContext context, String name, String ddName,
+                                   Storage storage, int offset, int length, int minimum,
+                                   int maximum, int lines, boolean before) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
+        int actual = clamp(length, minimum, maximum);
+        DataSet file = context.file(name, ddName);
+        byte[] record = read(storage, offset, actual);
+        String status = before ? FileStatus.OK : advance(file, lines, actual);
+        if (status.equals(FileStatus.OK)) {
+            status = file.write(record);
+        }
+        if (before && status.equals(FileStatus.OK)) {
+            status = advance(file, lines, actual);
+        }
+        return status(context, lengthChecked(status, actual, length));
+    }
+
+    /**
+     * 論理頁を数えながら書く (要件 FR-113)。
+     *
+     * <p>{@code LINAGE} を書いたファイルは、紙 1 枚を「上の余白・本文・下の余白」に
+     * 分けて扱う。{@code LINAGE-COUNTER} が数えるのは<b>本文の何行目か</b>だけである。
+     *
+     * <h2>数え方は検査スイートが決めている</h2>
+     * <p>NIST CCVS85 の SQ201M が、規格の要求を実行できる形で書いている。そこから
+     * 読み取れる規則は 3 つである。
+     *
+     * <ul>
+     *   <li>1 回の {@code WRITE} が使う行数は、{@code ADVANCING n} なら {@code n}、
+     *       行送りを書かなければ 1 である。<b>{@code BEFORE} でも {@code AFTER} でも
+     *       同じだけ進む</b> (WRT-TEST-004 / 005 / 006)</li>
+     *   <li>{@code ADVANCING PAGE} のあと {@code LINAGE-COUNTER} は 1 である
+     *       (WRT-TEST-002)。<b>開いた直後も 1 である</b> (WRT-TEST-001)</li>
+     *   <li>本文をはみ出す書き込みは<b>次の頁の 1 行目</b>へ回り、
+     *       {@code LINAGE-COUNTER} は 1 になる (WRT-TEST-003)</li>
+     * </ul>
+     *
+     * <p>頁の終わり ({@code AT END-OF-PAGE}) は、書いたあとの {@code LINAGE-COUNTER} が
+     * <b>脚注の行に達したとき</b>に起きる。脚注を書いていなければ、本文をはみ出したとき
+     * である。規格がそう分けている。
+     *
+     * <p>行送りそのものは空のレコードで表す (暫定判断 P-063)。紙送りの制御文字を
+     * 実機で確かめていないためである。
+     *
+     * <p>頁の形は<b>置き場から読む</b>。項目で書けるので、開くたびに読み直された値が
+     * そこに入っている。翻訳時に決まるのは置き場だけである。
+     *
+     * @param counterAt {@code LINAGE-COUNTER} の記憶域上の位置 (2 進 4 バイト)
+     * @param pageAt    本文の行数の置き場
+     * @param footingAt 脚注が始まる行の置き場。書かれていなければ 0 が入っている
+     * @param topAt     上の余白の行数の置き場
+     * @param bottomAt  下の余白の行数の置き場
+     * @param startedAt この頁にもう何か置いたかどうかの置き場。開いた直後は 0 である
+     */
+    public static byte[] writeLinage(ProgramContext context, String name, String ddName,
+                                     Storage storage, int offset, int length, int minimum,
+                                     int maximum, int lines, boolean before,
+                                     int counterAt, int pageAt, int footingAt, int topAt,
+                                     int bottomAt, int startedAt) {
+        int page = Math.max(1, readCounter(storage, pageAt));
+        int footing = readCounter(storage, footingAt);
+        int top = readCounter(storage, topAt);
+        int bottom = readCounter(storage, bottomAt);
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
+        int actual = clamp(length, minimum, maximum);
+        DataSet file = context.file(name, ddName);
+        byte[] record = read(storage, offset, actual);
+        // 開いた直後の LINAGE-COUNTER は 1 だが、まだ 1 行も置いていない。
+        // 数だけでは頁を送った直後と見分けられないので、別の置き場で覚えてある
+        boolean started = readCounter(storage, startedAt) != 0;
+        int placed = started ? readCounter(storage, counterAt) : 0;
+        String status = FileStatus.OK;
+        if (!started) {
+            // まだ 1 行も置いていない頁である。上の余白を先に送る
+            status = blanks(file, top, actual);
+        }
+        int used = lines == PAGE ? 1 : lines;
+        // 頁送りは書かれたとおりの送りであって、はみ出しではない。
+        // まだ 1 行も置いていない頁にいるなら、送る先はいまの頁である
+        boolean turning = lines == PAGE ? started : placed + used > page;
+        boolean overflow = lines != PAGE && turning;
+        if (turning && status.equals(FileStatus.OK)) {
+            status = endPage(file, placed, page, bottom, top, actual);
+            placed = 0;
+            used = 1;
+        }
+        if (status.equals(FileStatus.OK)) {
+            status = before
+                    ? placeBefore(file, record, used, actual)
+                    : placeAfter(file, record, used, actual);
+        }
+        int counter = placed + used;
+        writeCounter(storage, counterAt, counter);
+        writeCounter(storage, startedAt, 1);
+        context.setEndOfPage(footing > 0 ? counter >= footing : overflow);
+        return status(context, lengthChecked(status, actual, length));
+    }
+
+    /** 書いてから送る。レコードはいまの行に乗り、残りは空行である。 */
+    private static String placeBefore(DataSet file, byte[] record, int used, int width) {
+        String status = file.write(record);
+        return status.equals(FileStatus.OK) ? blanks(file, used - 1, width) : status;
+    }
+
+    /** 送ってから書く。レコードは送った先の行に乗る。 */
+    private static String placeAfter(DataSet file, byte[] record, int used, int width) {
+        String status = blanks(file, used - 1, width);
+        return status.equals(FileStatus.OK) ? file.write(record) : status;
+    }
+
+    /** 本文の残りと下の余白を送り、次の頁の上の余白まで進める。 */
+    private static String endPage(DataSet file, int counter, int page, int bottom, int top,
+                                  int width) {
+        String status = blanks(file, page - counter, width);
+        if (status.equals(FileStatus.OK)) {
+            status = blanks(file, bottom, width);
+        }
+        return status.equals(FileStatus.OK) ? blanks(file, top, width) : status;
+    }
+
+    /** 空行を {@code count} 行送る。 */
+    private static String blanks(DataSet file, int count, int width) {
+        String status = FileStatus.OK;
+        for (int i = 0; i < count && status.equals(FileStatus.OK); i++) {
+            status = file.write(blankLine(file, width));
+        }
+        return status;
+    }
+
+    /** {@code LINAGE-COUNTER} を読む。2 進 4 バイトである。 */
+    private static int readCounter(Storage storage, int at) {
+        byte[] bytes = storage.array();
+        return ((bytes[at] & 0xFF) << 24) | ((bytes[at + 1] & 0xFF) << 16)
+                | ((bytes[at + 2] & 0xFF) << 8) | (bytes[at + 3] & 0xFF);
+    }
+
+    /** {@code LINAGE-COUNTER} を書く。 */
+    public static void writeCounter(Storage storage, int at, int value) {
+        byte[] bytes = storage.array();
+        bytes[at] = (byte) (value >>> 24);
+        bytes[at + 1] = (byte) (value >>> 16);
+        bytes[at + 2] = (byte) (value >>> 8);
+        bytes[at + 3] = (byte) value;
+    }
+
+    /** 直前の {@code WRITE} が頁の終わりに達したか ({@code AT END-OF-PAGE} の分岐に使う)。 */
+    public static boolean atEndOfPage(ProgramContext context) {
+        return context.endOfPage();
+    }
+
+    /**
+     * 行を送る。
+     *
+     * <p>{@code n} 行送って印字するなら、間に空くのは {@code n-1} 行である。
+     * 送らない ({@code 0} 行) は重ね印字であり、紙の上でしか起こらない。ここでは
+     * 空行を足さないだけになる (暫定判断 P-063)。
+     *
+     * <h2>負の行数は「改頁してから送る」である</h2>
+     * <p>{@link #PAGE} は {@code -1} であり、「改頁して 1 行目へ」を表す。これを
+     * <b>一般化して</b>、{@code -k} を「改頁して k 行目へ」とする。報告書作成機能
+     * (要件 FR-214) が使う。改頁と行送りを 1 回の書き込みで表せるので、頁の先頭に
+     * 余計な空行が出ない。
+     */
+    private static String advance(DataSet file, int lines, int width) {
+        if (lines < 0) {
+            String status = file.write(pageBreak(file, width));
+            for (int i = 1; i < -lines && status.equals(FileStatus.OK); i++) {
+                status = file.write(blankLine(file, width));
+            }
+            return status;
+        }
+        String status = FileStatus.OK;
+        for (int i = 1; i < lines && status.equals(FileStatus.OK); i++) {
+            status = file.write(blankLine(file, width));
+        }
+        return status;
+    }
+
+    /**
+     * 空行のバイト列。
+     *
+     * <p>行の並びなら<b>長さ 0</b> が空行である。決まった長さのレコードなら空白で埋める。
+     * 行の切れ目を決めているのはデータセットの様式であり、そこに合わせる。
+     */
+    private static byte[] blankLine(DataSet file, int width) {
+        if (file.attributes().format() == RecordFormat.LINE) {
+            return new byte[0];
+        }
+        byte[] blank = new byte[Math.max(width, 0)];
+        Arrays.fill(blank, file.attributes().codePage().space());
+        return blank;
+    }
+
+    /**
+     * 改頁のバイト列。
+     *
+     * <p>紙送りの制御文字を持たないので、<b>改頁の文字だけの行</b>を置く。読み返した
+     * ときに頁の切れ目がどこにあったか分かる形である (暫定判断 P-063)。
+     */
+    private static byte[] pageBreak(DataSet file, int width) {
+        byte[] line = blankLine(file, width);
+        byte[] out = line.length > 0 ? line : new byte[1];
+        out[0] = file.attributes().codePage().encode("\f")[0];
+        return out;
     }
 
     /**
@@ -299,9 +770,36 @@ public final class Ops {
     public static byte[] rewrite(ProgramContext context, String name, String ddName,
                                  Storage storage, int offset, int length, int minimum,
                                  int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 context.file(name, ddName).rewrite(read(storage, offset, actual)), actual, length));
+    }
+
+    /**
+     * 書き出す長さが宣言の範囲に収まっているか (要件 FR-103, FR-106)。
+     *
+     * <p>{@code RECORD IS VARYING IN SIZE FROM n TO m DEPENDING ON 項目} と書いたとき、
+     * その項目に範囲の外の値が入っていることはありうる。規格はそのとき<b>書かない</b>と
+     * 決めている。レコード領域は変わらず、状態コード {@code 44} が立つ。
+     *
+     * <p>以前は範囲へ収めて<b>書いていた</b>。そうすると、宣言より短いレコードが
+     * ファイルに残る。CCVS85 の SQ212A は 18〜2048 のファイルへ 15〜17 バイトを
+     * 書こうとし、<b>入っていないこと</b>を後から読んで確かめている。
+     *
+     * <p>範囲を持つのは可変長のファイルだけである。固定長では下限と上限が同じ値で
+     * あり、書く長さもその値なので、ここは通らない。
+     *
+     * @return 範囲の外なら状態コードのバイト列。収まっていれば {@code null}
+     */
+    private static byte[] lengthOutOfRange(ProgramContext context, int length,
+                                           int minimum, int maximum) {
+        return length < minimum || length > maximum
+                ? status(context, FileStatus.RECORD_LENGTH_RANGE)
+                : null;
     }
 
     /**
@@ -329,6 +827,9 @@ public final class Ops {
      */
     public static byte[] openIndexed(ProgramContext context, String name, String ddName, int mode,
                                      int format, int recordLength, boolean optional, int[] keys) {
+        if (context.isFileLocked(name)) {
+            return status(context, FileStatus.CLOSED_WITH_LOCK);
+        }
         List<IndexedDataSet.Key> described = new java.util.ArrayList<>();
         for (int at = 0; at + 2 < keys.length; at += 3) {
             described.add(new IndexedDataSet.Key(keys[at], keys[at + 1], keys[at + 2] != 0));
@@ -363,6 +864,10 @@ public final class Ops {
     public static byte[] writeKey(ProgramContext context, String name, String ddName,
                                   Storage storage, int offset, int length, int minimum,
                                   int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 indexed(context, name, ddName).writeKey(read(storage, offset, actual)),
@@ -373,6 +878,10 @@ public final class Ops {
     public static byte[] rewriteKey(ProgramContext context, String name, String ddName,
                                     Storage storage, int offset, int length, int minimum,
                                     int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 indexed(context, name, ddName).rewriteKey(read(storage, offset, actual)),
@@ -418,6 +927,10 @@ public final class Ops {
     public static byte[] writeAt(ProgramContext context, String name, String ddName, int number,
                                  Storage storage, int offset, int length, int minimum,
                                  int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 relative(context, name, ddName).writeAt(number, read(storage, offset, actual)),
@@ -428,6 +941,10 @@ public final class Ops {
     public static byte[] rewriteAt(ProgramContext context, String name, String ddName, int number,
                                    Storage storage, int offset, int length, int minimum,
                                    int maximum) {
+        byte[] refused = lengthOutOfRange(context, length, minimum, maximum);
+        if (refused != null) {
+            return refused;
+        }
         int actual = clamp(length, minimum, maximum);
         return status(context, lengthChecked(
                 relative(context, name, ddName).rewriteAt(number, read(storage, offset, actual)),
@@ -465,6 +982,32 @@ public final class Ops {
         return relative(context, name, ddName).currentNumber();
     }
 
+    /**
+     * 順次読みで読めたレコードの相対レコード番号を、{@code RELATIVE KEY} の項目へ入れる
+     * (要件 FR-101)。
+     *
+     * <p>桁が足りなければ番号を返せない。規格はそのとき<b>読めなかったことにして</b>
+     * {@code 14} を立てると決めている (85 規格 VII-3 1.3.4 2B)。黙って切り詰めると、
+     * {@code PIC 99} の鍵で 100 本目を読んだプログラムが<b>0 本目を読んだ</b>と
+     * 思い込む (RL117A REL-TEST-3)。
+     *
+     * @param status 読み出しが返した状態。成功していなければそのまま返す
+     * @return 入れたあとの状態
+     */
+    public static byte[] relativeNumberInto(byte[] status, ProgramContext context, String name,
+                                            String ddName, NumericItem key, Storage storage,
+                                            int offset) {
+        if (!fileSucceeded(status, context.codePage())) {
+            return status;
+        }
+        int number = relative(context, name, ddName).currentNumber();
+        if (!key.fits(Decimal.of(number, 0))) {
+            return status(context, FileStatus.KEY_TOO_LARGE);
+        }
+        storeInteger(number, key, storage, offset);
+        return status;
+    }
+
     /** 相対編成として引く。編成は翻訳時に決まっているので、ここは必ず当たる。 */
     private static RelativeDataSet relative(ProgramContext context, String name, String ddName) {
         return (RelativeDataSet) context.file(name, ddName);
@@ -482,8 +1025,177 @@ public final class Ops {
 
     /** {@code CLOSE} (要件 FR-102)。 */
     public static byte[] close(ProgramContext context, String name, String ddName) {
-        return status(context, context.file(name, ddName).close());
+        return close(context, name, ddName, false);
     }
+
+    /**
+     * 閉じる (要件 FR-102)。
+     *
+     * @param lock {@code WITH LOCK} と書かれたか。書かれていれば、この実行単位では
+     *             <b>二度と開けない</b>。次に開こうとすると状態コード 38 が立つ
+     */
+    public static byte[] close(ProgramContext context, String name, String ddName,
+                               boolean lock) {
+        String status = context.file(name, ddName).close();
+        if (lock) {
+            context.lockFile(name);
+        }
+        return status(context, status);
+    }
+
+    /**
+     * 巻を送って閉じる — {@code CLOSE ... REEL} / {@code UNIT} (要件 FR-102)。
+     *
+     * <p>これは<b>ファイルを閉じない</b>。磁気テープなら、いまの巻を外して次の巻へ
+     * 移る指示であり、ファイルそのものは開いたままである。ディスク上のデータセットには
+     * 巻がないので、位置も内容も動かさず、巻の操作は行われなかったことを表す
+     * {@code 07} を返す (85 規格 VII-38, 4.2.4(3)F)。
+     *
+     * <p>閉じないので、続けて {@code WRITE} も {@code READ} もできる。CCVS85 の
+     * SQ123A / SQ124A はまさにそれを見ている — {@code CLOSE ... UNIT} のあとに
+     * 書き足し、開き直さずに読み進める。
+     */
+    public static byte[] closeReel(ProgramContext context, String name, String ddName) {
+        DataSet file = context.file(name, ddName);
+        if (!file.isOpen()) {
+            return status(context, FileStatus.NOT_OPEN);
+        }
+        return status(context, FileStatus.NON_REEL);
+    }
+
+    /**
+     * 巻を戻さずに閉じる — {@code CLOSE ... WITH NO REWIND} (要件 FR-102)。
+     *
+     * <p>こちらは<b>閉じる</b>。違うのは、閉じたあとテープを巻き戻さないという点だけで
+     * ある。ディスクには巻き戻しがないので閉じ方は変わらないが、巻の操作が行われな
+     * かったことは {@code 07} で伝える (85 規格 VII-38, 4.2.4(3)F)。
+     */
+    public static byte[] closeNoRewind(ProgramContext context, String name, String ddName) {
+        String status = context.file(name, ddName).close();
+        return status(context, FileStatus.OK.equals(status) ? FileStatus.NON_REEL : status);
+    }
+
+    /**
+     * 小数点の右側にある {@code P} のぶんだけ 0 を足す (要件 FR-031, FR-060)。
+     *
+     * <p>{@code PICTURE} の {@code P} は<b>桁を数えるが記憶域は取らない</b>。
+     * {@code S9PP} は 1 桁しか持たないが、表す値はその 100 倍である。転記の送り出し
+     * 側になったときは「格納した数字の代わりに 0 を置いた代数値」を使う、と規格が
+     * 決めている (85 規格 5.9.4)。200 を入れた {@code S9PP} を英数字へ移せば
+     * {@code "200"} になる。
+     *
+     * @param zeros 足す 0 の数
+     */
+    public static byte[] withScalingZeros(byte[] digits, int zeros, CodePage codePage) {
+        byte[] out = Arrays.copyOf(digits, digits.length + zeros);
+        Arrays.fill(out, digits.length, out.length, codePage.digit(0));
+        return out;
+    }
+
+    /**
+     * 数字編集項目の中身から値を取り出す (要件 FR-060、de-editing)。
+     *
+     * <p>編集は「値 → 見せ方」の変換である。それを<b>逆にたどる</b>。通貨記号も
+     * コンマも空白も値には関わらない。符号は {@code CR} / {@code DB} / {@code -} が
+     * 表しており、そこだけを見る。
+     *
+     * <p>小数の桁数は<b>編集した項目の記述から翻訳時に決まる</b>。書かれた小数点の
+     * 位置を数えないのは、浮動する記号や抑制で小数点が消えていることがあるためである。
+     *
+     * @param scale 編集した項目の小数の桁数
+     */
+    public static Decimal deEdit(Storage storage, int offset, int length, int scale,
+                                 CodePage codePage) {
+        String text = codePage.decode(read(storage, offset, length));
+        boolean negative = text.contains("CR") || text.contains("DB") || text.indexOf('-') >= 0;
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= '0' && c <= '9') {
+                digits.append(c);
+            }
+        }
+        if (digits.isEmpty()) {
+            // 空白だけなら 0 である。BLANK WHEN ZERO がそう書く
+            return Decimal.zero(scale);
+        }
+        Decimal value = Decimal.parse(
+                new java.math.BigDecimal(new java.math.BigInteger(digits.toString()), scale)
+                        .toPlainString());
+        return negative ? negate(value) : value;
+    }
+
+    /** 外から立てる切り替えを動かす (要件 FR-135)。 */
+    public static void setSwitch(ProgramContext context, int index, boolean on) {
+        context.switchState(index, on);
+    }
+
+    /** 外から立てる切り替えが立っているか (要件 FR-135)。 */
+    public static boolean switchState(ProgramContext context, int index) {
+        return context.switchState(index);
+    }
+
+    /**
+     * 行き先を書かない {@code GO TO} を通った (要件 FR-063)。
+     *
+     * <p>投げる例外を<b>返す</b>のは、呼ぶ側が {@code athrow} で投げるためである。
+     * こちらで投げると、生成した命令列のあとが到達不能だと検証器に伝わらない。
+     */
+    public static RuntimeException unalteredGoTo(String paragraph) {
+        return new UnalteredGoToException(paragraph);
+    }
+
+    /**
+     * べき乗 (要件 FR-047)。
+     *
+     * <p>指数が<b>整数</b>なら、答えは正確に出る。掛け算を重ねるだけだからである。
+     * 負のべきは逆数になるので、そこで割り切れなければ近似が入る。
+     *
+     * <p>指数が整数でなければ、答えは<b>近似である</b>。対数を通るほかない。
+     * 底が負ならその答えは実数にならないので、そこは誤りとして止める。
+     */
+    public static Decimal power(Decimal base, Decimal exponent) {
+        java.math.BigDecimal value = base.toBigDecimal();
+        java.math.BigDecimal times = exponent.toBigDecimal();
+        if (times.stripTrailingZeros().scale() <= 0) {
+            int whole = times.stripTrailingZeros().intValueExact();
+            if (whole >= 0) {
+                return decimalOf(value.pow(whole));
+            }
+            if (value.signum() == 0) {
+                throw new ArithmeticException("zero cannot be raised to a negative power");
+            }
+            return decimalOf(java.math.BigDecimal.ONE.divide(value.pow(-whole), APPROXIMATE));
+        }
+        if (value.signum() < 0) {
+            throw new ArithmeticException(
+                    "a negative number cannot be raised to a fractional power: " + value);
+        }
+        if (value.signum() == 0) {
+            return Decimal.zero(0);
+        }
+        double result = Math.pow(value.doubleValue(), times.doubleValue());
+        if (!Double.isFinite(result)) {
+            throw new ArithmeticException("the result of exponentiation is not a number");
+        }
+        return decimalOf(new java.math.BigDecimal(result).round(APPROXIMATE));
+    }
+
+    /** {@link java.math.BigDecimal} から {@link Decimal} を作る。 */
+    private static Decimal decimalOf(java.math.BigDecimal value) {
+        java.math.BigDecimal trimmed = value.stripTrailingZeros();
+        return Decimal.parse((trimmed.scale() < 0 ? trimmed.setScale(0) : trimmed)
+                .toPlainString());
+    }
+
+    /**
+     * 近似が入る計算の桁数。
+     *
+     * <p>組み込み関数と同じ 15 桁である。同じ根から出る値が場所によって違う桁数に
+     * なると、突き合わせられなくなる。
+     */
+    private static final java.math.MathContext APPROXIMATE =
+            new java.math.MathContext(15, java.math.RoundingMode.HALF_UP);
 
     /**
      * ファイル状態コードをバイト列にする。
@@ -580,6 +1292,12 @@ public final class Ops {
         context.sortWork(work, List.of(keys));
     }
 
+    /** 照合順序を決めて用意する (要件 FR-054, FR-120)。 */
+    public static void sortOpen(ProgramContext context, String work, SortKey[] keys,
+                                CollatingSequence sequence) {
+        context.sortWork(work, List.of(keys), sequence);
+    }
+
     /** {@code RELEASE} (要件 FR-120)。レコードを 1 つ渡す。 */
     public static void release(ProgramContext context, String work, Storage storage, int offset,
                                int length) {
@@ -639,6 +1357,8 @@ public final class Ops {
         }
         byte[] record = new byte[recordLength];
         SortWork sort = context.sortWork(work);
+        // GIVING に複数のファイルを書けば、どれにも同じレコードが全部入る (要件 FR-120)
+        sort.rewind();
         while (sort.next(record)) {
             file.write(record);
         }
@@ -659,13 +1379,49 @@ public final class Ops {
     }
 
     /**
-     * {@code ACCEPT} が端末から読む 1 行 (要件 FR-060)。
+     * {@code ACCEPT} の送出側の 1 レコードの桁数 (要件 FR-090)。
      *
-     * <p>読んだ文字を実行時のコードページのバイト列へ直す。受け取る項目への詰め方は
-     * 普通の転記と同じである。
+     * <p>ホストの {@code SYSIN} は 80 桁のレコードの並びである。読んだ 1 行はここまで
+     * 空白で埋め、超えた分は切り捨てる。
+     *
+     * <p>この桁数は<b>検査スイートが証拠を出している</b>。NC204M の ACC-TEST-F1-13 は
+     * 200 桁の項目を 1 回の {@code ACCEPT} で埋め、期待する中身の 0 桁目・80 桁目・
+     * 160 桁目に {@code D} を置いている。3 本のレコードの<b>先頭</b>である。
      */
-    public static byte[] acceptLine(ProgramContext context) {
-        return context.codePage().encode(context.readLine());
+    public static final int ACCEPT_RECORD = 80;
+
+    /**
+     * {@code ACCEPT} が読む送出データ (要件 FR-060, FR-090)。
+     *
+     * <p>受取項目が 1 レコードに収まらなければ、<b>収まるまでレコードを読む</b>。
+     * 200 桁の項目なら 80 桁を 3 本読む。読んだ文字は実行時のコードページのバイト列へ
+     * 直す。受け取る項目への詰め方は普通の転記と同じである。
+     *
+     * <p>入力が尽きたらそこで止める。1 本も読めなければ長さ 0 のバイト列になり、
+     * 英数字なら空白で埋まり、数字なら {@code 0} になる (暫定判断 P-083)。
+     *
+     * @param length 受取項目のバイト長
+     */
+    public static byte[] acceptLine(ProgramContext context, int length) {
+        if (length <= ACCEPT_RECORD) {
+            return context.codePage().encode(context.readLine());
+        }
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        for (int taken = 0; taken < length; taken += ACCEPT_RECORD) {
+            String line = context.readLine();
+            if (line.isEmpty()) {
+                break;
+            }
+            byte[] record = new byte[ACCEPT_RECORD];
+            // 短い札は<b>コードページの空白</b>で埋める。0x00 で埋めると、次の札が
+            // 81 桁目から始まるところまでは合っていても中身が別物になる
+            Arrays.fill(record, context.codePage().space());
+            byte[] typed = context.codePage().encode(line);
+            System.arraycopy(typed, 0, record, 0,
+                    Math.min(typed.length, ACCEPT_RECORD));
+            out.write(record, 0, ACCEPT_RECORD);
+        }
+        return out.toByteArray();
     }
 
     /**
@@ -673,8 +1429,16 @@ public final class Ops {
      *
      * <p>{@code ACCEPT} の送出側は<b>符号なし整数の表示形式</b>と決まっている。
      * 数値項目が受け取るときはこれを通す。
+     *
+     * <p>入力が尽きていれば<b>長さ 0 のバイト列</b>が来る。桁が 1 つも無いということ
+     * なので {@code 0} とする。英数字の受取項目はすでに同じ扱いになっていて、
+     * 長さ 0 の入力は転記の規則どおり空白で埋まる。数値だけ例外を投げると、
+     * <b>そのプログラムの残りの検査がまとめて消える</b> (暫定判断 P-083)。
      */
     public static Decimal asInteger(byte[] bytes, CodePage codePage) {
+        if (bytes.length == 0) {
+            return Decimal.zero(0);
+        }
         return ZonedDecimal.decode(bytes, 0, SignPosition.UNSIGNED, codePage, NumProcMode.NOPFD);
     }
 
@@ -695,17 +1459,33 @@ public final class Ops {
     public static void call(ProgramContext context, String name, ClassLoader loader,
                             DataView[] arguments) {
         ProgramContext.Loaded target = context.resolve(name, loader);
+        context.enter(name, target.storage(), target.program().storageMap(), target.program());
         try {
             target.program().run(target.storage(), context, arguments);
         } catch (ProgramReturn returned) {
             // 呼ばれた側が戻っただけである
         }
+        // 異常終了で抜けたときは積まれたまま残す (要件 FR-142)
+        context.leave();
     }
 
     /** 動的な {@code CALL}。呼び先の名前をデータ項目から読む。 */
     public static void call(ProgramContext context, byte[] name, ClassLoader loader,
                             DataView[] arguments) {
         call(context, context.codePage().decode(name).trim(), loader, arguments);
+    }
+
+    /**
+     * 囲む側の {@code USE GLOBAL} 宣言節を動かす (要件 FR-091, FR-105)。
+     *
+     * <p>受け止め手のない入出力の異常が起きたときだけ通る。判定は呼ぶ側が
+     * {@code fileFailed} で済ませてある。
+     *
+     * @param owner 宣言節を書いたプログラムの名前
+     */
+    public static void globalDeclarative(ProgramContext context, String owner,
+                                         int from, int through) {
+        context.performGlobal(owner, from, through);
     }
 
     /**
@@ -746,6 +1526,27 @@ public final class Ops {
     /** 引数の並びを作る。 */
     public static DataView[] arguments(DataView... views) {
         return views;
+    }
+
+    /**
+     * {@code USING} の {@code index} 番目に渡された領域 (要件 FR-141)。
+     *
+     * <p>呼ぶ側が渡していなければ<b>そこで打ち切る</b>。ホストでは連絡節の項目は呼ぶ側の
+     * 領域を指す仕掛け (BLL) だけを持ち、渡されていなければその仕掛けの中身が定まらない。
+     * 運が悪ければ自分の持ち場の外を指し、{@code S0C4} で終わる。運がよければ何かが読めて
+     * <b>誤った値のまま処理が進む</b>。
+     *
+     * <p>ここでは必ず {@code S0C4} で終わることにした。定まらない挙動を再現するより、
+     * 誤りを誤りとして見せるほうがよいという判断である (要件 FR-205 の安全側)。
+     *
+     * @param item 診断に出す項目の名前
+     */
+    public static DataView linkage(DataView[] arguments, int index, String item) {
+        if (arguments == null || index >= arguments.length || arguments[index] == null) {
+            throw new Abend(AbendCode.S0C4,
+                    "the caller did not pass an argument for " + item);
+        }
+        return arguments[index];
     }
 
     // ---- SSRANGE の検査 ----
@@ -861,6 +1662,36 @@ public final class Ops {
     public static void store(Decimal value, NumericItem target, Storage storage, int offset,
                              CobolRounding rounding) {
         Arithmetic.store(target, storage.view(offset, target.byteLength()), value, rounding);
+    }
+
+    /**
+     * 算術文の結果を数字編集項目へ格納する (要件 FR-041)。
+     *
+     * <p>{@code GIVING} と {@code COMPUTE} の受取側は数字編集項目でもよい。
+     * 丸めるのは<b>編集の前</b>である。編集は桁を絵に当てはめるだけの処理であり、
+     * どちら向きに丸めるかを知らないからである。
+     */
+    public static void storeEdited(Decimal value, Picture target, Storage storage, int offset,
+                                   CobolRounding rounding, CodePage codePage) {
+        Move.toNumericEdited(value.rescale(target.scale(), rounding), target,
+                storage.view(offset, target.size()), codePage);
+    }
+
+    /**
+     * {@code ON SIZE ERROR} つきの、数字編集項目への格納。
+     *
+     * <p>桁に収まらなければ<b>受取項目を変えず</b>に {@code true} を返す。
+     * 収まるかどうかを見るのは絵の桁数であり、編集用の文字は数えない。
+     */
+    public static boolean storeEditedChecked(Decimal value, Picture target, Storage storage,
+                                             int offset, CobolRounding rounding,
+                                             CodePage codePage) {
+        Decimal rounded = value.rescale(target.scale(), rounding);
+        if (!rounded.fitsInDigits(target.digits(), target.scale())) {
+            return true;
+        }
+        Move.toNumericEdited(rounded, target, storage.view(offset, target.size()), codePage);
+        return false;
     }
 
     /**

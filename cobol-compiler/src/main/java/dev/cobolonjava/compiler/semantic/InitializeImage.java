@@ -7,6 +7,7 @@ import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
+import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.ArrayList;
@@ -40,10 +41,17 @@ public final class InitializeImage {
     private final List<Replacing> replacing;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
-    private InitializeImage(CodePage codePage, boolean withFiller, List<Replacing> replacing) {
+    /** 図形定数 {@code HIGH-VALUE} / {@code LOW-VALUE} が表すバイト (要件 FR-054)。 */
+    private final byte highValue;
+    private final byte lowValue;
+
+    private InitializeImage(CodePage codePage, boolean withFiller, List<Replacing> replacing,
+                            byte highValue, byte lowValue) {
         this.codePage = codePage;
         this.withFiller = withFiller;
         this.replacing = List.copyOf(replacing);
+        this.highValue = highValue;
+        this.lowValue = lowValue;
     }
 
     /**
@@ -60,7 +68,7 @@ public final class InitializeImage {
         ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED;
 
         /** 項目の分類がこれに当たるか。 */
-        boolean matches(DataCategory actual) {
+        public boolean matches(DataCategory actual) {
             return switch (this) {
                 case ALPHABETIC -> actual == DataCategory.ALPHABETIC;
                 case ALPHANUMERIC -> actual == DataCategory.ALPHANUMERIC;
@@ -84,7 +92,7 @@ public final class InitializeImage {
     public record Result(List<Run> runs, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 
@@ -100,7 +108,19 @@ public final class InitializeImage {
      */
     public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
                                CodePage codePage) {
-        InitializeImage builder = new InitializeImage(codePage, withFiller, replacing);
+        return build(item, withFiller, replacing, codePage, (byte) 0xFF, (byte) 0x00);
+    }
+
+    /**
+     * 照合順序を差し替えたうえで組み立てる (要件 FR-054)。
+     *
+     * @param highValue 図形定数 {@code HIGH-VALUE} が表すバイト
+     * @param lowValue  図形定数 {@code LOW-VALUE} が表すバイト
+     */
+    public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
+                               CodePage codePage, byte highValue, byte lowValue) {
+        InitializeImage builder = new InitializeImage(codePage, withFiller, replacing,
+                highValue, lowValue);
         // 書かれた項目そのものは 1 回分である。表なら添字で 1 つに絞られている
         int length = item.length();
         byte[] image = new byte[length];
@@ -211,6 +231,10 @@ public final class InitializeImage {
             DataCategory category = DataCategory.of(item);
             if (category == DataCategory.NUMERIC_EDITED) {
                 Ops.moveNumericEdited(numberOf(item, value), item.picture(), scratch, 0, codePage);
+            } else if (category == DataCategory.ALPHANUMERIC_EDITED) {
+                // 挿入文字はそのまま残る。SPACES を入れても XXBXX/XX は "     /  " である
+                Ops.moveAlphanumericEdited(textOf(value, dataPositions(item.picture())),
+                        item.picture(), scratch, 0, codePage);
             } else if (category.isNumeric()) {
                 Ops.moveNumeric(numberOf(item, value), numericItemOf(item), scratch, 0);
             } else {
@@ -225,6 +249,17 @@ public final class InitializeImage {
         for (int i = 0; i < length; i++) {
             written[at + i] = true;
         }
+    }
+
+    /** 英数字編集項目の<b>文字位置</b>の数。挿入文字は数えない。 */
+    private static int dataPositions(Picture picture) {
+        int count = 0;
+        for (Picture.Cell cell : picture.cells()) {
+            if (cell.kind() != Picture.Kind.INSERT) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private NumericItem numericItemOf(DataItem item) {
@@ -254,7 +289,8 @@ public final class InitializeImage {
             return codePage.encode(text.text());
         }
         if (value instanceof LiteralValue.Number number) {
-            return codePage.encode(number.value().toBigDecimal().toPlainString());
+            // 英数字の受取項目では<b>英数字定数として扱う</b>。値に直すと先頭の 0 が消える
+            return codePage.encode(number.source());
         }
         byte[] out = new byte[length];
         if (value instanceof LiteralValue.Repeated repeated) {
@@ -272,8 +308,10 @@ public final class InitializeImage {
         return switch (constant) {
             case ZERO -> codePage.digit(0);
             case SPACE -> codePage.space();
-            case HIGH_VALUE -> (byte) 0xFF;
-            case LOW_VALUE, NULL -> (byte) 0x00;
+            case HIGH_VALUE -> highValue;
+            case LOW_VALUE -> lowValue;
+            // NULL は「あて先を持たない」を表すものであり、照合順序とは関わらない
+            case NULL -> (byte) 0x00;
             case QUOTE -> codePage.encode("\"")[0];
         };
     }

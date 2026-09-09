@@ -347,11 +347,38 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code EXIT PROGRAM} 文 (要件 FR-067)。
+     *
+     * <p>呼ばれた側から呼んだ側へ戻る。{@code GOBACK} と似ているが<b>同じではない</b>。
+     * 主プログラムで書いた {@code EXIT PROGRAM} は<b>何もしない</b>という決まりがあり、
+     * 次の文へ進む。{@code GOBACK} は主プログラムなら実行を終える。
+     *
+     * <p>したがって、どちらの意味になるかは<b>実行時にしか分からない</b>。同じ
+     * プログラムが呼ばれることも主として動くこともあるからである。
+     */
+    record ExitProgram(Origin origin) implements Statement {
+    }
+
+    /**
      * 文の並び。1 つの文が<b>複数の文へ展開された</b>ときに使う。
      *
      * <p>{@code MOVE CORRESPONDING} は名前の合う組の数だけ {@code MOVE} になる。
      * 展開を意味解析で済ませておけば、コード生成は普通の {@code MOVE} を出すだけでよい。
      */
+    /**
+     * デバッグの節を動かす文のかたまり (要件 FR-193)。
+     *
+     * <p>ただの {@link Sequence} と分けてあるのは、<b>実行時の切り替えで丸ごと
+     * 止められる</b>ようにするためである。切り替えを切ると 7 桁目の {@code D} の行は
+     * 動いたまま、デバッグの節だけが動かなくなる。
+     */
+    record DebugEntry(List<Statement> body, Origin origin) implements Statement {
+
+        public DebugEntry {
+            body = List.copyOf(body);
+        }
+    }
+
     record Sequence(List<Statement> statements, Origin origin) implements Statement {
 
         public Sequence {
@@ -407,6 +434,7 @@ public sealed interface Statement {
      * @param whens   条件と、成り立ったときの文。書かれた順に試す
      */
     record Search(DataReference index, DataReference varying, int occurs,
+                  DataReference occursDepending,
                   List<Statement> atEnd, List<When> whens, Origin origin) implements Statement {
 
         public Search {
@@ -433,10 +461,12 @@ public sealed interface Statement {
      * <p>書ける条件は<b>鍵と値の等号だけ</b>である。任意の条件を書けないのは、
      * 2 分探索が「大きいか小さいか」で半分を捨てる仕組みだからである。
      *
+     * @param occursDepending {@code OCCURS ... DEPENDING ON} の項目。無ければ {@code null}
      * @param keys  鍵ごとの照合。表に書かれた順に並ぶ
      * @param whenStatements 当たったときの文
      */
-    record SearchAll(DataReference index, int occurs, List<KeyTest> keys,
+    record SearchAll(DataReference index, int occurs, DataReference occursDepending,
+                     List<KeyTest> keys,
                      List<Statement> atEnd, List<Statement> whenStatements, Origin origin)
             implements Statement {
 
@@ -511,16 +541,67 @@ public sealed interface Statement {
             files = List.copyOf(files);
         }
 
-        /** 開くファイル 1 個と、その開き方。 */
-        public record Opened(FileDescription file, OpenMode mode) {
+        /**
+         * 開くファイル 1 個と、その開き方。
+         *
+         * @param noRewind {@code WITH NO REWIND} と書かれたか。巻を持たない媒体では
+         *                 巻き戻しようがないので、成功しても状態コードは {@code 07} になる
+         * @param debug    ファイル名が見張られているときに、開いたあとで動かす文 (要件 FR-193)
+         */
+        public record Opened(FileDescription file, OpenMode mode, boolean noRewind,
+                             List<Statement> debug) {
+
+            public Opened {
+                debug = List.copyOf(debug);
+            }
+
+            public Opened(FileDescription file, OpenMode mode) {
+                this(file, mode, false, List.of());
+            }
         }
     }
 
-    /** {@code CLOSE} 文 (要件 FR-102)。 */
-    record Close(List<FileDescription> files, Origin origin) implements Statement {
+    /**
+     * {@code CLOSE} 文 (要件 FR-102)。
+     *
+     * <p>巻の扱いは磁気テープの話だが、<b>翻訳の結果には効く</b>。{@code REEL} /
+     * {@code UNIT} はファイルを閉じずに巻を送る指示であり、{@code NO REWIND} は
+     * 閉じたあと巻き戻さない指示である。どちらも巻を持たない媒体では巻の操作が起きず、
+     * 状態コード {@code 07} が立つ。{@code WITH LOCK} は錠を掛け、そのファイルを
+     * <b>この実行単位では二度と開けなく</b>する。
+     */
+    record Close(List<Closed> files, Origin origin) implements Statement {
 
         public Close {
             files = List.copyOf(files);
+        }
+
+        /** 巻の扱い。 */
+        public enum Volume {
+            /** 巻を指す語がない。ふつうに閉じる。 */
+            NONE,
+            /** {@code REEL} / {@code UNIT}。<b>閉じない</b>。 */
+            REEL,
+            /** {@code WITH NO REWIND}。閉じるが巻き戻さない。 */
+            NO_REWIND
+        }
+
+        /**
+         * 閉じるファイル 1 個と、その閉じ方。
+         *
+         * @param lock   {@code WITH LOCK} と書かれたか
+         * @param volume 巻を指す語が書かれたか
+         */
+        public record Closed(FileDescription file, boolean lock, Volume volume,
+                             List<Statement> debug) {
+
+            public Closed {
+                debug = List.copyOf(debug);
+            }
+
+            public Closed(FileDescription file, boolean lock) {
+                this(file, lock, Volume.NONE, List.of());
+            }
         }
     }
 
@@ -535,12 +616,20 @@ public sealed interface Statement {
      * @param notAtEnd {@code NOT AT END} の文。指定がなければ空
      */
     record Read(FileDescription file, boolean next, int keyIndex, Move into,
-                List<Statement> atEnd, List<Statement> notAtEnd, KeyCheck keyCheck, Origin origin)
+                List<Statement> atEnd, List<Statement> notAtEnd, KeyCheck keyCheck,
+                List<Statement> debug, Origin origin)
             implements Statement {
+
+        public Read(FileDescription file, boolean next, int keyIndex, Move into,
+                    List<Statement> atEnd, List<Statement> notAtEnd, KeyCheck keyCheck,
+                    Origin origin) {
+            this(file, next, keyIndex, into, atEnd, notAtEnd, keyCheck, List.of(), origin);
+        }
 
         public Read {
             atEnd = List.copyOf(atEnd);
             notAtEnd = List.copyOf(notAtEnd);
+            debug = List.copyOf(debug);
         }
     }
 
@@ -568,7 +657,53 @@ public sealed interface Statement {
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
     record Write(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
-                 Origin origin) implements Statement {
+                 Advancing advancing, PageCheck pageCheck, List<Statement> debug, Origin origin)
+            implements Statement {
+
+        public Write {
+            debug = List.copyOf(debug);
+        }
+
+        public Write(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
+                     Advancing advancing, PageCheck pageCheck, Origin origin) {
+            this(file, record, from, keyCheck, advancing, pageCheck, List.of(), origin);
+        }
+    }
+
+    /**
+     * {@code AT END-OF-PAGE} と {@code NOT AT END-OF-PAGE} (要件 FR-113)。
+     *
+     * <p>頁の終わりに達したかどうかで分かれる。達したかを決めるのは
+     * {@code LINAGE} が定める脚注の行であり、書いたあとの {@code LINAGE-COUNTER} を見る。
+     */
+    record PageCheck(List<Statement> atEnd, List<Statement> otherwise) {
+
+        public PageCheck {
+            atEnd = List.copyOf(atEnd);
+            otherwise = List.copyOf(otherwise);
+        }
+    }
+
+    /**
+     * {@code WRITE} の行送り (要件 FR-102)。
+     *
+     * <p>印字するファイルは<b>行を送ってから書く</b>か、<b>書いてから送る</b>。
+     * {@code AFTER ADVANCING 2 LINES} なら 1 行空けてから書く。送る量は書かれた数か、
+     * 実行時に決まるデータ項目である。
+     *
+     * <p>{@code PAGE} は次の頁の先頭へ送る。
+     *
+     * @param lines 送る行数。書かれた数なら定数、項目なら {@code null}
+     * @param count 送る行数を持つ項目。定数なら {@code null}
+     * @param page 頁の先頭へ送るか
+     * @param before 書いてから送るか。{@code false} なら送ってから書く
+     */
+    record Advancing(Integer lines, DataReference count, boolean page, boolean before) {
+
+        /** 何行送るかが翻訳時に決まっているか。 */
+        public boolean fixed() {
+            return lines != null;
+        }
     }
 
     /**
@@ -581,7 +716,16 @@ public sealed interface Statement {
      * @param from   {@code FROM} の転記。指定がなければ {@code null}
      */
     record Rewrite(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
-                   Origin origin) implements Statement {
+                   List<Statement> debug, Origin origin) implements Statement {
+
+        public Rewrite {
+            debug = List.copyOf(debug);
+        }
+
+        public Rewrite(FileDescription file, DataItem record, Move from, KeyCheck keyCheck,
+                       Origin origin) {
+            this(file, record, from, keyCheck, List.of(), origin);
+        }
     }
 
     /**
@@ -590,7 +734,16 @@ public sealed interface Statement {
      * <p>消す相手は、順アクセスなら<b>直前に読んだレコード</b>、乱アクセスなら<b>鍵の指す
      * レコード</b>である。文に書くのはファイル名だけであり、どちらかはアクセス様式で決まる。
      */
-    record Delete(FileDescription file, KeyCheck keyCheck, Origin origin) implements Statement {
+    record Delete(FileDescription file, KeyCheck keyCheck, List<Statement> debug, Origin origin)
+            implements Statement {
+
+        public Delete {
+            debug = List.copyOf(debug);
+        }
+
+        public Delete(FileDescription file, KeyCheck keyCheck, Origin origin) {
+            this(file, keyCheck, List.of(), origin);
+        }
     }
 
     /**
@@ -604,7 +757,16 @@ public sealed interface Statement {
      * @param relation {@code KEY IS} に書いた関係。省略時は等号
      */
     record Start(FileDescription file, int keyIndex, DataReference key, KeyRelation relation,
-                 KeyCheck keyCheck, Origin origin) implements Statement {
+                 KeyCheck keyCheck, List<Statement> debug, Origin origin) implements Statement {
+
+        public Start {
+            debug = List.copyOf(debug);
+        }
+
+        public Start(FileDescription file, int keyIndex, DataReference key, KeyRelation relation,
+                     KeyCheck keyCheck, Origin origin) {
+            this(file, keyIndex, key, relation, keyCheck, List.of(), origin);
+        }
     }
 
     /**
@@ -622,9 +784,12 @@ public sealed interface Statement {
      * @param output  {@code OUTPUT PROCEDURE} の節。{@code GIVING} を書いていれば {@code null}
      * @param merge   {@code MERGE} 文かどうか
      */
+    /**
+     * @param sequence 並べ替えに使う照合順序。既定 (コードページの並び) なら {@code null}
+     */
     record Sort(FileDescription work, List<SortKeySpec> keys, List<FileDescription> using,
                 Procedure input, List<FileDescription> giving, Procedure output, boolean merge,
-                Origin origin) implements Statement {
+                byte[] sequence, Origin origin) implements Statement {
 
         public Sort {
             keys = List.copyOf(keys);
@@ -667,7 +832,65 @@ public sealed interface Statement {
      * <p>{@code PERFORM} と違い<b>戻ってこない</b>。段落の途中から別の段落へ移り、
      * そのまま流れ続ける。
      */
+    /**
+     * {@code SET 呼び名 TO ON/OFF} (要件 FR-135)。
+     *
+     * <p>外から立てる切り替えを、プログラムからも動かせる。記憶域を持たないので、
+     * 転記ではなく<b>実行時の入口が持つ状態</b>を書き換える。
+     */
+    record SetSwitch(int index, boolean on, Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code GO TO} 文 (要件 FR-063)。
+     *
+     * @param target 飛び先の段落。<b>{@code GO TO.} と書かれていれば {@code null}</b>
+     *               であり、{@code ALTER} が書き込むまで通ってはならない場所を表す
+     */
     record GoTo(String target, Origin origin) implements Statement {
+    }
+
+    /**
+     * 1 つの文 (センテンス)。終止符で区切られたひとまとまりである。
+     *
+     * <p>ふつうは並べて出すだけだが、{@code NEXT SENTENCE} の飛び先を決めるのに
+     * <b>どこで文が終わるか</b>が要る。区切りを IR に残しているのはそのためである。
+     */
+    record Sentence(List<Statement> body, Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code NEXT SENTENCE} (要件 FR-061)。
+     *
+     * <p><b>いまの文の残りを飛ばして</b>、次の文の先頭へ移る。{@code CONTINUE} とは違う。
+     * {@code CONTINUE} は「何もしない」であり、囲んでいる {@code IF} の外側にある
+     * 同じ文の続きは実行される。
+     */
+    record NextSentence(Origin origin) implements Statement {
+    }
+
+    /**
+     * {@code ALTER} (要件 FR-063)。
+     *
+     * <p>{@code GO TO} だけを書いた段落の<b>飛び先を実行時に書き換える</b>。
+     * 規格が書き換えられる段落を「{@code GO TO} だけを書いた段落」に限っているのは、
+     * 行き先が 1 つでなければ書き換える先が定まらないためである。
+     */
+    record Alter(List<Change> changes, Origin origin) implements Statement {
+
+        /** 書き換え 1 つ。{@code from} の段落が {@code to} へ飛ぶようになる。 */
+        public record Change(String from, String to) {
+        }
+    }
+
+    /**
+     * {@code GO TO ... DEPENDING ON} (要件 FR-063)。
+     *
+     * <p>値が 1 なら 1 つ目、2 なら 2 つ目へ飛ぶ。<b>並びの外なら飛ばない</b>。
+     * 誤りにはならず、次の文へ進む。規格がそう決めている。
+     */
+    record GoToDepending(List<String> targets, DataReference selector, Origin origin)
+            implements Statement {
     }
 
     /**
@@ -685,12 +908,20 @@ public sealed interface Statement {
      * @param body      その場に書いた文。段落を呼ぶ形では空
      */
     record Perform(String target, String through, Operand times, Condition until,
-                   boolean testAfter, List<Varying> varying, List<Statement> body, Origin origin)
+                   boolean testAfter, List<Varying> varying, List<Statement> body,
+                   List<Statement> debug, Origin origin)
             implements Statement {
+
+        public Perform(String target, String through, Operand times, Condition until,
+                       boolean testAfter, List<Varying> varying, List<Statement> body,
+                       Origin origin) {
+            this(target, through, times, until, testAfter, varying, body, List.of(), origin);
+        }
 
         public Perform {
             varying = List.copyOf(varying);
             body = List.copyOf(body);
+            debug = List.copyOf(debug);
         }
 
         /** 段落を呼ぶ形かどうか。 */
@@ -709,7 +940,17 @@ public sealed interface Statement {
          * @param by     1 回ごとに足す値
          * @param until  やめる条件
          */
-        public record Varying(DataReference target, Operand from, Operand by, Condition until) {
+        public record Varying(DataReference target, Operand from, Operand by, Condition until,
+                              List<Statement> debug, List<Statement> debugTest) {
+
+            public Varying {
+                debug = List.copyOf(debug);
+                debugTest = List.copyOf(debugTest);
+            }
+
+            public Varying(DataReference target, Operand from, Operand by, Condition until) {
+                this(target, from, by, until, List.of(), List.of());
+            }
         }
     }
 }

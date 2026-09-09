@@ -69,6 +69,36 @@ class NumericItemTest {
     }
 
     @Test
+    @DisplayName("符号を持たない項目には絶対値が入る")
+    void anUnsignedItemStoresTheAbsoluteValue() {
+        // 規格がそう決めている。符号を残すと、負の値を移したあと負のまま読み戻される
+        // (NC105A の MOVE-TEST-F1-114「MOVE TO COMP (ABS)」)
+        for (Usage usage : Usage.values()) {
+            if (usage.isFloatingPoint()) {
+                continue;
+            }
+            NumericItem item = NumericItem.of("9(5)V99", usage);
+            Decimal stored = item.decode(item.encode(Decimal.parse("-707.17")));
+            assertEquals(0, Decimal.parse("707.17").compareTo(stored),
+                    "sign was kept for " + usage);
+        }
+    }
+
+    @Test
+    @DisplayName("符号を持つ項目では符号がそのまま残る")
+    void aSignedItemKeepsItsSign() {
+        for (Usage usage : Usage.values()) {
+            if (usage.isFloatingPoint()) {
+                continue;
+            }
+            NumericItem item = NumericItem.of("S9(5)V99", usage);
+            Decimal stored = item.decode(item.encode(Decimal.parse("-707.17")));
+            assertEquals(0, Decimal.parse("-707.17").compareTo(stored),
+                    "sign was lost for " + usage);
+        }
+    }
+
+    @Test
     @DisplayName("すべての USAGE で符号化と復号が往復する")
     void roundTripAcrossUsages() {
         for (Usage usage : Usage.values()) {

@@ -1,5 +1,6 @@
 package dev.cobolonjava.job;
 
+import dev.cobolonjava.runtime.abend.AbendCode;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,8 +17,8 @@ import java.util.Locale;
  * # 行頭の # は注記
  * JOB PAYROLL
  * STEP EXTRACT PGM=PAYEXT PARM=202609
- *   DD PAYIN DSN=data/pay.dat
- *   DD PAYOUT DSN=work/extract.dat
+ *   DD PAYIN DSN=data/pay.dat DISP=SHR
+ *   DD PAYOUT DSN=&amp;WORK DISP=(NEW,PASS) SPACE=8000
  *   DD SYSOUT SYSOUT
  * STEP REPORT PGM=PAYRPT
  *   WHEN RC EXTRACT = 0
@@ -29,9 +30,22 @@ import java.util.Locale;
  * STEP CLEANUP PGM=PAYCLN
  *   WHEN ABEND
  *   DD SYSOUT SYSOUT
+ * STEP RERUN PGM=PAYEXT
+ *   WHEN ABENDCC EXTRACT = S0C7
+ *   DD SYSOUT SYSOUT
  * </pre>
  *
  * <p>字下げに意味はない。読みやすさのためだけのものである。
+ *
+ * <h2>DISP は書かなくてよい</h2>
+ * <p>JCL では {@code DISP} を書かなければ「新しく作る」だが、こちらは<b>何も言っていない</b>
+ * ことになる。確かめも、作りも、消しもしない。名前を書くだけで動かせるほうが、この処理系
+ * 自身の試験には都合がよい。ジョブの側で状態を決めたいときは書ける。
+ *
+ * <h2>大きさはバイトで書く</h2>
+ * <p>JCL の {@code SPACE=} は装置の単位 (トラック、シリンダ、ブロック) で書くが、こちらは
+ * <b>バイトで書く</b>。宣言的形式は装置を知らないので、トラックを持ち込む理由がない。
+ * 書かなければ限りなしであり、使い切って止まることはない。
  *
  * <h2>知らない書き方は誤りにする</h2>
  * <p>読み飛ばさない。書いたつもりの指定が効いていないことに気付けないからである。
@@ -221,8 +235,12 @@ public final class JobScript {
             if (first.equals("EVEN")) {
                 return words.size() == 1 ? new StepCondition.EvenIfAbend() : bad(words, number);
             }
+            if (first.equals("ABENDCC")) {
+                return abendCode(words, number);
+            }
             if (!first.equals("RC")) {
-                report(number, "a condition starts with RC, ABEND, EVEN or NOT: " + words.get(0));
+                report(number,
+                        "a condition starts with RC, ABEND, ABENDCC, EVEN or NOT: " + words.get(0));
                 return null;
             }
             // RC <ステップ> <関係> <値> か、ステップを書かない RC <関係> <値>
@@ -243,6 +261,32 @@ public final class JobScript {
                 report(number, "a return code must be an integer: " + words.get(operand + 1));
                 return null;
             }
+        }
+
+        /**
+         * {@code ABENDCC [ステップ] 関係 コード} (要件 FR-141)。
+         *
+         * <p>比べられるのは等しいか等しくないかだけである。異常終了コードに大小はない。
+         */
+        private StepCondition abendCode(List<String> words, int number) {
+            if (words.size() != 3 && words.size() != 4) {
+                return bad(words, number);
+            }
+            int operand = words.size() == 4 ? 2 : 1;
+            String step = operand == 2 ? words.get(1).toUpperCase(Locale.ROOT) : null;
+            StepCondition.Comparison comparison = comparisonOf(words.get(operand));
+            if (comparison != StepCondition.Comparison.EQ
+                    && comparison != StepCondition.Comparison.NE) {
+                report(number, "ABENDCC compares with = or <> only: " + words.get(operand));
+                return null;
+            }
+            AbendCode code = AbendCode.of(words.get(operand + 1));
+            if (code == null) {
+                report(number, "unknown abend code: " + words.get(operand + 1));
+                return null;
+            }
+            return new StepCondition.Abend(step,
+                    comparison == StepCondition.Comparison.EQ, code);
         }
 
         private StepCondition bad(List<String> words, int number) {
@@ -267,16 +311,67 @@ public final class JobScript {
                 report(number, "DD comes inside a STEP");
                 return;
             }
-            if (words.size() != 3) {
+            if (words.size() < 3) {
                 report(number, "DD takes a name and a target");
                 return;
             }
             String name = words.get(1).toUpperCase(Locale.ROOT);
             String target = words.get(2);
             String upper = target.toUpperCase(Locale.ROOT);
+            // 3 語目より後は修飾語である。書く順は問わない
+            Disposition disposition = Disposition.UNSPECIFIED;
+            long space = DdAssignment.UNLIMITED;
+            String serial = null;
+            for (String word : words.subList(3, words.size())) {
+                String key = word.toUpperCase(Locale.ROOT);
+                if (key.startsWith("DISP=")) {
+                    disposition = dispositionOf(word, number);
+                    if (disposition == null) {
+                        return;
+                    }
+                } else if (key.startsWith("SPACE=")) {
+                    space = spaceOf(word.substring(6), number);
+                    if (space < 0) {
+                        return;
+                    }
+                } else if (key.startsWith("VOL=")) {
+                    serial = word.substring(4).trim();
+                    if (serial.isEmpty()) {
+                        report(number, "VOL takes a volume serial");
+                        return;
+                    }
+                } else {
+                    report(number, "DD does not support: " + word);
+                    return;
+                }
+            }
             if (upper.startsWith("DSN=")) {
-                dd.add(new DdAssignment(name,
-                        new DdTarget.DataSet(java.nio.file.Path.of(target.substring(4)))));
+                String written = target.substring(4);
+                // JCL と同じく、先頭が & のものは一時データセットである
+                if (written.startsWith("&")) {
+                    dd.add(new DdAssignment(name,
+                            new DdTarget.Temporary(written.substring(1), disposition), space));
+                    return;
+                }
+                // 括弧の中が相対世代なら、これはメンバではなく世代データグループである
+                // (要件 FR-114)。JCL と同じ内部モデルへ落ちる
+                String qualifier = qualifierOf(written);
+                if (qualifier != null && GenerationDataGroup.relative(qualifier)) {
+                    dd.add(new DdAssignment(name, new DdTarget.DataSet(libraryOf(written), null,
+                            serial, disposition, Integer.valueOf(Integer.parseInt(qualifier))),
+                            space));
+                    return;
+                }
+                String member = memberOf(written, number);
+                if ("".equals(member)) {
+                    return;
+                }
+                dd.add(new DdAssignment(name, new DdTarget.DataSet(libraryOf(written), member,
+                        serial, disposition), space));
+                return;
+            }
+            if (words.size() > 3) {
+                report(number, "DISP, SPACE and VOL go with DSN=");
                 return;
             }
             switch (upper) {
@@ -285,6 +380,91 @@ public final class JobScript {
                 case "DATA" -> dd.add(new DdAssignment(name, readInline(number)));
                 default -> report(number, "unknown DD target: " + target);
             }
+        }
+
+        /**
+         * {@code DSN=ライブラリ(メンバ)} のメンバ名 (要件 FR-113)。
+         *
+         * @return 書かれていなければ {@code null}。誤りなら空文字列
+         */
+        private String memberOf(String written, int number) {
+            String member = qualifierOf(written);
+            if (member == null) {
+                return null;
+            }
+            if (member.isEmpty()) {
+                report(number, "DSN needs a member name inside the parentheses: " + written);
+                return "";
+            }
+            return member.toUpperCase(Locale.ROOT);
+        }
+
+        /** {@code DSN=名前(なにか)} の括弧の中。括弧が無ければ {@code null}。 */
+        private static String qualifierOf(String written) {
+            int open = written.indexOf('(');
+            if (open < 0 || !written.endsWith(")")) {
+                return null;
+            }
+            return written.substring(open + 1, written.length() - 1).trim();
+        }
+
+        /** {@code DSN=ライブラリ(メンバ)} のライブラリ名。メンバを書かなければ名前そのもの。 */
+        private static String libraryOf(String written) {
+            int open = written.indexOf('(');
+            return open < 0 || !written.endsWith(")")
+                    ? written : written.substring(0, open).trim();
+        }
+
+        /**
+         * {@code SPACE=バイト数} (要件 FR-141)。
+         *
+         * <p>JCL の {@code SPACE=} が装置の単位で書くのに対し、こちらは<b>バイトで書く</b>。
+         * 宣言的形式は装置を知らないので、トラックやシリンダを持ち込む理由がない。
+         *
+         * @return 書かれていなければ限りなし。綴りが誤りなら {@code -1}
+         */
+        private long spaceOf(String written, int number) {
+            try {
+                long bytes = Long.parseLong(written.trim());
+                if (bytes <= 0) {
+                    report(number, "SPACE takes a positive size: " + written);
+                    return -1;
+                }
+                return bytes;
+            } catch (NumberFormatException e) {
+                report(number, "SPACE takes a size in bytes: " + written);
+                return -1;
+            }
+        }
+
+        /**
+         * {@code DISP=状態} または {@code DISP=(状態,正常時,異常時)}。
+         *
+         * @return 綴りが誤りなら {@code null}
+         */
+        private Disposition dispositionOf(String written, int number) {
+            String value = written.substring(5).trim();
+            if (value.startsWith("(") && value.endsWith(")")) {
+                value = value.substring(1, value.length() - 1);
+            }
+            String[] parts = value.split(",", -1);
+            Disposition.Status status = Disposition.Status.of(parts[0]);
+            if (status == null) {
+                report(number, "unknown DISP: " + parts[0]);
+                return null;
+            }
+            Disposition.Action[] actions = new Disposition.Action[2];
+            for (int i = 0; i < 2; i++) {
+                if (parts.length <= i + 1 || parts[i + 1].isBlank()) {
+                    continue;
+                }
+                actions[i] = Disposition.Action.of(parts[i + 1]);
+                if (actions[i] == null) {
+                    report(number, "unknown DISP: " + parts[i + 1]);
+                    return null;
+                }
+            }
+            return Disposition.of(status, actions[0], actions[1]);
         }
 
         /** {@code DATA} から {@code END} までを、そのまま埋め込みのデータにする。 */

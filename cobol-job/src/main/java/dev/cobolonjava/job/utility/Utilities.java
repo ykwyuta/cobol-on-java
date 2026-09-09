@@ -24,7 +24,18 @@ public final class Utilities {
         Map<String, Supplier<CobolProgram>> out = new LinkedHashMap<>();
         out.put("IEFBR14", Iefbr14::new);
         out.put("IEBGENER", Iebgener::new);
+        out.put("IEBCOPY", Iebcopy::new);
         out.put("IDCAMS", Idcams::new);
+        // 整列は名前がいくつもある。呼ばれ方が違うだけで、動きは同じである
+        out.put("SORT", Dfsort::new);
+        out.put("DFSORT", Dfsort::new);
+        out.put("ICEMAN", Dfsort::new);
+        out.put("SYNCSORT", Dfsort::new);
+        out.put("ICETOOL", Icetool::new);
+        // バッチの TSO。分かるのは LISTDS だけである
+        out.put("IKJEFT01", Ikjeft01::new);
+        out.put("IKJEFT1A", Ikjeft01::new);
+        out.put("IKJEFT1B", Ikjeft01::new);
         return Map.copyOf(out);
     }
 

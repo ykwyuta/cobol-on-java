@@ -88,6 +88,8 @@ public final class IndexedDataSet implements KeyedDataSet {
     private int lastLength;
     /** 順アクセスの書き込みで、直前に書いた主鍵。昇順の検査に使う。 */
     private ByteKey lastWritten;
+    /** ジョブが割り当てで決めたこと (要件 FR-113, FR-141)。 */
+    private final DataSetAllocation allocation = new DataSetAllocation();
 
     public IndexedDataSet(Path path, DataSetAttributes attributes, Key primary,
                           List<Key> alternates) {
@@ -107,6 +109,16 @@ public final class IndexedDataSet implements KeyedDataSet {
     @Override
     public DataSetAttributes attributes() {
         return attributes;
+    }
+
+    @Override
+    public void limit(long bytes) {
+        allocation.limit(bytes);
+    }
+
+    @Override
+    public void member(boolean value) {
+        allocation.member(value);
     }
 
     @Override
@@ -132,14 +144,21 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (mode != null) {
             return FileStatus.ALREADY_OPEN;
         }
-        boolean missing = !Files.isReadable(path);
-        if (missing && requested != OpenMode.OUTPUT && !optional) {
-            return FileStatus.NOT_FOUND;
+        String refused = allocation.opening(path, requested, optional, attributes.codePage());
+        if (refused != null) {
+            return refused;
         }
+        boolean missing = !Files.isReadable(path);
         attributes = DataSetAttributes.read(path, attributes);
         records = new TreeMap<>();
         if (requested != OpenMode.OUTPUT && !missing) {
-            for (byte[] record : split(readAll())) {
+            RecordFraming.Framed framed = RecordFraming.split(readAll(), attributes, false);
+            if (framed.damaged()) {
+                // 読む順序が鍵の順である以上、どこまで読めるとは言えない (要件 FR-141)
+                records = null;
+                return FileStatus.IO_ERROR;
+            }
+            for (byte[] record : framed.records()) {
                 records.put(keyOf(record, primary), record);
             }
         }
@@ -189,7 +208,13 @@ public final class IndexedDataSet implements KeyedDataSet {
         }
     }
 
-    /** 索引はデータから導ける。開いたときと変えたときに組み直す。 */
+    /**
+     * 索引はデータから導ける。<b>開いたときだけ</b>組み直す。
+     *
+     * <p>ファイルはレコードだけを主鍵の順に持っているので、組み直した索引では
+     * 同じ副鍵のレコードが主鍵の順に並ぶ。開いたあとの並びは、書いた順・書き換えた順で
+     * 動く (暫定判断 P-087)。
+     */
     private void rebuildIndexes() {
         indexes = new ArrayList<>();
         for (Key alternate : alternates) {
@@ -199,6 +224,61 @@ public final class IndexedDataSet implements KeyedDataSet {
                         .add(entry.getKey());
             }
             indexes.add(index);
+        }
+    }
+
+    /**
+     * 索引にレコードを 1 本足す。同じ副鍵の並びの<b>末尾</b>に付く。
+     *
+     * <p>{@code WITH DUPLICATES} の副鍵で同じ値のレコードを順に読むと、
+     * <b>索引に入った順</b>に返る。並び全体を組み直してしまうと主鍵の順に戻ってしまい、
+     * あとから入ったレコードが先に返る (IX215A START-TEST-GF-09)。
+     */
+    private void indexInsert(ByteKey key, byte[] record) {
+        for (int i = 0; i < alternates.size(); i++) {
+            indexes.get(i)
+                    .computeIfAbsent(keyOf(record, alternates.get(i)), k -> new ArrayList<>())
+                    .add(key);
+        }
+    }
+
+    /** 索引からレコードを 1 本外す。 */
+    private void indexRemove(ByteKey key, byte[] record) {
+        for (int i = 0; i < alternates.size(); i++) {
+            removeFromChain(indexes.get(i), keyOf(record, alternates.get(i)), key);
+        }
+    }
+
+    /**
+     * 書き換えを索引へ映す。
+     *
+     * <p>値が変わらなかった副鍵は<b>並びを動かさない</b>。変わった副鍵では、元の並びから
+     * 外して新しい並びの末尾へ付ける。ホストの副索引も、鍵が変わった項目だけを
+     * 入れ替える。
+     */
+    private void indexUpdate(ByteKey key, byte[] before, byte[] after) {
+        for (int i = 0; i < alternates.size(); i++) {
+            Key alternate = alternates.get(i);
+            ByteKey was = keyOf(before, alternate);
+            ByteKey now = keyOf(after, alternate);
+            if (was.equals(now)) {
+                continue;
+            }
+            TreeMap<ByteKey, List<ByteKey>> index = indexes.get(i);
+            removeFromChain(index, was, key);
+            index.computeIfAbsent(now, k -> new ArrayList<>()).add(key);
+        }
+    }
+
+    private static void removeFromChain(TreeMap<ByteKey, List<ByteKey>> index, ByteKey value,
+                                        ByteKey key) {
+        List<ByteKey> keys = index.get(value);
+        if (keys == null) {
+            return;
+        }
+        keys.remove(key);
+        if (keys.isEmpty()) {
+            index.remove(value);
         }
     }
 
@@ -218,27 +298,6 @@ public final class IndexedDataSet implements KeyedDataSet {
     }
 
     // ---- レコードの切り出し ----
-
-    private List<byte[]> split(byte[] bytes) {
-        List<byte[]> out = new ArrayList<>();
-        if (attributes.format() == RecordFormat.VARIABLE) {
-            int at = 0;
-            while (at + 4 <= bytes.length) {
-                int length = ((bytes[at] & 0xFF) << 8) | (bytes[at + 1] & 0xFF);
-                if (length < 4 || at + length > bytes.length) {
-                    break;
-                }
-                out.add(Arrays.copyOfRange(bytes, at + 4, at + length));
-                at += length;
-            }
-            return out;
-        }
-        int length = attributes.recordLength();
-        for (int at = 0; at < bytes.length; at += length) {
-            out.add(Arrays.copyOfRange(bytes, at, Math.min(at + length, bytes.length)));
-        }
-        return out;
-    }
 
     private byte[] join(List<byte[]> all) {
         if (attributes.format() == RecordFormat.VARIABLE) {
@@ -278,6 +337,7 @@ public final class IndexedDataSet implements KeyedDataSet {
         ByteKey key = active == 0 ? takeNextPrimary() : takeNextAlternate();
         if (key == null) {
             atEnd = true;
+            current = null;
             return FileStatus.AT_END;
         }
         return take(key, into);
@@ -332,6 +392,7 @@ public final class IndexedDataSet implements KeyedDataSet {
             }
         }
         if (found == null) {
+            current = null;
             return FileStatus.NO_RECORD;
         }
         // 鍵で読んだあとの順次読みは、その索引の続きから始まる
@@ -340,14 +401,27 @@ public final class IndexedDataSet implements KeyedDataSet {
         return take(found, into);
     }
 
+    /**
+     * 読める状態か。読めないなら状態コードを返す。
+     *
+     * <p>読めなかったら、直前に読んだレコードは<b>もう現在のものではない</b>。
+     * 規格は {@code REWRITE} と {@code DELETE} の前の入出力文が「成功した
+     * {@code READ}」であることを求めている (85 規格 VII-51, 4.6.4(5))。
+     */
     private String readable() {
         if (mode == null) {
+            current = null;
             return FileStatus.NOT_OPEN;
         }
         if (!mode.canRead()) {
+            current = null;
             return FileStatus.READ_NOT_ALLOWED;
         }
-        return atEnd ? FileStatus.NOT_READABLE : null;
+        if (atEnd) {
+            current = null;
+            return FileStatus.NOT_READABLE;
+        }
+        return null;
     }
 
     private String take(ByteKey key, byte[] into) {
@@ -369,16 +443,19 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (checked != null && !FileStatus.NOT_READABLE.equals(checked)) {
             return checked;
         }
-        ByteKey wanted = new ByteKey(key.clone());
+        int declared = keyIndex == 0 ? primary.length() : alternates.get(keyIndex - 1).length();
+        if (key.length > declared) {
+            return FileStatus.NO_RECORD;
+        }
         if (keyIndex == 0) {
-            ByteKey found = locate(records.navigableKeySet(), wanted, relation);
+            ByteKey found = locate(records.navigableKeySet(), key, declared, relation);
             if (found == null) {
                 return FileStatus.NO_RECORD;
             }
             nextPrimary = found;
         } else {
             TreeMap<ByteKey, List<ByteKey>> index = indexes.get(keyIndex - 1);
-            ByteKey found = locate(index.navigableKeySet(), wanted, relation);
+            ByteKey found = locate(index.navigableKeySet(), key, declared, relation);
             if (found == null) {
                 return FileStatus.NO_RECORD;
             }
@@ -391,16 +468,43 @@ public final class IndexedDataSet implements KeyedDataSet {
         return FileStatus.OK;
     }
 
-    /** 関係を満たす鍵。小さいほうを探す関係では、満たす最後のものが位置になる。 */
-    private static ByteKey locate(java.util.NavigableSet<ByteKey> keys, ByteKey wanted,
-                                  KeyRelation relation) {
+    /**
+     * 関係を満たす鍵 (要件 FR-101)。
+     *
+     * <h2>短い鍵は「先頭が一致するもの」を指す</h2>
+     * <p>{@code START} に書く項目は、鍵と<b>同じ位置から始まって短くてよい</b>。
+     * 規格がそう決めている。短く書けば「先頭 n 文字が一致するレコード」を指す
+     * (総称鍵)。値そのものではなく<b>範囲</b>を指すことになる。
+     *
+     * <p>範囲は、書かれた値の後ろを {@code 0x00} で埋めた下端と {@code 0xFF} で埋めた
+     * 上端で表せる。あとは端から探すだけで、木の性質をそのまま使える。
+     * 端を作らずに 1 件ずつ先頭を比べると、鍵の多いファイルで遅くなる。
+     *
+     * @param wanted   書かれた値。宣言した鍵より短くてよい
+     * @param declared 宣言した鍵の長さ
+     */
+    private static ByteKey locate(java.util.NavigableSet<ByteKey> keys, byte[] wanted,
+                                  int declared, KeyRelation relation) {
+        ByteKey low = new ByteKey(padded(wanted, declared, (byte) 0x00));
+        ByteKey high = new ByteKey(padded(wanted, declared, (byte) 0xFF));
         return switch (relation) {
-            case EQUAL -> keys.contains(wanted) ? wanted : null;
-            case GREATER -> keys.higher(wanted);
-            case NOT_LESS -> keys.ceiling(wanted);
-            case LESS -> keys.lower(wanted);
-            case NOT_GREATER -> keys.floor(wanted);
+            case EQUAL -> {
+                ByteKey found = keys.ceiling(low);
+                yield found != null && found.compareTo(high) <= 0 ? found : null;
+            }
+            case GREATER -> keys.higher(high);
+            case NOT_LESS -> keys.ceiling(low);
+            case LESS -> keys.lower(low);
+            case NOT_GREATER -> keys.floor(high);
         };
+    }
+
+    /** 書かれた値の後ろを埋めて、宣言した鍵の長さに合わせる。 */
+    private static byte[] padded(byte[] wanted, int length, byte filler) {
+        byte[] out = new byte[length];
+        System.arraycopy(wanted, 0, out, 0, Math.min(wanted.length, length));
+        java.util.Arrays.fill(out, Math.min(wanted.length, length), length, filler);
+        return out;
     }
 
     // ---- 書く ----
@@ -441,15 +545,35 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (records.containsKey(key)) {
             return FileStatus.DUPLICATE_KEY;
         }
+        if (allocation.exceeded(occupied(), sizeOf(from))) {
+            // 順編成の 34 にあたるものが、鍵で引く編成では 24 である (要件 FR-141)
+            return FileStatus.BOUNDARY;
+        }
         String conflict = alternateConflict(key, from);
         if (conflict != null) {
             return conflict;
         }
         records.put(key, from.clone());
-        rebuildIndexes();
+        indexInsert(key, records.get(key));
         lastLength = from.length;
         current = null;
         return FileStatus.OK;
+    }
+
+    /** いま書き出したとしたら何バイトになるか (要件 FR-141)。 */
+    private long occupied() {
+        long total = 0;
+        for (byte[] record : records.values()) {
+            total += sizeOf(record);
+        }
+        return total;
+    }
+
+    /** レコード 1 つが占める大きさ。可変長なら {@code RDW} の 4 バイトが付く。 */
+    private long sizeOf(byte[] record) {
+        return attributes.format() == RecordFormat.VARIABLE
+                ? record.length + 4L
+                : attributes.recordLength();
     }
 
     /** {@code WITH DUPLICATES} を書いていない副鍵は、同じ値を 2 つ持てない。 */
@@ -501,15 +625,14 @@ public final class IndexedDataSet implements KeyedDataSet {
     }
 
     private String replace(ByteKey key, byte[] from) {
-        byte[] previous = records.put(key, from.clone());
-        rebuildIndexes();
+        // 副鍵のぶつかりは<b>書き換える前に</b>見る。索引を組み直して確かめてから戻すと、
+        // 同じ副鍵の並びが主鍵の順に戻ってしまう
         String conflict = alternateConflict(key, from);
         if (conflict != null) {
-            // 副鍵がぶつかるなら、書き換えはなかったことにする
-            records.put(key, previous);
-            rebuildIndexes();
             return conflict;
         }
+        byte[] previous = records.put(key, from.clone());
+        indexUpdate(key, previous, records.get(key));
         lastLength = from.length;
         current = null;
         return FileStatus.OK;
@@ -543,8 +666,10 @@ public final class IndexedDataSet implements KeyedDataSet {
     }
 
     private void remove(ByteKey key) {
-        records.remove(key);
-        rebuildIndexes();
+        byte[] record = records.remove(key);
+        if (record != null) {
+            indexRemove(key, record);
+        }
         current = null;
     }
 

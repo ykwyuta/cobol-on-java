@@ -150,9 +150,19 @@ public final class Picture {
                 newSignPosition, blankWhenZero, cells);
     }
 
-    /** {@code BLANK WHEN ZERO} 句を反映した新しい PICTURE を返す。 */
+    /**
+     * {@code BLANK WHEN ZERO} 句を反映した新しい PICTURE を返す。
+     *
+     * <p>規格は「数字項目に BLANK WHEN ZERO を書いたときは、その項目の種別を
+     * 数字編集とみなす」と決めている。つまり {@code PIC 9 BLANK WHEN ZERO} は
+     * {@code "5"} と比べられ、零を入れると空白になる。種別を変えないでおくと
+     * 比較も転記も数字項目のままになり、振る舞いが違ってしまう。
+     */
     public Picture withBlankWhenZero(boolean value) {
-        return new Picture(source, expanded, category, size, digits, scale,
+        Category newCategory = value && category == Category.NUMERIC
+                ? Category.NUMERIC_EDITED
+                : category;
+        return new Picture(source, expanded, newCategory, size, digits, scale,
                 signPosition, value, cells);
     }
 

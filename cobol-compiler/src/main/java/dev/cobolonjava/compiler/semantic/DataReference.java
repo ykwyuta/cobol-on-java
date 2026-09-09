@@ -32,8 +32,21 @@ public record DataReference(DataItem item, List<Subscript> subscripts, RefMod re
         record Constant(int value) implements Subscript {
         }
 
-        /** データ項目で指定した添字。値は実行時に決まる。 */
-        record Variable(DataReference reference) implements Subscript {
+        /**
+         * データ項目で指定した添字。値は実行時に決まる。
+         *
+         * @param offset 相対指定 {@code 項目 (I + 1)} のずれ。書かれていなければ 0
+         */
+        record Variable(DataReference reference, int offset) implements Subscript {
+        }
+
+        /**
+         * {@code ALL} と書いた添字 (要件 FR-070)。
+         *
+         * <p>「その次元のすべての反復」を表す。組み込み関数の引数にだけ書ける。
+         * <b>翻訳時に反復の数だけ引数へ展開する</b>ので、この形が後段へ届くことはない。
+         */
+        record All() implements Subscript {
         }
     }
 

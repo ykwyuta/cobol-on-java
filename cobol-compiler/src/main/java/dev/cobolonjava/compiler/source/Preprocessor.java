@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.source;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -76,6 +77,10 @@ public final class Preprocessor {
     public NormalizedSource process(String fileName, String source) {
         ProcessStatement.Scan scan = ProcessStatement.scan(source);
         SourceReader effective = readerFor(scan.options());
+        if (debuggingMode(source)) {
+            // 7 桁目の D の行を生かす。書かれていなければ注釈と同じである (要件 FR-193)
+            effective = effective.withDebuggingMode();
+        }
         NormalizedSource normalized = effective.normalize(fileName, scan.source());
         NormalizedSource expanded = new CopyExpander(resolver, effective).expand(normalized);
         NormalizedSource replaced = ReplaceProcessor.apply(expanded);
@@ -98,6 +103,36 @@ public final class Preprocessor {
         return options.sourceFormat()
                 .map(format -> format == reader.format() ? reader : format.reader())
                 .orElse(reader);
+    }
+
+    /**
+     * {@code WITH DEBUGGING MODE} が書かれているか (要件 FR-193)。
+     *
+     * <p>7 桁目の {@code D} の行を生かすかどうかが、これで決まる。
+     * <b>読み取りより前に知らなければならない</b>ので、正規化する前の字面を見る。
+     * 環境部の構文木を待っていては、その行はすでに落ちている。
+     *
+     * <p>注釈行は見ない。7 桁目が {@code *} か {@code /} の行、および自由形式の
+     * {@code *>} から始まる行である。説明の文に書かれた語で誤って有効にしないためである。
+     */
+    public static boolean debuggingMode(String source) {
+        for (String line : source.split("\n", -1)) {
+            String text = line.stripTrailing();
+            if (text.length() >= 7) {
+                char indicator = text.charAt(6);
+                if (indicator == '*' || indicator == '/') {
+                    continue;
+                }
+            }
+            String trimmed = text.stripLeading();
+            if (trimmed.startsWith("*>")) {
+                continue;
+            }
+            if (text.toUpperCase(Locale.ROOT).replace(" ", "").contains("WITHDEBUGGINGMODE")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

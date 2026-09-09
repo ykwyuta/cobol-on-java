@@ -1,6 +1,7 @@
 package dev.cobolonjava.compiler.codegen;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.compiler.CobolCompiler;
@@ -27,6 +28,25 @@ class SubscriptGenerationTest {
         Class<?> define(String name, byte[] classFile) {
             return defineClass(name, classFile, 0, classFile.length);
         }
+    }
+
+    private static CobolCompiler.Result compile(List<String> storage, String... procedure) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. HELLO.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.")) {
+            sb.append("       ").append(line).append('\n');
+        }
+        for (String line : storage) {
+            sb.append("       ").append(line).append('\n');
+        }
+        sb.append("       PROCEDURE DIVISION.\n");
+        for (String line : procedure) {
+            sb.append("       ").append(line).append('\n');
+        }
+        return CobolCompiler.standard().compile(FILE, sb.toString());
     }
 
     private static String run(List<String> storage, String... procedure) {
@@ -109,6 +129,48 @@ class SubscriptGenerationTest {
     }
 
     @Test
+    @DisplayName("添字に相対指定を書ける (FR-024, FR-025)")
+    void aSubscriptMayBeRelative() {
+        assertEquals("---X-", run(TABLE,
+                "MOVE 3 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I + 1).").substring(2));
+        assertEquals("-X---", run(TABLE,
+                "MOVE 3 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I - 1).").substring(2));
+    }
+
+    @Test
+    @DisplayName("符号を数字にくっつけたら、それは 2 つ目の添字である (FR-024, FR-025)")
+    void aSignAttachedToTheNumberIsAnotherSubscript() {
+        // 演算子は前後に空白を置く決まりなので、「I + 1」は演算子と数字に切れる。
+        // 「I +1」は符号つきの数字 1 つであり、相対指定ではない。
+        // NIST の検査スイートが ANIMAL (W-1 +1 W-3) と書いている
+        CobolCompiler.Result result = compile(TABLE,
+                "MOVE 3 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I +1).");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("subscript"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("符号つきの数字を添字に書ける (FR-024)")
+    void asignedNumberIsAValidSubscript() {
+        assertEquals("---X-", run(TABLE, "MOVE 'X' TO WS-E (+4).").substring(2));
+    }
+
+    @Test
+    @DisplayName("相対指定でも範囲は確かめる (FR-024, FR-140)")
+    void arelativeSubscriptIsRangeCheckedToo() {
+        // 確かめるのは<b>足したあとの値</b>である
+        CobolCompiler.Result result = compile(TABLE,
+                "MOVE 5 TO WS-I",
+                "MOVE 'X' TO WS-E (WS-I + 1).");
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("定数と変数の添字を混ぜられる (FR-024)")
     void constantAndVariableSubscriptsMix() {
         assertEquals("---X--", run(
@@ -136,6 +198,58 @@ class SubscriptGenerationTest {
                 List.of("01 WS-I PIC 9(3) COMP VALUE 3.",
                         "01 WS-A PIC X(5) VALUE ALL '-'."),
                 "MOVE 'XY' TO WS-A (WS-I:2).").substring(2));
+    }
+
+    @Test
+    @DisplayName("添字と部分参照に定数の足し引きを書ける (FR-024, FR-025)")
+    void constantArithmeticIsFoldedInASubscript() {
+        // NC224A は「TEST-1-DATA (10 - 7: 6 + 2 - 5)」と書く。3 桁目から 3 文字である。
+        // 足し引きの順は左からで、「6 + 2 - 5」は 3 になる
+        assertEquals("CDE", run(
+                List.of("01 WS-A PIC X(8) VALUE 'ABCDEFGH'.",
+                        "01 WS-R PIC X(3)."),
+                "MOVE WS-A (10 - 7: 6 + 2 - 5) TO WS-R.").substring(8));
+    }
+
+    @Test
+    @DisplayName("表の添字にも定数の足し引きを書ける (FR-024)")
+    void constantArithmeticIsFoldedInATableSubscript() {
+        assertEquals("C", run(
+                List.of("01 WS-T.",
+                        "   05 WS-E OCCURS 4 TIMES PIC X.",
+                        "01 WS-R PIC X."),
+                "MOVE 'ABCD' TO WS-T",
+                "MOVE WS-E (1 + 3 - 1) TO WS-R.").substring(4));
+    }
+
+    @Test
+    @DisplayName("部分参照の長さをデータ項目で書ける (FR-026)")
+    void aReferenceModificationLengthMayBeADataItem() {
+        assertEquals("CDE  ", run(
+                List.of("01 WS-A PIC X(8) VALUE 'ABCDEFGH'.",
+                        "01 WS-N PIC 9(3) COMP VALUE 3.",
+                        "01 WS-R PIC X(5)."),
+                "MOVE WS-A (3: WS-N) TO WS-R.").substring(10));
+    }
+
+    @Test
+    @DisplayName("受取側の長さもデータ項目で書ける (FR-026)")
+    void aReferenceModifiedReceiverMayHaveAVariableLength() {
+        // 書き換わるのは 3 桁だけ。受取側は短いほうに合わせて空白で埋められる
+        assertEquals("XY ---", run(
+                List.of("01 WS-N PIC 9(3) COMP VALUE 3.",
+                        "01 WS-A PIC X(6) VALUE ALL '-'."),
+                "MOVE 'XY' TO WS-A (1: WS-N).").substring(2));
+    }
+
+    @Test
+    @DisplayName("長さを省くと項目の終わりまでになる (FR-026)")
+    void anOmittedLengthRunsToTheEndOfTheItem() {
+        assertEquals("DEFGH   ", run(
+                List.of("01 WS-A PIC X(8) VALUE 'ABCDEFGH'.",
+                        "01 WS-I PIC 9(3) COMP VALUE 4.",
+                        "01 WS-R PIC X(8)."),
+                "MOVE WS-A (WS-I:) TO WS-R.").substring(10));
     }
 
     @Test

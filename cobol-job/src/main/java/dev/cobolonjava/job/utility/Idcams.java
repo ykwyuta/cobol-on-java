@@ -1,6 +1,10 @@
 package dev.cobolonjava.job.utility;
 
+import dev.cobolonjava.job.GenerationDataGroup;
+import dev.cobolonjava.job.SystemCatalog;
+import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
+import dev.cobolonjava.runtime.file.PartitionedDataSet;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -18,7 +22,7 @@ import java.util.Locale;
  *
  * <p>VSAM のデータセットを扱うユーティリティである。{@code SYSIN} に書いた制御文を
  * 上から順に実行する。実装したのは {@code REPRO}、{@code DELETE}、
- * {@code DEFINE CLUSTER}、{@code LISTCAT} である。
+ * {@code DEFINE CLUSTER}、{@code DEFINE GDG}、{@code LISTCAT} である。
  *
  * <h2>復帰コードはいちばん大きいものが残る</h2>
  * <p>制御文ごとに復帰コードが立ち、ジョブステップの復帰コードは<b>そのうちいちばん大きい
@@ -104,8 +108,8 @@ public final class Idcams extends UtilityProgram {
 
     /** {@code REPRO INFILE(dd) OUTFILE(dd)} と {@code INDATASET/OUTDATASET}。 */
     private void repro(ProgramContext context, String statement) {
-        Path from = target(context, statement, "INFILE", "INDATASET");
-        Path to = target(context, statement, "OUTFILE", "OUTDATASET");
+        Path from = target(context, statement, "INFILE", "INDATASET", false);
+        Path to = target(context, statement, "OUTFILE", "OUTDATASET", true);
         if (from == null || to == null) {
             print(context, "IDC3202I REPRO NEEDS AN INPUT AND AN OUTPUT");
             fail(12);
@@ -116,8 +120,8 @@ public final class Idcams extends UtilityProgram {
             fail(12);
             return;
         }
-        byte[] bytes = readBytes(from);
-        writeBytes(to, bytes);
+        byte[] bytes = readSound(context, from);
+        writeSound(context, to, bytes);
         DataSetAttributes.read(from).write(to);
         print(context, "IDC0005I NUMBER OF RECORDS PROCESSED WAS " + records(from, bytes));
     }
@@ -130,6 +134,10 @@ public final class Idcams extends UtilityProgram {
             return;
         }
         String name = unwrap(words.get(1));
+        if (said(words, "GDG")) {
+            deleteGroup(context, name, said(words, "FORCE"));
+            return;
+        }
         Path path = context.catalog().resolve(name);
         if (!Files.exists(path)) {
             print(context, "IDC3012I ENTRY " + name + " NOT FOUND");
@@ -149,6 +157,11 @@ public final class Idcams extends UtilityProgram {
      * {@code KEYS} と {@code INDEXED} を読み、サイドカーへ残す。
      */
     private void define(ProgramContext context, String statement) {
+        String group = parameter(statement, "GDG");
+        if (group != null) {
+            defineGroup(context, group);
+            return;
+        }
         String name = parameter(statement, "NAME");
         if (name == null) {
             print(context, "IDC3202I DEFINE NEEDS NAME()");
@@ -174,21 +187,118 @@ public final class Idcams extends UtilityProgram {
         print(context, "IDC0181I STORAGECLASS USED IS LOCAL");
     }
 
+    /**
+     * {@code DEFINE GDG(NAME(基底名) LIMIT(数) [EMPTY|NOEMPTY] [SCRATCH|NOSCRATCH])}
+     * (要件 FR-114)。
+     *
+     * <p>作るのは<b>データセットではなく登録</b>である。世代そのものはあとでジョブが
+     * {@code 基底名(+1)} と書いて作る。だから {@code DEFINE GDG} をしただけでは置き場に
+     * 何も現れない。
+     *
+     * <p>{@code LIMIT} は必須である。書き忘れたまま通すと、あふれる境目が無いことになり、
+     * 実機なら制御文の誤りで止まるジョブが<b>世代を溜め続けて</b>動いてしまう。
+     */
+    private void defineGroup(ProgramContext context, String operands) {
+        String name = parameter(operands, "NAME");
+        if (name == null) {
+            print(context, "IDC3202I DEFINE GDG NEEDS NAME()");
+            fail(12);
+            return;
+        }
+        name = unwrap(name).toUpperCase(Locale.ROOT);
+        String limit = parameter(operands, "LIMIT");
+        int kept = limit == null ? 0 : number(unwrap(limit), 0);
+        if (kept <= 0) {
+            print(context, "IDC3202I DEFINE GDG NEEDS LIMIT()");
+            fail(12);
+            return;
+        }
+        GenerationDataGroup groups = groupsOf(context);
+        if (groups.defined(name)) {
+            print(context, "IDC3013I DUPLICATE DATA SET NAME " + name);
+            fail(12);
+            return;
+        }
+        List<String> options = words(operands.replace(",", " "));
+        groups.define(new GenerationDataGroup.Definition(name, kept,
+                said(options, "EMPTY"), said(options, "SCRATCH")));
+        print(context, "IDC0508I DATA ALLOCATION STATUS FOR VOLUME LOCAL IS 0");
+        print(context, "IDC0181I STORAGECLASS USED IS LOCAL");
+    }
+
+    /**
+     * {@code DELETE 基底名 GDG [FORCE]} (要件 FR-114)。
+     *
+     * <p>世代が残っている基底は {@code FORCE} を書かないと消せない。書かずに消せると、
+     * <b>誰も名前で指せない世代</b>が置き場に残る。ホストが同じ守りを入れているのは
+     * そのためである。
+     */
+    private void deleteGroup(ProgramContext context, String name, boolean force) {
+        GenerationDataGroup groups = groupsOf(context);
+        String base = name.toUpperCase(Locale.ROOT);
+        if (!groups.defined(base)) {
+            print(context, "IDC3012I ENTRY " + base + " NOT FOUND");
+            fail(8);
+            return;
+        }
+        Path volume = context.catalog().directory();
+        SystemCatalog system = new SystemCatalog(volume);
+        List<Integer> generations = GenerationDataGroup.generations(volume, system, base);
+        if (!generations.isEmpty() && !force) {
+            print(context, "IDC3211I ENTRY " + base + " IS NOT EMPTY - FORCE IS REQUIRED");
+            fail(8);
+            return;
+        }
+        for (int generation : generations) {
+            String victim = GenerationDataGroup.nameOf(base, generation);
+            Path path = volume.resolve(victim);
+            remove(path);
+            remove(DataSetAttributes.sidecarOf(path));
+            system.forget(victim);
+            print(context, "IDC0550I ENTRY (A) " + victim + " DELETED");
+        }
+        groups.undefine(base);
+        print(context, "IDC0550I ENTRY (B) " + base + " DELETED");
+    }
+
+    /** 世代データグループの登録。置き場の上に載っている。 */
+    private static GenerationDataGroup groupsOf(ProgramContext context) {
+        return new GenerationDataGroup(context.catalog().directory());
+    }
+
+    /** その語が書いてあるか。{@code NOEMPTY} は {@code EMPTY} ではない。 */
+    private static boolean said(List<String> words, String word) {
+        return words.stream().anyMatch(each -> each.equalsIgnoreCase(word));
+    }
+
     /** {@code LISTCAT}。目録の一覧にあたるのは、置き場にあるファイルの一覧である。 */
     private void listcat(ProgramContext context, String statement) {
         String entries = parameter(statement, "ENTRIES");
         Path directory = context.catalog().directory();
+        GenerationDataGroup groups = groupsOf(context);
+        // 並べるのは目録である。置き場に残っていても、載っていなければ名前では引けない
+        SystemCatalog system = new SystemCatalog(directory);
         List<String> names = new ArrayList<>();
         if (entries != null) {
             for (String entry : words(entries.replace(",", " "))) {
                 names.add(unwrap(entry));
             }
         } else {
-            names.addAll(listing(directory));
+            for (String name : listing(directory, context.codePage())) {
+                if (system.isCataloged(name)) {
+                    names.add(name);
+                }
+            }
+            // 基底は置き場にファイルを持たないので、登録のほうから足す (要件 FR-114)
+            names.addAll(groups.bases());
+            names.sort(PartitionedDataSet.order(context.codePage()));
         }
         for (String name : names) {
             Path path = context.catalog().resolve(name);
-            if (Files.exists(path)) {
+            if (groups.defined(name)) {
+                // 基底は置き場に実体を持たない。登録だけがある (要件 FR-114)
+                print(context, "GDG ----------- " + name);
+            } else if (Files.exists(path) && system.isCataloged(name)) {
                 print(context, "NONVSAM ------- " + name);
             } else {
                 print(context, "IDC3012I ENTRY " + name + " NOT FOUND");
@@ -197,33 +307,49 @@ public final class Idcams extends UtilityProgram {
         }
     }
 
-    private static List<String> listing(Path directory) {
+    /**
+     * 置き場にある名前を並べる。
+     *
+     * <p>並べ方は<b>コードページの順</b>である (要件 FR-053)。目録の並びは名前を
+     * そのまま比べた順であり、EBCDIC では英字が数字より前に来る。Java の順で並べると
+     * {@code A.PAY1} と {@code A.PAYA} が逆に出る。区分データセットのディレクトリと
+     * 同じ決まりなので、同じ場所から引く。
+     */
+    private static List<String> listing(Path directory, CodePage codePage) {
         List<String> names = new ArrayList<>();
         if (!Files.isDirectory(directory)) {
             return names;
         }
         try (var stream = Files.list(directory)) {
             stream.map(path -> path.getFileName().toString())
-                    .filter(name -> !name.endsWith(".meta"))
-                    .sorted()
+                    // 点で始まるのは覚え書きである。データセットの名前は点で始まらない
+                    .filter(name -> !name.endsWith(".meta") && !name.startsWith("."))
                     .forEach(names::add);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot list " + directory, e);
         }
+        names.sort(PartitionedDataSet.order(codePage));
         return names;
     }
 
     // ---- 制御文の読み取り ----
 
-    /** {@code INFILE(dd)} なら DD 名、{@code INDATASET(名前)} ならデータセット名である。 */
+    /**
+     * {@code INFILE(dd)} なら DD 名、{@code INDATASET(名前)} ならデータセット名である。
+     *
+     * @param writing 書き先か。書き先は<b>無くてよい</b> — これから作るのだから
+     */
     private static Path target(ProgramContext context, String statement, String byDd,
-                               String byName) {
+                               String byName, boolean writing) {
         String dd = parameter(statement, byDd);
         if (dd != null) {
-            return context.catalog().resolve(unwrap(dd));
+            return writing ? created(context, unwrap(dd)) : opened(context, unwrap(dd));
         }
         String name = parameter(statement, byName);
-        return name == null ? null : context.catalog().resolve(unwrap(name));
+        if (name == null) {
+            return null;
+        }
+        return writing ? created(context, unwrap(name)) : opened(context, unwrap(name));
     }
 
     /** {@code 鍵(値)} の値。書かれていなければ {@code null}。 */

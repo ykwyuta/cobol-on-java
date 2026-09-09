@@ -189,6 +189,39 @@ class AcceptGenerationTest {
     }
 
     @Test
+    @DisplayName("80 桁に収まらない受取項目は、収まるまでレコードを読む (FR-090)")
+    void aReceiverLongerThanOneRecordReadsSeveralOfThem() {
+        // ホストの SYSIN は 80 桁のレコードの並びである。200 桁の項目なら 3 本読む。
+        // CCVS85 の NC204M (ACC-TEST-F1-13) が証拠を出している — 期待する 200 桁の
+        // 0 桁目・80 桁目・160 桁目に印が置いてあり、それが 3 本の先頭にあたる
+        String first = "A".repeat(80);
+        String second = "B".repeat(80);
+        String third = "C".repeat(40);
+        assertEquals(first + second + third,
+                withInput(List.of(first, second, third),
+                        List.of("01 WS-A PIC X(200)."), "ACCEPT WS-A."));
+    }
+
+    @Test
+    @DisplayName("短いレコードは 80 桁まで空白で埋めてから次へ進む (FR-090)")
+    void aShortRecordIsPaddedToTheRecordWidth() {
+        // 1 本目が短くても、2 本目は<b>81 桁目から</b>始まる。詰めて続けると
+        // そのあとの桁が全部ずれる
+        assertEquals("AB" + " ".repeat(78) + "CD" + " ".repeat(18),
+                withInput(List.of("AB", "CD"),
+                        List.of("01 WS-A PIC X(100)."), "ACCEPT WS-A."));
+    }
+
+    @Test
+    @DisplayName("80 桁までの受取項目はレコードを 1 本しか読まない (FR-090)")
+    void aReceiverInsideOneRecordReadsOnlyOne() {
+        assertEquals("AB   CD   ",
+                withInput(List.of("AB", "CD"),
+                        List.of("01 WS-A PIC X(5).", "01 WS-B PIC X(5)."),
+                        "ACCEPT WS-A", "ACCEPT WS-B."));
+    }
+
+    @Test
     @DisplayName("FROM 呼び名はまだ書けないと報告する (FR-060)")
     void aMnemonicSourceIsReportedAsUnsupported() {
         CobolCompiler.Result result = compile(

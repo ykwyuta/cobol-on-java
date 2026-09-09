@@ -3,8 +3,11 @@ package dev.cobolonjava.compiler.codegen;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.semantic.Condition;
 import dev.cobolonjava.compiler.semantic.DataCategory;
+import dev.cobolonjava.compiler.semantic.DataDivisionBuilder;
+import dev.cobolonjava.compiler.semantic.Intrinsic;
 import dev.cobolonjava.compiler.semantic.DataItem;
 import dev.cobolonjava.compiler.semantic.DataReference;
+import dev.cobolonjava.compiler.semantic.DataLayout;
 import dev.cobolonjava.compiler.semantic.DataSection;
 import dev.cobolonjava.compiler.semantic.Expression;
 import dev.cobolonjava.compiler.semantic.FileDescription;
@@ -20,15 +23,18 @@ import dev.cobolonjava.compiler.semantic.Statement;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.Origin;
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.function.Intrinsics;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.decimal.CobolRounding;
 import dev.cobolonjava.runtime.codepage.CodePages;
+import dev.cobolonjava.runtime.codepage.CollatingSequence;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.decimal.DecimalDivideException;
 import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
+import dev.cobolonjava.runtime.abend.StorageMap;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.picture.PictureParser;
 import dev.cobolonjava.runtime.sort.SortKey;
@@ -79,12 +85,20 @@ public final class ProgramGenerator {
 
     private static final String DATA_VIEW = Type.getInternalName(DataView.class);
     private static final String OPS = Type.getInternalName(Ops.class);
+    private static final String STORAGE_MAP = "L" + Type.getInternalName(StorageMap.class) + ";";
+    private static final String EXTERNAL_REGION_INTERNAL =
+            Type.getInternalName(CobolProgram.ExternalRegion.class);
+    private static final String EXTERNAL_REGION = "L" + EXTERNAL_REGION_INTERNAL + ";";
     private static final String SUPPORT = Type.getInternalName(ProgramSupport.class);
     private static final String STORAGE = Type.getInternalName(Storage.class);
     private static final String CODE_PAGE = Type.getDescriptor(CodePage.class);
     private static final String NUMERIC_ITEM = Type.getDescriptor(NumericItem.class);
+    private static final String CLASS_TEST =
+            Type.getInternalName(dev.cobolonjava.runtime.verb.ClassTest.class);
     private static final String PICTURE = Type.getDescriptor(Picture.class);
     private static final String DECIMAL = Type.getDescriptor(Decimal.class);
+    private static final String INTRINSICS = Type.getInternalName(Intrinsics.class);
+    private static final String COLLATING = Type.getDescriptor(CollatingSequence.class);
     private static final String CLAUSE = Type.getDescriptor(InspectScan.Clause.class);
     private static final String REGION = Type.getDescriptor(Region.class);
 
@@ -95,6 +109,23 @@ public final class ProgramGenerator {
     private final SpecialNames specialNames;
     /** PICTURE の通貨記号。{@code CURRENCY SIGN IS} で差し替えられる。 */
     private char currency = SpecialNames.DEFAULT_CURRENCY;
+    /** PICTURE の小数点。{@code DECIMAL-POINT IS COMMA} で差し替えられる。 */
+    private char decimalPoint = '.';
+
+    /**
+     * このプログラムの照合順序 (要件 FR-054)。
+     *
+     * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれ、それがコードページのバイト値の
+     * 並びと違うときだけ表が入る。{@code null} なら既定の比較を出す。
+     */
+    private byte[] collating;
+
+    /**
+     * 翻訳を始めた時刻 (要件 FR-070)。{@code FUNCTION WHEN-COMPILED} が返す。
+     *
+     * <p>翻訳時に決まる値なので、生成したクラスの定数として持たせる。
+     */
+    private final java.time.ZonedDateTime compiledAt = java.time.ZonedDateTime.now();
     /** {@code PROCEDURE DIVISION USING} に並べた 01 レベル。連絡節の位置決めに使う。 */
     private List<DataItem> parameters = List.of();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
@@ -127,7 +158,35 @@ public final class ProgramGenerator {
 
     private ClassWriter writer;
     private String internal;
+    /**
+     * 原文のファイル名。クラスファイルの {@code SourceFile} になる。
+     *
+     * <p>行番号表へ入れるのは<b>このファイルから来た文だけ</b>である。{@code COPY} で
+     * 取り込んだ文の行番号は写本の中の行であり、ここへ混ぜると別のファイルの行を
+     * このファイルの行として指してしまう (暫定判断 P-050)。
+     */
+    private final String sourceName;
+    /** 作業場所の割り付け。異常終了の覚え書きが項目名で書けるようにする (要件 FR-142)。 */
+    private DataLayout layout;
     private List<String> paragraphNames = new ArrayList<>();
+    /** 囲む側が書いた {@code USE GLOBAL} 宣言節 (要件 FR-091)。 */
+    private List<ProcedureBuilder.GlobalDeclarative> inheritedDeclaratives = List.of();
+
+    /** いま組み立てている段落の名前。行き先の無い {@code GO TO} の文面に使う。 */
+    private String currentParagraphName = "";
+
+    /**
+     * 行き先の無い {@code GO TO} を通ったときに止める命令を出す。
+     *
+     * <p>例外を<b>返して</b>もらってから投げるのは、投げたあとが到達不能だと
+     * 検証器に伝わるようにするためである。
+     */
+    private void emitUnalteredGoTo(String paragraph) {
+        run.visitLdcInsn(paragraph == null ? "" : paragraph);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "unalteredGoTo",
+                "(Ljava/lang/String;)Ljava/lang/RuntimeException;", false);
+        run.visitInsn(Opcodes.ATHROW);
+    }
     private List<ProcedureBuilder.Section> sections = List.of();
     private List<ProcedureBuilder.Declarative> declaratives = List.of();
     /** 通常の流れが始まる段落の番号。宣言部分はそれより前にある。 */
@@ -137,9 +196,10 @@ public final class ProgramGenerator {
     private MethodVisitor clinit;
     private byte[] initialStorageBytes;
 
-    private ProgramGenerator(String className, CodePage codePage, CompilerOptions options,
-                             SpecialNames specialNames) {
+    private ProgramGenerator(String className, String sourceName, CodePage codePage,
+                             CompilerOptions options, SpecialNames specialNames) {
         this.className = className;
+        this.sourceName = sourceName;
         this.codePage = codePage;
         this.rangeChecks = options.subscriptRangeChecks();
         this.specialNames = specialNames;
@@ -158,7 +218,7 @@ public final class ProgramGenerator {
     public record Result(String className, byte[] classFile, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 
@@ -167,6 +227,32 @@ public final class ProgramGenerator {
                                   InitialImage.Result image) {
         return generate(programName, procedure, image, CompilerOptions.NONE,
                 SpecialNames.standard());
+    }
+
+    /** 原文のファイル名と割り付けまで指定してプログラムを生成する (要件 FR-142)。 */
+    public static Result generate(String programName, String sourceName,
+                                  ProcedureBuilder.Result procedure, InitialImage.Result image,
+                                  DataLayout layout, CompilerOptions options,
+                                  SpecialNames specialNames) {
+        return generate(programName, sourceName, procedure, image, layout, options,
+                specialNames, List.of());
+    }
+
+    /**
+     * 囲む側の {@code USE GLOBAL} 宣言節も添えて生成する (要件 FR-091)。
+     *
+     * @param globals 囲む側が書いた宣言節。自分に受け持ちがなければこちらを見る
+     */
+    public static Result generate(String programName, String sourceName,
+                                  ProcedureBuilder.Result procedure, InitialImage.Result image,
+                                  DataLayout layout, CompilerOptions options,
+                                  SpecialNames specialNames,
+                                  List<ProcedureBuilder.GlobalDeclarative> globals) {
+        ProgramGenerator generator = new ProgramGenerator(classNameOf(programName), sourceName,
+                CodePages.DEFAULT, options, specialNames);
+        generator.layout = layout;
+        generator.inheritedDeclaratives = List.copyOf(globals);
+        return generator.emit(procedure, image);
     }
 
     /** 翻訳時オプションを指定してプログラムを生成する。 */
@@ -186,8 +272,8 @@ public final class ProgramGenerator {
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image, CodePage codePage,
                                   CompilerOptions options, SpecialNames specialNames) {
-        return new ProgramGenerator(classNameOf(programName), codePage, options, specialNames)
-                .emit(procedure, image);
+        return new ProgramGenerator(classNameOf(programName), null, codePage, options,
+                specialNames).emit(procedure, image);
     }
 
     /** COBOL のプログラム名を Java のクラス名にする。ハイフンは下線に読み替える。 */
@@ -200,18 +286,29 @@ public final class ProgramGenerator {
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
         parameters = procedure.parameters();
         currency = specialNames.currency();
+        decimalPoint = specialNames.decimalPoint();
+        collating = specialNames.collatingSequence();
         writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         internal = className.replace('.', '/');
         writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER,
                 internal, null, "java/lang/Object",
                 new String[] {Type.getInternalName(CobolProgram.class)});
+        // 原文のファイル名を埋める。異常終了の覚え書きが原文の行を指せるようになる
+        // (要件 FR-142)。行番号は文ごとに planStatements が入れる
+        if (sourceName != null) {
+            writer.visitSource(sourceName, null);
+        }
 
-        emitConstructor(writer, internal);
         emitInitialStorage(image.storage());
+        emitStorageMap();
+        emitExternalRegions();
         List<List<Runnable>> paragraphs = planParagraphs(procedure);
         if (!diagnostics.isEmpty()) {
             return new Result(className, null, List.copyOf(diagnostics));
         }
+        // 飛び先の表があるかどうかは、段落を読んでからでないと決まらない
+        emitConstructor(writer, internal);
+        declareAlterTables();
         emitRun(firstNormal, paragraphs.size());
         emitMain();
         if (!paragraphs.isEmpty()) {
@@ -226,14 +323,81 @@ public final class ProgramGenerator {
         return new Result(className, writer.toByteArray(), List.of());
     }
 
-    private static void emitConstructor(ClassWriter writer, String internal) {
+    private void emitConstructor(ClassWriter writer, String internal) {
         MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
         init.visitCode();
         init.visitVarInsn(Opcodes.ALOAD, 0);
         init.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        if (hasAlterable) {
+            // 飛び先の表は実行のたびに書き換えられるので、複製して持つ
+            init.visitVarInsn(Opcodes.ALOAD, 0);
+            init.visitFieldInsn(Opcodes.GETSTATIC, internal, ALTER_INITIAL, "[I");
+            init.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "[I", "clone", "()Ljava/lang/Object;",
+                    false);
+            init.visitTypeInsn(Opcodes.CHECKCAST, "[I");
+            init.visitFieldInsn(Opcodes.PUTFIELD, internal, ALTERED, "[I");
+        }
+        if (hasIndependentSegment && hasAlterable) {
+            init.visitVarInsn(Opcodes.ALOAD, 0);
+            init.visitInsn(Opcodes.ICONST_M1);
+            init.visitFieldInsn(Opcodes.PUTFIELD, internal, CURRENT_SEGMENT, "I");
+        }
         init.visitInsn(Opcodes.RETURN);
         init.visitMaxs(0, 0);
         init.visitEnd();
+    }
+
+    /** 書き換えられたあとの飛び先を持つ表。 */
+    private static final String ALTERED = "altered$";
+    /** 書かれたままの飛び先。 */
+    private static final String ALTER_INITIAL = "ALTER_INITIAL$";
+    /** 段落ごとの段番号。 */
+    private static final String SEGMENTS = "SEGMENTS$";
+    /** いま動いている段の番号。 */
+    private static final String CURRENT_SEGMENT = "segment$";
+
+    /**
+     * {@code ALTER} のための表を出す (要件 FR-063)。
+     *
+     * <p>書き換えられる段落が 1 つも無ければ何も出さない。ふつうのプログラムの
+     * 生成結果は<b>今までと同じ</b>である。
+     */
+    private void declareAlterTables() {
+        if (!hasAlterable) {
+            return;
+        }
+        writer.visitField(Opcodes.ACC_PRIVATE, ALTERED, "[I", null, null).visitEnd();
+        writer.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                ALTER_INITIAL, "[I", null, null).visitEnd();
+        if (hasIndependentSegment) {
+            writer.visitField(Opcodes.ACC_PRIVATE, CURRENT_SEGMENT, "I", null, null).visitEnd();
+            writer.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_FINAL,
+                    SEGMENTS, "[I", null, null).visitEnd();
+        }
+    }
+
+    /** 飛び先の表をクラスの初期化で組み立てる。 */
+    private void initAlterTables() {
+        if (!hasAlterable) {
+            return;
+        }
+        emitIntArray(ALTER_INITIAL, alterInitial);
+        if (hasIndependentSegment) {
+            emitIntArray(SEGMENTS, segments);
+        }
+    }
+
+    /** クラスの初期化で {@code int} の配列を組み立てる。 */
+    private void emitIntArray(String field, int[] values) {
+        push(clinit, values.length);
+        clinit.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_INT);
+        for (int i = 0; i < values.length; i++) {
+            clinit.visitInsn(Opcodes.DUP);
+            push(clinit, i);
+            push(clinit, values[i]);
+            clinit.visitInsn(Opcodes.IASTORE);
+        }
+        clinit.visitFieldInsn(Opcodes.PUTSTATIC, internal, field, "[I");
     }
 
     /** 初期イメージは複製して返す。実行のたびに書き換えられるためである。 */
@@ -272,23 +436,70 @@ public final class ProgramGenerator {
         for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
             paragraphNames.add(paragraph.name());
         }
+        planAlterable(procedure.paragraphs());
+        debugLineSlot = debugLineSlotOf();
+        debugReasonAt = debugReasonAtOf();
         sections = procedure.sections();
         declaratives = procedure.declaratives();
         firstNormal = procedure.firstNormalParagraph();
         List<List<Runnable>> planned = new ArrayList<>();
+        debugEntries = new ArrayList<>();
+        alterableTransfers = new ArrayList<>();
         for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
             nextLocal = FIRST_FREE_LOCAL;
+            currentParagraphName = paragraph.name();
+            // デバッグの節を動かす文は、書かれた文と<b>別に持つ</b> (要件 FR-193)。
+            // 一緒にすると ALTER で書き換えられる段落かどうかの判定が狂うし、
+            // 書き換えられる段落は本体を出さずに飛び先を返すので、そこでも落ちてしまう
+            planningDebugEntry = true;
+            debugEntries.add(planStatements(paragraph.debugEntry()));
+            planningDebugEntry = false;
+            // 書き換えられる段落は本体を出さない。その中の GO TO も出ないので、
+            // 行番号と理由をここで控えておく (要件 FR-193)
+            List<Runnable> transfer = new ArrayList<>();
+            if (paragraph.alterableGoTo() != null) {
+                planDebugLine(paragraph.alterableGoTo().origin(), "", transfer);
+            }
+            alterableTransfers.add(transfer);
             planned.add(planStatements(paragraph.statements()));
         }
         return planned;
     }
 
+    /**
+     * この文が原文のどの行から来たかを、クラスファイルの行番号表へ入れる (要件 FR-142)。
+     *
+     * <p>異常終了したとき「どの文で止まったか」を言えなければ、診断は役に立たない。
+     * 対応表を自分で持つのではなく<b>クラスファイルの行番号表を使う</b>。JVM の呼び出し
+     * 履歴がそのまま原文の行を指すようになり、対応表が本体とずれる余地が無い。
+     *
+     * <p>{@code COPY} で取り込んだ行は取り込み元の行を指す。{@link Origin} が
+     * 1 文字ごとに出自を持っているので、写した先ではなく<b>書いてある場所</b>になる。
+     */
+    private void planLine(Origin origin, List<Runnable> body) {
+        if (origin == null || origin.line() <= 0 || sourceName == null
+                || !sourceName.equals(origin.fileName())) {
+            return;
+        }
+        int line = origin.line();
+        body.add(() -> {
+            Label here = new Label();
+            run.visitLabel(here);
+            run.visitLineNumber(line, here);
+        });
+    }
+
     private List<Runnable> planStatements(List<Statement> statements) {
         List<Runnable> body = new ArrayList<>();
         for (Statement statement : statements) {
+            planLine(statement.origin(), body);
             if (statement instanceof Statement.Sequence sequence) {
                 // 意味解析で展開された文の並び。そのまま並べて出す
                 body.addAll(planStatements(sequence.statements()));
+            } else if (statement instanceof Statement.Sentence sentence) {
+                planSentence(sentence, body);
+            } else if (statement instanceof Statement.NextSentence) {
+                planNextSentence(statement.origin(), body);
             } else if (statement instanceof Statement.Move move) {
                 planMove(move, body);
             } else if (statement instanceof Statement.Arithmetic arithmetic) {
@@ -315,6 +526,13 @@ public final class ProgramGenerator {
                 // STOP RUN は実行そのものを終え、GOBACK は呼んだ側へ戻る
                 String name = stop.wholeRun() ? "stopRun" : "programReturn";
                 body.add(() -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, name, "()V", false));
+            } else if (statement instanceof Statement.ExitProgram) {
+                // 呼ばれていれば戻り、主プログラムなら何もしない。決めるのは実行時である
+                body.add(() -> {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "exitProgram",
+                            "(" + CONTEXT + ")V", false);
+                });
             } else if (statement instanceof Statement.Search search) {
                 planSearch(search, body);
             } else if (statement instanceof Statement.SearchAll searchAll) {
@@ -349,6 +567,20 @@ public final class ProgramGenerator {
                 planReturn(returned, body);
             } else if (statement instanceof Statement.GoTo goTo) {
                 planGoTo(goTo, body);
+            } else if (statement instanceof Statement.DebugEntry entry) {
+                planDebugEntry(entry, body);
+            } else if (statement instanceof Statement.GoToDepending depending) {
+                planGoToDepending(depending, body);
+            } else if (statement instanceof Statement.Alter alter) {
+                planAlter(alter, body);
+            } else if (statement instanceof Statement.SetSwitch set) {
+                body.add(() -> {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    push(set.index());
+                    run.visitInsn(set.on() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "setSwitch",
+                            "(" + CONTEXT + "IZ)V", false);
+                });
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
@@ -478,7 +710,8 @@ public final class ProgramGenerator {
 
         int result = nextLocal++;
         Runnable storePointer = planStoreResultInt(statement.pointer(), result,
-                Type.getInternalName(StringVerb.Result.class), "pointer", statement.origin());
+                Type.getInternalName(StringVerb.Result.class), "pointer", false,
+                statement.origin());
         if (storePointer == null) {
             return;
         }
@@ -528,8 +761,9 @@ public final class ProgramGenerator {
 
     private void planUnstring(Statement.Unstring statement, List<Runnable> body) {
         Runnable offset = planAddress(statement.source(), statement.origin());
-        OptionalInt length = lengthOf(statement.source(), statement.origin());
-        if (offset == null || length.isEmpty()) {
+        // 送り出す側なので、可変長の表を含む群なら<b>いま何個あるか</b>までである
+        Runnable length = planSendingLength(statement.source(), statement.origin());
+        if (offset == null || length == null) {
             return;
         }
         Runnable pointer = planPointerValue(statement.pointer(), statement.origin());
@@ -579,9 +813,10 @@ public final class ProgramGenerator {
         }
         String resultType = Type.getInternalName(UnstringVerb.Result.class);
         Runnable storePointer = planStoreResultInt(statement.pointer(), result, resultType,
-                "pointer", statement.origin());
+                "pointer", false, statement.origin());
+        // TALLYING は<b>足し込む</b>。入れ替えない (規格 VI-135)
         Runnable storeTallying = planStoreResultInt(statement.tallying(), result, resultType,
-                "tallying", statement.origin());
+                "tallying", true, statement.origin());
         if (storePointer == null || storeTallying == null) {
             return;
         }
@@ -590,7 +825,7 @@ public final class ProgramGenerator {
 
         body.add(() -> {
             offset.run();
-            push(length.getAsInt());
+            length.run();
             pointer.run();
             emitArray(delimiters, Type.getInternalName(UnstringVerb.Delimiter.class));
             emitArray(fields, Type.getInternalName(UnstringVerb.Field.class));
@@ -653,15 +888,36 @@ public final class ProgramGenerator {
             };
         }
 
+        // 受取項目が数字なら、切り出したものを<b>符号なし整数</b>として入れる。
+        // 英数字として詰めると、桁があふれたときに上の桁が残る (NC218A)
+        boolean numeric = DataCategory.of(target.field()).isNumeric();
+        String numericField = numeric
+                ? numericItemConstant(target.field().item(), origin)
+                : null;
+        if (numeric && numericField == null) {
+            return null;
+        }
+        boolean justifiedField = target.field().item().justified();
         Runnable writeDelimiter = delimiter;
         Runnable writeCount = count;
         return () -> {
             run.visitVarInsn(Opcodes.ALOAD, result);
             push(index);
-            fieldOffset.run();
-            push(fieldLength.getAsInt());
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringField",
-                    "(L" + resultType + ";IL" + STORAGE + ";II)V", false);
+            if (numeric) {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, numericField, NUMERIC_ITEM);
+                fieldOffset.run();
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringNumeric",
+                        "(L" + resultType + ";I" + NUMERIC_ITEM + "L" + STORAGE + ";I"
+                                + CODE_PAGE + ")V", false);
+            } else {
+                fieldOffset.run();
+                push(fieldLength.getAsInt());
+                run.visitInsn(justifiedField ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeUnstringField",
+                        "(L" + resultType + ";IL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+            }
             if (writeDelimiter != null) {
                 writeDelimiter.run();
             }
@@ -687,8 +943,13 @@ public final class ProgramGenerator {
     }
 
     /** 実行結果の整数を項目へ書き戻す命令。書き戻す先がなければ何もしない。 */
+    /**
+     * {@code UNSTRING} が返した数を受取項目へ入れる。
+     *
+     * @param accumulate 入れ替えずに<b>足し込む</b>か。{@code TALLYING} がそうである
+     */
     private Runnable planStoreResultInt(DataReference target, int result, String resultType,
-                                        String accessor, Origin origin) {
+                                        String accessor, boolean accumulate, Origin origin) {
         if (target == null) {
             return () -> { };
         }
@@ -697,12 +958,13 @@ public final class ProgramGenerator {
         if (offset == null || field == null) {
             return null;
         }
+        String entry = accumulate ? "addInteger" : "storeInteger";
         return () -> {
             run.visitVarInsn(Opcodes.ALOAD, result);
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, resultType, accessor, "()I", false);
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             offset.run();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, entry,
                     "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
         };
     }
@@ -767,7 +1029,9 @@ public final class ProgramGenerator {
         }
         Runnable limit = planSourceDecimal(new Operand.Reference(statement.index()),
                 statement.origin());
-        if (limit == null) {
+        Runnable bound = planOccurs(statement.occurs(), statement.occursDepending(),
+                statement.origin());
+        if (limit == null || bound == null) {
             return;
         }
 
@@ -790,7 +1054,7 @@ public final class ProgramGenerator {
             // 指標が回数を超えていたら、そこで終わりである
             limit.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
-            push(statement.occurs());
+            bound.run();
             run.visitJumpInsn(Opcodes.IF_ICMPGT, exhausted);
             for (int i = 0; i < hit.length; i++) {
                 emitCondition(statement.whens().get(i).condition(), hit[i], true);
@@ -848,6 +1112,11 @@ public final class ProgramGenerator {
             }
             comparisons.add(comparison);
         }
+        Runnable bound = planOccurs(statement.occurs(), statement.occursDepending(),
+                statement.origin());
+        if (bound == null) {
+            return;
+        }
         List<Runnable> atEnd = planStatements(statement.atEnd());
         List<Runnable> matched = planStatements(statement.whenStatements());
 
@@ -863,7 +1132,7 @@ public final class ProgramGenerator {
 
             run.visitInsn(Opcodes.ICONST_1);
             run.visitVarInsn(Opcodes.ISTORE, low);
-            push(statement.occurs());
+            bound.run();
             run.visitVarInsn(Opcodes.ISTORE, high);
 
             run.visitLabel(top);
@@ -976,8 +1245,10 @@ public final class ProgramGenerator {
                 }
                 : () -> {
                     run.visitVarInsn(Opcodes.ALOAD, 2);
+                    // 受取項目が 1 レコードに収まらなければ、収まるまで読む (要件 FR-090)
+                    push(length.getAsInt());
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "acceptLine",
-                            "(" + Type.getDescriptor(ProgramContext.class) + ")[B", false);
+                            "(" + Type.getDescriptor(ProgramContext.class) + "I)[B", false);
                 };
 
         if (statement.kind() == MoveRules.Kind.ALPHANUMERIC) {
@@ -1025,7 +1296,8 @@ public final class ProgramGenerator {
             return;
         }
         InitializeImage.Result image = InitializeImage.build(statement.target().item(),
-                statement.withFiller(), statement.replacing(), codePage);
+                statement.withFiller(), statement.replacing(), codePage,
+                specialNames.highValue(), specialNames.lowValue());
         diagnostics.addAll(image.diagnostics());
         if (!image.succeeded()) {
             return;
@@ -1078,6 +1350,7 @@ public final class ProgramGenerator {
             int length = file.recordLength();
             boolean optional = file.optional();
             boolean indexed = file.organization() == Organization.INDEXED;
+            List<Runnable> watched = planStatements(opened.debug());
             body.add(() -> {
                 emitFileName(file);
                 push(mode);
@@ -1095,26 +1368,52 @@ public final class ProgramGenerator {
                         "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;II"
                                 + (indexed ? "" : "I") + "IZ" + (indexed ? "[I" : "") + ")[B",
                         false);
+                if (opened.noRewind()) {
+                    // 巻き戻さないという指示は、巻を持たない媒体では行いようがない。
+                    // 開けたことは変わらないので、成功したときだけ 07 に置き換える
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "nonReel",
+                            "([B" + CONTEXT + ")[B", false);
+                }
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
+                // 開けば頁は初めからである。形を読み直し、行数を 0 に戻す
+                if (file.linage() != null) {
+                    emitLinageSetup(file.linage(), statement.origin());
+                }
+                watched.forEach(Runnable::run);
             });
         }
     }
 
     /** {@code CLOSE} を組み立てる (要件 FR-102)。 */
     private void planClose(Statement.Close statement, List<Runnable> body) {
-        for (FileDescription file : statement.files()) {
+        for (Statement.Close.Closed closed : statement.files()) {
+            FileDescription file = closed.file();
             int slot = nextLocal++;
             Runnable status = planFileStatus(file, statement.origin(), slot, false, false);
             if (status == null) {
                 return;
             }
+            List<Runnable> watched = planStatements(closed.debug());
             body.add(() -> {
                 emitFileName(file);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "close",
-                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
+                switch (closed.volume()) {
+                    // REEL / UNIT は閉じない。巻を送るだけなので、ファイルは開いたままである
+                    case REEL -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "closeReel",
+                            "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
+                    case NO_REWIND -> run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS,
+                            "closeNoRewind",
+                            "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
+                    case NONE -> {
+                        push(closed.lock() ? 1 : 0);
+                        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "close",
+                                "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;Z)[B", false);
+                    }
+                }
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
+                watched.forEach(Runnable::run);
             });
         }
     }
@@ -1159,7 +1458,7 @@ public final class ProgramGenerator {
         // 順次読みでは読んでみるまで番号が決まらない。読めた番号を鍵の項目へ返す
         Runnable number = !byKey && file.organization() == Organization.RELATIVE
                         && file.relativeKey() != null
-                ? planRelativeNumber(file, statement.origin())
+                ? planRelativeNumber(file, slot, statement.origin())
                 : null;
         List<Runnable> into = statement.into() == null
                 ? List.of()
@@ -1168,6 +1467,11 @@ public final class ProgramGenerator {
         List<Runnable> notAtEnd = planStatements(statement.notAtEnd());
         List<Runnable> onInvalid = planStatements(onInvalidOf(statement.keyCheck(), true));
         List<Runnable> otherwise = planStatements(onInvalidOf(statement.keyCheck(), false));
+        // ファイル名を見張るデバッグの節は、<b>レコードが渡ったときだけ</b>動く
+        // (要件 FR-193)。AT END や INVALID KEY では動かない。読めていないのだから
+        // DEBUG-CONTENTS に入れるものが無い。DB203A の READ-TEST-2 がそこを見ている。
+        // ほかの入出力文は成否によらず動くので、そちらとは置き場所が違う
+        List<Runnable> watched = planStatements(statement.debug());
         int length = file.recordLength();
         Runnable keyArguments = key;
         Runnable offset = recordOffset;
@@ -1194,6 +1498,10 @@ public final class ProgramGenerator {
                                 + (byKey ? "I" : "") + "L" + STORAGE + ";II)[B", false);
             }
             run.visitVarInsn(Opcodes.ASTORE, slot);
+            // 番号を返せなければ<b>読めなかったことになる</b>。状態を判定するより前に置く
+            if (number != null) {
+                number.run();
+            }
             status.run();
 
             Label ended = new Label();
@@ -1202,12 +1510,10 @@ public final class ProgramGenerator {
             emitStatusTest(slot, "fileAtEnd", Opcodes.IFNE, ended);
             emitStatusTest(slot, "fileInvalidKey", Opcodes.IFNE, invalid);
             emitStatusTest(slot, "fileSucceeded", Opcodes.IFEQ, end);
-            if (number != null) {
-                number.run();
-            }
             if (depending != null) {
                 depending.run();
             }
+            watched.forEach(Runnable::run);
             into.forEach(Runnable::run);
             notAtEnd.forEach(Runnable::run);
             otherwise.forEach(Runnable::run);
@@ -1269,6 +1575,20 @@ public final class ProgramGenerator {
         };
     }
 
+    /** 項目のバイト列を、番地と長さの組として積む。 */
+    private Runnable planKeyBytes(DataReference key, Origin origin) {
+        Runnable address = planAddress(key, origin);
+        OptionalInt length = lengthOf(key, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        int size = length.getAsInt();
+        return () -> {
+            address.run();
+            push(size);
+        };
+    }
+
     /** 数値項目の値を {@code int} として積む。相対レコード番号とレコード長に使う。 */
     private Runnable planKeyValue(DataReference key, Origin origin) {
         Runnable address = planAddress(key, origin);
@@ -1284,8 +1604,15 @@ public final class ProgramGenerator {
         };
     }
 
-    /** 読めたレコードの相対レコード番号を {@code RELATIVE KEY} の項目へ入れる。 */
-    private Runnable planRelativeNumber(FileDescription file, Origin origin) {
+    /**
+     * 読めたレコードの相対レコード番号を {@code RELATIVE KEY} の項目へ入れる。
+     *
+     * <p>桁が足りなければ番号を返せない。<b>状態コードごと差し替える</b>ので、
+     * 状態を判定するより前に置かなければならない (要件 FR-101)。
+     *
+     * @param slot 状態コードを置いた局所変数。入れたあとの状態で上書きする
+     */
+    private Runnable planRelativeNumber(FileDescription file, int slot, Origin origin) {
         DataReference key = file.relativeKey();
         Runnable address = planAddress(key, origin);
         String field = numericItemConstant(key.item(), origin);
@@ -1293,13 +1620,14 @@ public final class ProgramGenerator {
             return null;
         }
         return () -> {
+            run.visitVarInsn(Opcodes.ALOAD, slot);
             emitFileName(file);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "relativeNumber",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)I", false);
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             address.run();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
-                    "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "relativeNumberInto",
+                    "([B" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + NUMERIC_ITEM
+                            + "L" + STORAGE + ";I)[B", false);
+            run.visitVarInsn(Opcodes.ASTORE, slot);
         };
     }
 
@@ -1311,7 +1639,36 @@ public final class ProgramGenerator {
      */
     private void planWrite(Statement.Write statement, List<Runnable> body) {
         planRecordOutput(statement.file(), statement.record(), statement.from(),
-                statement.keyCheck(), "write", statement.origin(), body);
+                statement.keyCheck(), "write", statement.advancing(), statement.debug(),
+                statement.origin(), body);
+        planPageCheck(statement.pageCheck(), body);
+    }
+
+    /**
+     * {@code AT END-OF-PAGE} の分岐を組み立てる (要件 FR-113)。
+     *
+     * <p>頁の終わりに達したかは、書いた側 (実行時) しか知らない。記憶域に残すと
+     * プログラムから見えてしまうので、実行時の入口が覚えたものを読む。
+     */
+    private void planPageCheck(Statement.PageCheck pageCheck, List<Runnable> body) {
+        if (pageCheck == null) {
+            return;
+        }
+        List<Runnable> atEnd = planStatements(pageCheck.atEnd());
+        List<Runnable> otherwise = planStatements(pageCheck.otherwise());
+        body.add(() -> {
+            Label reached = new Label();
+            Label end = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "atEndOfPage",
+                    "(" + CONTEXT + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFNE, reached);
+            otherwise.forEach(Runnable::run);
+            run.visitJumpInsn(Opcodes.GOTO, end);
+            run.visitLabel(reached);
+            atEnd.forEach(Runnable::run);
+            run.visitLabel(end);
+        });
     }
 
     /**
@@ -1322,7 +1679,8 @@ public final class ProgramGenerator {
      */
     private void planRewrite(Statement.Rewrite statement, List<Runnable> body) {
         planRecordOutput(statement.file(), statement.record(), statement.from(),
-                statement.keyCheck(), "rewrite", statement.origin(), body);
+                statement.keyCheck(), "rewrite", null, statement.debug(),
+                statement.origin(), body);
     }
 
     /**
@@ -1332,8 +1690,9 @@ public final class ProgramGenerator {
      * どちらを呼ぶかは<b>アクセス様式で翻訳時に決まる</b>。
      */
     private void planRecordOutput(FileDescription file, DataItem record, Statement.Move from,
-                                  Statement.KeyCheck keyCheck, String verb, Origin origin,
-                                  List<Runnable> body) {
+                                  Statement.KeyCheck keyCheck, String verb,
+                                  Statement.Advancing advancing, List<Statement> debug,
+                                  Origin origin, List<Runnable> body) {
         int slot = nextLocal++;
         Runnable status = planFileStatus(file, origin, slot, false, keyCheck != null);
         Runnable area = planAddress(new DataReference(record, List.of(), null, origin), origin);
@@ -1355,8 +1714,30 @@ public final class ProgramGenerator {
         if (byKey) {
             entry = indexed ? verb + "Key" : verb + "At";
         }
-        String called = entry;
         boolean withNumber = byKey && !indexed;
+        Runnable lines = null;
+        if (advancing != null) {
+            if (byKey) {
+                // 行送りは印字するファイルのものである。鍵で引くファイルには行がない
+                report(origin, "ADVANCING cannot be used on a keyed file: " + file.name());
+                return;
+            }
+            lines = planAdvancing(advancing, origin);
+            if (lines == null) {
+                return;
+            }
+            entry = "writeLine";
+        }
+        // LINAGE を書いたファイルは、行送りを書かない WRITE も 1 行を使う。
+        // 頁の中の位置を数え続けなければならないので、常にこちらの道を通す
+        FileDescription.Linage linage = "write".equals(verb) && !byKey ? file.linage() : null;
+        if (linage != null) {
+            entry = "writeLinage";
+        }
+        String called = entry;
+        Runnable advance = lines;
+        boolean before = advancing != null && advancing.before();
+        Runnable page = linage == null ? null : planLinageShape(linage);
         Runnable call = () -> {
             emitFileName(file);
             if (withNumber) {
@@ -1365,11 +1746,99 @@ public final class ProgramGenerator {
             area.run();
             length.run();
             emitLengthBounds(file, record);
+            if (linage != null && advance == null) {
+                // 行送りを書かない WRITE は AFTER ADVANCING 1 と同じだけ進む
+                push(1);
+                push(0);
+            } else if (advance != null) {
+                advance.run();
+                push(before ? 1 : 0);
+            }
+            if (page != null) {
+                page.run();
+            }
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, called,
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
-                            + (withNumber ? "I" : "") + "L" + STORAGE + ";IIII)[B", false);
+                            + (withNumber ? "I" : "") + "L" + STORAGE + ";IIII"
+                            + (linage != null || advance != null ? "IZ" : "")
+                            + (linage != null ? "IIIIII" : "") + ")[B", false);
         };
-        planKeyedCall(call, status, slot, keyCheck, body);
+        planKeyedCall(call, status, slot, keyCheck, debug, body);
+    }
+
+    /**
+     * 論理頁の形が<b>どこに置いてあるか</b>を積む (要件 FR-113)。
+     *
+     * <p>値そのものではなく置き場を渡す。頁の形は項目で書けるので、開くたびに
+     * 読み直さなければならない。翻訳時に決まるのは置き場だけである。
+     */
+    private Runnable planLinageShape(FileDescription.Linage linage) {
+        int counterAt = linage.counter().absoluteOffset().orElse(-1);
+        int pageAt = linage.page().at().absoluteOffset().orElse(-1);
+        int footingAt = linage.footing().at().absoluteOffset().orElse(-1);
+        int topAt = linage.top().at().absoluteOffset().orElse(-1);
+        int bottomAt = linage.bottom().at().absoluteOffset().orElse(-1);
+        int startedAt = linage.started().at().absoluteOffset().orElse(-1);
+        return () -> {
+            push(counterAt);
+            push(pageAt);
+            push(footingAt);
+            push(topAt);
+            push(bottomAt);
+            push(startedAt);
+        };
+    }
+
+    /**
+     * 開くときに、頁の形をその置き場へ写す (要件 FR-113)。
+     *
+     * <p>項目で書かれた形は<b>開くたびに読み直す</b>決まりである。数で書かれた形も
+     * 同じ道を通す。書かれていない指定は 0 になる。
+     */
+    private void emitLinageSetup(FileDescription.Linage linage, Origin origin) {
+        storeLinageSlot(linage.page(), origin);
+        storeLinageSlot(linage.footing(), origin);
+        storeLinageSlot(linage.top(), origin);
+        storeLinageSlot(linage.bottom(), origin);
+        // 開いた時点で紙は本文の 1 行目にある。規格は LINAGE-COUNTER を
+        // <b>1 にする</b>と決めている (85 規格 VII-5 1.3.8、SQ201M WRT-TEST-01)。
+        // まだ何も置いていないことは別の置き場で覚える
+        emitStoreCounter(linage.counter().absoluteOffset().orElse(0), () -> push(1));
+        emitStoreCounter(linage.started().at().absoluteOffset().orElse(0), () -> push(0));
+    }
+
+    private void storeLinageSlot(FileDescription.Linage.Slot slot, Origin origin) {
+        int at = slot.at().absoluteOffset().orElse(0);
+        if (slot.source() == null) {
+            emitStoreCounter(at, () -> push(0));
+            return;
+        }
+        Runnable value = planLinageValue(slot.source(), origin);
+        if (value == null) {
+            return;
+        }
+        emitStoreCounter(at, value);
+    }
+
+    /** 頁の形の値を {@code int} として積む。 */
+    private Runnable planLinageValue(Operand source, Origin origin) {
+        if (source instanceof Operand.Literal literal) {
+            Decimal value = decimalOf(literal.value(), origin);
+            if (value == null) {
+                return null;
+            }
+            int written = value.toBigDecimal().intValue();
+            return () -> push(written);
+        }
+        return planKeyValue(((Operand.Reference) source).reference(), origin);
+    }
+
+    private void emitStoreCounter(int at, Runnable value) {
+        run.visitVarInsn(Opcodes.ALOAD, 1);
+        push(at);
+        value.run();
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "writeCounter",
+                "(L" + STORAGE + ";II)V", false);
     }
 
     /**
@@ -1410,7 +1879,7 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, entry,
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + arguments + ")[B",
                     false);
-        }, status, slot, statement.keyCheck(), body);
+        }, status, slot, statement.keyCheck(), statement.debug(), body);
     }
 
     /**
@@ -1424,8 +1893,9 @@ public final class ProgramGenerator {
         Runnable status = planFileStatus(file, statement.origin(), slot, false,
                 statement.keyCheck() != null);
         boolean indexed = file.organization() == Organization.INDEXED;
+        // 索引編成では<b>書かれた項目</b>を渡す。鍵より短ければ総称鍵になる
         Runnable key = indexed
-                ? planRecordKey(file, statement.keyIndex(), statement.origin())
+                ? planKeyBytes(statement.key(), statement.origin())
                 : planKeyValue(statement.key(), statement.origin());
         if (status == null || key == null) {
             return;
@@ -1442,7 +1912,7 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, indexed ? "startKey" : "start",
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
                             + (indexed ? "IL" + STORAGE + ";III" : "II") + ")[B", false);
-        }, status, slot, statement.keyCheck(), body);
+        }, status, slot, statement.keyCheck(), statement.debug(), body);
     }
 
     /**
@@ -1451,12 +1921,17 @@ public final class ProgramGenerator {
      * @param call 状態コードのバイト列を積む命令
      */
     private void planKeyedCall(Runnable call, Runnable status, int slot,
-                               Statement.KeyCheck keyCheck, List<Runnable> body) {
+                               Statement.KeyCheck keyCheck, List<Statement> debug,
+                               List<Runnable> body) {
+        // ファイル名を見張るデバッグの節は<b>入出力の直後</b>に動く (要件 FR-193)。
+        // INVALID KEY で飛ぶ前でなければならない。飛んだ先で DEBUG-ITEM を読む試験がある
+        List<Runnable> watched = planStatements(debug);
         if (keyCheck == null) {
             body.add(() -> {
                 call.run();
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();
+                watched.forEach(Runnable::run);
             });
             return;
         }
@@ -1466,6 +1941,7 @@ public final class ProgramGenerator {
             call.run();
             run.visitVarInsn(Opcodes.ASTORE, slot);
             status.run();
+            watched.forEach(Runnable::run);
 
             Label invalid = new Label();
             Label end = new Label();
@@ -1503,13 +1979,135 @@ public final class ProgramGenerator {
      */
     private Runnable planWrittenLength(FileDescription file, DataItem record, Origin origin) {
         FileDescription.Varying varying = file.varying();
-        if (varying == null || varying.depending() == null) {
-            // DEPENDING ON がなければ、書いたレコード記述の長さがそのままレコード長である
+        if (varying == null) {
+            // 固定長。書いたレコード記述の長さがそのままレコード長である
             int length = record.totalLength();
             return () -> push(length);
         }
+        if (varying.depending() == null) {
+            // RECORD IS VARYING に DEPENDING ON を書かなければ、レコード長は
+            // <b>レコード記述そのもの</b>が決める。OCCURS ... DEPENDING ON が
+            // あればその値ぶんだけ短くなる (要件 FR-106)
+            return planDescribedLength(record, origin);
+        }
         Runnable address = planAddress(varying.depending(), origin);
         String field = numericItemConstant(varying.depending().item(), origin);
+        if (address == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
+        };
+    }
+
+    /**
+     * レコード記述そのものから、いまのレコード長を積む (要件 FR-106)。
+     *
+     * <p>記憶域は<b>最大の回数</b>で取ってある。実行時に変わるのは「いま何個あるか」
+     * だけなので、割り付けた長さから<b>使っていない分</b>を引けばよい。
+     *
+     * <pre>
+     * レコード長 = 割り付けた長さ - Σ (最大回数 - いまの回数) × 1 個分の長さ
+     * </pre>
+     *
+     * <p>この形でよいのは、規格が {@code OCCURS ... DEPENDING ON} の項目を<b>その群の
+     * 最後</b>に限っているからである。うしろに何も来ないので、余りは末尾に固まる。
+     */
+    private Runnable planDescribedLength(DataItem record, Origin origin) {
+        List<DataItem> tables = new ArrayList<>();
+        collectDependingTables(record, tables, false);
+        int whole = record.totalLength();
+        if (tables.isEmpty()) {
+            return () -> push(whole);
+        }
+        List<Runnable> parts = new ArrayList<>();
+        for (DataItem table : tables) {
+            DataItem counter = table.occursDepending();
+            String field = numericItemConstant(counter, origin);
+            Runnable address = planAddress(
+                    new DataReference(counter, List.of(), null, origin), origin);
+            if (field == null || address == null) {
+                return null;
+            }
+            int max = table.occurs();
+            int element = table.length();
+            parts.add(() -> {
+                // (最大回数 - いまの回数) × 1 個分
+                push(max);
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+                address.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
+                        "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
+                run.visitInsn(Opcodes.ISUB);
+                push(element);
+                run.visitInsn(Opcodes.IMUL);
+                run.visitInsn(Opcodes.ISUB);
+            });
+        }
+        return () -> {
+            push(whole);
+            parts.forEach(Runnable::run);
+        };
+    }
+
+    /**
+     * レコードの中の {@code OCCURS ... DEPENDING ON} の表を集める。
+     *
+     * <p>入れ子になった表 (可変長の表の中の可変長の表) は数えない。1 個分の長さ自体が
+     * 変わるので、上の引き算では足りないからである。<b>黙って近い値を返さない</b>ため、
+     * 見つけたら告げて最大の長さのままにする。
+     */
+    /** その項目の中に {@code OCCURS ... DEPENDING ON} の表があるか。 */
+    private static boolean hasDependingTable(DataItem item) {
+        if (item.occursDepending() != null) {
+            return true;
+        }
+        for (DataItem child : item.children()) {
+            if (hasDependingTable(child)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void collectDependingTables(DataItem item, List<DataItem> tables, boolean inside) {
+        boolean depending = item.occursDepending() != null;
+        if (depending) {
+            if (inside) {
+                diagnostics.add(Diagnostic.warning(item.origin(),
+                        "a variable-length table inside another variable-length table is not"
+                                + " measured yet; the record is written at its maximum length: "
+                                + item.name()));
+                return;
+            }
+            tables.add(item);
+        }
+        for (DataItem child : item.children()) {
+            collectDependingTables(child, tables, inside || depending);
+        }
+    }
+
+    /**
+     * 送る行数を積む命令 (要件 FR-102)。
+     *
+     * <p>頁の先頭へ送る指定は<b>負の数</b>で表す。行数と同じ 1 つの引数に載せられ、
+     * 呼ぶ側の形が増えないからである。
+     *
+     * @return 読めなければ {@code null}
+     */
+    private Runnable planAdvancing(Statement.Advancing advancing, Origin origin) {
+        if (advancing.page()) {
+            return () -> push(Ops.PAGE);
+        }
+        if (advancing.fixed()) {
+            int lines = advancing.lines();
+            return () -> push(lines);
+        }
+        Runnable address = planAddress(advancing.count(), origin);
+        String field = numericItemConstant(advancing.count().item(), origin);
         if (address == null || field == null) {
             return null;
         }
@@ -1592,20 +2190,28 @@ public final class ProgramGenerator {
             keys.add(element);
         }
         Runnable input = planSortSide(statement.using(), statement.input(), "sortUsing",
-                work, statement.origin());
+                work, statement.merge(), statement.origin());
         Runnable output = planSortSide(statement.giving(), statement.output(), "sortGiving",
-                work, statement.origin());
+                work, statement.merge(), statement.origin());
         if (input == null || output == null) {
             return;
         }
         String name = work.name();
+        byte[] sequence = statement.sequence();
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);
             run.visitLdcInsn(name);
             emitArray(keys, Type.getInternalName(SortKey.class));
+            // 並べ替えの鍵も、文が指した (なければプログラムの) 照合順序に従う。
+            // ここだけコードページの並びで並べると、同じプログラムの中で
+            // 場所によって順序が食い違う
+            if (sequence != null) {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal,
+                        collatingConstant(sequence), COLLATING);
+            }
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "sortOpen",
                     "(" + CONTEXT + "Ljava/lang/String;[" + Type.getDescriptor(SortKey.class)
-                            + ")V", false);
+                            + (sequence != null ? COLLATING : "") + ")V", false);
             input.run();
             run.visitVarInsn(Opcodes.ALOAD, 2);
             run.visitLdcInsn(name);
@@ -1662,7 +2268,7 @@ public final class ProgramGenerator {
      */
     private Runnable planSortSide(List<FileDescription> files,
                                   Statement.Sort.Procedure procedure, String entry,
-                                  FileDescription work, Origin origin) {
+                                  FileDescription work, boolean merge, Origin origin) {
         if (procedure != null) {
             int from = paragraphNames.indexOf(procedure.from());
             int through = procedure.through() == null
@@ -1672,7 +2278,14 @@ public final class ProgramGenerator {
                 report(origin, "undefined paragraph: " + procedure.from());
                 return null;
             }
-            return () -> emitPerformRange(from, through);
+            String reason = "sortUsing".equals(entry)
+                    ? "SORT INPUT"
+                    : (merge ? "MERGE OUTPUT" : "SORT OUTPUT");
+            return () -> {
+                // 整列の手続きへ入る (要件 FR-193)
+                emitDebugReason(reason);
+                emitPerformRange(from, through);
+            };
         }
         String name = work.name();
         List<Runnable> calls = new ArrayList<>();
@@ -1866,10 +2479,10 @@ public final class ProgramGenerator {
                             null);
                 }
             }
-            return null;
+            return planInheritedDeclarative(file, slot, atEndHandled, invalidKeyHandled, opened);
         }
         if (byMode.isEmpty()) {
-            return null;
+            return planInheritedDeclarative(file, slot, atEndHandled, invalidKeyHandled, opened);
         }
         List<Runnable> tests = new ArrayList<>();
         for (ProcedureBuilder.Declarative declarative : byMode) {
@@ -1877,6 +2490,81 @@ public final class ProgramGenerator {
                     file));
         }
         return () -> tests.forEach(Runnable::run);
+    }
+
+    /**
+     * 囲む側の {@code USE GLOBAL} 宣言節を動かす命令 (要件 FR-091, FR-105)。
+     *
+     * <p>自分に受け持つ節がないときだけ通る。規格がそう決めている——内側の宣言が
+     * 外側を隠す。受け持ちの決め方は自分の節と同じで、ファイル名が先、次に開き方である。
+     *
+     * @return 受け持つ節がなければ {@code null}
+     */
+    private Runnable planInheritedDeclarative(FileDescription file, int slot,
+                                              boolean atEndHandled, boolean invalidKeyHandled,
+                                              OpenMode opened) {
+        ProcedureBuilder.GlobalDeclarative named = null;
+        List<ProcedureBuilder.GlobalDeclarative> byMode = new ArrayList<>();
+        for (ProcedureBuilder.GlobalDeclarative declarative : inheritedDeclaratives) {
+            if (declarative.files().stream().anyMatch(f -> f.equalsIgnoreCase(file.name()))) {
+                named = declarative;
+            } else if (declarative.mode() != null) {
+                byMode.add(declarative);
+            }
+        }
+        if (named != null) {
+            return planGlobalDeclarativeCall(named, slot, atEndHandled, invalidKeyHandled, null);
+        }
+        if (opened != null) {
+            for (ProcedureBuilder.GlobalDeclarative declarative : byMode) {
+                if (declarative.mode() == opened) {
+                    return planGlobalDeclarativeCall(declarative, slot, atEndHandled,
+                            invalidKeyHandled, null);
+                }
+            }
+            return null;
+        }
+        if (byMode.isEmpty()) {
+            return null;
+        }
+        List<Runnable> tests = new ArrayList<>();
+        for (ProcedureBuilder.GlobalDeclarative declarative : byMode) {
+            tests.add(planGlobalDeclarativeCall(declarative, slot, atEndHandled,
+                    invalidKeyHandled, file));
+        }
+        return () -> tests.forEach(Runnable::run);
+    }
+
+    /** 囲む側の宣言節 1 つを呼ぶ命令。段落の番号は<b>囲む側の並び</b>での番号である。 */
+    private Runnable planGlobalDeclarativeCall(ProcedureBuilder.GlobalDeclarative declarative,
+                                               int slot, boolean atEndHandled,
+                                               boolean invalidKeyHandled,
+                                               FileDescription modeCheck) {
+        int mode = declarative.mode() == null ? -1 : declarative.mode().ordinal();
+        return () -> {
+            Label skip = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, slot);
+            loadCodePage();
+            run.visitInsn(atEndHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitInsn(invalidKeyHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileFailed",
+                    "([B" + CODE_PAGE + "ZZ)Z", false);
+            run.visitJumpInsn(Opcodes.IFEQ, skip);
+            if (modeCheck != null) {
+                emitFileName(modeCheck);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileMode",
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)I", false);
+                push(mode);
+                run.visitJumpInsn(Opcodes.IF_ICMPNE, skip);
+            }
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(declarative.owner());
+            push(declarative.from());
+            push(declarative.through());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "globalDeclarative",
+                    "(" + CONTEXT + "Ljava/lang/String;II)V", false);
+            run.visitLabel(skip);
+        };
     }
 
     /**
@@ -1906,6 +2594,8 @@ public final class ProgramGenerator {
                 push(mode);
                 run.visitJumpInsn(Opcodes.IF_ICMPNE, skip);
             }
+            // 宣言節へ入る。DEBUG-CONTENTS は USE PROCEDURE である (要件 FR-193)
+            emitDebugReason("USE PROCEDURE");
             emitPerformRange(from, through);
             run.visitLabel(skip);
         };
@@ -2114,14 +2804,15 @@ public final class ProgramGenerator {
      */
     private void planInspect(Statement.Inspect statement, List<Runnable> body) {
         Runnable offset = planAddress(statement.target(), statement.origin());
-        OptionalInt length = lengthOf(statement.target(), statement.origin());
-        if (offset == null || length.isEmpty()) {
+        // 可変長の表を含む群なら、走査するのは<b>いま何個あるか</b>までである
+        Runnable size = planSendingLength(statement.target(), statement.origin());
+        if (offset == null || size == null) {
             return;
         }
-        int size = length.getAsInt();
+        String signed = signedNumericTarget(statement.target(), statement.origin());
 
         if (statement.converting() != null) {
-            planConverting(statement, offset, size, body);
+            planConverting(statement, offset, size, signed, body);
             return;
         }
 
@@ -2148,22 +2839,62 @@ public final class ProgramGenerator {
 
         body.add(() -> {
             if (!tallyClauses.isEmpty()) {
-                offset.run();
-                push(size);
-                emitClauseArray(tallyClauses);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tally",
-                        "(L" + STORAGE + ";II[" + CLAUSE + ")[I", false);
+                if (signed == null) {
+                    offset.run();
+                    size.run();
+                    emitClauseArray(tallyClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tally",
+                            "(L" + STORAGE + ";II[" + CLAUSE + ")[I", false);
+                } else {
+                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, signed, NUMERIC_ITEM);
+                    offset.run();
+                    loadCodePage();
+                    emitClauseArray(tallyClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tallyUnsigned",
+                            "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE
+                                    + "[" + CLAUSE + ")[I", false);
+                }
                 run.visitVarInsn(Opcodes.ASTORE, array);
                 counters.forEach(Runnable::run);
             }
             if (!replaceClauses.isEmpty()) {
-                offset.run();
-                push(size);
-                emitClauseArray(replaceClauses);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replace",
-                        "(L" + STORAGE + ";II[" + CLAUSE + ")V", false);
+                if (signed == null) {
+                    offset.run();
+                    size.run();
+                    emitClauseArray(replaceClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replace",
+                            "(L" + STORAGE + ";II[" + CLAUSE + ")V", false);
+                } else {
+                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, signed, NUMERIC_ITEM);
+                    offset.run();
+                    loadCodePage();
+                    emitClauseArray(replaceClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replaceUnsigned",
+                            "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE
+                                    + "[" + CLAUSE + ")V", false);
+                }
             }
         });
+    }
+
+    /**
+     * 検査するのが<b>符号つきの数字項目</b>なら、その項目を表す定数の名前を返す。
+     *
+     * <p>規格は「同じ長さの符号なし項目へ移し、英数字として見直したもの」を検査すると
+     * 決めている (85 規格 6.19.4 一般規則 2c)。{@code PIC S9(5)} に {@code -12345} を
+     * 入れると末尾は {@code 0xD5} であり、{@code "5"} をいくら探しても当たらない
+     * (NC216A INS-TEST-F1-23-2)。符号を持たない項目なら {@code null} を返し、
+     * 今までどおり記憶域をそのまま走査する。
+     */
+    private String signedNumericTarget(DataReference reference, Origin origin) {
+        DataItem item = reference.item();
+        if (!DataCategory.of(reference).isNumeric()
+                || (item.usage() != null && item.usage() != Usage.DISPLAY)
+                || item.picture() == null
+                || !item.picture().signPosition().isSigned()) {
+            return null;
+        }
+        return numericItemConstant(item, origin);
     }
 
     private List<Runnable> planInspectClauses(List<Statement.Inspect.InspectClause> clauses,
@@ -2276,8 +3007,8 @@ public final class ProgramGenerator {
         };
     }
 
-    private void planConverting(Statement.Inspect statement, Runnable offset, int size,
-                                List<Runnable> body) {
+    private void planConverting(Statement.Inspect statement, Runnable offset, Runnable size,
+                                String signed, List<Runnable> body) {
         Statement.Inspect.Converting converting = statement.converting();
         Runnable from = planInspectBytes(converting.from(), statement.origin());
         Runnable to = planInspectBytes(converting.to(), statement.origin());
@@ -2286,13 +3017,26 @@ public final class ProgramGenerator {
             return;
         }
         body.add(() -> {
+            if (signed == null) {
+                offset.run();
+                size.run();
+                from.run();
+                to.run();
+                region.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "convert",
+                        "(L" + STORAGE + ";II[B[B" + REGION + ")V", false);
+                return;
+            }
+            // CONVERTING も「符号なし項目へ移したもの」を検査する。数える走査と同じ規則である
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, signed, NUMERIC_ITEM);
             offset.run();
-            push(size);
+            loadCodePage();
             from.run();
             to.run();
             region.run();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "convert",
-                    "(L" + STORAGE + ";II[B[B" + REGION + ")V", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "convertUnsigned",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE + "[B[B"
+                            + REGION + ")V", false);
         });
     }
 
@@ -2321,8 +3065,16 @@ public final class ProgramGenerator {
      * その場に書いた文か、指定は 1 回・回数・条件のいずれか。組み合わせて出す。
      */
     private void planPerform(Statement.Perform statement, List<Runnable> body) {
+        // PERFORM で入った手続きの DEBUG-CONTENTS は PERFORM LOOP である (要件 FR-193)。
+        // 繰り返しの 2 周目からではなく<b>1 周目から</b>そうである
+        planDebugLine(statement.origin(), "PERFORM LOOP", body);
         Runnable once = planPerformBody(statement);
         if (once == null) {
+            return;
+        }
+        if (statement.times() == null && statement.until() == null
+                && statement.varying().isEmpty()) {
+            body.add(once);
             return;
         }
         if (statement.times() != null) {
@@ -2333,11 +3085,7 @@ public final class ProgramGenerator {
             planUntil(statement, once, body);
             return;
         }
-        if (!statement.varying().isEmpty()) {
-            planVarying(statement, once, body);
-            return;
-        }
-        body.add(once);
+        planVarying(statement, once, body);
     }
 
     /** 繰り返す中身を 1 回分。 */
@@ -2404,15 +3152,19 @@ public final class ProgramGenerator {
      * {@code WITH TEST AFTER} なら中身を 1 度実行してから条件を見る。
      */
     private void planUntil(Statement.Perform statement, Runnable once, List<Runnable> body) {
+        // 条件を見るたびに、そこで指した名前を指し直したことになる (要件 FR-193)
+        List<Runnable> watched = planStatements(statement.debug());
         body.add(() -> {
             Label top = new Label();
             Label end = new Label();
             run.visitLabel(top);
             if (!statement.testAfter()) {
+                watched.forEach(Runnable::run);
                 emitCondition(statement.until(), end, true);
             }
             once.run();
             if (statement.testAfter()) {
+                watched.forEach(Runnable::run);
                 emitCondition(statement.until(), end, true);
             }
             run.visitJumpInsn(Opcodes.GOTO, top);
@@ -2427,37 +3179,71 @@ public final class ProgramGenerator {
      * 段ごとに「初期値を入れる」命令と「1 回分足す」命令を作り、両者を組み合わせて出す。
      *
      * <p>{@code TEST BEFORE} では段の数だけ判定を縦に並べ、内側の段が尽きたところで
-     * その段を初期値へ戻して外側を 1 進める。{@code TEST AFTER} では中身を先に実行し、
+     * 外側を 1 進めてからその段を初期値へ戻す。{@code TEST AFTER} では中身を先に実行し、
      * 内側の条件から順に見ていく。どちらも<b>初期値へ戻すのは判定に負けた段だけ</b>である。
+     *
+     * <p><b>外側を進めるのが先である</b>。内側の初期値は外側の変数で書けるので、
+     * 順序が答えを変える。
+     *
+     * <pre>
+     * PERFORM P VARYING A FROM 1 BY 1 UNTIL A &gt; 3
+     *             AFTER B FROM A BY 1 UNTIL B &gt; 3.
+     * </pre>
+     *
+     * <p>P を呼ぶ回数は 6 である。内側を先に戻すと、戻した先が古い A になるので
+     * 8 回になる (NC201A PFM-TEST-F4-23、85 規格 VI-114 6.20.4 GR10(d)1)。
      */
     private void planVarying(Statement.Perform statement, Runnable once, List<Runnable> body) {
         List<Statement.Perform.Varying> levels = statement.varying();
         List<Runnable> set = new ArrayList<>();
         List<Runnable> step = new ArrayList<>();
+        List<List<Runnable>> tests = new ArrayList<>();
         for (Statement.Perform.Varying level : levels) {
+            tests.add(planStatements(level.debugTest()));
             Runnable initialize = planStore(level.target(),
                     planSourceDecimal(level.from(), statement.origin()), statement.origin());
             Runnable increment = planIncrement(level, statement.origin());
             if (initialize == null || increment == null) {
                 return;
             }
-            set.add(initialize);
-            step.add(increment);
+            // その段で指した名前は<b>置き直すたび</b>に指し直したことになる (要件 FR-193)
+            List<Runnable> watched = planStatements(level.debug());
+            if (watched.isEmpty()) {
+                set.add(initialize);
+                step.add(increment);
+            } else {
+                set.add(() -> {
+                    initialize.run();
+                    watched.forEach(Runnable::run);
+                });
+                step.add(() -> {
+                    increment.run();
+                    watched.forEach(Runnable::run);
+                });
+            }
         }
 
         int depth = levels.size();
         body.add(() -> {
             set.forEach(Runnable::run);
             if (statement.testAfter()) {
-                emitVaryingTestAfter(levels, set, step, once);
+                emitVaryingTestAfter(levels, set, step, tests, once);
             } else {
-                emitVaryingTestBefore(levels, set, step, once, depth);
+                emitVaryingTestBefore(levels, set, step, tests, once, depth);
             }
         });
     }
 
+    /** 段の条件を見る。見るたびに、そこで指した名前を指し直したことになる (要件 FR-193)。 */
+    private void emitVaryingTest(Statement.Perform.Varying level, List<Runnable> watched,
+                                 Label exhausted) {
+        watched.forEach(Runnable::run);
+        emitCondition(level.until(), exhausted, true);
+    }
+
     private void emitVaryingTestBefore(List<Statement.Perform.Varying> levels, List<Runnable> set,
-                                       List<Runnable> step, Runnable once, int depth) {
+                                       List<Runnable> step, List<List<Runnable>> tests,
+                                       Runnable once, int depth) {
         Label end = new Label();
         Label[] test = new Label[depth];
         Label[] exhausted = new Label[depth];
@@ -2468,34 +3254,38 @@ public final class ProgramGenerator {
         }
         for (int k = 0; k < depth; k++) {
             run.visitLabel(test[k]);
-            emitCondition(levels.get(k).until(), exhausted[k], true);
+            emitVaryingTest(levels.get(k), tests.get(k), exhausted[k]);
         }
         once.run();
         step.get(depth - 1).run();
         run.visitJumpInsn(Opcodes.GOTO, test[depth - 1]);
         for (int k = depth - 1; k >= 1; k--) {
             run.visitLabel(exhausted[k]);
-            set.get(k).run();
+            // <b>外側を進めてから</b>内側を初期値へ戻す。順序が答えを変える (NC201A)
             step.get(k - 1).run();
+            set.get(k).run();
             run.visitJumpInsn(Opcodes.GOTO, test[k - 1]);
         }
         run.visitLabel(end);
     }
 
     private void emitVaryingTestAfter(List<Statement.Perform.Varying> levels, List<Runnable> set,
-                                      List<Runnable> step, Runnable once) {
+                                      List<Runnable> step, List<List<Runnable>> tests,
+                                      Runnable once) {
         Label top = new Label();
         run.visitLabel(top);
         once.run();
         for (int k = levels.size() - 1; k >= 0; k--) {
             Label exhausted = new Label();
-            emitCondition(levels.get(k).until(), exhausted, true);
+            emitVaryingTest(levels.get(k), tests.get(k), exhausted);
             step.get(k).run();
+            // 進めた段より内側は、すべて初期値へ戻す。<b>進めたあとで</b>戻すので、
+            // 内側の初期値を外側の変数で書いてあれば新しい値が入る (NC201A)
+            for (int inner = k + 1; inner < levels.size(); inner++) {
+                set.get(inner).run();
+            }
             run.visitJumpInsn(Opcodes.GOTO, top);
             run.visitLabel(exhausted);
-            if (k > 0) {
-                set.get(k).run();
-            }
         }
     }
 
@@ -2527,8 +3317,14 @@ public final class ProgramGenerator {
         }
         Runnable offset = planAddress(target, origin);
         DataItem item = target.item();
+        if (offset == null || item.picture() == null) {
+            return null;
+        }
+        if (DataCategory.of(target) == DataCategory.NUMERIC_EDITED) {
+            return planStoreEdited(item, value, offset, rounding);
+        }
         String field = numericItemConstant(item, origin);
-        if (offset == null || field == null || item.picture() == null) {
+        if (field == null) {
             return null;
         }
         return () -> {
@@ -2539,6 +3335,28 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
                     "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
                             + Type.getDescriptor(CobolRounding.class) + ")V", false);
+        };
+    }
+
+    /**
+     * 積んだ {@link Decimal} を数字編集項目へ書き込む命令 (要件 FR-041)。
+     *
+     * <p>{@code GIVING} と {@code COMPUTE} の受取側は数字編集項目でもよい。書き込む道が
+     * 転記と同じになるのは、<b>編集は転記の規則そのもの</b>だからである。違うのは丸めが
+     * 効くことだけで、ランタイムが編集の前に丸める。
+     */
+    private Runnable planStoreEdited(DataItem item, Runnable value, Runnable offset,
+                                     String rounding) {
+        String picture = pictureConstant(item.picture());
+        return () -> {
+            value.run();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, picture, PICTURE);
+            offset.run();
+            loadRounding(rounding);
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeEdited",
+                    "(" + DECIMAL + PICTURE + "L" + STORAGE + ";I"
+                            + Type.getDescriptor(CobolRounding.class) + CODE_PAGE + ")V", false);
         };
     }
 
@@ -2580,7 +3398,73 @@ public final class ProgramGenerator {
             }
             return;
         }
+        if (condition instanceof Condition.ClassTest test) {
+            emitClassTest(test, target, jumpWhenTrue);
+            return;
+        }
+        if (condition instanceof Condition.SwitchTest test) {
+            // 記憶域を見ない。実行の外から立てられたものを読むだけである
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            push(test.index());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "switchState",
+                    "(" + CONTEXT + "I)Z", false);
+            run.visitJumpInsn(jumpWhenTrue == test.whenOn() ? Opcodes.IFNE : Opcodes.IFEQ, target);
+            return;
+        }
         emitRelation((Condition.Relation) condition, target, jumpWhenTrue);
+    }
+
+    /**
+     * 級条件を組み立てる (要件 FR-046)。
+     *
+     * <p>{@code NUMERIC} の見方は<b>項目の書き方で変わる</b>。符号を持つ数値項目では
+     * 符号の場所まで見るので、その項目として読めるかどうかで決める。英数字項目に
+     * 符号は無いので、すべてのバイトが数字かどうかだけを見る。
+     */
+    private void emitClassTest(Condition.ClassTest test, Label target, boolean jumpWhenTrue) {
+        Runnable bytes = planSourceBytes(new Operand.Reference(test.item()), test.origin(), 0);
+        if (bytes == null) {
+            return;
+        }
+        DataItem item = test.item().item();
+        boolean signedNumeric = test.kind() == Condition.ClassTest.Kind.NUMERIC
+                && item.picture() != null && item.picture().isNumeric();
+        String shape = signedNumeric ? numericItemConstant(item, test.origin()) : null;
+        if (signedNumeric && shape == null) {
+            return;
+        }
+        byte[] allowed = test.allowed();
+        Condition.ClassTest.Kind kind = test.kind();
+        bytes.run();
+        switch (kind) {
+            case NUMERIC -> {
+                if (signedNumeric) {
+                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, shape, NUMERIC_ITEM);
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "numeric",
+                            "([B" + NUMERIC_ITEM + CODE_PAGE + ")Z", false);
+                } else {
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "digits",
+                            "([B" + CODE_PAGE + ")Z", false);
+                }
+            }
+            case DEFINED -> {
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, bytesConstant(allowed), "[B");
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "member", "([B[B)Z", false);
+            }
+            default -> {
+                loadCodePage();
+                push(switch (kind) {
+                    case ALPHABETIC_LOWER -> 1;
+                    case ALPHABETIC_UPPER -> 2;
+                    default -> 0;
+                });
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "alphabetic",
+                        "([B" + CODE_PAGE + "I)Z", false);
+            }
+        }
+        run.visitJumpInsn(jumpWhenTrue ? Opcodes.IFNE : Opcodes.IFEQ, target);
     }
 
     private void emitRelation(Condition.Relation relation, Label target, boolean jumpWhenTrue) {
@@ -2605,12 +3489,17 @@ public final class ProgramGenerator {
         Runnable left;
         Runnable right;
         if (relation.numeric()) {
-            left = planSourceDecimal(relation.left(), relation.origin());
-            right = planSourceDecimal(relation.right(), relation.origin());
+            left = planComparisonSide(relation.left(), relation.origin());
+            right = planComparisonSide(relation.right(), relation.origin());
         } else {
+            // 英数字の比較に式は書けない。四則の相手は数値しかない。
+            // 数字の被演算子は<b>同じ大きさの英数字項目へ移したものとして</b>比べる
+            // ——符号は落ち、P は 0 として数える (85 規格 6.15.2)
             int length = comparisonLength(relation);
-            left = planSourceBytes(relation.left(), relation.origin(), length);
-            right = planSourceBytes(relation.right(), relation.origin(), length);
+            left = planNumericAsAlphanumeric(Condition.Relation.operandOf(relation.left()),
+                    relation.origin(), length);
+            right = planNumericAsAlphanumeric(Condition.Relation.operandOf(relation.right()),
+                    relation.origin(), length);
         }
         if (left == null || right == null) {
             return null;
@@ -2621,25 +3510,449 @@ public final class ProgramGenerator {
             if (relation.numeric()) {
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareNumeric",
                         "(" + DECIMAL + DECIMAL + ")I", false);
-            } else {
+            } else if (collating == null) {
                 loadCodePage();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
                         "([B[B" + CODE_PAGE + ")I", false);
+            } else {
+                // 照合順序を差し替えたプログラムでは、位置で比べる (要件 FR-054)
+                loadCollating();
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
+                        "([B[B" + COLLATING + CODE_PAGE + ")I", false);
             }
         };
     }
 
-    /** 図形定数を広げる長さ。相手の項目の長さに合わせる。 */
+    /**
+     * 比べる片側を {@link Decimal} として積む命令。
+     *
+     * <p>被演算子 1 個なら今までどおり。式なら評価して積む。
+     */
+    private Runnable planComparisonSide(Expression side, Origin origin) {
+        Operand operand = Condition.Relation.operandOf(side);
+        return operand != null
+                ? planSourceDecimal(operand, origin)
+                : planExpression(side, IntermediateDigits.of(side, List.of()), origin);
+    }
+
+    /**
+     * 図形定数を広げる長さ。相手の項目の長さに合わせる。
+     *
+     * <p>どちらも図形定数なら合わせる相手がいない。<b>1 文字とする</b>。長さ 0 にすると
+     * 両辺が空のバイト列になり、{@code IF HIGH-VALUE = LOW-VALUE} が<b>常に真</b>に
+     * なってしまう。図形定数は 1 文字を並べたものなので、1 文字どうしで比べる。
+     */
     private static int comparisonLength(Condition.Relation relation) {
-        int length = lengthOf(relation.left());
-        return length > 0 ? length : lengthOf(relation.right());
+        int length = lengthOf(Condition.Relation.operandOf(relation.left()));
+        if (length > 0) {
+            return length;
+        }
+        length = lengthOf(Condition.Relation.operandOf(relation.right()));
+        return length > 0 ? length : 1;
     }
 
     private static int lengthOf(Operand operand) {
+        if (operand == null) {
+            return 0;
+        }
         if (operand instanceof Operand.Reference reference) {
-            return reference.reference().constantLength().orElse(0);
+            // 長さが実行時に決まる部分参照でも、項目全体を超えることはない。
+            // 図形定数を広げる長さとしては、その上限で足りる
+            return reference.reference().constantLength()
+                    .orElse(reference.reference().item().length());
+        }
+        if (operand instanceof Operand.Function function) {
+            return functionLength(function);
         }
         return 0;
+    }
+
+    /**
+     * 組み込み関数が返すバイト列の長さ (要件 FR-070)。
+     *
+     * <p>翻訳時に決まっていなければならない。決まらなければ、転記も比較も長さが決まらない。
+     *
+     * @return 数値を返す関数なら {@code 0}
+     */
+    private static int functionLength(Operand.Function function) {
+        return switch (function.returns()) {
+            case ONE_CHARACTER -> 1;
+            case TIMESTAMP -> Intrinsics.TIMESTAMP_LENGTH;
+            case SAME_LENGTH -> alphanumericLength(argument(function, 0));
+            case WIDEST -> widestArgument(function);
+            case INTEGER, NUMERIC -> 0;
+        };
+    }
+
+    /** いちばん長い引数の長さ。{@code MAX} と {@code MIN} は引数そのものを返す。 */
+    private static int widestArgument(Operand.Function function) {
+        int widest = 0;
+        for (int i = 0; i < function.arguments().size(); i++) {
+            widest = Math.max(widest, alphanumericLength(argument(function, i)));
+        }
+        return widest;
+    }
+
+    /** バイト列として見たときの長さ。定数はその綴りの長さである。 */
+    private static int alphanumericLength(Operand operand) {
+        if (operand instanceof Operand.Literal literal
+                && literal.value() instanceof LiteralValue.Text text) {
+            return text.text().length();
+        }
+        return lengthOf(operand);
+    }
+
+    /** 文字を受け取る関数の引数。意味解析が式でないことを確かめてある。 */
+    private static Operand argument(Operand.Function function, int index) {
+        return ((Expression.Value) function.arguments().get(index)).operand();
+    }
+
+    // ---- 組み込み関数 ----
+
+    /**
+     * 組み込み関数の呼び出しを積む命令 (要件 FR-070)。バイト列を返すもの。
+     */
+    private Runnable planFunctionBytes(Operand.Function function) {
+        Origin origin = function.origin();
+        return switch (function.intrinsic()) {
+            case UPPER_CASE -> planLetterMap(function, "upperCase");
+            case LOWER_CASE -> planLetterMap(function, "lowerCase");
+            case REVERSE -> {
+                Runnable value = planAlphanumericArgument(function, 0);
+                yield value == null ? null : () -> {
+                    value.run();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "reverse",
+                            "([B)[B", false);
+                };
+            }
+            case CURRENT_DATE -> () -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "currentDate",
+                        "(L" + Type.getInternalName(ProgramContext.class) + ";)[B", false);
+            };
+            // 翻訳した時刻は翻訳時に決まっている。実行時に読むものは何も無い
+            case WHEN_COMPILED -> {
+                String field = bytesConstant(Intrinsics.timestamp(compiledAt, CodePages.DEFAULT));
+                yield () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+            }
+            case MAX -> planTextFold(function, "maxText", "[B");
+            case MIN -> planTextFold(function, "minText", "[B");
+            case CHAR -> {
+                Runnable ordinal = planNumericArgument(function, 0, origin);
+                yield ordinal == null ? null : () -> {
+                    ordinal.run();
+                    loadCollating();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "charOf",
+                            "(" + DECIMAL + COLLATING + ")[B", false);
+                };
+            }
+            default -> {
+                report(origin, "FUNCTION " + function.intrinsic().spelling()
+                        + " does not return an alphanumeric value");
+                yield null;
+            }
+        };
+    }
+
+    /** 引数を文字として受け取る形かどうか。 */
+    private static boolean takesText(Operand.Function function) {
+        return function.returns() == Intrinsic.Result.WIDEST
+                || (function.intrinsic().takes() == Intrinsic.Argument.EITHER
+                        && function.returns() == Intrinsic.Result.INTEGER
+                        && !allNumericArguments(function));
+    }
+
+    /** 引数がぜんぶ数値として読めるか。 */
+    private static boolean allNumericArguments(Operand.Function function) {
+        for (int i = 0; i < function.arguments().size(); i++) {
+            if (!(function.arguments().get(i) instanceof Expression.Value value)) {
+                return true;
+            }
+            Operand operand = value.operand();
+            if (operand instanceof Operand.Reference reference
+                    && !DataCategory.of(reference.reference()).isNumeric()) {
+                return false;
+            }
+            if (operand instanceof Operand.Literal literal
+                    && literal.value() instanceof LiteralValue.Text) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 引数を<b>バイト列の配列</b>にして渡す関数 (要件 FR-070)。
+     *
+     * <p>{@code MAX} と {@code MIN} は引数が英数字なら照合順序で比べる。したがって
+     * 並びを一緒に渡す。
+     */
+    private Runnable planTextFold(Operand.Function function, String method, String returns) {
+        List<Runnable> values = new ArrayList<>();
+        for (int i = 0; i < function.arguments().size(); i++) {
+            Runnable value = planAlphanumericArgument(function, i);
+            if (value == null) {
+                return null;
+            }
+            values.add(value);
+        }
+        return () -> {
+            push(values.size());
+            run.visitTypeInsn(Opcodes.ANEWARRAY, "[B");
+            for (int i = 0; i < values.size(); i++) {
+                run.visitInsn(Opcodes.DUP);
+                push(i);
+                values.get(i).run();
+                run.visitInsn(Opcodes.AASTORE);
+            }
+            loadCollating();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([[B" + COLLATING + CODE_PAGE + ")" + returns, false);
+        };
+    }
+
+    private Runnable planLetterMap(Operand.Function function, String method) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([B" + CODE_PAGE + ")[B", false);
+        };
+    }
+
+    /** 組み込み関数の呼び出しを積む命令。{@link Decimal} を返すもの。 */
+    private Runnable planFunctionDecimal(Operand.Function function) {
+        Origin origin = function.origin();
+        return switch (function.intrinsic()) {
+            // 長さは翻訳時に決まる。実行時に数えるものは何も無い
+            case LENGTH -> planConstantLength(function, origin);
+            case MAX -> planFold(function, "max", origin);
+            case MIN -> planFold(function, "min", origin);
+            case SUM -> planFold(function, "sum", origin);
+            case ORD_MAX -> takesText(function)
+                    ? planTextFold(function, "ordMaxText", DECIMAL)
+                    : planFold(function, "ordMax", origin);
+            case ORD_MIN -> takesText(function)
+                    ? planTextFold(function, "ordMinText", DECIMAL)
+                    : planFold(function, "ordMin", origin);
+            case RANGE -> planFold(function, "range", origin);
+            case MEDIAN -> planFold(function, "median", origin);
+            case MIDRANGE -> planFold(function, "midrange", origin);
+            case INTEGER_OF_DATE -> planUnary(function, "integerOfDate", origin);
+            case INTEGER_OF_DAY -> planUnary(function, "integerOfDay", origin);
+            case DATE_OF_INTEGER -> planUnary(function, "dateOfInteger", origin);
+            case DAY_OF_INTEGER -> planUnary(function, "dayOfInteger", origin);
+            case INTEGER -> planUnary(function, "integer", origin);
+            case INTEGER_PART -> planUnary(function, "integerPart", origin);
+            case FACTORIAL -> planUnary(function, "factorial", origin);
+            case MOD -> planBinary(function, "mod", origin);
+            case REM -> planBinary(function, "rem", origin);
+            case ANNUITY -> planBinary(function, "annuity", origin);
+            case MEAN -> planFold(function, "mean", origin);
+            case VARIANCE -> planFold(function, "variance", origin);
+            case STANDARD_DEVIATION -> planFold(function, "standardDeviation", origin);
+            case PRESENT_VALUE -> planFold(function, "presentValue", origin);
+            case SQRT -> planUnary(function, "sqrt", origin);
+            case LOG -> planUnary(function, "log", origin);
+            case LOG10 -> planUnary(function, "log10", origin);
+            case EXP -> planUnary(function, "exp", origin);
+            case EXP10 -> planUnary(function, "exp10", origin);
+            case SIN -> planUnary(function, "sin", origin);
+            case COS -> planUnary(function, "cos", origin);
+            case TAN -> planUnary(function, "tan", origin);
+            case ASIN -> planUnary(function, "asin", origin);
+            case ACOS -> planUnary(function, "acos", origin);
+            case ATAN -> planUnary(function, "atan", origin);
+            case RANDOM -> planRandom(function, origin);
+            case ORD -> planOrd(function);
+            case NUMVAL -> planReading(function, "numval");
+            case NUMVAL_C -> planNumvalC(function);
+            default -> {
+                report(origin, "FUNCTION " + function.intrinsic().spelling()
+                        + " does not return a numeric value");
+                yield null;
+            }
+        };
+    }
+
+    /**
+     * {@code FUNCTION LENGTH}。
+     *
+     * <p>項目の文字位置の数は<b>データ部を読んだ時点で決まっている</b>。実行時に数えると、
+     * 数えるための命令を出すことになるうえ、答えは同じである。
+     */
+    private Runnable planConstantLength(Operand.Function function, Origin origin) {
+        int length = alphanumericLength(argument(function, 0));
+        if (length <= 0) {
+            report(origin, "FUNCTION LENGTH requires an item whose length is known"
+                    + " at compile time");
+            return null;
+        }
+        String field = decimalConstant(Decimal.of(length, 0));
+        return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, DECIMAL);
+    }
+
+    /** 引数をいくつでも取る関数。{@link Decimal} の配列にして渡す。 */
+    private Runnable planFold(Operand.Function function, String method, Origin origin) {
+        List<Runnable> values = new ArrayList<>();
+        for (int i = 0; i < function.arguments().size(); i++) {
+            Runnable value = planNumericArgument(function, i, origin);
+            if (value == null) {
+                return null;
+            }
+            values.add(value);
+        }
+        return () -> {
+            push(values.size());
+            run.visitTypeInsn(Opcodes.ANEWARRAY, Type.getInternalName(Decimal.class));
+            for (int i = 0; i < values.size(); i++) {
+                run.visitInsn(Opcodes.DUP);
+                push(i);
+                values.get(i).run();
+                run.visitInsn(Opcodes.AASTORE);
+            }
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([" + DECIMAL + ")" + DECIMAL, false);
+        };
+    }
+
+    private Runnable planUnary(Operand.Function function, String method, Origin origin) {
+        Runnable value = planNumericArgument(function, 0, origin);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "(" + DECIMAL + ")" + DECIMAL, false);
+        };
+    }
+
+    private Runnable planBinary(Operand.Function function, String method, Origin origin) {
+        Runnable left = planNumericArgument(function, 0, origin);
+        Runnable right = planNumericArgument(function, 1, origin);
+        if (left == null || right == null) {
+            return null;
+        }
+        return () -> {
+            left.run();
+            right.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+        };
+    }
+
+    /** バイト列を読んで数値を返す関数。 */
+    private Runnable planReading(Operand.Function function, String method) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "([B" + CODE_PAGE + ")" + DECIMAL, false);
+        };
+    }
+
+    /** {@code FUNCTION ORD}。答えは<b>照合順序の何番目か</b>である。 */
+    private Runnable planOrd(Operand.Function function) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            loadCollating();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "ord",
+                    "([B" + COLLATING + ")" + DECIMAL, false);
+        };
+    }
+
+    /** {@code FUNCTION NUMVAL-C}。第 2 引数の通貨記号は省ける。 */
+    private Runnable planNumvalC(Operand.Function function) {
+        Runnable value = planAlphanumericArgument(function, 0);
+        Runnable currency = function.arguments().size() > 1
+                ? planAlphanumericArgument(function, 1)
+                : () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal,
+                        bytesConstant(new byte[0]), "[B");
+        if (value == null || currency == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            currency.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "numvalC",
+                    "([B[B" + CODE_PAGE + ")" + DECIMAL, false);
+        };
+    }
+
+    /**
+     * {@code FUNCTION RANDOM} (要件 FR-070)。
+     *
+     * <p>引数を書けば種になる。書かなければ<b>前の続き</b>を返すので、並びを持っている
+     * {@link ProgramContext} を渡す。
+     */
+    private Runnable planRandom(Operand.Function function, Origin origin) {
+        if (function.arguments().isEmpty()) {
+            return () -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "random",
+                        "(L" + Type.getInternalName(ProgramContext.class) + ";)" + DECIMAL,
+                        false);
+            };
+        }
+        Runnable seed = planNumericArgument(function, 0, origin);
+        if (seed == null) {
+            return null;
+        }
+        return () -> {
+            seed.run();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "random",
+                    "(" + DECIMAL + "L" + Type.getInternalName(ProgramContext.class) + ";)"
+                            + DECIMAL, false);
+        };
+    }
+
+    /**
+     * いま組み立てている算術文の中間結果の桁数。算術文の外では {@code null}。
+     *
+     * <p>規格の {@code dmax} は<b>文全体</b>から決まる。組み込み関数の引数も文の一部で
+     * あって、その中の除算をどこで打ち切るかは受取項目の小数桁に依る。
+     *
+     * <pre>
+     * 01 WS-NUM PIC S9(5)V9(7).
+     * COMPUTE WS-NUM = FUNCTION SQRT(8 / 2.1).
+     * </pre>
+     *
+     * <p>引数だけを見て {@code dmax} を決めると、被除数 {@code 8} の小数桁は 0 なので
+     * {@code 8 / 2.1} は 3 になり、平方根は 1.732 になる。受取項目の 7 桁を見れば
+     * 3.8095238 となり、1.9518 が出る。IF136A の F-SQRT-16 がそこだけを確かめている。
+     */
+    private IntermediateDigits statementDigits;
+
+    /** 数値の引数。式を書いてもよい。 */
+    private Runnable planNumericArgument(Operand.Function function, int index, Origin origin) {
+        Expression argument = function.arguments().get(index);
+        IntermediateDigits digits = statementDigits != null
+                ? statementDigits
+                : IntermediateDigits.of(argument, List.of());
+        return planExpression(argument, digits, origin);
+    }
+
+    /** 文字の引数。式は書けないことを意味解析が確かめてある。 */
+    private Runnable planAlphanumericArgument(Operand.Function function, int index) {
+        Operand operand = argument(function, index);
+        return planSourceBytes(operand, function.origin(), alphanumericLength(operand));
     }
 
     private static int branchOpcode(Condition.Comparison comparison) {
@@ -2669,6 +3982,8 @@ public final class ProgramGenerator {
         run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", RUN_DESCRIPTOR, null, null);
         run.visitCode();
         if (paragraphCount > from) {
+            // いちばん最初に入る手続きの DEBUG-CONTENTS である (要件 FR-193)
+            emitDebugReason("START PROGRAM");
             emitPerformRange(from, paragraphCount - 1);
         }
         run.visitInsn(Opcodes.RETURN);
@@ -2691,6 +4006,20 @@ public final class ProgramGenerator {
             targets[i] = new Label();
         }
         Label fallthrough = new Label();
+        if (hasAlterable && hasIndependentSegment) {
+            // 独立段へ別の段から入るたびに、その段の ALTER を元へ戻す (要件 FR-061)
+            dispatch.visitVarInsn(Opcodes.ALOAD, 0);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 0);
+            dispatch.visitFieldInsn(Opcodes.GETFIELD, internal, ALTERED, "[I");
+            dispatch.visitFieldInsn(Opcodes.GETSTATIC, internal, ALTER_INITIAL, "[I");
+            dispatch.visitFieldInsn(Opcodes.GETSTATIC, internal, SEGMENTS, "[I");
+            dispatch.visitVarInsn(Opcodes.ILOAD, 1);
+            dispatch.visitVarInsn(Opcodes.ALOAD, 0);
+            dispatch.visitFieldInsn(Opcodes.GETFIELD, internal, CURRENT_SEGMENT, "I");
+            dispatch.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "enterParagraph",
+                    "([I[I[III)I", false);
+            dispatch.visitFieldInsn(Opcodes.PUTFIELD, internal, CURRENT_SEGMENT, "I");
+        }
         dispatch.visitVarInsn(Opcodes.ILOAD, 1);
         dispatch.visitTableSwitchInsn(0, paragraphCount - 1, fallthrough, targets);
         for (int i = 0; i < paragraphCount; i++) {
@@ -2725,11 +4054,21 @@ public final class ProgramGenerator {
      * 待っている {@code PERFORM} があってもそこで実行は終わり、呼んだ側へ戻る。
      */
     private void emitPerformMethod(int paragraphCount) {
+        emitGlobalRangeBridge();
         MethodVisitor perform = writer.visitMethod(Opcodes.ACC_PRIVATE, "performRange",
                 PERFORM_DESCRIPTOR, null, null);
         perform.visitCode();
         int pc = 6;
         int next = 7;
+        int saved = 8;
+        if (hasAlterable && hasIndependentSegment) {
+            // PERFORM から戻ったら、呼んだ側の段へ戻ったことになる (要件 FR-061)。
+            // 控えておかないと、同じ段落から独立段を 2 度 PERFORM したときに
+            // 「同じ段の中にいる」と見えてしまい、2 度目が初期状態へ戻らない
+            perform.visitVarInsn(Opcodes.ALOAD, 0);
+            perform.visitFieldInsn(Opcodes.GETFIELD, internal, CURRENT_SEGMENT, "I");
+            perform.visitVarInsn(Opcodes.ISTORE, saved);
+        }
         perform.visitVarInsn(Opcodes.ILOAD, 1);
         perform.visitVarInsn(Opcodes.ISTORE, pc);
 
@@ -2753,6 +4092,8 @@ public final class ProgramGenerator {
         perform.visitVarInsn(Opcodes.ILOAD, 2);
         perform.visitJumpInsn(Opcodes.IF_ICMPEQ, end);
         perform.visitIincInsn(pc, 1);
+        // 次の段落へ<b>落ちて</b>入る。移した文があるわけではない (要件 FR-193)
+        emitDebugReason(perform, 3, "FALL THROUGH");
         Label check = new Label();
         perform.visitJumpInsn(Opcodes.GOTO, check);
         perform.visitLabel(jumped);
@@ -2771,6 +4112,11 @@ public final class ProgramGenerator {
         perform.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "programReturn", "()V", false);
 
         perform.visitLabel(end);
+        if (hasAlterable && hasIndependentSegment) {
+            perform.visitVarInsn(Opcodes.ALOAD, 0);
+            perform.visitVarInsn(Opcodes.ILOAD, saved);
+            perform.visitFieldInsn(Opcodes.PUTFIELD, internal, CURRENT_SEGMENT, "I");
+        }
         perform.visitInsn(Opcodes.RETURN);
         perform.visitMaxs(0, 0);
         perform.visitEnd();
@@ -2806,11 +4152,60 @@ public final class ProgramGenerator {
         run = writer.visitMethod(Opcodes.ACC_PRIVATE, paragraphMethod(index),
                 PARAGRAPH_DESCRIPTOR, null, null);
         run.visitCode();
+        // 書き換えられる段落でもデバッグの節は動く。飛び先を返す前に出す (要件 FR-193)
+        debugEntries.get(index).forEach(Runnable::run);
+        if (alterInitial[index] != NOT_ALTERABLE) {
+            // 中身の GO TO は出さないが、それが移した文であることは控える
+            alterableTransfers.get(index).forEach(Runnable::run);
+            // 書き換えられる段落は、飛び先を表から読んで返す。
+            // 中身は GO TO 1 つだけなので、これで置き換えてしまってよい
+            run.visitVarInsn(Opcodes.ALOAD, 0);
+            run.visitFieldInsn(Opcodes.GETFIELD, internal, ALTERED, "[I");
+            push(index);
+            run.visitInsn(Opcodes.IALOAD);
+            if (alterInitial[index] == ALTER_UNSET) {
+                // 行き先を持たずに書かれた段落。ALTER される前に通ったら止める
+                Label decided = new Label();
+                run.visitInsn(Opcodes.DUP);
+                run.visitJumpInsn(Opcodes.IFGE, decided);
+                run.visitInsn(Opcodes.POP);
+                emitUnalteredGoTo(paragraphNames.get(index));
+                run.visitLabel(decided);
+            }
+            run.visitInsn(Opcodes.IRETURN);
+            run.visitMaxs(0, 0);
+            run.visitEnd();
+            return;
+        }
         body.forEach(Runnable::run);
         run.visitInsn(Opcodes.ICONST_M1);
         run.visitInsn(Opcodes.IRETURN);
         run.visitMaxs(0, 0);
         run.visitEnd();
+    }
+
+    /**
+     * 囲まれたプログラムから宣言節を動かすための入口を出す (要件 FR-091, FR-105)。
+     *
+     * <p>{@code performRange} は private であり、記憶域も文脈も引数で受ける。外から
+     * 呼べる形に包んでおく。引数の並びは空でよい——宣言節は {@code USING} を取らない。
+     */
+    private void emitGlobalRangeBridge() {
+        MethodVisitor bridge = writer.visitMethod(Opcodes.ACC_PUBLIC, "performGlobalRange",
+                "(IIL" + STORAGE + ";" + CONTEXT + ")V", null, null);
+        bridge.visitCode();
+        bridge.visitVarInsn(Opcodes.ALOAD, 0);
+        bridge.visitVarInsn(Opcodes.ILOAD, 1);
+        bridge.visitVarInsn(Opcodes.ILOAD, 2);
+        bridge.visitVarInsn(Opcodes.ALOAD, 3);
+        bridge.visitVarInsn(Opcodes.ALOAD, 4);
+        bridge.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CobolProgram.class),
+                "NO_ARGUMENTS", "[" + Type.getDescriptor(DataView.class));
+        bridge.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "performRange",
+                PERFORM_DESCRIPTOR, false);
+        bridge.visitInsn(Opcodes.RETURN);
+        bridge.visitMaxs(0, 0);
+        bridge.visitEnd();
     }
 
     /** 段落の範囲を実行する呼び出しを積む。 */
@@ -2825,6 +4220,65 @@ public final class ProgramGenerator {
                 PERFORM_DESCRIPTOR, false);
     }
 
+    /**
+     * {@code ALTER} で書き換えられる段落と、段分けの段番号を控える (要件 FR-061, FR-063)。
+     *
+     * <p>書き換えられる段落は<b>{@code GO TO} だけを書いた段落</b>である。その段落は
+     * 飛び先を定数で返すのではなく、書き換えられる<b>表から読んで返す</b>ようにする。
+     */
+    private void planAlterable(List<ProcedureBuilder.Paragraph> paragraphs) {
+        alterInitial = new int[paragraphs.size()];
+        segments = new int[paragraphs.size()];
+        hasAlterable = false;
+        hasIndependentSegment = false;
+        for (int i = 0; i < paragraphs.size(); i++) {
+            ProcedureBuilder.Paragraph paragraph = paragraphs.get(i);
+            segments[i] = paragraph.segment();
+            hasIndependentSegment |= paragraph.segment() >= INDEPENDENT_SEGMENT;
+            Statement.GoTo goTo = paragraph.alterableGoTo();
+            alterInitial[i] = alterInitialOf(goTo);
+            hasAlterable |= alterInitial[i] != NOT_ALTERABLE;
+        }
+    }
+
+    /**
+     * 書かれたままの飛び先。
+     *
+     * <p>3 通りある。<b>書き換えられない段落</b> ({@link #NOT_ALTERABLE})、
+     * 書き換えられて<b>初めの行き先を持つ</b>段落 (0 以上)、そして書き換えられるが
+     * <b>行き先をまだ持たない</b>段落 ({@link #ALTER_UNSET}) である。3 つ目は
+     * {@code GO TO.} とだけ書いた段落で、{@code ALTER} が書き込むまで通ってはならない。
+     */
+    private int alterInitialOf(Statement.GoTo goTo) {
+        if (goTo == null) {
+            return NOT_ALTERABLE;
+        }
+        return goTo.target() == null ? ALTER_UNSET : paragraphNames.indexOf(goTo.target());
+    }
+
+    /** 書き換えられない段落。 */
+    private static final int NOT_ALTERABLE = -1;
+    /** 書き換えられるが、行き先をまだ持たない段落。 */
+    private static final int ALTER_UNSET = -2;
+
+    /** ここから上が独立段である ({@code Ops.enterParagraph} と対)。 */
+    private static final int INDEPENDENT_SEGMENT = 50;
+
+    /** 段落ごとの、書かれたままの飛び先。書き換えられない段落は {@code -1}。 */
+    private int[] alterInitial = new int[0];
+
+    /** 段落ごとの、デバッグの節を動かす命令の並び (要件 FR-193)。 */
+    private List<List<Runnable>> debugEntries = new ArrayList<>();
+
+    /** 書き換えられる段落が持つ {@code GO TO} の、行番号と理由を控える命令 (要件 FR-193)。 */
+    private List<List<Runnable>> alterableTransfers = new ArrayList<>();
+    /** 段落ごとの段番号。 */
+    private int[] segments = new int[0];
+    /** 書き換えられる段落があるか。無ければ表そのものを出さない。 */
+    private boolean hasAlterable;
+    /** 独立段があるか。 */
+    private boolean hasIndependentSegment;
+
     private static String paragraphMethod(int index) {
         return "paragraph$" + index;
     }
@@ -2832,22 +4286,36 @@ public final class ProgramGenerator {
     private void planMove(Statement.Move move, List<Runnable> body) {
         for (Statement.Move.Target target : move.targets()) {
             Runnable offset = planAddress(target.reference(), move.origin());
-            OptionalInt length = lengthOf(target.reference(), move.origin());
-            if (offset == null || length.isEmpty()) {
+            if (offset == null) {
                 return;
             }
             switch (target.kind()) {
-                case ALPHANUMERIC -> planAlphanumericMove(move, target, offset,
-                        length.getAsInt(), body);
+                case ALPHANUMERIC -> planAlphanumericMove(move, target, offset, body);
                 case NUMERIC -> planNumericMove(move, target, offset, body);
                 case NUMERIC_EDITED -> planEditedMove(move, target, offset, body);
+                case ALPHANUMERIC_EDITED ->
+                        planAlphanumericEditedMove(move, target, offset, body);
             }
         }
     }
 
+    /**
+     * 英数字転記。
+     *
+     * <p>受取側の長さは<b>実行時に決まってよい</b> ({@code WS-A (1: WS-N)})。
+     * 図形定数を広げる長さだけは翻訳時に要るので、そこには<b>項目全体の長さ</b>を使う。
+     * 部分参照の長さは項目全体を超えないので、広げてから切り詰めた結果は同じになる。
+     */
     private void planAlphanumericMove(Statement.Move move, Statement.Move.Target target,
-                                      Runnable offset, int length, List<Runnable> body) {
-        Runnable source = planSourceBytes(move.source(), move.origin(), length);
+                                      Runnable offset, List<Runnable> body) {
+        Runnable length = planLength(target.reference(), move.origin());
+        if (length == null) {
+            return;
+        }
+        int widest = target.reference().constantLength()
+                .orElse(target.reference().item().length());
+        Runnable source = planMoveSourceBytes(move.source(), target.reference(),
+                move.origin(), widest);
         if (source == null) {
             return;
         }
@@ -2855,12 +4323,134 @@ public final class ProgramGenerator {
         body.add(() -> {
             source.run();
             offset.run();
-            push(length);
+            length.run();
             run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
                     "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
         });
+    }
+
+    /**
+     * 英数字編集転記 (要件 FR-030)。
+     *
+     * <p>受取側の文字位置 ({@code A} と {@code X}) の数だけ送出データを採り、挿入文字
+     * ({@code B} {@code 0} {@code /}) をその場所に置く。<b>広げる長さは項目の長さでは
+     * なく文字位置の数</b>である。図形定数を項目の長さぶん広げてしまうと、挿入文字が
+     * 入る分だけ多く採ってしまい、うしろがずれる。
+     */
+    private void planAlphanumericEditedMove(Statement.Move move, Statement.Move.Target target,
+                                            Runnable offset, List<Runnable> body) {
+        Picture picture = target.reference().item().picture();
+        Runnable source = planMoveSourceBytes(move.source(), target.reference(),
+                move.origin(), dataPositions(picture));
+        if (source == null) {
+            return;
+        }
+        String field = pictureConstant(picture);
+        body.add(() -> {
+            source.run();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, PICTURE);
+            offset.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumericEdited",
+                    "([B" + PICTURE + "L" + STORAGE + ";I" + CODE_PAGE + ")V", false);
+        });
+    }
+
+    /**
+     * 転記の送出データを積む命令 (要件 FR-060)。
+     *
+     * <p>{@link #planSourceBytes} との違いは 1 つだけである。<b>符号付きの表示形式の
+     * 項目からは、符号を落とした数字の並びを送る</b>。規格が絶対値を送ると決めている。
+     * そのまま読むと、ゾーンに埋め込んだ符号のせいで最後の桁が英字に見える
+     * (NC105A の MOVE-TEST-F1-92 / -93 がそこだけを確かめている)。
+     *
+     * <p>転記に限る。{@code DISPLAY} や {@code STRING} は記憶域の字面をそのまま送る。
+     */
+    private Runnable planMoveSourceBytes(Operand source, DataReference target, Origin origin,
+                                         int targetLength) {
+        if (!(source instanceof Operand.Reference operand)
+                || DataCategory.of(target) == DataCategory.GROUP) {
+            // 受取側が集団項目なら<b>バイト範囲そのもの</b>への転記であり、変換は起きない。
+            // 符号も落とさない。SQ111A は符号の 1 バイトを FILLER で受けて数える
+            return planSourceBytes(source, origin, targetLength);
+        }
+        return planNumericAsAlphanumeric(source, origin, targetLength);
+    }
+
+    /**
+     * 数字項目を<b>英数字項目へ移したかのように</b>読む命令 (要件 FR-060)。
+     *
+     * <p>2 つのことが起きる。符号は落ち、{@code PICTURE} の {@code P} は 0 として
+     * 数える。どちらも規格が「格納した文字ではなく代数値を使う」と決めている
+     * ところである (85 規格 5.9.4)。数字項目でなければ、そのままバイトを読む。
+     *
+     * <p>転記の送り出し側と、英数字との比較の両方で通る。比較の規則は「数字の
+     * 被演算子を<b>同じ大きさの英数字項目へ移したものとして</b>比べる」であり、
+     * 転記と同じ扱いである (85 規格 6.15.2)。
+     */
+    private Runnable planNumericAsAlphanumeric(Operand source, Origin origin, int targetLength) {
+        if (!(source instanceof Operand.Reference operand)) {
+            return planSourceBytes(source, origin, targetLength);
+        }
+        DataReference reference = operand.reference();
+        DataItem item = reference.item();
+        // PICTURE の P は<b>桁を数えるが記憶域は取らない</b>。S9PP に 200 を入れて
+        // 英数字へ移せば "200" である
+        int scalingZeros = scalingZerosOf(item);
+        if (DataCategory.of(reference) != DataCategory.NUMERIC_INTEGER
+                || (item.usage() != null && item.usage() != Usage.DISPLAY)
+                || item.picture() == null
+                || (!item.picture().signPosition().isSigned() && scalingZeros == 0)) {
+            // 符号は PICTURE の S が決める。SIGN IS 句は<b>持ち方</b>を変えるだけである
+            return planSourceBytes(source, origin, targetLength);
+        }
+        Runnable offset = planAddress(reference, origin);
+        String field = numericItemConstant(item, origin);
+        if (offset == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            offset.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readUnsignedDigits",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE + ")[B", false);
+            if (scalingZeros > 0) {
+                push(scalingZeros);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "withScalingZeros",
+                        "([BI" + CODE_PAGE + ")[B", false);
+            }
+        };
+    }
+
+    /**
+     * 小数点の右側にある {@code P} の数 (要件 FR-031)。
+     *
+     * <p>{@code S9PP} なら 2 である。記憶域は 1 桁しか取らないが、値は<b>その 100 倍</b>で
+     * ある。転記の送り出し側になったときは、格納した数字のうしろに 0 を 2 つ置く。
+     *
+     * <p>左側の {@code P} ({@code PP99} のような書き方) は数えない。そちらは値が
+     * 小数になるので、そもそも英数字へは移せない。
+     */
+    private static int scalingZerosOf(DataItem item) {
+        if (item.picture() == null || item.picture().scale() >= 0) {
+            return 0;
+        }
+        return -item.picture().scale();
+    }
+
+    /** 英数字編集項目の<b>文字位置</b>の数。挿入文字は数えない。 */
+    private static int dataPositions(Picture picture) {
+        int count = 0;
+        for (Picture.Cell cell : picture.cells()) {
+            if (cell.kind() != Picture.Kind.INSERT) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private void planNumericMove(Statement.Move move, Statement.Move.Target target,
@@ -2919,6 +4509,17 @@ public final class ProgramGenerator {
      */
     private void planCompute(Statement.Compute statement, List<Runnable> body) {
         IntermediateDigits digits = IntermediateDigits.of(statement.value(), statement.targets());
+        IntermediateDigits enclosing = statementDigits;
+        statementDigits = digits;
+        try {
+            planCompute(statement, digits, body);
+        } finally {
+            statementDigits = enclosing;
+        }
+    }
+
+    private void planCompute(Statement.Compute statement, IntermediateDigits digits,
+                             List<Runnable> body) {
         Runnable value = planExpression(statement.value(), digits, statement.origin());
         if (value == null) {
             return;
@@ -3015,20 +4616,32 @@ public final class ProgramGenerator {
                                       Origin origin) {
         Runnable offset = planAddress(target.reference(), origin);
         DataItem item = target.reference().item();
-        String field = numericItemConstant(item, origin);
-        if (offset == null || field == null || item.picture() == null) {
+        if (offset == null || item.picture() == null) {
             return null;
         }
         String rounding = target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION";
+        boolean edited = DataCategory.of(target.reference()) == DataCategory.NUMERIC_EDITED;
+        String field = edited
+                ? pictureConstant(item.picture())
+                : numericItemConstant(item, origin);
+        if (field == null) {
+            return null;
+        }
         return () -> {
             Label done = new Label();
             run.visitVarInsn(Opcodes.ALOAD, slot);
-            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field,
+                    edited ? PICTURE : NUMERIC_ITEM);
             offset.run();
             loadRounding(rounding);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
-                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
-                            + Type.getDescriptor(CobolRounding.class) + ")Z", false);
+            if (edited) {
+                loadCodePage();
+            }
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS,
+                    edited ? "storeEditedChecked" : "storeChecked",
+                    "(" + DECIMAL + (edited ? PICTURE : NUMERIC_ITEM) + "L" + STORAGE + ";I"
+                            + Type.getDescriptor(CobolRounding.class)
+                            + (edited ? CODE_PAGE : "") + ")Z", false);
             run.visitJumpInsn(Opcodes.IFEQ, done);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitVarInsn(Opcodes.ISTORE, flag);
@@ -3076,11 +4689,23 @@ public final class ProgramGenerator {
                                 + Type.getDescriptor(CobolRounding.class) + ")" + DECIMAL, false);
             };
         }
+        if (binary.operator() == Expression.Operator.POWER) {
+            return () -> {
+                left.run();
+                right.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "power",
+                        "(" + DECIMAL + DECIMAL + ")" + DECIMAL, false);
+                // 近似が入る答えは桁が伸びる。中間結果の上限まで削る
+                push(scale);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "truncate",
+                        "(" + DECIMAL + "I)" + DECIMAL, false);
+            };
+        }
         String name = switch (binary.operator()) {
             case ADD -> "add";
             case SUBTRACT -> "subtract";
             case MULTIPLY -> "multiply";
-            case DIVIDE -> throw new IllegalStateException("handled above");
+            case DIVIDE, POWER -> throw new IllegalStateException("handled above");
         };
         int natural = naturalScale(binary, digits);
         return () -> {
@@ -3107,18 +4732,29 @@ public final class ProgramGenerator {
     }
 
     private void planArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
+        // 被演算子に組み込み関数を書けるので、その引数にも文全体の dmax を渡す
+        IntermediateDigits enclosing = statementDigits;
+        statementDigits = IntermediateDigits.of(
+                new Expression.Value(statement.operands().get(0)), statement.targets());
+        try {
+            planArithmeticBody(statement, body);
+        } finally {
+            statementDigits = enclosing;
+        }
+    }
+
+    private void planArithmeticBody(Statement.Arithmetic statement, List<Runnable> body) {
         if (statement.isChecked()) {
             planCheckedArithmetic(statement, body);
             return;
         }
+        List<Integer> slots = planOperandSlots(statement, body);
+        if (slots == null) {
+            return;
+        }
         for (Statement.Arithmetic.Target target : statement.targets()) {
-            Runnable offset = planAddress(target.reference(), statement.origin());
-            if (offset == null) {
-                return;
-            }
             DataItem item = target.reference().item();
-            String field = numericItemConstant(item, statement.origin());
-            if (field == null || item.picture() == null) {
+            if (item.picture() == null) {
                 return;
             }
             int scale = item.picture().scale();
@@ -3126,32 +4762,45 @@ public final class ProgramGenerator {
 
             List<Runnable> value = new ArrayList<>();
             if (statement.accumulate() != null) {
-                // 受取項目の現在値から始める
-                String source = field;
-                value.add(() -> {
-                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, source, NUMERIC_ITEM);
-                    offset.run();
-                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
-                            "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
-                });
+                // 受取項目の現在値から始める。この形の受取項目は数値に限られる
+                Runnable read = planReadReceiver(target.reference(), statement.origin());
+                if (read == null) {
+                    return;
+                }
+                value.add(read);
             }
-            if (!planFold(statement, value, scale, rounding)) {
-                return;
-            }
+            planFold(statement, slots, value, scale, rounding);
             if (statement.accumulate() != null) {
                 value.add(() -> emitOperator(statement.accumulate(), scale, rounding));
             }
 
-            body.add(() -> {
-                value.forEach(Runnable::run);
-                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-                offset.run();
-                loadRounding(rounding);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "store",
-                        "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
-                                + Type.getDescriptor(CobolRounding.class) + ")V", false);
-            });
+            Runnable store = planStore(target.reference(), () -> value.forEach(Runnable::run),
+                    rounding, statement.origin());
+            if (store == null) {
+                return;
+            }
+            body.add(store);
         }
+    }
+
+    /**
+     * {@code GIVING} を書かない算術文が、受取項目の現在値を読む命令。
+     *
+     * <p>この形の受取項目は<b>計算に加わる</b>ので数値項目に限られる。数字編集項目が
+     * ここへ来ることは意味解析が防いでいる。
+     */
+    private Runnable planReadReceiver(DataReference reference, Origin origin) {
+        Runnable offset = planAddress(reference, origin);
+        String field = numericItemConstant(reference.item(), origin);
+        if (offset == null || field == null) {
+            return null;
+        }
+        return () -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+            offset.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
+        };
     }
 
     /**
@@ -3165,9 +4814,16 @@ public final class ProgramGenerator {
      */
     private void planCheckedArithmetic(Statement.Arithmetic statement, List<Runnable> body) {
         int flag = nextLocal++;
-        List<Runnable> perTarget = new ArrayList<>();
+        // 被演算子は受取項目より先に、1 度だけ読む。条件文の中で読むので
+        // 「旗を立てる前」ではなく<b>受取項目の並びの先頭</b>へ置く
+        List<Runnable> prologue = new ArrayList<>();
+        List<Integer> slots = planOperandSlots(statement, prologue);
+        if (slots == null) {
+            return;
+        }
+        List<Runnable> perTarget = new ArrayList<>(prologue);
         for (Statement.Arithmetic.Target target : statement.targets()) {
-            Runnable planned = planCheckedTarget(statement, target, flag);
+            Runnable planned = planCheckedTarget(statement, target, flag, slots);
             if (planned == null) {
                 return;
             }
@@ -3333,7 +4989,12 @@ public final class ProgramGenerator {
         int flag = nextLocal++;
         List<Runnable> operations = new ArrayList<>();
         for (Statement.Arithmetic operation : group.operations()) {
-            Runnable planned = planCheckedTarget(operation, operation.targets().get(0), flag);
+            List<Integer> slots = planOperandSlots(operation, operations);
+            if (slots == null) {
+                return;
+            }
+            Runnable planned =
+                    planCheckedTarget(operation, operation.targets().get(0), flag, slots);
             if (planned == null) {
                 return;
             }
@@ -3343,34 +5004,26 @@ public final class ProgramGenerator {
     }
 
     private Runnable planCheckedTarget(Statement.Arithmetic statement,
-                                       Statement.Arithmetic.Target target, int flag) {
-        Runnable offset = planAddress(target.reference(), statement.origin());
-        if (offset == null) {
-            return null;
-        }
+                                       Statement.Arithmetic.Target target, int flag,
+                                       List<Integer> slots) {
         DataItem item = target.reference().item();
-        String field = numericItemConstant(item, statement.origin());
-        if (field == null || item.picture() == null) {
+        if (item.picture() == null) {
             return null;
         }
         int scale = item.picture().scale();
         String rounding = target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION";
-
-        // 被演算子を先に局所変数へ取る。除数を調べてから割るためである
-        List<Integer> slots = new ArrayList<>();
-        List<Runnable> loads = new ArrayList<>();
-        for (Operand operand : statement.operands()) {
-            Runnable push = planSourceDecimal(operand, statement.origin());
-            if (push == null) {
-                return null;
-            }
-            int slot = nextLocal++;
-            slots.add(slot);
-            loads.add(() -> {
-                push.run();
-                run.visitVarInsn(Opcodes.ASTORE, slot);
-            });
+        Runnable read = statement.accumulate() == null
+                ? () -> { }
+                : planReadReceiver(target.reference(), statement.origin());
+        if (read == null) {
+            return null;
         }
+        int result = nextLocal++;
+        Runnable store = planCheckedStore(target, result, flag, statement.origin());
+        if (store == null) {
+            return null;
+        }
+
         int folded = nextLocal++;
         boolean foldDivides = statement.fold() == Statement.Arithmetic.Operator.DIVIDE;
         boolean accumulateDivides =
@@ -3379,7 +5032,6 @@ public final class ProgramGenerator {
         return () -> {
             Label failed = new Label();
             Label done = new Label();
-            loads.forEach(Runnable::run);
             if (foldDivides) {
                 // 2 個目以降が除数になる
                 for (int i = 1; i < slots.size(); i++) {
@@ -3398,22 +5050,15 @@ public final class ProgramGenerator {
             }
 
             if (statement.accumulate() != null) {
-                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-                offset.run();
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readNumeric",
-                        "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)" + DECIMAL, false);
+                read.run();
                 run.visitVarInsn(Opcodes.ALOAD, folded);
                 emitOperator(statement.accumulate(), scale, rounding);
             } else {
                 run.visitVarInsn(Opcodes.ALOAD, folded);
             }
-            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
-            offset.run();
-            loadRounding(rounding);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeChecked",
-                    "(" + DECIMAL + NUMERIC_ITEM + "L" + STORAGE + ";I"
-                            + Type.getDescriptor(CobolRounding.class) + ")Z", false);
-            run.visitJumpInsn(Opcodes.IFEQ, done);
+            run.visitVarInsn(Opcodes.ASTORE, result);
+            store.run();
+            run.visitJumpInsn(Opcodes.GOTO, done);
             run.visitLabel(failed);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitVarInsn(Opcodes.ISTORE, flag);
@@ -3428,22 +5073,51 @@ public final class ProgramGenerator {
         run.visitJumpInsn(Opcodes.IFNE, failed);
     }
 
-    /** 被演算子を左から畳む命令を積む。 */
-    private boolean planFold(Statement.Arithmetic statement, List<Runnable> value, int scale,
-                             String rounding) {
-        boolean first = true;
+    /**
+     * 被演算子を<b>1 度だけ</b>読んで局所変数へ取る命令を {@code body} へ積む
+     * (要件 FR-043、規格 6.11.4 GR2)。
+     *
+     * <p>受取項目が被演算子でもあることがある。
+     *
+     * <pre>
+     * DIVIDE B INTO A GIVING R1 A ROUNDED R2 R3
+     * </pre>
+     *
+     * <p>2 つ目の受取項目が {@code A} を書き換える。そのあとで {@code A} を読み直すと、
+     * 3 つ目からは<b>別の計算</b>になる。規格は被演算子を文の実行前に評価すると決めて
+     * いる。NC172A / NC173A がこの形を 32 通り確かめている。
+     *
+     * @return 被演算子ごとの局所変数の番号。読めなければ {@code null}
+     */
+    private List<Integer> planOperandSlots(Statement.Arithmetic statement, List<Runnable> body) {
+        List<Integer> slots = new ArrayList<>();
+        List<Runnable> loads = new ArrayList<>();
         for (Operand operand : statement.operands()) {
             Runnable push = planSourceDecimal(operand, statement.origin());
             if (push == null) {
-                return false;
+                return null;
             }
-            value.add(push);
-            if (!first) {
+            int slot = nextLocal++;
+            slots.add(slot);
+            loads.add(() -> {
+                push.run();
+                run.visitVarInsn(Opcodes.ASTORE, slot);
+            });
+        }
+        body.add(() -> loads.forEach(Runnable::run));
+        return slots;
+    }
+
+    /** 控えておいた被演算子を左から畳む命令を積む。 */
+    private void planFold(Statement.Arithmetic statement, List<Integer> slots,
+                          List<Runnable> value, int scale, String rounding) {
+        for (int i = 0; i < slots.size(); i++) {
+            int slot = slots.get(i);
+            value.add(() -> run.visitVarInsn(Opcodes.ALOAD, slot));
+            if (i > 0) {
                 value.add(() -> emitOperator(statement.fold(), scale, rounding));
             }
-            first = false;
         }
-        return true;
     }
 
     private void emitOperator(Statement.Arithmetic.Operator operator, int scale, String rounding) {
@@ -3491,6 +5165,43 @@ public final class ProgramGenerator {
      * <p>連絡節の項目は記憶域を持たない。呼ぶ側から渡された領域が実体であり、
      * 記憶域も位置もその領域から取る。
      */
+    /**
+     * 連絡節の 01 レベルが、渡された引数の何番目か。
+     *
+     * <p>{@code REDEFINES} で重ねた 01 は {@code USING} に並ばない。<b>重ねる先が
+     * 同じ領域を指している</b>ので、その引数を使う (IC237A が
+     * 「01 L-A1 REDEFINES L-A」と書いている)。重ねた項目をさらに重ねることもできるので、
+     * 名前をたどる。
+     *
+     * @return 見つからなければ {@code -1}
+     */
+    private int parameterIndexOf(DataItem record) {
+        for (DataItem current = record; current != null; current = redefined(current)) {
+            int index = parameters.indexOf(current);
+            if (index >= 0) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private DataItem redefined(DataItem item) {
+        if (item.redefinesName() == null) {
+            return null;
+        }
+        for (DataItem candidate : parameters) {
+            if (item.redefinesName().equals(candidate.name())) {
+                return candidate;
+            }
+        }
+        for (DataItem candidate : layout.all()) {
+            if (candidate.record() == candidate && item.redefinesName().equals(candidate.name())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     private Runnable planAddress(DataReference reference, Origin origin) {
         Runnable offset = planOffset(reference, origin);
         if (offset == null) {
@@ -3513,29 +5224,38 @@ public final class ProgramGenerator {
                 offset.run();
             };
         }
-        int index = parameters.indexOf(record);
+        int index = parameterIndexOf(record);
         if (index < 0) {
             report(origin, "a LINKAGE SECTION item is not listed in PROCEDURE DIVISION USING: "
                     + describe(record));
             return null;
         }
+        String item = describe(record);
         return () -> {
-            emitArgument(index);
+            emitArgument(index, item);
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, DATA_VIEW, "storage",
                     "()L" + Type.getInternalName(Storage.class) + ";", false);
             // 渡された領域の始まりからの位置になる
-            emitArgument(index);
+            emitArgument(index, item);
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, DATA_VIEW, "offset", "()I", false);
             offset.run();
             run.visitInsn(Opcodes.IADD);
         };
     }
 
-    /** {@code USING} の {@code index} 番目に渡された領域を積む。 */
-    private void emitArgument(int index) {
+    /**
+     * {@code USING} の {@code index} 番目に渡された領域を積む。
+     *
+     * <p>配列から直に取らずランタイムを通すのは、<b>渡されていないときに打ち切る</b>ため
+     * である。ホストではその場合の中身が定まらず、運が悪ければ {@code S0C4} で終わり、
+     * 運がよければ誤った値のまま処理が進む (要件 FR-141)。
+     */
+    private void emitArgument(int index, String item) {
         run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
         push(index);
-        run.visitInsn(Opcodes.AALOAD);
+        run.visitLdcInsn(item);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "linkage",
+                "([L" + DATA_VIEW + ";ILjava/lang/String;)L" + DATA_VIEW + ";", false);
     }
 
     private Runnable planOffset(DataReference reference, Origin origin) {
@@ -3555,8 +5275,9 @@ public final class ProgramGenerator {
                 fixed += (value.value() - 1) * unit;
                 continue;
             }
-            DataReference inner = ((DataReference.Subscript.Variable) subscript).reference();
-            Runnable push = planSourceDecimal(new Operand.Reference(inner), origin);
+            DataReference.Subscript.Variable given =
+                    (DataReference.Subscript.Variable) subscript;
+            Runnable push = planSourceDecimal(new Operand.Reference(given.reference()), origin);
             if (push == null) {
                 return null;
             }
@@ -3564,6 +5285,8 @@ public final class ProgramGenerator {
             variable.add(() -> {
                 push.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+                // 相対指定のずれは、範囲を確かめる前に足す。確かめるのは足したあとの値である
+                addOffset(given.offset());
                 emitSubscriptCheck(table);
                 run.visitInsn(Opcodes.ICONST_1);
                 run.visitInsn(Opcodes.ISUB);
@@ -3587,6 +5310,30 @@ public final class ProgramGenerator {
         return () -> {
             push(base);
             variable.forEach(Runnable::run);
+        };
+    }
+
+    /**
+     * 表の回数を積む命令。
+     *
+     * <p>{@code OCCURS ... DEPENDING ON} を書いた表では、いま何個あるかは<b>実行時に
+     * しか決まらない</b>。記憶域は最大の回数で取ってあるので、最大まで走ると
+     * まだ入っていない場所を読んで「見つかった」と言ってしまう (NC235A)。
+     *
+     * @param occurs    書かれた最大の回数
+     * @param depending {@code DEPENDING ON} の項目。無ければ {@code null}
+     */
+    private Runnable planOccurs(int occurs, DataReference depending, Origin origin) {
+        if (depending == null) {
+            return () -> push(occurs);
+        }
+        Runnable value = planSourceDecimal(new Operand.Reference(depending), origin);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
         };
     }
 
@@ -3633,15 +5380,16 @@ public final class ProgramGenerator {
         if (reference.refMod().leftmost() instanceof DataReference.Subscript.Constant) {
             return () -> { };
         }
-        DataReference inner = ((DataReference.Subscript.Variable)
-                reference.refMod().leftmost()).reference();
-        Runnable push = planSourceDecimal(new Operand.Reference(inner), origin);
+        DataReference.Subscript.Variable given =
+                (DataReference.Subscript.Variable) reference.refMod().leftmost();
+        Runnable push = planSourceDecimal(new Operand.Reference(given.reference()), origin);
         if (push == null) {
             return null;
         }
         return () -> {
             push.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            addOffset(given.offset());
             emitRefModCheck(reference, origin);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitInsn(Opcodes.ISUB);
@@ -3651,7 +5399,9 @@ public final class ProgramGenerator {
 
     /**
      * 参照の長さ。<b>長さは翻訳時に決まっていなければならない</b>。
-     * 部分参照の長さにデータ項目を書いた場合は、まだ生成できない (暫定判断 P-027)。
+     *
+     * <p>長さそのものを翻訳時の値として使う道 (定数のバイト列を作る、編集の形を決める)
+     * が引く。実行時に決まってよい道は {@link #planLength} を使う。
      */
     private OptionalInt lengthOf(DataReference reference, Origin origin) {
         OptionalInt length = reference.constantLength();
@@ -3662,10 +5412,86 @@ public final class ProgramGenerator {
         return length;
     }
 
+    /**
+     * 参照の長さを積む命令 (要件 FR-026、暫定判断 P-027)。
+     *
+     * <p>部分参照の長さは<b>データ項目で書ける</b>。{@code WS-A (1: WS-N)} の {@code WS-N}
+     * は実行時にしか決まらない。ランタイムの演算はどれも長さを引数で受け取るので、
+     * <b>定数を積むところを計算に差し替える</b>だけで通る。
+     *
+     * <p>長さを省いた {@code WS-A (WS-I:)} は「項目の終わりまで」であり、
+     * 開始位置が実行時に決まればこれも実行時に決まる。
+     *
+     * @return 積む命令。組み立てられなければ {@code null}
+     */
+    /**
+     * <b>送り出す</b>ときの長さ (要件 FR-020)。
+     *
+     * <p>可変長の表を含む群を送り出すときは、長さが<b>実行時に決まる</b>。いま何個
+     * あるかまでしか送らない。受け取るときは違って<b>いちばん大きい形</b>を使う。
+     * 規格がそう分けている。分けないと、受取側の古い個数で切ってしまう
+     * (NC247A の MOV-TEST-F1-6)。
+     */
+    private Runnable planSendingLength(DataReference reference, Origin origin) {
+        // 添字を書けば<b>1 個分</b>である。表そのものを添字なしで指したときだけ、
+        // いま何個あるかで長さが決まる
+        if (reference.refMod() == null && reference.subscripts().isEmpty()
+                && hasDependingTable(reference.item())) {
+            return planDescribedLength(reference.item(), origin);
+        }
+        return planLength(reference, origin);
+    }
+
+    private Runnable planLength(DataReference reference, Origin origin) {
+        OptionalInt constant = reference.constantLength();
+        if (constant.isPresent()) {
+            int length = constant.getAsInt();
+            return () -> push(length);
+        }
+        DataReference.RefMod refMod = reference.refMod();
+        if (refMod.length() != null) {
+            return planSubscriptValue(refMod.length(), origin);
+        }
+        // 長さの省略。項目の終わりまでなので「全体の長さ - (開始位置 - 1)」である
+        Runnable leftmost = planSubscriptValue(refMod.leftmost(), origin);
+        if (leftmost == null) {
+            return null;
+        }
+        int whole = reference.item().length();
+        return () -> {
+            push(whole + 1);
+            leftmost.run();
+            run.visitInsn(Opcodes.ISUB);
+        };
+    }
+
+    /** 添字 1 個の値を {@code int} として積む命令。 */
+    private Runnable planSubscriptValue(DataReference.Subscript subscript, Origin origin) {
+        if (subscript instanceof DataReference.Subscript.Constant value) {
+            return () -> push(value.value());
+        }
+        if (!(subscript instanceof DataReference.Subscript.Variable given)) {
+            report(origin, "ALL may not be written as a reference modification");
+            return null;
+        }
+        Runnable push = planSourceDecimal(new Operand.Reference(given.reference()), origin);
+        if (push == null) {
+            return null;
+        }
+        return () -> {
+            push.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            addOffset(given.offset());
+        };
+    }
+
     // ---- 送出側 ----
 
     /** 送出側をバイト列として積む命令。 */
     private Runnable planSourceBytes(Operand source, Origin origin, int targetLength) {
+        if (source instanceof Operand.Function function) {
+            return planFunctionBytes(function);
+        }
         if (source instanceof Operand.Literal literal) {
             byte[] bytes = literalBytes(literal.value(), targetLength);
             String field = bytesConstant(bytes);
@@ -3673,13 +5499,13 @@ public final class ProgramGenerator {
         }
         DataReference reference = ((Operand.Reference) source).reference();
         Runnable offset = planAddress(reference, origin);
-        OptionalInt length = lengthOf(reference, origin);
-        if (offset == null || length.isEmpty()) {
+        Runnable length = planSendingLength(reference, origin);
+        if (offset == null || length == null) {
             return null;
         }
         return () -> {
             offset.run();
-            push(length.getAsInt());
+            length.run();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
                     "(L" + STORAGE + ";II)[B", false);
         };
@@ -3687,6 +5513,9 @@ public final class ProgramGenerator {
 
     /** 送出側を {@link Decimal} として積む命令。 */
     private Runnable planSourceDecimal(Operand source, Origin origin) {
+        if (source instanceof Operand.Function function) {
+            return planFunctionDecimal(function);
+        }
         if (source instanceof Operand.Literal literal) {
             Decimal value = decimalOf(literal.value(), origin);
             if (value == null) {
@@ -3700,6 +5529,18 @@ public final class ProgramGenerator {
         OptionalInt length = lengthOf(reference, origin);
         if (offset == null || length.isEmpty()) {
             return null;
+        }
+        if (DataCategory.of(reference) == DataCategory.NUMERIC_EDITED) {
+            // 数字編集項目からは<b>編集を解いて</b>値を取り出す (de-editing)
+            int scale = reference.item().picture() == null ? 0 : reference.item().picture().scale();
+            return () -> {
+                offset.run();
+                push(length.getAsInt());
+                push(scale);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "deEdit",
+                        "(L" + STORAGE + ";III" + CODE_PAGE + ")" + DECIMAL, false);
+            };
         }
         if (!DataCategory.of(reference).isNumeric()) {
             // 英数字項目から数値項目への転記。送出側は符号なしの整数として読む
@@ -3731,8 +5572,25 @@ public final class ProgramGenerator {
                 && figure.constant() == LiteralValue.FigurativeConstant.ZERO) {
             return Decimal.zero(0);
         }
+        if (value instanceof LiteralValue.Text text && isDigits(text.text())) {
+            // 数字だけでできた英数字定数は、<b>符号なしの整数</b>として読む。
+            // 英数字の項目を数値へ移すのと同じ扱いである
+            return Decimal.parse(text.text());
+        }
         report(origin, "a numeric receiver requires a numeric literal");
         return null;
+    }
+
+    private static boolean isDigits(String text) {
+        if (text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) < '0' || text.charAt(i) > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** 定数を受取項目の長さまで広げたバイト列。図形定数と {@code ALL} はここで埋める。 */
@@ -3749,19 +5607,30 @@ public final class ProgramGenerator {
             return out;
         }
         if (value instanceof LiteralValue.Number number) {
-            return codePage.encode(number.value().toBigDecimal().toPlainString());
+            // 規格は英数字の受取項目に対する数字定数を<b>英数字定数として扱う</b>と
+            // 決めている。値に直してから書き戻すと 0123456789 の先頭の 0 が消える
+            // (CCVS85 の NC105A / NC202A)
+            return codePage.encode(number.source());
         }
         byte[] out = new byte[targetLength];
         Arrays.fill(out, figureByte(((LiteralValue.Figure) value).constant()));
         return out;
     }
 
+    /**
+     * 図形定数 1 個が表すバイト。
+     *
+     * <p>{@code HIGH-VALUE} と {@code LOW-VALUE} は<b>照合順序の端に来る文字</b>で
+     * ある。{@code PROGRAM COLLATING SEQUENCE} を書けば変わる (要件 FR-054)。
+     * {@code NULL} は「あて先を持たない」を表すものであり、照合順序とは関わらない。
+     */
     private byte figureByte(LiteralValue.FigurativeConstant constant) {
         return switch (constant) {
             case ZERO -> codePage.digit(0);
             case SPACE -> codePage.space();
-            case HIGH_VALUE -> (byte) 0xFF;
-            case LOW_VALUE, NULL -> (byte) 0x00;
+            case HIGH_VALUE -> specialNames.highValue();
+            case LOW_VALUE -> specialNames.lowValue();
+            case NULL -> (byte) 0x00;
             case QUOTE -> codePage.ch('"');
         };
     }
@@ -3774,7 +5643,8 @@ public final class ProgramGenerator {
             return null;
         }
         Usage usage = item.usage() == null ? Usage.DISPLAY : item.usage();
-        String key = "N:" + item.picture().source() + ":" + usage + ":" + item.signPosition();
+        String key = "N:" + item.picture().source() + ":" + usage + ":" + item.signPosition()
+                + ":" + decimalPoint;
         return constants.computeIfAbsent(key, k -> {
             String name = "N" + constants.size();
             return new Constant(name, NUMERIC_ITEM, () -> {
@@ -3783,9 +5653,12 @@ public final class ProgramGenerator {
                         usage.name(), Type.getDescriptor(Usage.class));
                 // 通貨記号は翻訳時に決まる。PICTURE の解釈がこれに依る
                 clinit.visitLdcInsn((int) currency);
+                // 小数点も翻訳時に決まる。ここが食い違うと、実行時に PICTURE が
+                // 別の意味に読まれる
+                clinit.visitLdcInsn((int) decimalPoint);
                 clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
                         Type.getInternalName(NumericItem.class), "of",
-                        "(Ljava/lang/String;" + Type.getDescriptor(Usage.class) + "C)"
+                        "(Ljava/lang/String;" + Type.getDescriptor(Usage.class) + "CC)"
                                 + NUMERIC_ITEM, false);
                 if (item.signPosition() != SignPosition.UNSIGNED) {
                     clinit.visitFieldInsn(Opcodes.GETSTATIC,
@@ -3801,15 +5674,31 @@ public final class ProgramGenerator {
         }).name();
     }
 
+    /**
+     * PICTURE を組み立てる定数。
+     *
+     * <p>字面だけでは足りない。{@code BLANK WHEN ZERO} は PICTURE 文字列の外に書く
+     * 句なので、字面から作り直すと落ちてしまう。定数の名前もこれで分ける
+     * — 同じ {@code 9(5)} でも、空白にするものとしないものは別の PICTURE である。
+     */
     private String pictureConstant(Picture picture) {
-        return constants.computeIfAbsent("P:" + picture.source(), k -> {
+        boolean blank = picture.blankWhenZero();
+        String key = "P:" + picture.source() + ":" + decimalPoint + ":" + blank;
+        return constants.computeIfAbsent(key, k -> {
             String name = "P" + constants.size();
             return new Constant(name, PICTURE, () -> {
                 clinit.visitLdcInsn(picture.source());
                 clinit.visitLdcInsn((int) currency);
+                clinit.visitLdcInsn((int) decimalPoint);
                 clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
                         Type.getInternalName(PictureParser.class), "parse",
-                        "(Ljava/lang/String;C)" + PICTURE, false);
+                        "(Ljava/lang/String;CC)" + PICTURE, false);
+                if (blank) {
+                    clinit.visitInsn(Opcodes.ICONST_1);
+                    clinit.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            Type.getInternalName(Picture.class), "withBlankWhenZero",
+                            "(Z)" + PICTURE, false);
+                }
             });
         }).name();
     }
@@ -3826,6 +5715,40 @@ public final class ProgramGenerator {
         }).name();
     }
 
+    /**
+     * 照合順序を組み立てる定数 (要件 FR-054)。
+     *
+     * <p>256 バイトの表を定数として持ち、クラスの初期化で
+     * {@link CollatingSequence} に包む。表そのものは翻訳時に決まっている。
+     */
+    private String collatingConstant(byte[] table) {
+        String bytes = bytesConstant(table);
+        return constants.computeIfAbsent("C:" + bytes, k -> {
+            String name = "C" + constants.size();
+            return new Constant(name, COLLATING, () -> {
+                clinit.visitFieldInsn(Opcodes.GETSTATIC, internal, bytes, "[B");
+                clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        Type.getInternalName(CollatingSequence.class), "of",
+                        "([B)" + COLLATING, false);
+            });
+        }).name();
+    }
+
+    /** このプログラムの照合順序を積む。既定なら恒等の並びを積む。 */
+    private void loadCollating() {
+        if (collating == null) {
+            String field = constants.computeIfAbsent("C:native", k -> {
+                String name = "C" + constants.size();
+                return new Constant(name, COLLATING, () -> clinit.visitMethodInsn(
+                        Opcodes.INVOKESTATIC, Type.getInternalName(CollatingSequence.class),
+                        "nativeOrder", "()" + COLLATING, false));
+            }).name();
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, COLLATING);
+            return;
+        }
+        run.visitFieldInsn(Opcodes.GETSTATIC, internal, collatingConstant(collating), COLLATING);
+    }
+
     private String decimalConstant(Decimal value) {
         String text = value.toBigDecimal().toPlainString();
         return constants.computeIfAbsent("D:" + text, k -> {
@@ -3837,6 +5760,190 @@ public final class ProgramGenerator {
                         "(Ljava/lang/String;)" + DECIMAL, false);
             });
         }).name();
+    }
+
+    /**
+     * 作業場所の割り付けを生成クラスへ埋める (要件 FR-142)。
+     *
+     * <p>どのバイトがどの項目かを知っているのは翻訳の側である。実行時に手元にあるのは
+     * バイト列だけなので、割り付けを持ち歩かせる。項目ごとにバイトコードを吐くと項目の
+     * 多いプログラムでクラスファイルが膨らむので、初期イメージと同じく<b>文字列定数
+     * 1 個</b>に畳む。
+     */
+    private void emitStorageMap() {
+        if (layout == null) {
+            return;
+        }
+        List<StorageMap.Entry> entries = new ArrayList<>();
+        for (DataItem record : layout.records()) {
+            if (record.section() == DataSection.LINKAGE
+                    || record.section() == DataSection.SPECIAL_REGISTER) {
+                // 連絡節の実体は呼ぶ側にある。特殊レジスタは実行の全体で 1 つである
+                continue;
+            }
+            collectEntries(record, 0, entries);
+        }
+        if (entries.isEmpty()) {
+            return;
+        }
+        String encoded = new StorageMap(entries).encoded();
+        // フィールドの宣言は静的初期化子を書くところがまとめて行う
+        constants.put("\0storageMap", new Constant("STORAGE_MAP", STORAGE_MAP, () -> {
+            clinit.visitLdcInsn(encoded);
+            clinit.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    Type.getInternalName(StorageMap.class), "parse",
+                    "(Ljava/lang/String;)" + STORAGE_MAP, false);
+        }));
+
+        MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "storageMap",
+                "()" + STORAGE_MAP, null, null);
+        method.visitCode();
+        method.visitFieldInsn(Opcodes.GETSTATIC, internal, "STORAGE_MAP", STORAGE_MAP);
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    /**
+     * {@code EXTERNAL} を書いた 01 レベルの領域を返す {@code externalRegions} を出す
+     * (要件 FR-014)。
+     *
+     * <p>返すのは名前と位置だけである。突き合わせるのは実行時の
+     * {@link dev.cobolonjava.runtime.program.ProgramContext} であり、
+     * 生成コードは<b>ふつうに自分の記憶域を指す</b>。参照 1 つずつを実行単位の領域へ
+     * 振り分けると、添字も部分参照も二重に持たなければならなくなる。
+     */
+    private void emitExternalRegions() {
+        if (layout == null) {
+            return;
+        }
+        List<CobolProgram.ExternalRegion> shared = sharedRegions();
+        if (shared.isEmpty()) {
+            return;
+        }
+        MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "externalRegions",
+                "()[" + EXTERNAL_REGION, null, null);
+        method.visitCode();
+        emitInt(method, shared.size());
+        method.visitTypeInsn(Opcodes.ANEWARRAY, EXTERNAL_REGION_INTERNAL);
+        for (int i = 0; i < shared.size(); i++) {
+            CobolProgram.ExternalRegion region = shared.get(i);
+            method.visitInsn(Opcodes.DUP);
+            emitInt(method, i);
+            method.visitTypeInsn(Opcodes.NEW, EXTERNAL_REGION_INTERNAL);
+            method.visitInsn(Opcodes.DUP);
+            method.visitLdcInsn(region.name());
+            emitInt(method, region.offset());
+            emitInt(method, region.length());
+            method.visitMethodInsn(Opcodes.INVOKESPECIAL, EXTERNAL_REGION_INTERNAL, "<init>",
+                    "(Ljava/lang/String;II)V", false);
+            method.visitInsn(Opcodes.AASTORE);
+        }
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    /**
+     * 実行単位で分け合う領域を数え上げる (要件 FR-014)。
+     *
+     * <p>{@code GLOBAL} は<b>囲む側のプログラム名とデータ名</b>で分け合う。別の
+     * プログラムが同じ名前の {@code GLOBAL} 項目を持っていても、別の領域である。
+     *
+     * <p>作業場所の 01 レベルは<b>データ名</b>で分け合う。ファイル節のレコード領域は
+     * <b>ファイル名</b>で分け合う — 規格が結び付けているのはファイル結合子であって
+     * レコード記述ではないので、両側でレコードの名前が違っていてもよい。1 つの
+     * {@code FD} に複数の 01 を書けば同じ領域に重なるので、いちばん遠くまで届いた
+     * ものが領域の長さになる。
+     */
+    private List<CobolProgram.ExternalRegion> sharedRegions() {
+        List<CobolProgram.ExternalRegion> regions = new ArrayList<>();
+        Map<String, int[]> files = new LinkedHashMap<>();
+        for (DataItem record : layout.records()) {
+            if (record.section() == DataSection.LINKAGE) {
+                continue;
+            }
+            if (record.globalOwner() != null) {
+                // 囲む側が持つ 1 つの領域を分け合う。名前だけでは足りない —
+                // 別のプログラムの同じ名前は別の領域である (要件 FR-091)
+                String key = record.section() == DataSection.FILE && record.fileName() != null
+                        ? "GLOBAL:" + record.globalOwner() + ":FD:" + record.fileName()
+                        : "GLOBAL:" + record.globalOwner() + ":" + record.name();
+                int[] span = files.computeIfAbsent(key,
+                        k -> new int[] {record.base(), record.base()});
+                span[0] = Math.min(span[0], record.base());
+                span[1] = Math.max(span[1], record.base() + record.length());
+                continue;
+            }
+            if (!record.external()) {
+                continue;
+            }
+            if (record.section() == DataSection.FILE && record.fileName() != null) {
+                int[] span = files.computeIfAbsent("FD:" + record.fileName(),
+                        k -> new int[] {record.base(), record.base()});
+                span[0] = Math.min(span[0], record.base());
+                span[1] = Math.max(span[1], record.base() + record.length());
+                continue;
+            }
+            regions.add(new CobolProgram.ExternalRegion(
+                    record.name(), record.base(), record.length()));
+        }
+        for (Map.Entry<String, int[]> file : files.entrySet()) {
+            regions.add(new CobolProgram.ExternalRegion(file.getKey(),
+                    file.getValue()[0], file.getValue()[1] - file.getValue()[0]));
+        }
+        return regions;
+    }
+
+    /** 定数を積む。{@code push} は {@code run} へ出すので、ここでは使えない。 */
+    private static void emitInt(MethodVisitor into, int value) {
+        if (value >= -1 && value <= 5) {
+            into.visitInsn(Opcodes.ICONST_0 + value);
+        } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
+            into.visitIntInsn(Opcodes.BIPUSH, value);
+        } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
+            into.visitIntInsn(Opcodes.SIPUSH, value);
+        } else {
+            into.visitLdcInsn(value);
+        }
+    }
+
+    /** 項目とその下位を、書かれた順に並べる。 */
+    private static void collectEntries(DataItem item, int depth, List<StorageMap.Entry> out) {
+        if (item.name() != null) {
+            // base() が立つのは 01 レベルだけである。配下の項目は根から辿る
+            int offset = item.record().base() + item.offset();
+            out.add(new StorageMap.Entry(depth, item.level(), item.name(), offset,
+                    item.length(), Math.max(item.occurs(), 1), kindOf(item), pictureOf(item),
+                    usageOf(item)));
+        }
+        for (DataItem child : item.children()) {
+            // 名前のない項目 (FILLER) は段を増やさない。見せ方だけの話である
+            collectEntries(child, item.name() == null ? depth : depth + 1, out);
+        }
+    }
+
+    private static StorageMap.Kind kindOf(DataItem item) {
+        if (!item.isElementary()) {
+            return StorageMap.Kind.GROUP;
+        }
+        if (item.isIndex()) {
+            return StorageMap.Kind.INDEX;
+        }
+        Picture picture = item.picture();
+        return picture != null && picture.isNumeric()
+                ? StorageMap.Kind.NUMBER
+                : StorageMap.Kind.TEXT;
+    }
+
+    /** {@code USAGE} を書かなければ {@code DISPLAY} である。 */
+    private static Usage usageOf(DataItem item) {
+        return item.usage() == null ? Usage.DISPLAY : item.usage();
+    }
+
+    private static String pictureOf(DataItem item) {
+        Picture picture = item.picture();
+        return picture == null ? "" : picture.source();
     }
 
     private void emitStaticInitializer() {
@@ -3854,6 +5961,7 @@ public final class ProgramGenerator {
         clinit.visitMethodInsn(Opcodes.INVOKESTATIC, SUPPORT, "bytes",
                 "(Ljava/lang/String;)[B", false);
         clinit.visitFieldInsn(Opcodes.PUTSTATIC, internal, "INITIAL", "[B");
+        initAlterTables();
 
         for (Constant constant : constants.values()) {
             if (constant.emit() == null) {
@@ -3888,7 +5996,127 @@ public final class ProgramGenerator {
      * 入れ子の {@code IF} や {@code PERFORM} の中でも、その場で {@code return} できる。
      * これが段落を別々のメソッドにしている構えの効いているところである。
      */
+    /** デバッグの節を動かす文を組み立てている間は、行番号を控えない。 */
+    private boolean planningDebugEntry;
+
+    /**
+     * 制御を移す文の行番号を控える (要件 FR-193)。
+     *
+     * <p>{@code DEBUG-LINE} は<b>制御を移した文</b>の行番号である。入られた手続きの
+     * ほうからは分からないので、移す側に控えさせる。控え先は意味解析が置いた
+     * {@code DBG-LINE$} である。デバッグを書いていないプログラムには置き場が無いので、
+     * <b>命令はまったく出ない</b>。
+     */
+    private void planDebugLine(Origin origin, String reason, List<Runnable> body) {
+        if (planningDebugEntry || origin == null || debugLineSlot == null) {
+            return;
+        }
+        Runnable offset = planAddress(debugLineSlot, origin);
+        if (offset == null) {
+            return;
+        }
+        String field = bytesConstant(codePage.encode(lineText(origin)));
+        int length = debugLineSlot.item().length();
+        body.add(() -> {
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+            offset.run();
+            push(length);
+            run.visitInsn(Opcodes.ICONST_0);
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
+                    "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+            // なぜその手続きへ来たか。GO TO は空白、PERFORM は PERFORM LOOP である
+            emitDebugReason(reason);
+        });
+    }
+
+    /** 行番号を 6 桁の文字にする。{@code DEBUG-LINE} の桁割りである。 */
+    private static String lineText(Origin origin) {
+        return DataDivisionBuilder.debugLine(origin);
+    }
+
+    /** {@code DBG-LINE$} への参照。デバッグを書いていなければ {@code null}。 */
+    private DataReference debugLineSlot;
+
+    private DataReference debugLineSlotOf() {
+        List<DataItem> found = layout.findAll(DataDivisionBuilder.DEBUG_LINE_SLOT);
+        return found.isEmpty() ? null : new DataReference(found.get(0), List.of(), null, null);
+    }
+
+    /**
+     * {@code DBG-WHY$} の絶対位置 (要件 FR-193)。デバッグを書いていなければ {@code -1}。
+     *
+     * <p>{@code DEBUG-CONTENTS} には<b>なぜその手続きへ来たか</b>が入る。規格が決めている
+     * 文字は {@code START PROGRAM} {@code FALL THROUGH} {@code PERFORM LOOP}
+     * {@code USE PROCEDURE} {@code SORT INPUT} {@code SORT OUTPUT} {@code MERGE OUTPUT}
+     * であり、{@code GO TO} や 1 度目の {@code PERFORM} では空白である。
+     *
+     * <p>来た理由を知っているのは<b>移す側</b>だけなので、そこで控えさせる。控え先は
+     * 記憶域の中なので、どのメソッドからでも書ける。位置は定数である。
+     */
+    private int debugReasonAt = -1;
+
+    private int debugReasonAtOf() {
+        List<DataItem> found = layout.findAll(DataDivisionBuilder.DEBUG_REASON_SLOT);
+        return found.isEmpty()
+                ? -1
+                : new DataReference(found.get(0), List.of(), null, null)
+                        .absoluteOffset().orElse(-1);
+    }
+
+    /**
+     * デバッグの節を動かすかたまりを組み立てる (要件 FR-193)。
+     *
+     * <p><b>実行時の切り替えで丸ごと止まる</b>。切ると 7 桁目の {@code D} の行は
+     * 動いたまま、デバッグの節だけが動かなくなる。参照実装ではジョブの指定で切る。
+     */
+    private void planDebugEntry(Statement.DebugEntry statement, List<Runnable> body) {
+        List<Runnable> inner = planStatements(statement.body());
+        body.add(() -> {
+            Label skip = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "debuggingProcedures",
+                    "(" + CONTEXT + ")Z", false);
+            run.visitJumpInsn(Opcodes.IFEQ, skip);
+            inner.forEach(Runnable::run);
+            run.visitLabel(skip);
+        });
+    }
+
+    /** 手続きへ来た理由を控える。{@code storageLocal} はそのメソッドでの記憶域の番号。 */
+    private void emitDebugReason(MethodVisitor into, int storageLocal, String text) {
+        if (debugReasonAt < 0) {
+            return;
+        }
+        int width = DataDivisionBuilder.DEBUG_REASON_SIZE;
+        String padded = text.length() >= width
+                ? text.substring(0, width)
+                : text + " ".repeat(width - text.length());
+        String field = bytesConstant(codePage.encode(padded));
+        into.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+        into.visitVarInsn(Opcodes.ALOAD, storageLocal);
+        push(into, debugReasonAt);
+        push(into, width);
+        into.visitInsn(Opcodes.ICONST_0);
+        into.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CodePages.class), "DEFAULT",
+                CODE_PAGE);
+        into.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
+                "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+    }
+
+    /** 段落のメソッドの中から控える。記憶域は局所変数 1 である。 */
+    private void emitDebugReason(String text) {
+        emitDebugReason(run, 1, text);
+    }
+
     private void planGoTo(Statement.GoTo statement, List<Runnable> body) {
+        planDebugLine(statement.origin(), "", body);
+        if (statement.target() == null) {
+            // 行き先の無い GO TO が、書き換えられる段落の外に書かれていた。
+            // 書き換えようが無いので、通ったらそこで止める
+            body.add(() -> emitUnalteredGoTo(currentParagraphName));
+            return;
+        }
         int target = paragraphNames.indexOf(statement.target());
         if (target < 0) {
             report(statement.origin(), "undefined paragraph: " + statement.target());
@@ -3898,6 +6126,124 @@ public final class ProgramGenerator {
             push(target);
             run.visitInsn(Opcodes.IRETURN);
         });
+    }
+
+    /**
+     * {@code GO TO ... DEPENDING ON} を組み立てる (要件 FR-063)。
+     *
+     * <p>値が 1 なら 1 つ目、2 なら 2 つ目へ飛ぶ。<b>並びの外なら飛ばない</b>ので、
+     * 飛び先表の外れ道は「何もせず下へ抜ける」になる。誤りにはならない。
+     */
+    private void planGoToDepending(Statement.GoToDepending statement, List<Runnable> body) {
+        planDebugLine(statement.origin(), "", body);
+        List<Integer> targets = new ArrayList<>();
+        for (String name : statement.targets()) {
+            int target = paragraphNames.indexOf(name);
+            if (target < 0) {
+                report(statement.origin(), "undefined paragraph: " + name);
+                return;
+            }
+            targets.add(target);
+        }
+        Runnable selector = planSourceDecimal(new Operand.Reference(statement.selector()),
+                statement.origin());
+        if (selector == null) {
+            return;
+        }
+        body.add(() -> {
+            Label fallThrough = new Label();
+            Label[] cases = new Label[targets.size()];
+            for (int i = 0; i < cases.length; i++) {
+                cases[i] = new Label();
+            }
+            selector.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
+            run.visitTableSwitchInsn(1, targets.size(), fallThrough, cases);
+            for (int i = 0; i < cases.length; i++) {
+                run.visitLabel(cases[i]);
+                push(targets.get(i));
+                run.visitInsn(Opcodes.IRETURN);
+            }
+            run.visitLabel(fallThrough);
+        });
+    }
+
+    /**
+     * 1 つの文 (センテンス) を出す (要件 FR-061)。
+     *
+     * <p>並べて出すだけだが、<b>終わりに印を打つ</b>。{@code NEXT SENTENCE} はここへ飛ぶ。
+     * 文は入れ子にならないので印は 1 つでよいが、念のため外側のものを退避しておく。
+     */
+    private void planSentence(Statement.Sentence sentence, List<Runnable> body) {
+        List<Runnable> inner = planStatements(sentence.body());
+        body.add(() -> {
+            Label end = new Label();
+            Label outer = sentenceEnd;
+            sentenceEnd = end;
+            inner.forEach(Runnable::run);
+            sentenceEnd = outer;
+            run.visitLabel(end);
+        });
+    }
+
+    /**
+     * {@code NEXT SENTENCE} を出す (要件 FR-061)。
+     *
+     * <p>いまの文の終わりへ飛ぶ。{@code CONTINUE} との違いはここである。
+     * {@code CONTINUE} は何もしないので、囲んでいる {@code IF} の外側にある
+     * 同じ文の続きが実行される。
+     */
+    private void planNextSentence(Origin origin, List<Runnable> body) {
+        body.add(() -> {
+            if (sentenceEnd == null) {
+                report(origin, "NEXT SENTENCE must be written inside a sentence");
+                return;
+            }
+            run.visitJumpInsn(Opcodes.GOTO, sentenceEnd);
+        });
+    }
+
+    /** いま出している文の終わりの印。{@code NEXT SENTENCE} の飛び先である。 */
+    private Label sentenceEnd;
+
+    /**
+     * {@code ALTER} を組み立てる (要件 FR-063)。
+     *
+     * <p>書き換えられる段落は飛び先を表から読んで返すので、ここでするのは
+     * <b>表を書き換えること</b>だけである。
+     */
+    private void planAlter(Statement.Alter statement, List<Runnable> body) {
+        // ALTER も見張られる文である。DEBUG-LINE はこの文の行番号になる (要件 FR-193)
+        planDebugLine(statement.origin(), "", body);
+        List<int[]> changes = new ArrayList<>();
+        for (Statement.Alter.Change change : statement.changes()) {
+            int from = paragraphNames.indexOf(change.from());
+            int to = paragraphNames.indexOf(change.to());
+            if (from < 0 || to < 0) {
+                report(statement.origin(), "undefined paragraph: "
+                        + (from < 0 ? change.from() : change.to()));
+                return;
+            }
+            changes.add(new int[] {from, to});
+        }
+        body.add(() -> {
+            for (int[] change : changes) {
+                run.visitVarInsn(Opcodes.ALOAD, 0);
+                run.visitFieldInsn(Opcodes.GETFIELD, internal, ALTERED, "[I");
+                push(change[0]);
+                push(change[1]);
+                run.visitInsn(Opcodes.IASTORE);
+            }
+        });
+    }
+
+    /** 相対指定のずれを、積んである添字へ足す。0 なら何も出さない。 */
+    private void addOffset(int offset) {
+        if (offset == 0) {
+            return;
+        }
+        push(offset);
+        run.visitInsn(Opcodes.IADD);
     }
 
     private void report(Origin origin, String message) {

@@ -35,7 +35,9 @@ public final class MoveRules {
         /** {@code Move.numeric}。小数点で位置を合わせる。 */
         NUMERIC,
         /** {@code Move.toNumericEdited}。編集結果を書き込む。 */
-        NUMERIC_EDITED
+        NUMERIC_EDITED,
+        /** {@code Move.toAlphanumericEdited}。挿入文字を置きながら詰める。 */
+        ALPHANUMERIC_EDITED
     }
 
     /** 分類の組み合わせから転記の種類を決める。 */
@@ -46,7 +48,13 @@ public final class MoveRules {
         if (receiver.isNumeric()) {
             return Kind.NUMERIC;
         }
-        return receiver == DataCategory.NUMERIC_EDITED ? Kind.NUMERIC_EDITED : Kind.ALPHANUMERIC;
+        if (receiver == DataCategory.NUMERIC_EDITED) {
+            return Kind.NUMERIC_EDITED;
+        }
+        // 英数字編集は挿入文字を置く。ただのバイト詰めでは B と 0 と / が消える
+        return receiver == DataCategory.ALPHANUMERIC_EDITED
+                ? Kind.ALPHANUMERIC_EDITED
+                : Kind.ALPHANUMERIC;
     }
 
     /**
@@ -65,7 +73,12 @@ public final class MoveRules {
                     || sender == DataCategory.ALPHANUMERIC
                     || sender == DataCategory.ALPHANUMERIC_EDITED;
             case ALPHANUMERIC, ALPHANUMERIC_EDITED -> sender != DataCategory.NUMERIC_NONINTEGER;
-            case NUMERIC_INTEGER, NUMERIC_NONINTEGER, NUMERIC_EDITED -> sender.isNumeric()
+            // 数字編集項目から数値項目への転記は<b>編集を解く</b> (de-editing)。
+            // 規格が認めている道であり、書いた文字の並びから値を取り出す
+            case NUMERIC_INTEGER, NUMERIC_NONINTEGER -> sender.isNumeric()
+                    || sender == DataCategory.ALPHANUMERIC
+                    || sender == DataCategory.NUMERIC_EDITED;
+            case NUMERIC_EDITED -> sender.isNumeric()
                     || sender == DataCategory.ALPHANUMERIC;
             case GROUP -> true;
         };

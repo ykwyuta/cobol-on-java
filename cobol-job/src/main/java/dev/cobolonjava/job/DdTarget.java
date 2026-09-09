@@ -13,15 +13,72 @@ import java.util.List;
 public sealed interface DdTarget {
 
     /**
-     * 実ファイル。{@code DSN=} にあたる。
+     * 名前で指したデータセット。{@code DSN=} にあたる。
      *
-     * @param disposition {@code DISP=} の 1 つ目の副パラメタ。指定がなければ {@code SHR}
+     * <p>場所ではなく<b>名前</b>を持つのが要点である。どのボリュームにあるかを引くのは
+     * 目録の仕事であり (要件 FR-131)、ジョブの記述はそれを知らない。名前と場所を
+     * 同じものにすると、目録に載せる・外すという操作が表せなくなる。
+     *
+     * @param member      区分データセットのメンバ名 (要件 FR-113)。{@code DSN=ライブラリ(メンバ)}
+     *                    と書いたときのメンバである。書かなければ {@code null}
+     * @param serial      {@code VOL=SER=} に書いたボリューム通し番号。書けば<b>目録を通さず</b>
+     *                    置き場を直に見る。目録に載っていないデータセットへ届く唯一の手である。
+     *                    書かなければ {@code null}
+     * @param disposition {@code DISP=}。ステップの前と後の両方を決める
+     * @param generation  {@code DSN=基底名(+1)} と書いたときの相対世代 (要件 FR-114)。
+     *                    ここではまだ相対番号のままである。絶対名へ直すのはジョブ実行で
+     *                    あり、<b>ジョブの初めに 1 度だけ</b>行う。書かなければ {@code null}
      */
-    record DataSet(Path path, Disposition disposition) implements DdTarget {
+    record DataSet(String name, String member, String serial, Disposition disposition,
+                   Integer generation) implements DdTarget {
+
+        /** 世代データグループでない割当。 */
+        public DataSet(String name, String member, String serial, Disposition disposition) {
+            this(name, member, serial, disposition, null);
+        }
 
         /** 処置を書かない割当。宣言的形式はこちらを使う。 */
-        public DataSet(Path path) {
-            this(path, Disposition.SHR);
+        public DataSet(String name) {
+            this(name, null, null, Disposition.UNSPECIFIED);
+        }
+
+        /** 順編成のデータセットを、目録から引いて使う割当。 */
+        public DataSet(String name, Disposition disposition) {
+            this(name, null, null, disposition);
+        }
+
+        /** 相対世代で指しているか。絶対名へ直されればもう {@code false} である。 */
+        public boolean relativeGeneration() {
+            return generation != null;
+        }
+
+        /** 名前だけを差し替えた同じ割当。相対世代を絶対名へ直すのに使う。 */
+        public DataSet named(String resolved) {
+            return new DataSet(resolved, member, serial, disposition, null);
+        }
+
+        /** 区分データセットのメンバを指しているか (要件 FR-113)。 */
+        public boolean partitioned() {
+            return member != null;
+        }
+    }
+
+    /**
+     * 一時データセット。JCL の {@code DSN=&&名前} にあたる。
+     *
+     * <p>ジョブの間だけ存在し、<b>終われば消える</b>。ステップの間で受け渡す作業ファイルが
+     * これであり、実資産のバッチではいちばんよく使われる形である。
+     *
+     * <p>場所を持たないのが要点である。置き場はジョブ実行が決めるので、同じジョブを
+     * 同時に何本流しても<b>互いの作業ファイルを踏まない</b>。
+     *
+     * @param name 名前。ジョブの中でこの名前が同じものを指す
+     */
+    record Temporary(String name, Disposition disposition) implements DdTarget {
+
+        /** 処置を書かない割当。 */
+        public Temporary(String name) {
+            this(name, Disposition.of(Disposition.Status.NEW));
         }
     }
 

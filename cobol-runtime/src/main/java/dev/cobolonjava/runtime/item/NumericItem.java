@@ -61,7 +61,13 @@ public final class NumericItem {
      * 生成コードは翻訳時の指定をここへ渡す。
      */
     public static NumericItem of(String pictureString, Usage usage, char currency) {
-        Picture p = PictureParser.parse(pictureString, currency);
+        return of(pictureString, usage, currency, PictureParser.DEFAULT_DECIMAL_POINT);
+    }
+
+    /** 小数点の文字まで決めて作る。{@code DECIMAL-POINT IS COMMA} が使う。 */
+    public static NumericItem of(String pictureString, Usage usage, char currency,
+                                 char decimalPoint) {
+        Picture p = PictureParser.parse(pictureString, currency, decimalPoint);
         return new NumericItem(p, usage, p.signPosition(), TruncMode.STD, NumProcMode.NOPFD,
                 UndefinedBehavior.SAFE, CodePages.DEFAULT);
     }
@@ -84,6 +90,11 @@ public final class NumericItem {
 
     public NumericItem withCodePage(CodePage v) {
         return new NumericItem(picture, usage, signPosition, truncMode, numProcMode, undefinedBehavior, v);
+    }
+
+    /** 符号の置き場。 */
+    public SignPosition signPosition() {
+        return signPosition;
     }
 
     public Picture picture() {
@@ -113,6 +124,12 @@ public final class NumericItem {
      * 事前に {@link #fits(Decimal)} で判定する (要件 FR-043)。
      */
     public byte[] encode(Decimal value) {
+        // 符号を持たない受取項目には<b>絶対値</b>が入る。規格がそう決めている。
+        // 符号を残すと、-70717 を PIC 9(9) COMP へ移したときに負のまま読み戻される
+        // (NC105A の MOVE-TEST-F1-114「MOVE TO COMP (ABS)」がそこだけを確かめている)
+        if (!signPosition.isSigned() && value.signum() < 0) {
+            value = value.negate();
+        }
         return switch (usage) {
             case DISPLAY -> ZonedDecimal.encode(value, picture.digits(), picture.scale(),
                     signPosition, codePage);

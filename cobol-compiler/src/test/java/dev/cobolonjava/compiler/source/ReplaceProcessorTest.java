@@ -129,6 +129,36 @@ class ReplaceProcessorTest {
     }
 
     @Test
+    @DisplayName("照合ではコンマとセミコロンを空白と同じに扱う (FR-091)")
+    void separatorCommasAndSemicolonsAreTreatedAsSpaces() {
+        // 85 規格 XII 3.4 一般規則 6(b)。擬似テキストと本文で区切りの書き方が
+        // 違っていても当たらなければならない (SM208A REP-TEST-8)
+        assertEquals("MOVE \"PASS\" TO P-OR-F.", replace(
+                "REPLACE ==MOVE;  \"FAIL\"  , TO== BY ==MOVE \"PASS\" TO==.",
+                "MOVE  , \"FAIL\";      TO  P-OR-F."));
+    }
+
+    @Test
+    @DisplayName("一致に含まれないコンマは残る (FR-091)")
+    void aCommaOutsideTheMatchIsKept() {
+        // 読み飛ばすのは語と語のあいだだけである。一致の先頭で読み飛ばすと、
+        // 手前のコンマまで消えてしまう
+        assertEquals("MOVE A , NEW TO B.", replace(
+                "REPLACE ==OLD== BY ==NEW==.",
+                "MOVE A , OLD TO B."));
+    }
+
+    @Test
+    @DisplayName("終止符は空白と同じにはならない (FR-091)")
+    void thePeriodIsNotASpaceSeparator() {
+        // コンマとセミコロンだけが空白と同じである。終止符は文の切れ目を表すので、
+        // 語のあいだに挟まっていれば一致しない
+        assertEquals("X ADD-A . ADD-B", replace(
+                "REPLACE ==ADD-A ADD-B== BY ==X==.",
+                "ADD-A ; ADD-B ADD-A . ADD-B"));
+    }
+
+    @Test
     @DisplayName("差し込まれた語は REPLACE を書いた位置を指す (FR-094)")
     void replacementWordsKeepTheirOrigin() {
         NormalizedSource result = ReplaceProcessor.apply(

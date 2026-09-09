@@ -6,9 +6,10 @@ import dev.cobolonjava.job.Disposition;
 import dev.cobolonjava.job.Job;
 import dev.cobolonjava.job.JobDiagnostic;
 import dev.cobolonjava.job.Step;
+import dev.cobolonjava.job.GenerationDataGroup;
 import dev.cobolonjava.job.StepCondition;
+import dev.cobolonjava.runtime.file.PartitionedDataSet;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -53,9 +54,15 @@ public final class Jcl {
         }
     }
 
-    /** JCL を読む。データセット名は基点のディレクトリの下に置かれているものとする。 */
-    public static Result read(String text, Path base) {
-        return read(text, base, JclLibrary.empty());
+    /**
+     * JCL を読む。
+     *
+     * <p>置き場を知らない。{@code DSN=} は<b>名前</b>であって場所ではなく、どこにあるかを
+     * 引くのは目録の仕事である (要件 FR-131、暫定判断 P-045 の解消)。ここで場所へ直せば、
+     * 目録に載せる・外すという操作が表せなくなる。
+     */
+    public static Result read(String text) {
+        return read(text, JclLibrary.empty());
     }
 
     /**
@@ -63,18 +70,17 @@ public final class Jcl {
      *
      * @param library {@code EXEC 手続き名} と {@code INCLUDE} の取り出し先
      */
-    public static Result read(String text, Path base, JclLibrary library) {
-        return new Builder(base, library).build(text);
+    public static Result read(String text, JclLibrary library) {
+        return new Builder(library).build(text);
     }
 
     /** JCL をバイト列から読む。JCL の本文は UTF-8 のテキストである。 */
-    public static Result read(byte[] bytes, Path base) {
-        return read(new String(bytes, StandardCharsets.UTF_8), base);
+    public static Result read(byte[] bytes) {
+        return read(new String(bytes, StandardCharsets.UTF_8));
     }
 
     private static final class Builder {
 
-        private final Path base;
         private final JclLibrary library;
         private final List<JobDiagnostic> diagnostics = new ArrayList<>();
         private final List<Step> steps = new ArrayList<>();
@@ -98,8 +104,7 @@ public final class Jcl {
         /** そのステップを囲んでいた条件。{@code EXEC} を読んだ時点のものである。 */
         private List<StepCondition> enclosing = List.of();
 
-        private Builder(Path base, JclLibrary library) {
-            this.base = base;
+        private Builder(JclLibrary library) {
             this.library = library;
         }
 
@@ -298,17 +303,30 @@ public final class Jcl {
                 report(card, "DD comes inside a step");
                 return;
             }
-            DdTarget target = targetOf(card);
-            if (target == null) {
+            Allocation allocation = targetOf(card);
+            if (allocation == null) {
                 return;
             }
             if (card.name() == null) {
                 // 名前欄の空いた DD は、直前の DD への連結である
-                concatenate(card, target);
+                concatenate(card, allocation.target());
                 return;
             }
             lastDd = card.name().toUpperCase(Locale.ROOT);
-            dd.add(new DdAssignment(lastDd, target));
+            dd.add(new DdAssignment(lastDd, allocation.target(), allocation.space(),
+                    allocation.directory()));
+        }
+
+        /**
+         * {@code DD} 文 1 枚が言っていること。行き先と、割り当てる大きさである。
+         *
+         * @param directory ディレクトリブロックの数。書かなければ {@code 0}
+         */
+        private record Allocation(DdTarget target, long space, int directory) {
+
+            Allocation(DdTarget target, long space) {
+                this(target, space, 0);
+            }
         }
 
         /** 連結。読むときは並べた順に 1 つのファイルに見える。 */
@@ -329,16 +347,22 @@ public final class Jcl {
             dd.set(last, new DdAssignment(lastDd, new DdTarget.Concatenation(parts)));
         }
 
-        private DdTarget targetOf(JclCard card) {
+        private Allocation targetOf(JclCard card) {
             String operands = card.operands().trim();
             if (operands.equals("*") || operands.startsWith("*,")
                     || operands.equals("DATA") || operands.startsWith("DATA,")) {
-                return new DdTarget.Inline(
-                        card.inline() == null ? new byte[0] : card.inline());
+                return new Allocation(new DdTarget.Inline(
+                        card.inline() == null ? new byte[0] : card.inline()),
+                        DdAssignment.UNLIMITED);
             }
             String name = null;
-            Disposition disposition = Disposition.SHR;
+            // DISP を書かなければ「新しく作る」である。ホストの既定はこちらであり、
+            // 読むつもりの DD には DISP=SHR を書かねばならない
+            Disposition disposition = Disposition.of(Disposition.Status.NEW);
             DdTarget special = null;
+            long space = DdAssignment.UNLIMITED;
+            int directory = 0;
+            String serial = null;
             for (String operand : JclOperands.split(operands)) {
                 String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
                 String value = JclOperands.value(operand);
@@ -347,30 +371,204 @@ public final class Jcl {
                     case "DISP" -> disposition = dispositionOf(card, value, disposition);
                     case "SYSOUT" -> special = new DdTarget.Sysout();
                     case "DUMMY" -> special = new DdTarget.Dummy();
-                    // 装置と大きさの指定は、ファイルとして持つこの実装では効かない
-                    case "UNIT", "SPACE", "VOL", "VOLUME", "LRECL", "RECFM", "BLKSIZE", "DCB" ->
+                    case "SPACE" -> {
+                        Space allocated = spaceOf(card, value);
+                        space = allocated.bytes();
+                        directory = allocated.directory();
+                    }
+                    case "VOL", "VOLUME" -> serial = serialOf(card, value);
+                    // 装置と記述の指定は、ファイルとして持つこの実装では効かない
+                    case "UNIT", "LRECL", "RECFM", "BLKSIZE", "DCB" ->
                             report(card, key + " is not supported yet");
                     default -> report(card, "DD does not support: " + key);
                 }
             }
             if (special != null) {
-                return special;
+                return new Allocation(special, DdAssignment.UNLIMITED);
             }
             if (name == null) {
                 report(card, "DD needs DSN=, SYSOUT=, DUMMY or *");
                 return null;
             }
-            return new DdTarget.DataSet(base.resolve(name), disposition);
+            // 先頭が & のものは一時データセットである。シンボリックの展開を抜けた
+            // あとなので、ここまで残っている & は名前の一部である
+            if (name.startsWith("&")) {
+                return new Allocation(new DdTarget.Temporary(name.substring(1), disposition),
+                        space, directory);
+            }
+            // 括弧の中が相対世代なら、これはメンバではなく世代データグループである
+            String qualifier = qualifierOf(name);
+            if (qualifier != null && GenerationDataGroup.relative(qualifier)) {
+                return new Allocation(new DdTarget.DataSet(libraryOf(name), null, serial,
+                        disposition, Integer.valueOf(Integer.parseInt(qualifier))),
+                        space, directory);
+            }
+            String member = memberOf(card, name);
+            if (member != null && member.isEmpty()) {
+                return null;
+            }
+            return new Allocation(new DdTarget.DataSet(libraryOf(name), member, serial,
+                    disposition), space, directory);
         }
 
+        /**
+         * {@code VOL=SER=通し番号} または {@code VOL=(...,SER=通し番号)} (暫定判断 P-045 の解消)。
+         *
+         * <p>これを書いたジョブは<b>目録を通さずに置き場を直に見る</b>。{@code KEEP} で
+         * 残したデータセットは目録に載っていないので、名前だけでは届かない。ホストで
+         * {@code VOL=SER} を書かねばならないのと同じ形である。
+         */
+        private String serialOf(JclCard card, String value) {
+            for (String part : JclOperands.split(JclOperands.unwrap(value))) {
+                String key = JclOperands.key(part).toUpperCase(Locale.ROOT);
+                if (key.equals("REF")) {
+                    report(card, "VOL=REF is not supported yet");
+                    return null;
+                }
+                if (!key.equals("SER")) {
+                    continue;
+                }
+                List<String> serials =
+                        JclOperands.split(JclOperands.unwrap(JclOperands.value(part)));
+                // 複数ボリュームにまたがるデータセットは持たない。先頭を採る
+                return serials.isEmpty() ? null : JclOperands.unquote(serials.get(0));
+            }
+            report(card, "VOL needs SER=");
+            return null;
+        }
+
+        /** {@code DSN=名前(なにか)} の括弧の中。括弧が無ければ {@code null}。 */
+        private static String qualifierOf(String name) {
+            int open = name.indexOf('(');
+            if (open < 0 || !name.endsWith(")")) {
+                return null;
+            }
+            return name.substring(open + 1, name.length() - 1).trim();
+        }
+
+        /**
+         * {@code DSN=ライブラリ(メンバ)} のメンバ名 (要件 FR-113)。
+         *
+         * <p>括弧の中が相対世代のときは<b>世代データグループ</b>であり、メンバではない
+         * (要件 FR-114)。そちらは呼ぶ前に分けてある。
+         *
+         * <p>名前そのものも検める (暫定判断 P-056 の解消)。ホストのメンバ名は 8 文字までで
+         * あり、超えていればジョブを<b>読む段で</b>弾かれる。ここで通せば、実機なら JCL
+         * 誤りで動かないジョブがここでは動いてしまう。
+         *
+         * @return 書かれていなければ {@code null}。誤りなら空文字列
+         */
+        private String memberOf(JclCard card, String name) {
+            String member = qualifierOf(name);
+            if (member == null) {
+                return null;
+            }
+            if (member.isEmpty()) {
+                report(card, "DSN needs a member name inside the parentheses: " + name);
+                return "";
+            }
+            String upper = member.toUpperCase(Locale.ROOT);
+            if (!PartitionedDataSet.validName(upper)) {
+                // ホストはジョブを読む段で弾く。通せば実機で動かないジョブがここでは動く
+                report(card, "invalid member name: " + member);
+                return "";
+            }
+            return upper;
+        }
+
+        /** {@code DSN=ライブラリ(メンバ)} のライブラリ名。メンバを書かなければ名前そのもの。 */
+        private static String libraryOf(String name) {
+            int open = name.indexOf('(');
+            return open < 0 || !name.endsWith(")") ? name : name.substring(0, open).trim();
+        }
+
+        /**
+         * {@code SPACE=(単位,(一次,二次))} (要件 FR-141)。
+         *
+         * <p>読むのは<b>一次割当と二次割当があるかどうか</b>だけである。二次割当があれば
+         * 使い切っても伸ばせるので、限りなしとして扱う。無ければ一次割当がそのまま限りに
+         * なる。ホストで {@code SPACE} を書き忘れたジョブが途中で止まるのは、この形である。
+         *
+         * <p>単位は {@code TRK} / {@code CYL} / ブロック長である。トラックとシリンダの
+         * 大きさは 3390 のものを使う。実際の装置を持たない以上どこかで決めるほかなく、
+         * いちばん広く使われている値を採る。
+         */
+        private Space spaceOf(JclCard card, String value) {
+            List<String> parts = JclOperands.split(JclOperands.unwrap(value));
+            if (parts.isEmpty()) {
+                report(card, "SPACE needs a unit");
+                return Space.NONE;
+            }
+            long unit = unitOf(parts.get(0));
+            if (unit <= 0) {
+                report(card, "unknown SPACE unit: " + parts.get(0));
+                return Space.NONE;
+            }
+            if (parts.size() < 2) {
+                return Space.NONE;
+            }
+            List<String> amounts = JclOperands.split(JclOperands.unwrap(parts.get(1)));
+            // 3 つ目はディレクトリブロックの数である。書いてあれば区分データセットになる
+            int directory = amounts.size() >= 3 ? (int) number(amounts.get(2)) : 0;
+            if (amounts.size() >= 2 && number(amounts.get(1)) > 0) {
+                // 二次割当があれば伸ばせる。使い切って止まることはない
+                return new Space(DdAssignment.UNLIMITED, directory);
+            }
+            long primary = number(amounts.isEmpty() ? "" : amounts.get(0));
+            return new Space(primary > 0 ? primary * unit : DdAssignment.UNLIMITED, directory);
+        }
+
+        /**
+         * {@code SPACE=} が言っていること。
+         *
+         * @param bytes     書ける大きさ。{@code 0} なら限りなし
+         * @param directory ディレクトリブロックの数。{@code 0} なら区分データセットではない
+         */
+        private record Space(long bytes, int directory) {
+
+            static final Space NONE = new Space(DdAssignment.UNLIMITED, 0);
+        }
+
+        /** 3390 のトラックは 56664 バイト、シリンダは 15 トラックである。 */
+        private static long unitOf(String text) {
+            return switch (text.trim().toUpperCase(Locale.ROOT)) {
+                case "TRK" -> 56664L;
+                case "CYL" -> 56664L * 15;
+                default -> number(text);
+            };
+        }
+
+        private static long number(String text) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException e) {
+                return 0;
+            }
+        }
+
+        /** {@code DISP=(状態, 正常終了時, 異常終了時)}。書かれていないところは既定で埋める。 */
         private Disposition dispositionOf(JclCard card, String value, Disposition fallback) {
             List<String> parts = JclOperands.split(JclOperands.unwrap(value));
-            Disposition disposition = Disposition.of(parts.get(0));
-            if (disposition == null) {
+            Disposition.Status status = Disposition.Status.of(parts.get(0));
+            if (status == null) {
                 report(card, "unknown DISP: " + parts.get(0));
                 return fallback;
             }
-            return disposition;
+            Disposition.Action normal = actionOf(card, parts, 1);
+            Disposition.Action abnormal = actionOf(card, parts, 2);
+            return Disposition.of(status, normal, abnormal);
+        }
+
+        /** {@code DISP} の 2 つ目と 3 つ目。書かれていなければ {@code null} である。 */
+        private Disposition.Action actionOf(JclCard card, List<String> parts, int at) {
+            if (at >= parts.size() || parts.get(at).isBlank()) {
+                return null;
+            }
+            Disposition.Action action = Disposition.Action.of(parts.get(at));
+            if (action == null) {
+                report(card, "unknown DISP: " + parts.get(at));
+            }
+            return action;
         }
 
         private void closeStep() {

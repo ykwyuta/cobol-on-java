@@ -59,6 +59,30 @@ class EvaluateGenerationTest {
         return sink.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "|");
     }
 
+    @Test
+    @DisplayName("主語は算術式でよい (FR-047)")
+    void aSubjectMayBeAnArithmeticExpression() {
+        // 「EVALUATE A ALSO ( TEMP + 96 ) * 2」と書ける。被演算子 1 個に縛ると、
+        // 括弧で始まる主語がまるごと読めない
+        assertEquals("BOTH|", output(List.of(
+                        "01 WS-A PIC 9(4) VALUE 10.",
+                        "01 WS-T PIC 9(4) VALUE 2."),
+                "EVALUATE WS-A ALSO ( WS-T + 96 ) * 2",
+                "    WHEN 10 ALSO 196 DISPLAY 'BOTH'",
+                "    WHEN OTHER DISPLAY 'NEITHER'",
+                "END-EVALUATE."));
+    }
+
+    @Test
+    @DisplayName("STOP と定数を書く形は、見せて先へ進む (FR-062)")
+    void stopWithALiteralShowsItAndCarriesOn() {
+        // 規格の廃要素である。操作員の返事を待つと決められているが、返事をする
+        // 相手のいない実行では待ちようがない。<b>止まらない</b>のが STOP RUN との違い
+        assertEquals("PLEASE MOUNT TAPE|AFTER|", output(List.of(),
+                "STOP 'PLEASE MOUNT TAPE'.",
+                "DISPLAY 'AFTER'."));
+    }
+
     /** 主語 1 個の値による分岐。値を変えて通った枝を返す。 */
     private static String branchFor(String value) {
         return output(List.of("01 WS-G PIC X VALUE '" + value + "'."),
@@ -197,6 +221,33 @@ class EvaluateGenerationTest {
                 "    GOBACK.",
                 "NEVER-REACHED.",
                 "    DISPLAY 'AFTER'."));
+    }
+
+    @Test
+    @DisplayName("主語に条件名を書ける — 目的語は TRUE か FALSE (FR-061)")
+    void aConditionNameMayBeASubject() {
+        // 規格は EVALUATE の主語に条件式を許している。条件名は条件式である。
+        // 値として読むと「そんな項目は無い」になってしまう
+        assertEquals("HIT|", output(
+                List.of("01 WS-N PIC 99 VALUE 81.",
+                        "   88 IT-IS-81 VALUE 81.",
+                        "01 WS-M PIC 99 VALUE 7."),
+                "    EVALUATE IT-IS-81 ALSO WS-M",
+                "      WHEN TRUE ALSO 7 DISPLAY 'HIT'",
+                "      WHEN OTHER DISPLAY 'MISS'",
+                "    END-EVALUATE."));
+    }
+
+    @Test
+    @DisplayName("条件名の主語に FALSE を書けば、成り立たないほうに当たる (FR-061)")
+    void aConditionNameSubjectAlsoTakesFalse() {
+        assertEquals("HIT|", output(
+                List.of("01 WS-N PIC 99 VALUE 12.",
+                        "   88 IT-IS-81 VALUE 81."),
+                "    EVALUATE IT-IS-81",
+                "      WHEN TRUE DISPLAY 'MISS'",
+                "      WHEN FALSE DISPLAY 'HIT'",
+                "    END-EVALUATE."));
     }
 
     @Test

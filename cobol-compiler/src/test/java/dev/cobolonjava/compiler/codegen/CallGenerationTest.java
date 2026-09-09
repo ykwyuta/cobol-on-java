@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.compiler.CobolCompiler;
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.FileOperationException;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import java.io.ByteArrayOutputStream;
@@ -63,11 +64,14 @@ class CallGenerationTest {
             CobolCompiler.Result result = compile(lines);
             assertTrue(result.succeeded(),
                     () -> "unexpected diagnostics: " + result.diagnostics());
-            try {
-                Class<?> type = loader.define(result.className(), result.classFile());
-                loaded.add((CobolProgram) type.getDeclaredConstructor().newInstance());
-            } catch (ReflectiveOperationException e) {
-                throw new AssertionError("cannot load the generated program", e);
+            // 1 本のソースにプログラムが何本あってもよい。ぜんぶ読み込む
+            for (CobolCompiler.Compiled program : result.programs()) {
+                try {
+                    Class<?> type = loader.define(program.className(), program.classFile());
+                    loaded.add((CobolProgram) type.getDeclaredConstructor().newInstance());
+                } catch (ReflectiveOperationException e) {
+                    throw new AssertionError("cannot load the generated program", e);
+                }
             }
         }
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
@@ -86,6 +90,216 @@ class CallGenerationTest {
             "MAIN-START.",
             "    MOVE 'xyz' TO LK-A",
             "    GOBACK.");
+
+    /** EXTERNAL の領域だけを書き換えて戻る副プログラム。引数は取らない。 */
+    private static final List<String> SUB_EXTERNAL = List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. SUBEXT.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01 SHARED-DATA IS EXTERNAL.",
+            "   03 SH-TEXT PIC X(2).",
+            "   03 SH-NUM  PIC 9(4).",
+            "PROCEDURE DIVISION.",
+            "MAIN-START.",
+            "    MOVE 'ZZ' TO SH-TEXT",
+            "    ADD 10 TO SH-NUM",
+            "    GOBACK.");
+
+    /** 囲む側の GLOBAL 項目を、囲まれた側が書き換えて戻る。 */
+    private static final List<String> NESTED_GLOBAL = List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GLOMAIN.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01 SHARED-DATA IS GLOBAL.",
+            "   03 SH-TEXT PIC X(2).",
+            "   03 SH-NUM  PIC 9(4).",
+            "PROCEDURE DIVISION.",
+            "MAIN-START.",
+            "    MOVE 'AA' TO SH-TEXT",
+            "    MOVE 1 TO SH-NUM",
+            "    CALL 'GLOSUB'",
+            "    DISPLAY SH-TEXT SH-NUM",
+            "    STOP RUN.",
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GLOSUB.",
+            "PROCEDURE DIVISION.",
+            "SUB-START.",
+            "    MOVE 'ZZ' TO SH-TEXT",
+            "    ADD 10 TO SH-NUM",
+            "    GOBACK.",
+            "END PROGRAM GLOSUB.",
+            "END PROGRAM GLOMAIN.");
+
+    @Test
+    @DisplayName("囲む側の GLOBAL 項目は、囲まれた側から見える (FR-091)")
+    void acontainedProgramSeesTheGlobalItemsOfItsContainer() {
+        // GLOSUB は SHARED-DATA を宣言していない。囲む GLOMAIN が GLOBAL と書いたので
+        // 見えている。実体は 1 つなので、書き換えは戻ったところで見える
+        assertEquals("ZZ0011", run(List.of(NESTED_GLOBAL)).trim());
+    }
+
+    @Test
+    @DisplayName("GLOBAL と書かなければ、囲まれた側からは見えない (FR-091)")
+    void withoutTheGlobalClauseAcontainedProgramCannotSeeTheItem() {
+        // 見えないものを使えば<b>翻訳が通らない</b>。黙って別の項目を使うより良い
+        List<String> lines = new ArrayList<>(NESTED_GLOBAL);
+        lines.set(lines.indexOf("01 SHARED-DATA IS GLOBAL."), "01 SHARED-DATA.");
+        CobolCompiler.Result result = compile(lines);
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("SH-TEXT"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("並んだプログラムでは GLOBAL は見えない (FR-091)")
+    void asiblingProgramDoesNotSeeTheGlobalItem() {
+        // 入れ子でなければ引き継がない。END PROGRAM の位置だけが違う —
+        // GLOMAIN を閉じてから GLOSUB を始めれば、2 本は並んだ関係になる
+        List<String> lines = new ArrayList<>(NESTED_GLOBAL);
+        lines.remove("END PROGRAM GLOSUB.");
+        lines.remove("END PROGRAM GLOMAIN.");
+        lines.add(lines.lastIndexOf("IDENTIFICATION DIVISION."), "END PROGRAM GLOMAIN.");
+        lines.add("END PROGRAM GLOSUB.");
+        CobolCompiler.Result result = compile(lines);
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("SH-TEXT"),
+                result.diagnostics().toString());
+    }
+
+    /**
+     * 囲む側が {@code FD ... GLOBAL} と {@code USE GLOBAL} を持ち、囲まれた側が
+     * そのファイルを読む。読む先が無いので {@code AT END} になり、受け止め手が
+     * 無いので囲む側の宣言節が動く。
+     */
+    private static List<String> nestedFile(String use) {
+        return List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GFMAIN.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT OPTIONAL IN-FILE ASSIGN TO GFDD.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  IN-FILE GLOBAL.",
+            "01  IN-REC PIC X(4).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-MARK IS GLOBAL PIC 9 VALUE 0.",
+            "PROCEDURE DIVISION.",
+            "DECLARATIVES.",
+            "CATCHER SECTION.",
+            "    " + use,
+            "CATCH-IT.",
+            "    MOVE 7 TO WS-MARK.",
+            "END DECLARATIVES.",
+            "MAIN SECTION.",
+            "MAIN-START.",
+            "    CALL 'GFSUB'",
+            "    DISPLAY WS-MARK",
+            "    STOP RUN.",
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GFSUB.",
+            "PROCEDURE DIVISION.",
+            "SUB-START.",
+            "    OPEN INPUT IN-FILE",
+            "    READ IN-FILE",
+            "    GOBACK.",
+            "END PROGRAM GFSUB.",
+            "END PROGRAM GFMAIN.");
+    }
+
+    @Test
+    @DisplayName("囲む側の FD ... GLOBAL と USE GLOBAL は、囲まれた側でも効く (FR-091)")
+    void acontainedProgramUsesTheGlobalFileAndDeclarativeOfItsContainer() {
+        // GFSUB はファイルも宣言節も持たない。囲む GFMAIN が GLOBAL と書いたので、
+        // ファイルが見え、受け止め手のない AT END で<b>囲む側の宣言節が動く</b>。
+        // 節は囲む側の記憶域で動くので、書いた値は戻ったところで見えていなければならない
+        assertEquals("7", run(List.of(nestedFile(
+                "USE GLOBAL AFTER STANDARD ERROR PROCEDURE ON INPUT."))).trim());
+    }
+
+    @Test
+    @DisplayName("GLOBAL でない宣言節は、囲まれた側では動かない (FR-091)")
+    void anonGlobalDeclarativeDoesNotReachAcontainedProgram() {
+        // GLOBAL と書かなければ、囲む側の中でしか動かない。囲まれた側では受け止め手が
+        // 無いままになり、<b>異常終了する</b> (要件 FR-104)。GLOBAL の 1 語だけが違う
+        assertThrows(FileOperationException.class, () -> run(List.of(nestedFile(
+                "USE AFTER STANDARD ERROR PROCEDURE ON INPUT."))));
+    }
+
+    @Test
+    @DisplayName("EXTERNAL の領域は実行単位で 1 つである (FR-014)")
+    void anExternalItemIsOneAreaForTheWholeRunUnit() {
+        // 引数を渡していないのに、呼ぶ側が書いた値が呼ばれた側から見え、
+        // 呼ばれた側が書いた値が呼ぶ側から見える。それが EXTERNAL である。
+        // ADD 10 TO SH-NUM が 11 になるのは<b>両方向</b>が通っている証拠になる
+        assertEquals("ZZ0011", run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. EXTMAIN.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 SHARED-DATA IS EXTERNAL.",
+                        "   03 SH-TEXT PIC X(2).",
+                        "   03 SH-NUM  PIC 9(4).",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    MOVE 'AA' TO SH-TEXT",
+                        "    MOVE 1 TO SH-NUM",
+                        "    CALL 'SUBEXT'",
+                        "    DISPLAY SH-TEXT SH-NUM",
+                        "    STOP RUN."),
+                SUB_EXTERNAL)).trim());
+    }
+
+    @Test
+    @DisplayName("EXTERNAL と書かなければ、名前が同じでも別の領域である (FR-014)")
+    void anItemWithoutTheExternalClauseIsNotShared() {
+        // 名前が同じだけでは分け合わない。EXTERNAL と書いたときだけである
+        assertEquals("AA0001", run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. EXTMAIN2.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 SHARED-DATA.",
+                        "   03 SH-TEXT PIC X(2).",
+                        "   03 SH-NUM  PIC 9(4).",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    MOVE 'AA' TO SH-TEXT",
+                        "    MOVE 1 TO SH-NUM",
+                        "    CALL 'SUBEXT'",
+                        "    DISPLAY SH-TEXT SH-NUM",
+                        "    STOP RUN."),
+                SUB_EXTERNAL)).trim());
+    }
+
+    @Test
+    @DisplayName("EXTERNAL は 2 度目の CALL でも引き継がれる (FR-014)")
+    void anExternalItemKeepsItsValueAcrossCalls() {
+        // 副プログラムの作業場所は 2 度目の呼び出しでも前回のままだが、EXTERNAL は
+        // <b>呼ぶ側の書き換えも</b>引き継ぐ。1 + 10 + 10 で 21 になる
+        assertEquals("ZZ0021", run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. EXTMAIN3.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 SHARED-DATA IS EXTERNAL.",
+                        "   03 SH-TEXT PIC X(2).",
+                        "   03 SH-NUM  PIC 9(4).",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    MOVE 'AA' TO SH-TEXT",
+                        "    MOVE 1 TO SH-NUM",
+                        "    CALL 'SUBEXT'",
+                        "    CALL 'SUBEXT'",
+                        "    DISPLAY SH-TEXT SH-NUM",
+                        "    STOP RUN."),
+                SUB_EXTERNAL)).trim());
+    }
 
     @Test
     @DisplayName("CALL は副プログラムを呼び、書き換えは呼ぶ側に届く (FR-080, FR-081)")
@@ -392,5 +606,137 @@ class CallGenerationTest {
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("BY VALUE"),
                 result.diagnostics().toString());
+    }
+
+    // ---- EXIT PROGRAM (FR-067) ----
+
+    @Test
+    @DisplayName("EXIT PROGRAM は呼んだ側へ戻る (FR-067)")
+    void exitProgramReturnsToTheCaller() {
+        assertEquals("[in][back]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    CALL 'SUBX'",
+                        "    DISPLAY '[back]'."),
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. SUBX.",
+                        "PROCEDURE DIVISION.",
+                        "SUB-START.",
+                        "    DISPLAY '[in]' WITH NO ADVANCING",
+                        "    EXIT PROGRAM.",
+                        "    DISPLAY '[not reached]'."))));
+    }
+
+    @Test
+    @DisplayName("主プログラムの EXIT PROGRAM は何もしない (FR-067)")
+    void exitProgramDoesNothingInAMainProgram() {
+        // COBOL の決まりである。GOBACK と違うのはここだけであり、
+        // どちらの意味になるかは実行時にしか分からない
+        assertEquals("[one][two]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    DISPLAY '[one]' WITH NO ADVANCING",
+                        "    EXIT PROGRAM.",
+                        "    DISPLAY '[two]'."))));
+    }
+
+    @Test
+    @DisplayName("EXIT だけなら何もしない (FR-067)")
+    void aPlainExitIsStillNothing() {
+        assertEquals("[one][two]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    DISPLAY '[one]' WITH NO ADVANCING",
+                        "    EXIT.",
+                        "    DISPLAY '[two]'."))));
+    }
+
+    // ---- 1 本のソースに何本でも書ける (FR-080) ----
+
+    @Test
+    @DisplayName("END PROGRAM で区切れば 1 本のソースに何本でも書ける (FR-080)")
+    void oneSourceMayHoldSeveralPrograms() {
+        CobolCompiler.Result result = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGA.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    DISPLAY '[one]'.",
+                "END PROGRAM PROGA.",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGB.",
+                "PROCEDURE DIVISION.",
+                "SUB-START.",
+                "    DISPLAY '[two]'."));
+
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertEquals(2, result.programs().size());
+        assertTrue(result.programs().get(0).className().endsWith("PROGA"),
+                result.programs().get(0).className());
+        assertTrue(result.programs().get(1).className().endsWith("PROGB"),
+                result.programs().get(1).className());
+    }
+
+    @Test
+    @DisplayName("プログラムごとに名前は独立である (FR-080)")
+    void namesDoNotLeakBetweenPrograms() {
+        // 同じ名前のファイルを 2 本が別々に持っていても、互いに関わりがない。
+        // まとめて 1 つの割り付けにすると、関わりのない重なりを誤りとして報せてしまう
+        CobolCompiler.Result result = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGA.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT PRINT-FILE ASSIGN TO PRTDD.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  PRINT-FILE.",
+                "01  PRINT-REC PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    STOP RUN.",
+                "END PROGRAM PROGA.",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PROGB.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT PRINT-FILE ASSIGN TO PRTDD.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  PRINT-FILE.",
+                "01  PRINT-REC PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "SUB-START.",
+                "    STOP RUN."));
+
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertEquals(2, result.programs().size());
+    }
+
+    @Test
+    @DisplayName("並べて書いたプログラムは呼び合える (FR-080)")
+    void programsInOneSourceCanCallEachOther() {
+        assertEquals("[in][back]\n".replace("\n", System.lineSeparator()), run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    CALL 'SUBY'",
+                        "    DISPLAY '[back]'.",
+                        "END PROGRAM MAIN.",
+                        "IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. SUBY.",
+                        "PROCEDURE DIVISION.",
+                        "SUB-START.",
+                        "    DISPLAY '[in]' WITH NO ADVANCING",
+                        "    EXIT PROGRAM."))));
     }
 }

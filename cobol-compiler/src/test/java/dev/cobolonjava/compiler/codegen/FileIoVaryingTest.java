@@ -453,40 +453,61 @@ class FileIoVaryingTest {
                 result.diagnostics().toString());
     }
 
-    @Test
-    @DisplayName("DEPENDING ON が上限を超えていれば収めて 04 になる (FR-106)")
-    void aLengthAboveTheMaximumIsClamped(@TempDir Path directory) {
-        assertEquals("04|", run(directory, source(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. TOOLONG.",
-                "ENVIRONMENT DIVISION.",
-                "INPUT-OUTPUT SECTION.",
-                "FILE-CONTROL.",
-                "    SELECT OUT-FILE ASSIGN TO CLAMPDD",
-                "        FILE STATUS IS WS-STATUS.",
-                "DATA DIVISION.",
-                "FILE SECTION.",
-                "FD  OUT-FILE",
-                "    RECORD IS VARYING IN SIZE FROM 1 TO 4 DEPENDING ON WS-LEN.",
-                "01  OUT-REC PIC X(4).",
-                "WORKING-STORAGE SECTION.",
-                "01  WS-STATUS PIC XX.",
-                "01  WS-LEN    PIC 9(3) COMP.",
-                "PROCEDURE DIVISION.",
-                "    OPEN OUTPUT OUT-FILE.",
-                "    MOVE 'ABCD' TO OUT-REC.",
-                "    MOVE 99 TO WS-LEN.",
-                "    WRITE OUT-REC.",
-                "    DISPLAY WS-STATUS.",
-                "    CLOSE OUT-FILE.",
-                "    STOP RUN.")));
-        // 領域の外へはみ出さず、4 バイトだけが書かれる
-        assertArrayEquals(rdw("ABCD"), bytesOf(directory.resolve("CLAMPDD")));
+    /** 上限 4 の可変長ファイルへ {@code WS-LEN} の長さで 1 本書く。 */
+    private static String[] writeWithLength(int length) {
+        return new String[] {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. RANGEDD.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT OUT-FILE ASSIGN TO CLAMPDD",
+            "        FILE STATUS IS WS-STATUS.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  OUT-FILE",
+            "    RECORD IS VARYING IN SIZE FROM 2 TO 4 DEPENDING ON WS-LEN.",
+            "01  OUT-REC PIC X(4).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-STATUS PIC XX.",
+            "01  WS-LEN    PIC 9(3) COMP.",
+            "PROCEDURE DIVISION.",
+            "    OPEN OUTPUT OUT-FILE.",
+            "    MOVE 'ABCD' TO OUT-REC.",
+            "    MOVE " + length + " TO WS-LEN.",
+            "    WRITE OUT-REC.",
+            "    DISPLAY WS-STATUS.",
+            "    CLOSE OUT-FILE.",
+            "    STOP RUN."};
     }
 
     @Test
-    @DisplayName("上限がレコード領域より長い指定は誤りである (FR-106)")
-    void theMaximumCannotExceedTheRecordArea() {
+    @DisplayName("DEPENDING ON が上限を超えていれば<b>書かずに</b> 44 になる (FR-103, FR-106)")
+    void aLengthAboveTheMaximumIsRefused(@TempDir Path directory) {
+        // 規格は範囲の外の長さを「書かない」と決めている。収めて書くと、宣言と違う
+        // 長さのレコードがファイルに残る。CCVS85 の SQ212A は 18〜2048 のファイルへ
+        // 15〜17 バイトを書こうとし、<b>入っていないこと</b>を後から読んで確かめている
+        assertEquals("44|", run(directory, source(writeWithLength(99))));
+        assertArrayEquals(new byte[0], bytesOf(directory.resolve("CLAMPDD")));
+    }
+
+    @Test
+    @DisplayName("DEPENDING ON が下限を下回っても<b>書かずに</b> 44 になる (FR-103, FR-106)")
+    void aLengthBelowTheMinimumIsRefused(@TempDir Path directory) {
+        assertEquals("44|", run(directory, source(writeWithLength(1))));
+        assertArrayEquals(new byte[0], bytesOf(directory.resolve("CLAMPDD")));
+    }
+
+    @Test
+    @DisplayName("範囲の中なら今までどおり書ける (FR-106)")
+    void aLengthInsideTheRangeIsWritten(@TempDir Path directory) {
+        assertEquals("00|", run(directory, source(writeWithLength(3))));
+        assertArrayEquals(rdw("ABC"), bytesOf(directory.resolve("CLAMPDD")));
+    }
+
+    @Test
+    @DisplayName("上限がレコード領域より長い指定は、告げて通す (FR-106, FR-183)")
+    void theMaximumBeyondTheRecordAreaIsWarnedAbout() {
         CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. TOOBIG.",
@@ -503,6 +524,10 @@ class FileIoVaryingTest {
                 "01  WS-LEN PIC 9(3) COMP.",
                 "PROCEDURE DIVISION.",
                 "    STOP RUN."));
+        // 規格に沿わないが意味は決まる。止めてしまうと、その先の本当の誤りが見えなくなる
+        assertTrue(result.succeeded(), result.diagnostics().toString());
+        assertEquals(1, result.diagnostics().size(), result.diagnostics().toString());
+        assertTrue(result.diagnostics().get(0).isWarning(), result.diagnostics().toString());
         assertTrue(result.diagnostics().toString().contains("exceeds the record area"),
                 result.diagnostics().toString());
     }
@@ -539,5 +564,46 @@ class FileIoVaryingTest {
                 "    DISPLAY WS-LEN.",
                 "    CLOSE IN-FILE.",
                 "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("DEPENDING ON を書かなければ、レコード記述がレコード長を決める (FR-106)")
+    void withoutADependingPhraseTheRecordDescriptionDecidesTheLength(@TempDir Path directory) {
+        // RECORD IS VARYING だけを書いたときのレコード長は、レコード記述に書かれた
+        // OCCURS ... DEPENDING ON の<b>いまの値</b>で決まる。RL211A がこの形である
+        assertEquals("00|", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. ODOWRIT.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT OUT-FILE ASSIGN TO ODOUT",
+                "        FILE STATUS IS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  OUT-FILE",
+                "    RECORD IS VARYING.",
+                "01  OUT-REC.",
+                "    02  OUT-HEAD PIC X(2).",
+                "    02  OUT-LEN  PIC 9.",
+                "    02  OUT-TAIL PIC X OCCURS 1 TO 5 DEPENDING ON OUT-LEN.",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN OUTPUT OUT-FILE.",
+                "    MOVE 'AB' TO OUT-HEAD.",
+                "    MOVE 1 TO OUT-LEN.",
+                "    MOVE 'P' TO OUT-TAIL (1).",
+                "    WRITE OUT-REC.",
+                "    MOVE 5 TO OUT-LEN.",
+                "    MOVE 'V' TO OUT-TAIL (5).",
+                "    WRITE OUT-REC.",
+                "    CLOSE OUT-FILE.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")));
+        // 1 個ぶんなら 2 + 1 + 1 = 4 バイト、5 個ぶんなら 2 + 1 + 5 = 8 バイト。
+        // 最大の 8 バイトを 2 本書いていたら、この突き合わせで落ちる
+        assertArrayEquals(concat(rdw("AB1P"), rdw("AB5P   V")),
+                bytesOf(directory.resolve("ODOUT")));
     }
 }

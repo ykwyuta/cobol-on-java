@@ -262,6 +262,26 @@ class LinkageGenerationTest {
     }
 
     @Test
+    @DisplayName("USING に並ばない REDEFINES は、重ねる先の引数を使う (FR-027)")
+    void aRedefiningLinkageItemUsesTheArgumentItOverlays() {
+        // 重ねた 01 は USING に並ばない。同じ領域を指しているので、
+        // 重ねる先へ渡された引数をそのまま使う (IC237A)
+        CobolCompiler.Result result = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SUB.",
+                "DATA DIVISION.",
+                "LINKAGE SECTION.",
+                "01 LK-A  PIC X(3).",
+                "01 LK-A1 REDEFINES LK-A PIC 9(3).",
+                "01 LK-B  PIC 9(3).",
+                "PROCEDURE DIVISION USING LK-A LK-B.",
+                "MAIN-START.",
+                "    MOVE LK-A1 TO LK-B."));
+
+        assertTrue(result.succeeded(), result.diagnostics()::toString);
+    }
+
+    @Test
     @DisplayName("BY VALUE はまだ書けないと報告する (FR-027)")
     void byValueIsReportedAsUnsupported() {
         CobolCompiler.Result result = compile(List.of(

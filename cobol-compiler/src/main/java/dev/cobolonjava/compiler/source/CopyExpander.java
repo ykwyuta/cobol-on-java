@@ -85,29 +85,34 @@ public final class CopyExpander {
                                           boolean suppressedByCaller) {
         String name = statement.textName().toUpperCase(Locale.ROOT);
         if (stack.contains(name)) {
-            throw new SourceFormatException(statement.origin()
-                    + ": COPY " + statement.textName() + " is recursive: "
+            throw new SourceFormatException(statement.origin(),
+                    "COPY " + statement.textName() + " is recursive: "
                     + String.join(" then ", stack) + " then " + name);
         }
         if (stack.size() >= MAX_DEPTH) {
-            throw new SourceFormatException(statement.origin()
-                    + ": COPY nesting exceeds " + MAX_DEPTH + " levels");
+            throw new SourceFormatException(statement.origin(),
+                    "COPY nesting exceeds " + MAX_DEPTH + " levels");
         }
 
         Optional<CopyBook> book = resolver.resolve(statement.textName(), statement.libraryName());
         if (book.isEmpty()) {
-            throw new SourceFormatException(statement.origin()
-                    + ": copybook not found: " + statement.textName()
+            throw new SourceFormatException(statement.origin(),
+                    "copybook not found: " + statement.textName()
                     + (statement.libraryName() == null ? "" : " in " + statement.libraryName()));
         }
 
+        // デバッグ行の語も置換の照合に加わる。規格は「7 桁目の D が無いものとして
+        // 照合に参加する」と決めている (85 規格 XII 2.4)。だから写し句は
+        // <b>デバッグ行を生かして</b>起こす。生かさない設定なら、置換のあとで落とす
+        CopyBook found = book.get();
+        SourceReader bookReader = reader.withDebuggingMode();
         List<TextWord> body = PreprocessorLexer.lex(
-                reader.normalize(book.get().fileName(), book.get().text()));
+                bookReader.normalize(found.fileName(), found.text()));
 
         // 入れ子のコピー句も一緒に抑止される
         boolean suppressed = suppressedByCaller || statement.suppress();
         if (suppressed) {
-            suppressedFiles.add(book.get().fileName());
+            suppressedFiles.add(found.fileName());
         }
 
         stack.push(name);
@@ -118,6 +123,10 @@ public final class CopyExpander {
         }
 
         List<TextWord> replaced = TextReplacements.apply(body, statement.replacements());
+        if (!reader.debuggingMode()) {
+            replaced = withoutDebugLines(replaced, found.fileName(),
+                    bookReader.debugLines(found.text()));
+        }
         if (!replaced.isEmpty()) {
             // 展開結果の先頭は、直前の語と続けて読まれないよう空白で区切る
             replaced.set(0, replaced.get(0).withPrecededBySpace(true));
@@ -125,16 +134,42 @@ public final class CopyExpander {
         return replaced;
     }
 
+    /**
+     * 置換で消えずに残ったデバッグ行の語を落とす。
+     *
+     * <p>{@code WITH DEBUGGING MODE} が書かれていなければ、デバッグ行は注釈と同じである。
+     * 照合のあいだだけ生かしておいて、ここで落とす。落とさずに残すと、写し句の
+     * デバッグ行が<b>ふつうの文としてプログラムへ入ってしまう</b>。
+     *
+     * <p>見分けるのは出自の行番号である。置換で差し込まれた語は {@code COPY} を
+     * 書いた側から来ているので、ファイル名が違い、巻き込まれない。
+     */
+    private static List<TextWord> withoutDebugLines(List<TextWord> words, String fileName,
+                                                    Set<Integer> debugLines) {
+        if (debugLines.isEmpty()) {
+            return words;
+        }
+        List<TextWord> out = new ArrayList<>(words.size());
+        for (TextWord word : words) {
+            Origin origin = word.origin();
+            if (fileName.equals(origin.fileName()) && debugLines.contains(origin.line())) {
+                continue;
+            }
+            out.add(word);
+        }
+        return out;
+    }
+
     /** {@code COPY} 文を解析する。 */
     private CopyStatement parseCopy(List<TextWord> words, int start) {
         Origin origin = words.get(start).origin();
         int i = start + 1;
         if (i >= words.size()) {
-            throw new SourceFormatException(origin + ": COPY requires a text-name");
+            throw new SourceFormatException(origin, "COPY requires a text-name");
         }
         TextWord nameWord = words.get(i++);
         if (nameWord.kind() != TextWordKind.WORD && nameWord.kind() != TextWordKind.LITERAL) {
-            throw new SourceFormatException(origin + ": COPY requires a text-name");
+            throw new SourceFormatException(origin, "COPY requires a text-name");
         }
         String textName = unquote(nameWord);
 
@@ -142,7 +177,7 @@ public final class CopyExpander {
         if (i < words.size() && (words.get(i).isWord("OF") || words.get(i).isWord("IN"))) {
             i++;
             if (i >= words.size()) {
-                throw new SourceFormatException(origin + ": COPY OF/IN requires a library-name");
+                throw new SourceFormatException(origin, "COPY OF/IN requires a library-name");
             }
             libraryName = unquote(words.get(i++));
         }
@@ -163,8 +198,8 @@ public final class CopyExpander {
                 TextReplacements.Operand from = TextReplacements.readOperand(words, i, origin);
                 i = from.endIndex() + 1;
                 if (i >= words.size() || !words.get(i).isWord("BY")) {
-                    throw new SourceFormatException(
-                            origin + ": REPLACING requires BY after an operand");
+                    throw new SourceFormatException(origin,
+                            "REPLACING requires BY after an operand");
                 }
                 i++;
                 TextReplacements.Operand to = TextReplacements.readOperand(words, i, origin);
@@ -174,7 +209,7 @@ public final class CopyExpander {
         }
 
         if (i >= words.size() || !words.get(i).isSeparator('.')) {
-            throw new SourceFormatException(origin + ": COPY must be terminated by a period");
+            throw new SourceFormatException(origin, "COPY must be terminated by a period");
         }
         return new CopyStatement(textName, libraryName, suppress, replacements, i, origin);
     }

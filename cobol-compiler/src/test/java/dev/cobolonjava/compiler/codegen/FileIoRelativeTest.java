@@ -154,6 +154,62 @@ class FileIoRelativeTest {
         }
     }
 
+    /** {@code RELATIVE KEY} を 1 桁にした宣言。10 本目の番号が入らない。 */
+    private static String narrowKeyProgram(String... procedure) {
+        String[] head = {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. RELTEST.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT R-FILE ASSIGN TO RELDD",
+            "        ORGANIZATION IS RELATIVE",
+            "        ACCESS MODE IS SEQUENTIAL",
+            "        RELATIVE KEY IS WS-RRN",
+            "        FILE STATUS IS WS-STATUS.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  R-FILE.",
+            "01  R-REC PIC X(3).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-STATUS PIC XX.",
+            "01  WS-RRN    PIC 9 COMP.",
+            "PROCEDURE DIVISION.",
+        };
+        String[] all = new String[head.length + procedure.length];
+        System.arraycopy(head, 0, all, 0, head.length);
+        System.arraycopy(procedure, 0, all, head.length, procedure.length);
+        return source(all);
+    }
+
+    /** 3 バイトのレコードを 10 本持つデータセットを作る。 */
+    private static void seedTen(Path directory) {
+        write(directory.resolve("RELDD"), ebcdic("aaabbbcccdddeeefffggghhhiiijjj"));
+        write(directory.resolve("RELDD.meta"),
+                "recfm=F\nlrecl=3\ncodepage=IBM-1047\n".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @DisplayName("番号が RELATIVE KEY に収まらない順次読みは 14 である (FR-101, FR-103)")
+    void aSequentialReadWhoseNumberDoesNotFitIsRejected(@TempDir Path directory) {
+        // 鍵が 1 桁なので 10 本目の番号を返せない。黙って切り詰めると、
+        // 読み手は<b>0 本目を読んだ</b>と思い込む (RL117A REL-TEST-3、
+        // 85 規格 VII-3 1.3.4 2B)
+        seedTen(directory);
+        assertEquals("00|9|14|9|", run(directory, narrowKeyProgram(
+                "    OPEN INPUT R-FILE.",
+                "    PERFORM 9 TIMES",
+                "        READ R-FILE AT END CONTINUE END-READ",
+                "    END-PERFORM.",
+                "    DISPLAY WS-STATUS.",
+                "    DISPLAY WS-RRN.",
+                "    READ R-FILE AT END CONTINUE END-READ.",
+                "    DISPLAY WS-STATUS.",
+                "    DISPLAY WS-RRN.",
+                "    CLOSE R-FILE.",
+                "    STOP RUN.")));
+    }
+
     @Test
     @DisplayName("番号で読める (FR-101)")
     void recordsAreReadByNumber(@TempDir Path directory) {
@@ -320,11 +376,28 @@ class FileIoRelativeTest {
     // ---- 組み合わせの検査 ----
 
     @Test
-    @DisplayName("READ ... NEXT は動的アクセスだけである (FR-101)")
-    void readNextNeedsDynamicAccess() {
-        assertTrue(diagnostics(program("SEQUENTIAL",
+    @DisplayName("順アクセスでも NEXT と書いてよい。意味は変わらない (FR-101)")
+    void sequentialAccessMayAlsoSayNext(@TempDir Path directory) {
+        // 順アクセスの READ はもともと次のレコードを読む。NEXT は<b>印であって
+        // 指定ではない</b>。動的アクセスでだけ、鍵で読むのか順に読むのかを分ける。
+        // ここを「動的アクセスだけ」と狭く決めていて、正しいプログラムを断っていた
+        seed(directory);
+        assertEquals("aaa|ddd|", run(directory, program("SEQUENTIAL",
+                "    OPEN INPUT R-FILE.",
+                "    READ R-FILE NEXT AT END DISPLAY 'END'",
+                "        NOT AT END DISPLAY R-REC END-READ.",
+                "    READ R-FILE AT END DISPLAY 'END'",
+                "        NOT AT END DISPLAY R-REC END-READ.",
+                "    CLOSE R-FILE.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("乱アクセスに「次」は無い (FR-101)")
+    void randomAccessHasNoNextRecord() {
+        assertTrue(diagnostics(program("RANDOM",
                 "    READ R-FILE NEXT AT END CONTINUE END-READ.",
-                "    STOP RUN.")).toString().contains("ACCESS MODE IS DYNAMIC"));
+                "    STOP RUN.")).toString().contains("ACCESS MODE IS RANDOM"));
     }
 
     @Test
@@ -409,25 +482,51 @@ class FileIoRelativeTest {
     }
 
     @Test
-    @DisplayName("相対編成に可変長レコードは置けない (FR-100)")
-    void aRelativeFileHasFixedSlots() {
-        assertTrue(diagnostics(source(
+    @DisplayName("相対編成でも可変長のレコードを持てる。スロットは固定である (FR-100, FR-101)")
+    void aRelativeFileMayHoldVaryingRecords(@TempDir Path directory) {
+        // 番号が住所である以上、スロットの大きさは変えられない。宣言した最大で取り、
+        // 先頭 4 バイトに実際の長さを置く。ホストの可変長 RRDS と同じ形である。
+        // ここを「可変長は置けない」と断っていた
+        String varying = source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. VARSLOT.",
                 "ENVIRONMENT DIVISION.",
                 "INPUT-OUTPUT SECTION.",
                 "FILE-CONTROL.",
                 "    SELECT R-FILE ASSIGN TO RELDD",
-                "        ORGANIZATION IS RELATIVE.",
+                "        ORGANIZATION IS RELATIVE",
+                "        ACCESS MODE IS RANDOM",
+                "        RELATIVE KEY IS WS-RRN",
+                "        FILE STATUS IS WS-STATUS.",
                 "DATA DIVISION.",
                 "FILE SECTION.",
                 "FD  R-FILE",
-                "    RECORD IS VARYING IN SIZE FROM 1 TO 3 DEPENDING ON WS-LEN.",
-                "01  R-REC PIC X(3).",
+                "    RECORD IS VARYING IN SIZE FROM 1 TO 5 DEPENDING ON WS-LEN.",
+                "01  R-REC PIC X(5).",
                 "WORKING-STORAGE SECTION.",
+                "01  WS-RRN PIC 9(3) COMP.",
                 "01  WS-LEN PIC 9(3) COMP.",
+                "01  WS-STATUS PIC XX.",
                 "PROCEDURE DIVISION.",
-                "    STOP RUN.")).toString().contains("cannot have variable-length records"));
+                "    OPEN OUTPUT R-FILE.",
+                "    MOVE 'ab' TO R-REC MOVE 2 TO WS-LEN MOVE 1 TO WS-RRN.",
+                "    WRITE R-REC.",
+                "    MOVE 'cdefg' TO R-REC MOVE 5 TO WS-LEN MOVE 3 TO WS-RRN.",
+                "    WRITE R-REC.",
+                "    CLOSE R-FILE.",
+                "    OPEN INPUT R-FILE.",
+                "    MOVE 3 TO WS-RRN.",
+                "    READ R-FILE INVALID KEY DISPLAY 'NONE'",
+                "        NOT INVALID KEY DISPLAY R-REC END-READ.",
+                "    MOVE 1 TO WS-RRN.",
+                "    READ R-FILE INVALID KEY DISPLAY 'NONE'",
+                "        NOT INVALID KEY DISPLAY R-REC END-READ.",
+                "    CLOSE R-FILE.",
+                "    STOP RUN.");
+
+        // 2 番は書いていないので空きスロットのまま残る
+        assertEquals("cdefg|ab   |", run(directory, varying));
+        assertEquals(27, bytesOf(directory.resolve("RELDD")).length);
     }
 
     @Test

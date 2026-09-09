@@ -31,12 +31,46 @@ import java.util.Map;
  * @param records      {@code FD} 配下のレコード記述。すべて同じ領域に重なる
  * @param recordLength レコード長。{@code FD} 配下の記述から決まる
  * @param varying      可変長の指定。固定長なら {@code null}
+ * @param linage       {@code LINAGE} の指定。書かれていなければ {@code null}
  */
 public record FileDescription(String name, String ddName, Organization organization,
                               RecordFormat format, Access access, DataReference status,
                               boolean optional, DataReference relativeKey, List<RecordKey> keys,
                               boolean sort, List<DataItem> records, int recordLength,
-                              Varying varying, Origin origin) {
+                              Varying varying, Linage linage, Origin origin) {
+
+    /**
+     * 論理頁の形 (要件 FR-113)。
+     *
+     * <p>紙 1 枚を「上の余白・本文・下の余白」に分ける。{@code LINAGE-COUNTER} が数えるのは
+     * <b>本文の中の何行目か</b>だけであり、余白は数に入らない。
+     *
+     * <p>{@code FOOTING} は本文の中の行番号で、そこへ達した書き込みが
+     * {@code AT END-OF-PAGE} を起こす。
+     *
+     * @param page    本文の行数
+     * @param footing 脚注が始まる行。書かれていなければ 0
+     * @param top     上の余白の行数
+     * @param bottom  下の余白の行数
+     * @param counter {@code LINAGE-COUNTER} の置き場
+     * @param started この頁にもう何か置いたかどうかの置き場。開いた直後は 0 である
+     */
+    public record Linage(DataReference counter, Slot page, Slot footing, Slot top, Slot bottom,
+                         Slot started) {
+
+        /**
+         * 頁の形の値 1 つ。
+         *
+         * <p>数で書かれていても項目で書かれていても、<b>開くたびに置き場へ写す</b>。
+         * 項目で書かれた形は開くたびに読み直す決まりであり、数で書かれた形も同じ道を
+         * 通せば場合分けが要らない。
+         *
+         * @param at     値の置き場 (隠し項目)
+         * @param source 開くときにそこへ書く元。書かれていなければ 0
+         */
+        public record Slot(DataReference at, Operand source) {
+        }
+    }
 
     public FileDescription {
         records = List.copyOf(records);
@@ -134,7 +168,7 @@ public record FileDescription(String name, String ddName, Organization organizat
     public record Result(Map<String, FileDescription> files, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
     }
 
@@ -155,10 +189,24 @@ public record FileDescription(String name, String ddName, Organization organizat
     }
 
     /** 環境部の {@code SELECT} 句を読む。 */
-    public static List<Selected> select(CobolParser.CompilationUnitContext tree,
+    public static List<Selected> select(CobolParser.ProgramUnitContext program,
+                                        List<Diagnostic> diagnostics) {
+        return select(program, List.of(), diagnostics);
+    }
+
+    /**
+     * 囲む側から引き継ぐ {@code SELECT} も併せて読む (要件 FR-091)。
+     *
+     * <p>ファイルの記述は {@code SELECT} と {@code FD} の 2 か所に分かれている。
+     * {@code FD ... GLOBAL} を引き継ぐなら、対になる {@code SELECT} も要る。
+     *
+     * <p>同じ名前を自分でも書いていれば<b>自分のほうが勝つ</b>。内側の宣言が外側を隠す。
+     */
+    public static List<Selected> select(CobolParser.ProgramUnitContext program,
+                                        List<CobolParser.SelectEntryContext> inherited,
                                         List<Diagnostic> diagnostics) {
         List<Selected> out = new ArrayList<>();
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
+        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             if (unit.environmentDivision() == null
                     || unit.environmentDivision().inputOutputSection() == null
                     || unit.environmentDivision().inputOutputSection()
@@ -173,17 +221,33 @@ public record FileDescription(String name, String ddName, Organization organizat
                 }
             }
         }
+        for (CobolParser.SelectEntryContext entry : inherited) {
+            Selected selected = selectedOf(entry, diagnostics);
+            if (selected != null && !declares(out, selected.name())) {
+                out.add(selected);
+            }
+        }
         return out;
+    }
+
+    /** その名前のファイルを、このプログラムが自分で書いているか。 */
+    private static boolean declares(List<Selected> selected, String name) {
+        for (Selected one : selected) {
+            if (one.name().equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Selected selectedOf(CobolParser.SelectEntryContext entry,
                                        List<Diagnostic> diagnostics) {
         Origin origin = ReferenceResolver.originOf(entry);
-        List<org.antlr.v4.runtime.tree.TerminalNode> names = entry.IDENTIFIER();
-        String name = names.get(0).getText().toUpperCase(Locale.ROOT);
-        String ddName = entry.LITERAL() != null
-                ? unquote(entry.LITERAL().getText())
-                : names.get(1).getText().toUpperCase(Locale.ROOT);
+        String name = entry.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        String ddName = ddNameOf(entry, name, origin, diagnostics);
+        if (ddName == null) {
+            return null;
+        }
 
         Organization organization = Organization.SEQUENTIAL;
         RecordFormat format = RecordFormat.FIXED;
@@ -192,7 +256,14 @@ public record FileDescription(String name, String ddName, Organization organizat
         CobolParser.IdentifierContext relativeKey = null;
         List<SelectedKey> keys = new ArrayList<>();
         for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
-            if (clause.ORGANIZATION() != null) {
+            // RESERVE は ALTERNATE を含むので、副鍵より先に外す。
+            // PASSWORD は名前を持つが鍵ではない。どちらも翻訳の結果には効かない
+            if (clause.assignClause() != null || clause.RESERVE() != null
+                    || clause.PASSWORD() != null || clause.PADDING() != null
+                    || clause.DELIMITER() != null) {
+                continue;
+            }
+            if (clause.organizationName() != null || clause.ORGANIZATION() != null) {
                 organization = organizationOf(clause);
                 // 行順編成だけが切り出し方の違う編成である
                 format = organization == Organization.LINE_SEQUENTIAL
@@ -203,7 +274,13 @@ public record FileDescription(String name, String ddName, Organization organizat
             } else if (clause.STATUS() != null) {
                 status = clause.identifier();
             } else if (clause.RELATIVE() != null) {
-                relativeKey = clause.identifier();
+                // 裸の RELATIVE は編成の指定であり、鍵の名前ではない
+                if (clause.identifier() == null) {
+                    organization = Organization.RELATIVE;
+                    format = RecordFormat.FIXED;
+                } else {
+                    relativeKey = clause.identifier();
+                }
             } else if (clause.ALTERNATE() != null) {
                 keys.add(new SelectedKey(clause.identifier(), clause.DUPLICATES() != null));
             } else if (clause.RECORD() != null) {
@@ -217,14 +294,42 @@ public record FileDescription(String name, String ddName, Organization organizat
                 status, relativeKey, keys, origin);
     }
 
+    /**
+     * {@code ASSIGN} に書かれた名前 (要件 FR-100)。
+     *
+     * <p>句の順は決まっていないので、文法では位置を縛らず<b>ここで必ず 1 つあることを
+     * 確かめる</b>。無ければ、そのファイルをどこへ結び付けるのかが分からない。
+     *
+     * <p>2 つ以上書かれていたら先頭を採る。装置の名前を並べる書き方があるが、
+     * こちらでは DD 名 1 つに対応する。
+     */
+    private static String ddNameOf(CobolParser.SelectEntryContext entry, String name,
+                                   Origin origin, List<Diagnostic> diagnostics) {
+        for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
+            CobolParser.AssignClauseContext assign = clause.assignClause();
+            if (assign == null) {
+                continue;
+            }
+            if (!assign.LITERAL().isEmpty()) {
+                return unquote(assign.LITERAL(0).getText());
+            }
+            return assign.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
+        }
+        diagnostics.add(new Diagnostic(origin, "SELECT " + name + " has no ASSIGN clause"));
+        return null;
+    }
+
     private static Organization organizationOf(CobolParser.SelectClauseContext clause) {
         if (clause.RELATIVE() != null) {
             return Organization.RELATIVE;
         }
-        if (clause.INDEXED() != null) {
+        CobolParser.OrganizationNameContext organization = clause.organizationName();
+        if (organization == null || organization.INDEXED() != null) {
             return Organization.INDEXED;
         }
-        return clause.LINE() != null ? Organization.LINE_SEQUENTIAL : Organization.SEQUENTIAL;
+        return organization.LINE() != null
+                ? Organization.LINE_SEQUENTIAL
+                : Organization.SEQUENTIAL;
     }
 
     private static Access accessOf(CobolParser.SelectClauseContext clause) {
@@ -253,10 +358,10 @@ public record FileDescription(String name, String ddName, Organization organizat
      *
      * @param records {@code FD} ごとのレコード領域の 01 レベル
      */
-    public static Result build(CobolParser.CompilationUnitContext tree, List<Selected> selected,
+    public static Result build(CobolParser.ProgramUnitContext program, List<Selected> selected,
                                Map<String, List<DataItem>> records,
                                ReferenceResolver resolver, List<Diagnostic> diagnostics) {
-        Map<String, CobolParser.FileDescriptionEntryContext> entries = entriesOf(tree);
+        Map<String, CobolParser.FileDescriptionEntryContext> entries = entriesOf(program);
         Map<String, FileDescription> files = new LinkedHashMap<>();
         for (Selected one : selected) {
             List<DataItem> area = records.get(one.name());
@@ -276,17 +381,6 @@ public record FileDescription(String name, String ddName, Organization organizat
                 format = recordingOf(recording, format, one.origin(), diagnostics);
             }
             Varying varying = varyingOf(entry, length, resolver, diagnostics);
-            if (one.organization() == Organization.RELATIVE && format == RecordFormat.VARIABLE) {
-                diagnostics.add(new Diagnostic(one.origin(),
-                        "a RELATIVE file cannot have variable-length records"));
-                continue;
-            }
-            if (varying != null && one.organization() == Organization.RELATIVE) {
-                // 相対編成のスロットは固定長である。長さが違えば番号が住所にならない
-                diagnostics.add(new Diagnostic(one.origin(),
-                        "a RELATIVE file cannot have variable-length records"));
-                continue;
-            }
             if (varying != null) {
                 // RECORD IS VARYING と書けば、様式は可変長である
                 format = RecordFormat.VARIABLE;
@@ -317,11 +411,15 @@ public record FileDescription(String name, String ddName, Organization organizat
             } else if (!checkOrganization(one, relativeKey, keys, diagnostics)) {
                 continue;
             }
+            Linage linage = linageOf(entry, one, resolver, diagnostics);
+            if (linage == null && hasLinage(entry)) {
+                continue;
+            }
             if (files.putIfAbsent(one.name(),
                     new FileDescription(one.name(), one.ddName(), one.organization(), format,
                             one.access(), status, one.optional(), relativeKey, keys,
                             entry != null && entry.SD() != null, area, length,
-                            varying, one.origin())) != null) {
+                            varying, linage, one.origin())) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }
         }
@@ -332,6 +430,112 @@ public record FileDescription(String name, String ddName, Organization organizat
             }
         }
         return new Result(Map.copyOf(files), List.copyOf(diagnostics));
+    }
+
+    /** {@code FD} に {@code LINAGE} が書かれているか。 */
+    private static boolean hasLinage(CobolParser.FileDescriptionEntryContext entry) {
+        return linageClauseOf(entry) != null;
+    }
+
+    private static CobolParser.LinageClauseContext linageClauseOf(
+            CobolParser.FileDescriptionEntryContext entry) {
+        if (entry == null) {
+            return null;
+        }
+        for (CobolParser.FileDescriptionClauseContext clause : entry.fileDescriptionClause()) {
+            if (clause.linageClause() != null) {
+                return clause.linageClause();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * {@code LINAGE} を読む (要件 FR-113)。
+     *
+     * <p>行数は<b>書かれた数だけ</b>を受ける。規格はデータ項目も許しており、その場合は
+     * 開くたびに値を読み直す決まりである。読み直す仕掛けをまだ持っていないので、
+     * 数の代わりに項目が書かれていたら<b>断る</b> (暫定判断 P-071)。黙って
+     * 開いたときの値で固めると、途中で変えたつもりの頁の形が効かない。
+     */
+    private static Linage linageOf(CobolParser.FileDescriptionEntryContext entry, Selected one,
+                                   ReferenceResolver resolver, List<Diagnostic> diagnostics) {
+        CobolParser.LinageClauseContext clause = linageClauseOf(entry);
+        if (clause == null) {
+            return null;
+        }
+        Operand page = countOf(clause.linageCount(), resolver, one.origin(), diagnostics);
+        if (page == null) {
+            return null;
+        }
+        Operand footing = null;
+        Operand top = null;
+        Operand bottom = null;
+        for (CobolParser.LinagePartContext part : clause.linagePart()) {
+            Operand value = countOf(part.linageCount(), resolver, one.origin(), diagnostics);
+            if (value == null) {
+                return null;
+            }
+            if (part.FOOTING() != null) {
+                footing = value;
+            } else if (part.TOP() != null) {
+                top = value;
+            } else {
+                bottom = value;
+            }
+        }
+        DataReference counter = resolver.resolveName(LINAGE_COUNTER, one.origin());
+        Linage.Slot pageSlot = slotOf(resolver, one, "LNG-PAGE$", page, diagnostics);
+        Linage.Slot footingSlot = slotOf(resolver, one, "LNG-FOOT$", footing, diagnostics);
+        Linage.Slot topSlot = slotOf(resolver, one, "LNG-TOP$", top, diagnostics);
+        Linage.Slot bottomSlot = slotOf(resolver, one, "LNG-BOTTOM$", bottom, diagnostics);
+        Linage.Slot startedSlot = slotOf(resolver, one, "LNG-START$", null, diagnostics);
+        if (counter == null || pageSlot == null || footingSlot == null
+                || topSlot == null || bottomSlot == null || startedSlot == null) {
+            return null;
+        }
+        return new Linage(counter, pageSlot, footingSlot, topSlot, bottomSlot, startedSlot);
+    }
+
+    /** 頁の形の値 1 つと、その置き場を結び付ける。 */
+    private static Linage.Slot slotOf(ReferenceResolver resolver, Selected one, String prefix,
+                                      Operand source, List<Diagnostic> diagnostics) {
+        DataReference at = resolver.resolveName(prefix + one.name(), one.origin());
+        return at == null ? null : new Linage.Slot(at, source);
+    }
+
+    /** {@code LINAGE-COUNTER} の名前。データ部には書かれないが、名前で読める。 */
+    public static final String LINAGE_COUNTER = "LINAGE-COUNTER";
+
+    /**
+     * 頁の形の値 1 つ。数でも項目でもよい。
+     *
+     * <p>項目で書かれた形は<b>開くたびに読み直す</b>決まりである。数で書かれた形も
+     * 同じ道 (開くときに置き場へ写す) を通すので、ここでは区別せずに被演算子にする。
+     */
+    private static Operand countOf(CobolParser.LinageCountContext count,
+                                   ReferenceResolver resolver, Origin origin,
+                                   List<Diagnostic> diagnostics) {
+        if (count.NUMBER() != null) {
+            try {
+                return new Operand.Literal(new LiteralValue.Number(
+                        dev.cobolonjava.runtime.decimal.Decimal.parse(
+                                count.NUMBER().getText())));
+            } catch (NumberFormatException e) {
+                diagnostics.add(new Diagnostic(origin,
+                        "LINAGE takes an integer: " + count.NUMBER().getText()));
+                return null;
+            }
+        }
+        DataReference item = resolver.resolve(count.identifier());
+        if (item == null) {
+            return null;
+        }
+        if (!DataCategory.of(item).isNumeric()) {
+            diagnostics.add(new Diagnostic(origin, "LINAGE requires an integer item"));
+            return null;
+        }
+        return new Operand.Reference(item);
     }
 
     /**
@@ -433,9 +637,9 @@ public record FileDescription(String name, String ddName, Organization organizat
 
     /** ファイル名から {@code FD} を引く表。 */
     private static Map<String, CobolParser.FileDescriptionEntryContext> entriesOf(
-            CobolParser.CompilationUnitContext tree) {
+            CobolParser.ProgramUnitContext program) {
         Map<String, CobolParser.FileDescriptionEntryContext> entries = new LinkedHashMap<>();
-        for (CobolParser.ProgramUnitContext unit : tree.programUnit()) {
+        for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             if (unit.dataDivision() == null) {
                 continue;
             }
@@ -463,7 +667,8 @@ public record FileDescription(String name, String ddName, Organization organizat
         if (entry != null) {
             for (CobolParser.FileDescriptionClauseContext clause : entry.fileDescriptionClause()) {
                 if (clause.RECORDING() != null) {
-                    mode = clause.IDENTIFIER().getText();
+                    // DATA RECORDS も名前を並べるので、IDENTIFIER は複数ありうる
+                    mode = clause.IDENTIFIER(0).getText();
                 }
             }
         }
@@ -499,10 +704,13 @@ public record FileDescription(String name, String ddName, Organization organizat
                 return null;
             }
             if (maximum > area) {
-                // 領域より長いレコードは受け取れない。読めば領域の外へはみ出す
-                diagnostics.add(new Diagnostic(origin, "RECORD VARYING maximum of " + maximum
-                        + " exceeds the record area of " + area + " bytes"));
-                return null;
+                // 規格に沿わないが、意味は決まる。レコード領域はレコード記述が決めるので、
+                // そこまでで頭打ちにする。黙って切らずに<b>告げて通す</b> (要件 FR-183)。
+                // 止めてしまうと、その先にある本当の誤りが見えなくなる (IX401M)
+                diagnostics.add(Diagnostic.warning(origin, "RECORD VARYING maximum of " + maximum
+                        + " exceeds the record area of " + area + " bytes;"
+                        + " the record area is used"));
+                maximum = area;
             }
             DataReference depending = varying.identifier() == null
                     ? null

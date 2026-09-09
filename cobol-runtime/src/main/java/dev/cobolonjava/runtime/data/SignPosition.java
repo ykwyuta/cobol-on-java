@@ -35,4 +35,9 @@ public enum SignPosition {
     public boolean isSigned() {
         return this != UNSIGNED;
     }
+
+    /** 符号が先頭側にあるかどうか。 */
+    public boolean isLeading() {
+        return this == LEADING || this == LEADING_SEPARATE;
+    }
 }

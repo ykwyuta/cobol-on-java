@@ -1,0 +1,373 @@
+package dev.cobolonjava.compiler.codegen;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.cobolonjava.compiler.CobolCompiler;
+import dev.cobolonjava.runtime.codepage.CodePages;
+import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.ProgramContext;
+import dev.cobolonjava.runtime.storage.Storage;
+import java.util.List;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+/**
+ * {@code ALPHABET} 句と {@code PROGRAM COLLATING SEQUENCE} (要件 FR-054)。
+ *
+ * <p>確かめるのは<b>比較の向きが変わること</b>である。EBCDIC では英字がすべて数字より
+ * 小さいが、ASCII の並びでは逆になる。差し替えが効いていれば、同じ条件が逆の枝を通る。
+ */
+@Tag("V1")
+class CollatingSequenceTest {
+
+    private static final String FILE = "MAIN.cbl";
+
+    private static final class GeneratedLoader extends ClassLoader {
+
+        private GeneratedLoader() {
+            super(CollatingSequenceTest.class.getClassLoader());
+        }
+
+        Class<?> define(String name, byte[] classFile) {
+            return defineClass(name, classFile, 0, classFile.length);
+        }
+    }
+
+    /**
+     * 環境部を書き足せるプログラムを組み立てる。
+     *
+     * @param environment 構成節の中身。空なら環境部そのものを書かない
+     */
+    private static CobolCompiler.Result compile(List<String> environment, List<String> storage,
+                                                String... procedure) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : List.of("IDENTIFICATION DIVISION.", "PROGRAM-ID. HELLO.")) {
+            sb.append("       ").append(line).append('\n');
+        }
+        if (!environment.isEmpty()) {
+            sb.append("       ENVIRONMENT DIVISION.\n");
+            sb.append("       CONFIGURATION SECTION.\n");
+            for (String line : environment) {
+                sb.append("       ").append(line).append('\n');
+            }
+        }
+        sb.append("       DATA DIVISION.\n");
+        sb.append("       WORKING-STORAGE SECTION.\n");
+        for (String line : storage) {
+            sb.append("       ").append(line).append('\n');
+        }
+        sb.append("       PROCEDURE DIVISION.\n");
+        for (String line : procedure) {
+            sb.append("       ").append(line).append('\n');
+        }
+        return CobolCompiler.standard().compile(FILE, sb.toString());
+    }
+
+    private static String run(List<String> environment, List<String> storage,
+                              String... procedure) {
+        CobolCompiler.Result result = compile(environment, storage, procedure);
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        try {
+            Class<?> type = new GeneratedLoader().define(result.className(), result.classFile());
+            CobolProgram program = (CobolProgram) type.getDeclaredConstructor().newInstance();
+            Storage executed = program.runFresh();
+            return CodePages.DEFAULT.decode(executed.array());
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot run the generated program", e);
+        }
+    }
+
+    private static final List<String> TWO_LETTERS = List.of(
+            "01 WS-A PIC X VALUE 'A'.",
+            "01 WS-B PIC X VALUE '1'.",
+            "01 WS-R PIC X.");
+
+    private static final String COMPARE =
+            "IF WS-A < WS-B MOVE 'T' TO WS-R ELSE MOVE 'F' TO WS-R END-IF.";
+
+    @Test
+    @DisplayName("既定では EBCDIC の並びで比べる (FR-053)")
+    void withoutAnAlphabetTheCodePageOrderIsUsed() {
+        // EBCDIC では英字 (0xC1) が数字 (0xF1) より小さい
+        assertEquals("T", run(List.of(), TWO_LETTERS, COMPARE).substring(2));
+    }
+
+    @Test
+    @DisplayName("STANDARD-2 を選ぶと ASCII の並びで比べる (FR-054)")
+    void anAsciiAlphabetTurnsTheComparisonAround() {
+        // ASCII では数字 (0x31) が英字 (0x41) より小さいので、向きが逆になる
+        assertEquals("F", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS ASCII-ORDER.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET ASCII-ORDER IS STANDARD-2."),
+                TWO_LETTERS, COMPARE).substring(2));
+    }
+
+    @Test
+    @DisplayName("NATIVE を選んでも既定と同じである (FR-054)")
+    void theNativeAlphabetChangesNothing() {
+        assertEquals("T", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS N-A-T-I-V-E.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET N-A-T-I-V-E IS NATIVE."),
+                TWO_LETTERS, COMPARE).substring(2));
+    }
+
+    @Test
+    @DisplayName("文字を並べて書くと、書いた順が先頭になる (FR-054)")
+    void listedCharactersComeFirstInTheOrderWritten() {
+        // "1" を先頭に置けば、EBCDIC の並びでは大きいはずの数字が小さくなる
+        assertEquals("F", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET DIGITS-FIRST IS \"1\" \"2\" \"3\"."),
+                TWO_LETTERS, COMPARE).substring(2));
+    }
+
+    @Test
+    @DisplayName("2 文字以上の定数は 1 文字ずつが別の位置になる (FR-054)")
+    void aLiteralOfSeveralCharactersSpreadsOverThatManyPositions() {
+        // "123" は "1" "2" "3" と並べたのと同じである。1 つの位置へまとめると
+        // 照合順序が丸ごとずれる。ここを「1 文字でなければ誤り」と断っていた
+        assertEquals("F", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET DIGITS-FIRST IS \"123\"."),
+                TWO_LETTERS, COMPARE).substring(2));
+        // 1 文字ずつ別の位置なので、"2" は "1" より大きい
+        assertEquals("+00000200", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET DIGITS-FIRST IS \"123\"."),
+                List.of("01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = FUNCTION ORD(\"2\")."));
+    }
+
+    @Test
+    @DisplayName("THRU の範囲も 1 文字ずつが別の位置になる (FR-054)")
+    void aThruRangeSpreadsOverItsCharacters() {
+        // "A" THRU "C" は "A" "B" "C" と並べたのと同じである
+        assertEquals("+00000300", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS LETTERS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET LETTERS-FIRST IS \"A\" THRU \"C\"."),
+                List.of("01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = FUNCTION ORD(\"C\")."));
+    }
+
+    @Test
+    @DisplayName("ALSO で並べた文字は同じ位置になる (FR-054)")
+    void charactersJoinedByAlsoCompareEqual() {
+        assertEquals("T", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS FOLDED.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET FOLDED IS \"A\" ALSO \"1\"."),
+                TWO_LETTERS,
+                "IF WS-A = WS-B MOVE 'T' TO WS-R ELSE MOVE 'F' TO WS-R END-IF.").substring(2));
+    }
+
+    /** 図形定数と比べた結果を {@code WS-R} に残す。72 桁を越えないよう 3 行に割る。 */
+    private static String[] compareWith(String left, String constant) {
+        return new String[] {
+            "IF " + left + " = " + constant,
+            "    MOVE 'T' TO WS-R",
+            "ELSE MOVE 'F' TO WS-R END-IF."};
+    }
+
+    private static final List<String> ONE_LETTER_AND_RESULT = List.of(
+            "01 WS-A PIC X.",
+            "01 WS-R PIC X.");
+
+    private static final List<String> DIGITS_FIRST = List.of("OBJECT-COMPUTER.",
+            "    COBOL-ON-JAVA",
+            "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+            "SPECIAL-NAMES.",
+            "    ALPHABET DIGITS-FIRST IS \"1\" \"2\" \"3\".");
+
+    /**
+     * NC219A の並び。{@code 0xFF} と {@code 0x00} を {@code ALSO} で {@code "N"} の位置へ
+     * 動かしている。並びのいちばん後ろに来るのは、もう {@code 0xFF} ではない。
+     */
+    private static final List<String> NC219A_ALPHABET = List.of("OBJECT-COMPUTER.",
+            "    COBOL-ON-JAVA",
+            "    PROGRAM COLLATING SEQUENCE IS COLLATING-SEQ-1.",
+            "SPECIAL-NAMES.",
+            "    ALPHABET COLLATING-SEQ-1 IS \"F\" \"U\" \"N\"",
+            "        ALSO HIGH-VALUE",
+            "        ALSO LOW-VALUE",
+            "        \"Y\".");
+
+    @Test
+    @DisplayName("LOW-VALUE は差し替えた並びの<b>先頭に来る文字</b>である (FR-054)")
+    void lowValueIsTheFirstCharacterOfTheProgramCollatingSequence() {
+        // 規格は図形定数を「並びの端に来る文字」と決めている。バイト値 0x00 ではない
+        assertEquals("T", run(DIGITS_FIRST,
+                List.of("01 WS-A PIC X VALUE '1'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "LOW-VALUE")).substring(1));
+        // VALUE 句にも効く。並びの先頭の文字がそのまま入る
+        assertEquals("1", run(DIGITS_FIRST,
+                List.of("01 WS-L PIC X VALUE LOW-VALUE."), "CONTINUE."));
+    }
+
+    @Test
+    @DisplayName("ALSO で端から動かした文字は、もう図形定数ではない (FR-054)")
+    void aCharacterMovedByAlsoIsNoLongerTheFigurativeConstant() {
+        // CCVS85 の NC219A が見ているところである。HIGH-VALUE をバイト値 0xFF のままに
+        // していると N = HIGH-VALUE が真になり、「並びの端に来る文字」という定義が壊れる
+        assertEquals("F", run(NC219A_ALPHABET,
+                List.of("01 WS-A PIC X VALUE 'N'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "HIGH-VALUE")).substring(1));
+        // 先頭に置いた "F" が LOW-VALUE である
+        assertEquals("T", run(NC219A_ALPHABET,
+                List.of("01 WS-A PIC X VALUE 'F'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "LOW-VALUE")).substring(1));
+        // 端どうしを比べれば、後ろのほうが大きい
+        assertEquals("F", run(NC219A_ALPHABET, ONE_LETTER_AND_RESULT,
+                compareWith("HIGH-VALUE", "LOW-VALUE")).substring(1));
+        assertEquals("T", run(NC219A_ALPHABET, ONE_LETTER_AND_RESULT,
+                "IF HIGH-VALUE > LOW-VALUE",
+                "    MOVE 'T' TO WS-R",
+                "ELSE MOVE 'F' TO WS-R END-IF.").substring(1));
+    }
+
+    @Test
+    @DisplayName("並びを選んでいなければ、同じ ALPHABET を書いても図形定数は動かない (FR-054)")
+    void anAlphabetThatIsNotSelectedDoesNotMoveTheFigurativeConstants() {
+        // 図形定数を動かすのは PROGRAM COLLATING SEQUENCE である。ALPHABET 句を書いた
+        // だけでは動かない。書いただけの並びは SORT ... SEQUENCE が引くためのものである
+        List<String> declaredOnly = List.of("SPECIAL-NAMES.",
+                "    ALPHABET COLLATING-SEQ-1 IS \"F\" \"U\" \"N\"",
+                "        ALSO HIGH-VALUE",
+                "        ALSO LOW-VALUE",
+                "        \"Y\".");
+        assertEquals("F", run(declaredOnly,
+                List.of("01 WS-A PIC X VALUE 'F'.", "01 WS-R PIC X."),
+                compareWith("WS-A", "LOW-VALUE")).substring(1));
+    }
+
+    @Test
+    @DisplayName("CHAR と ORD は差し替えた並びの位置で答える (FR-054, FR-070)")
+    void charAndOrdFollowTheProgramCollatingSequence() {
+        // "1" を 1 番目に置いた並びでは ORD("1") が 1 になる
+        assertEquals("+00000100", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET DIGITS-FIRST IS \"1\" \"2\" \"3\"."),
+                List.of("01 WS-N PIC S9(6)V99 SIGN IS LEADING SEPARATE VALUE 0."),
+                "COMPUTE WS-N = FUNCTION ORD(\"1\")."));
+        assertEquals("1", run(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS DIGITS-FIRST.",
+                        "SPECIAL-NAMES.",
+                        "    ALPHABET DIGITS-FIRST IS \"1\" \"2\" \"3\"."),
+                List.of("01 WS-C PIC X."),
+                "MOVE FUNCTION CHAR(1) TO WS-C."));
+    }
+
+    @Test
+    @DisplayName("並べ替えの鍵も照合順序に従う (FR-054, FR-120)")
+    void sortKeysFollowTheCollatingSequence() {
+        // EBCDIC では数字が英字より大きい。数字を先頭へ置いた並びなら逆になる。
+        // ここは「まだ支えていない」と断っていた
+        assertEquals("1|A|", sorted(
+                "    ALPHABET DIGITS-FIRST IS \"123456789\".",
+                "    SORT SORT-WORK ASCENDING KEY S-KEY",
+                "        SEQUENCE DIGITS-FIRST",
+                "        INPUT PROCEDURE IS FEED",
+                "        OUTPUT PROCEDURE IS DRAIN."));
+        // 並べ替えの指定が無ければコードページの並びである
+        assertEquals("A|1|", sorted(
+                "    ALPHABET DIGITS-FIRST IS \"123456789\".",
+                "    SORT SORT-WORK ASCENDING KEY S-KEY",
+                "        INPUT PROCEDURE IS FEED",
+                "        OUTPUT PROCEDURE IS DRAIN."));
+    }
+
+    /** 2 件を並べ替えて、出てきた順に印字する。 */
+    private static String sorted(String alphabet, String... sort) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SORTSEQ.",
+                "ENVIRONMENT DIVISION.",
+                "CONFIGURATION SECTION.",
+                "SPECIAL-NAMES.",
+                alphabet,
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT SORT-WORK ASSIGN TO SORTWK.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "SD  SORT-WORK.",
+                "01  S-REC.",
+                "    05  S-KEY PIC X.",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-DONE PIC X VALUE 'N'.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.")) {
+            sb.append("       ").append(line).append('\n');
+        }
+        for (String line : sort) {
+            sb.append("       ").append(line).append('\n');
+        }
+        for (String line : List.of(
+                "    STOP RUN.",
+                "FEED.",
+                "    MOVE 'A' TO S-KEY RELEASE S-REC",
+                "    MOVE '1' TO S-KEY RELEASE S-REC.",
+                "DRAIN.",
+                "    PERFORM UNTIL WS-DONE = 'Y'",
+                "        RETURN SORT-WORK AT END MOVE 'Y' TO WS-DONE",
+                "            NOT AT END DISPLAY S-KEY END-RETURN",
+                "    END-PERFORM.")) {
+            sb.append("       ").append(line).append('\n');
+        }
+
+        CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, sb.toString());
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+        try {
+            Class<?> type = new GeneratedLoader().define(result.className(), result.classFile());
+            ((CobolProgram) type.getDeclaredConstructor().newInstance())
+                    .runFresh(ProgramContext.capturing(sink));
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot load the generated program", e);
+        }
+        return sink.toString(java.nio.charset.StandardCharsets.UTF_8)
+                .replace(System.lineSeparator(), "|");
+    }
+
+    @Test
+    @DisplayName("知らない ALPHABET 名は誤りとして報告する (FR-054)")
+    void anUndefinedAlphabetNameIsReported() {
+        CobolCompiler.Result result = compile(
+                List.of("OBJECT-COMPUTER.",
+                        "    COBOL-ON-JAVA",
+                        "    PROGRAM COLLATING SEQUENCE IS MISSING-ONE."),
+                TWO_LETTERS, COMPARE);
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("undefined alphabet-name"),
+                result.diagnostics().toString());
+    }
+}

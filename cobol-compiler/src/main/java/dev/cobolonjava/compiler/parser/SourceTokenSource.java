@@ -38,8 +38,23 @@ import org.antlr.v4.runtime.misc.Pair;
  */
 public final class SourceTokenSource implements TokenSource {
 
-    /** 数字定数の綴り。COBOL は小数点の前に必ず数字を要求する。 */
-    private static final Pattern NUMERIC = Pattern.compile("[+-]?\\d+(\\.\\d+)?([eE][+-]?\\d+)?");
+    /**
+     * 数字定数の綴り。
+     *
+     * <p>小数点は<b>いちばん右に来てはならない</b>が、いちばん左に来てもよい。
+     * {@code VALUE .5} は正しい COBOL であり、NIST の検査スイートも書いている。
+     * 小数点だけで始まる形を読めないと、{@code PIC V99 VALUE .25} が通らない。
+     *
+     * <p>区切りの終止符と紛れないのは、<b>終止符は空白が続く</b>と決まっているから
+     * である。{@code .5} は空白が続かないので定数であり、{@code . } は区切りである。
+     * 切り分けはここへ来る前に済んでいる。
+     */
+    private static final Pattern NUMERIC =
+            Pattern.compile("[+-]?(\\d+(\\.\\d+)?|\\.\\d+)([eE][+-]?\\d+)?");
+
+    /** {@code DECIMAL-POINT IS COMMA} のときの数字定数の綴り。 */
+    private static final Pattern NUMERIC_COMMA =
+            Pattern.compile("[+-]?(\\d+(,\\d+)?|,\\d+)([eE][+-]?\\d+)?");
 
     /**
      * 文法が宣言しているが予約語ではない名前。区切り文字、島、そして語の種別そのものである。
@@ -52,7 +67,19 @@ public final class SourceTokenSource implements TokenSource {
             "GREATER_EQUAL_SIGN", "LESS_EQUAL_SIGN", "NOT_EQUAL_SIGN",
             "PLUS_SIGN", "MINUS_SIGN", "TIMES_SIGN", "DIVIDE_SIGN", "POWER_SIGN",
             "PICTURE_STRING", "EXEC_BLOCK",
+            // NUMBER_KEYWORD は SPELLED_WORDS が綴りを持っている
+            "NUMBER_KEYWORD",
             "IDENTIFIER", "LITERAL", "NUMBER");
+
+    /**
+     * 綴りと字句の名前が一致しない予約語。
+     *
+     * <p>{@code NUMBER} は COBOL の予約語だが、この文法では同じ名前の字句を
+     * <b>数字定数</b>に使っている。{@code LINE NUMBER IS 1} のような書き方を読むには
+     * 語のほうにも字句が要るので、別の名前で宣言して、ここで綴りと結び付ける。
+     */
+    private static final Map<String, Integer> SPELLED_WORDS =
+            Map.of("NUMBER", CobolParser.NUMBER_KEYWORD);
 
     private static final Map<String, Integer> RESERVED_WORDS = reservedWords(CobolParser.VOCABULARY);
 
@@ -86,8 +113,26 @@ public final class SourceTokenSource implements TokenSource {
     private TokenFactory<?> factory = CommonTokenFactory.DEFAULT;
 
     public SourceTokenSource(List<SourceToken> tokens) {
-        this.tokens = List.copyOf(tokens);
+        this(tokens, false);
     }
+
+    /**
+     * @param commaDecimalPoint {@code DECIMAL-POINT IS COMMA} が書かれているか。
+     *                          書かれていれば、コンマは小数点として読む
+     */
+    public SourceTokenSource(List<SourceToken> tokens, boolean commaDecimalPoint) {
+        this.tokens = List.copyOf(tokens);
+        this.commaDecimalPoint = commaDecimalPoint;
+    }
+
+    /**
+     * コンマが小数点かどうか (要件 FR-054)。
+     *
+     * <p>{@code DECIMAL-POINT IS COMMA} と書けば {@code 1234,56} が数字定数になる。
+     * 語へ切る側は「コンマのあとに空白が無ければ 1 語」としているので、切り方は
+     * 変わらない。<b>変わるのは読み方だけ</b>である。
+     */
+    private final boolean commaDecimalPoint;
 
     /** 文法が宣言した予約語の表。COBOL の綴り (ハイフン) から字句の種別を引く。 */
     private static Map<String, Integer> reservedWords(Vocabulary vocabulary) {
@@ -102,13 +147,64 @@ public final class SourceTokenSource implements TokenSource {
         return Map.copyOf(words);
     }
 
+    /**
+     * 次のトークン。
+     *
+     * <p>コンマとセミコロンは<b>渡さない</b>。COBOL の決まりでは、この 2 つは空白が
+     * 書ける場所ならどこへでも書ける飾りであり、意味を持たない。文法の側で「ここには
+     * コンマが来るかもしれない」を書いて回ると、書き漏らしたところだけが読めなくなる。
+     * 渡さないほうが漏れようがない (暫定判断 P-062)。
+     *
+     * <p>{@code DECIMAL-POINT IS COMMA} を書くとコンマは小数点になるが、それは
+     * まだ読めない (暫定判断 P-010)。読めるようにする段で、ここも一緒に決める。
+     */
     @Override
     public Token nextToken() {
+        while (index < tokens.size() && decorative(index)) {
+            index++;
+        }
         if (index >= tokens.size()) {
             return endOfFile();
         }
         SourceToken source = tokens.get(index++);
-        return new OriginToken(stream, typeOf(source), source);
+        int type = typeOf(source);
+        if (type == CobolParser.NUMBER && commaDecimalPoint && source.text().indexOf(',') >= 0) {
+            // 以後の道はふつうの綴りだけを知っていればよい。ここで直しておく
+            return new OriginToken(stream, type, source, source.text().replace(',', '.'));
+        }
+        return new OriginToken(stream, type, source);
+    }
+
+    /**
+     * 飾りの区切りか。コンマとセミコロンは空白と同じ扱いである。
+     *
+     * <h2>括弧の前のコンマだけは残す</h2>
+     * <p>1 か所だけ、コンマを落とすと<b>意味が変わる</b>ところがある。
+     *
+     * <pre>
+     * FUNCTION MAX(A * B, (C + 1) / 2)   引数 2 個
+     * FUNCTION MAX(A * B  (C + 1) / 2)   B を (C + 1) で添字付けした 1 個
+     * </pre>
+     *
+     * <p>データ名のうしろに括弧が来れば添字である。分けているのはコンマだけなので、
+     * <b>次が開き括弧のコンマは落とさない</b>。それ以外の場所に {@code , (} と書ける
+     * ところは COBOL に無いので、残しても他の読みには効かない。
+     */
+    private boolean decorative(int at) {
+        SourceToken token = tokens.get(at);
+        if (token.kind() != SourceTokenKind.SEPARATOR) {
+            return false;
+        }
+        char c = token.text().charAt(0);
+        if (c == ';') {
+            return true;
+        }
+        return c == ',' && !opensParentheses(at + 1);
+    }
+
+    /** その位置が開き括弧かどうか。 */
+    private boolean opensParentheses(int at) {
+        return at < tokens.size() && tokens.get(at).text().equals("(");
     }
 
     private Token endOfFile() {
@@ -117,7 +213,7 @@ public final class SourceTokenSource implements TokenSource {
     }
 
     /** トークンの種別を決める。予約語かどうかの判別はここだけで行う。 */
-    private static int typeOf(SourceToken token) {
+    private int typeOf(SourceToken token) {
         return switch (token.kind()) {
             case LITERAL -> CobolParser.LITERAL;
             case PICTURE_STRING -> CobolParser.PICTURE_STRING;
@@ -139,16 +235,22 @@ public final class SourceTokenSource implements TokenSource {
         };
     }
 
-    private static int wordType(String text) {
+    private int wordType(String text) {
         Integer symbol = OPERATOR_SYMBOLS.get(text);
         if (symbol != null) {
             return symbol;
         }
-        Integer reserved = RESERVED_WORDS.get(text.toUpperCase(Locale.ROOT).replace('-', '_'));
+        String upper = text.toUpperCase(Locale.ROOT);
+        Integer spelled = SPELLED_WORDS.get(upper);
+        if (spelled != null) {
+            return spelled;
+        }
+        Integer reserved = RESERVED_WORDS.get(upper.replace('-', '_'));
         if (reserved != null) {
             return reserved;
         }
-        return NUMERIC.matcher(text).matches() ? CobolParser.NUMBER : CobolParser.IDENTIFIER;
+        Pattern numeric = commaDecimalPoint ? NUMERIC_COMMA : NUMERIC;
+        return numeric.matcher(text).matches() ? CobolParser.NUMBER : CobolParser.IDENTIFIER;
     }
 
     // ---- TokenSource の残り。文字の流れを持たないため、位置は OriginToken が担う ----

@@ -1,6 +1,7 @@
 package dev.cobolonjava.runtime.file;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.io.IOException;
@@ -186,6 +187,44 @@ class IndexedDataSetTest {
     }
 
     @Test
+    @DisplayName("副鍵を書き換えたレコードは、同じ値の並びの末尾へ移る (FR-102)")
+    void rewritingAnAlternateKeyMovesTheRecordToTheEndOfItsChain() {
+        // 索引はレコードから導けるが、<b>並びまでは導けない</b>。組み直すと主鍵の順に
+        // 戻ってしまい、あとから入ったレコードが先に返る (IX215A START-TEST-GF-09)
+        IndexedDataSet.Key alternate = new IndexedDataSet.Key(3, 2, true);
+        IndexedDataSet file = seeded("K.DAT", alternate);
+
+        file.open(OpenMode.IO, false);
+        byte[] record = area();
+        // BBB の副鍵を y1 から x1 へ変える。x1 の並びはすでに AAA / CCC である
+        assertEquals(FileStatus.OK, file.rewriteKey(record("BBB", "x1", "two")));
+
+        assertEquals(FileStatus.OK, file.readKey(1, key("x1"), record));
+        assertEquals("AAAx1one", decode(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("CCCx1thr", decode(record));
+        // 主鍵の順なら BBB が CCC より先に来る。書き換えた順だから末尾である
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("BBBx1two", decode(record));
+    }
+
+    @Test
+    @DisplayName("副鍵の値が変わらない書き換えは並びを動かさない (FR-102)")
+    void rewritingWithoutChangingTheAlternateKeyKeepsThePosition() {
+        IndexedDataSet.Key alternate = new IndexedDataSet.Key(3, 2, true);
+        IndexedDataSet file = seeded("K.DAT", alternate);
+
+        file.open(OpenMode.IO, false);
+        byte[] record = area();
+        assertEquals(FileStatus.OK, file.rewriteKey(record("AAA", "x1", "ONE")));
+
+        assertEquals(FileStatus.OK, file.readKey(1, key("x1"), record));
+        assertEquals("AAAx1ONE", decode(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("CCCx1thr", decode(record));
+    }
+
+    @Test
     @DisplayName("重複を許さない副鍵は同じ値を 2 つ持てない (FR-103)")
     void anAlternateWithoutDuplicatesRejectsTheSecond() {
         IndexedDataSet.Key alternate = new IndexedDataSet.Key(3, 2, false);
@@ -292,5 +331,51 @@ class IndexedDataSetTest {
     void aMissingFileNeedsOutputOrOptional() {
         assertEquals(FileStatus.NOT_FOUND, at("NONE.DAT").open(OpenMode.INPUT, false));
         assertEquals(FileStatus.OPTIONAL_CREATED, at("NONE.DAT").open(OpenMode.INPUT, true));
+    }
+
+    // ---- 割当てが決めること (要件 FR-113, FR-141) ----
+
+    @Test
+    @DisplayName("形が壊れていれば、開いた時点で 30 になる (FR-141)")
+    void aDamagedDataSetCannotBeOpened() throws IOException {
+        Path path = directory.resolve("K.DAT");
+        Files.write(path, CodePages.DEFAULT.encode("AAAx1oneBBBy1"));
+        LAYOUT.write(path);
+        IndexedDataSet file = at("K.DAT");
+
+        // 読む順序は鍵の順であり、バイト列の位置と対応しない。
+        // だから順編成のように「壊れた場所まで読める」とは言えない
+        assertEquals(FileStatus.IO_ERROR, file.open(OpenMode.INPUT, false));
+        assertEquals(FileStatus.NOT_OPEN, file.read(area()));
+    }
+
+    @Test
+    @DisplayName("割り当てた領域を越えれば 24 になる (FR-141)")
+    void writingPastTheAllocationReportsTwentyFour() {
+        IndexedDataSet file = at("K.DAT");
+        file.limit(16);
+
+        file.open(OpenMode.OUTPUT, false);
+        assertEquals(FileStatus.OK, file.writeKey(record("AAA", "x1", "one")));
+        assertEquals(FileStatus.OK, file.writeKey(record("BBB", "y1", "two")));
+        assertEquals(FileStatus.BOUNDARY, file.writeKey(record("CCC", "z1", "thr")));
+    }
+
+    @Test
+    @DisplayName("無いメンバは開けない (FR-113)")
+    void aMissingMemberCannotBeOpened() {
+        IndexedDataSet file = at("K.DAT");
+        file.member(true);
+
+        assertThrows(DataSetOpenException.class, () -> file.open(OpenMode.INPUT, false));
+    }
+
+    @Test
+    @DisplayName("区分データセットそのものは開けない (FR-113)")
+    void aLibraryIsNotOpenedByItself() throws IOException {
+        Files.createDirectory(directory.resolve("K.LIB"));
+        IndexedDataSet file = at("K.LIB");
+
+        assertThrows(DataSetOpenException.class, () -> file.open(OpenMode.INPUT, false));
     }
 }

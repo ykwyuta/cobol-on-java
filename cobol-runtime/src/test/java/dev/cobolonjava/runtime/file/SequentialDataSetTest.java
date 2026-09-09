@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.cobolonjava.runtime.abend.AbendCode;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -229,13 +230,52 @@ class SequentialDataSetTest {
     }
 
     @Test
-    @DisplayName("開いていなければ 42 になる (FR-103)")
+    @DisplayName("開いていないファイルへの操作は、文ごとに違う番号になる (FR-103)")
     void usingAClosedFileFails() {
+        // 42 は<b>CLOSE のための番号</b>である。READ は「INPUT でも I-O でもない
+        // ファイルへの READ」なので 47、WRITE は同じ理屈で 48 になる
+        // (85 規格 VII-5, 1.3.5(4)F・G)。CCVS85 の SQ147A / SQ151A がここを見ている
         SequentialDataSet file = SequentialDataSet.at(directory.resolve("F.DAT"));
 
-        assertEquals(FileStatus.NOT_OPEN, file.read(area(3)));
-        assertEquals(FileStatus.NOT_OPEN, file.write(area(3)));
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.read(area(3)));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.write(area(3)));
         assertEquals(FileStatus.NOT_OPEN, file.close());
+    }
+
+    @Test
+    @DisplayName("順編成の WRITE は I-O では書けない (FR-103)")
+    void writingToAsequentialFileOpenedForIoIsRefused() {
+        // 読みながら書き戻すのは REWRITE の仕事である。順編成の WRITE は
+        // OUTPUT か EXTEND だけである (CCVS85 の SQ156A)
+        SequentialDataSet out = SequentialDataSet.at(directory.resolve("IO.DAT"));
+        out.open(OpenMode.OUTPUT);
+        out.write(area(3));
+        out.close();
+
+        SequentialDataSet file = SequentialDataSet.at(directory.resolve("IO.DAT"));
+        assertEquals(FileStatus.OK, file.open(OpenMode.IO));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.write(area(3)));
+    }
+
+    @Test
+    @DisplayName("読めなかったあとの REWRITE は 43 になる (FR-103)")
+    void rewritingAfterAnUnsuccessfulReadIsRefused() {
+        // 規格は REWRITE の前の入出力文が<b>成功した READ</b> であることを求めている
+        // (85 規格 VII-51, 4.6.4(5))。終わりまで読んだあとは何も指していない。
+        // 消しておかないと、1 本前のレコードを書き換えてしまう (CCVS85 の SQ144A)
+        Path path = directory.resolve("E.DAT");
+        DataSetAttributes attributes =
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT);
+        SequentialDataSet out = new SequentialDataSet(path, attributes);
+        out.open(OpenMode.OUTPUT);
+        out.write(CodePages.DEFAULT.encode("abc"));
+        out.close();
+
+        SequentialDataSet file = new SequentialDataSet(path, attributes);
+        file.open(OpenMode.IO);
+        assertEquals(FileStatus.OK, file.read(area(3)));
+        assertEquals(FileStatus.AT_END, file.read(area(3)));
+        assertEquals(FileStatus.NO_CURRENT_RECORD, file.rewrite(CodePages.DEFAULT.encode("xyz")));
     }
 
     @Test
@@ -395,8 +435,12 @@ class SequentialDataSetTest {
     }
 
     @Test
-    @DisplayName("可変長の REWRITE は長さを変えられる (FR-102, FR-106)")
-    void rewritingAVariableRecordMayChangeItsLength() {
+    @DisplayName("可変長でも REWRITE は長さを変えられない (FR-102, FR-106)")
+    void rewritingAVariableRecordCannotChangeItsLength() {
+        // 規格は「書き換えるレコードの文字位置の数は、置き換えられるレコードの
+        // 文字位置の数と等しくなければならない」と決めている (85 規格 VII-48)。
+        // 順編成では可変長でも同じである——あとのレコードの位置がずれてしまう。
+        // CCVS85 の SQ227A / SQ228A がここを見ている
         Path path = directory.resolve("V.DAT");
         DataSetAttributes attributes =
                 new DataSetAttributes(RecordFormat.VARIABLE, 10, CodePages.DEFAULT);
@@ -409,14 +453,16 @@ class SequentialDataSetTest {
         SequentialDataSet file = new SequentialDataSet(path, attributes);
         file.open(OpenMode.IO);
         file.read(area(10));
-        assertEquals(FileStatus.OK, file.rewrite(CodePages.DEFAULT.encode("x")));
+        assertEquals(FileStatus.REWRITE_LENGTH, file.rewrite(CodePages.DEFAULT.encode("x")));
+        // 同じ長さなら書き換えられる
+        assertEquals(FileStatus.OK, file.rewrite(CodePages.DEFAULT.encode("zzzz")));
         file.close();
 
         SequentialDataSet back = new SequentialDataSet(path, attributes);
         back.open(OpenMode.INPUT);
         byte[] record = area(10);
         back.read(record);
-        assertEquals(1, back.lastLength());
+        assertEquals(4, back.lastLength());
         back.read(record);
         assertEquals(2, back.lastLength());
     }
@@ -496,5 +542,181 @@ class SequentialDataSetTest {
         file.close();
 
         assertEquals("aaabbb", decode(Files.readAllBytes(path)));
+    }
+
+    // ---- 形が壊れている (FR-141) ----
+
+    @Test
+    @DisplayName("固定長で割り切れない半端は、そこで読めなくなる (FR-103, FR-141)")
+    void aPartialFixedRecordIsAnIoError() throws IOException {
+        Path path = write("F.DAT", "aaabbbcc");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        // 切れるところまでは読める。読めていたものを捨てはしない
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("aaa", decode(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("bbb", decode(record));
+        assertEquals(FileStatus.IO_ERROR, file.read(record));
+    }
+
+    @Test
+    @DisplayName("半端を短いレコードとして渡さない (FR-141)")
+    void aPartialRecordIsNeverHandedOver() throws IOException {
+        Path path = write("F.DAT", "aaabbbcc");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        file.read(record);
+        file.read(record);
+        file.read(record);
+        // 誤りを返したのだから、受取領域は前のレコードのままである
+        assertEquals("bbb", decode(record));
+    }
+
+    @Test
+    @DisplayName("可変長で RDW がつながらなければ、そこで読めなくなる (FR-103, FR-141)")
+    void abrokenRdwIsAnIoError() throws IOException {
+        // 1 件目は正しい。2 件目の RDW は残りより長い長さを名乗っている
+        byte[] bytes = new byte[]{0, 7, 0, 0, 'a', 'b', 'c', 0, 99, 0, 0, 'x'};
+        Path path = directory.resolve("V.DAT");
+        Files.write(path, bytes);
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.VARIABLE, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.IO_ERROR, file.read(record));
+    }
+
+    @Test
+    @DisplayName("壊れていなければ誤りにはしない (FR-141)")
+    void awholeDataSetIsNotAnError() throws IOException {
+        Path path = write("F.DAT", "aaabbb");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.INPUT);
+        byte[] record = area(3);
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.AT_END, file.read(record));
+    }
+
+    // ---- 割り当てた領域 (FR-141) ----
+
+    @Test
+    @DisplayName("割り当てた領域を使い切れば書けなくなる (FR-103, FR-141)")
+    void writingPastTheSpaceFails() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("O.DAT"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+        file.limit(6);
+
+        file.open(OpenMode.OUTPUT);
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaa")));
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("bbb")));
+        assertEquals(FileStatus.NO_SPACE, file.write(CodePages.DEFAULT.encode("ccc")));
+    }
+
+    @Test
+    @DisplayName("書けなくなっても、それまでのレコードは残る (FR-141)")
+    void whatFitWasStillWritten() throws IOException {
+        Path path = directory.resolve("O.DAT");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+        file.limit(6);
+
+        file.open(OpenMode.OUTPUT);
+        file.write(CodePages.DEFAULT.encode("aaa"));
+        file.write(CodePages.DEFAULT.encode("bbb"));
+        file.write(CodePages.DEFAULT.encode("ccc"));
+        file.close();
+
+        assertEquals("aaabbb", decode(Files.readAllBytes(path)));
+    }
+
+    @Test
+    @DisplayName("限りを設けなければいくらでも書ける (FR-141)")
+    void noLimitMeansNoLimit() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("O.DAT"),
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT));
+
+        file.open(OpenMode.OUTPUT);
+        for (int i = 0; i < 100; i++) {
+            assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaa")));
+        }
+    }
+
+    @Test
+    @DisplayName("可変長では RDW の 4 バイトも領域を使う (FR-141)")
+    void theRdwCountsTowardTheSpace() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("V.DAT"),
+                new DataSetAttributes(RecordFormat.VARIABLE, 3, CodePages.DEFAULT));
+        file.limit(7);
+
+        file.open(OpenMode.OUTPUT);
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaa")));
+        assertEquals(FileStatus.NO_SPACE, file.write(CodePages.DEFAULT.encode("bbb")));
+    }
+
+    // ---- 区分データセットのメンバ (要件 FR-113) ----
+
+    @Test
+    @DisplayName("メンバが無ければ開けない。状態コードにならない (FR-113, FR-141)")
+    void aMissingMemberCannotBeOpened() throws IOException {
+        Files.createDirectories(directory.resolve("MY.LIB"));
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("MY.LIB/NOSUCH"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+        file.member(true);
+
+        // データセット (ライブラリ) はある。無いのはメンバなので、割当ては通っている。
+        // プログラムへ制御は戻らない
+        DataSetOpenException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                DataSetOpenException.class, () -> file.open(OpenMode.INPUT));
+        assertEquals(AbendCode.S013, failure.abendCode());
+        assertTrue(failure.getMessage().contains("member not found"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("メンバでなければ、無いファイルは 35 のままである (FR-103, FR-113)")
+    void aMissingSequentialFileIsStillAStatus() {
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("NOSUCH.DAT"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+
+        // 順編成なら「無いファイル」であり、FILE STATUS で受け止められる
+        assertEquals(FileStatus.NOT_FOUND, file.open(OpenMode.INPUT));
+    }
+
+    @Test
+    @DisplayName("書くのなら無いメンバでもよい。そこで作る (FR-113)")
+    void writingCreatesTheMember() throws IOException {
+        Files.createDirectories(directory.resolve("MY.LIB"));
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("MY.LIB/NEWMEM"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+        file.member(true);
+
+        assertEquals(FileStatus.OK, file.open(OpenMode.OUTPUT));
+        assertEquals(FileStatus.OK, file.write(CodePages.DEFAULT.encode("aaaaa")));
+        file.close();
+        assertEquals("aaaaa", decode(Files.readAllBytes(directory.resolve("MY.LIB/NEWMEM"))));
+    }
+
+    @Test
+    @DisplayName("区分データセットそのものは開けない (FR-113, FR-141)")
+    void aLibraryIsNotOpenedByItself() throws IOException {
+        Files.createDirectories(directory.resolve("MY.LIB"));
+        SequentialDataSet file = new SequentialDataSet(directory.resolve("MY.LIB"),
+                new DataSetAttributes(RecordFormat.FIXED, 5, CodePages.DEFAULT));
+
+        // どのメンバのバイト列を読むのかが決まっていない
+        DataSetOpenException failure = org.junit.jupiter.api.Assertions.assertThrows(
+                DataSetOpenException.class, () -> file.open(OpenMode.INPUT));
+        assertEquals(AbendCode.S013, failure.abendCode());
     }
 }

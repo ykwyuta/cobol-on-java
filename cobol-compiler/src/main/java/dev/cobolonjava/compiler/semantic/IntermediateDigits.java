@@ -28,6 +28,23 @@ public final class IntermediateDigits {
     /** {@code ARITH(COMPAT)} の中間結果の総桁数の上限。 */
     public static final int MAX_DIGITS = 30;
 
+    /**
+     * 整数を返す組み込み関数の整数部の桁数。
+     *
+     * <p>返る値の大きさは引数に依るが、規格の算術は 18 桁までである。上限の 30 桁で
+     * 数えてはならない。総桁数を上限へ収めるときに<b>削るのは小数部だけ</b>なので、
+     * 整数部を大きく見積もると<b>周りの式の小数部が消える</b>。
+     *
+     * <pre>
+     * 01 I    PIC S9(5)V9(5) VALUE 3.4.
+     * COMPUTE TEMP = FUNCTION INTEGER(3.2) + I.
+     * </pre>
+     *
+     * <p>30 桁で数えると、和の節は整数部 31・小数部 5 で 6 桁あふれ、小数部が 0 に
+     * 削られて 6.4 が 6 になる。IF111A の F-INTEGER-20 がそこだけを確かめている。
+     */
+    private static final int INTEGER_RESULT_DIGITS = 18;
+
     private final int dmax;
 
     private IntermediateDigits(int dmax) {
@@ -117,7 +134,45 @@ public final class IntermediateDigits {
                     left.scale() + right.scale()).capped();
             case DIVIDE -> new Digits(
                     left.integerDigits() + right.scale(), dmax).capped();
+            // べき乗の桁は指数で決まる。整数のべきなら底の桁を掛けた数、
+            // そうでなければ近似が入るので、持てるだけの小数桁を取る
+            case POWER -> powerDigits(left, binary.right());
         };
+    }
+
+    /**
+     * べき乗の桁数 (要件 FR-047)。
+     *
+     * <p>指数が<b>0 以上の整数の定数</b>なら、答えは正確に出せる。底の桁数を指数の回だけ
+     * 重ねたものが上限である。そうでなければ答えに近似が入るので、持てるだけの小数桁を
+     * 取っておく。
+     */
+    private Digits powerDigits(Digits base, Expression exponent) {
+        Integer times = integerExponentOf(exponent);
+        if (times == null || times < 0) {
+            return new Digits(MAX_DIGITS - dmax, dmax).capped();
+        }
+        if (times == 0) {
+            return new Digits(1, 0);
+        }
+        return new Digits(base.integerDigits() * times, base.scale() * times).capped();
+    }
+
+    /** 指数が 0 以上の整数の定数なら、その値。 */
+    private static Integer integerExponentOf(Expression exponent) {
+        if (!(exponent instanceof Expression.Value value)
+                || !(value.operand() instanceof Operand.Literal literal)) {
+            return null;
+        }
+        Decimal number = numberOf(literal.value());
+        if (number == null || number.scale() > 0) {
+            return null;
+        }
+        try {
+            return number.toBigDecimal().intValueExact();
+        } catch (ArithmeticException e) {
+            return null;
+        }
     }
 
     private static Digits digitsOf(Operand operand) {
@@ -130,6 +185,9 @@ public final class IntermediateDigits {
             int total = value.magnitude().toString().length();
             return new Digits(Math.max(1, total - scale), scale);
         }
+        if (operand instanceof Operand.Function function) {
+            return digitsOf(function);
+        }
         DataReference reference = ((Operand.Reference) operand).reference();
         Picture picture = reference.item().picture();
         if (picture == null || !picture.isNumeric()) {
@@ -137,6 +195,31 @@ public final class IntermediateDigits {
             return new Digits(Math.max(1, reference.constantLength().orElse(1)), 0);
         }
         return new Digits(picture.digits() - picture.scale(), picture.scale());
+    }
+
+    /**
+     * 組み込み関数の結果の桁数 (暫定判断 P-065)。
+     *
+     * <p>整数を返す関数は上限の桁で数え、そうでないものは<b>引数のうちいちばん大きいもの</b>
+     * に合わせる。合計と範囲だけは繰り上がりの分を 1 桁足す。
+     *
+     * <p>ここで決めているのは<b>周りの式をどこで打ち切るか</b>だけである。関数が返す値
+     * そのものは実行時の {@link Decimal} が自分の小数桁を持っている。
+     */
+    private static Digits digitsOf(Operand.Function function) {
+        if (function.intrinsic().returns() == Intrinsic.Result.INTEGER) {
+            return new Digits(INTEGER_RESULT_DIGITS, 0);
+        }
+        int integerDigits = 1;
+        int scale = 0;
+        for (Expression argument : function.arguments()) {
+            Digits digits = new IntermediateDigits(0).of(argument);
+            integerDigits = Math.max(integerDigits, digits.integerDigits());
+            scale = Math.max(scale, digits.scale());
+        }
+        boolean accumulates = function.intrinsic() == Intrinsic.SUM
+                || function.intrinsic() == Intrinsic.RANGE;
+        return new Digits(accumulates ? integerDigits + 1 : integerDigits, scale).capped();
     }
 
     private static int scaleOf(Operand operand) {

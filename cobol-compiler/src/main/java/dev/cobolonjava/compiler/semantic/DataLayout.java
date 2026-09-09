@@ -71,6 +71,29 @@ public final class DataLayout {
     }
 
     /**
+     * {@code OCCURS ... DEPENDING ON} に書かれた名前を、項目そのものへ結び付ける
+     * (要件 FR-020, FR-106)。
+     *
+     * <p>データ部を読み終えてから 1 度だけ通す。回数を決める項目は表より<b>あとに
+     * 書かれていてもよい</b>ので、読みながらでは引き当てられない。
+     *
+     * <p>1 個に絞れない名前はここでは<b>何もしない</b>。「あいまいである」「そんな名前は
+     * ない」と報せるのは手続き部を読む側であり、ここでも言うと診断が二重になる。
+     */
+    void linkOccursDepending() {
+        for (DataItem item : all()) {
+            String name = item.occursDependingName();
+            if (name == null || item.occursDepending() != null) {
+                continue;
+            }
+            List<DataItem> found = findAll(name);
+            if (found.size() == 1) {
+                item.setOccursDepending(found.get(0));
+            }
+        }
+    }
+
+    /**
      * 名前で項目を探す。
      *
      * <p>COBOL は<b>同じ名前を複数の場所に置ける</b> (修飾して区別する)。したがって

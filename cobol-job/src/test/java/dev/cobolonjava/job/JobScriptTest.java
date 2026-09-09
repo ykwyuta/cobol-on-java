@@ -68,8 +68,8 @@ class JobScriptTest {
 
         Step step = job.steps().get(0);
         assertEquals(3, step.dd().size());
-        assertEquals(Path.of("data/in.dat"),
-                assertInstanceOf(DdTarget.DataSet.class, step.dd().get(0).target()).path());
+        assertEquals("data/in.dat",
+                assertInstanceOf(DdTarget.DataSet.class, step.dd().get(0).target()).name());
         assertInstanceOf(DdTarget.Sysout.class, step.dd().get(1).target());
         assertInstanceOf(DdTarget.Dummy.class, step.dd().get(2).target());
     }
@@ -216,5 +216,85 @@ class JobScriptTest {
     @DisplayName("1 つの記述に JOB は 1 つである (FR-132)")
     void oneDescriptionHoldsOneJob() {
         assertTrue(diagnostics("JOB A", "JOB B").contains("holds one JOB"));
+    }
+
+    // ---- SPACE (FR-141) ----
+
+    @Test
+    @DisplayName("SPACE はバイトで書く (FR-132, FR-141)")
+    void spaceIsWrittenInBytes() {
+        Job job = job(
+                "JOB J",
+                "STEP S PGM=P",
+                "  DD OUT DSN=out.dat SPACE=8000");
+
+        assertEquals(8000L, job.steps().get(0).dd().get(0).space());
+    }
+
+    @Test
+    @DisplayName("DISP と SPACE はどちらの順でも書ける (FR-132, FR-141)")
+    void modifiersComeInAnyOrder() {
+        Job job = job(
+                "JOB J",
+                "STEP S PGM=P",
+                "  DD A DSN=a.dat DISP=(NEW,CATLG) SPACE=100",
+                "  DD B DSN=b.dat SPACE=100 DISP=(NEW,CATLG)");
+
+        assertEquals(100L, job.steps().get(0).dd().get(0).space());
+        assertEquals(100L, job.steps().get(0).dd().get(1).space());
+        assertEquals(Disposition.Status.NEW, assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(1).target()).disposition().status());
+    }
+
+    @Test
+    @DisplayName("SPACE は数でなければ誤りである (FR-132, FR-141)")
+    void spaceMustBeANumber() {
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD OUT DSN=out.dat SPACE=TRK")
+                .contains("SPACE takes a size in bytes"));
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD OUT DSN=out.dat SPACE=0")
+                .contains("SPACE takes a positive size"));
+    }
+
+    @Test
+    @DisplayName("行き先を持たない DD に SPACE は書けない (FR-132, FR-141)")
+    void aSysoutTakesNoSpace() {
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD RPT SYSOUT SPACE=100")
+                .contains("go with DSN="));
+    }
+
+    @Test
+    @DisplayName("知らない修飾語は誤りである (FR-132)")
+    void anUnknownModifierIsAnError() {
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD OUT DSN=out.dat UNIT=SYSDA")
+                .contains("DD does not support"));
+    }
+
+    // ---- 名前と場所 (要件 FR-113、暫定判断 P-045 の解消) ----
+
+    @Test
+    @DisplayName("DSN=ライブラリ(メンバ) を読む (FR-113)")
+    void aMemberIsWrittenInParentheses() {
+        Job job = job("JOB J", "STEP S PGM=P", "  DD LIB DSN=PROC.LIB(PAYPROC) DISP=SHR");
+
+        DdTarget.DataSet dataSet = assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target());
+        assertEquals("PROC.LIB", dataSet.name());
+        assertEquals("PAYPROC", dataSet.member());
+    }
+
+    @Test
+    @DisplayName("VOL= は目録を通さずに置き場を見せる修飾語である (FR-132)")
+    void aVolumeSerialIsAModifier() {
+        Job job = job("JOB J", "STEP S PGM=P", "  DD IN DSN=PAY.WORK VOL=WORK01 DISP=SHR");
+
+        assertEquals("WORK01", assertInstanceOf(DdTarget.DataSet.class,
+                job.steps().get(0).dd().get(0).target()).serial());
+    }
+
+    @Test
+    @DisplayName("括弧の中が空ならメンバ名がない (FR-113)")
+    void anEmptyMemberIsAnError() {
+        assertTrue(diagnostics("JOB J", "STEP S PGM=P", "  DD LIB DSN=PROC.LIB()")
+                .contains("needs a member name"));
     }
 }

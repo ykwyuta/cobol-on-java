@@ -36,12 +36,18 @@ public final class InitialImage {
     private final CodePage codePage;
     private final char quoteCharacter;
     private final byte fill;
+    /** 図形定数 {@code HIGH-VALUE} / {@code LOW-VALUE} が表すバイト (要件 FR-054)。 */
+    private final byte highValue;
+    private final byte lowValue;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
-    private InitialImage(CodePage codePage, char quoteCharacter, byte fill) {
+    private InitialImage(CodePage codePage, char quoteCharacter, byte fill,
+                         byte highValue, byte lowValue) {
         this.codePage = codePage;
         this.quoteCharacter = quoteCharacter;
         this.fill = fill;
+        this.highValue = highValue;
+        this.lowValue = lowValue;
     }
 
     /**
@@ -61,7 +67,7 @@ public final class InitialImage {
     public record Result(List<RecordImage> records, byte[] storage, List<Diagnostic> diagnostics) {
 
         public boolean succeeded() {
-            return diagnostics.isEmpty();
+            return !Diagnostic.blocking(diagnostics);
         }
 
         /** 名前で初期イメージを探す。 */
@@ -81,12 +87,35 @@ public final class InitialImage {
     }
 
     /**
+     * 照合順序を差し替えたうえで組み立てる (要件 FR-054)。
+     *
+     * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれていれば、{@code VALUE HIGH-VALUE} の
+     * 表すバイトが変わる。<b>並びのいちばん後ろに来る文字</b>だからである。
+     */
+    public static Result build(DataLayout layout, SpecialNames specialNames) {
+        return build(layout, CodePages.DEFAULT, '"',
+                specialNames.highValue(), specialNames.lowValue());
+    }
+
+    /**
      * 初期イメージを組み立てる。
      *
      * @param quoteCharacter 図形定数 {@code QUOTE} が表す文字。{@code APOST} 指定では {@code '}
      */
     public static Result build(DataLayout layout, CodePage codePage, char quoteCharacter) {
-        InitialImage builder = new InitialImage(codePage, quoteCharacter, codePage.space());
+        return build(layout, codePage, quoteCharacter, (byte) 0xFF, (byte) 0x00);
+    }
+
+    /**
+     * 初期イメージを組み立てる。
+     *
+     * @param highValue 図形定数 {@code HIGH-VALUE} が表すバイト (要件 FR-054)
+     * @param lowValue  図形定数 {@code LOW-VALUE} が表すバイト
+     */
+    public static Result build(DataLayout layout, CodePage codePage, char quoteCharacter,
+                               byte highValue, byte lowValue) {
+        InitialImage builder = new InitialImage(codePage, quoteCharacter, codePage.space(),
+                highValue, lowValue);
         List<RecordImage> images = new ArrayList<>();
         byte[] storage = new byte[layout.totalLength()];
         Arrays.fill(storage, codePage.space());
@@ -98,7 +127,17 @@ public final class InitialImage {
             }
             byte[] image = builder.repeat(builder.imageOf(record), record);
             images.add(new RecordImage(record, image));
-            // 01 レベルの REDEFINES は同じ位置に重なる。書いた順に上書きされる
+            if (record.redefinesName() != null) {
+                // 重ねた項目は<b>記憶域へ書かない</b>。重ねる先が同じ場所を持っている。
+                // 書くと、値の無い側の空白が<b>重ねる先の初期値を消してしまう</b>
+                // (NC116A の「01 AN-00008-X-1 REDEFINES DS-L-00008」で消えていた)。
+                // 規格は重ねた項目に VALUE を書くことを禁じているので、書く値も無い
+                if (hasInitialValue(record)) {
+                    builder.report(record.origin(), "VALUE is not allowed in a REDEFINES item: "
+                            + describe(record));
+                }
+                continue;
+            }
             System.arraycopy(image, 0, storage, record.base(),
                     Math.min(image.length, storage.length - record.base()));
         }
@@ -128,6 +167,10 @@ public final class InitialImage {
             return image;
         }
         for (DataItem child : item.children()) {
+            if (child.isAlias()) {
+                // 66 レベルは記憶域を持たない。書けば名前を付けた先の初期値を消してしまう
+                continue;
+            }
             if (child.redefinesName() != null) {
                 if (hasInitialValue(child)) {
                     report(child.origin(), "VALUE is not allowed in a REDEFINES item: "
@@ -144,7 +187,7 @@ public final class InitialImage {
         if (item.initialValue() != null) {
             // 群項目の VALUE は中身を英数字として一括で埋める。下位の項目を書いたあとに
             // 上書きする — 群に VALUE を書いたなら、下位に VALUE を書くことは許されない
-            writeText(image, item, item.initialValue(), false);
+            writeText(image, item, item.initialValue());
         }
         return image;
     }
@@ -193,7 +236,10 @@ public final class InitialImage {
             writeNumeric(image, item, value, picture, usage == null ? Usage.DISPLAY : usage);
             return;
         }
-        writeText(image, item, value, item.justified());
+        // JUSTIFIED は<b>初期値には効かない</b>。規格がそう決めている
+        // (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは実行時の転記だけで
+        // ある。X(3) JUST VALUE "XY" は "XY " になる (CCVS85 の NC107A)
+        writeText(image, item, value);
     }
 
     private void writeNumeric(byte[] image, DataItem item, LiteralValue value,
@@ -242,7 +288,14 @@ public final class InitialImage {
     }
 
     /** 英数字・英字・編集項目、および群項目への書き込み。 */
-    private void writeText(byte[] image, DataItem item, LiteralValue value, boolean justified) {
+    /**
+     * 英数字項目の初期値を書き込む。
+     *
+     * <p>常に<b>左詰め</b>である。{@code JUSTIFIED} は初期値には効かない —— 規格が
+     * そう決めている (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは実行時の
+     * 転記だけである。{@code X(3) JUST VALUE "XY"} は {@code "XY "} になる。
+     */
+    private void writeText(byte[] image, DataItem item, LiteralValue value) {
         byte[] bytes = textBytes(item, value, image.length);
         if (bytes == null) {
             return;
@@ -252,9 +305,7 @@ public final class InitialImage {
                     + " (" + bytes.length + " > " + image.length + ")");
             return;
         }
-        // 右寄せは JUSTIFIED RIGHT のときだけ。既定は左寄せで残りは空白
-        int at = justified ? image.length - bytes.length : 0;
-        System.arraycopy(bytes, 0, image, at, bytes.length);
+        System.arraycopy(bytes, 0, image, 0, bytes.length);
     }
 
     private byte[] textBytes(DataItem item, LiteralValue value, int length) {
@@ -289,8 +340,10 @@ public final class InitialImage {
         return switch (constant) {
             case ZERO -> codePage.digit(0);
             case SPACE -> codePage.space();
-            case HIGH_VALUE -> (byte) 0xFF;
-            case LOW_VALUE, NULL -> (byte) 0x00;
+            case HIGH_VALUE -> highValue;
+            case LOW_VALUE -> lowValue;
+            // NULL は「あて先を持たない」を表すものであり、照合順序とは関わらない
+            case NULL -> (byte) 0x00;
             case QUOTE -> codePage.ch(quoteCharacter);
         };
     }

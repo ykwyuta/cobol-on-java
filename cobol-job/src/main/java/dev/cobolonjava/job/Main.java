@@ -59,7 +59,7 @@ public final class Main {
         List<JobDiagnostic> diagnostics;
         if (description.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
                 .endsWith(".jcl")) {
-            Jcl.Result parsed = Jcl.read(text, base, procedures == null
+            Jcl.Result parsed = Jcl.read(text, procedures == null
                     ? dev.cobolonjava.job.jcl.JclLibrary.empty()
                     : dev.cobolonjava.job.jcl.JclLibrary.at(procedures));
             job = parsed.job();
@@ -91,7 +91,11 @@ public final class Main {
         return switch (step.status()) {
             case EXECUTED -> job + "." + step.name() + " ENDED - RC=" + step.returnCode();
             case BYPASSED -> job + "." + step.name() + " NOT EXECUTED";
-            case ABENDED -> job + "." + step.name() + " ABENDED - " + step.failure();
+            case ABENDED -> job + "." + step.name() + " ABENDED"
+                    + (step.abendCode() == null ? "" : " " + step.abendCode().text())
+                    + " - " + step.failure();
+            case FAILED -> job + "." + step.name() + " JCL ERROR - " + step.failure();
+            case FLUSHED -> job + "." + step.name() + " FLUSHED";
         };
     }
 

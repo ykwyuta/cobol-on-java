@@ -39,22 +39,8 @@ class SearchGenerationTest {
     }
 
     private static CobolCompiler.Result compile(List<String> storage, String... procedure) {
-        StringBuilder sb = new StringBuilder();
-        for (String line : List.of(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. HELLO.",
-                "DATA DIVISION.",
-                "WORKING-STORAGE SECTION.")) {
-            sb.append("       ").append(line).append('\n');
-        }
-        for (String line : storage) {
-            sb.append("       ").append(line).append('\n');
-        }
-        sb.append("       PROCEDURE DIVISION.\n");
-        for (String line : procedure) {
-            sb.append("       ").append(line).append('\n');
-        }
-        return CobolCompiler.standard().compile(FILE, sb.toString());
+        return CobolCompiler.standard().compile(FILE,
+                FixedFormatSource.program(storage, procedure));
     }
 
     /** 翻訳して実行し、DISPLAY の出力を返す。 */
@@ -214,6 +200,102 @@ class SearchGenerationTest {
     }
 
     @Test
+    @DisplayName("VARYING に指標データ項目を書ける (FR-025, FR-066)")
+    void theVaryingItemMayBeAnIndexDataItem() {
+        // USAGE INDEX の項目には INDEXED BY のような印が付かない。
+        // 表の指標名と取り違えると、名前を切り出すところで壊れる
+        assertEquals("[3]|", run(
+                List.of("01 WS-T.",
+                        "   05 WS-E OCCURS 3 TIMES INDEXED BY WS-I.",
+                        "      10 WS-KEY  PIC X(3).",
+                        "      10 WS-DATA PIC X(3).",
+                        "01 WS-J USAGE IS INDEX.",
+                        "01 WS-SHOW PIC 9."),
+                procedure(
+                        "    SET WS-I TO 1",
+                        "    SET WS-J TO 1",
+                        "    SEARCH WS-E VARYING WS-J",
+                        "        WHEN WS-KEY (WS-I) = 'ccc'",
+                        "            CONTINUE",
+                        "    END-SEARCH",
+                        "    SET WS-SHOW TO WS-J",
+                        "    DISPLAY '[' WS-SHOW ']'.")));
+    }
+
+    @Test
+    @DisplayName("WHEN と AT END にも NEXT SENTENCE を書ける (FR-061, FR-066)")
+    void searchPhrasesMayBeNextSentence() {
+        // 当たった枝で文の残りを飛ばす。END-SEARCH のあとの DISPLAY は通らない
+        assertEquals("[ ]|", run(
+                List.of("01 WS-T.",
+                        "   05 WS-E OCCURS 3 TIMES INDEXED BY WS-I.",
+                        "      10 WS-KEY  PIC X(3).",
+                        "      10 WS-DATA PIC X(3).",
+                        "01 WS-R PIC X."),
+                procedure(
+                        "    SET WS-I TO 1",
+                        "    SEARCH WS-E",
+                        "        AT END NEXT SENTENCE",
+                        "        WHEN WS-KEY (WS-I) = 'bbb'",
+                        "            NEXT SENTENCE",
+                        "    END-SEARCH",
+                        "    MOVE 'X' TO WS-R.",
+                        "    DISPLAY '[' WS-R ']'.")));
+    }
+
+    @Test
+    @DisplayName("表の中の表も SEARCH できる (FR-066)")
+    void anInnerTableCanBeSearched() {
+        // 外側の何番目を見るかは、外側の指標のいまの値が決める。
+        // SEARCH 自身が動かすのは内側の指標だけである
+        assertEquals("[bbb]|", run(
+                List.of("01 WS-T.",
+                        "   05 WS-ROW OCCURS 2 TIMES INDEXED BY WS-R.",
+                        "      10 WS-E OCCURS 3 TIMES INDEXED BY WS-I.",
+                        "         15 WS-KEY PIC X(3).",
+                        "01 WS-OUT PIC X(3)."),
+                "    MOVE 'zzz' TO WS-KEY (1, 1)",
+                "    MOVE 'aaa' TO WS-KEY (2, 1)",
+                "    MOVE 'bbb' TO WS-KEY (2, 2)",
+                "    MOVE 'ccc' TO WS-KEY (2, 3)",
+                "    SET WS-R TO 2",
+                "    SET WS-I TO 1",
+                "    SEARCH WS-E",
+                "        WHEN WS-KEY (WS-R, WS-I) = 'bbb'",
+                "            MOVE WS-KEY (WS-R, WS-I) TO WS-OUT",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-OUT ']'."));
+    }
+
+    @Test
+    @DisplayName("表の中の表も SEARCH ALL できる (FR-066)")
+    void anInnerTableCanBeBinarySearched() {
+        // 2 分探索が動かすのは<b>自分の指標だけ</b>である。外側の添字は WHEN に
+        // 書かれた鍵の参照が持っており、探索のあいだ変わらない。
+        // ここを「表の中の表はできない」と断っていた
+        assertEquals("[eee]|", run(
+                List.of("01 WS-T.",
+                        "   05 WS-ROW OCCURS 2 TIMES INDEXED BY WS-R.",
+                        "      10 WS-E OCCURS 3 TIMES",
+                        "         ASCENDING KEY IS WS-KEY INDEXED BY WS-I.",
+                        "         15 WS-KEY PIC X(3).",
+                        "01 WS-OUT PIC X(3) VALUE SPACE."),
+                "    MOVE 'aaa' TO WS-KEY (1, 1)",
+                "    MOVE 'bbb' TO WS-KEY (1, 2)",
+                "    MOVE 'ccc' TO WS-KEY (1, 3)",
+                "    MOVE 'ddd' TO WS-KEY (2, 1)",
+                "    MOVE 'eee' TO WS-KEY (2, 2)",
+                "    MOVE 'fff' TO WS-KEY (2, 3)",
+                "    SET WS-R TO 2",
+                "    SEARCH ALL WS-E",
+                "        AT END MOVE 'xxx' TO WS-OUT",
+                "        WHEN WS-KEY (WS-R, WS-I) = 'eee'",
+                "            MOVE WS-KEY (WS-R, WS-I) TO WS-OUT",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-OUT ']'."));
+    }
+
+    @Test
     @DisplayName("指標名へ MOVE はできない (FR-025)")
     void anIndexNameCannotReceiveAMove() {
         CobolCompiler.Result result = compile(TABLE, "MOVE 1 TO WS-I.");
@@ -224,13 +306,15 @@ class SearchGenerationTest {
     }
 
     @Test
-    @DisplayName("SET の受取側は指標名でなければならない (FR-025)")
-    void setRequiresAnIndexName() {
+    @DisplayName("SET ... TO の受取側は指標名か整数の項目である (FR-025)")
+    void setToRefusesSomethingThatIsNeither() {
+        // 文字の項目は受け取れない。何番目かを入れる先ではない
         CobolCompiler.Result result = compile(
-                List.of("01 WS-N PIC 9(3)."), "SET WS-N TO 1.");
+                List.of("01 WS-X PIC X(3)."), "SET WS-X TO 1.");
 
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("requires an index name"),
+        assertTrue(result.diagnostics().get(0).message()
+                        .contains("an index name or an integer item"),
                 result.diagnostics().toString());
     }
 
@@ -254,6 +338,94 @@ class SearchGenerationTest {
 
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("SEARCH ALL"),
+                result.diagnostics().toString());
+    }
+
+    // ---- SET の受取側 (FR-025、暫定判断 P-035) ----
+
+    @Test
+    @DisplayName("SET ... TO は整数の項目へも書ける (FR-025)")
+    void setToMayWriteAnIntegerItem() {
+        // 規格がそう決めており、実資産も SET WS-COUNT TO IDX と書く。
+        // 指標名に限ると、表の何番目にいるかを取り出す手立てが無くなる
+        List<String> storage = new java.util.ArrayList<>(TABLE);
+        storage.add("01 WS-N PIC 9(4) VALUE 0.");
+
+        assertEquals("[0003]|", run(storage, procedure(
+                "    SET WS-I TO 3",
+                "    SET WS-N TO WS-I",
+                "    DISPLAY '[' WS-N ']'.")));
+    }
+
+    @Test
+    @DisplayName("USAGE INDEX の項目も SET の受取側になる (FR-025, 暫定判断 P-035)")
+    void anIndexDataItemCanBeSet() {
+        List<String> storage = new java.util.ArrayList<>(TABLE);
+        storage.add("01 WS-SAVE USAGE IS INDEX.");
+
+        assertEquals("[222]|", run(storage, procedure(
+                "    SET WS-I TO 2",
+                "    SET WS-SAVE TO WS-I",
+                "    SET WS-I TO 1",
+                "    SET WS-I TO WS-SAVE",
+                "    DISPLAY '[' WS-DATA (WS-I) ']'.")));
+    }
+
+    @Test
+    @DisplayName("SEARCH は OCCURS ... DEPENDING ON の値までしか走らない (FR-066)")
+    void searchStopsAtTheDependingCount() {
+        // 記憶域は最大の回数で取ってある。最大まで走ると、まだ入っていない場所を読んで
+        // 「見つかった」と言ってしまう (NC235A の「ENTRY SHOULD NOT BE FOUND」)
+        List<String> storage = List.of(
+                "01 WS-N PIC 9(4) COMP VALUE 2.",
+                "01 WS-T.",
+                "   05 WS-E OCCURS 1 TO 3 TIMES DEPENDING ON WS-N",
+                "      INDEXED BY WS-I.",
+                "      10 WS-KEY PIC X(3).",
+                "01 WS-R PIC X.");
+        assertEquals("[E]|", run(storage,
+                "    MOVE 'aaa' TO WS-KEY (1)",
+                "    MOVE 'bbb' TO WS-KEY (2)",
+                "    MOVE 'ccc' TO WS-KEY (3)",
+                "    SET WS-I TO 1",
+                "    SEARCH WS-E AT END MOVE 'E' TO WS-R",
+                "        WHEN WS-KEY (WS-I) = 'ccc' MOVE 'F' TO WS-R",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-R ']'."));
+    }
+
+    @Test
+    @DisplayName("DEPENDING ON の値を増やせば、その先まで走る (FR-066)")
+    void searchReachesFurtherWhenTheCountGrows() {
+        List<String> storage = List.of(
+                "01 WS-N PIC 9(4) COMP VALUE 3.",
+                "01 WS-T.",
+                "   05 WS-E OCCURS 1 TO 3 TIMES DEPENDING ON WS-N",
+                "      INDEXED BY WS-I.",
+                "      10 WS-KEY PIC X(3).",
+                "01 WS-R PIC X.");
+        assertEquals("[F]|", run(storage,
+                "    MOVE 'aaa' TO WS-KEY (1)",
+                "    MOVE 'bbb' TO WS-KEY (2)",
+                "    MOVE 'ccc' TO WS-KEY (3)",
+                "    SET WS-I TO 1",
+                "    SEARCH WS-E AT END MOVE 'E' TO WS-R",
+                "        WHEN WS-KEY (WS-I) = 'ccc' MOVE 'F' TO WS-R",
+                "    END-SEARCH",
+                "    DISPLAY '[' WS-R ']'."));
+    }
+
+    @Test
+    @DisplayName("SET ... UP BY の受取側は指標名に限る (FR-025)")
+    void setUpByNeedsAnIndexName() {
+        // 動かしているのは表の中の位置そのものである
+        List<String> storage = new java.util.ArrayList<>(TABLE);
+        storage.add("01 WS-N PIC 9(4) VALUE 0.");
+
+        CobolCompiler.Result result = compile(storage, procedure("    SET WS-N UP BY 1."));
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("UP/DOWN BY"),
                 result.diagnostics().toString());
     }
 }

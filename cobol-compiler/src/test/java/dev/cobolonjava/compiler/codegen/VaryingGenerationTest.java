@@ -218,6 +218,45 @@ class VaryingGenerationTest {
     }
 
     @Test
+    @DisplayName("内側を戻す前に外側を進める (FR-061)")
+    void theOuterVariableIsAugmentedBeforeTheInnerOneIsReset() {
+        // 内側の初期値が外側の変数そのものなので、順序が回数を変える。
+        // 進めてから戻せば (1,1)(1,2)(1,3)(2,2)(2,3)(3,3) の 6 回。
+        // 戻してから進めると内側が古い値から始まり 8 回になる
+        // (NC201A PFM-TEST-F4-23、85 規格 VI-114 6.20.4 GR10(d)1)
+        assertEquals("00644", run(
+                List.of("01 WS-N PIC 9(3) VALUE 0.",
+                        "01 WS-I PIC 9 VALUE 0.",
+                        "01 WS-J PIC 9 VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > 3",
+                "            AFTER WS-J FROM WS-I BY 1 UNTIL WS-J > 3",
+                "        ADD 1 TO WS-N",
+                "    END-PERFORM."));
+    }
+
+    @Test
+    @DisplayName("TEST AFTER でも内側を戻す前に外側を進める (FR-061)")
+    void theSameOrderHoldsWithTestAfter() {
+        // TEST AFTER は判定より先に中身を流すので、戻した直後にもう 1 回流れる。
+        // 進めてから戻せば 10 回、戻してから進めると 11 回である。
+        // CCVS85 が押さえているのは TEST BEFORE のほうであり、こちらは
+        // <b>同じ規則を当てただけ</b>で実機と突き合わせていない
+        assertEquals("01044", run(
+                List.of("01 WS-N PIC 9(3) VALUE 0.",
+                        "01 WS-I PIC 9 VALUE 0.",
+                        "01 WS-J PIC 9 VALUE 0."),
+                "MAIN-START.",
+                "    MOVE 1 TO WS-I.",
+                "    MOVE 1 TO WS-J.",
+                "    PERFORM WITH TEST AFTER",
+                "            VARYING WS-I FROM 1 BY 1 UNTIL WS-I > 3",
+                "            AFTER WS-J FROM WS-I BY 1 UNTIL WS-J > 3",
+                "        ADD 1 TO WS-N",
+                "    END-PERFORM."));
+    }
+
+    @Test
     @DisplayName("1 回分の増分が 1 でなくても条件どおりに止まる (FR-061)")
     void aStepLargerThanOneStillStopsAtItsCondition() {
         // 1 3 5 7 9 を足して 25。次は 11 で条件が成り立つ

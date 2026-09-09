@@ -10,8 +10,66 @@
 // 宣言していない語は利用者定義語 (IDENTIFIER) として扱う。
 parser grammar CobolParser;
 
+@parser::members {
+    /**
+     * ここから先に<b>関係条件が続いているか</b>を、トークンを覗いて決める。
+     *
+     * <p>省略した比較の「AND B」と、普通の条件の「AND B = C」は、B のところまで
+     * まったく同じ形である。どちらかは<b>そのあとを見ないと決まらない</b>。文法の
+     * 規則だけで書こうとすると ANTLR が全文脈の予測に落ちるので、ここで先を覗く。
+     *
+     * <p>覗くのは次の AND / OR / 終止符までである。そこまでに関係演算子や
+     * {@code IS}、種類を問う語があれば、それは省略した比較ではない。
+     *
+     * @return 関係条件が続いていれば {@code true}
+     */
+    private boolean relationAhead() {
+        int depth = 0;
+        for (int i = 1; i <= 400; i++) {
+            int type = _input.LA(i);
+            if (type == Token.EOF) {
+                return false;
+            }
+            if (type == LPAREN) {
+                depth++;
+                continue;
+            }
+            if (type == RPAREN) {
+                if (depth == 0) {
+                    return false;
+                }
+                depth--;
+                continue;
+            }
+            if (depth != 0) {
+                continue;
+            }
+            switch (type) {
+                case AND: case OR: case PERIOD: case THEN: case ELSE: case END_IF:
+                case WHEN: case UNTIL: case ALSO:
+                    return false;
+                case EQUAL_SIGN: case GREATER_SIGN: case LESS_SIGN:
+                case GREATER_EQUAL_SIGN: case LESS_EQUAL_SIGN: case NOT_EQUAL_SIGN:
+                case GREATER: case LESS: case EQUAL: case IS:
+                case NUMERIC: case ALPHABETIC:
+                    return true;
+                // 符号条件は名前のあとに来る。先頭に来た ZERO は比べる値である
+                case POSITIVE: case NEGATIVE: case ZERO:
+                    if (i > 1) {
+                        return true;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        return false;
+    }
+}
+
 tokens {
-    // 区切り文字
+    // 区切り文字。コンマとセミコロンは飾りなので SourceTokenSource が落とす。
+    // 名前だけ残してあるのは、利用者定義語として引かれないようにするためである
     PERIOD, COMMA, SEMICOLON, LPAREN, RPAREN, COLON,
 
     // 関係演算子の記号形。COBOL 語として書けない綴りなので、
@@ -32,9 +90,19 @@ tokens {
     // 環境部
     ENVIRONMENT, CONFIGURATION, SOURCE_COMPUTER, OBJECT_COMPUTER, SPECIAL_NAMES,
     CURRENCY, DECIMAL_POINT,
+    ALPHABET, STANDARD_1, STANDARD_2, NATIVE, EBCDIC,
     INPUT_OUTPUT, FILE_CONTROL, SELECT, OPTIONAL, ASSIGN, ORGANIZATION, LINE, SEQUENTIAL,
     ACCESS, MODE, STATUS, RECORDING, LABEL, STANDARD, OMITTED, BLOCK, CONTAINS, RECORDS,
     RELATIVE, RANDOM, DYNAMIC, ALTERNATE, DUPLICATES,
+    RESERVE, AREA, AREAS, PASSWORD, PADDING, CODE_SET, OFF,
+    REEL, UNIT, REMOVAL, REWIND, LOCK, REVERSED, END_OF_PAGE, EOP,
+    I_O_CONTROL, SAME, SORT_MERGE, MULTIPLE, TAPE, POSITION, RERUN, APPLY, EVERY,
+    LINAGE, FOOTING, TOP, BOTTOM,
+
+    // 報告書節 (要件 FR-214)
+    REPORT, REPORTS, RD, DETAIL, HEADING, CONTROL, CONTROLS, FINAL,
+    SUM, SOURCE, COLUMN, LIMIT, LIMITS, GROUP, PLUS, LAST, INDICATE,
+    INITIATE, GENERATE, TERMINATE, NUMBER_KEYWORD,
 
     // 手続き部
     PROCEDURE, MOVE, CORRESPONDING, CORR, OF, IN,
@@ -43,10 +111,10 @@ tokens {
     COMPUTE, END_COMPUTE,
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
-    UPON, NO, ADVANCING, USING, REFERENCE, CONTENT,
+    UPON, NO, ADVANCING, USING, REFERENCE, CONTENT, LINES, PAGE,
     CALL, END_CALL, CANCEL, EXCEPTION,
     INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
-    NUMERIC_EDITED,
+    NUMERIC_EDITED, ALPHABETIC_LOWER, ALPHABETIC_UPPER, CLASS, SYMBOLIC,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
     UP, DOWN, SEARCH, END_SEARCH, AT,
     OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
@@ -59,6 +127,7 @@ tokens {
     STRING, UNSTRING, DELIMITED, DELIMITER, COUNT, OVERFLOW, INTO,
     END_STRING, END_UNSTRING,
     AND, OR, NOT, GREATER, LESS, EQUAL, THAN, POSITIVE, NEGATIVE,
+    FUNCTION, ALTER, PROCEED, DEBUGGING, PROCEDURES, REFERENCES,
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
@@ -94,7 +163,7 @@ programUnit
       environmentDivision?
       dataDivision?
       procedureDivision?
-      endProgramStatement?
+      endProgramStatement*
     ;
 
 // ---- 見出し部 ----
@@ -131,26 +200,73 @@ environmentDivision
 // ---- 入出力節 ----
 
 inputOutputSection
-    : INPUT_OUTPUT SECTION PERIOD fileControlParagraph?
+    : INPUT_OUTPUT SECTION PERIOD fileControlParagraph? ioControlParagraph?
+    ;
+
+// 入出力の制御。領域の共有 (SAME)、1 巻のテープに何本置くか (MULTIPLE FILE)、
+// 再開の点 (RERUN) の指定である。<b>どれも翻訳の結果には効かない</b> —
+// 記憶と装置の割り付けの話であり、こちらでは実行時の資源管理が引き受ける。
+// 読み飛ばすが、読めないとは言わない
+// <b>1 つの終止符に指定が何本も入る。</b>CCVS85 は SAME を 2 行並べて最後だけ
+// 終止符を打つ。指定ごとに終止符を要求すると、正しいプログラムを断ってしまう
+ioControlParagraph
+    : I_O_CONTROL PERIOD (ioControlEntry+ PERIOD)*
+    ;
+
+ioControlEntry
+    : SAME (RECORD | SORT | SORT_MERGE)? AREA? FOR? IDENTIFIER+
+    | MULTIPLE FILE TAPE? CONTAINS? multipleFile+
+    | RERUN ~(PERIOD | SAME | MULTIPLE | RERUN | APPLY)*
+    | APPLY ~(PERIOD | SAME | MULTIPLE | RERUN | APPLY)*
+    ;
+
+multipleFile
+    : IDENTIFIER (POSITION NUMBER)?
     ;
 
 fileControlParagraph
     : FILE_CONTROL PERIOD selectEntry*
     ;
 
-// ASSIGN に書くのは DD 名であり、ファイルの場所そのものではない
+// ASSIGN に書くのは DD 名であり、ファイルの場所そのものではない。
+//
+// <b>句の順は決まっていない。</b>ASSIGN も句の 1 つであり、ACCESS や ORGANIZATION の
+// あとに書かれることがある。規格が並びを決めているのは SELECT と名前だけである。
+// 必ず 1 つ要るという検査は意味解析でやる — 文法で位置まで縛ると、
+// 順を入れ替えただけの正しいプログラムを「読めない」と断ってしまう
 selectEntry
-    : SELECT OPTIONAL? IDENTIFIER ASSIGN TO? (IDENTIFIER | LITERAL) selectClause* PERIOD
+    : SELECT OPTIONAL? IDENTIFIER selectClause* PERIOD
     ;
 
 selectClause
-    : ORGANIZATION IS? (LINE? SEQUENTIAL | RELATIVE | INDEXED)
+    : assignClause
+    | ORGANIZATION IS? RELATIVE
+    | ORGANIZATION IS? organizationName
+    | organizationName
     | ACCESS MODE? IS? (SEQUENTIAL | RANDOM | DYNAMIC)
-    | FILE STATUS IS? identifier
+    // FILE は省いてよい。CCVS85 は「STATUS IS X」とだけ書く
+    | FILE? STATUS IS? identifier
     | RECORDING MODE? IS? IDENTIFIER
-    | RELATIVE KEY? IS? identifier
+    // 裸の RELATIVE は編成の指定、名前が続けば相対キーの指定である
+    | RELATIVE (KEY? IS? identifier)?
     | ALTERNATE RECORD? KEY? IS? identifier (WITH? DUPLICATES)?
     | RECORD KEY? IS? identifier
+    // 入出力の領域をいくつ取るか。実行時の緩衝の話であり、翻訳の結果には効かない
+    | RESERVE (NUMBER | NO) ALTERNATE? (AREA | AREAS)?
+    | PASSWORD IS? identifier
+    // 順編成のブロックの埋め草と、レコードの切れ目。どちらも装置の話である
+    | PADDING CHARACTER? IS? (identifier | literal)
+    | RECORD DELIMITER IS? (IDENTIFIER | STANDARD_1)
+    ;
+
+assignClause
+    : ASSIGN TO? (IDENTIFIER | LITERAL)+
+    ;
+
+// ORGANIZATION IS は省いてよい
+organizationName
+    : LINE? SEQUENTIAL
+    | INDEXED
     ;
 
 configurationSection
@@ -168,8 +284,19 @@ sourceComputerParagraph
     : SOURCE_COMPUTER PERIOD ~PERIOD* PERIOD
     ;
 
+// 動かす機械の指定そのものは翻訳の結果に効かないので読み飛ばす。
+// PROGRAM COLLATING SEQUENCE だけは効く (要件 FR-054)
 objectComputerParagraph
-    : OBJECT_COMPUTER PERIOD ~PERIOD* PERIOD
+    : OBJECT_COMPUTER PERIOD objectComputerPart* PERIOD
+    ;
+
+objectComputerPart
+    : programCollatingSequence
+    | ~PERIOD
+    ;
+
+programCollatingSequence
+    : PROGRAM COLLATING? SEQUENCE IS? IDENTIFIER
     ;
 
 // SPECIAL-NAMES は段落の最後にピリオドが 1 つ来る。句の区切りは要らない
@@ -180,7 +307,59 @@ specialNamesParagraph
 specialNamesEntry
     : CURRENCY SIGN? IS? literal
     | DECIMAL_POINT IS? IDENTIFIER
+    | alphabetClause
+    | classClause
+    | symbolicCharactersClause
+    | switchClause
     | IDENTIFIER IS IDENTIFIER
+    ;
+
+// 外から立てる切り替え (UPSI)。名前を付け、その入・切に条件名を与える。
+// ジョブが立てたところをプログラムが読む。呼び名の指定と形が同じなので、
+// <b>切り替えの状態を書いたときだけ</b>こちらへ来るようにしている
+switchClause
+    : IDENTIFIER (IS IDENTIFIER)? switchStatus+
+    ;
+
+switchStatus
+    : (ON | OFF) STATUS? IS? IDENTIFIER
+    ;
+
+// 書いて決める級。「CLASS 名前 IS 文字の並び」で、級条件が引く
+classClause
+    : CLASS IDENTIFIER IS? classMember+
+    ;
+
+classMember
+    : literal ((THROUGH | THRU) literal)?
+    ;
+
+// SYMBOLIC CHARACTERS は名前を「照合順序の何番目か」で決める。
+// 名前は定数として使える
+symbolicCharactersClause
+    : SYMBOLIC CHARACTERS? symbolicCharacter+
+    ;
+
+symbolicCharacter
+    : IDENTIFIER+ (IS | ARE)? NUMBER+ (IN IDENTIFIER)?
+    ;
+
+// ALPHABET は照合順序に名前を付ける (要件 FR-054)
+alphabetClause
+    : ALPHABET IDENTIFIER IS? alphabetSpecification
+    ;
+
+alphabetSpecification
+    : STANDARD_1
+    | STANDARD_2
+    | NATIVE
+    | EBCDIC
+    | alphabetPosition+
+    ;
+
+// 1 つの位置に置く文字。ALSO で並べたものは同じ位置になる
+alphabetPosition
+    : literal ((THROUGH | THRU) literal | (ALSO literal)+)?
     ;
 
 // ---- データ部 ----
@@ -194,6 +373,7 @@ dataDivisionSection
     | workingStorageSection
     | localStorageSection
     | linkageSection
+    | reportSection
     ;
 
 // FD のレコード記述項は、その FD のレコード領域を表す
@@ -210,13 +390,48 @@ fileDescriptionClause
     : BLOCK CONTAINS? NUMBER (TO NUMBER)? (RECORDS | CHARACTER | CHARACTERS)?
     | recordVaryingClause
     | RECORD CONTAINS? NUMBER (TO NUMBER)? (CHARACTER | CHARACTERS)?
-    | LABEL RECORD (IS | ARE)? (STANDARD | OMITTED)
+    | LABEL (RECORD | RECORDS) (IS | ARE)? (STANDARD | OMITTED)
     | RECORDING MODE? IS? IDENTIFIER
+    // DATA RECORD(S) は「このファイルにはこの記述がある」と書くだけの覚え書きである。
+    // 実際の記述は FD に続く 01 が持っており、読んで捨てるのが決まりである
+    | DATA (RECORD | RECORDS) (IS | ARE)? IDENTIFIER+
+    | IS? GLOBAL
+    | IS? EXTERNAL
+    // 装置の文字集合。データセットの文字コードは DD の指定で決まる
+    | CODE_SET IS? IDENTIFIER
+    | linageClause
+    // VALUE OF は「ラベルに何を書くか」の指定である。規格でも廃要素であり、
+    // ラベルを持たないこちらでは読んで捨てる
+    | VALUE OF valueOfEntry+
+    // このファイルへ書き出す報告書 (要件 FR-214)
+    | (REPORT | REPORTS) (IS | ARE)? IDENTIFIER+
+    ;
+
+valueOfEntry
+    : IDENTIFIER IS? (LITERAL | NUMBER | identifier)
+    ;
+
+// 1 ページに何行置くか (要件 FR-113)。LINAGE-COUNTER と WRITE ... ADVANCING PAGE が使う
+linageClause
+    : LINAGE IS? linageCount LINES? linagePart*
+    ;
+
+linagePart
+    : WITH? FOOTING AT? linageCount
+    | LINES? AT? TOP linageCount
+    | LINES? AT? BOTTOM linageCount
+    ;
+
+linageCount
+    : NUMBER
+    | identifier
     ;
 
 // 可変長レコードの長さは DEPENDING ON の項目が持つ
+// FROM も IN SIZE も ON も省いてよい。CCVS85 は
+// 「RECORD VARYING 200 TO 240 DEPENDING REC-LENGTH」と書く
 recordVaryingClause
-    : RECORD IS? VARYING IN? SIZE? (FROM NUMBER)? (TO NUMBER)?
+    : RECORD IS? VARYING IN? SIZE? (FROM? NUMBER)? (TO NUMBER)?
       (CHARACTER | CHARACTERS)? (DEPENDING ON? identifier)?
     ;
 
@@ -230,6 +445,89 @@ localStorageSection
 
 linkageSection
     : LINKAGE SECTION PERIOD dataDescriptionEntry*
+    ;
+
+// ---- 報告書節 (要件 FR-214) ----
+
+reportSection
+    : REPORT SECTION PERIOD reportDescriptionEntry*
+    ;
+
+// RD の下に続く 01 は、その報告書の報告集団である
+reportDescriptionEntry
+    : RD IDENTIFIER reportDescriptionClause* PERIOD reportGroupEntry*
+    ;
+
+reportDescriptionClause
+    : IS? GLOBAL
+    | CODE_SET IS? IDENTIFIER
+    | (CONTROL | CONTROLS) (IS | ARE)? FINAL? identifier*
+    | PAGE (LIMIT | LIMITS)? (IS | ARE)? NUMBER (LINE | LINES)? pageDetailClause*
+    ;
+
+pageDetailClause
+    : HEADING IS? NUMBER
+    | FIRST DETAIL IS? NUMBER
+    | LAST DETAIL IS? NUMBER
+    | FOOTING IS? NUMBER
+    ;
+
+reportGroupEntry
+    : levelNumber dataName? reportGroupClause* PERIOD
+    ;
+
+// 句の並びは自由である。規格が「データ名以外はどの順に書いてもよい」と決めている
+reportGroupClause
+    : lineNumberClause
+    | nextGroupClause
+    | typeClause
+    | columnNumberClause
+    | sourceClause
+    | sumClause
+    | GROUP INDICATE
+    | pictureClause
+    | usageClause
+    | signClause
+    | justifiedClause
+    | blankWhenZeroClause
+    | valueClause
+    ;
+
+lineNumberClause
+    : LINE NUMBER_KEYWORD? IS? (PLUS? NUMBER | NEXT PAGE)
+    ;
+
+nextGroupClause
+    : NEXT GROUP IS? (PLUS? NUMBER | NEXT PAGE)
+    ;
+
+typeClause
+    : TYPE IS? reportGroupType
+    ;
+
+// 略記 (RH PH CH DE CF PF RF) は IDENTIFIER として読み、意味解析で見分ける。
+// 2 文字の語を予約語にすると、資産の項目名とぶつかりうるからである
+reportGroupType
+    : REPORT HEADING
+    | PAGE HEADING
+    | CONTROL HEADING (FINAL | identifier)?
+    | DETAIL
+    | CONTROL FOOTING (FINAL | identifier)?
+    | PAGE FOOTING
+    | REPORT FOOTING
+    | IDENTIFIER (FINAL | identifier)?
+    ;
+
+columnNumberClause
+    : COLUMN NUMBER_KEYWORD? IS? NUMBER
+    ;
+
+sourceClause
+    : SOURCE IS? identifier
+    ;
+
+sumClause
+    : SUM identifier+ (UPON identifier)? (RESET ON? (FINAL | identifier))?
     ;
 
 dataDescriptionEntry
@@ -264,8 +562,9 @@ redefinesClause
     : REDEFINES dataName
     ;
 
+// 名前は修飾してよい。「RENAMES AL OF A-GLOB THRU BOB OF A-GLOB」と書ける
 renamesClause
-    : RENAMES dataName ((THRU | THROUGH) dataName)?
+    : RENAMES qualifiedDataName ((THRU | THROUGH) qualifiedDataName)?
     ;
 
 pictureClause
@@ -314,7 +613,7 @@ occursIndexedClause
 // 88 レベルの条件名は値を並べたり範囲で書いたりできる。
 // 通常のデータ項目の VALUE 句はその 1 個の場合にあたる
 valueClause
-    : (VALUE | VALUES) (IS | ARE)? valueRange (COMMA? valueRange)*
+    : (VALUE | VALUES) (IS | ARE)? valueRange valueRange*
     ;
 
 valueRange
@@ -348,13 +647,18 @@ literal
     ;
 
 figurativeConstant
-    : ALL? (ZERO | ZEROS | ZEROES
-          | SPACE | SPACES
-          | HIGH_VALUE | HIGH_VALUES
-          | LOW_VALUE | LOW_VALUES
-          | QUOTE | QUOTES
-          | NULL | NULLS)
+    : ALL? figurativeWord
     | ALL LITERAL
+    ;
+
+// ALL を伴わない図形定数。INSPECT の被演算子はこちらしか書けない
+figurativeWord
+    : ZERO | ZEROS | ZEROES
+    | SPACE | SPACES
+    | HIGH_VALUE | HIGH_VALUES
+    | LOW_VALUE | LOW_VALUES
+    | QUOTE | QUOTES
+    | NULL | NULLS
     ;
 
 // ---- 一意名 ----
@@ -370,16 +674,27 @@ qualifiedDataName
     ;
 
 subscripts
-    : LPAREN subscript (COMMA? subscript)* RPAREN
+    : LPAREN subscript subscript* RPAREN
     ;
 
 referenceModifier
     : LPAREN subscript COLON subscript? RPAREN
     ;
 
+// 定数どうしの足し引きを書ける。NC224A は「TEST-1-DATA (10 - 7: 6 + 2 - 5)」と書く。
+// 値は翻訳時に決まるので、畳んで 1 つの数にする。掛け算と割り算は<b>まだ読まない</b> —
+// 左から畳むだけでは優先順位が合わないからである
 subscript
-    : NUMBER
-    | qualifiedDataName
+    : NUMBER ((PLUS_SIGN | MINUS_SIGN) NUMBER)*
+    | ALL
+    | qualifiedDataName relativeOffset?
+    ;
+
+// 相対指定 (要件 FR-025)。演算子は前後に空白を置く決まりなので、
+// 「I + 1」は演算子と数字に切れる。「I +1」は符号つきの数字 1 つであり、
+// これは相対指定ではなく<b>2 つ目の添字</b>である。切れ目がそのまま意味の違いになる
+relativeOffset
+    : (PLUS_SIGN | MINUS_SIGN) NUMBER
     ;
 
 // ---- 手続き部 ----
@@ -395,8 +710,14 @@ procedureParameter
 
 // 段落名を持たない文が先に来ることがある
 // 宣言部分は手続き部の先頭にあり、通常の流れでは通らない
+//
+// <b>章が始まったら、あとはすべて章の中である。</b>段落と章を混ぜて並べられる形
+// (procedureUnit* のような書き方) にすると、章の中の paragraph* を続けるか抜けるかが
+// 外側の繰り返しと区別できず、ANTLR が全文脈の予測に落ちる。CCVS85 の大きな
+// プログラムでは<b>それが指数時間になって返ってこなくなった</b>。規格でも
+// 手続き部の本体は「段落の並び」か「章の並び」のどちらかであり、混ざらない。
 procedureBody
-    : declarativesPart? sentence* procedureUnit*
+    : declarativesPart? sentence* paragraph* procedureSection*
     ;
 
 declarativesPart
@@ -410,6 +731,18 @@ declarativeSection
 // USE は文ではなく、その節がいつ動くかの宣言である
 useStatement
     : USE GLOBAL? AFTER? STANDARD? (ERROR | EXCEPTION) PROCEDURE ON? useTarget
+    | USE FOR? DEBUGGING ON? debugTarget
+    ;
+
+// デバッグの節が何を見張るか (要件 FR-193)。対象は並べて書ける
+debugTarget
+    : debugItem+
+    ;
+
+debugItem
+    : ALL PROCEDURES
+    | ALL REFERENCES? OF? identifier
+    | IDENTIFIER
     ;
 
 useTarget
@@ -420,9 +753,8 @@ useTarget
     | IDENTIFIER+
     ;
 
-procedureUnit
+procedureSection
     : sectionHeader sentence* paragraph*
-    | paragraph
     ;
 
 sectionHeader
@@ -433,8 +765,16 @@ paragraph
     : paragraphName PERIOD sentence*
     ;
 
+// 手続き名は<b>数字だけでもよい</b>。データ名と違うところである。
+// 段分けの章は「00 SECTION 00.」のように名前も番号も数字で書かれる
+// 手続き名は<b>節の名前で修飾してよい</b>。同じ段落名が別の節にあってもよいからである
 paragraphName
+    : procedureWord ((OF | IN) procedureWord)?
+    ;
+
+procedureWord
     : IDENTIFIER
+    | NUMBER
     ;
 
 sentence
@@ -453,6 +793,7 @@ statement
     | performStatement
     | continueStatement
     | goToStatement
+    | alterStatement
     | exitStatement
     | callStatement
     | cancelStatement
@@ -476,14 +817,33 @@ statement
     | multiplyStatement
     | divideStatement
     | computeStatement
+    | initiateStatement
+    | generateStatement
+    | terminateStatement
+    ;
+
+// ---- 報告書の文 (要件 FR-214) ----
+
+initiateStatement
+    : INITIATE IDENTIFIER+
+    ;
+
+// 引数は報告集団の名前でも報告書の名前でもよい
+generateStatement
+    : GENERATE IDENTIFIER
+    ;
+
+terminateStatement
+    : TERMINATE IDENTIFIER+
     ;
 
 moveStatement
-    : MOVE (CORRESPONDING | CORR)? moveSource TO identifier (COMMA? identifier)*
+    : MOVE (CORRESPONDING | CORR)? moveSource TO identifier identifier*
     ;
 
 moveSource
-    : identifier
+    : functionCall
+    | identifier
     | literal
     ;
 
@@ -505,20 +865,51 @@ notCondition
     : NOT? simpleCondition
     ;
 
-// 条件名は「名前だけ」で書かれる。関係条件と符号条件を先に試す
+// 条件名は「名前だけ」で書かれる。関係条件と級条件と符号条件を先に試す
 simpleCondition
     : LPAREN condition RPAREN
     | relationCondition
+    | classCondition
     | signCondition
     | conditionNameCondition
     ;
 
-relationCondition
-    : arithmeticOperand relationalOperator arithmeticOperand
+// 級条件。中身が何でできているかを問う。比べる相手は無い
+classCondition
+    : identifier IS? NOT? className
     ;
 
+className
+    : NUMERIC
+    | ALPHABETIC_LOWER
+    | ALPHABETIC_UPPER
+    | ALPHABETIC
+    | IDENTIFIER
+    ;
+
+// 両辺は算術式である。IF 1 + (TWO * 3) = 7 と書ける。
+//
+// <b>続けて書く比較は、主語や演算子を省いてよい</b> (省略した比較)。
+// 「IF A > 10 AND < 21」は「A > 10 AND A < 21」であり、
+// 「IF A = 1 OR 98」は「A = 1 OR A = 98」である。古い資産がよく使う書き方である。
+relationCondition
+    : expression relationalOperator expression abbreviatedRelation*
+    ;
+
+// 省いた形は 2 つある。演算子だけ書き直すか、値だけを並べるかである。
+//
+// 値だけを並べる形は、そのあとに関係条件が続いていないときだけ取る (relationAhead)。
+// 「AND B = C」は普通の条件であり、「AND B」は省略した比較か条件名条件である。
+// 名前 1 個のときにどちらかは<b>名前を引かないと決まらない</b>ので、意味解析で分ける
+abbreviatedRelation
+    : (AND | OR) relationalOperator expression
+    // 「AND NOT B」は「AND NOT (主語 = B)」である。比較そのものを否定する
+    | (AND | OR) NOT? {!relationAhead()}? expression
+    ;
+
+// 符号を問う相手は算術式でよい。「IF 9 ** TWO + (180 - 90) IS NOT POSITIVE」と書ける
 signCondition
-    : arithmeticOperand IS? NOT? (POSITIVE | NEGATIVE | ZERO)
+    : expression IS? NOT? (POSITIVE | NEGATIVE | ZERO)
     ;
 
 conditionNameCondition
@@ -559,8 +950,11 @@ continueStatement
     : CONTINUE
     ;
 
+// STOP と定数を書く形は規格の廃要素である。書いた文字を操作員へ見せて<b>待つ</b>と
+// 決められているが、待つ相手がいない実行では見せて先へ進むほかない
 stopStatement
     : STOP RUN
+    | STOP literal
     | GOBACK
     ;
 
@@ -619,9 +1013,15 @@ tallyingCounter
     : identifier FOR tallyingSpec+
     ;
 
+// ALL / LEADING は<b>そのあとの被演算子すべてに効く</b>。書き直さなくてよい。
+// NC216A は「FOR LEADING "S" AFTER WS-Y "S" AFTER "U" ...」と 4 組を並べている
 tallyingSpec
     : CHARACTERS inspectRegion*
-    | (ALL | LEADING) inspectOperand inspectRegion*
+    | (ALL | LEADING) tallyingOperand+
+    ;
+
+tallyingOperand
+    : inspectOperand inspectRegion*
     ;
 
 replacingPhrase
@@ -630,7 +1030,11 @@ replacingPhrase
 
 replacingSpec
     : CHARACTERS BY inspectOperand inspectRegion*
-    | (ALL | LEADING | FIRST) inspectOperand BY inspectOperand inspectRegion*
+    | (ALL | LEADING | FIRST) replacingOperand+
+    ;
+
+replacingOperand
+    : inspectOperand BY inspectOperand inspectRegion*
     ;
 
 convertingPhrase
@@ -643,7 +1047,17 @@ inspectRegion
 
 inspectOperand
     : identifier
-    | literal
+    | inspectLiteral
+    ;
+
+// INSPECT の被演算子に「ALL で始まる定数」は書けない (85 規格 6.19.4)。
+// ALL は句の種別を表す語である。定数として読めるようにしておくと
+// 「LEADING AH BY OH ALL 'F' BY 'Z'」の ALL 'F' を LEADING の 2 つめの
+// 被演算子として飲み込んでしまい、最後の句が消える (NC216A INS-TEST-F3-20)
+inspectLiteral
+    : LITERAL
+    | NUMBER
+    | figurativeWord
     ;
 
 // EVALUATE は「主語と目的語を突き合わせる」書き方である。
@@ -651,29 +1065,38 @@ inspectOperand
 evaluateStatement
     : EVALUATE evaluateSubject (ALSO evaluateSubject)*
       evaluateBranch+
-      (WHEN OTHER statement*)?
+      (WHEN OTHER branchBody)?
       END_EVALUATE?
     ;
 
 // 同じ本体に複数の WHEN を並べられる
 evaluateBranch
-    : (WHEN evaluateObject (ALSO evaluateObject)*)+ statement*
+    : (WHEN evaluateObject (ALSO evaluateObject)*)+ branchBody
     ;
 
+// 枝の中身。NEXT SENTENCE は「この文の残りを飛ばす」ことであり、文の並びではない
+branchBody
+    : NEXT SENTENCE
+    | statement*
+    ;
+
+// 主語は算術式でよい。「EVALUATE A ALSO ( TEMP + 96 ) * 2」と書ける。
+// 級条件を主語に置くこともできる。その形では目的語が TRUE / FALSE になる
 evaluateSubject
     : TRUE
     | FALSE
-    | arithmeticOperand
+    | classCondition
+    | expression
     ;
 
 // 範囲は THRU で見分ける。残りは条件を先に試し、当たらなければ値とする
 evaluateObject
     : ANY
-    | NOT? arithmeticOperand (THRU | THROUGH) arithmeticOperand
+    | NOT? expression (THRU | THROUGH) expression
     | TRUE
     | FALSE
     | condition
-    | NOT? arithmeticOperand
+    | NOT? expression
     ;
 
 // DISPLAY は USAGE の DISPLAY と綴りが同じである。文の先頭かどうかで見分ける
@@ -688,11 +1111,31 @@ openStatement
     ;
 
 openPhrase
-    : (INPUT | OUTPUT | I_O | EXTEND) IDENTIFIER+
+    : (INPUT | OUTPUT | I_O | EXTEND) openFile+
+    ;
+
+// NO REWIND は巻き戻さないという指示である。巻を持たない媒体では行いようがないので、
+// 開けても状態コードは 07 になる。REVERSED (逆から読む) はまだ実装していない
+openFile
+    : IDENTIFIER (WITH? NO REWIND | REVERSED)?
     ;
 
 closeStatement
-    : CLOSE IDENTIFIER+
+    : CLOSE closeFile+
+    ;
+
+closeFile
+    : IDENTIFIER closeOption?
+    ;
+
+// 巻の扱いは磁気テープの話だが、翻訳の結果には効く。REEL / UNIT は<b>閉じない</b> —
+// 次の巻へ移るだけである。NO REWIND は閉じるが巻き戻さない。どちらも巻を持たない媒体
+// では巻の操作が起きず、状態コード 07 が立つ。LOCK は錠を掛け、閉じたあと
+// <b>この実行単位では二度と開けなく</b>する
+closeOption
+    : (REEL | UNIT) (FOR? REMOVAL)?
+    | WITH? NO REWIND
+    | WITH? LOCK
     ;
 
 // AT END はファイルの終わりに来たときだけ通る
@@ -715,17 +1158,43 @@ notInvalidKeyPhrase
     ;
 
 writeStatement
-    : WRITE IDENTIFIER (FROM identifier)?
+    : WRITE IDENTIFIER ((OF | IN) IDENTIFIER)? (FROM identifier)?
+      advancingPhrase?
+      atEndOfPagePhrase? notAtEndOfPagePhrase?
       invalidKeyPhrase? notInvalidKeyPhrase? END_WRITE?
+    ;
+
+// 用紙の終わりに来たときだけ通る (要件 FR-113)。LINAGE を書いたファイルだけが使える
+atEndOfPagePhrase
+    : AT? (END_OF_PAGE | EOP) branchBody
+    ;
+
+notAtEndOfPagePhrase
+    : NOT AT? (END_OF_PAGE | EOP) branchBody
+    ;
+
+// 印字するファイルへの行送り。AFTER は送ってから書き、BEFORE は書いてから送る。
+// 呼び名を書けば、その装置が決めた送りになる (紙送りの通路)
+advancingPhrase
+    : (BEFORE | AFTER) ADVANCING? (advancingLines | PAGE)
+    ;
+
+advancingLines
+    : (identifier | NUMBER | ZERO | ZEROS | ZEROES) (LINE | LINES)?
     ;
 
 // SORT は溜めて並べ替えて配る。入口と出口はファイルか手続きのどちらかである
 sortStatement
-    : SORT IDENTIFIER sortKeyClause+ sortDuplicates? sortInput sortOutput
+    : SORT IDENTIFIER sortKeyClause+ sortDuplicates? sortSequence? sortInput sortOutput
     ;
 
 mergeStatement
-    : MERGE IDENTIFIER sortKeyClause+ sortDuplicates? sortUsing sortOutput
+    : MERGE IDENTIFIER sortKeyClause+ sortDuplicates? sortSequence? sortUsing sortOutput
+    ;
+
+// 並べ替えに使う照合順序。COLLATING は省いてよい
+sortSequence
+    : COLLATING? SEQUENCE IS? IDENTIFIER
     ;
 
 sortKeyClause
@@ -784,11 +1253,11 @@ searchStatement
     ;
 
 atEndPhrase
-    : AT? END statement+
+    : AT? END branchBody
     ;
 
 searchWhen
-    : WHEN condition statement+
+    : WHEN condition branchBody
     ;
 
 // ACCEPT は日付と時刻の特殊レジスタか、端末からの 1 行を受け取る
@@ -825,8 +1294,14 @@ initializeCategory
 // SET は条件名を成り立たせる形と、指標名を動かす形の 2 つがある
 setStatement
     : SET identifier+ TO TRUE
+    // 外から立てる切り替えを、プログラムからも動かせる。続けて書ける
+    | SET switchSetting+
     | SET identifier+ TO arithmeticOperand
     | SET identifier+ (UP | DOWN) BY arithmeticOperand
+    ;
+
+switchSetting
+    : identifier+ TO (ON | OFF)
     ;
 
 // 呼び先は文字定数か、実行時に名前が決まるデータ項目である
@@ -864,13 +1339,26 @@ cancelStatement
     ;
 
 // GO TO は段落の途中から別の段落へ飛ぶ。PERFORM と違い、戻ってこない
-goToStatement
-    : GO TO? paragraphName
+// ALTER は GO TO だけを書いた段落の飛び先を、実行時に書き換える (要件 FR-063)
+alterStatement
+    : ALTER alterChange+
     ;
 
-// EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある
+alterChange
+    : paragraphName TO (PROCEED TO)? paragraphName
+    ;
+
+// DEPENDING ON があれば、値が何番目かで飛び先が決まる。無ければ 1 つだけ書ける
+// 行き先を書かない GO TO は、<b>ALTER で書き換えられるまで実行してはならない</b>
+// 場所である。規格の廃要素だが、古い資産には残っている
+goToStatement
+    : GO TO? paragraphName* (DEPENDING ON? identifier)?
+    ;
+
+// EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある。
+// EXIT PROGRAM は別物で、呼ばれた側から戻る
 exitStatement
-    : EXIT
+    : EXIT PROGRAM?
     ;
 
 // 段落を呼ぶ形と、その場に本体を書く形の 2 つがある。
@@ -977,8 +1465,28 @@ notOnSizeErrorPhrase
     ;
 
 arithmeticOperand
-    : identifier
+    : functionCall
+    | identifier
     | literal
+    ;
+
+// 組み込み関数の呼び出し (要件 FR-070)。
+//
+// 引数の区切りのコンマは飾りであり、SourceTokenSource が落としている。
+// 区切っているのは空白のほうである。COBOL では 2 項の演算子は前後に空白を置き、
+// 単項の符号は後ろに空白を置かない。したがって字句の切れ目に差が残り、
+// 「11, -5」は 2 個、「11 - 5」は 1 個の引数になる。
+functionCall
+    : FUNCTION functionName (LPAREN expression (COMMA? expression)* RPAREN)?
+    ;
+
+// 予約語と綴りが同じ関数名は、ここに並べて拾う
+functionName
+    : IDENTIFIER
+    | RANDOM
+    | DATE
+    | DAY
+    | SUM
     ;
 
 // GIVING がなければ受取項目になるため、ROUNDED を書ける

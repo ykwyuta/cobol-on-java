@@ -2,6 +2,7 @@ package dev.cobolonjava.job.jcl;
 
 import dev.cobolonjava.job.JobDiagnostic;
 import dev.cobolonjava.job.StepCondition;
+import dev.cobolonjava.runtime.abend.AbendCode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -149,8 +150,7 @@ public final class JclCondition {
             return new StepCondition.OnlyIfAbend();
         }
         if (upper.equals("ABENDCC")) {
-            report("ABENDCC is not supported yet");
-            return null;
+            return abendCode(null);
         }
         if (upper.equals("RC")) {
             return returnCode(null);
@@ -166,15 +166,40 @@ public final class JclCondition {
             case "RC" -> returnCode(step);
             case "RUN" -> new StepCondition.Ran(step);
             case "ABEND" -> new StepCondition.OnlyIfAbend();
-            case "ABENDCC" -> {
-                report("ABENDCC is not supported yet");
-                yield null;
-            }
+            case "ABENDCC" -> abendCode(step);
             default -> {
                 report("IF does not understand: " + word);
                 yield null;
             }
         };
+    }
+
+    /**
+     * {@code ABENDCC 関係 コード} (要件 FR-141)。
+     *
+     * <p>比べられるのは等しいか等しくないかだけである。異常終了コードに大小はない。
+     */
+    private StepCondition abendCode(String step) {
+        String operator = word();
+        if (operator == null) {
+            return null;
+        }
+        StepCondition.Comparison comparison = comparisonOf(operator);
+        if (comparison != StepCondition.Comparison.EQ
+                && comparison != StepCondition.Comparison.NE) {
+            report("ABENDCC compares with = or ¬= only: " + operator);
+            return null;
+        }
+        String written = word();
+        if (written == null) {
+            return null;
+        }
+        AbendCode code = AbendCode.of(written);
+        if (code == null) {
+            report("unknown abend code: " + written);
+            return null;
+        }
+        return new StepCondition.Abend(step, comparison == StepCondition.Comparison.EQ, code);
     }
 
     private StepCondition returnCode(String step) {

@@ -179,6 +179,55 @@ class ArithmeticGenerationTest {
     }
 
     @Test
+    @DisplayName("GIVING の受取項目は数字編集項目でよい (FR-041, FR-043)")
+    void aGivingReceiverMayBeNumericEdited() {
+        assertEquals("007  8", run(
+                List.of("01 WS-A PIC 9(3) VALUE 007.", "01 WS-E PIC ZZ9."),
+                "ADD WS-A 1 GIVING WS-E."));
+    }
+
+    @Test
+    @DisplayName("数字編集項目への格納でも ROUNDED は効く (FR-041, FR-045)")
+    void roundingHappensBeforeTheEditing() {
+        // 24.68 を小数 1 桁へ丸めてから絵に当てはめる。切り捨てなら 24.6 になる
+        assertEquals("01234 24.7", run(
+                List.of("01 WS-A PIC 9(3)V99 VALUE 012.34.", "01 WS-E PIC ZZ9.9."),
+                "MULTIPLY WS-A BY 2 GIVING WS-E ROUNDED."));
+    }
+
+    @Test
+    @DisplayName("REMAINDER の受取項目も数字編集項目でよい (FR-041, FR-044)")
+    void theRemainderReceiverMayBeNumericEdited() {
+        // 174 / 16 = 10 あまり 14。剰余は切り捨てた商から求める
+        assertEquals(" 10 14", run(
+                List.of("01 WS-Q PIC ZZ9.", "01 WS-R PIC ZZ9."),
+                "DIVIDE 16 INTO 174 GIVING WS-Q REMAINDER WS-R."));
+    }
+
+    @Test
+    @DisplayName("GIVING を書かない受取項目に数字編集項目は書けない (FR-043)")
+    void aReceiverThatJoinsTheComputationMustBeNumeric() {
+        // 受取項目が計算に加わる形である。編集した文字列を読み戻して足すことはできない
+        CobolCompiler.Result result = compile(
+                List.of("01 WS-E PIC ZZ9."), "ADD 1 TO WS-E.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message()
+                        .contains("requires a numeric receiver"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("数字編集項目でも ON SIZE ERROR は受取項目を変えない (FR-041, FR-043)")
+    void aSizeErrorLeavesAnEditedReceiverAlone() {
+        assertEquals("   X", run(
+                List.of("01 WS-E PIC ZZ9.", "01 WS-F PIC X."),
+                "ADD 900 500 GIVING WS-E",
+                "    ON SIZE ERROR MOVE 'X' TO WS-F",
+                "END-ADD."));
+    }
+
+    @Test
     @DisplayName("数値でない受取項目は誤りとして報告する (FR-043)")
     void aNonNumericReceiverIsReported() {
         CobolCompiler.Result result = compile(
@@ -208,5 +257,34 @@ class ArithmeticGenerationTest {
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("requires GIVING"),
                 result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("被演算子は文の実行前に 1 度だけ読む (FR-043、規格 6.11.4 GR2)")
+    void theOperandsAreReadOnceBeforeAnyReceiverIsStored() {
+        // 2 つ目の受取項目が被演算子 WS-A を書き換える。3 つ目以降が書き換えた
+        // あとの値を読むと、別の計算になってしまう。
+        // WS-A=100 WS-B=020 なので、どの受取項目も 100 / 20 = 5 である
+        assertEquals("005020005005", run(
+                List.of("01 WS-A PIC 9(3) VALUE 100.",
+                        "01 WS-B PIC 9(3) VALUE 020.",
+                        "01 WS-D PIC 9(3) VALUE 000.",
+                        "01 WS-E PIC 9(3) VALUE 000."),
+                "DIVIDE WS-B INTO WS-A GIVING WS-D WS-A WS-E."));
+    }
+
+    @Test
+    @DisplayName("ON SIZE ERROR つきでも被演算子は 1 度だけ読む (FR-041, FR-043)")
+    void theOperandsAreReadOnceWithASizeErrorPhraseToo() {
+        // 受取項目 WS-A を書き換えたあとの値で計算し直すと、あふれない計算まで
+        // あふれたことにしてしまう (NC172A の「WRONGLY AFFECTED BY SIZE ERROR」)
+        assertEquals("005020005005N", run(
+                List.of("01 WS-A PIC 9(3) VALUE 100.",
+                        "01 WS-B PIC 9(3) VALUE 020.",
+                        "01 WS-D PIC 9(3) VALUE 000.",
+                        "01 WS-E PIC 9(3) VALUE 000.",
+                        "01 WS-F PIC X VALUE 'N'."),
+                "DIVIDE WS-B INTO WS-A GIVING WS-D WS-A WS-E",
+                "    ON SIZE ERROR MOVE 'Y' TO WS-F."));
     }
 }

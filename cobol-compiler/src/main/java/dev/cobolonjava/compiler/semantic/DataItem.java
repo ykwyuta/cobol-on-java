@@ -155,8 +155,50 @@ public final class DataItem {
      * <p>指標名はデータ項目ではない。書き込めるのは {@code SET} だけであり、
      * {@code MOVE} の受取側にはできない。
      */
+    /** {@code USAGE IS INDEX} と書かれたか。群に書けば配下の基本項目すべてに効く。 */
+    public boolean indexDeclared() {
+        return indexDeclared;
+    }
+
+    private boolean indexDeclared;
+
     public boolean isIndex() {
         return index;
+    }
+
+    private boolean external;
+
+    /**
+     * {@code EXTERNAL} と書かれたか (要件 FR-014)。
+     *
+     * <p>書かれた 01 レベルの領域は<b>実行単位で 1 つ</b>である。同じ名前で
+     * {@code EXTERNAL} と書いたどのプログラムからも、同じ中身が見える。
+     */
+    public boolean external() {
+        return external;
+    }
+
+    void setExternal(boolean value) {
+        this.external = value;
+    }
+
+    private String globalOwner;
+
+    /**
+     * {@code GLOBAL} と書かれた 01 レベルを持つプログラムの名前 (要件 FR-091)。
+     *
+     * <p>入れ子のプログラムでは、囲む側が {@code GLOBAL} と書いた項目を<b>囲まれた側から
+     * 見える</b>。実体は囲む側が持つので、名前だけでは足りず<b>誰のものか</b>まで要る。
+     * 別のプログラムが同じ名前の {@code GLOBAL} 項目を持っていても、別の領域である。
+     *
+     * @return {@code GLOBAL} でなければ {@code null}
+     */
+    public String globalOwner() {
+        return globalOwner;
+    }
+
+    void setGlobalOwner(String value) {
+        this.globalOwner = value;
     }
 
     public List<ConditionName> conditionNames() {
@@ -222,6 +264,18 @@ public final class DataItem {
         return length * occurs;
     }
 
+    /**
+     * 66 レベルの別名かどうか (要件 FR-021)。
+     *
+     * <p>別名は<b>記憶域を持たない</b>。すでにある記述の上に名前を重ねているだけなので、
+     * 初期値を書くときに通ってはならない。通すと、名前を付けた先の初期値を消してしまう。
+     */
+    public boolean isAlias() {
+        return alias;
+    }
+
+    private boolean alias;
+
     /** 下位の項目を持たない項目かどうか。 */
     public boolean isElementary() {
         return children.isEmpty();
@@ -249,6 +303,41 @@ public final class DataItem {
         this.blankWhenZero = value;
     }
 
+    /**
+     * {@code OCCURS ... DEPENDING ON} に書かれた項目の名前。書かれていなければ {@code null}。
+     *
+     * <p>記憶域は<b>最大の回数</b>で取る。実行時に変わるのは「いま何個あるか」だけで
+     * あり、割り付けそのものは動かない。{@code SEARCH} が端まで走る回数と、
+     * この表を含む群の長さが、この項目の値で決まる。
+     */
+    private String occursDependingName;
+
+    public String occursDependingName() {
+        return occursDependingName;
+    }
+
+    void setOccursDependingName(String value) {
+        this.occursDependingName = value;
+    }
+
+    /**
+     * {@code OCCURS ... DEPENDING ON} に書かれた項目そのもの。名前を引き当てて結び付ける。
+     *
+     * <p>名前だけでは<b>群の長さを実行時に数えられない</b>。数えるのは翻訳の後ろの段
+     * (符号生成) であり、そこには名前を引く道具が無い。データ部を読み終えた時点で
+     * 引き当てておく。引き当てられない名前はここでは<b>黙って残す</b>。誤りとして
+     * 報せるのは手続き部を読む側の役目であり、二重に言うと診断が散る。
+     */
+    private DataItem occursDepending;
+
+    public DataItem occursDepending() {
+        return occursDepending;
+    }
+
+    void setOccursDepending(DataItem value) {
+        this.occursDepending = value;
+    }
+
     void setOccurs(int value) {
         this.occurs = value;
         this.table = true;
@@ -260,6 +349,10 @@ public final class DataItem {
 
     void setInitialValue(LiteralValue value) {
         this.initialValue = value;
+    }
+
+    void markAlias() {
+        this.alias = true;
     }
 
     void addChild(DataItem child) {
@@ -285,6 +378,10 @@ public final class DataItem {
 
     void addSearchKey(SearchKey value) {
         searchKeys.add(value);
+    }
+
+    void markIndexDeclared() {
+        this.indexDeclared = true;
     }
 
     void markIndex() {

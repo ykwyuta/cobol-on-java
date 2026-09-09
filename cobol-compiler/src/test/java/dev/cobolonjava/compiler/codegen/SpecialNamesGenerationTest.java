@@ -208,11 +208,29 @@ class SpecialNamesGenerationTest {
     }
 
     @Test
-    @DisplayName("DECIMAL-POINT IS COMMA はまだ書けないと報告する (FR-054)")
-    void decimalPointIsCommaIsReportedAsUnsupported() {
-        // 小数点の入れ替えは数字定数の綴りにも効くので、字句の切り出しまで遡る
-        CobolCompiler.Result result = compile(
+    @DisplayName("DECIMAL-POINT IS COMMA は数字定数の綴りにも効く (FR-054)")
+    void decimalPointIsCommaChangesHowNumbersAreSpelled() {
+        // 小数点の入れ替えは PICTURE だけでなく数字定数の綴りにも効くので、
+        // <b>字句の切り出しまで遡る</b>必要がある
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        load(compile(
                 List.of("    DECIMAL-POINT IS COMMA."),
+                List.of("01 WS-N PIC 9(3)V99 VALUE 12,34.",
+                        "01 WS-E PIC ZZZ.ZZ9,99."),
+                "    MOVE WS-N TO WS-E",
+                "    DISPLAY WS-E."))
+                .runFresh(ProgramContext.capturing(sink));
+
+        // 桁区切りはピリオド、小数点はコンマになる
+        assertEquals("     12,34",
+                sink.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), ""));
+    }
+
+    @Test
+    @DisplayName("DECIMAL-POINT IS のあとは COMMA だけである (FR-054)")
+    void decimalPointTakesOnlyComma() {
+        CobolCompiler.Result result = compile(
+                List.of("    DECIMAL-POINT IS PERIOD."),
                 List.of("01 WS-A PIC X."), "CONTINUE.");
 
         assertFalse(result.succeeded());

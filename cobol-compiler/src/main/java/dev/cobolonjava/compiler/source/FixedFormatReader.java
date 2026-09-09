@@ -1,7 +1,9 @@
 package dev.cobolonjava.compiler.source;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 固定形式ソースの読み取りと正規化 (要件 FR-002, FR-003, FR-094)。
@@ -57,6 +59,27 @@ public final class FixedFormatReader implements SourceReader {
         return new FixedFormatReader(false);
     }
 
+    @Override
+    public SourceReader withDebuggingMode() {
+        return debuggingMode ? this : new FixedFormatReader(true);
+    }
+
+    @Override
+    public boolean debuggingMode() {
+        return debuggingMode;
+    }
+
+    @Override
+    public Set<Integer> debugLines(String source) {
+        Set<Integer> lines = new LinkedHashSet<>();
+        for (SourceLine line : split("", source)) {
+            if (line.indicator() == LineIndicator.DEBUG) {
+                lines.add(line.lineNumber());
+            }
+        }
+        return lines;
+    }
+
     /** 物理行の並びをカラムで分解する。 */
     public List<SourceLine> split(String fileName, String source) {
         List<SourceLine> lines = new ArrayList<>();
@@ -78,7 +101,7 @@ public final class FixedFormatReader implements SourceReader {
         try {
             indicator = LineIndicator.of(indicatorChar);
         } catch (SourceFormatException e) {
-            throw new SourceFormatException(fileName + ":" + lineNumber + ": " + e.getMessage());
+            throw new SourceFormatException(new Origin(fileName, lineNumber, 1), "" + e.getMessage());
         }
 
         int from = Math.min(raw.length(), SourceLine.CONTENT_START_COLUMN - 1);
@@ -95,11 +118,92 @@ public final class FixedFormatReader implements SourceReader {
 
     /** 分解済みの行を 1 本の正規化済みソースへまとめる。 */
     public NormalizedSource normalize(List<SourceLine> lines) {
+        return join(withoutCommentEntries(lines));
+    }
+
+    /**
+     * 見出し部の注記段落を落とす (要件 FR-002)。
+     *
+     * <p>{@code AUTHOR} / {@code INSTALLATION} / {@code DATE-WRITTEN} /
+     * {@code DATE-COMPILED} / {@code SECURITY} の 5 つは、COBOL の決まりで<b>注記</b>で
+     * ある。書かれた中身に文法は無く、処理系は読んで捨てる。
+     *
+     * <pre>
+     * 000400 AUTHOR.
+     * 000500     FEDERAL COMPILER TESTING CENTER.
+     * 000600 INSTALLATION.
+     * 000700     GENERAL SERVICES ADMINISTRATION
+     * 000800     AUTOMATED DATA AND TELECOMMUNICATION SERVICE.
+     * </pre>
+     *
+     * <p>どこで終わるかを決めるのは<b>桁</b>である。注記は B 領域 (12 桁目から) に書き、
+     * 次に A 領域 (8〜11 桁目) から始まる行が来たら終わりである。語では決められない。
+     * 上の例の注記には {@code DATA} という語が入っており、部の見出しと見分けられない。
+     *
+     * <p>だから構文解析器へ渡す前に、ここで落とす。桁を知っているのはこの層だけである。
+     * 自由形式には領域が無いので、この扱いは固定形式だけである (暫定判断 P-064)。
+     */
+    private static List<SourceLine> withoutCommentEntries(List<SourceLine> lines) {
+        List<SourceLine> out = new ArrayList<>();
+        boolean inside = false;
+        for (SourceLine line : lines) {
+            if (line.indicator() == LineIndicator.COMMENT
+                    || line.indicator() == LineIndicator.EJECT) {
+                out.add(line);
+                continue;
+            }
+            boolean areaA = startsInAreaA(line.content());
+            if (inside && !areaA) {
+                continue;
+            }
+            inside = false;
+            if (areaA && namesCommentEntry(line.content())) {
+                inside = true;
+                continue;
+            }
+            out.add(line);
+        }
+        return out;
+    }
+
+    /** A 領域 (8〜11 桁目) から書き始めているか。 */
+    private static boolean startsInAreaA(String content) {
+        for (int i = 0; i < content.length(); i++) {
+            if (content.charAt(i) != ' ') {
+                return i < AREA_A_WIDTH;
+            }
+        }
+        return false;
+    }
+
+    /** 注記段落の見出しか。{@code AUTHOR.} のように終止符が続く。 */
+    private static boolean namesCommentEntry(String content) {
+        String text = content.strip();
+        int stop = text.indexOf('.');
+        if (stop <= 0) {
+            return false;
+        }
+        return COMMENT_ENTRIES.contains(
+                text.substring(0, stop).strip().toUpperCase(java.util.Locale.ROOT));
+    }
+
+    /** A 領域の広さ。8 桁目から 11 桁目までの 4 桁である。 */
+    private static final int AREA_A_WIDTH = 4;
+
+    /** 中身が注記である段落。COBOL の決まりで、処理系は読んで捨てる。 */
+    private static final java.util.Set<String> COMMENT_ENTRIES = java.util.Set.of(
+            "AUTHOR", "INSTALLATION", "DATE-WRITTEN", "DATE-COMPILED", "SECURITY");
+
+    private NormalizedSource join(List<SourceLine> lines) {
         NormalizedSource.Builder out = new NormalizedSource.Builder();
         // 直前の行が文字定数の途中で終わっているか。継続の扱いを分ける
         char openQuote = 0;
 
-        for (SourceLine line : lines) {
+        // 直前の行の 72 桁目が「2 個 1 組の引用符」の 1 個目だったか
+        boolean splitQuote = false;
+
+        for (int at = 0; at < lines.size(); at++) {
+            SourceLine line = lines.get(at);
             switch (line.indicator()) {
                 case COMMENT, EJECT -> {
                     continue;
@@ -114,14 +218,23 @@ public final class FixedFormatReader implements SourceReader {
             }
 
             if (line.indicator() == LineIndicator.CONTINUATION) {
-                openQuote = appendContinuation(out, line, openQuote);
+                openQuote = appendContinuation(out, line, openQuote, splitQuote);
+                splitQuote = false;
             } else {
                 if (openQuote != 0) {
-                    throw new SourceFormatException(line.fileName() + ":" + line.lineNumber()
-                            + ": a non-numeric literal is left unclosed and the next line is not a"
+                    throw new SourceFormatException(new Origin(line.fileName(), line.lineNumber(), 1), "a non-numeric literal is left unclosed and the next line is not a"
                             + " continuation line");
                 }
                 openQuote = appendNormal(out, line);
+                splitQuote = false;
+                if (openQuote == 0 && splitQuoteFollows(lines, at)) {
+                    char closed = closedAtMargin(line);
+                    if (closed != 0) {
+                        // 72 桁目の引用符は組の 1 個目である。定数はまだ閉じていない
+                        openQuote = closed;
+                        splitQuote = true;
+                    }
+                }
             }
         }
 
@@ -129,6 +242,44 @@ public final class FixedFormatReader implements SourceReader {
             throw new SourceFormatException("a non-numeric literal is left unclosed at end of source");
         }
         return out.build();
+    }
+
+    /**
+     * 72 桁目の引用符が<b>2 個 1 組の片割れ</b>かどうか (要件 FR-011)。
+     *
+     * <p>定数の中の引用符は 2 個並べて書く。その 2 個が行の境目で分かれることがある。
+     * CCVS85 の NC215A がそう書いている。
+     *
+     * <pre>
+     * 004900     THE-BIG-OL-LITERAL-ALPHABET IS "A+0B-1C*2D/3E=4Fl5G,6H;7I.8J"
+     * 005000-    ""9K(L)M&gt;N&lt;O PQRSTUVWXYZ".
+     * </pre>
+     *
+     * <p>72 桁目の {@code "} を「定数を閉じた」と読むと、次の行が<b>宙に浮く</b>。
+     * 正しくは 72 桁目が組の 1 個目、継続行の B 領域の 1 個目が<b>再開の印</b>、
+     * 2 個目が組の 2 個目である。3 個で 1 文字の {@code "} を表している。
+     *
+     * <p>行 1 本だけを見て決めることはできない。<b>次の行が継続行で、その B 領域が
+     * 同じ引用符で始まっているとき</b>にかぎり、片割れと読む (暫定判断 P-084)。
+     *
+     * @param at いま見ている行の位置
+     */
+    private static boolean splitQuoteFollows(List<SourceLine> lines, int at) {
+        for (int next = at + 1; next < lines.size(); next++) {
+            SourceLine line = lines.get(next);
+            if (line.indicator() == LineIndicator.COMMENT
+                    || line.indicator() == LineIndicator.EJECT) {
+                continue;
+            }
+            if (line.indicator() != LineIndicator.CONTINUATION) {
+                return false;
+            }
+            String content = line.content();
+            int first = SourceText.countLeadingSpaces(content);
+            return first < content.length()
+                    && (content.charAt(first) == '\'' || content.charAt(first) == '"');
+        }
+        return false;
     }
 
     /** 通常の行を、区切りの空白を挟んで連結する。 */
@@ -154,32 +305,61 @@ public final class FixedFormatReader implements SourceReader {
     }
 
     /**
+     * 定数を<b>ちょうど 72 桁目の引用符で</b>閉じているか。
+     *
+     * <p>閉じているなら、その引用符を返す。閉じていない、あるいは 72 桁目より手前で
+     * 閉じているなら {@code 0} を返す。
+     */
+    private static char closedAtMargin(SourceLine line) {
+        String padded = line.contentPaddedToMargin();
+        String trimmed = SourceText.stripTrailing(padded);
+        if (trimmed.length() != padded.length() || trimmed.isEmpty()) {
+            // 72 桁目が空白なら、そこで定数が閉じているはずがない
+            return 0;
+        }
+        char last = trimmed.charAt(trimmed.length() - 1);
+        if (last != '\'' && last != '"') {
+            return 0;
+        }
+        // 最後の 1 文字を落とせば定数が開いたままになるなら、それが閉じた引用符である
+        return SourceText.openQuoteAtEnd(trimmed.substring(0, trimmed.length() - 1), (char) 0)
+                == last ? last : 0;
+    }
+
+    /**
      * 継続行を連結する。
      *
-     * @param openQuote 直前の行で開いたままの引用符。0 なら定数の外
+     * @param openQuote  直前の行で開いたままの引用符。0 なら定数の外
+     * @param splitQuote 直前の行の 72 桁目が「2 個 1 組の引用符」の 1 個目だったか。
+     *                   そうなら、再開の印を外した先頭の 1 文字が<b>組の 2 個目</b>で
+     *                   あり、定数を閉じる引用符ではない (要件 FR-011、暫定判断 P-084)
      * @return この行の末尾で開いたままの引用符
      */
-    private char appendContinuation(NormalizedSource.Builder out, SourceLine line, char openQuote) {
+    private char appendContinuation(NormalizedSource.Builder out, SourceLine line, char openQuote,
+                                    boolean splitQuote) {
         String content = line.content();
         int first = SourceText.countLeadingSpaces(content);
         if (first >= content.length()) {
-            throw new SourceFormatException(line.fileName() + ":" + line.lineNumber()
-                    + ": a continuation line has no content in area B");
+            throw new SourceFormatException(new Origin(line.fileName(), line.lineNumber(), 1), "a continuation line has no content in area B");
         }
 
         int start = first;
         if (openQuote != 0) {
             // 定数の継続。B 領域の最初の非空白は引用符でなければならず、それは定数に含めない
             if (content.charAt(first) != openQuote) {
-                throw new SourceFormatException(line.fileName() + ":" + line.lineNumber()
-                        + ": a continued non-numeric literal must resume with the quotation"
+                throw new SourceFormatException(new Origin(line.fileName(), line.lineNumber(), 1), "a continued non-numeric literal must resume with the quotation"
                         + " character " + openQuote);
             }
             start = first + 1;
         }
 
         String rest = SourceText.stripInlineComment(content.substring(start), openQuote);
-        char resulting = SourceText.openQuoteAtEnd(rest, openQuote);
+        // 組の 2 個目は定数の中の 1 文字である。数えるときだけ読み飛ばす
+        // (出す文字列には残す。2 個並んだまま渡せば、字句解析が 1 文字へ畳む)
+        boolean pairing = splitQuote && !rest.isEmpty() && rest.charAt(0) == openQuote;
+        char resulting = pairing
+                ? SourceText.openQuoteAtEnd(rest.substring(1), openQuote)
+                : SourceText.openQuoteAtEnd(rest, openQuote);
         if (resulting != 0) {
             // まだ閉じていないので、この行も 72 桁まで定数の一部になる
             rest = line.contentPaddedToMargin().substring(start);

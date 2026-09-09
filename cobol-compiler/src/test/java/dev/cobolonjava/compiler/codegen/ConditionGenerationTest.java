@@ -169,6 +169,127 @@ class ConditionGenerationTest {
     }
 
     @Test
+    @DisplayName("表の項目に付いた条件名は添字を取る (FR-022, FR-046)")
+    void aConditionNameOnATableItemTakesASubscript() {
+        // 添字は条件名のほうに書かれるが、効くのは親の表への参照である
+        List<String> storage = List.of(
+                "01 WS-TABLE.",
+                "   02 WS-CELL PIC X OCCURS 3 TIMES.",
+                "      88 WS-HIT VALUE 'H'.",
+                "01 WS-R PIC X.");
+
+        assertEquals("H",
+                run(storage,
+                        "MOVE 'H' TO WS-CELL (2)",
+                        "IF WS-HIT (2) MOVE 'H' TO WS-R ELSE MOVE 'M' TO WS-R END-IF.")
+                        .substring(3),
+                "書いた桁の中身を見ている");
+        assertEquals("M",
+                run(storage,
+                        "MOVE 'H' TO WS-CELL (2)",
+                        "IF WS-HIT (1) MOVE 'H' TO WS-R ELSE MOVE 'M' TO WS-R END-IF.")
+                        .substring(3),
+                "別の桁は見ていない");
+    }
+
+    @Test
+    @DisplayName("SET 条件名 TO TRUE も添字を取る (FR-068)")
+    void settingAConditionNameTrueTakesASubscript() {
+        assertEquals(" H ", run(
+                List.of("01 WS-TABLE.",
+                        "   02 WS-CELL PIC X OCCURS 3 TIMES.",
+                        "      88 WS-HIT VALUE 'H'."),
+                "SET WS-HIT (2) TO TRUE."));
+    }
+
+    @Test
+    @DisplayName("添字の数が合わない条件名は診断になる (FR-022)")
+    void aConditionNameWithTheWrongNumberOfSubscriptsIsDiagnosed() {
+        CobolCompiler.Result result = compile(
+                List.of("01 WS-TABLE.",
+                        "   02 WS-CELL PIC X OCCURS 3 TIMES.",
+                        "      88 WS-HIT VALUE 'H'.",
+                        "01 WS-R PIC X."),
+                "IF WS-HIT MOVE 'H' TO WS-R END-IF.");
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("subscript"),
+                () -> result.diagnostics().toString());
+    }
+
+    /** 3 つの印を置き、{@code END-IF} のあとに同じ文が続く形を流す。 */
+    private static final List<String> THREE_MARKS = List.of(
+            "01 WS-A PIC 9 VALUE 1.", "01 WS-R PIC X.", "01 WS-S PIC X.");
+
+    @Test
+    @DisplayName("NEXT SENTENCE は文の残りを飛ばす (FR-061)")
+    void nextSentenceSkipsTheRestOfTheSentence() {
+        // END-IF のあとにまだ同じ文が続いている。NEXT SENTENCE は終止符の先へ飛ぶので
+        // WS-S に X は入らない
+        assertEquals("T ", run(THREE_MARKS,
+                "IF WS-A = 1 NEXT SENTENCE ELSE MOVE 'E' TO WS-R END-IF",
+                "MOVE 'X' TO WS-S.",
+                "MOVE 'T' TO WS-R.").substring(1));
+    }
+
+    @Test
+    @DisplayName("CONTINUE は文の残りを飛ばさない (FR-061)")
+    void continueDoesNotSkipTheRestOfTheSentence() {
+        // 同じ形を CONTINUE で書くと、END-IF のあとの MOVE が通る。
+        // ここが 2 つの文の違いである
+        assertEquals("TX", run(THREE_MARKS,
+                "IF WS-A = 1 CONTINUE ELSE MOVE 'E' TO WS-R END-IF",
+                "MOVE 'X' TO WS-S.",
+                "MOVE 'T' TO WS-R.").substring(1));
+    }
+
+    @Test
+    @DisplayName("EVALUATE の枝にも NEXT SENTENCE を書ける (FR-061, FR-062)")
+    void anEvaluateBranchMayBeNextSentence() {
+        assertEquals(" N", run(
+                List.of("01 WS-A PIC 9 VALUE 2.", "01 WS-R PIC X.", "01 WS-S PIC X."),
+                "EVALUATE WS-A",
+                "    WHEN 1 MOVE '1' TO WS-R",
+                "    WHEN 2 NEXT SENTENCE",
+                "    WHEN OTHER MOVE 'O' TO WS-R",
+                "END-EVALUATE",
+                "MOVE 'X' TO WS-R.",
+                "MOVE 'N' TO WS-S.").substring(1),
+                "枝が選ばれたら END-EVALUATE のあとの MOVE は通らない");
+        assertEquals("XN", run(
+                List.of("01 WS-A PIC 9 VALUE 1.", "01 WS-R PIC X.", "01 WS-S PIC X."),
+                "EVALUATE WS-A",
+                "    WHEN 1 MOVE '1' TO WS-R",
+                "    WHEN 2 NEXT SENTENCE",
+                "    WHEN OTHER MOVE 'O' TO WS-R",
+                "END-EVALUATE",
+                "MOVE 'X' TO WS-R.",
+                "MOVE 'N' TO WS-S.").substring(1),
+                "別の枝なら文の続きは通る");
+    }
+
+    @Test
+    @DisplayName("関係条件の両辺に算術式を書ける (FR-046)")
+    void aRelationMayCompareArithmeticExpressions() {
+        assertEquals("T", branchTaken("1 + (WS-A * 2) = 21"));
+        assertEquals("T", branchTaken("WS-A + WS-B = WS-B + WS-A"));
+        assertEquals("F", branchTaken("WS-A * 3 > WS-B * 2"));
+    }
+
+    @Test
+    @DisplayName("EVALUATE の目的語にも算術式を書ける (FR-062)")
+    void anEvaluateObjectMayBeAnArithmeticExpression() {
+        assertEquals("H", run(
+                List.of("01 WS-A PIC 9(3) VALUE 010.",
+                        "01 WS-B PIC 9(3) VALUE 004.",
+                        "01 WS-R PIC X."),
+                "EVALUATE WS-A",
+                "    WHEN WS-B * 2 MOVE 'L' TO WS-R",
+                "    WHEN (WS-B + 1) * 2 MOVE 'H' TO WS-R",
+                "    WHEN OTHER MOVE 'O' TO WS-R",
+                "END-EVALUATE.").substring(6));
+    }
+
+    @Test
     @DisplayName("ELSE がなくても書ける (FR-061)")
     void theElseBranchIsOptional() {
         assertEquals("40", java.util.HexFormat.of().withUpperCase().formatHex(
@@ -207,6 +328,39 @@ class ConditionGenerationTest {
         assertEquals("40", java.util.HexFormat.of().withUpperCase().formatHex(
                 CodePages.DEFAULT.encode(run(
                         List.of("01 WS-R PIC X."), "IF WS-R = ' ' CONTINUE END-IF."))));
+    }
+
+    @Test
+    @DisplayName("同じ条件名を別の表に書いたら、修飾したほうを見る (FR-022)")
+    void aQualifiedConditionNameNamesItsOwnTable() {
+        // どちらの表にも SAYS-A がある。修飾しているほうは 2 次元なので添字も 2 つ要る。
+        // 修飾を見ないと、先に見つかる 1 次元の表で数えてしまう
+        assertEquals("T", run(
+                List.of("01 FLAT-TABLE.",
+                        "   05 FLAT-CELL PIC X OCCURS 3 TIMES.",
+                        "      88 SAYS-A VALUE 'A'.",
+                        "01 DEEP-TABLE.",
+                        "   05 DEEP-ROW OCCURS 2 TIMES.",
+                        "      10 DEEP-CELL PIC X OCCURS 2 TIMES.",
+                        "         88 SAYS-A VALUE 'A'.",
+                        "01 WS-R PIC X."),
+                "MOVE 'A' TO DEEP-CELL OF DEEP-ROW (2, 1)",
+                "IF SAYS-A OF DEEP-CELL (2, 1) MOVE 'T' TO WS-R END-IF.").substring(7));
+    }
+
+    @Test
+    @DisplayName("修飾しても 1 個に絞れなければ、条件名として扱わない (FR-022)")
+    void anAmbiguousConditionNameIsRefused() {
+        CobolCompiler.Result result = compile(
+                List.of("01 G-ONE.",
+                        "   05 C-ONE PIC X.",
+                        "      88 SAYS-A VALUE 'A'.",
+                        "01 G-TWO.",
+                        "   05 C-TWO PIC X.",
+                        "      88 SAYS-A VALUE 'A'.",
+                        "01 WS-R PIC X."),
+                "IF SAYS-A MOVE 'T' TO WS-R END-IF.");
+        assertFalse(result.succeeded());
     }
 
     @Test

@@ -2,11 +2,13 @@ package dev.cobolonjava.compiler.codegen;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.compiler.CobolCompiler;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.UnalteredGoToException;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -36,22 +38,8 @@ class GoToGenerationTest {
     }
 
     private static CobolCompiler.Result compile(List<String> storage, String... procedure) {
-        StringBuilder sb = new StringBuilder();
-        for (String line : List.of(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. HELLO.",
-                "DATA DIVISION.",
-                "WORKING-STORAGE SECTION.")) {
-            sb.append("       ").append(line).append('\n');
-        }
-        for (String line : storage) {
-            sb.append("       ").append(line).append('\n');
-        }
-        sb.append("       PROCEDURE DIVISION.\n");
-        for (String line : procedure) {
-            sb.append("       ").append(line).append('\n');
-        }
-        return CobolCompiler.standard().compile(FILE, sb.toString());
+        return CobolCompiler.standard().compile(FILE,
+                FixedFormatSource.program(storage, procedure));
     }
 
     private static String run(List<String> storage, String... procedure) {
@@ -227,6 +215,349 @@ class GoToGenerationTest {
                 "    GO TO LAST-P.",
                 "LAST-P.",
                 "    ADD 10 TO WS-N."));
+    }
+
+    private static final List<String> SELECTOR = List.of(
+            "01 WS-N PIC 9(3) VALUE 0.",
+            "01 WS-K PIC 9 VALUE 0.");
+
+    /** {@code GO TO ... DEPENDING ON} を、選ぶ値を変えながら流す。 */
+    private static String depending(int selector) {
+        return run(SELECTOR,
+                "MAIN-START.",
+                "    MOVE " + selector + " TO WS-K",
+                "    GO TO A-P B-P C-P DEPENDING ON WS-K",
+                "    ADD 7 TO WS-N",
+                "    STOP RUN.",
+                "A-P.",
+                "    ADD 1 TO WS-N",
+                "    STOP RUN.",
+                "B-P.",
+                "    ADD 2 TO WS-N",
+                "    STOP RUN.",
+                "C-P.",
+                "    ADD 3 TO WS-N",
+                "    STOP RUN.").substring(0, 3);
+    }
+
+    @Test
+    @DisplayName("GO TO ... DEPENDING ON は何番目かで飛び先を選ぶ (FR-063)")
+    void goToDependingPicksTheNthTarget() {
+        assertEquals("001", depending(1));
+        assertEquals("002", depending(2));
+        assertEquals("003", depending(3));
+    }
+
+    @Test
+    @DisplayName("並びの外なら飛ばずに次の文へ進む (FR-063)")
+    void avalueOutsideTheListFallsThrough() {
+        // 誤りにはならない。規格がそう決めている
+        assertEquals("007", depending(0));
+        assertEquals("007", depending(4));
+    }
+
+    @Test
+    @DisplayName("DEPENDING ON がなければ飛び先は 1 つである (FR-061)")
+    void withoutDependingOnlyOneTargetIsAllowed() {
+        CobolCompiler.Result result = compile(COUNTER,
+                "MAIN-START.",
+                "    GO TO A-P B-P.",
+                "A-P.",
+                "    ADD 1 TO WS-N.",
+                "B-P.",
+                "    ADD 2 TO WS-N.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("one procedure name"),
+                result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("手続き名は数字だけでもよい (FR-061)")
+    void aProcedureNameMayBeAllDigits() {
+        // データ名と違うところである。段分けの章は「00 SECTION 00.」と書かれる
+        assertEquals("101", run(COUNTER,
+                "MAIN-START.",
+                "    ADD 1 TO WS-N",
+                "    GO TO 50.",
+                "20.",
+                "    ADD 10 TO WS-N.",
+                "50.",
+                "    ADD 100 TO WS-N."));
+    }
+
+    @Test
+    @DisplayName("章に段番号を書ける (FR-061, 暫定判断 P-066)")
+    void aSectionMayCarryASegmentNumber() {
+        assertEquals("101", run(COUNTER,
+                "MAIN-START SECTION 00.",
+                "FIRST-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO THIRD-P.",
+                "SECOND-S SECTION 50.",
+                "SECOND-P.",
+                "    ADD 10 TO WS-N.",
+                "THIRD-S SECTION 99.",
+                "THIRD-P.",
+                "    ADD 100 TO WS-N."));
+    }
+
+    @Test
+    @DisplayName("ALTER は GO TO だけの段落の飛び先を書き換える (FR-063)")
+    void alterChangesWhereAGoToLeads() {
+        // 1 回目は B-P へ、書き換えたあとは C-P へ飛ぶ
+        assertEquals("0021", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("同じ段落名が別の節にあれば、節の名前で修飾して選ぶ (FR-061)")
+    void aParagraphNameMayBeQualifiedByItsSection() {
+        // 修飾を落として先頭の名前だけを見ると、<b>別の節の同じ名前へ飛ぶ</b>。
+        // 黙って違うほうへ飛ぶより悪いことはない
+        assertEquals("0020", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SAME-NAME OF SECTION-TWO",
+                "    STOP RUN.",
+                "SECTION-ONE SECTION.",
+                "SAME-NAME.",
+                "    ADD 1 TO WS-N.",
+                "SECTION-TWO SECTION.",
+                "SAME-NAME.",
+                "    ADD 20 TO WS-N."));
+    }
+
+    @Test
+    @DisplayName("修飾が無くても、同じ節の中の段落を先に見る (FR-061)")
+    void anUnqualifiedNameFindsTheOneInItsOwnSection() {
+        assertEquals("0021", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SECTION-TWO",
+                "    STOP RUN.",
+                "SECTION-ONE SECTION.",
+                "SAME-NAME.",
+                "    ADD 1 TO WS-N.",
+                "SECTION-TWO SECTION.",
+                "TWO-START.",
+                "    GO TO SAME-NAME.",
+                "SAME-NAME.",
+                "    ADD 20 TO WS-N",
+                "    PERFORM SAME-NAME OF SECTION-ONE."));
+    }
+
+    @Test
+    @DisplayName("どちらか決まらなければ断る (FR-061)")
+    void anAmbiguousProcedureNameIsRefused() {
+        assertTrue(compile(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SAME-NAME",
+                "    STOP RUN.",
+                "SECTION-ONE SECTION.",
+                "SAME-NAME.",
+                "    ADD 1 TO WS-N.",
+                "SECTION-TWO SECTION.",
+                "SAME-NAME.",
+                "    ADD 20 TO WS-N.").diagnostics().toString().contains("is ambiguous"));
+    }
+
+    @Test
+    @DisplayName("行き先を書かない GO TO は ALTER が入れた先へ飛ぶ (FR-063)")
+    void aGoToWithNoDestinationTakesTheOneAlterPutsIn() {
+        // 「GO TO.」とだけ書いた段落は、行き先が<b>まだ決まっていない</b>場所である。
+        // 規格の廃要素だが、古い資産には残っている
+        assertEquals("0020", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("行き先を書かない GO TO を ALTER の前に通ったら止める (FR-063)")
+    void anUnalteredGoToStopsTheProgram() {
+        // 規格はここを未定義としている。未定義のまま次の段落へ流すと、そのあとの
+        // 結果が何を意味するのか分からなくなる。黙って進めるより、そこで止める
+        UnalteredGoToException stopped = assertThrows(UnalteredGoToException.class, () -> run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO.",
+                "AFTER-P.",
+                "    EXIT."));
+
+        assertTrue(stopped.getMessage().contains("SWITCH-P"), stopped.getMessage());
+    }
+
+    @Test
+    @DisplayName("PROCEED TO は省略できる (FR-063)")
+    void theProceedToPhraseIsOptional() {
+        assertEquals("0020", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("独立段へ入り直すと ALTER が元へ戻る (FR-061, FR-063)")
+    void anIndependentSegmentForgetsWhatWasAltered() {
+        // 段番号 50 以上は独立段である。別の段から制御が移るたびに初期状態へ戻る。
+        // 「初期状態」とは ALTER で書き換えた飛び先が元へ戻ることである
+        assertEquals("0002", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "INDEPENDENT SECTION 50.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("同じ段落から独立段を 2 度呼んでも、2 度目は初期状態である (FR-061)")
+    void callingAnIndependentSegmentTwiceFromOneParagraphRestartsIt() {
+        // 段の中で ALTER する形。1 度目は B-P を通って自分を C-P へ向け直す。
+        // 2 度目も初期状態へ戻るので、また B-P を通る。合計 2 である。
+        //
+        // <b>呼んだ側の段へ戻ることを控えていないと、2 度目は「同じ段の中にいる」と
+        // 見えて初期状態へ戻らない。</b>その場合は 1 + 20 = 21 になる
+        assertEquals("0002", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "INDEPENDENT SECTION 50.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("常駐段を 2 度呼べば、書き換えは 2 度目に効く (FR-061)")
+    void callingAResidentSegmentTwiceKeepsWhatWasAltered() {
+        // 同じ形を段番号 49 で書けば、書き換えは残る。1 + 20 = 21 である。
+        // <b>独立段と常駐段で振る舞いが分かれる形</b>にしてある
+        assertEquals("0021", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "RESIDENT SECTION 49.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("常駐段なら書き換えは残る (FR-061, FR-063)")
+    void aResidentSegmentKeepsWhatWasAltered() {
+        // 同じ形を段番号 49 で書けば、書き換えは残ったままである
+        assertEquals("0040", run(
+                List.of("01 WS-N PIC 9(4) VALUE 0."),
+                "DRIVER SECTION 00.",
+                "MAIN-START.",
+                "    ALTER SWITCH-P TO PROCEED TO C-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    PERFORM SWITCH-P THRU AFTER-P",
+                "    STOP RUN.",
+                "RESIDENT SECTION 49.",
+                "SWITCH-P.",
+                "    GO TO B-P.",
+                "B-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO AFTER-P.",
+                "C-P.",
+                "    ADD 20 TO WS-N",
+                "    GO TO AFTER-P.",
+                "AFTER-P.",
+                "    EXIT."));
+    }
+
+    @Test
+    @DisplayName("GO TO だけでない段落は ALTER できない (FR-063)")
+    void onlyAParagraphHoldingASingleGoToMayBeAltered() {
+        CobolCompiler.Result result = compile(COUNTER,
+                "MAIN-START.",
+                "    ALTER OTHER-P TO PROCEED TO LAST-P.",
+                "OTHER-P.",
+                "    ADD 1 TO WS-N",
+                "    GO TO LAST-P.",
+                "LAST-P.",
+                "    EXIT.");
+
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().get(0).message().contains("a single GO TO"),
+                result.diagnostics().toString());
     }
 
     @Test
