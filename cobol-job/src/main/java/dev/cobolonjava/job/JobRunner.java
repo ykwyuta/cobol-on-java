@@ -285,7 +285,9 @@ public final class JobRunner {
                 utility.runFresh(context, arguments(step));
             } else {
                 ProgramContext.Loaded loaded = context.resolve(step.program(), loader);
-                loaded.program().runFresh(context, arguments(step));
+                DataView[] programArguments = arguments(step);
+                loaded.validateArguments(programArguments);
+                loaded.program().runFresh(context, programArguments);
             }
         } catch (RuntimeException e) {
             // 実行を抜けた例外は異常終了である。コードは条件そのものが名乗る (要件 FR-141)

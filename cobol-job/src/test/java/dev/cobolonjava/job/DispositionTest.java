@@ -36,7 +36,7 @@ class DispositionTest {
         dev.cobolonjava.job.jcl.Jcl.Result parsed = dev.cobolonjava.job.jcl.Jcl.read(
                 String.join("\n", cards));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
-        return JobRunner.at(directory.resolve("work"),
+        return JobRunner.at(directory.resolve(".job-work"),
                         DispositionTest.class.getClassLoader(), sink)
                 .withBase(directory)
                 .run(parsed.job());
@@ -239,7 +239,7 @@ class DispositionTest {
                 "LINE");
 
         assertEquals(0, result.returnCode());
-        assertFalse(Files.exists(directory.resolve("work").resolve("J.STEP1")),
+        assertFalse(Files.exists(directory.resolve(".job-work").resolve("J.STEP1")),
                 "スプールも埋め込みデータも、そのステップの間だけ要るものである");
     }
 
@@ -253,7 +253,7 @@ class DispositionTest {
                 "LINE");
 
         assertEquals(JobRunner.Status.ABENDED, result.step("STEP1").status());
-        assertTrue(Files.exists(directory.resolve("work").resolve("J.STEP1")),
+        assertTrue(Files.exists(directory.resolve(".job-work").resolve("J.STEP1")),
                 "何が起きたのかを見られるほうが役に立つ");
     }
 
@@ -290,7 +290,7 @@ class DispositionTest {
 
         assertEquals(0, result.returnCode());
         // 置き場ごと消える。名前を知っていても次のジョブからは見えない
-        assertFalse(Files.exists(directory.resolve("work").resolve("J.temp")));
+        assertFalse(Files.exists(directory.resolve(".job-work").resolve("J.temp")));
         assertFalse(exists("WORK"));
         assertFalse(exists("&WORK"));
     }
@@ -386,7 +386,7 @@ class DispositionTest {
                 "  DD IN DSN=nosuch.dat"));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
 
-        JobRunner.Result result = JobRunner.at(directory.resolve("work"),
+        JobRunner.Result result = JobRunner.at(directory.resolve(".job-work"),
                         DispositionTest.class.getClassLoader(), new ByteArrayOutputStream())
                 .withBase(directory)
                 .run(parsed.job());
@@ -404,7 +404,7 @@ class DispositionTest {
                 "  DD IN DSN=nosuch.dat DISP=SHR"));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
 
-        JobRunner.Result result = JobRunner.at(directory.resolve("work"),
+        JobRunner.Result result = JobRunner.at(directory.resolve(".job-work"),
                         DispositionTest.class.getClassLoader(), new ByteArrayOutputStream())
                 .withBase(directory)
                 .run(parsed.job());

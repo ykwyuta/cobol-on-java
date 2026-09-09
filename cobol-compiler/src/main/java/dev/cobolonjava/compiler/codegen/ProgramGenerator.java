@@ -34,6 +34,9 @@ import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
+import dev.cobolonjava.runtime.interop.ProgramId;
+import dev.cobolonjava.runtime.interop.ProgramParameter;
+import dev.cobolonjava.runtime.interop.ProgramSignature;
 import dev.cobolonjava.runtime.abend.StorageMap;
 import dev.cobolonjava.runtime.picture.Picture;
 import dev.cobolonjava.runtime.picture.PictureParser;
@@ -43,6 +46,11 @@ import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.program.ProgramSupport;
+import dev.cobolonjava.runtime.procedure.ProcedureBoundary;
+import dev.cobolonjava.runtime.procedure.ProcedureDescriptor;
+import dev.cobolonjava.runtime.procedure.ProcedureId;
+import dev.cobolonjava.runtime.procedure.ProcedureKind;
+import dev.cobolonjava.runtime.procedure.ProcedureManifest;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import dev.cobolonjava.runtime.verb.InspectScan;
@@ -101,7 +109,11 @@ public final class ProgramGenerator {
     private static final String COLLATING = Type.getDescriptor(CollatingSequence.class);
     private static final String CLAUSE = Type.getDescriptor(InspectScan.Clause.class);
     private static final String REGION = Type.getDescriptor(Region.class);
+    private static final String PROCEDURE_BOUNDARY = Type.getInternalName(ProcedureBoundary.class);
+    private static final String PROCEDURE_BOUNDARY_DESCRIPTOR =
+            Type.getDescriptor(ProcedureBoundary.class);
 
+    private final String programId;
     private final String className;
     private final CodePage codePage;
     /** {@code SSRANGE} が効いているか。効いていれば添字と部分参照の位置を実行時に検査する。 */
@@ -195,9 +207,13 @@ public final class ProgramGenerator {
     private MethodVisitor run;
     private MethodVisitor clinit;
     private byte[] initialStorageBytes;
+    private ProgramSignature programSignature;
+    private ProcedureManifest procedureManifest;
 
-    private ProgramGenerator(String className, String sourceName, CodePage codePage,
+    private ProgramGenerator(String programId, String className, String sourceName,
+                             CodePage codePage,
                              CompilerOptions options, SpecialNames specialNames) {
+        this.programId = programId;
         this.className = className;
         this.sourceName = sourceName;
         this.codePage = codePage;
@@ -248,10 +264,24 @@ public final class ProgramGenerator {
                                   DataLayout layout, CompilerOptions options,
                                   SpecialNames specialNames,
                                   List<ProcedureBuilder.GlobalDeclarative> globals) {
-        ProgramGenerator generator = new ProgramGenerator(classNameOf(programName), sourceName,
-                CodePages.DEFAULT, options, specialNames);
+        return generate(programName, sourceName, procedure, image, layout, options, specialNames,
+                globals, null, null);
+    }
+
+    /** ABI署名と手続きmanifestを生成class自身へ埋め込む。 */
+    public static Result generate(String programName, String sourceName,
+                                  ProcedureBuilder.Result procedure, InitialImage.Result image,
+                                  DataLayout layout, CompilerOptions options,
+                                  SpecialNames specialNames,
+                                  List<ProcedureBuilder.GlobalDeclarative> globals,
+                                  ProgramSignature signature,
+                                  ProcedureManifest manifest) {
+        ProgramGenerator generator = new ProgramGenerator(programName, classNameOf(programName),
+                sourceName, CodePages.DEFAULT, options, specialNames);
         generator.layout = layout;
         generator.inheritedDeclaratives = List.copyOf(globals);
+        generator.programSignature = signature;
+        generator.procedureManifest = manifest;
         return generator.emit(procedure, image);
     }
 
@@ -272,7 +302,7 @@ public final class ProgramGenerator {
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image, CodePage codePage,
                                   CompilerOptions options, SpecialNames specialNames) {
-        return new ProgramGenerator(classNameOf(programName), null, codePage, options,
+        return new ProgramGenerator(programName, classNameOf(programName), null, codePage, options,
                 specialNames).emit(procedure, image);
     }
 
@@ -308,6 +338,8 @@ public final class ProgramGenerator {
         }
         // 飛び先の表があるかどうかは、段落を読んでからでないと決まらない
         emitConstructor(writer, internal);
+        emitProgramName();
+        emitEmbeddedMetadata();
         declareAlterTables();
         emitRun(firstNormal, paragraphs.size());
         emitMain();
@@ -345,6 +377,134 @@ public final class ProgramGenerator {
         init.visitInsn(Opcodes.RETURN);
         init.visitMaxs(0, 0);
         init.visitEnd();
+    }
+
+    /** Javaクラス名へ読み替える前のPROGRAM-IDを実行時へ残す。 */
+    private void emitProgramName() {
+        MethodVisitor name = writer.visitMethod(Opcodes.ACC_PUBLIC, "name",
+                "()Ljava/lang/String;", null, null);
+        name.visitCode();
+        name.visitLdcInsn(programId);
+        name.visitInsn(Opcodes.ARETURN);
+        name.visitMaxs(0, 0);
+        name.visitEnd();
+    }
+
+    /** コンパイル結果を伴わない配備でも同じABI・手続き情報を復元できる入口。 */
+    private void emitEmbeddedMetadata() {
+        if (programSignature != null) {
+            emitProgramSignature();
+        }
+        if (procedureManifest != null) {
+            emitProcedureManifest();
+        }
+    }
+
+    private void emitProgramSignature() {
+        String parameterInternal = Type.getInternalName(ProgramParameter.class);
+        MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "programSignature",
+                "()L" + Type.getInternalName(ProgramSignature.class) + ";", null, null);
+        method.visitCode();
+        method.visitLdcInsn(programSignature.programId().value());
+        emitInt(method, programSignature.parameters().size());
+        method.visitTypeInsn(Opcodes.ANEWARRAY, parameterInternal);
+        for (int i = 0; i < programSignature.parameters().size(); i++) {
+            ProgramParameter parameter = programSignature.parameters().get(i);
+            method.visitInsn(Opcodes.DUP);
+            emitInt(method, i);
+            method.visitTypeInsn(Opcodes.NEW, parameterInternal);
+            method.visitInsn(Opcodes.DUP);
+            method.visitLdcInsn(parameter.name());
+            emitInt(method, parameter.minimumBytes());
+            emitInt(method, parameter.maximumBytes());
+            emitEnum(method, ProgramParameter.Presence.class, parameter.presence().name());
+            emitEnum(method, ProgramParameter.PassingMode.class, parameter.passingMode().name());
+            emitEnum(method, ProgramParameter.Direction.class, parameter.direction().name());
+            method.visitLdcInsn(parameter.layoutHash());
+            method.visitMethodInsn(Opcodes.INVOKESPECIAL, parameterInternal, "<init>",
+                    "(Ljava/lang/String;IIL"
+                            + Type.getInternalName(ProgramParameter.Presence.class)
+                            + ";L" + Type.getInternalName(ProgramParameter.PassingMode.class)
+                            + ";L" + Type.getInternalName(ProgramParameter.Direction.class)
+                            + ";Ljava/lang/String;)V", false);
+            method.visitInsn(Opcodes.AASTORE);
+        }
+        method.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/List", "of",
+                "([Ljava/lang/Object;)Ljava/util/List;", true);
+        method.visitMethodInsn(Opcodes.INVOKESTATIC,
+                Type.getInternalName(ProgramSignature.class), "of",
+                "(Ljava/lang/String;Ljava/util/List;)L"
+                        + Type.getInternalName(ProgramSignature.class) + ";", false);
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    private void emitProcedureManifest() {
+        String descriptorInternal = Type.getInternalName(ProcedureDescriptor.class);
+        String procedureIdInternal = Type.getInternalName(ProcedureId.class);
+        MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC, "procedureManifest",
+                "()L" + Type.getInternalName(ProcedureManifest.class) + ";", null, null);
+        method.visitCode();
+        method.visitLdcInsn(procedureManifest.programId().value());
+        emitInt(method, procedureManifest.procedures().size());
+        method.visitTypeInsn(Opcodes.ANEWARRAY, descriptorInternal);
+        for (int i = 0; i < procedureManifest.procedures().size(); i++) {
+            ProcedureDescriptor descriptor = procedureManifest.procedures().get(i);
+            method.visitInsn(Opcodes.DUP);
+            emitInt(method, i);
+            method.visitTypeInsn(Opcodes.NEW, descriptorInternal);
+            method.visitInsn(Opcodes.DUP);
+            method.visitTypeInsn(Opcodes.NEW, procedureIdInternal);
+            method.visitInsn(Opcodes.DUP);
+            method.visitLdcInsn(descriptor.id().programId().value());
+            method.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(ProgramId.class),
+                    "of", "(Ljava/lang/String;)L" + Type.getInternalName(ProgramId.class) + ";",
+                    false);
+            emitEnum(method, ProcedureKind.class, descriptor.id().kind().name());
+            method.visitLdcInsn(descriptor.id().name());
+            method.visitMethodInsn(Opcodes.INVOKESPECIAL, procedureIdInternal, "<init>",
+                    "(L" + Type.getInternalName(ProgramId.class) + ";L"
+                            + Type.getInternalName(ProcedureKind.class)
+                            + ";Ljava/lang/String;)V", false);
+            emitInt(method, descriptor.firstParagraph());
+            emitInt(method, descriptor.lastParagraph());
+            emitBoolean(method, descriptor.declarative());
+            emitNullableString(method, descriptor.sourceFile());
+            emitInt(method, descriptor.sourceLine());
+            emitBoolean(method, descriptor.directInvocationEligible());
+            emitNullableString(method, descriptor.ineligibilityReason());
+            method.visitMethodInsn(Opcodes.INVOKESPECIAL, descriptorInternal, "<init>",
+                    "(L" + procedureIdInternal
+                            + ";IIZLjava/lang/String;IZLjava/lang/String;)V", false);
+            method.visitInsn(Opcodes.AASTORE);
+        }
+        method.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/List", "of",
+                "([Ljava/lang/Object;)Ljava/util/List;", true);
+        method.visitMethodInsn(Opcodes.INVOKESTATIC,
+                Type.getInternalName(ProcedureManifest.class), "of",
+                "(Ljava/lang/String;Ljava/util/List;)L"
+                        + Type.getInternalName(ProcedureManifest.class) + ";", false);
+        method.visitInsn(Opcodes.ARETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    private static void emitEnum(MethodVisitor method, Class<?> type, String constant) {
+        method.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(type), constant,
+                Type.getDescriptor(type));
+    }
+
+    private static void emitBoolean(MethodVisitor method, boolean value) {
+        method.visitInsn(value ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+    }
+
+    private static void emitNullableString(MethodVisitor method, String value) {
+        if (value == null) {
+            method.visitInsn(Opcodes.ACONST_NULL);
+        } else {
+            method.visitLdcInsn(value);
+        }
     }
 
     /** 書き換えられたあとの飛び先を持つ表。 */
@@ -3102,7 +3262,97 @@ public final class ProgramGenerator {
             report(statement.origin(), "undefined paragraph: " + statement.target());
             return null;
         }
+        ProcedureBuilder.Section hooked = hookableSection(statement);
+        if (hooked != null) {
+            int boundary = nextLocal++;
+            int failure = nextLocal++;
+            String caller = currentParagraphName;
+            Origin origin = statement.origin();
+            return () -> emitHookedSectionPerform(hooked, from, to, caller, origin,
+                    boundary, failure);
+        }
         return () -> emitPerformRange(from, to);
+    }
+
+    /** Mock対象にできるのは、THRUを伴わない通常SECTIONの明示的PERFORMだけである。 */
+    private ProcedureBuilder.Section hookableSection(Statement.Perform statement) {
+        if (statement.through() != null) {
+            return null;
+        }
+        for (ProcedureBuilder.Section section : sections) {
+            if (!section.declarative() && section.name().equals(statement.target())) {
+                return section;
+            }
+        }
+        return null;
+    }
+
+    /** before/after hookで囲んだSECTIONの一回分を生成する。 */
+    private void emitHookedSectionPerform(ProcedureBuilder.Section section, int from, int to,
+                                          String caller, Origin origin,
+                                          int boundaryLocal, int failureLocal) {
+        run.visitVarInsn(Opcodes.ALOAD, 2);
+        run.visitLdcInsn(programId);
+        run.visitLdcInsn(section.name());
+        emitNullableString(caller);
+        emitNullableString(origin == null ? sourceName : origin.fileName());
+        push(origin == null ? 0 : origin.line());
+        run.visitVarInsn(Opcodes.ALOAD, 1);
+        run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "beforeProcedure",
+                "(" + CONTEXT
+                        + "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+                        + "Ljava/lang/String;I"
+                        + "L" + STORAGE + ";"
+                        + "[" + Type.getDescriptor(DataView.class)
+                        + ")" + PROCEDURE_BOUNDARY_DESCRIPTOR,
+                false);
+        run.visitVarInsn(Opcodes.ASTORE, boundaryLocal);
+
+        Label mocked = new Label();
+        Label realStart = new Label();
+        Label realEnd = new Label();
+        Label failed = new Label();
+        Label done = new Label();
+        run.visitTryCatchBlock(realStart, realEnd, failed, "java/lang/Throwable");
+
+        run.visitVarInsn(Opcodes.ALOAD, boundaryLocal);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "proceedProcedure",
+                "(" + PROCEDURE_BOUNDARY_DESCRIPTOR + ")Z", false);
+        run.visitJumpInsn(Opcodes.IFEQ, mocked);
+
+        run.visitLabel(realStart);
+        emitPerformRange(from, to);
+        run.visitLabel(realEnd);
+        run.visitVarInsn(Opcodes.ALOAD, boundaryLocal);
+        run.visitInsn(Opcodes.ICONST_1);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "afterProcedure",
+                "(" + PROCEDURE_BOUNDARY_DESCRIPTOR + "Z)V", false);
+        run.visitJumpInsn(Opcodes.GOTO, done);
+
+        run.visitLabel(failed);
+        run.visitVarInsn(Opcodes.ASTORE, failureLocal);
+        run.visitVarInsn(Opcodes.ALOAD, boundaryLocal);
+        run.visitVarInsn(Opcodes.ALOAD, failureLocal);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "afterProcedureFailure",
+                "(" + PROCEDURE_BOUNDARY_DESCRIPTOR
+                        + "Ljava/lang/Throwable;)Ljava/lang/Throwable;", false);
+        run.visitInsn(Opcodes.ATHROW);
+
+        run.visitLabel(mocked);
+        run.visitVarInsn(Opcodes.ALOAD, boundaryLocal);
+        run.visitInsn(Opcodes.ICONST_0);
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "afterProcedure",
+                "(" + PROCEDURE_BOUNDARY_DESCRIPTOR + "Z)V", false);
+        run.visitLabel(done);
+    }
+
+    private void emitNullableString(String value) {
+        if (value == null) {
+            run.visitInsn(Opcodes.ACONST_NULL);
+        } else {
+            run.visitLdcInsn(value);
+        }
     }
 
     /**
@@ -4055,6 +4305,7 @@ public final class ProgramGenerator {
      */
     private void emitPerformMethod(int paragraphCount) {
         emitGlobalRangeBridge();
+        emitProcedureRangeBridge();
         MethodVisitor perform = writer.visitMethod(Opcodes.ACC_PRIVATE, "performRange",
                 PERFORM_DESCRIPTOR, null, null);
         perform.visitCode();
@@ -4201,6 +4452,24 @@ public final class ProgramGenerator {
         bridge.visitVarInsn(Opcodes.ALOAD, 4);
         bridge.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CobolProgram.class),
                 "NO_ARGUMENTS", "[" + Type.getDescriptor(DataView.class));
+        bridge.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "performRange",
+                PERFORM_DESCRIPTOR, false);
+        bridge.visitInsn(Opcodes.RETURN);
+        bridge.visitMaxs(0, 0);
+        bridge.visitEnd();
+    }
+
+    /** manifestで適格性を確認した通常SECTIONをテスト・デバッガから起動するbridge。 */
+    private void emitProcedureRangeBridge() {
+        MethodVisitor bridge = writer.visitMethod(Opcodes.ACC_PUBLIC, "performProcedureRange",
+                PERFORM_DESCRIPTOR, null, null);
+        bridge.visitCode();
+        bridge.visitVarInsn(Opcodes.ALOAD, 0);
+        bridge.visitVarInsn(Opcodes.ILOAD, 1);
+        bridge.visitVarInsn(Opcodes.ILOAD, 2);
+        bridge.visitVarInsn(Opcodes.ALOAD, 3);
+        bridge.visitVarInsn(Opcodes.ALOAD, 4);
+        bridge.visitVarInsn(Opcodes.ALOAD, 5);
         bridge.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "performRange",
                 PERFORM_DESCRIPTOR, false);
         bridge.visitInsn(Opcodes.RETURN);

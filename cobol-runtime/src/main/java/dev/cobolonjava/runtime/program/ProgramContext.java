@@ -21,6 +21,14 @@ import dev.cobolonjava.runtime.file.RelativeDataSet;
 import dev.cobolonjava.runtime.sort.SortKey;
 import dev.cobolonjava.runtime.sort.SortWork;
 import dev.cobolonjava.runtime.file.SequentialDataSet;
+import dev.cobolonjava.runtime.interop.LegacyClassNameResolver;
+import dev.cobolonjava.runtime.interop.ProgramId;
+import dev.cobolonjava.runtime.interop.ProgramResolver;
+import dev.cobolonjava.runtime.procedure.ProcedureBoundary;
+import dev.cobolonjava.runtime.procedure.ProcedureDecision;
+import dev.cobolonjava.runtime.procedure.ProcedureHook;
+import dev.cobolonjava.runtime.procedure.ProcedureId;
+import dev.cobolonjava.runtime.procedure.ProcedureInvocation;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.nio.file.Path;
 import java.nio.charset.Charset;
@@ -54,6 +62,12 @@ public final class ProgramContext {
     private final Charset outputCharset;
     /** 呼び出しをまたいで残る副プログラム。名前から引く。 */
     private final Map<String, Loaded> loaded;
+    /** COBOL と登録済み Java に共通の名前解決境界。 */
+    private final ProgramResolver programResolver;
+    /** 明示的な外部形式PERFORMの境界。通常実行ではNOOPである。 */
+    private final ProcedureHook procedureHook;
+    /** hook呼び出しのセッション内通番。 */
+    private long procedureSequence;
     /** 日付と時刻の特殊レジスタが見る時計。試験では固定する。 */
     private final Clock clock;
     /** {@code ACCEPT} が読む行の出どころ。 */
@@ -125,6 +139,8 @@ public final class ProgramContext {
      * 取り出せない。
      */
     private final java.util.Deque<Active> active = new java.util.ArrayDeque<>();
+    /** active と同じ順で、その入口が副プログラム呼び出しかを持つ。 */
+    private final java.util.Deque<Boolean> calledFrames = new java.util.ArrayDeque<>();
     /** 診断出力の細かさ (要件 FR-143)。 */
     private DumpLevel dumpLevel = DumpLevel.TRACE;
 
@@ -167,8 +183,24 @@ public final class ProgramContext {
      * ならないので、この順でなければならない。
      */
     public void enter(String name, Storage storage, StorageMap map, CobolProgram program) {
+        enterFrame(name, storage, map, program, !active.isEmpty());
+    }
+
+    /** Java の外部 API を含む主プログラム入口。 */
+    public void enterMain(String name, Storage storage, StorageMap map, CobolProgram program) {
+        enterFrame(name, storage, map, program, false);
+    }
+
+    /** COBOL の {@code CALL} または Java の低レベル call 入口。 */
+    public void enterCall(String name, Storage storage, StorageMap map, CobolProgram program) {
+        enterFrame(name, storage, map, program, true);
+    }
+
+    private void enterFrame(String name, Storage storage, StorageMap map, CobolProgram program,
+                            boolean called) {
         flushExternals();
         active.push(new Active(name, storage, map));
+        calledFrames.push(called);
         externalFrames.push(new ExternalFrame(name, storage, program));
         loadExternals();
     }
@@ -182,8 +214,14 @@ public final class ProgramContext {
     public void leave() {
         flushExternals();
         active.poll();
+        calledFrames.poll();
         externalFrames.poll();
         loadExternals();
+    }
+
+    /** 現在の入口が副プログラム呼び出しか。{@code EXIT PROGRAM} の意味を決める。 */
+    public boolean currentInvocationIsCall() {
+        return Boolean.TRUE.equals(calledFrames.peek());
     }
 
     // ---- EXTERNAL (要件 FR-014) ----
@@ -287,7 +325,8 @@ public final class ProgramContext {
     private ProgramContext(CodePage codePage, OutputStream out, OutputStream error,
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
                            Supplier<String> input, Storage registers,
-                           DataSetCatalog catalog, Map<String, DataSet> files) {
+                           DataSetCatalog catalog, Map<String, DataSet> files,
+                           ProgramResolver programResolver, ProcedureHook procedureHook) {
         this.codePage = codePage;
         this.out = out;
         this.error = error;
@@ -298,6 +337,8 @@ public final class ProgramContext {
         this.registers = registers;
         this.catalog = catalog;
         this.files = files;
+        this.programResolver = programResolver;
+        this.procedureHook = procedureHook;
     }
 
     /**
@@ -377,13 +418,40 @@ public final class ProgramContext {
      */
     public ProgramContext withOutput(OutputStream value) {
         return new ProgramContext(codePage, value, value, outputCharset, loaded, clock, input,
-                registers, catalog, files);
+                registers, catalog, files, programResolver, procedureHook);
     }
 
     /** 目録を差し替えた構成を返す。 */
     public ProgramContext withCatalog(DataSetCatalog value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
-                registers, value, files);
+                registers, value, files, programResolver, procedureHook);
+    }
+
+    /** プログラム解決境界を差し替えた構成を返す。読み込み済み状態は引き継ぐ。 */
+    public ProgramContext withProgramResolver(ProgramResolver value) {
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
+                registers, catalog, files, java.util.Objects.requireNonNull(value, "value"),
+                procedureHook);
+    }
+
+    /** 明示的PERFORMのhookを差し替えた構成を返す。 */
+    public ProgramContext withProcedureHook(ProcedureHook value) {
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
+                registers, catalog, files, programResolver,
+                java.util.Objects.requireNonNull(value, "value"));
+    }
+
+    /** 生成コードが明示的PERFORMへ入る直前に呼ぶ。 */
+    public ProcedureBoundary beforeProcedure(ProcedureId id, String callerProcedure,
+                                             String sourceFile, int sourceLine,
+                                             Storage workingStorage,
+                                             dev.cobolonjava.runtime.storage.DataView[] arguments) {
+        ProcedureInvocation invocation = new ProcedureInvocation(++procedureSequence, id,
+                callerProcedure, sourceFile, sourceLine, workingStorage,
+                java.util.Arrays.asList(arguments), this);
+        ProcedureDecision decision = java.util.Objects.requireNonNull(
+                procedureHook.before(invocation), "procedure hook decision");
+        return new ProcedureBoundary(procedureHook, invocation, decision);
     }
 
     /**
@@ -420,7 +488,15 @@ public final class ProgramContext {
      *
      * <p>作業場所を一緒に持つのは、<b>呼び出しをまたいで残す</b>ためである。
      */
-    public record Loaded(CobolProgram program, Storage storage) {
+    public record Loaded(CobolProgram program, Storage storage,
+                         dev.cobolonjava.runtime.interop.ProgramSignature signature) {
+
+        /** 署名付き定義だけ、プログラムへ入る前に低レベルABIを検査する。 */
+        public void validateArguments(dev.cobolonjava.runtime.storage.DataView[] arguments) {
+            if (signature != null) {
+                signature.validate(arguments);
+            }
+        }
     }
 
     /** 端末へ書く既定の構成。 */
@@ -428,7 +504,8 @@ public final class ProgramContext {
         return new ProgramContext(CodePages.DEFAULT, System.out, System.err,
                 Charset.defaultCharset(), new HashMap<>(), Clock.systemDefaultZone(),
                 ProgramContext::readStandardInput, Storage.allocate(SpecialRegisterArea.SIZE),
-                DataSetCatalog.standard(), new HashMap<>());
+                DataSetCatalog.standard(), new HashMap<>(), LegacyClassNameResolver.INSTANCE,
+                ProcedureHook.NOOP);
     }
 
     /** 出力を捕まえる構成。試験で使う。 */
@@ -436,7 +513,7 @@ public final class ProgramContext {
         return new ProgramContext(CodePages.DEFAULT, sink, sink, StandardCharsets.UTF_8,
                 new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput,
                 Storage.allocate(SpecialRegisterArea.SIZE), DataSetCatalog.standard(),
-                new HashMap<>());
+                new HashMap<>(), LegacyClassNameResolver.INSTANCE, ProcedureHook.NOOP);
     }
 
     /**
@@ -446,7 +523,7 @@ public final class ProgramContext {
      */
     public ProgramContext withCodePage(CodePage value) {
         return new ProgramContext(value, out, error, outputCharset, loaded, clock, input,
-                registers, catalog, files);
+                registers, catalog, files, programResolver, procedureHook);
     }
 
     /**
@@ -456,13 +533,13 @@ public final class ProgramContext {
      */
     public ProgramContext withClock(Clock value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, value, input,
-                registers, catalog, files);
+                registers, catalog, files, programResolver, procedureHook);
     }
 
     /** {@code ACCEPT} が読む行の出どころを差し替えた構成を返す。 */
     public ProgramContext withInput(Supplier<String> value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, value,
-                registers, catalog, files);
+                registers, catalog, files, programResolver, procedureHook);
     }
 
     /** 日付と時刻の特殊レジスタが見る時計。 */
@@ -608,20 +685,25 @@ public final class ProgramContext {
      * @throws ProgramNotFoundException 読み込めない場合
      */
     public Loaded resolve(String name, ClassLoader loader) {
-        Loaded existing = loaded.get(name);
+        ProgramId id = ProgramId.of(name);
+        Loaded existing = loaded.get(id.value());
         if (existing != null) {
             return existing;
         }
-        String className = ProgramSupport.classNameOf(name);
-        try {
-            Class<?> type = Class.forName(className, true, loader);
-            CobolProgram program = (CobolProgram) type.getDeclaredConstructor().newInstance();
-            Loaded fresh = new Loaded(program, Storage.wrap(program.initialStorage()));
-            loaded.put(name, fresh);
-            return fresh;
-        } catch (ReflectiveOperationException | ClassCastException e) {
-            throw new ProgramNotFoundException(name, e);
+        CobolProgram program = programResolver.resolve(id, loader);
+        dev.cobolonjava.runtime.interop.ProgramSignature catalogSignature =
+                programResolver.signature(id);
+        dev.cobolonjava.runtime.interop.ProgramSignature embeddedSignature =
+                program.programSignature();
+        if (catalogSignature != null && embeddedSignature != null
+                && !catalogSignature.equals(embeddedSignature)) {
+            throw new IllegalStateException("catalog and generated class signatures disagree: "
+                    + id.value());
         }
+        Loaded fresh = new Loaded(program, Storage.wrap(program.initialStorage()),
+                catalogSignature != null ? catalogSignature : embeddedSignature);
+        loaded.put(id.value(), fresh);
+        return fresh;
     }
 
     /**
@@ -630,7 +712,7 @@ public final class ProgramContext {
      * <p>次に呼ばれたときは作業場所が初期状態から始まる。
      */
     public void forget(String name) {
-        loaded.remove(name);
+        loaded.remove(ProgramId.of(name).value());
     }
 
     public CodePage codePage() {

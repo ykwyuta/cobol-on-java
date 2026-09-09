@@ -11,12 +11,25 @@ import dev.cobolonjava.compiler.semantic.InitialImage;
 import dev.cobolonjava.compiler.semantic.ProcedureBuilder;
 import dev.cobolonjava.compiler.semantic.ReferenceResolver;
 import dev.cobolonjava.compiler.semantic.SpecialNames;
+import dev.cobolonjava.compiler.semantic.Statement;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
+import dev.cobolonjava.runtime.interop.ProgramId;
+import dev.cobolonjava.runtime.interop.ProgramParameter;
+import dev.cobolonjava.runtime.interop.ProgramSignature;
+import dev.cobolonjava.runtime.procedure.ProcedureDescriptor;
+import dev.cobolonjava.runtime.procedure.ProcedureId;
+import dev.cobolonjava.runtime.procedure.ProcedureKind;
+import dev.cobolonjava.runtime.procedure.ProcedureManifest;
+import java.lang.reflect.RecordComponent;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -73,6 +86,8 @@ public final class CobolCompiler {
      * @param diagnostics 見つかった誤り。空なら成功
      */
     public record Result(String className, byte[] classFile, DataLayout layout,
+                         ProgramSignature programSignature,
+                         ProcedureManifest procedureManifest,
                          List<Diagnostic> diagnostics, List<Compiled> programs) {
 
         /**
@@ -82,10 +97,29 @@ public final class CobolCompiler {
          * 1 本しか書かれていないソースが大多数なので、呼ぶ側はこれだけを見ればよい。
          */
         public Result(String className, byte[] classFile, DataLayout layout,
-                      List<Diagnostic> diagnostics) {
-            this(className, classFile, layout, diagnostics,
+                      ProgramSignature programSignature,
+                      ProcedureManifest procedureManifest, List<Diagnostic> diagnostics) {
+            this(className, classFile, layout, programSignature, procedureManifest, diagnostics,
                     className == null ? List.of()
-                            : List.of(new Compiled(className, classFile, layout)));
+                            : List.of(new Compiled(className, classFile, layout,
+                                    programSignature, procedureManifest)));
+        }
+
+        /** 手続きmanifestだけを持つ移行途中の呼出側向け互換入口。 */
+        public Result(String className, byte[] classFile, DataLayout layout,
+                      ProcedureManifest procedureManifest, List<Diagnostic> diagnostics) {
+            this(className, classFile, layout, null, procedureManifest, diagnostics);
+        }
+
+        /**
+         * manifest導入前の呼出側と、翻訳結果を合成する検証コード向けの互換入口。
+         * 実際のコンパイラが成功結果を返す場合はmanifest付きの入口を使う。
+         */
+        public Result(String className, byte[] classFile, DataLayout layout,
+                      List<Diagnostic> diagnostics) {
+            this(className, classFile, layout, null, null, diagnostics,
+                    className == null ? List.of()
+                            : List.of(new Compiled(className, classFile, layout, null, null)));
         }
 
         public boolean succeeded() {
@@ -99,7 +133,15 @@ public final class CobolCompiler {
      * <p>1 本のソースに何本あってもよい。{@code END PROGRAM} で区切って並べる書き方で
      * ある。
      */
-    public record Compiled(String className, byte[] classFile, DataLayout layout) {
+    public record Compiled(String className, byte[] classFile, DataLayout layout,
+                           ProgramSignature programSignature,
+                           ProcedureManifest procedureManifest) {
+
+        /** ABI署名導入前の呼出側向け互換入口。 */
+        public Compiled(String className, byte[] classFile, DataLayout layout,
+                        ProcedureManifest procedureManifest) {
+            this(className, classFile, layout, null, procedureManifest);
+        }
     }
 
     /**
@@ -132,14 +174,16 @@ public final class CobolCompiler {
                 return one;
             }
             warnings.addAll(one.diagnostics());
-            programs.add(new Compiled(one.className(), one.classFile(), one.layout()));
+            programs.add(new Compiled(one.className(), one.classFile(), one.layout(),
+                    one.programSignature(), one.procedureManifest()));
         }
         if (programs.isEmpty()) {
             return failed(null, List.of(new Diagnostic(null, "no program unit in " + fileName)));
         }
         Compiled first = programs.get(0);
         return new Result(first.className(), first.classFile(), first.layout(),
-                List.copyOf(warnings), List.copyOf(programs));
+                first.programSignature(), first.procedureManifest(), List.copyOf(warnings),
+                List.copyOf(programs));
     }
 
     /**
@@ -397,19 +441,181 @@ public final class CobolCompiler {
         globals.put(programNameOf(program).toUpperCase(Locale.ROOT),
                 globalDeclarativesOf(programNameOf(program), procedure));
 
+        ProgramSignature signature = programSignature(programNameOf(program), procedure);
+        ProcedureManifest manifest = procedureManifest(programNameOf(program), procedure);
         ProgramGenerator.Result generated = ProgramGenerator.generate(
                 programNameOf(program), fileName, procedure, image, data.layout(),
-                effective, specialNames, visible);
+                effective, specialNames, visible, signature, manifest);
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
         }
         warnings.addAll(generated.diagnostics());
-        return new Result(generated.className(), generated.classFile(), data.layout(),
-                List.copyOf(warnings));
+        return new Result(generated.className(), generated.classFile(), data.layout(), signature,
+                manifest, List.copyOf(warnings));
     }
 
     private static Result failed(DataLayout layout, List<Diagnostic> diagnostics) {
-        return new Result(null, null, layout, List.copyOf(diagnostics));
+        return new Result(null, null, layout, null, null, List.copyOf(diagnostics));
+    }
+
+    private static ProgramSignature programSignature(
+            String program, ProcedureBuilder.Result procedure) {
+        List<ProgramParameter> parameters = procedure.parameters().stream()
+                .map(item -> ProgramParameter.fixedReference(
+                        item.name(), item.totalLength(), dataItemHash(item)))
+                .toList();
+        return ProgramSignature.of(program, parameters);
+    }
+
+    /** 同じ全長でも子項目の境界やUSAGEが違うレイアウトを区別する。 */
+    private static String dataItemHash(dev.cobolonjava.compiler.semantic.DataItem root) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateLayoutHash(digest, "cobol-data-layout-v1\n");
+            updateLayoutHash(digest, root, 0);
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private static void updateLayoutHash(MessageDigest digest,
+                                         dev.cobolonjava.compiler.semantic.DataItem item,
+                                         int depth) {
+        updateLayoutHash(digest, Integer.toString(depth));
+        digest.update((byte) 0);
+        updateLayoutHash(digest, item.name() == null ? "FILLER" : item.name());
+        digest.update((byte) 0);
+        updateLayoutHash(digest, Integer.toString(item.level()));
+        digest.update((byte) ':');
+        updateLayoutHash(digest, Integer.toString(item.offset()));
+        digest.update((byte) ':');
+        updateLayoutHash(digest, Integer.toString(item.length()));
+        digest.update((byte) ':');
+        updateLayoutHash(digest, Integer.toString(item.occurs()));
+        digest.update((byte) 0);
+        updateLayoutHash(digest, item.usage() == null ? "GROUP" : item.usage().name());
+        digest.update((byte) 0);
+        updateLayoutHash(digest, item.picture() == null ? "" : item.picture().source());
+        digest.update((byte) 0);
+        updateLayoutHash(digest, item.signPosition().name());
+        digest.update((byte) '\n');
+        for (dev.cobolonjava.compiler.semantic.DataItem child : item.children()) {
+            updateLayoutHash(digest, child, depth + 1);
+        }
+    }
+
+    private static void updateLayoutHash(MessageDigest digest, String value) {
+        digest.update(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static ProcedureManifest procedureManifest(
+            String program, ProcedureBuilder.Result procedure) {
+        ProgramId programId = ProgramId.of(program);
+        List<ProcedureDescriptor> descriptors = new ArrayList<>();
+        List<String> paragraphNames = procedure.paragraphs().stream()
+                .map(ProcedureBuilder.Paragraph::name).toList();
+        for (ProcedureBuilder.Section section : procedure.sections()) {
+            int first = paragraphNames.indexOf(section.first());
+            int last = paragraphNames.indexOf(section.last());
+            if (first < 0 || last < first) {
+                throw new IllegalStateException("invalid SECTION range: " + section.name());
+            }
+            dev.cobolonjava.compiler.source.Origin origin =
+                    procedure.paragraphs().get(first).origin();
+            String reason = section.declarative()
+                    ? "declarative SECTIONs require their declared runtime condition"
+                    : unsupportedDirectTransfer(procedure, first, last);
+            descriptors.add(new ProcedureDescriptor(new ProcedureId(programId,
+                    ProcedureKind.SECTION, section.name()), first, last, section.declarative(),
+                    origin == null ? null : origin.fileName(), origin == null ? 0 : origin.line(),
+                    reason == null, reason));
+        }
+        for (int i = 0; i < procedure.paragraphs().size(); i++) {
+            ProcedureBuilder.Paragraph paragraph = procedure.paragraphs().get(i);
+            // 見出しより前の文は内部的な匿名段落になる。外部から参照できる安定IDではない。
+            if (paragraph.name() == null || paragraph.name().isBlank()) {
+                continue;
+            }
+            dev.cobolonjava.compiler.source.Origin origin = paragraph.origin();
+            descriptors.add(new ProcedureDescriptor(new ProcedureId(programId,
+                    ProcedureKind.PARAGRAPH, paragraph.name()),
+                    i, i, i < procedure.firstNormalParagraph(),
+                    origin == null ? null : origin.fileName(), origin == null ? 0 : origin.line(),
+                    false, "direct invocation is supported only for SECTIONs"));
+        }
+        return ProcedureManifest.of(program, descriptors);
+    }
+
+    /**
+     * 初期版は非構造化transferを含むSECTIONを保守的に拒否する。
+     * 局所GO TOを許す解析はcontrol-flow graphを導入する段で行う。
+     */
+    private static String unsupportedDirectTransfer(
+            ProcedureBuilder.Result procedure, int first, int last) {
+        for (int i = first; i <= last; i++) {
+            ProcedureBuilder.Paragraph paragraph = procedure.paragraphs().get(i);
+            String reason = unsupportedTransfer(paragraph.statements());
+            if (reason == null) {
+                reason = unsupportedTransfer(paragraph.debugEntry());
+            }
+            if (reason != null) {
+                return reason;
+            }
+        }
+        return null;
+    }
+
+    private static String unsupportedTransfer(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Statement.GoTo statement) {
+            return "contains GO TO at " + statement.origin();
+        }
+        if (value instanceof Statement.GoToDepending statement) {
+            return "contains GO TO DEPENDING ON at " + statement.origin();
+        }
+        if (value instanceof Statement.Alter statement) {
+            return "contains ALTER at " + statement.origin();
+        }
+        if (value instanceof Statement.NextSentence statement) {
+            return "contains NEXT SENTENCE at " + statement.origin();
+        }
+        if (value instanceof Iterable<?> values) {
+            for (Object one : values) {
+                String reason = unsupportedTransfer(one);
+                if (reason != null) {
+                    return reason;
+                }
+            }
+            return null;
+        }
+        Class<?> type = value.getClass();
+        if (!type.isRecord() || !belongsToStatement(type)) {
+            return null;
+        }
+        for (RecordComponent component : type.getRecordComponents()) {
+            try {
+                String reason = unsupportedTransfer(component.getAccessor().invoke(value));
+                if (reason != null) {
+                    return reason;
+                }
+            } catch (ReflectiveOperationException impossible) {
+                throw new IllegalStateException("cannot inspect " + type.getName(), impossible);
+            }
+        }
+        return null;
+    }
+
+    private static boolean belongsToStatement(Class<?> type) {
+        for (Class<?> owner = type.getEnclosingClass(); owner != null;
+             owner = owner.getEnclosingClass()) {
+            if (owner == Statement.class) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** プログラムの名前。文字定数で書かれていれば引用符を外す。 */

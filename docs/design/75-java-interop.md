@@ -4,7 +4,7 @@
 | --- | --- |
 | 対応要件 | ARC-2, ARC-4, ARC-7, FR-020, FR-027, FR-080〜FR-086, FR-142, FR-170, FR-172, FR-173, NFR-050, NFR-052, NFR-060, NFR-061 |
 | 未充足要件 | IBM 非 OO static Java call と FR-171 の OO COBOL (`INVOKE` / `CLASS-ID` / `METHOD-ID`) は別設計が必要 |
-| ステータス | 敵対的レビュー済み。ABI gate と FR-171 分離を反映、未実装 |
+| ステータス | 敵対的レビュー済み。共通カタログ、セッション、手続き型Java SPI、主entryの固定長ABI署名検査、単一配備カタログを実装 |
 
 ## 目的
 
@@ -19,6 +19,32 @@
 
 プロセス間 RPC、JNI によるネイティブ COBOL 呼び出し、任意 Java メソッドの反射呼び出しは
 この設計の対象外である。
+
+## 実装状況（2026-09-10）
+
+`cobol-runtime` に `ProgramCatalog`、`ProgramId`、`CobolRuntime`、`CobolSession`、
+`JavaCallable` を追加した。既存の生成クラス ABI (`CobolProgram`) を維持したまま、明示カタログを
+介して Java→生成COBOL→登録Java、および登録Java→COBOL の再入を実行できる。
+セッションは `WORKING-STORAGE`、`CANCEL`、`RETURN-CODE`、`STOP RUN`、thread owner、catalog revision
+を管理する。従来のクラス名反射解決は明示的に選ぶ移行用 fallback に限定した。
+
+コンパイラは主entryの`PROCEDURE DIVISION USING`から`ProgramSignature`を生成する。各01レベルの
+固定バイト長に加え、子項目の境界、USAGE、PICTURE、符号をSHA-256 `layoutHash`へ含める。
+JUnitでソースから翻訳したプログラムはsignature付きでcatalogへ登録し、Javaの`call` / `runMain`、
+直接SECTION起動、COBOLの`CALL`、ジョブ起動の直前に引数個数と長さを共通検査する。不一致では
+プログラムへ入る前に`ProgramSignatureMismatchException`を返す。署名のない既存生成物は移行用の
+互換モードとして検査なしで呼べる。
+`ProgramSignature`と`ProcedureManifest`は生成classの`CobolProgram` metadata methodにも埋め込み、
+コンパイル結果を伴わない事前コンパイルclassから復元できる。catalog側とclass側のsignatureが異なる
+場合は実行前に拒否し、SECTION直接起動ではdescriptorをclass自身のmanifestと再照合する。
+コンパイラCLIは生成class群と同時に`META-INF/cobol/programs.json`を出力する。JSONには決定的な
+catalog revision、生成class名、完全な現行`ProgramSignature`、`procedureHash`、runtime ABIを記録する。
+ランタイムは未知field、重複名、ABI不一致、許可package外classを拒否し、class内metadataとの一致を
+確認して`ProgramCatalog`を構築する。JUnitも同じ配備catalogを読み込める。
+
+この増分は低レベルのバイト指向 API である。`ENTRY`、`OMITTED`、`RETURNING`、`BY VALUE`、
+可変長・pointer、呼出し側layout hash照合、型付き生成ビュー、複数JARのcatalog合成と署名による真正性検証はまだgateを通していない。
+暫定範囲は [P-089〜P-091](../decisions/provisional.md#p-089-初期の-programid-はjava文字列を正規化する) に記録する。
 
 ## 設計原則
 
@@ -117,8 +143,11 @@ public record Parameter(
 - `returning` は `CALL ... RETURNING` の出力専用契約である。RETURNING 使用時の `RETURN-CODE` 規則も
   entry signature の適合性試験へ含める。
 
-上記は公開 API の最小要素を示す概念形である。`OMITTED`、`OPTIONAL`、`RETURNING`、`BY VALUE`、
-`ENTRY` の positive / negative test vector が揃うまで Java record の形を互換 API として凍結しない。
+上記は最終形の概念である。現実装の`ProgramSignature` / `ProgramParameter`は主entry、固定長、
+必須、`BY REFERENCE`だけをコンパイラから生成する。`DataView[]`になった後は呼出し側が
+`REFERENCE`と`CONTENT`のどちらを選んだか観測できないため、passing modeは記述するが実行時には
+検査しない。`OMITTED`、`OPTIONAL`、`RETURNING`、`BY VALUE`、`ENTRY`のpositive / negative test
+vectorが揃うまで、これらを対応済みの互換APIとして凍結しない。
 
 COBOL の動的呼び出しには翻訳時に署名が分からないことがある。その場合も、カタログから解決した
 定義の署名を呼び出し直前に検査する。署名を持たない既存 COBOL クラスは互換モードで呼べるが、
@@ -237,7 +266,7 @@ final class CustomerLookup implements JavaCallable {
 
 ### 生成物マニフェスト
 
-コンパイラはクラスと一緒に `META-INF/cobol/programs/<program-id>.json` を生成する。
+コンパイラCLIは一回の起動で生成したクラス群と一緒に `META-INF/cobol/programs.json` を生成する。
 マニフェストには最低限、次を含める。
 
 - 形式バージョン
@@ -249,6 +278,12 @@ final class CustomerLookup implements JavaCallable {
 カタログはマニフェストを先に読み、ABI バージョンと重複を検査してからクラスを初期化する。
 マニフェストにない任意クラスを走査しない。移行期間だけ、現在の
 `ProgramSupport.classNameOf` を使う明示的な互換 resolver を提供する。
+
+現実装の`DeployCatalogManifest.fromResource`は資源が0件または複数件なら拒否する。複数JARを
+無条件に列挙順で合成すると、同名programとrevisionの意味が不定になるためである。またruntime ABIと
+許可packageはclass初期化前に検査するが、class内metadataはインスタンス生成後に照合する。
+manifestのhashは取り違え検出用であり、署名や信頼された配布経路なしに攻撃者によるclass／manifestの
+同時改ざんを防ぐものではない。
 
 ## Java から COBOL を呼ぶ
 
@@ -498,8 +533,8 @@ COBOL と Java をまたぐ各呼び出しに同じイベントを出す。
 
 ### `cobol-compiler`
 
-- `PROCEDURE DIVISION USING` と LINKAGE の割付けから `ProgramSignature` を生成する
-- プログラムマニフェストを class 出力と一緒に出す
+- `PROCEDURE DIVISION USING` と LINKAGE の割付けから主entryの固定長 `ProgramSignature` を生成する（実装済み）
+- プログラム一覧、決定的revision、ABI署名を持つJSON配備カタログを class 出力と一緒に出す（実装済み）
 - 指定された01レベル / copybook の型付きレコードビューを生成する
 - 外部公開対象に対してプログラム別 Java ファサードを生成する
 - `DYNAM` / `NODYNAM` の呼出しサイト情報を生成コードへ埋め込む
@@ -527,9 +562,12 @@ COBOL と Java をまたぐ各呼び出しに同じイベントを出す。
 
 ### 第3段階: マニフェストと型付き生成 API
 
-- コンパイラから署名とマニフェストを出力する
+- コンパイラから主entryの固定長署名と手続きマニフェストをコンパイル結果へ出力する（実装済み）
+- 署名と手続きマニフェストを生成classへ埋め込む（実装済み）
+- program一覧とrevisionを持つ独立deploy catalog manifestを生成する（単一catalogを実装済み）
 - copybook レコードビューとプログラムファサードを生成する
-- ABI / `layoutHash` の事前検査を必須にする
+- 引数個数・固定長の事前検査を行う（署名付きcatalogで実装済み）
+- 呼出し側生成ビューと配備先の`layoutHash`照合を必須にする
 
 ### 第4段階: `DYNAM` / `NODYNAM` と `BY VALUE`
 

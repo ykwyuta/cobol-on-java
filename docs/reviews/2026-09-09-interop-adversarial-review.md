@@ -55,6 +55,13 @@ CALL は RETURN-CODE の扱いも異なる。
 usage、encoded length、addressability、passing convention を、call result に RETURNING descriptor を持たせる。
 ABI compatibility matrix と negative test を先に作り、`minimumBytes` だけの API を凍結しない。
 
+**対応状況（2026-09-10）:** 主entryの必須・固定長`BY REFERENCE`に限定したsignature生成と、
+Java入口・COBOL `CALL`・JUnit直接SECTION・ジョブの実行前個数／長さ検査を実装した。内部レイアウトの
+hashも生成し、signatureと手続きmanifestは生成classへ埋め込む。単一の独立deploy catalogをJSONで
+生成・読込みし、class内metadataと照合する経路も実装した。呼出し側ビューとの照合、複数catalog合成、
+配備物の暗号学的真正性検証は未実装である。
+`OMITTED`等を表現できない現recordを最終互換APIとして凍結せず、残りはP-090で追跡する。
+
 ### AR-03 [P1] program 名正規化と配備 revision が曖昧である
 
 **反証:** decode 後の Unicode upper-case は文字展開や別 byte 列の衝突を起こし得る。immutable catalog
@@ -83,6 +90,11 @@ IBM oracle で可視性を確定するまで「部分更新あり得る」とし
 **改善:** 既定を strict にし、SECTION 範囲外への control transfer、ALTER 対象、宣言節進入を
 `NonLocalProcedureTransferException` で失敗させる。コンパイラの control-flow graph で直接試験可能性を
 manifest に出し、非適格 SECTION は program-level test を要求する。明示 `PERFORM SECTION` の Mock は維持する。
+
+**対応状況（2026-09-10）:** 段落範囲、source位置、直接起動適格性をmanifestへ追加し、適格SECTIONだけを
+既存PERFORM範囲実行器で起動する入口を実装した。第1増分は安全側に倒し、非構造化transfer文を含む
+SECTIONを遷移先によらず拒否する。正確な範囲外判定と安全なローカル`GO TO`の許可は
+[P-093](../decisions/provisional.md#p-093-section直接起動は非構造化transferを保守的に拒否する)で追跡する。
 
 ### AR-06 [P1] JUnit extension の失敗集約、並列性、cache が過小設計である
 

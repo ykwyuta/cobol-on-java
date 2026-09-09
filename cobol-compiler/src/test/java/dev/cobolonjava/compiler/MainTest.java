@@ -1,8 +1,12 @@
 package dev.cobolonjava.compiler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.cobolonjava.runtime.interop.CobolRuntime;
+import dev.cobolonjava.runtime.interop.CobolSession;
+import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import java.io.ByteArrayOutputStream;
@@ -10,6 +14,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.net.URLClassLoader;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -69,6 +74,22 @@ class MainTest {
             throw new AssertionError("cannot run the generated program", e);
         }
         assertEquals("SUM=00015" + System.lineSeparator(), sink.toString(StandardCharsets.UTF_8));
+
+        Path manifestFile = output.resolve(DeployCatalogManifest.RESOURCE_NAME);
+        assertTrue(Files.isRegularFile(manifestFile), "配備カタログが書き出される");
+        ByteArrayOutputStream catalogSink = new ByteArrayOutputStream();
+        try (URLClassLoader loader = new URLClassLoader(new java.net.URL[] {
+                output.toUri().toURL()}, getClass().getClassLoader())) {
+            DeployCatalogManifest manifest = DeployCatalogManifest.fromResource(loader);
+            assertEquals("SUMMER", manifest.programs().get(0).programId().value());
+            assertNotNull(manifest.programs().get(0).signature());
+            try (CobolSession session = CobolRuntime.builder(manifest.toProgramCatalog())
+                    .classLoader(loader).build().openSession(catalogSink)) {
+                session.runMain("SUMMER");
+            }
+        }
+        assertEquals("SUM=00015" + System.lineSeparator(),
+                catalogSink.toString(StandardCharsets.UTF_8));
     }
 
     @Test

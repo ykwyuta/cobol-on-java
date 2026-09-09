@@ -6,6 +6,7 @@ import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
 import dev.cobolonjava.compiler.source.FreeFormatReader;
 import dev.cobolonjava.compiler.source.Preprocessor;
 import dev.cobolonjava.compiler.source.ProcessStatement;
+import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -20,8 +21,8 @@ import java.util.List;
  * cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free] [-q オプション] ソース...
  * </pre>
  *
- * <p>翻訳したクラスファイルを書き出す。生成したクラスは {@code main} を持つので、
- * そのまま {@code java} で起動できる。
+ * <p>翻訳したクラスファイルと {@code META-INF/cobol/programs.json} を書き出す。
+ * 生成したクラスは {@code main} を持つので、そのまま {@code java} で起動できる。
  *
  * <p>{@code -q} には翻訳時オプションを {@code CBL} 文と同じ綴りで書く
  * ({@code -q SSRANGE,ARITH(EXTEND)})。ソースに書かれた {@code CBL} / {@code PROCESS} の
@@ -45,17 +46,21 @@ public final class Main {
         }
 
         int failed = 0;
+        List<CobolCompiler.Compiled> deployed = new ArrayList<>();
         for (Path source : options.sources()) {
-            if (!compile(source, options)) {
+            if (!compile(source, options, deployed)) {
                 failed++;
             }
         }
+        // 全件失敗でも空catalogを書き、以前の成功ビルドのcatalogを残さない。
+        writeDeployCatalog(options.output(), deployed);
         if (failed > 0) {
             System.exit(1);
         }
     }
 
-    private static boolean compile(Path source, Options options) throws IOException {
+    private static boolean compile(Path source, Options options,
+                                   List<CobolCompiler.Compiled> deployed) throws IOException {
         Preprocessor preprocessor = options.preprocessor();
         CobolCompiler.Result result = new CobolCompiler(preprocessor, options.compilerOptions())
                 .compile(source.getFileName().toString(),
@@ -74,8 +79,17 @@ public final class Main {
                     .resolve(program.className().replace('.', '/') + ".class");
             Files.createDirectories(target.getParent());
             Files.write(target, program.classFile());
+            deployed.add(program);
         }
         return true;
+    }
+
+    private static void writeDeployCatalog(Path output, List<CobolCompiler.Compiled> programs)
+            throws IOException {
+        Path target = output.resolve(DeployCatalogManifest.RESOURCE_NAME);
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, DeployCatalogGenerator.generate(programs).toJson(),
+                StandardCharsets.UTF_8);
     }
 
     /** 起動時の指定。 */

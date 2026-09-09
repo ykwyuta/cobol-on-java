@@ -3,7 +3,7 @@
 | 項目 | 内容 |
 | --- | --- |
 | 対応要件 | FR-061, FR-080〜FR-084, FR-194, FR-195, FR-197, FR-198, FR-204, NFR-043 |
-| ステータス | 敵対的レビュー済み。SECTION strict 実行と JUnit lifecycle gate を反映、未実装 |
+| ステータス | 敵対的レビュー済み。外部プログラムMock、明示的PERFORM SECTION Mock/spy、手続きmanifest、制限付き直接SECTION実行を実装 |
 
 ## 目的
 
@@ -25,6 +25,38 @@ Java agent や private メソッド Mock を必要としない。
 [ADR-0006](../decisions/0006-program-and-section-test-seams.md) に記録する。呼び出し ABI と
 セッションの基本は[設計 75](75-java-interop.md)に従う。残余リスクと実装開始条件は
 [敵対的レビュー](../reviews/2026-09-09-interop-adversarial-review.md)に従う。
+
+## 実装状況（2026-09-10）
+
+独立した `cobol-junit` モジュールを追加し、`CobolExtension`、`CobolTestContext`、
+`CobolProgramFixture`、`CobolTestResult` を実装した。JUnitテストごとに出力とセッションを分離し、
+COBOLソースの遅延コンパイル、`call` / `runMain`、`DataView` 引数、作業場所、`CANCEL` を扱える。
+外部サブルーチンは `stubProgram` / `expectProgram` で Java 実装へ上書きでき、期待回数と呼出し前後の
+引数バイトスナップショットを検証する。`mockSection` / `spySection` は通常SECTIONへの明示的な
+`PERFORM SECTION-NAME`だけを差し替え、作業場所とLINKAGEの前後像、正常・Mock・GOBACK・STOP RUN・
+ABEND・例外の終了種別を記録する。段落、`THRU`、`GO TO`、fall-throughは差し替えない。
+program MockとSECTION Mock/spyの記録にはテストセッション共通の単調増加通番を付ける。
+コンパイラ生成の主entry `ProgramSignature`をテストcatalogへ登録し、program実行とSECTION直接起動の
+前にLINKAGE引数の個数と固定バイト長を検査する。
+コンパイラはSECTION・段落・宣言部分フラグ、段落範囲、source位置、直接起動適格性と
+SHA-256 `procedureHash`を`Compiled`結果へ出し、`sourceText` / `source`で翻訳した対象は
+Mock/spy登録時と直接起動時に通常SECTIONの実在性を検査する。
+`fixture.invokeSection`は適格な通常SECTIONを既存のPERFORM範囲実行器で起動する。対象SECTION自身の
+Mockは適用せず、その内側から明示的にPERFORMされる別SECTIONのMock / spyは適用する。
+LINKAGEは参照渡し、WORKING-STORAGEは通常のprogram instanceと同じ寿命を持ち、`GOBACK`と
+`STOP RUN`はprogram実行と同じ終了種別で返す。
+
+現実装の適格性判定は意図的に保守的である。通常SECTION内の任意の深さに`GO TO`、
+`GO TO ... DEPENDING ON`、`ALTER`、`NEXT SENTENCE`が一つでもあれば、実際にはSECTION内だけを
+移動する安全な制御であっても直接起動を拒否する。宣言SECTIONも拒否する。これは範囲外遷移を
+正常終了に見せないための暫定gateであり、正確なcontrol-flow graph解析を導入するまで、該当処理は
+program-level testで検証する。
+最初の実行後の上書き変更と `PER_CLASS` lifecycle は拒否する。
+
+現時点では低レベル API であり、統合済み`CobolInvocationLog`、開始・終了時刻と深度、
+copybook resolver、内容ハッシュ共有cache、完全なentry署名と呼出し側layout hash照合、program spy、複数deploy catalogの合成、
+正確なcontrol-flow graph判定、型付きfixture、全失敗経路のlifecycle contract testは未実装である。
+この差分を [P-091](../decisions/provisional.md#p-091-cobol-junit-初期版は低レベルプログラム境界に限定する) に記録する。
 
 ## テストの境界
 
@@ -189,6 +221,7 @@ assertEquals("001", counter.workingStorage(CounterWs::over).countText());
 - 先頭・末尾段落の内部番号
 - 宣言部分か通常部分か
 - ソースファイルと位置
+- 直接起動適格性と不適格理由
 - 手続き一覧のハッシュ `procedureHash`
 
 数値の段落番号や `paragraph$3` のような生成メソッド名は公開しない。Java API は
@@ -215,8 +248,9 @@ void calculatesNetAmountInSection() {
 直接起動は対象 SECTION を合成的に `PERFORM` した範囲規則を使う。ただし本来の caller と PERFORM stack
 が存在しないため、SECTION 内から範囲外への `GO TO`、ALTER 対象、宣言節への進入を正常な `GOBACK` に
 読み替えない。初期版は `NonLocalProcedureTransferException` で失敗し、program-level test を要求する。
-コンパイラは control-flow graph から直接起動の適格性と理由を manifest に出す。対象 SECTION 自身に
-登録された Mock は無視し、その内側から明示的に `PERFORM` する別 SECTION の Mock は有効とする。
+現実装は非構造化transfer文が一つでもあれば拒否する保守的な構文走査から、直接起動の適格性と理由を
+manifestに出す。将来はcontrol-flow graphで範囲外遷移だけを識別する。対象 SECTION 自身に登録された
+Mock は無視し、その内側から明示的に `PERFORM` する別 SECTION の Mock は有効とする。
 
 宣言節とデバッグ節は通常の SECTION API から直接起動できない。専用の異常条件やデバッグ条件を
 作って実行することで試験する。これは、本来存在しない呼び出し方を単体テストが固定するのを防ぐ
@@ -557,16 +591,23 @@ JUnit の型、Mock DSL、assertion は追加しない。
 
 ### 第3段階: SECTION hook と直接実行
 
-- 手続きメタデータと `procedureHash` を生成する
-- 明示的 `PERFORM SECTION` の `ProcedureHook` を追加する
-- `invokeSection`、SECTION Mock / spy を追加する
-- `GO TO`、fall-through、`THRU` が誤って置換されないことを固定する
+- SECTION・段落・宣言部分フラグ、範囲、source位置、直接起動適格性と `procedureHash` をコンパイル結果へ生成する（実装済み）
+- signatureと手続きmanifestを生成classへ埋め込む（実装済み）
+- program一覧・revisionを持つ独立deploy catalog manifestを生成する（単一catalogを実装済み）
+- 明示的 `PERFORM SECTION` の `ProcedureHook` を追加する（実装済み）
+- SECTION Mock / spy を追加する（実装済み）
+- ソース翻訳対象のSECTION登録をmanifestで検査する（実装済み）
+- `invokeSection` と保守的な非構造化control transfer拒否を追加する（実装済み）
+- control-flow graphで範囲外transferだけを正確に拒否し、安全なローカル`GO TO`を許可する（未実装）
+- `GO TO`、fall-through、`THRU` が誤って置換されないことを固定する（実装済み）
 
 ### 第4段階: 型付き fixture と運用統合
 
 - copybook 生成ビューとテストファサードを統合する
 - データセット fixture、失敗時診断、OpenTelemetry テスト出力を追加する
-- 事前コンパイル済み本番成果物を使う統合テスト経路を整える
+- `program(...)`で登録した現行生成classの埋込みmetadataを使う統合テスト経路（実装済み）
+- JAR単位のdeploy catalog manifestを読み込む統合テスト経路（単一catalogを実装済み）
+- 複数JARのcatalogを明示的な重複・revision規則で合成する（未実装）
 
 ## 受け入れ条件
 

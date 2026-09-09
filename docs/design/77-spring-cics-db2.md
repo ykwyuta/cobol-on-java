@@ -5,7 +5,7 @@
 | 対応要件 | FR-150〜156, FR-160〜167, NFR-032, NFR-034〜036 |
 | 関連 ADR | [ADR-0007](../decisions/0007-framework-neutral-subsystem-ports.md), [ADR-0008](../decisions/0008-cics-on-spring-mvc-and-session.md), [ADR-0009](../decisions/0009-db2-spring-managed-unit-of-work.md), [ADR-0010](../decisions/0010-bms-thymeleaf-terminal-ui.md), [ADR-0012](../decisions/0012-db2-driver-managed-uow-for-required-hold-cursors.md) |
 | 関連レビュー | [敵対的レビュー](../reviews/2026-09-09-interop-adversarial-review.md) |
-| ステータス | 敵対的レビュー済み。P0 実装開始ゲートあり、未実装 |
+| ステータス | 敵対的レビュー済み。`cobol-db2` / `cobol-cics`中立コア第1増分をexperimentalとして実装。P0 gate未合格 |
 | 基準環境 | Java 21、Spring Boot 4.1.x、Spring Framework 7.0.x |
 
 ## 1. 目的と範囲
@@ -22,10 +22,33 @@
 - COBOL、CICS、Db2 と参加可能な Java サービスを、選択した profile の同じ作業単位 (UOW) で実行する。
 - Spring Boot の更新および別フレームワークへの移行時に、COBOL の再翻訳と中核意味論の変更を避ける。
 
-本設計は実装構造と契約を定めるものであり、Spring Boot モジュールや CICS / Db2 エミュレーションの
-実装は今回の範囲に含まない。IBM CICS 製品そのもの、3270 データストリームと端末通信、Db2 の
+本設計を基準として段階実装を開始した。IBM CICS 製品そのもの、3270 データストリームと端末通信、Db2 の
 アクセスパスやロック性能を再現するものでもない。Web UI は画面セルと操作意味論の互換を目標とし、
 実端末との pixel 単位の同一性を保証しない。
+
+### 1.1 実装状況（2026-09-10）
+
+`cobol-cics`を追加し、許可リスト型`CicsTransactionRegistry`、COMMAREA / containerのcopy分離と
+入力上限、`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`のcommand/control、同一thread・同一
+`CobolSession`でLINKする`DefaultCicsGateway`を実装した。疑似会話はversion / owner / expiry /
+idempotency keyを持つ不変envelopeとし、COBOL起動前の排他claim、期限付きleaseによるCAS
+save / complete / releaseをport契約へ追加した。単一JVM用reference storeでは同一版への並行claimが
+一件だけ成功することを試験している。
+
+このCICS増分は中立構造契約である。Spring MVC / Session adapter、task全体のcoordinator、lease更新、
+STRICT会話表とNON_ATOMIC outcome journal、EIB、BMS、EXEC CICS翻訳、実CICS比較は未実装である。
+`load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
+
+`cobol-db2`を追加し、二つの`Db2ExecutionProfile`、task-scoped `UnitOfWorkPort`、中立`SqlPlan` /
+`SqlBindings` / `SqlOutcome`、`CursorHoldStrategy`、SQLCA field別fidelity行列を実装した。
+`Db2TaskRuntime`はtask開始時のprofile固定、最初のSQLまでのUOW遅延開始、明示commit / rollback後の
+遅延再開、同期thread所有、終了時rollbackとport closeを強制する。native profileではopaqueな
+`ResourceLeaseId`をcommit間でpinし、leaseが変われば拒否する。静的inventoryと動的OPENの双方で、
+未承認またはprofile不一致の`WITH HOLD`をUOW開始前に拒否する。
+
+この増分はfake adapterでのV1構造契約であり、Spring Boot 4.1、JDBC、実Db2へまだ接続していない。
+SQLコプロセッサ、host variable descriptor / codec、SQLCA値storage、warning採取、cursor registry、
+Spring-managed adapter、driver-managed lease adapter、実Db2でのcommit後FETCHは未実装である。
 
 ## 2. 設計原則
 
@@ -792,7 +815,7 @@ Session store outage、disk full、spool limit、browser retry を crash point �
 
 ## 10. 段階的な実装順序
 
-今回の成果物は設計までとし、将来の実装は次の順序を推奨する。
+実装は次の順序で進める。
 
 1. 中立 command / SQL plan / UOW / conversation / BMS screen モデルと contract test kit。
 2. Spring Boot 4.1 DataSource / transaction adapter と単純 SQL、SQLCA。

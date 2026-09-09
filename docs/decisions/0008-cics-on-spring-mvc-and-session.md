@@ -55,6 +55,14 @@ JavaScript / CSS と組み合わせた 3270 互換 HTML view を提供するが�
   別 ADR が必要になる。
 - Session 保存先によって会話状態と業務更新の整合性保証が異なる。
 
+## 実装メモ（2026-09-10）
+
+中立第1増分として`cobol-cics`へTRANSID registry、入力上限、CICS command/control、同一sessionの
+LINK gateway、版・owner・期限・冪等key・期限付きleaseを持つ会話portを追加した。会話を使うtaskは
+`load`結果だけで実行せず、COBOL起動前に期待版を`claim`する。reference実装は単一JVM用であり、
+Spring Sessionや業務Db2との原子性を表さない。Spring adapterが実装されるまでは本ADR全体を
+実装済みとは判定しない。
+
 ## 却下した案
 
 ### WebFlux を既定入口とする

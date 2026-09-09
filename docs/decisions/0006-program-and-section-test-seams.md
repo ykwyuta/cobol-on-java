@@ -61,6 +61,11 @@ SECTION Mock は `PROCEED`、`RETURN`、`THROW` のいずれかを返す。`PROC
 `NonLocalProcedureTransferException` で失敗させる。これらを手続き部末尾まで実行して正常復帰に
 読み替えず、program-level test を要求する。
 
+第1増分ではcontrol-flow graph完成前の安全側のgateとして、`GO TO`、`GO TO ... DEPENDING ON`、
+`ALTER`、`NEXT SENTENCE`を含むSECTIONを遷移先によらず不適格にする。したがって安全なローカル
+`GO TO`も一時的にprogram-level testを要求する。この差は
+[P-093](provisional.md#p-093-section直接起動は非構造化transferを保守的に拒否する)で追跡する。
+
 ### 記録と検証
 
 プログラム Mock と SECTION Mock は、呼び出し開始時の引数・関連領域をバイトスナップショットとして

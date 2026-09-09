@@ -21,6 +21,10 @@ import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.file.RelativeDataSet;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.picture.Picture;
+import dev.cobolonjava.runtime.procedure.ProcedureBoundary;
+import dev.cobolonjava.runtime.procedure.ProcedureDecision;
+import dev.cobolonjava.runtime.procedure.ProcedureId;
+import dev.cobolonjava.runtime.procedure.ProcedureOutcome;
 import dev.cobolonjava.runtime.sort.SortKey;
 import dev.cobolonjava.runtime.sort.SortWork;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -162,7 +166,7 @@ public final class Ops {
      * 呼ばれていれば 2 つ以上になる。
      */
     public static void exitProgram(ProgramContext context) {
-        if (context.active().size() > 1) {
+        if (context.currentInvocationIsCall()) {
             throw new ProgramReturn();
         }
     }
@@ -1444,6 +1448,45 @@ public final class Ops {
 
     // ---- 副プログラムの呼び出し ----
 
+    /** 明示的な外部形式 {@code PERFORM SECTION} のhookへ入る。 */
+    public static ProcedureBoundary beforeProcedure(
+            ProgramContext context, String program, String section, String caller,
+            String sourceFile, int sourceLine, Storage storage, DataView[] arguments) {
+        return context.beforeProcedure(ProcedureId.section(program, section), caller,
+                sourceFile, sourceLine, storage, arguments);
+    }
+
+    /** hookが実物のSECTIONを動かすよう要求したか。 */
+    public static boolean proceedProcedure(ProcedureBoundary boundary) {
+        return boundary.decision() == ProcedureDecision.PROCEED;
+    }
+
+    /** SECTIONまたはMockが正常に戻ったことをhookへ通知する。 */
+    public static void afterProcedure(ProcedureBoundary boundary, boolean real) {
+        boundary.hook().after(boundary.invocation(),
+                real ? ProcedureOutcome.REAL_RETURN : ProcedureOutcome.MOCK_RETURN);
+    }
+
+    /** 実物のSECTIONが制御例外または障害で抜けたとき、元の例外を保って通知する。 */
+    public static Throwable afterProcedureFailure(ProcedureBoundary boundary, Throwable primary) {
+        try {
+            ProcedureOutcome outcome;
+            if (primary instanceof ProgramReturn) {
+                outcome = ProcedureOutcome.GOBACK;
+            } else if (primary instanceof ProgramStop) {
+                outcome = ProcedureOutcome.STOP_RUN;
+            } else if (primary instanceof Abend) {
+                outcome = ProcedureOutcome.ABEND;
+            } else {
+                outcome = ProcedureOutcome.THREW;
+            }
+            boundary.hook().after(boundary.invocation(), outcome);
+        } catch (Throwable hookFailure) {
+            primary.addSuppressed(hookFailure);
+        }
+        return primary;
+    }
+
     /**
      * {@code CALL} (要件 FR-080, FR-081)。
      *
@@ -1459,7 +1502,8 @@ public final class Ops {
     public static void call(ProgramContext context, String name, ClassLoader loader,
                             DataView[] arguments) {
         ProgramContext.Loaded target = context.resolve(name, loader);
-        context.enter(name, target.storage(), target.program().storageMap(), target.program());
+        target.validateArguments(arguments);
+        context.enterCall(name, target.storage(), target.program().storageMap(), target.program());
         try {
             target.program().run(target.storage(), context, arguments);
         } catch (ProgramReturn returned) {

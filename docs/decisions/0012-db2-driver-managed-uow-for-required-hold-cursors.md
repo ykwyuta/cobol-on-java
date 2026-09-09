@@ -8,6 +8,10 @@
 | 置換対象 | [ADR-0009](0009-db2-spring-managed-unit-of-work.md)の `WITH HOLD` に関する決定 |
 | 関連設計 | [設計 77](../design/77-spring-cics-db2.md) |
 
+> **実装状況（2026-09-10）:** 中立`Db2TaskRuntime`でprofile混在拒否、遅延UOW、commit間の
+> `ResourceLeaseId` pin、全終了経路のport closeまで実装した。これはopaque IDによる構造契約であり、
+> Db2 JDBC driverの同一物理connection、holdability、commit後FETCHはまだ実装・実機検証していない。
+
 ## 文脈
 
 Db2 の `WITH HOLD` は commit 後も cursor を開いたまま次の FETCH を継続する。Spring の local
