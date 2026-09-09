@@ -307,6 +307,49 @@ public final class Ops {
                 .setBytes(InspectScan.replace(read(storage, offset, length), clauses));
     }
 
+    /**
+     * 符号つきの数字項目を数える走査 (85 規格 6.19.4 一般規則 2c)。
+     *
+     * <p>規格は「同じ長さの符号なし項目へ移し、英数字として見直したもの」を検査すると
+     * 決めている。{@code PIC S9(5)} に {@code -12345} を入れると末尾は {@code 0xD5} で
+     * あり、{@code '5'} として照合しても当たらない。符号を落とした像を作ってから数える。
+     */
+    public static int[] tallyUnsigned(NumericItem item, Storage storage, int offset,
+                                      CodePage codePage, InspectScan.Clause... clauses) {
+        return InspectScan.tally(readUnsignedDigits(item, storage, offset, codePage), clauses);
+    }
+
+    /**
+     * 符号つきの数字項目を置き換える走査 (85 規格 6.19.4 一般規則 2c)。
+     *
+     * <p>検査するのは符号を落とした像である。ゾーンに符号を埋めた書き方では像の長さが
+     * 項目と同じなので、そのまま書き戻す。<b>符号は消える。</b>規格が「符号なし項目へ
+     * 移したもの」を検査すると決めている以上、書き戻る像にも符号はない。
+     *
+     * <p>符号を別のバイトに持つ書き方 ({@code SIGN IS SEPARATE}) では、像は符号の
+     * 1 バイトぶん短い。検査していない符号のバイトには触れない。
+     */
+    public static void replaceUnsigned(NumericItem item, Storage storage, int offset,
+                                       CodePage codePage, InspectScan.Clause... clauses) {
+        byte[] replaced = InspectScan.replace(
+                readUnsignedDigits(item, storage, offset, codePage), clauses);
+        storage.view(digitsOffset(item, offset), replaced.length).setBytes(replaced);
+    }
+
+    /** 符号つきの数字項目の {@code CONVERTING}。数える走査と同じ理由で符号を落とす。 */
+    public static void convertUnsigned(NumericItem item, Storage storage, int offset,
+                                       CodePage codePage, byte[] from, byte[] to, Region region) {
+        byte[] converted = Inspect.convert(
+                readUnsignedDigits(item, storage, offset, codePage), from, to, region);
+        storage.view(digitsOffset(item, offset), converted.length).setBytes(converted);
+    }
+
+    /** 符号を落とした像が始まる位置。前置きの符号を別に持つときだけ 1 バイトずれる。 */
+    private static int digitsOffset(NumericItem item, int offset) {
+        SignPosition sign = item.signPosition();
+        return sign.isSigned() && sign.isSeparate() && sign.isLeading() ? offset + 1 : offset;
+    }
+
     /** {@code CONVERTING}。1 バイトずつの読み替えである。 */
     public static void convert(Storage storage, int offset, int length, byte[] from, byte[] to,
                                Region region) {

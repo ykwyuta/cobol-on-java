@@ -1772,11 +1772,11 @@ public final class ProcedureBuilder {
     }
 
     private Operand inspectOperandOf(CobolParser.InspectOperandContext context, Origin origin) {
-        if (context.literal() != null) {
+        if (context.inspectLiteral() != null) {
             try {
-                return new Operand.Literal(LiteralValue.of(context.literal()));
+                return new Operand.Literal(LiteralValue.of(context.inspectLiteral()));
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + context.literal().getText());
+                report(origin, "invalid literal: " + context.inspectLiteral().getText());
                 return null;
             }
         }

@@ -647,13 +647,18 @@ literal
     ;
 
 figurativeConstant
-    : ALL? (ZERO | ZEROS | ZEROES
-          | SPACE | SPACES
-          | HIGH_VALUE | HIGH_VALUES
-          | LOW_VALUE | LOW_VALUES
-          | QUOTE | QUOTES
-          | NULL | NULLS)
+    : ALL? figurativeWord
     | ALL LITERAL
+    ;
+
+// ALL を伴わない図形定数。INSPECT の被演算子はこちらしか書けない
+figurativeWord
+    : ZERO | ZEROS | ZEROES
+    | SPACE | SPACES
+    | HIGH_VALUE | HIGH_VALUES
+    | LOW_VALUE | LOW_VALUES
+    | QUOTE | QUOTES
+    | NULL | NULLS
     ;
 
 // ---- 一意名 ----
@@ -1042,7 +1047,17 @@ inspectRegion
 
 inspectOperand
     : identifier
-    | literal
+    | inspectLiteral
+    ;
+
+// INSPECT の被演算子に「ALL で始まる定数」は書けない (85 規格 6.19.4)。
+// ALL は句の種別を表す語である。定数として読めるようにしておくと
+// 「LEADING AH BY OH ALL 'F' BY 'Z'」の ALL 'F' を LEADING の 2 つめの
+// 被演算子として飲み込んでしまい、最後の句が消える (NC216A INS-TEST-F3-20)
+inspectLiteral
+    : LITERAL
+    | NUMBER
+    | figurativeWord
     ;
 
 // EVALUATE は「主語と目的語を突き合わせる」書き方である。

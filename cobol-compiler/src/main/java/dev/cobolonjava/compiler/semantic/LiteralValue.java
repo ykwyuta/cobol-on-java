@@ -72,6 +72,23 @@ public sealed interface LiteralValue {
         return new Figure(constantOf(text));
     }
 
+    /**
+     * {@code INSPECT} の被演算子の定数を読む。
+     *
+     * <p>こちらには {@code ALL 定数} の分岐がない。{@code INSPECT} では {@code ALL} が
+     * 句の種別を表す語だからである (85 規格 6.19.4)。
+     */
+    static LiteralValue of(CobolParser.InspectLiteralContext context) {
+        if (context.LITERAL() != null) {
+            return new Text(unquote(context.LITERAL().getText()));
+        }
+        if (context.NUMBER() != null) {
+            String spelling = context.NUMBER().getText();
+            return new Number(Decimal.parse(spelling), spelling);
+        }
+        return new Figure(constantOf(context.figurativeWord().getText().toUpperCase(Locale.ROOT)));
+    }
+
     private static FigurativeConstant constantOf(String text) {
         return switch (text) {
             case "ZERO", "ZEROS", "ZEROES" -> FigurativeConstant.ZERO;

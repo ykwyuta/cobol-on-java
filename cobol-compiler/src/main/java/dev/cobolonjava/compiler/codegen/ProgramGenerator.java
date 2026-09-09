@@ -2795,9 +2795,10 @@ public final class ProgramGenerator {
         if (offset == null || size == null) {
             return;
         }
+        String signed = signedNumericTarget(statement.target(), statement.origin());
 
         if (statement.converting() != null) {
-            planConverting(statement, offset, size, body);
+            planConverting(statement, offset, size, signed, body);
             return;
         }
 
@@ -2824,22 +2825,62 @@ public final class ProgramGenerator {
 
         body.add(() -> {
             if (!tallyClauses.isEmpty()) {
-                offset.run();
-                size.run();
-                emitClauseArray(tallyClauses);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tally",
-                        "(L" + STORAGE + ";II[" + CLAUSE + ")[I", false);
+                if (signed == null) {
+                    offset.run();
+                    size.run();
+                    emitClauseArray(tallyClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tally",
+                            "(L" + STORAGE + ";II[" + CLAUSE + ")[I", false);
+                } else {
+                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, signed, NUMERIC_ITEM);
+                    offset.run();
+                    loadCodePage();
+                    emitClauseArray(tallyClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tallyUnsigned",
+                            "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE
+                                    + "[" + CLAUSE + ")[I", false);
+                }
                 run.visitVarInsn(Opcodes.ASTORE, array);
                 counters.forEach(Runnable::run);
             }
             if (!replaceClauses.isEmpty()) {
-                offset.run();
-                size.run();
-                emitClauseArray(replaceClauses);
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replace",
-                        "(L" + STORAGE + ";II[" + CLAUSE + ")V", false);
+                if (signed == null) {
+                    offset.run();
+                    size.run();
+                    emitClauseArray(replaceClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replace",
+                            "(L" + STORAGE + ";II[" + CLAUSE + ")V", false);
+                } else {
+                    run.visitFieldInsn(Opcodes.GETSTATIC, internal, signed, NUMERIC_ITEM);
+                    offset.run();
+                    loadCodePage();
+                    emitClauseArray(replaceClauses);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "replaceUnsigned",
+                            "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE
+                                    + "[" + CLAUSE + ")V", false);
+                }
             }
         });
+    }
+
+    /**
+     * 検査するのが<b>符号つきの数字項目</b>なら、その項目を表す定数の名前を返す。
+     *
+     * <p>規格は「同じ長さの符号なし項目へ移し、英数字として見直したもの」を検査すると
+     * 決めている (85 規格 6.19.4 一般規則 2c)。{@code PIC S9(5)} に {@code -12345} を
+     * 入れると末尾は {@code 0xD5} であり、{@code "5"} をいくら探しても当たらない
+     * (NC216A INS-TEST-F1-23-2)。符号を持たない項目なら {@code null} を返し、
+     * 今までどおり記憶域をそのまま走査する。
+     */
+    private String signedNumericTarget(DataReference reference, Origin origin) {
+        DataItem item = reference.item();
+        if (!DataCategory.of(reference).isNumeric()
+                || (item.usage() != null && item.usage() != Usage.DISPLAY)
+                || item.picture() == null
+                || !item.picture().signPosition().isSigned()) {
+            return null;
+        }
+        return numericItemConstant(item, origin);
     }
 
     private List<Runnable> planInspectClauses(List<Statement.Inspect.InspectClause> clauses,
@@ -2953,7 +2994,7 @@ public final class ProgramGenerator {
     }
 
     private void planConverting(Statement.Inspect statement, Runnable offset, Runnable size,
-                                List<Runnable> body) {
+                                String signed, List<Runnable> body) {
         Statement.Inspect.Converting converting = statement.converting();
         Runnable from = planInspectBytes(converting.from(), statement.origin());
         Runnable to = planInspectBytes(converting.to(), statement.origin());
@@ -2962,13 +3003,26 @@ public final class ProgramGenerator {
             return;
         }
         body.add(() -> {
+            if (signed == null) {
+                offset.run();
+                size.run();
+                from.run();
+                to.run();
+                region.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "convert",
+                        "(L" + STORAGE + ";II[B[B" + REGION + ")V", false);
+                return;
+            }
+            // CONVERTING も「符号なし項目へ移したもの」を検査する。数える走査と同じ規則である
+            run.visitFieldInsn(Opcodes.GETSTATIC, internal, signed, NUMERIC_ITEM);
             offset.run();
-            size.run();
+            loadCodePage();
             from.run();
             to.run();
             region.run();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "convert",
-                    "(L" + STORAGE + ";II[B[B" + REGION + ")V", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "convertUnsigned",
+                    "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE + "[B[B"
+                            + REGION + ")V", false);
         });
     }
 
