@@ -35,7 +35,13 @@ idempotency keyを持つ不変envelopeとし、COBOL起動前の排他claim、�
 save / complete / releaseをport契約へ追加した。単一JVM用reference storeでは同一版への並行claimが
 一件だけ成功することを試験している。
 
-このCICS増分は中立構造契約である。Spring MVC / Session adapter、task全体のcoordinator、lease更新、
+`CicsTaskCoordinator`は、TRANSIDと入力上限の検査、会話claim、program port実行、次TRANSIDの再検査、
+会話mutationとUOWの確定、異常時abort、closeを一要求上で順序付ける。会話変更と業務UOWの実際の
+原子性・公開順序は`CicsTaskBoundary`へ委譲し、Spring型やDb2型を中立coordinatorへ持ち込まない。
+commit失敗は`NOT_COMMITTED`と`UNKNOWN`を区別し、`UNKNOWN`では危険な自動rollback、lease解放、
+program再実行を行わない。開始前、program失敗、commit失敗、close失敗の各cleanup traceをfakeで固定した。
+
+このCICS増分は中立構造契約である。Spring MVC / Session adapter、実program executor、lease更新、
 STRICT会話表とNON_ATOMIC outcome journal、EIB、BMS、EXEC CICS翻訳、実CICS比較は未実装である。
 `load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
 
@@ -117,6 +123,11 @@ interface ConversationStorePort {
     Optional<ConversationEnvelope> load(ConversationId id);
     SaveResult save(ConversationEnvelope expected, ConversationEnvelope next);
     void complete(ConversationEnvelope expected);
+}
+
+interface CicsTaskBoundary extends SyncpointPort, AutoCloseable {
+    void commit(ConversationMutation conversation, Instant now);
+    void abort(Optional<ConversationLease> lease, Throwable failure, Instant now);
 }
 
 interface SqlExecutorPort {

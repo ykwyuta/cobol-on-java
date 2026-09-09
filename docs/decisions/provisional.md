@@ -2916,15 +2916,18 @@ control結果へ変換する。疑似会話はversion / owner / expiry / idempot
 原子的claimで期限付きleaseを一件だけ取得する。saveはIDとownerを維持して版を一つだけ進める。
 in-memory storeはreference / test用に限定する。
 
-**どこがずれうるか**: `DefaultCicsGateway`だけでは初期program、XCTL loop、RETURN、ABEND、UOW、会話保存を
-一括管理するtask coordinatorになっていない。生成COBOLの`EXEC CICS`はまだgatewayを呼ばない。
+**どこがずれうるか**: `CicsTaskCoordinator`はclaim、program port、RETURN結果、会話mutation、UOW、
+abort、cleanupを順序付けるが、初期programとXCTL loopを実行するproduction program portは未実装である。
+`CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
+commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
+生成COBOLの`EXEC CICS`はまだgatewayを呼ばない。
 leaseにはrenewalがなく、task timeoutとlease期限の設定を誤ると実行中に別要求が再claimしうる。
 caller提供の`Instant`はcluster node間の時計ずれを吸収せず、in-memory CASはprocess再起動やclusterで
 共有されない。`load`は排他権を与えず、誤用すると二重実行になる。payload生成後の上限検査だけでは
 HTTP body受信時のmemory枯渇を防げない。ownerは安全なbinding値に変換済みであることをadapter側が保証する。
 STRICT原子保存、NON_ATOMIC outcome journal、EIBRESP詳細、channel、BMS snapshot、CICS条件処理は未実装である。
 
-**解消条件**: task coordinatorと生成CICS命令を接続し、LINK / XCTL / RETURN / ABEND / SYNCPOINTの
+**解消条件**: production program portと生成CICS命令を接続し、LINK / XCTL / RETURN / ABEND / SYNCPOINTの
 終了・rollback・cleanup traceを通す。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を
 実装する。Spring Session JDBCのSTRICT adapterとNON_ATOMIC adapterへ同じ並行・crash・expiry・logout・
 冪等再送contract suiteを適用し、複数instanceで検証する。EIB、BMS snapshot、実CICS比較vectorを追加し、

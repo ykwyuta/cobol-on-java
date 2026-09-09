@@ -60,7 +60,9 @@ JavaScript / CSS と組み合わせた 3270 互換 HTML view を提供するが�
 中立第1増分として`cobol-cics`へTRANSID registry、入力上限、CICS command/control、同一sessionの
 LINK gateway、版・owner・期限・冪等key・期限付きleaseを持つ会話portを追加した。会話を使うtaskは
 `load`結果だけで実行せず、COBOL起動前に期待版を`claim`する。reference実装は単一JVM用であり、
-Spring Sessionや業務Db2との原子性を表さない。Spring adapterが実装されるまでは本ADR全体を
+Spring Sessionや業務Db2との原子性を表さない。中立`CicsTaskCoordinator`はclaimからprogram、会話変更、
+UOW、abort、closeを順序付けるが、原子確定は`CicsTaskBoundary` adapterの責務とする。commit結果が
+`UNKNOWN`ならleaseを解放せず自動再実行しない。Spring adapterが実装されるまでは本ADR全体を
 実装済みとは判定しない。
 
 ## 却下した案
