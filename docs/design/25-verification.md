@@ -592,9 +592,15 @@ NC215A は 51 文字の照合順序を 2 行に分けて書いている。
 
 | 本数 | 理由 | どう見るか |
 | --- | --- | --- |
-| 11 | 通信部 (`COMMUNICATION SECTION`) | <b>L0</b>。支えないと決めてある (制約 C-5) |
+| 11 | 通信機能 (`COMMUNICATION SECTION`) | <b>L0</b>。支えないと決めてある (制約 C-5) |
 | 2 | `OPEN INPUT ... REVERSED` | 逆から読む。断っている (暫定 P-081) |
 | 1 | `PICTURE P` | <b>配布物の誤り</b>である (下記) |
+
+11 本は<b>理由の文面まで直した</b>。以前は
+`extraneous input 'COMMUNICATION' expecting {<EOF>, IDENTIFICATION, ID}` と出ていて、
+支えていないのか書き方が悪いのかが読み取れなかった。いまは
+`COMMUNICATION SECTION is not supported` である。数は 1 本も動かないが、
+<b>数の隣に並ぶ理由は読まれる</b> (設計 40)。
 
 IX110A に `01 STATUS-TEST-10 PIC P VALUE ZERO.` と書いてある。`P` は<b>桁を 1 つも
 持たない</b>ので、数字項目の PICTURE として規格が許していない。対になる IX109A の

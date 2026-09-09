@@ -166,6 +166,36 @@ INSPECT WRK-XN-83-1 REPLACING
 <b>読み分けを意味解析へ回さない</b>のが要点である。構文木ができた時点で句の切れ目は
 決まってしまっており、あとから直せない。
 
+## 支えていないものでも、<b>どこまでがそれか</b>は読む
+
+通信機能は L0 である (制約 C-5)。だからといって構文解析器が転ぶに任せてよいわけでは
+ない。転ぶと診断はこうなる。
+
+```
+CM101M.cbl:229:8: extraneous input 'COMMUNICATION' expecting {<EOF>, IDENTIFICATION, ID}
+```
+
+これでは<b>支えていないのか、書き方が悪いのか</b>が読む側に分からない。そこで
+通信節と通信の文だけは受け取り、意味解析で名指しして断る。
+
+```
+CM101M.cbl:229:8: COMMUNICATION SECTION is not supported: the communication module is not implemented
+```
+
+節の中身は読まない。`COMMUNICATION SECTION.` のあとを、<b>部か節が始まるまで</b>
+1 語ずつ飲む (`communicationWord`)。終わりの見分け方は 2 段になっている。
+
+- 部の始まり (`PROCEDURE` / `IDENTIFICATION` / `ID`) は<b>字面だけで決まる</b>ので、
+  否定の語集合に書く。構文解析器は述語を待たずに繰り返しを抜けられる
+- 節の始まりと `END PROGRAM` は<b>2 語目まで見ないと決まらない</b>ので述語で見る。
+  裸の `END` は終わりではない —— `CD` の中に `END KEY IS ...` と書けるからである
+
+文のほうは `ENABLE` / `DISABLE` / `SEND` / `RECEIVE` / `PURGE` と
+`ACCEPT ... [MESSAGE] COUNT` である。前の 5 つは終止符までを飲む。
+
+<b>語を予約語にすると、それを名前に使ったプログラムが通らなくなる</b>。ここで足した
+7 語はどれも 85 規格の予約語なので、通らなくなるほうが正しい。
+
 ## 次の増分
 
 データ部の割り付けは[設計 50](50-data-layout.md)、手続き部は[設計 60](60-procedure.md) へ続く。

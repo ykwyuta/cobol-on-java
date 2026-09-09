@@ -240,6 +240,13 @@ public final class DataDivisionBuilder {
                 // 報告書節は記述の形が違う。割り付けは addReports が作る
                 continue;
             }
+            if (section.communicationSection() != null) {
+                // 支えていない (制約 C-5)。断るときは<b>何を読んだのか</b>まで書く
+                report(originOf(section.communicationSection()),
+                        "COMMUNICATION SECTION is not supported: "
+                        + "the communication module is not implemented");
+                continue;
+            }
             currentSection = sectionOf(section);
             for (CobolParser.DataDescriptionEntryContext entry : entriesOf(section)) {
                 addEntry(entry);
