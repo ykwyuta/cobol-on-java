@@ -3410,11 +3410,13 @@ public final class ProgramGenerator {
             left = planComparisonSide(relation.left(), relation.origin());
             right = planComparisonSide(relation.right(), relation.origin());
         } else {
-            // 英数字の比較に式は書けない。四則の相手は数値しかない
+            // 英数字の比較に式は書けない。四則の相手は数値しかない。
+            // 数字の被演算子は<b>同じ大きさの英数字項目へ移したものとして</b>比べる
+            // ——符号は落ち、P は 0 として数える (85 規格 6.15.2)
             int length = comparisonLength(relation);
-            left = planSourceBytes(Condition.Relation.operandOf(relation.left()),
+            left = planNumericAsAlphanumeric(Condition.Relation.operandOf(relation.left()),
                     relation.origin(), length);
-            right = planSourceBytes(Condition.Relation.operandOf(relation.right()),
+            right = planNumericAsAlphanumeric(Condition.Relation.operandOf(relation.right()),
                     relation.origin(), length);
         }
         if (left == null || right == null) {
@@ -4292,12 +4294,33 @@ public final class ProgramGenerator {
             // 符号も落とさない。SQ111A は符号の 1 バイトを FILLER で受けて数える
             return planSourceBytes(source, origin, targetLength);
         }
+        return planNumericAsAlphanumeric(source, origin, targetLength);
+    }
+
+    /**
+     * 数字項目を<b>英数字項目へ移したかのように</b>読む命令 (要件 FR-060)。
+     *
+     * <p>2 つのことが起きる。符号は落ち、{@code PICTURE} の {@code P} は 0 として
+     * 数える。どちらも規格が「格納した文字ではなく代数値を使う」と決めている
+     * ところである (85 規格 5.9.4)。数字項目でなければ、そのままバイトを読む。
+     *
+     * <p>転記の送り出し側と、英数字との比較の両方で通る。比較の規則は「数字の
+     * 被演算子を<b>同じ大きさの英数字項目へ移したものとして</b>比べる」であり、
+     * 転記と同じ扱いである (85 規格 6.15.2)。
+     */
+    private Runnable planNumericAsAlphanumeric(Operand source, Origin origin, int targetLength) {
+        if (!(source instanceof Operand.Reference operand)) {
+            return planSourceBytes(source, origin, targetLength);
+        }
         DataReference reference = operand.reference();
         DataItem item = reference.item();
+        // PICTURE の P は<b>桁を数えるが記憶域は取らない</b>。S9PP に 200 を入れて
+        // 英数字へ移せば "200" である
+        int scalingZeros = scalingZerosOf(item);
         if (DataCategory.of(reference) != DataCategory.NUMERIC_INTEGER
                 || (item.usage() != null && item.usage() != Usage.DISPLAY)
                 || item.picture() == null
-                || !item.picture().signPosition().isSigned()) {
+                || (!item.picture().signPosition().isSigned() && scalingZeros == 0)) {
             // 符号は PICTURE の S が決める。SIGN IS 句は<b>持ち方</b>を変えるだけである
             return planSourceBytes(source, origin, targetLength);
         }
@@ -4312,7 +4335,29 @@ public final class ProgramGenerator {
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readUnsignedDigits",
                     "(" + NUMERIC_ITEM + "L" + STORAGE + ";I" + CODE_PAGE + ")[B", false);
+            if (scalingZeros > 0) {
+                push(scalingZeros);
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "withScalingZeros",
+                        "([BI" + CODE_PAGE + ")[B", false);
+            }
         };
+    }
+
+    /**
+     * 小数点の右側にある {@code P} の数 (要件 FR-031)。
+     *
+     * <p>{@code S9PP} なら 2 である。記憶域は 1 桁しか取らないが、値は<b>その 100 倍</b>で
+     * ある。転記の送り出し側になったときは、格納した数字のうしろに 0 を 2 つ置く。
+     *
+     * <p>左側の {@code P} ({@code PP99} のような書き方) は数えない。そちらは値が
+     * 小数になるので、そもそも英数字へは移せない。
+     */
+    private static int scalingZerosOf(DataItem item) {
+        if (item.picture() == null || item.picture().scale() >= 0) {
+            return 0;
+        }
+        return -item.picture().scale();
     }
 
     /** 英数字編集項目の<b>文字位置</b>の数。挿入文字は数えない。 */

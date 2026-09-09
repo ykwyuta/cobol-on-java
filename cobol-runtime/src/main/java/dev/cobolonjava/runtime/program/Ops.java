@@ -1002,6 +1002,23 @@ public final class Ops {
     }
 
     /**
+     * 小数点の右側にある {@code P} のぶんだけ 0 を足す (要件 FR-031, FR-060)。
+     *
+     * <p>{@code PICTURE} の {@code P} は<b>桁を数えるが記憶域は取らない</b>。
+     * {@code S9PP} は 1 桁しか持たないが、表す値はその 100 倍である。転記の送り出し
+     * 側になったときは「格納した数字の代わりに 0 を置いた代数値」を使う、と規格が
+     * 決めている (85 規格 5.9.4)。200 を入れた {@code S9PP} を英数字へ移せば
+     * {@code "200"} になる。
+     *
+     * @param zeros 足す 0 の数
+     */
+    public static byte[] withScalingZeros(byte[] digits, int zeros, CodePage codePage) {
+        byte[] out = Arrays.copyOf(digits, digits.length + zeros);
+        Arrays.fill(out, digits.length, out.length, codePage.digit(0));
+        return out;
+    }
+
+    /**
      * 数字編集項目の中身から値を取り出す (要件 FR-060、de-editing)。
      *
      * <p>編集は「値 → 見せ方」の変換である。それを<b>逆にたどる</b>。通貨記号も

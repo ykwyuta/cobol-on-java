@@ -250,6 +250,72 @@ class AlphanumericEditedMoveTest {
     }
 
     @Test
+    @DisplayName("PICTURE の P は、送り出すとき 0 として数える (FR-031, FR-060)")
+    void thescalingPositionsCountAsZerosWhenSending() {
+        // P は<b>桁を数えるが記憶域は取らない</b>。S9PP は 1 桁しか持たないが、
+        // 表す値はその 100 倍である。規格は転記の送り出し側になったときに
+        // 「格納した数字の代わりに 0 を置いた代数値」を使うと決めている (85 規格 5.9.4)。
+        // CCVS85 の NC124A (PICTURE-TEST-27) がここを見ている
+        assertEquals("[200]|", run(
+                List.of("01 WS-P PIC S9PP VALUE 200.", "01 WS-X PIC X(3) VALUE SPACE."),
+                "MOVE WS-P TO WS-X.",
+                "DISPLAY '[' WS-X ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("P の位置は値を丸める。持てるのは 100 の倍数だけである (FR-031)")
+    void thescalingPositionsTruncateTheValue() {
+        // 9PP が持てるのは 100 の倍数だけなので、123 を入れると 100 になる。
+        // そこから英数字へ移せば "100" である (NC124A の PICTURE-TEST-29)
+        assertEquals("[100]|", run(
+                List.of("01 WS-N PIC 999 VALUE 123.",
+                        "01 WS-P PIC 9PP VALUE ZERO.",
+                        "01 WS-X PIC X(3) VALUE SPACE."),
+                "MOVE WS-N TO WS-P.",
+                "MOVE WS-P TO WS-X.",
+                "DISPLAY '[' WS-X ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("英数字と比べる数字項目は、移したものとして比べる (FR-060)")
+    void anumericOperandComparedWithAlphanumericIsPseudoMoved() {
+        // 規格は「数字の被演算子を<b>同じ大きさの英数字項目へ移したものとして</b>
+        // 比べる」と決めている (85 規格 6.15.2)。符号は落ちるので、-123 を持つ
+        // S9(3) は "123" と等しい。CCVS85 の NC103A がここを見ている
+        assertEquals("[T]|", run(
+                List.of("01 WS-N PIC S9(3) VALUE -123.",
+                        "01 WS-X PIC X(3) VALUE '123'.",
+                        "01 WS-R PIC X."),
+                "IF WS-N = WS-X MOVE 'T' TO WS-R ELSE MOVE 'F' TO WS-R END-IF.",
+                "DISPLAY '[' WS-R ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("比べるときも P は 0 として数える (FR-031, FR-060)")
+    void thescalingPositionsCountAsZerosWhenComparing() {
+        assertEquals("[T]|", run(
+                List.of("01 WS-P PIC S9PP VALUE 200.",
+                        "01 WS-X PIC X(3) VALUE '200'.",
+                        "01 WS-R PIC X."),
+                "IF WS-P = WS-X MOVE 'T' TO WS-R ELSE MOVE 'F' TO WS-R END-IF.",
+                "DISPLAY '[' WS-R ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("P を持たない項目は今までどおり格納した文字がそのまま出る (FR-060)")
+    void anitemWithoutScalingPositionsIsUnchanged() {
+        assertEquals("[200]|", run(
+                List.of("01 WS-N PIC 999 VALUE 200.", "01 WS-X PIC X(3) VALUE SPACE."),
+                "MOVE WS-N TO WS-X.",
+                "DISPLAY '[' WS-X ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
     @DisplayName("添字を書けば 1 個分である (FR-020)")
     void asubscriptedReferenceIsOneOccurrence() {
         // 表そのものを添字なしで指したときだけ、いま何個あるかで長さが決まる
