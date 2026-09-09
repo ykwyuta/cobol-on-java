@@ -187,7 +187,7 @@ public final class InitialImage {
         if (item.initialValue() != null) {
             // 群項目の VALUE は中身を英数字として一括で埋める。下位の項目を書いたあとに
             // 上書きする — 群に VALUE を書いたなら、下位に VALUE を書くことは許されない
-            writeText(image, item, item.initialValue(), false);
+            writeText(image, item, item.initialValue());
         }
         return image;
     }
@@ -236,7 +236,10 @@ public final class InitialImage {
             writeNumeric(image, item, value, picture, usage == null ? Usage.DISPLAY : usage);
             return;
         }
-        writeText(image, item, value, item.justified());
+        // JUSTIFIED は<b>初期値には効かない</b>。規格がそう決めている
+        // (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは実行時の転記だけで
+        // ある。X(3) JUST VALUE "XY" は "XY " になる (CCVS85 の NC107A)
+        writeText(image, item, value);
     }
 
     private void writeNumeric(byte[] image, DataItem item, LiteralValue value,
@@ -285,7 +288,14 @@ public final class InitialImage {
     }
 
     /** 英数字・英字・編集項目、および群項目への書き込み。 */
-    private void writeText(byte[] image, DataItem item, LiteralValue value, boolean justified) {
+    /**
+     * 英数字項目の初期値を書き込む。
+     *
+     * <p>常に<b>左詰め</b>である。{@code JUSTIFIED} は初期値には効かない —— 規格が
+     * そう決めている (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは実行時の
+     * 転記だけである。{@code X(3) JUST VALUE "XY"} は {@code "XY "} になる。
+     */
+    private void writeText(byte[] image, DataItem item, LiteralValue value) {
         byte[] bytes = textBytes(item, value, image.length);
         if (bytes == null) {
             return;
@@ -295,9 +305,7 @@ public final class InitialImage {
                     + " (" + bytes.length + " > " + image.length + ")");
             return;
         }
-        // 右寄せは JUSTIFIED RIGHT のときだけ。既定は左寄せで残りは空白
-        int at = justified ? image.length - bytes.length : 0;
-        System.arraycopy(bytes, 0, image, at, bytes.length);
+        System.arraycopy(bytes, 0, image, 0, bytes.length);
     }
 
     private byte[] textBytes(DataItem item, LiteralValue value, int length) {

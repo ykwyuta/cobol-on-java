@@ -56,9 +56,28 @@ class InitialImageTest {
     }
 
     @Test
-    @DisplayName("JUSTIFIED RIGHT では右寄せになる (FR-013)")
-    void justifiedRightMovesTheValueToTheEnd() {
-        assertEquals("4040C1C2", hex("WS-A", "01 WS-A PIC X(4) JUSTIFIED RIGHT VALUE 'AB'."));
+    @DisplayName("JUSTIFIED RIGHT は<b>初期値には効かない</b> (FR-013)")
+    void justifiedRightDoesNotAffectTheInitialValue() {
+        // 規格がそう決めている (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは
+        // 実行時の転記だけである。CCVS85 の NC107A は X(3) JUST VALUE "XY" が
+        // "XY " になることを確かめている
+        assertEquals("C1C24040", hex("WS-A", "01 WS-A PIC X(4) JUSTIFIED RIGHT VALUE 'AB'."));
+    }
+
+    @Test
+    @DisplayName("01 レベルの REDEFINES は、長ければ記憶域を広げる (FR-021)")
+    void alargerRedefinitionAtLevel01ExtendsTheArea() {
+        // 01 レベルでファイル節の外なら、重ねる先より<b>長くてよい</b>。長ければ
+        // そのぶん記憶域を広げなければならない。広げないと次の 01 レベルが重なり、
+        // そちらへ書いたつもりのない値が<b>黙って壊れる</b>
+        // (CCVS85 の NC107A: MOVE SPACE TO REDEF12 が次の 01 レベルを潰していた)
+        InitialImage.Result image = imageOf(
+                "01 WS-A PIC X(2).",
+                "01 WS-B REDEFINES WS-A PIC X(8).",
+                "01 WS-C PIC X(3) VALUE 'AAA'.");
+        assertTrue(image.succeeded(), () -> image.diagnostics().toString());
+        // WS-B が 8 バイトあるので、WS-C は 8 バイト目から始まる
+        assertEquals(11, image.storage().length);
     }
 
     @Test

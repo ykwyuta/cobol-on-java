@@ -306,6 +306,19 @@ class AlphanumericEditedMoveTest {
     }
 
     @Test
+    @DisplayName("JUSTIFIED は初期値には効かず、転記には効く (FR-013, FR-060)")
+    void justifiedAffectsMovesButNotTheInitialValue() {
+        // 規格がそう決めている (85 規格 JUSTIFIED 句の一般規則 (3))。
+        // CCVS85 の NC107A は X(3) JUST VALUE "XY" が "XY " になることを確かめている
+        assertEquals("[XY ][ AB]|", run(
+                List.of("01 WS-J PIC X(3) JUST VALUE 'XY'.",
+                        "01 WS-K PIC X(3) JUST."),
+                "MOVE 'AB' TO WS-K.",
+                "DISPLAY '[' WS-J '][' WS-K ']'.",
+                "STOP RUN."));
+    }
+
+    @Test
     @DisplayName("P を持たない項目は今までどおり格納した文字がそのまま出る (FR-060)")
     void anitemWithoutScalingPositionsIsUnchanged() {
         assertEquals("[200]|", run(

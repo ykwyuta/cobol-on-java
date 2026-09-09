@@ -1552,9 +1552,15 @@ public final class DataDivisionBuilder {
                 continue;
             }
             if (record.redefinesName() != null) {
-                // 01 レベルの REDEFINES は記憶域を進めない。重ねる先と同じ位置から始まる
+                // 01 レベルの REDEFINES は重ねる先と同じ位置から始まる。ただし
+                // <b>重ねる先より長くてよい</b> —— 01 レベルでファイル節の外なら、
+                // 規格がそれを許している。長ければ、そのぶん記憶域を広げなければ
+                // ならない。広げないと、次の 01 レベルが重なって<b>黙って壊れる</b>
+                // (CCVS85 の NC107A: MOVE SPACE TO REDEF12 が次の REDEF13 を潰していた)
                 DataItem target = redefinedRecord(record);
-                record.setBase(target == null ? base : target.base());
+                int at = target == null ? base : target.base();
+                record.setBase(at);
+                base = Math.max(base, at + record.totalLength());
                 continue;
             }
             record.setBase(base);
