@@ -193,10 +193,24 @@ public final class DataDivisionBuilder {
     public static Result build(CobolParser.ProgramUnitContext program,
                                SpecialNames specialNames, String programName,
                                List<InheritedGlobal> inherited) {
+        return build(program, specialNames, programName, inherited, List.of());
+    }
+
+    /**
+     * 囲む側の {@code GLOBAL} 項目とファイルも見えるようにして割り付けを作る
+     * (要件 FR-091)。
+     *
+     * @param inheritedFiles 囲む側から引き継ぐ {@code FD ... GLOBAL}
+     */
+    public static Result build(CobolParser.ProgramUnitContext program,
+                               SpecialNames specialNames, String programName,
+                               List<InheritedGlobal> inherited,
+                               List<InheritedFile> inheritedFiles) {
         DataDivisionBuilder builder = new DataDivisionBuilder(specialNames);
         builder.programName = programName;
         builder.addSameAreas(program);
         builder.addProgramUnit(program);
+        builder.addInheritedFiles(inheritedFiles);
         builder.addInheritedGlobals(inherited);
         builder.addIndexItems();
         builder.addLinageCounters(program);
@@ -245,35 +259,98 @@ public final class DataDivisionBuilder {
     private void addFileSection(CobolParser.FileSectionContext section) {
         currentSection = DataSection.FILE;
         for (CobolParser.FileDescriptionEntryContext fd : section.fileDescriptionEntry()) {
-            currentFile = fd.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
-            Origin origin = originOf(fd);
-            if (fileRecords.containsKey(currentFile)) {
-                report(origin, "duplicate FD for " + currentFile);
-                continue;
-            }
-            // FD ... IS EXTERNAL は、ファイル結合子とレコード領域を実行単位で 1 つに
-            // する (要件 FR-014)。領域のほうは記述項に印を付けて持ち回る
-            boolean external = isExternalFile(fd);
-            List<DataItem> area = new ArrayList<>();
-            for (CobolParser.DataDescriptionEntryContext entry : fd.dataDescriptionEntry()) {
-                int before = records.size();
-                addEntry(entry);
-                for (int i = before; i < records.size(); i++) {
-                    area.add(records.get(i));
-                    if (external) {
-                        records.get(i).setExternal(true);
-                    }
-                }
-            }
-            if (area.isEmpty() && reportNamesOf(fd).isEmpty()) {
-                report(origin, "FD " + currentFile + " has no record description");
-                continue;
-            }
-            // REPORT を書いたファイルのレコードは報告書節が決める。addReports が足す
-            fileRecords.put(currentFile, area);
+            addFileDescription(fd, null);
         }
         currentFile = null;
         currentSection = DataSection.WORKING_STORAGE;
+    }
+
+    /**
+     * {@code FD} 1 個を読む (要件 FR-100)。
+     *
+     * @param globalOwner 囲む側から引き継いだものなら、そのプログラムの名前
+     *                    (要件 FR-091)。自分が書いたものなら {@code null}
+     */
+    private void addFileDescription(CobolParser.FileDescriptionEntryContext fd,
+                                    String globalOwner) {
+        currentFile = fd.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+        Origin origin = originOf(fd);
+        if (fileRecords.containsKey(currentFile)) {
+            if (globalOwner == null) {
+                report(origin, "duplicate FD for " + currentFile);
+            }
+            // 同じ名前を自分でも宣言していれば、そちらが勝つ (要件 FR-091)
+            return;
+        }
+        // FD ... IS EXTERNAL は、ファイル結合子とレコード領域を実行単位で 1 つに
+        // する (要件 FR-014)。領域のほうは記述項に印を付けて持ち回る
+        boolean external = isExternalFile(fd);
+        // 自分が書いた FD ... GLOBAL は、囲まれた側から見える。持ち主はこちらである
+        String owner = globalOwner != null ? globalOwner
+                : (isGlobalFile(fd) ? programName : null);
+        List<DataItem> area = new ArrayList<>();
+        for (CobolParser.DataDescriptionEntryContext entry : fd.dataDescriptionEntry()) {
+            int before = records.size();
+            addEntry(entry);
+            for (int i = before; i < records.size(); i++) {
+                area.add(records.get(i));
+                if (external) {
+                    records.get(i).setExternal(true);
+                }
+                if (owner != null) {
+                    records.get(i).setGlobalOwner(owner);
+                }
+            }
+        }
+        if (area.isEmpty() && reportNamesOf(fd).isEmpty()) {
+            report(origin, "FD " + currentFile + " has no record description");
+            return;
+        }
+        // REPORT を書いたファイルのレコードは報告書節が決める。addReports が足す
+        fileRecords.put(currentFile, area);
+    }
+
+    /**
+     * 囲む側の {@code FD ... GLOBAL} を、この割り付けにも並べる (要件 FR-091)。
+     *
+     * <p>ファイルの記述は {@code SELECT} と {@code FD} の 2 か所に分かれている。
+     * こちらが持ってくるのは {@code FD} のほうで、{@code SELECT} は
+     * {@link FileDescription#select} が引き継ぐ。
+     */
+    private void addInheritedFiles(List<InheritedFile> inherited) {
+        if (inherited.isEmpty()) {
+            return;
+        }
+        currentSection = DataSection.FILE;
+        for (InheritedFile one : inherited) {
+            open.clear();
+            previous = null;
+            addFileDescription(one.entry(), one.owner());
+        }
+        currentFile = null;
+        currentSection = DataSection.WORKING_STORAGE;
+        open.clear();
+        previous = null;
+    }
+
+    /**
+     * 囲む側から引き継ぐ {@code FD ... GLOBAL} 1 個 (要件 FR-091)。
+     *
+     * @param owner 書いたプログラムの名前。実体はそちらにある
+     * @param entry {@code FD} の記述項。配下のレコード記述も入っている
+     */
+    public record InheritedFile(String owner,
+                                CobolParser.FileDescriptionEntryContext entry) {
+    }
+
+    /** {@code FD ... GLOBAL} と書かれたか (要件 FR-091)。 */
+    public static boolean isGlobalFile(CobolParser.FileDescriptionEntryContext fd) {
+        for (CobolParser.FileDescriptionClauseContext clause : fd.fileDescriptionClause()) {
+            if (clause.GLOBAL() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** {@code FD ... IS EXTERNAL} と書かれたか (要件 FR-014)。 */

@@ -97,6 +97,21 @@ public interface CobolProgram {
     }
 
     /**
+     * 段落の範囲を、このプログラムの記憶域で実行する (要件 FR-091, FR-105)。
+     *
+     * <p>{@code USE GLOBAL AFTER ERROR PROCEDURE} のためにある。囲まれたプログラムで
+     * 入出力の異常が起きたとき、動かすのは<b>囲む側の宣言節</b>である。節の中身は
+     * 囲む側の段落と項目を指しているので、囲む側の記憶域で動かさなければならない。
+     *
+     * <p>手で書いたプログラムは宣言節を持たない。
+     */
+    default void performGlobalRange(int from, int through, Storage storage,
+                                    ProgramContext context) {
+        throw new UnsupportedOperationException(
+                name() + " has no procedure division to run a range of");
+    }
+
+    /**
      * {@code EXTERNAL} の領域 1 個。
      *
      * @param name   データ名。実行単位でこの名前が同じものは同じ領域である

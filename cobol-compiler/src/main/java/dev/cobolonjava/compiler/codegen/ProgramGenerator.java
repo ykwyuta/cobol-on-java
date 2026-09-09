@@ -169,6 +169,8 @@ public final class ProgramGenerator {
     /** 作業場所の割り付け。異常終了の覚え書きが項目名で書けるようにする (要件 FR-142)。 */
     private DataLayout layout;
     private List<String> paragraphNames = new ArrayList<>();
+    /** 囲む側が書いた {@code USE GLOBAL} 宣言節 (要件 FR-091)。 */
+    private List<ProcedureBuilder.GlobalDeclarative> inheritedDeclaratives = List.of();
 
     /** いま組み立てている段落の名前。行き先の無い {@code GO TO} の文面に使う。 */
     private String currentParagraphName = "";
@@ -232,9 +234,24 @@ public final class ProgramGenerator {
                                   ProcedureBuilder.Result procedure, InitialImage.Result image,
                                   DataLayout layout, CompilerOptions options,
                                   SpecialNames specialNames) {
+        return generate(programName, sourceName, procedure, image, layout, options,
+                specialNames, List.of());
+    }
+
+    /**
+     * 囲む側の {@code USE GLOBAL} 宣言節も添えて生成する (要件 FR-091)。
+     *
+     * @param globals 囲む側が書いた宣言節。自分に受け持ちがなければこちらを見る
+     */
+    public static Result generate(String programName, String sourceName,
+                                  ProcedureBuilder.Result procedure, InitialImage.Result image,
+                                  DataLayout layout, CompilerOptions options,
+                                  SpecialNames specialNames,
+                                  List<ProcedureBuilder.GlobalDeclarative> globals) {
         ProgramGenerator generator = new ProgramGenerator(classNameOf(programName), sourceName,
                 CodePages.DEFAULT, options, specialNames);
         generator.layout = layout;
+        generator.inheritedDeclaratives = List.copyOf(globals);
         return generator.emit(procedure, image);
     }
 
@@ -2448,10 +2465,10 @@ public final class ProgramGenerator {
                             null);
                 }
             }
-            return null;
+            return planInheritedDeclarative(file, slot, atEndHandled, invalidKeyHandled, opened);
         }
         if (byMode.isEmpty()) {
-            return null;
+            return planInheritedDeclarative(file, slot, atEndHandled, invalidKeyHandled, opened);
         }
         List<Runnable> tests = new ArrayList<>();
         for (ProcedureBuilder.Declarative declarative : byMode) {
@@ -2459,6 +2476,81 @@ public final class ProgramGenerator {
                     file));
         }
         return () -> tests.forEach(Runnable::run);
+    }
+
+    /**
+     * 囲む側の {@code USE GLOBAL} 宣言節を動かす命令 (要件 FR-091, FR-105)。
+     *
+     * <p>自分に受け持つ節がないときだけ通る。規格がそう決めている——内側の宣言が
+     * 外側を隠す。受け持ちの決め方は自分の節と同じで、ファイル名が先、次に開き方である。
+     *
+     * @return 受け持つ節がなければ {@code null}
+     */
+    private Runnable planInheritedDeclarative(FileDescription file, int slot,
+                                              boolean atEndHandled, boolean invalidKeyHandled,
+                                              OpenMode opened) {
+        ProcedureBuilder.GlobalDeclarative named = null;
+        List<ProcedureBuilder.GlobalDeclarative> byMode = new ArrayList<>();
+        for (ProcedureBuilder.GlobalDeclarative declarative : inheritedDeclaratives) {
+            if (declarative.files().stream().anyMatch(f -> f.equalsIgnoreCase(file.name()))) {
+                named = declarative;
+            } else if (declarative.mode() != null) {
+                byMode.add(declarative);
+            }
+        }
+        if (named != null) {
+            return planGlobalDeclarativeCall(named, slot, atEndHandled, invalidKeyHandled, null);
+        }
+        if (opened != null) {
+            for (ProcedureBuilder.GlobalDeclarative declarative : byMode) {
+                if (declarative.mode() == opened) {
+                    return planGlobalDeclarativeCall(declarative, slot, atEndHandled,
+                            invalidKeyHandled, null);
+                }
+            }
+            return null;
+        }
+        if (byMode.isEmpty()) {
+            return null;
+        }
+        List<Runnable> tests = new ArrayList<>();
+        for (ProcedureBuilder.GlobalDeclarative declarative : byMode) {
+            tests.add(planGlobalDeclarativeCall(declarative, slot, atEndHandled,
+                    invalidKeyHandled, file));
+        }
+        return () -> tests.forEach(Runnable::run);
+    }
+
+    /** 囲む側の宣言節 1 つを呼ぶ命令。段落の番号は<b>囲む側の並び</b>での番号である。 */
+    private Runnable planGlobalDeclarativeCall(ProcedureBuilder.GlobalDeclarative declarative,
+                                               int slot, boolean atEndHandled,
+                                               boolean invalidKeyHandled,
+                                               FileDescription modeCheck) {
+        int mode = declarative.mode() == null ? -1 : declarative.mode().ordinal();
+        return () -> {
+            Label skip = new Label();
+            run.visitVarInsn(Opcodes.ALOAD, slot);
+            loadCodePage();
+            run.visitInsn(atEndHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitInsn(invalidKeyHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileFailed",
+                    "([B" + CODE_PAGE + "ZZ)Z", false);
+            run.visitJumpInsn(Opcodes.IFEQ, skip);
+            if (modeCheck != null) {
+                emitFileName(modeCheck);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "fileMode",
+                        "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)I", false);
+                push(mode);
+                run.visitJumpInsn(Opcodes.IF_ICMPNE, skip);
+            }
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(declarative.owner());
+            push(declarative.from());
+            push(declarative.through());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "globalDeclarative",
+                    "(" + CONTEXT + "Ljava/lang/String;II)V", false);
+            run.visitLabel(skip);
+        };
     }
 
     /**
@@ -3878,6 +3970,7 @@ public final class ProgramGenerator {
      * 待っている {@code PERFORM} があってもそこで実行は終わり、呼んだ側へ戻る。
      */
     private void emitPerformMethod(int paragraphCount) {
+        emitGlobalRangeBridge();
         MethodVisitor perform = writer.visitMethod(Opcodes.ACC_PRIVATE, "performRange",
                 PERFORM_DESCRIPTOR, null, null);
         perform.visitCode();
@@ -4005,6 +4098,30 @@ public final class ProgramGenerator {
         run.visitInsn(Opcodes.IRETURN);
         run.visitMaxs(0, 0);
         run.visitEnd();
+    }
+
+    /**
+     * 囲まれたプログラムから宣言節を動かすための入口を出す (要件 FR-091, FR-105)。
+     *
+     * <p>{@code performRange} は private であり、記憶域も文脈も引数で受ける。外から
+     * 呼べる形に包んでおく。引数の並びは空でよい——宣言節は {@code USING} を取らない。
+     */
+    private void emitGlobalRangeBridge() {
+        MethodVisitor bridge = writer.visitMethod(Opcodes.ACC_PUBLIC, "performGlobalRange",
+                "(IIL" + STORAGE + ";" + CONTEXT + ")V", null, null);
+        bridge.visitCode();
+        bridge.visitVarInsn(Opcodes.ALOAD, 0);
+        bridge.visitVarInsn(Opcodes.ILOAD, 1);
+        bridge.visitVarInsn(Opcodes.ILOAD, 2);
+        bridge.visitVarInsn(Opcodes.ALOAD, 3);
+        bridge.visitVarInsn(Opcodes.ALOAD, 4);
+        bridge.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CobolProgram.class),
+                "NO_ARGUMENTS", "[" + Type.getDescriptor(DataView.class));
+        bridge.visitMethodInsn(Opcodes.INVOKESPECIAL, internal, "performRange",
+                PERFORM_DESCRIPTOR, false);
+        bridge.visitInsn(Opcodes.RETURN);
+        bridge.visitMaxs(0, 0);
+        bridge.visitEnd();
     }
 
     /** 段落の範囲を実行する呼び出しを積む。 */
@@ -5622,9 +5739,13 @@ public final class ProgramGenerator {
             if (record.globalOwner() != null) {
                 // 囲む側が持つ 1 つの領域を分け合う。名前だけでは足りない —
                 // 別のプログラムの同じ名前は別の領域である (要件 FR-091)
-                regions.add(new CobolProgram.ExternalRegion(
-                        "GLOBAL:" + record.globalOwner() + ":" + record.name(),
-                        record.base(), record.length()));
+                String key = record.section() == DataSection.FILE && record.fileName() != null
+                        ? "GLOBAL:" + record.globalOwner() + ":FD:" + record.fileName()
+                        : "GLOBAL:" + record.globalOwner() + ":" + record.name();
+                int[] span = files.computeIfAbsent(key,
+                        k -> new int[] {record.base(), record.base()});
+                span[0] = Math.min(span[0], record.base());
+                span[1] = Math.max(span[1], record.base() + record.length());
                 continue;
             }
             if (!record.external()) {

@@ -169,7 +169,7 @@ public final class ProgramContext {
     public void enter(String name, Storage storage, StorageMap map, CobolProgram program) {
         flushExternals();
         active.push(new Active(name, storage, map));
-        externalFrames.push(new ExternalFrame(storage, program));
+        externalFrames.push(new ExternalFrame(name, storage, program));
         loadExternals();
     }
 
@@ -193,16 +193,50 @@ public final class ProgramContext {
     /** 積まれたプログラムの記憶域と、その {@code EXTERNAL} の位置。 */
     private final java.util.Deque<ExternalFrame> externalFrames = new java.util.ArrayDeque<>();
 
-    private record ExternalFrame(Storage storage, CobolProgram program) {
+    private record ExternalFrame(String name, Storage storage, CobolProgram program) {
 
         CobolProgram.ExternalRegion[] regions() {
             return program == null ? CobolProgram.NO_EXTERNAL_REGIONS : program.externalRegions();
         }
     }
 
+    /**
+     * 囲む側の宣言節を、その記憶域で動かす (要件 FR-091, FR-105)。
+     *
+     * <p>{@code USE GLOBAL AFTER ERROR PROCEDURE} である。囲まれたプログラムで入出力の
+     * 異常が起きたとき、動かすのは囲む側の節であり、<b>囲む側の記憶域</b>で動かす。
+     * 節の中身は囲む側の段落と項目を指しているからである。
+     *
+     * <p>囲む側は積まれた中にいる。{@code CALL} で入ったので、下のほうにいるはずである。
+     * いなければ何もしない — 呼ばれ方が規格の想定と違うということであり、黙って
+     * 別のプログラムの節を動かすよりは何もしないほうがよい。
+     *
+     * @param owner 宣言節を書いたプログラムの名前
+     */
+    public void performGlobal(String owner, int from, int through) {
+        ExternalFrame current = externalFrames.peek();
+        for (ExternalFrame frame : externalFrames) {
+            if (frame.program() == null || !owner.equalsIgnoreCase(frame.name())) {
+                continue;
+            }
+            // 節はよそのプログラムの記憶域で動く。<b>入って出るのと同じ</b>形に
+            // 分け合っているものを合わせる。そうしないと、戻ったところで
+            // 呼んだ側の古い写しが書き戻され、節の書いた値が消える
+            flush(current);
+            load(frame);
+            frame.program().performGlobalRange(from, through, frame.storage(), this);
+            flush(frame);
+            load(current);
+            return;
+        }
+    }
+
     /** いま動いている側の {@code EXTERNAL} を実行単位の写しへ書き戻す。 */
     private void flushExternals() {
-        ExternalFrame frame = externalFrames.peek();
+        flush(externalFrames.peek());
+    }
+
+    private void flush(ExternalFrame frame) {
         if (frame == null) {
             return;
         }
@@ -220,7 +254,10 @@ public final class ProgramContext {
      * どのプログラムから見ても同じ初期状態から始まる。
      */
     private void loadExternals() {
-        ExternalFrame frame = externalFrames.peek();
+        load(externalFrames.peek());
+    }
+
+    private void load(ExternalFrame frame) {
         if (frame == null) {
             return;
         }

@@ -1385,6 +1385,19 @@ public final class Ops {
     }
 
     /**
+     * 囲む側の {@code USE GLOBAL} 宣言節を動かす (要件 FR-091, FR-105)。
+     *
+     * <p>受け止め手のない入出力の異常が起きたときだけ通る。判定は呼ぶ側が
+     * {@code fileFailed} で済ませてある。
+     *
+     * @param owner 宣言節を書いたプログラムの名前
+     */
+    public static void globalDeclarative(ProgramContext context, String owner,
+                                         int from, int through) {
+        context.performGlobal(owner, from, through);
+    }
+
+    /**
      * {@code CANCEL} (要件 FR-083)。
      *
      * <p>読み込んだ副プログラムを忘れる。次に呼ばれたときは<b>作業場所が初期状態から</b>

@@ -150,9 +150,30 @@ public final class ProcedureBuilder {
      * @param mode  開き方で指定したもの。ファイル名で指定していれば {@code null}
      */
     public record Declarative(String section, String first, String last,
-                              List<FileDescription> files, OpenMode mode, Origin origin) {
+                              List<FileDescription> files, OpenMode mode, boolean global,
+                              Origin origin) {
 
         public Declarative {
+            files = List.copyOf(files);
+        }
+    }
+
+    /**
+     * 囲む側が書いた {@code USE GLOBAL} 宣言節 1 つ (要件 FR-091)。
+     *
+     * <p>囲まれたプログラムから動かすので、<b>誰のどの段落か</b>を持つ。段落の番号は
+     * 囲む側の並びでの番号である。
+     *
+     * @param owner 書いたプログラムの名前
+     * @param from  最初の段落の番号 (囲む側の並びでの番号)
+     * @param through 最後の段落の番号
+     * @param files 受け持つファイルの名前。開き方で受け持つ節では空
+     * @param mode  受け持つ開き方。ファイル名で受け持つ節では {@code null}
+     */
+    public record GlobalDeclarative(String owner, int from, int through,
+                                    List<String> files, OpenMode mode) {
+
+        public GlobalDeclarative {
             files = List.copyOf(files);
         }
     }
@@ -732,7 +753,9 @@ public final class ProcedureBuilder {
             }
             named.add(file);
         }
-        declaratives.add(new Declarative(name, name, last, named, mode, origin));
+        // USE GLOBAL は<b>囲まれたプログラムの入出力でも</b>動く (要件 FR-091)
+        boolean global = context.useStatement().GLOBAL() != null;
+        declaratives.add(new Declarative(name, name, last, named, mode, global, origin));
     }
 
     /**

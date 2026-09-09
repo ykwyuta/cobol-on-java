@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.compiler.CobolCompiler;
 import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.FileOperationException;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import java.io.ByteArrayOutputStream;
@@ -167,6 +168,67 @@ class CallGenerationTest {
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().toString().contains("SH-TEXT"),
                 result.diagnostics().toString());
+    }
+
+    /**
+     * 囲む側が {@code FD ... GLOBAL} と {@code USE GLOBAL} を持ち、囲まれた側が
+     * そのファイルを読む。読む先が無いので {@code AT END} になり、受け止め手が
+     * 無いので囲む側の宣言節が動く。
+     */
+    private static List<String> nestedFile(String use) {
+        return List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GFMAIN.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT OPTIONAL IN-FILE ASSIGN TO GFDD.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  IN-FILE GLOBAL.",
+            "01  IN-REC PIC X(4).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-MARK IS GLOBAL PIC 9 VALUE 0.",
+            "PROCEDURE DIVISION.",
+            "DECLARATIVES.",
+            "CATCHER SECTION.",
+            "    " + use,
+            "CATCH-IT.",
+            "    MOVE 7 TO WS-MARK.",
+            "END DECLARATIVES.",
+            "MAIN SECTION.",
+            "MAIN-START.",
+            "    CALL 'GFSUB'",
+            "    DISPLAY WS-MARK",
+            "    STOP RUN.",
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. GFSUB.",
+            "PROCEDURE DIVISION.",
+            "SUB-START.",
+            "    OPEN INPUT IN-FILE",
+            "    READ IN-FILE",
+            "    GOBACK.",
+            "END PROGRAM GFSUB.",
+            "END PROGRAM GFMAIN.");
+    }
+
+    @Test
+    @DisplayName("囲む側の FD ... GLOBAL と USE GLOBAL は、囲まれた側でも効く (FR-091)")
+    void acontainedProgramUsesTheGlobalFileAndDeclarativeOfItsContainer() {
+        // GFSUB はファイルも宣言節も持たない。囲む GFMAIN が GLOBAL と書いたので、
+        // ファイルが見え、受け止め手のない AT END で<b>囲む側の宣言節が動く</b>。
+        // 節は囲む側の記憶域で動くので、書いた値は戻ったところで見えていなければならない
+        assertEquals("7", run(List.of(nestedFile(
+                "USE GLOBAL AFTER STANDARD ERROR PROCEDURE ON INPUT."))).trim());
+    }
+
+    @Test
+    @DisplayName("GLOBAL でない宣言節は、囲まれた側では動かない (FR-091)")
+    void anonGlobalDeclarativeDoesNotReachAcontainedProgram() {
+        // GLOBAL と書かなければ、囲む側の中でしか動かない。囲まれた側では受け止め手が
+        // 無いままになり、<b>異常終了する</b> (要件 FR-104)。GLOBAL の 1 語だけが違う
+        assertThrows(FileOperationException.class, () -> run(List.of(nestedFile(
+                "USE AFTER STANDARD ERROR PROCEDURE ON INPUT."))));
     }
 
     @Test

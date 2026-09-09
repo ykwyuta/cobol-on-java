@@ -17,8 +17,10 @@ import dev.cobolonjava.compiler.source.Preprocessor;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * 翻訳の入口。ソース 1 本からクラスファイルまでを通す。
@@ -120,11 +122,12 @@ public final class CobolCompiler {
         List<Compiled> programs = new ArrayList<>();
         // 告げるだけの診断は翻訳を止めない。積んでおいて結果に載せる (要件 FR-183)
         List<Diagnostic> warnings = new ArrayList<>(parsed.diagnostics());
-        List<List<DataDivisionBuilder.InheritedGlobal>> inherited =
-                inheritedGlobals(parsed.tree().programUnit());
+        List<Inherited> inherited = inheritedGlobals(parsed.tree().programUnit());
+        // 囲む側の USE GLOBAL 宣言節。親は子より先に翻訳されるので、順に積める
+        Map<String, List<ProcedureBuilder.GlobalDeclarative>> globals = new LinkedHashMap<>();
         int at = 0;
         for (CobolParser.ProgramUnitContext unit : parsed.tree().programUnit()) {
-            Result one = compile(unit, fileName, effective, inherited.get(at++));
+            Result one = compile(unit, fileName, effective, inherited.get(at++), globals);
             if (!one.succeeded()) {
                 return one;
             }
@@ -137,6 +140,19 @@ public final class CobolCompiler {
         Compiled first = programs.get(0);
         return new Result(first.className(), first.classFile(), first.layout(),
                 List.copyOf(warnings), List.copyOf(programs));
+    }
+
+    /**
+     * 1 本のプログラムが囲む側から引き継ぐもの (要件 FR-091)。
+     *
+     * @param data    作業場所の {@code GLOBAL} 01 レベル
+     * @param files   {@code FD ... GLOBAL} の記述項
+     * @param selects その {@code FD} と対になる {@code SELECT}
+     */
+    private record Inherited(List<DataDivisionBuilder.InheritedGlobal> data,
+                             List<DataDivisionBuilder.InheritedFile> files,
+                             List<CobolParser.SelectEntryContext> selects,
+                             List<String> ancestors) {
     }
 
     /**
@@ -156,22 +172,32 @@ public final class CobolCompiler {
      *
      * @return プログラムの並び順に、そのプログラムが引き継ぐ {@code GLOBAL} の記述項
      */
-    private static List<List<DataDivisionBuilder.InheritedGlobal>> inheritedGlobals(
+    private static List<Inherited> inheritedGlobals(
             List<CobolParser.ProgramUnitContext> units) {
-        List<List<DataDivisionBuilder.InheritedGlobal>> out = new ArrayList<>();
+        List<Inherited> out = new ArrayList<>();
         // 囲んでいるプログラムの、名前と GLOBAL の記述項
         Deque<DataDivisionBuilder.InheritedGlobal> open = new ArrayDeque<>();
+        Deque<DataDivisionBuilder.InheritedFile> openFiles = new ArrayDeque<>();
+        Deque<OpenSelect> openSelects = new ArrayDeque<>();
         Deque<String> names = new ArrayDeque<>();
         for (CobolParser.ProgramUnitContext unit : units) {
             // いま積まれているものが、このプログラムから見える
-            List<DataDivisionBuilder.InheritedGlobal> visible = new ArrayList<>(open);
-            java.util.Collections.reverse(visible);
-            out.add(List.copyOf(visible));
+            out.add(new Inherited(outermostFirst(open), outermostFirst(openFiles),
+                    outermostFirst(openSelects).stream().map(OpenSelect::entry).toList(),
+                    outermostFirst(names)));
 
             String name = programNameOf(unit);
             names.push(name);
             for (List<CobolParser.DataDescriptionEntryContext> group : globalEntriesOf(unit)) {
                 open.push(new DataDivisionBuilder.InheritedGlobal(name, group));
+            }
+            for (CobolParser.FileDescriptionEntryContext fd : globalFilesOf(unit)) {
+                openFiles.push(new DataDivisionBuilder.InheritedFile(name, fd));
+                CobolParser.SelectEntryContext select =
+                        selectOf(unit, fd.IDENTIFIER().getText());
+                if (select != null) {
+                    openSelects.push(new OpenSelect(name, select));
+                }
             }
             // END PROGRAM の枚数だけ囲みが閉じる
             for (int i = 0; i < unit.endProgramStatement().size() && !names.isEmpty(); i++) {
@@ -179,9 +205,93 @@ public final class CobolCompiler {
                 while (!open.isEmpty() && closed.equalsIgnoreCase(open.peek().owner())) {
                     open.pop();
                 }
+                while (!openFiles.isEmpty() && closed.equalsIgnoreCase(openFiles.peek().owner())) {
+                    openFiles.pop();
+                }
+                while (!openSelects.isEmpty()
+                        && closed.equalsIgnoreCase(openSelects.peek().owner())) {
+                    openSelects.pop();
+                }
             }
         }
         return out;
+    }
+
+    /** 積まれたものを<b>外側から</b>並べ直す。 */
+    private static <T> List<T> outermostFirst(Deque<T> stack) {
+        List<T> out = new ArrayList<>(stack);
+        java.util.Collections.reverse(out);
+        return List.copyOf(out);
+    }
+
+    /** 積んでいる {@code SELECT} と、その持ち主。 */
+    private record OpenSelect(String owner, CobolParser.SelectEntryContext entry) {
+    }
+
+    /**
+     * そのプログラムが書いた {@code USE GLOBAL} 宣言節 (要件 FR-091)。
+     *
+     * <p>段落の番号は<b>そのプログラムの並び</b>での番号である。囲まれた側はこの番号で
+     * 呼ぶ。番号の付け方は生成側と同じでなければならない——書かれた順である。
+     */
+    private static List<ProcedureBuilder.GlobalDeclarative> globalDeclarativesOf(
+            String owner, ProcedureBuilder.Result procedure) {
+        List<String> names = new ArrayList<>();
+        for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
+            names.add(paragraph.name());
+        }
+        List<ProcedureBuilder.GlobalDeclarative> out = new ArrayList<>();
+        for (ProcedureBuilder.Declarative declarative : procedure.declaratives()) {
+            if (!declarative.global()) {
+                continue;
+            }
+            int from = names.indexOf(declarative.first());
+            int through = names.indexOf(declarative.last());
+            if (from < 0 || through < 0) {
+                continue;
+            }
+            out.add(new ProcedureBuilder.GlobalDeclarative(owner, from, through,
+                    declarative.files().stream().map(FileDescription::name).toList(),
+                    declarative.mode()));
+        }
+        return List.copyOf(out);
+    }
+
+    /** そのプログラムが {@code GLOBAL} と書いた {@code FD}。 */
+    private static List<CobolParser.FileDescriptionEntryContext> globalFilesOf(
+            CobolParser.ProgramUnitContext unit) {
+        List<CobolParser.FileDescriptionEntryContext> out = new ArrayList<>();
+        if (unit.dataDivision() == null) {
+            return out;
+        }
+        for (CobolParser.DataDivisionSectionContext section : unit.dataDivision().dataDivisionSection()) {
+            if (section.fileSection() == null) {
+                continue;
+            }
+            for (CobolParser.FileDescriptionEntryContext fd : section.fileSection().fileDescriptionEntry()) {
+                if (DataDivisionBuilder.isGlobalFile(fd)) {
+                    out.add(fd);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** その名前の {@code SELECT}。書かれていなければ {@code null}。 */
+    private static CobolParser.SelectEntryContext selectOf(CobolParser.ProgramUnitContext unit,
+                                                           String fileName) {
+        if (unit.environmentDivision() == null
+                || unit.environmentDivision().inputOutputSection() == null
+                || unit.environmentDivision().inputOutputSection().fileControlParagraph() == null) {
+            return null;
+        }
+        for (CobolParser.SelectEntryContext entry : unit.environmentDivision()
+                .inputOutputSection().fileControlParagraph().selectEntry()) {
+            if (entry.IDENTIFIER().getText().equalsIgnoreCase(fileName)) {
+                return entry;
+            }
+        }
+        return null;
     }
 
     /**
@@ -237,8 +347,8 @@ public final class CobolCompiler {
 
     /** プログラム 1 本を翻訳する。 */
     private Result compile(CobolParser.ProgramUnitContext program, String fileName,
-                           CompilerOptions effective,
-                           List<DataDivisionBuilder.InheritedGlobal> inherited) {
+                           CompilerOptions effective, Inherited inherited,
+                           Map<String, List<ProcedureBuilder.GlobalDeclarative>> globals) {
         // 告げるだけの診断は段をまたいで積む。止めるものが出たところで打ち切る
         List<Diagnostic> warnings = new ArrayList<>();
 
@@ -251,7 +361,7 @@ public final class CobolCompiler {
         SpecialNames specialNames = environment.specialNames();
 
         DataDivisionBuilder.Result data = DataDivisionBuilder.build(program, specialNames,
-                programNameOf(program), inherited);
+                programNameOf(program), inherited.data(), inherited.files());
         if (!data.succeeded()) {
             return failed(data.layout(), data.diagnostics());
         }
@@ -260,7 +370,8 @@ public final class CobolCompiler {
         // SELECT と FD は離れて書かれる。両方を読み終えてから突き合わせる
         List<Diagnostic> fileDiagnostics = new ArrayList<>();
         FileDescription.Result declared = FileDescription.build(program,
-                FileDescription.select(program, fileDiagnostics), data.fileRecords(),
+                FileDescription.select(program, inherited.selects(), fileDiagnostics),
+                data.fileRecords(),
                 new ReferenceResolver(data.layout(), fileDiagnostics), fileDiagnostics);
         if (!declared.succeeded()) {
             return failed(data.layout(), declared.diagnostics());
@@ -278,9 +389,17 @@ public final class CobolCompiler {
         }
         warnings.addAll(diagnostics);
 
+        // 囲む側が書いた USE GLOBAL は、こちらに受け持ちがなければこちらでも動く
+        List<ProcedureBuilder.GlobalDeclarative> visible = new ArrayList<>();
+        for (String ancestor : inherited.ancestors()) {
+            visible.addAll(globals.getOrDefault(ancestor.toUpperCase(Locale.ROOT), List.of()));
+        }
+        globals.put(programNameOf(program).toUpperCase(Locale.ROOT),
+                globalDeclarativesOf(programNameOf(program), procedure));
+
         ProgramGenerator.Result generated = ProgramGenerator.generate(
                 programNameOf(program), fileName, procedure, image, data.layout(),
-                effective, specialNames);
+                effective, specialNames, visible);
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
         }

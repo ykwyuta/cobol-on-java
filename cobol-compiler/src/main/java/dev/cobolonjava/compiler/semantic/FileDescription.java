@@ -189,6 +189,20 @@ public record FileDescription(String name, String ddName, Organization organizat
     /** 環境部の {@code SELECT} 句を読む。 */
     public static List<Selected> select(CobolParser.ProgramUnitContext program,
                                         List<Diagnostic> diagnostics) {
+        return select(program, List.of(), diagnostics);
+    }
+
+    /**
+     * 囲む側から引き継ぐ {@code SELECT} も併せて読む (要件 FR-091)。
+     *
+     * <p>ファイルの記述は {@code SELECT} と {@code FD} の 2 か所に分かれている。
+     * {@code FD ... GLOBAL} を引き継ぐなら、対になる {@code SELECT} も要る。
+     *
+     * <p>同じ名前を自分でも書いていれば<b>自分のほうが勝つ</b>。内側の宣言が外側を隠す。
+     */
+    public static List<Selected> select(CobolParser.ProgramUnitContext program,
+                                        List<CobolParser.SelectEntryContext> inherited,
+                                        List<Diagnostic> diagnostics) {
         List<Selected> out = new ArrayList<>();
         for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             if (unit.environmentDivision() == null
@@ -205,7 +219,23 @@ public record FileDescription(String name, String ddName, Organization organizat
                 }
             }
         }
+        for (CobolParser.SelectEntryContext entry : inherited) {
+            Selected selected = selectedOf(entry, diagnostics);
+            if (selected != null && !declares(out, selected.name())) {
+                out.add(selected);
+            }
+        }
         return out;
+    }
+
+    /** その名前のファイルを、このプログラムが自分で書いているか。 */
+    private static boolean declares(List<Selected> selected, String name) {
+        for (Selected one : selected) {
+            if (one.name().equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Selected selectedOf(CobolParser.SelectEntryContext entry,
