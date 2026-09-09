@@ -2934,36 +2934,73 @@ public final class ProcedureBuilder {
         return orOf(context.orCondition());
     }
 
+    /**
+     * 論理結合を<b>平らに並べてから</b>優先順位で組み直す (要件 FR-046)。
+     *
+     * <p>省略した比較は「主語と演算子を補った関係条件」であり、書かれた位置に
+     * <b>独立した項として並ぶ</b>。関係条件の中で先に束ねてしまってはならない。
+     *
+     * <pre>
+     * IF X = 1 AND Y = 2 OR 3   →   ((X = 1) AND (Y = 2)) OR (Y = 3)
+     * </pre>
+     *
+     * <p>関係条件の中で束ねると {@code (X = 1) AND ((Y = 2) OR (Y = 3))} になり、
+     * 答えが変わる (NC211A CC--TEST-GF-38)。だから項と結合子を平らに集めて、
+     * 最後に {@code AND} を先に結ぶ。
+     */
     private Condition orOf(CobolParser.OrConditionContext context) {
-        Condition result = null;
-        for (CobolParser.AndConditionContext operand : context.andCondition()) {
-            Condition next = andOf(operand);
-            if (next == null) {
+        List<Condition> terms = new ArrayList<>();
+        List<Boolean> conjunctions = new ArrayList<>();
+        for (int i = 0; i < context.andCondition().size(); i++) {
+            if (i > 0) {
+                conjunctions.add(false);
+            }
+            if (!collectAnd(context.andCondition(i), terms, conjunctions)) {
                 return null;
             }
-            result = result == null ? next : new Condition.Or(result, next);
         }
-        return result;
+        return combined(terms, conjunctions);
     }
 
-    private Condition andOf(CobolParser.AndConditionContext context) {
-        Condition result = null;
-        for (CobolParser.NotConditionContext operand : context.notCondition()) {
-            Condition next = notOf(operand);
-            if (next == null) {
-                return null;
+    private boolean collectAnd(CobolParser.AndConditionContext context, List<Condition> terms,
+                               List<Boolean> conjunctions) {
+        for (int i = 0; i < context.notCondition().size(); i++) {
+            if (i > 0) {
+                conjunctions.add(true);
             }
-            result = result == null ? next : new Condition.And(result, next);
+            if (!collectNot(context.notCondition(i), terms, conjunctions)) {
+                return false;
+            }
         }
-        return result;
+        return true;
     }
 
-    private Condition notOf(CobolParser.NotConditionContext context) {
-        Condition inner = simpleOf(context.simpleCondition());
+    /**
+     * {@code NOT} を付けた条件 (要件 FR-046)。
+     *
+     * <p>関係条件に前置した {@code NOT} が及ぶのは、<b>そこに書かれた関係だけ</b>である。
+     * うしろに省略した比較が続いていても、それは独立した項として {@code NOT} の外に並ぶ。
+     *
+     * <pre>
+     * IF NOT ONE &lt; AZE OR TWO   →   (NOT (ONE &lt; AZE)) OR (ONE &lt; TWO)
+     * </pre>
+     *
+     * <p>まとめて否定すると {@code NOT ((ONE < AZE) OR (ONE < TWO))} になり、
+     * <b>答えが変わる</b> (NC211A CC--TEST-GF-38)。
+     */
+    private boolean collectNot(CobolParser.NotConditionContext context, List<Condition> terms,
+                               List<Boolean> conjunctions) {
+        boolean negated = context.NOT() != null;
+        CobolParser.SimpleConditionContext simple = context.simpleCondition();
+        if (simple.relationCondition() != null) {
+            return collectRelation(simple.relationCondition(), negated, terms, conjunctions);
+        }
+        Condition inner = simpleOf(simple);
         if (inner == null) {
-            return null;
+            return false;
         }
-        return context.NOT() == null ? inner : new Condition.Not(inner);
+        terms.add(negated ? new Condition.Not(inner) : inner);
+        return true;
     }
 
     private Condition simpleOf(CobolParser.SimpleConditionContext context) {
@@ -3019,44 +3056,52 @@ public final class ProcedureBuilder {
     }
 
     private Condition relationOf(CobolParser.RelationConditionContext context) {
+        List<Condition> terms = new ArrayList<>();
+        List<Boolean> conjunctions = new ArrayList<>();
+        return collectRelation(context, false, terms, conjunctions)
+                ? combined(terms, conjunctions)
+                : null;
+    }
+
+    /**
+     * 関係条件と、それに続く省略した比較を項として並べる。
+     *
+     * @param negated 前に {@code NOT} が書かれていたか。及ぶのは<b>書かれた関係だけ</b>で
+     *                あり、省略した比較は否定の外に出る
+     */
+    private boolean collectRelation(CobolParser.RelationConditionContext context, boolean negated,
+                                    List<Condition> terms, List<Boolean> conjunctions) {
         Origin origin = ReferenceResolver.originOf(context);
         Expression left = expressionOf(context.expression(0), origin);
         Expression right = expressionOf(context.expression(1), origin);
         if (left == null || right == null) {
-            return null;
+            return false;
         }
         Condition.Comparison comparison = comparisonOf(context.relationalOperator());
         if (comparison == null) {
             report(origin, "unknown relational operator: "
                     + context.relationalOperator().getText());
-            return null;
+            return false;
         }
         Condition condition = relation(left, comparison, right, origin);
-        return withAbbreviations(condition, left, comparison, context, origin);
+        terms.add(negated ? new Condition.Not(condition) : condition);
+        return collectAbbreviations(left, comparison, context, origin, terms, conjunctions);
     }
 
     /**
-     * 省略した比較を広げる (要件 FR-046)。
+     * 省略した比較を項として並べる (要件 FR-046)。
      *
      * <p>{@code A > 10 AND < 21} は {@code A > 10 AND A < 21} である。<b>主語は
      * 引き継がれ、演算子は書き直されるまで引き継がれる</b>。書き直した演算子は、
      * そこから先へも引き継がれる。
      *
-     * <p>広げた条件を関係条件の中で束ねているので、外側の {@code AND} / {@code OR} より
-     * 先に結ばれる。COBOL の優先順位と同じである。
+     * <p>広げた項は<b>囲む条件と同じ高さ</b>に並ぶ。関係条件の中で束ねてしまうと、
+     * 外側の {@code AND} / {@code OR} との優先順位が変わってしまう。
      */
-    private Condition withAbbreviations(Condition first, Expression subject,
-                                        Condition.Comparison comparison,
-                                        CobolParser.RelationConditionContext context,
-                                        Origin origin) {
-        if (context.abbreviatedRelation().isEmpty()) {
-            return first;
-        }
-        // AND は OR より先に結ぶ。左から順に畳むと「A = 30 OR > 10 AND < 21」の
-        // 答えが変わる。並べてから優先順位で組み直す
-        List<Condition> terms = new ArrayList<>();
-        List<Boolean> conjunctions = new ArrayList<>();
-        terms.add(first);
+    private boolean collectAbbreviations(Expression subject, Condition.Comparison comparison,
+                                         CobolParser.RelationConditionContext context,
+                                         Origin origin, List<Condition> terms,
+                                         List<Boolean> conjunctions) {
         Condition.Comparison carried = comparison;
         for (CobolParser.AbbreviatedRelationContext next : context.abbreviatedRelation()) {
             Expression right;
@@ -3065,24 +3110,24 @@ public final class ProcedureBuilder {
                 if (carried == null) {
                     report(origin, "unknown relational operator: "
                             + next.relationalOperator().getText());
-                    return null;
+                    return false;
                 }
             }
             Condition term = conditionNameTerm(next, origin);
             if (term == null) {
                 right = expressionOf(next.expression(), origin);
                 if (right == null) {
-                    return null;
+                    return false;
                 }
                 term = relation(subject, carried, right, origin);
             }
             if (next.NOT() != null) {
                 term = new Condition.Not(term);
             }
-            terms.add(term);
             conjunctions.add(next.AND() != null);
+            terms.add(term);
         }
-        return combined(terms, conjunctions);
+        return true;
     }
 
     /**

@@ -1533,6 +1533,8 @@ public final class DataDivisionBuilder {
         Map<String, Integer> fileBases = new LinkedHashMap<>();
         for (DataItem record : records) {
             inheritUsage(record, null, false);
+            // USAGE が決まってからでないと、SIGN が効く項目かどうかを判じられない
+            inheritSign(record, SignPosition.UNSIGNED);
             layout(record, 0);
             if (record.section() == DataSection.LINKAGE) {
                 continue;
@@ -1612,6 +1614,49 @@ public final class DataDivisionBuilder {
         for (DataItem child : item.children()) {
             inheritUsage(child, usage, index);
         }
+    }
+
+    /**
+     * 群項目に書いた {@code SIGN} を下位へ配る (要件 FR-021)。
+     *
+     * <p>{@code SIGN} は群項目にも書ける。書けば<b>配下の、符号つきで
+     * {@code USAGE DISPLAY} の基本項目すべて</b>に効く。ただし内側の群項目や基本項目が
+     * 自分の {@code SIGN} を持っていれば<b>そちらが勝つ</b> (85 規格 VI-42 5.12.4 GR2)。
+     *
+     * <pre>
+     * 01 TEST-17-DATA  SIGN TRAILING.
+     *   03 TEST-17-GROUP SIGN LEADING SEPARATE.
+     *     05 TEST-17-C   PIC S9(4).
+     * </pre>
+     *
+     * <p>TEST-17-C は 5 バイトになり、先頭が符号の文字である。外側の
+     * {@code SIGN TRAILING} だけを見ると 4 バイトになり、<b>長さから違う</b>
+     * (NC116A SIG-TEST-GF-17)。
+     *
+     * <p>効くのは符号つきの表示形式の数字項目だけである。ほかの項目に配ると
+     * 長さの計算まで変わってしまう。
+     */
+    private void inheritSign(DataItem item, SignPosition inherited) {
+        SignPosition sign = item.signPosition() == SignPosition.UNSIGNED
+                ? inherited
+                : item.signPosition();
+        if (item.isElementary()) {
+            if (item.signPosition() == SignPosition.UNSIGNED
+                    && sign != SignPosition.UNSIGNED && signable(item)) {
+                item.setSignPosition(sign);
+            }
+            return;
+        }
+        for (DataItem child : item.children()) {
+            inheritSign(child, sign);
+        }
+    }
+
+    /** {@code SIGN} が効く項目か。符号つきで、記憶域に文字で持つ数字項目だけである。 */
+    private static boolean signable(DataItem item) {
+        return item.picture() != null && item.picture().isNumeric()
+                && item.picture().signPosition().isSigned()
+                && (item.usage() == null || item.usage() == Usage.DISPLAY);
     }
 
     private int layout(DataItem item, int offset) {

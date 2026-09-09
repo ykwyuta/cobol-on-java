@@ -178,6 +178,42 @@ class DataDivisionBuilderTest {
     }
 
     @Test
+    @DisplayName("群項目に書いた SIGN は下位へ効く (FR-031)")
+    void aSignClauseOnAGroupReachesItsSubordinates() {
+        DataLayout layout = layoutOf(
+                "01 WS-REC SIGN IS LEADING SEPARATE.",
+                "   05 WS-A PIC S9(5).",
+                "   05 WS-B PIC 9(5).",
+                "   05 WS-C PIC X(5).");
+
+        assertEquals(6, item(layout, "WS-A").length());
+        assertEquals(SignPosition.LEADING_SEPARATE, item(layout, "WS-A").signPosition());
+        // 符号なしの数字項目と英数字項目には効かない
+        assertEquals(5, item(layout, "WS-B").length());
+        assertEquals(SignPosition.UNSIGNED, item(layout, "WS-B").signPosition());
+        assertEquals(5, item(layout, "WS-C").length());
+    }
+
+    @Test
+    @DisplayName("内側に書いた SIGN が外側より勝つ (FR-031)")
+    void anInnerSignClauseOverridesTheOuterOne() {
+        // NC116A SIG-TEST-GF-17 が入れ子の群項目でこれを試している (85 規格 5.12.4 GR2)
+        DataLayout layout = layoutOf(
+                "01 WS-REC SIGN IS TRAILING.",
+                "   05 WS-A PIC S9(4).",
+                "   05 WS-GROUP SIGN IS LEADING SEPARATE.",
+                "      10 WS-C PIC S9(4).",
+                "   05 WS-D PIC S9(4) SIGN IS TRAILING SEPARATE.");
+
+        assertEquals(4, item(layout, "WS-A").length());
+        assertEquals(SignPosition.TRAILING, item(layout, "WS-A").signPosition());
+        assertEquals(5, item(layout, "WS-C").length());
+        assertEquals(SignPosition.LEADING_SEPARATE, item(layout, "WS-C").signPosition());
+        assertEquals(5, item(layout, "WS-D").length());
+        assertEquals(SignPosition.TRAILING_SEPARATE, item(layout, "WS-D").signPosition());
+    }
+
+    @Test
     @DisplayName("PICTURE を持たない浮動小数点項目は 4 / 8 バイトである (FR-032)")
     void floatingPointItemsHaveAFixedLength() {
         DataLayout layout = layoutOf(

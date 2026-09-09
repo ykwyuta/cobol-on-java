@@ -3165,8 +3165,19 @@ public final class ProgramGenerator {
      * 段ごとに「初期値を入れる」命令と「1 回分足す」命令を作り、両者を組み合わせて出す。
      *
      * <p>{@code TEST BEFORE} では段の数だけ判定を縦に並べ、内側の段が尽きたところで
-     * その段を初期値へ戻して外側を 1 進める。{@code TEST AFTER} では中身を先に実行し、
+     * 外側を 1 進めてからその段を初期値へ戻す。{@code TEST AFTER} では中身を先に実行し、
      * 内側の条件から順に見ていく。どちらも<b>初期値へ戻すのは判定に負けた段だけ</b>である。
+     *
+     * <p><b>外側を進めるのが先である</b>。内側の初期値は外側の変数で書けるので、
+     * 順序が答えを変える。
+     *
+     * <pre>
+     * PERFORM P VARYING A FROM 1 BY 1 UNTIL A &gt; 3
+     *             AFTER B FROM A BY 1 UNTIL B &gt; 3.
+     * </pre>
+     *
+     * <p>P を呼ぶ回数は 6 である。内側を先に戻すと、戻した先が古い A になるので
+     * 8 回になる (NC201A PFM-TEST-F4-23、85 規格 VI-114 6.20.4 GR10(d)1)。
      */
     private void planVarying(Statement.Perform statement, Runnable once, List<Runnable> body) {
         List<Statement.Perform.Varying> levels = statement.varying();
@@ -3236,8 +3247,9 @@ public final class ProgramGenerator {
         run.visitJumpInsn(Opcodes.GOTO, test[depth - 1]);
         for (int k = depth - 1; k >= 1; k--) {
             run.visitLabel(exhausted[k]);
-            set.get(k).run();
+            // <b>外側を進めてから</b>内側を初期値へ戻す。順序が答えを変える (NC201A)
             step.get(k - 1).run();
+            set.get(k).run();
             run.visitJumpInsn(Opcodes.GOTO, test[k - 1]);
         }
         run.visitLabel(end);
@@ -3253,11 +3265,13 @@ public final class ProgramGenerator {
             Label exhausted = new Label();
             emitVaryingTest(levels.get(k), tests.get(k), exhausted);
             step.get(k).run();
+            // 進めた段より内側は、すべて初期値へ戻す。<b>進めたあとで</b>戻すので、
+            // 内側の初期値を外側の変数で書いてあれば新しい値が入る (NC201A)
+            for (int inner = k + 1; inner < levels.size(); inner++) {
+                set.get(inner).run();
+            }
             run.visitJumpInsn(Opcodes.GOTO, top);
             run.visitLabel(exhausted);
-            if (k > 0) {
-                set.get(k).run();
-            }
         }
     }
 

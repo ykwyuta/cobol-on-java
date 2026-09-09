@@ -183,6 +183,36 @@ class AbbreviatedRelationTest {
     }
 
     @Test
+    @DisplayName("省いた比較は囲む条件と同じ高さに並ぶ (FR-046)")
+    void anAbbreviationRanksWithTheEnclosingCondition() {
+        // 「A = 1 AND B = 2 OR 3」は「(A = 1 AND B = 2) OR (B = 3)」である。
+        // 省いた比較を関係条件の中で束ねると「A = 1 AND (B = 2 OR B = 3)」になり、
+        // A が 1 でないときの答えが変わる (NC211A CC--TEST-GF-38)
+        String[] mixed = {
+            "    IF WS-A = 1 AND WS-B = 2 OR 3",
+            "        DISPLAY 'HIT' ELSE DISPLAY 'MISS' END-IF."};
+
+        assertEquals("HIT", runWith(1, 2, mixed));
+        // A が 1 でなくても、B = 3 だけで成り立つ
+        assertEquals("HIT", runWith(9, 3, mixed));
+        assertEquals("MISS", runWith(9, 2, mixed));
+    }
+
+    @Test
+    @DisplayName("前に置いた NOT は書かれた関係だけに効く (FR-046)")
+    void aLeadingNotCoversOnlyTheWrittenRelation() {
+        // 「NOT A = 1 OR 2」は「(NOT (A = 1)) OR (A = 2)」である。
+        // まとめて否定すると「NOT (A = 1 OR A = 2)」になり、A が 2 のときに逆になる
+        String[] negated = {
+            "    IF NOT WS-A = 1 OR 2",
+            "        DISPLAY 'HIT' ELSE DISPLAY 'MISS' END-IF."};
+
+        assertEquals("MISS", run(1, negated));
+        assertEquals("HIT", run(2, negated));
+        assertEquals("HIT", run(9, negated));
+    }
+
+    @Test
     @DisplayName("省略しない比較を続けて書いてもよい (FR-046)")
     void aFullRelationMayStillFollow() {
         // 「AND B」の B が名前なら、省略した比較ではなく普通の条件である。
