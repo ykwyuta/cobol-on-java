@@ -616,15 +616,25 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
   コプロセッサを提供する。
 - **FR-151 (L2)**: `SQLCA` (`SQLCODE`、`SQLSTATE`、`SQLERRD`、`SQLWARN`) を正しく設定する。
   少なくとも `0`、`+100`、`-803`、`-911`、`-913`、`-805` 等、業務ロジックが分岐に使う
-  主要 SQLCODE を、対応する JDBC 例外から適切に写像する。
+  主要 SQLCODE を、対応する JDBC 診断から適切に写像する。JDBC から取得できない SQLCA field を
+  推測で生成せず、field / statement ごとに `EXACT`、`DERIVED`、`UNAVAILABLE` の保証を公開する。
 - **FR-152 (L2)**: ホスト変数のバインド時に、COBOL のデータ型 (パック10進、ゾーン10進、
   可変長文字 `VARCHAR` 構造) と SQL 型の変換を、桁落ち・丸めなく行う。
 - **FR-153 (L2)**: カーソル操作 (`DECLARE`、`OPEN`、`FETCH`、`CLOSE`、
   `WITH HOLD`、`FOR UPDATE`)、`INCLUDE SQLCA`/`INCLUDE メンバ`、
-  動的 SQL (`PREPARE`/`EXECUTE`/`EXECUTE IMMEDIATE`/`DESCRIBE`) をサポートする。
+  動的 SQL (`PREPARE`/`EXECUTE`/`EXECUTE IMMEDIATE`/`DESCRIBE`) をサポートする。`WITH HOLD` は
+  必須 entry では task 全体を Db2 JDBC driver 管理の専用 connection / UOW で実行し、同じ物理接続を
+  task 内の複数 commit 間で維持する。近似を許容する cursor だけ spool strategy を明示選択できる。
+  未分類 cursor へ近似方式を暗黙適用しない。
 - **FR-154 (L1)**: `COMMIT` / `ROLLBACK` を JTA またはコネクション単位のトランザクションへ写像する。
 - **FR-155 (L1)**: 移行先 RDBMS (PostgreSQL 等) と Db2 の SQL 方言差を吸収する変換層を設けるが、
   完全な方言変換は本プロジェクトのスコープ外とし、差分は診断として報告する。
+- **FR-156 (L1)**: Db2 の Spring Boot 4.1 アダプタを提供する。`DataSource`、コネクションプール、
+  `PlatformTransactionManager`、JDBC 資源同期は通常の `SPRING_MANAGED` profile では Spring Boot /
+  Spring Framework の管理下に置く。`WITH HOLD` 必須 task は例外として
+  `DB2_DRIVER_MANAGED_HOLD` profile を選び、Db2 adapter が task-scoped connection lease を所有して
+  SQL `COMMIT` / `ROLLBACK` と CICS `SYNCPOINT` を JDBC connection へ直接写像する。同一 task 内で
+  Spring 管理 JDBC と混在させず、connection / cursor を疑似会話の次 task へ持ち越さない。
 
 ### 7.4 オンライン連携 (CICS / IMS)
 
@@ -639,13 +649,26 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
 - **FR-161 (L1)**: `EIB` (`EIBCALEN`、`EIBAID`、`EIBTRNID`、`EIBDATE`、`EIBTIME`、`EIBRESP` 等) を
   提供し、業務ロジックが参照する主要フィールドを正しく設定する。
 - **FR-162 (L1)**: BMS マップ (BMS マクロ) を解析し、画面定義を構造化データへ変換する。
-  3270 画面そのものの再現は必須とせず、フィールド単位のデータ入出力インタフェースを提供する。
+  3270 データストリームそのものは再現しないが、フィールド単位のデータ入出力と Web 画面再現に
+  必要な座標、画面サイズ、基本・拡張属性、初期値、入力規則を欠落なく中立モデルへ保持する。
 - **FR-163 (L1)**: 疑似会話型トランザクションの状態保持 (COMMAREA / チャネル・コンテナ) を
   サポートする。
 - **FR-164 (L1)**: IMS DL/I 呼び出し (`CBLTDLI` / `AIBTDLI`) のインタフェースを定義し、
   PCB マスク・SSA・状態コード (`GA`、`GB`、`GE`、`II` 等) を扱えるようにする。
   実際のデータベースへの写像は、差し替え可能なアダプタとして提供する。
   IMS 連携はフェーズ 4 の目標とし、初期リリースではインタフェース定義のみとする。
+- **FR-165 (L1)**: CICS オンライン実行の Spring Boot 4.1 アダプタを提供する。Servlet / Spring MVC
+  でトランザクション要求を受け、Spring Session を利用して疑似会話の識別子とライフサイクルを管理し、
+  COMMAREA / チャネル・コンテナを会話ストアへ永続化する。Spring Boot Actuator / Micrometer と
+  graceful shutdown へ統合する。
+  生きた `CobolSession`、`Storage`、JDBC 資源を HTTP セッションへ保存してはならない。
+- **FR-166 (L1)**: BMS 中立モデルから Thymeleaf で HTML をサーバレンダリングし、CSS の固定セル
+  グリッドにより 3270 の画面サイズ、行・桁位置、固定文字、入力欄、色、輝度、非表示、反転、下線等を
+  可能な限り忠実に再現する。画面幅に合わせた reflow は行わず、縮小またはスクロールで配置を維持する。
+- **FR-167 (L1)**: BMS 画面用 JavaScript は、protected / unprotected、ASKIP、NUM、IC、FSET / MDT、
+  field length、Tab / Backtab、Insert / Overwrite、Enter、Clear、PA1〜PA3、PF1〜PF24、cursor position、
+  keyboard lock と二重送信防止を再現する。ブラウザ側判定を信頼せず、受信時に同じ規則をサーバ側で
+  再検証して EIBAID、cursor position、modified field set と BMS input map を構築する。
 
 ### 7.5 Java との相互運用
 
@@ -721,6 +744,13 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
   与え、出力を期待値と突合するテストランナーを提供する。
 - **FR-196**: ホストと本処理系の出力を突合する比較ツール (EBCDIC 対応の差分ツール、
   レコード様式を考慮したバイナリ差分) を提供する。
+- **FR-197**: Java の JUnit 5 テストから COBOL プログラムまたは名前付き SECTION を起動し、
+  LINKAGE / WORKING-STORAGE の型付き設定・参照、標準出力・標準エラー・復帰コード・異常終了を
+  検証できるテスト API を提供する。テストごとに独立した実行単位を既定とする。
+- **FR-198**: 単体テストでは、COBOL の `CALL` 先プログラムと、明示的な `PERFORM` で呼ぶ
+  SECTION を Java 実装へ差し替え、呼び出し回数・順序・引数を検証できること。通常の
+  fall-through または `GO TO` による SECTION 進入は差し替え対象とせず、COBOL の制御フローを
+  暗黙に変更しないこと。
 
 ---
 
@@ -802,6 +832,22 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
   差し替え可能なプラグイン境界とする。
 - **NFR-033**: コード全体で、互換性に関わる判断には参照仕様の該当箇所または
   検証テストへの参照をコメントで残す。
+- **NFR-034**: CICS / Db2 の意味論、SQL 計画、トランザクション境界、会話状態の中核 API は
+  Spring、Servlet、JDBC、特定コネクションプールの型に依存させない。Spring Boot 連携は
+  ports-and-adapters 形式の独立モジュールに閉じ込め、別フレームワークへ交換可能にする。
+- **NFR-035**: Spring Boot 連携は対応する Boot メジャーバージョンごとにアダプタ成果物を分ける。
+  Boot 4 系アダプタは 4.1 を基準版とし、CI で基準版と最新 4.1.x を継続検証する。次の minor / major
+  については公式移行ガイド、非推奨 API、構成プロパティ差分を検査し、互換表をリリースごとに更新する。
+- **NFR-036**: BMS の意味論と `BmsScreenModel` は Thymeleaf、HTML、DOM、JavaScript に依存させない。
+  画面レンダラとブラウザ動作は交換可能な adapter とし、視覚互換モードでも HTML escape、CSP、CSRF、
+  サーバ側入力検証、アクセシブルな代替操作を維持する。
+- **NFR-037**: CICS / Db2 / BMS の互換性項目は、IBM 実環境一致、公開仕様一致、推測の証拠レベルを
+  区別し、要件、test vector、oracle、adapter / driver / browser version の traceability matrix を公開する。
+  実環境で未検証の項目を「忠実」「完全互換」と表示しない。
+- **NFR-038**: CICS task、Servlet thread、Spring Db2 connection、native task-scoped connection lease、
+  会話 payload、WORKING-STORAGE、cursor spool、compile cache はすべて deployment ごとの上限と bounded
+  queue / timeout を持つ。capacity plan と
+  load / soak / crash test の閾値を一般提供前に確定する。
 
 ### 10.5 テスト容易性と品質
 
@@ -878,7 +924,7 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
 | C-4 | Report Writer | 基本部分を実装済 (L1)。`RD` の頁の形、`LINE` / `COLUMN` / `SOURCE` / `VALUE`、`INITIATE` / `GENERATE` / `TERMINATE`、`LINE-COUNTER` / `PAGE-COUNTER`。制御の切れ目 (`CONTROL` / `SUM` / `CONTROL HEADING` / `CONTROL FOOTING`) は未実装で、**断る** (暫定判断 P-078)。実装は専用の実行時機構を持たず、普通の記述と普通の文へ落とすプリプロセッサ方式である |
 | C-5 | 通信機能 (`COMMUNICATION SECTION`) | L0。現代の資産では使用されないと判断 |
 | C-6 | `SEGMENTATION` (セグメント番号) | 構文は受理するがオーバレイは行わない (L1) |
-| C-7 | 3270 端末エミュレーション | 画面プロトコルそのものは再現しない (FR-162) |
+| C-7 | 3270 端末プロトコル | データストリームと端末通信は再現しない。Thymeleaf / JavaScript / CSS の Web UI で配置と主要 BMS 操作属性を可能な限り再現する (FR-162, FR-166, FR-167) |
 | C-8 | Db2 / VSAM の性能特性 | アクセスパスや I/O 特性は移行先環境に依存する |
 | C-9 | ハードウェア浮動小数の例外条件 | HFP の表現は再現するが、機械チェック等は再現しない |
 | C-10 | ソート製品固有の制御ステートメント全機能 | 主要機能のみ (FR-137) |
@@ -942,8 +988,8 @@ Hercules コンソールコマンドと、テスト用ディレクティブ (`*T
 | **P0-b** 処理系 | 構文解析・意味解析・コード生成 | FR-001〜004, 010〜014, 060〜068, 070〜071, 080〜085, 090〜094 | NIST CCVS85 の非 I/O モジュール合格率 95% 以上。OSS コーパス (NFR-042) のコンパイル通過率を測定・公開 |
 | **P1** バッチ | 順・索引・相対ファイルとジョブ実行 | FR-100〜122, 130〜137, 140〜143, 180〜196 | 実業務相当のバッチジョブを、ソース無修正で実行し出力バイト列が一致。JCL / 宣言的形式の両フロントエンドが同一結果を返す |
 | **P2** Java 連携 | 相互運用と API 化 | FR-170〜173 | COBOL ⇔ Java 双方向呼び出しのサンプルが動作。コピー句からのクラス生成が動作 |
-| **P3** Db2 連携 | SQL コプロセッサ | FR-150〜155, 069 | 主要 SQL 文とカーソル操作が動作し、SQLCODE 分岐が再現される |
-| **P4** オンライン | CICS / IMS 連携 | FR-160〜164 | 疑似会話型トランザクションのサンプルが動作 |
+| **P3** Db2 連携 | SQL コプロセッサと Spring Boot 4.1 Db2 アダプタ | FR-150〜156, 069 | 主要 SQL 文とカーソル操作が Spring 管理 UOW で動作し、SQLCODE 分岐が再現される |
+| **P4** オンライン | CICS / IMS 連携、Spring Boot 4.1 CICS アダプタ、BMS Web UI | FR-160〜167 | 疑似会話型トランザクションと主要 BMS 属性の画面が Spring MVC / Session / Thymeleaf 上で動作 |
 
 各フェーズの完了条件として、以下を共通に課す。
 
@@ -1027,11 +1073,11 @@ v0.2 の未決事項 Q-8〜Q-14 について、以下のとおり決定した。
 | --- | --- | --- |
 | 言語仕様 | FR-001 〜 FR-094 | 59 |
 | ファイル入出力 | FR-100 〜 FR-122 | 17 |
-| 実行環境・連携 | FR-130 〜 FR-173 | 27 |
-| コンパイラ・ツール | FR-180 〜 FR-196 | 12 |
+| 実行環境・連携 | FR-130 〜 FR-173 | 31 |
+| コンパイラ・ツール | FR-180 〜 FR-198 | 14 |
 | 未定義動作 | FR-200 〜 FR-206 | 7 |
 | 検証基盤 | FR-210 〜 FR-213 | 4 |
-| 非機能 | NFR-001 〜 NFR-072 | 32 |
+| 非機能 | NFR-001 〜 NFR-072 | 37 |
 | アーキテクチャ制約 | ARC-1 〜 ARC-9 | 9 |
 | 制約事項 | C-1 〜 C-11 | 11 |
 | リスク | R-1 〜 R-9 (R-1b を含む) | 10 |
@@ -1042,6 +1088,7 @@ v0.2 の未決事項 Q-8〜Q-14 について、以下のとおり決定した。
 
 | 版 | 日付 | 変更内容 | 担当 |
 | --- | --- | --- | --- |
+| 0.6 | 2026-09-09 | Java / COBOL 双方向連携と JUnit 5 テスト・Mock、Spring Boot 4.1 の CICS / Db2 adapter と更新分離を追加。BMS 中立画面から Thymeleaf / JavaScript / CSS で固定セル配置、主要属性、AID、cursor、MDT を再現し、サーバ側で再検証する要件を追加。敵対的レビューを行い、SQLCA fidelity、`WITH HOLD` 必須 task の Db2 driver 管理 UOW、subsystem oracle、bounded resource / capacity gate を追記 | - |
 | 0.5 | 2026-09-04 | `COMPUTE` の実装に先立ち、中間結果の桁数の規則を 5.5.1 として書き起こし D-19 として記載。演算ごとの桁数の表、除数を数えない `dmax` の定義、`ROUNDED` による +1、中間結果は切り捨てる規則を確定。総桁数の上限を FR-047 として追加 | - |
 | 0.4 | 2026-09-03 | 設計着手時の未決事項 Q-15 (「島」の終端判定) を決定し D-18 として記載。区切りピリオド・読点・semicolon を「直後に空白が続くとき」だけ区切り文字とする規則、PICTURE 文字列の終端、`EXEC` ブロックを語としての `END-EXEC` で閉じる規則を確定。実装は `Tokenizer` (設計 30) | - |
 | 0.3 | 2026-09-03 | v0.2 の未決事項 Q-8〜Q-14 を決定 (D-11〜D-17)。Hercules のテスト機構を実地調査し、`.tst` / `loadcore` をそのまま V2 期待値の採取・回帰基盤として用いる方式を 4.4 節に定義 (FR-210〜213)。V2 の定義を「Hercules と一致」へ厳密化しリスク R-8 を追加。仕様が結果を保証しない領域の 2 モード方式を FR-205 / FR-206 として明文化しリスク R-9 を追加。ベースラインを Enterprise COBOL 6.x に確定し削除済み旧構文を C-11 に記載。ARC-8 に「島」の一覧を追加。NFR-041 に組み合わせ縮約方針と打ち切り基準、NFR-042 にコーパス非同梱方針を追加。未決事項を設計着手時の Q-15〜Q-19 へ更新 | - |

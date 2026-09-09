@@ -19,7 +19,12 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: 手続き部と一意名の解決 (P0-b)](docs/design/60-procedure.md)
 - [設計: 報告書作成機能](docs/design/65-report-writer.md)
 - [設計: コード生成 (P0-b)](docs/design/70-codegen.md)
+- [設計: Java 連携](docs/design/75-java-interop.md)
+- [設計: JUnit による COBOL 単体テスト](docs/design/76-junit-testing.md)
+- [設計: Spring Boot 4.1 による CICS / Db2 連携](docs/design/77-spring-cics-db2.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
+- [アーキテクチャ決定記録 (ADR)](docs/decisions/README.md)
+- [敵対的設計レビュー: Java / JUnit / CICS / Db2 / BMS](docs/reviews/2026-09-09-interop-adversarial-review.md)
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
 
 ## 主要な技術方針
