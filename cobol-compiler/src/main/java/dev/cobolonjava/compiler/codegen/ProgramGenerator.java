@@ -1458,7 +1458,7 @@ public final class ProgramGenerator {
         // 順次読みでは読んでみるまで番号が決まらない。読めた番号を鍵の項目へ返す
         Runnable number = !byKey && file.organization() == Organization.RELATIVE
                         && file.relativeKey() != null
-                ? planRelativeNumber(file, statement.origin())
+                ? planRelativeNumber(file, slot, statement.origin())
                 : null;
         List<Runnable> into = statement.into() == null
                 ? List.of()
@@ -1498,6 +1498,10 @@ public final class ProgramGenerator {
                                 + (byKey ? "I" : "") + "L" + STORAGE + ";II)[B", false);
             }
             run.visitVarInsn(Opcodes.ASTORE, slot);
+            // 番号を返せなければ<b>読めなかったことになる</b>。状態を判定するより前に置く
+            if (number != null) {
+                number.run();
+            }
             status.run();
 
             Label ended = new Label();
@@ -1506,9 +1510,6 @@ public final class ProgramGenerator {
             emitStatusTest(slot, "fileAtEnd", Opcodes.IFNE, ended);
             emitStatusTest(slot, "fileInvalidKey", Opcodes.IFNE, invalid);
             emitStatusTest(slot, "fileSucceeded", Opcodes.IFEQ, end);
-            if (number != null) {
-                number.run();
-            }
             if (depending != null) {
                 depending.run();
             }
@@ -1603,8 +1604,15 @@ public final class ProgramGenerator {
         };
     }
 
-    /** 読めたレコードの相対レコード番号を {@code RELATIVE KEY} の項目へ入れる。 */
-    private Runnable planRelativeNumber(FileDescription file, Origin origin) {
+    /**
+     * 読めたレコードの相対レコード番号を {@code RELATIVE KEY} の項目へ入れる。
+     *
+     * <p>桁が足りなければ番号を返せない。<b>状態コードごと差し替える</b>ので、
+     * 状態を判定するより前に置かなければならない (要件 FR-101)。
+     *
+     * @param slot 状態コードを置いた局所変数。入れたあとの状態で上書きする
+     */
+    private Runnable planRelativeNumber(FileDescription file, int slot, Origin origin) {
         DataReference key = file.relativeKey();
         Runnable address = planAddress(key, origin);
         String field = numericItemConstant(key.item(), origin);
@@ -1612,13 +1620,14 @@ public final class ProgramGenerator {
             return null;
         }
         return () -> {
+            run.visitVarInsn(Opcodes.ALOAD, slot);
             emitFileName(file);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "relativeNumber",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)I", false);
             run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
             address.run();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeInteger",
-                    "(I" + NUMERIC_ITEM + "L" + STORAGE + ";I)V", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "relativeNumberInto",
+                    "([B" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;" + NUMERIC_ITEM
+                            + "L" + STORAGE + ";I)[B", false);
+            run.visitVarInsn(Opcodes.ASTORE, slot);
         };
     }
 
@@ -1752,7 +1761,7 @@ public final class ProgramGenerator {
                     "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;"
                             + (withNumber ? "I" : "") + "L" + STORAGE + ";IIII"
                             + (linage != null || advance != null ? "IZ" : "")
-                            + (linage != null ? "IIIII" : "") + ")[B", false);
+                            + (linage != null ? "IIIIII" : "") + ")[B", false);
         };
         planKeyedCall(call, status, slot, keyCheck, debug, body);
     }
@@ -1769,12 +1778,14 @@ public final class ProgramGenerator {
         int footingAt = linage.footing().at().absoluteOffset().orElse(-1);
         int topAt = linage.top().at().absoluteOffset().orElse(-1);
         int bottomAt = linage.bottom().at().absoluteOffset().orElse(-1);
+        int startedAt = linage.started().at().absoluteOffset().orElse(-1);
         return () -> {
             push(counterAt);
             push(pageAt);
             push(footingAt);
             push(topAt);
             push(bottomAt);
+            push(startedAt);
         };
     }
 
@@ -1789,8 +1800,11 @@ public final class ProgramGenerator {
         storeLinageSlot(linage.footing(), origin);
         storeLinageSlot(linage.top(), origin);
         storeLinageSlot(linage.bottom(), origin);
-        // 開けば頁は初めからである。0 は「まだ 1 行も置いていない」
-        emitStoreCounter(linage.counter().absoluteOffset().orElse(0), () -> push(0));
+        // 開いた時点で紙は本文の 1 行目にある。規格は LINAGE-COUNTER を
+        // <b>1 にする</b>と決めている (85 規格 VII-5 1.3.8、SQ201M WRT-TEST-01)。
+        // まだ何も置いていないことは別の置き場で覚える
+        emitStoreCounter(linage.counter().absoluteOffset().orElse(0), () -> push(1));
+        emitStoreCounter(linage.started().at().absoluteOffset().orElse(0), () -> push(0));
     }
 
     private void storeLinageSlot(FileDescription.Linage.Slot slot, Origin origin) {

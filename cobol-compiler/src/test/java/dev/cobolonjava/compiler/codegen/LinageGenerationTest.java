@@ -116,6 +116,32 @@ class LinageGenerationTest {
             "        LINES AT BOTTOM 3.");
 
     @Test
+    @DisplayName("開いた直後の LINAGE-COUNTER は 1 である (FR-113)")
+    void theCounterIsOneRightAfterOpen() {
+        // SQ201M WRT-TEST-01 が決めている (85 規格 VII-5 1.3.8)。
+        // まだ 1 行も置いていないが 0 ではない。紙は本文の 1 行目にある
+        assertEquals("0001|0001|", run(directory,
+                program(PAGE_OF_FIVE,
+                        "    MOVE LINAGE-COUNTER TO WS-N DISPLAY WS-N",
+                        "    WRITE PRINT-REC",
+                        "    MOVE LINAGE-COUNTER TO WS-N DISPLAY WS-N.")));
+    }
+
+    @Test
+    @DisplayName("開いた直後の 1 は「頁を送った直後」とは違う (FR-113)")
+    void theInitialOneDoesNotCountAsALineAlreadyPlaced() {
+        // 数だけでは見分けられない。頁を送った直後なら 1 行置いてあるので
+        // ADVANCING PAGE がもう 1 枚送るが、開いた直後は送らない。
+        // 上の余白 1 行 + 本文 1 行 = 2 行しか出ない
+        run(directory, program(List.of(
+                "    LINAGE IS 5 LINES",
+                "        LINES AT TOP 1",
+                "        LINES AT BOTTOM 1."),
+                "    WRITE PRINT-REC AFTER ADVANCING PAGE."));
+        assertEquals(2, lines(directory));
+    }
+
+    @Test
     @DisplayName("行送りを書かない WRITE は 1 行進む (FR-113)")
     void aWriteWithoutAdvancingTakesOneLine() {
         // SQ201M WRT-TEST-004 が決めている

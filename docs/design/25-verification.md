@@ -415,8 +415,8 @@ CCVS85 のプログラムはどれも自分の結果を印字するので、印�
 
 ```
 合計 390 本 (うち動かさない診断の検査 29 本):
-  全部通った 343 / 落ちた 4 / 翻訳できない 14 / 壊れた 0 / 返らない 0  (合格率 95.0%)
-検査は 8720 件流れて 4 件落ちた (合格率 100.0%)
+  全部通った 346 / 落ちた 1 / 翻訳できない 14 / 壊れた 0 / 返らない 0  (合格率 95.8%)
+検査は 8723 件流れて 1 件落ちた (合格率 100.0%)
 このうち 127 件は<人が紙を見て決める>検査であり、道具は確かめていない
 ```
 
@@ -479,16 +479,48 @@ EITHER THE T"S OR THE U"S SHOULD BE USED EXCLUSIVELY, NOT BOTH.
 本ごとに見ると NC105A 19 件、NC223A 18 件、DB201A 16 件、NC172A / NC173A 各 16 件、
 ST147A 14 件、SQ124A 13 件である。
 
-### 残り 4 件の内訳 (2026-09-09)
+### 残り 1 件 — <b>卓に人が要る</b>検査である (2026-09-09)
 
-落ちた本は 4 本、どれも 1 件ずつである。
+落ちているのは OBNC1M の STOP-TEST-GF-9 だけである。これは処理系の不備ではない。
 
-| 本 | 機能 |
-| --- | --- |
-| OBNC1M | STOP LITERAL |
-| RL117A | CREATE RL-FD2 |
-| SQ201M | LINAGE-CT AFTER OPEN |
-| ST137A | NATIVE COLL.SEQUENCE |
+```
+       STOP     "OPERATOR KILL OBNC1".
+       MOVE ZEROES TO ERROR-HOLD.
+       OPEN     OUTPUT PRINT-FILE.
+       ...
+       PERFORM  FAIL.
+       MOVE     "EXECUTION DID NOT HALT" TO RE-MARK.
+```
+
+`STOP 定数` は<b>卓へ文字を出して、人が再開させるまで止まる</b>。この検査は
+紙にこう書いて、人が指示どおりに動くことを前提にしている。
+
+```
+STOP-TEST-GF-9 PASSES UNLESS A SECOND REPORT FOR OBNC1 IS GENERATED AFTER THIS ONE.
+```
+
+つまり<b>人がジョブを落とせば通る</b>。無人で流せば止まらずに 2 枚目の紙が出て、
+落ちたことになる。`REQUIRE INSPECTION` の札は付いていないので、道具は落ちたほうに
+数えている。数を甘くしないためにそのままにしてある (覚え書き §7)。
+
+### 3 件のうち 1 件は、また<b>道具のほう</b>だった
+
+ST137A の 1 件は差し込み札 063 / 064 の選び違えだった。配布物の注記はこう書いている。
+
+```
+NOTE THAT THE QUOTE CHARACTER IS NOT TO APPEAR IN THE X-63 CARD AND
+THE DOLLAR SIGN $ IS TO APPEAR TWICE WHEREVER THE $ BELONGS
+IN THE NATIVE COLLATING SEQUENCE
+```
+
+ST137A は同じ 51 文字を<b>定数でも持っていて</b>、並べ替えた結果と突き合わせる。
+その定数に `&` は無く、`$` が 2 つある。引用符を定数に書けないので、代わりに
+`$` をもう 1 つ使っているのである。こちらは引用符の決まりだけを読んで `&` を
+入れていた。<b>4 度目である</b> (覚え書き §6)。
+
+札にも検査を仕込んだ (`XCardsTest`)。51 文字か、引用符を含まないか、`$` が 2 つあるか、
+昇順と降順が互いの逆順か。<b>配布物が文章でしか書いていない決まりは、道具の側に
+検査として置く。</b>
 
 ### 1 件ずつに散った 3 件は、どれも<b>規格の細かい規則</b>だった
 

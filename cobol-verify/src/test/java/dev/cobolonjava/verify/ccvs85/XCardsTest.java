@@ -41,6 +41,29 @@ class XCardsTest {
     }
 
     @Test
+    @DisplayName("照合順序の札は 51 文字で、引用符を含まず、ドル記号を 2 度持つ (NFR-040)")
+    void theCollatingCardsMatchWhatTheSuiteRequires() {
+        // 文字の顔ぶれはこちらで選べない。ST137A が同じ 51 文字を定数で持っていて、
+        // 並べ替えた結果と突き合わせる。引用符は定数に書けないので、代わりに
+        // ドル記号をもう 1 つ使う決まりである (配布物の X-63 の注記)。
+        // 選び違えると<b>道具が処理系の失敗を作る</b> (ST137A SRT-TEST-003)
+        XCards cards = XCards.defaults();
+        String ascending = unquote(cards.text(63));
+        String descending = unquote(cards.text(64));
+
+        assertEquals(51, ascending.length(), ascending);
+        assertEquals(51, descending.length(), descending);
+        assertEquals(2, ascending.chars().filter(c -> c == '$').count(), ascending);
+        assertEquals(0, ascending.chars().filter(c -> c == '"' || c == '\'').count(), ascending);
+        assertEquals(ascending, new StringBuilder(descending).reverse().toString());
+    }
+
+    /** 札は引用符ごと書いてある。中身だけを取り出す。 */
+    private static String unquote(String card) {
+        return card.substring(1, card.length() - 1);
+    }
+
+    @Test
     @DisplayName("外から差し替えられる (NFR-040)")
     void aFileCanOverrideTheDefaults() throws IOException {
         Path file = directory.resolve("mine.properties");

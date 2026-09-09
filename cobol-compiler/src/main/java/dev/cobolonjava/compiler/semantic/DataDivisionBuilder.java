@@ -836,8 +836,10 @@ public final class DataDivisionBuilder {
                 records.add(counter);
                 // 頁の形も置き場を持つ。項目で書かれた形は<b>開くたびに読み直す</b>
                 String file = fd.IDENTIFIER().getText().toUpperCase(Locale.ROOT);
+                // LNG-START$ は「この頁にもう何か置いたか」である。LINAGE-COUNTER だけでは
+                // 足りない。開いた直後も頁を送った直後も 1 だが、前者はまだ何も置いていない
                 for (String prefix : List.of("LNG-PAGE$", "LNG-FOOT$", "LNG-TOP$",
-                        "LNG-BOTTOM$")) {
+                        "LNG-BOTTOM$", "LNG-START$")) {
                     DataItem slot = new DataItem(INDEPENDENT_LEVEL, prefix + file, originOf(fd));
                     slot.setPicture(PictureParser.parse(INDEX_PICTURE));
                     slot.setUsage(Usage.COMP);

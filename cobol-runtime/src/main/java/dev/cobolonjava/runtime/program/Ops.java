@@ -585,7 +585,7 @@ public final class Ops {
      *       行送りを書かなければ 1 である。<b>{@code BEFORE} でも {@code AFTER} でも
      *       同じだけ進む</b> (WRT-TEST-004 / 005 / 006)</li>
      *   <li>{@code ADVANCING PAGE} のあと {@code LINAGE-COUNTER} は 1 である
-     *       (WRT-TEST-002)</li>
+     *       (WRT-TEST-002)。<b>開いた直後も 1 である</b> (WRT-TEST-001)</li>
      *   <li>本文をはみ出す書き込みは<b>次の頁の 1 行目</b>へ回り、
      *       {@code LINAGE-COUNTER} は 1 になる (WRT-TEST-003)</li>
      * </ul>
@@ -605,12 +605,13 @@ public final class Ops {
      * @param footingAt 脚注が始まる行の置き場。書かれていなければ 0 が入っている
      * @param topAt     上の余白の行数の置き場
      * @param bottomAt  下の余白の行数の置き場
+     * @param startedAt この頁にもう何か置いたかどうかの置き場。開いた直後は 0 である
      */
     public static byte[] writeLinage(ProgramContext context, String name, String ddName,
                                      Storage storage, int offset, int length, int minimum,
                                      int maximum, int lines, boolean before,
                                      int counterAt, int pageAt, int footingAt, int topAt,
-                                     int bottomAt) {
+                                     int bottomAt, int startedAt) {
         int page = Math.max(1, readCounter(storage, pageAt));
         int footing = readCounter(storage, footingAt);
         int top = readCounter(storage, topAt);
@@ -622,20 +623,23 @@ public final class Ops {
         int actual = clamp(length, minimum, maximum);
         DataSet file = context.file(name, ddName);
         byte[] record = read(storage, offset, actual);
-        int counter = readCounter(storage, counterAt);
+        // 開いた直後の LINAGE-COUNTER は 1 だが、まだ 1 行も置いていない。
+        // 数だけでは頁を送った直後と見分けられないので、別の置き場で覚えてある
+        boolean started = readCounter(storage, startedAt) != 0;
+        int placed = started ? readCounter(storage, counterAt) : 0;
         String status = FileStatus.OK;
-        if (counter == 0) {
+        if (!started) {
             // まだ 1 行も置いていない頁である。上の余白を先に送る
             status = blanks(file, top, actual);
         }
         int used = lines == PAGE ? 1 : lines;
         // 頁送りは書かれたとおりの送りであって、はみ出しではない。
-        // すでに 1 行も置いていない頁にいるなら、送る先はいまの頁である
-        boolean turning = lines == PAGE ? counter > 0 : counter + used > page;
+        // まだ 1 行も置いていない頁にいるなら、送る先はいまの頁である
+        boolean turning = lines == PAGE ? started : placed + used > page;
         boolean overflow = lines != PAGE && turning;
         if (turning && status.equals(FileStatus.OK)) {
-            status = endPage(file, counter, page, bottom, top, actual);
-            counter = 0;
+            status = endPage(file, placed, page, bottom, top, actual);
+            placed = 0;
             used = 1;
         }
         if (status.equals(FileStatus.OK)) {
@@ -643,8 +647,9 @@ public final class Ops {
                     ? placeBefore(file, record, used, actual)
                     : placeAfter(file, record, used, actual);
         }
-        counter += used;
+        int counter = placed + used;
         writeCounter(storage, counterAt, counter);
+        writeCounter(storage, startedAt, 1);
         context.setEndOfPage(footing > 0 ? counter >= footing : overflow);
         return status(context, lengthChecked(status, actual, length));
     }
@@ -975,6 +980,32 @@ public final class Ops {
      */
     public static int relativeNumber(ProgramContext context, String name, String ddName) {
         return relative(context, name, ddName).currentNumber();
+    }
+
+    /**
+     * 順次読みで読めたレコードの相対レコード番号を、{@code RELATIVE KEY} の項目へ入れる
+     * (要件 FR-101)。
+     *
+     * <p>桁が足りなければ番号を返せない。規格はそのとき<b>読めなかったことにして</b>
+     * {@code 14} を立てると決めている (85 規格 VII-3 1.3.4 2B)。黙って切り詰めると、
+     * {@code PIC 99} の鍵で 100 本目を読んだプログラムが<b>0 本目を読んだ</b>と
+     * 思い込む (RL117A REL-TEST-3)。
+     *
+     * @param status 読み出しが返した状態。成功していなければそのまま返す
+     * @return 入れたあとの状態
+     */
+    public static byte[] relativeNumberInto(byte[] status, ProgramContext context, String name,
+                                            String ddName, NumericItem key, Storage storage,
+                                            int offset) {
+        if (!fileSucceeded(status, context.codePage())) {
+            return status;
+        }
+        int number = relative(context, name, ddName).currentNumber();
+        if (!key.fits(Decimal.of(number, 0))) {
+            return status(context, FileStatus.KEY_TOO_LARGE);
+        }
+        storeInteger(number, key, storage, offset);
+        return status;
     }
 
     /** 相対編成として引く。編成は翻訳時に決まっているので、ここは必ず当たる。 */

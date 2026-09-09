@@ -28,6 +28,14 @@ public final class FileStatus {
     public static final String NON_REEL = "07";
     /** ファイルの終わり。 */
     public static final String AT_END = "10";
+    /**
+     * 読めたレコードの相対レコード番号が、{@code RELATIVE KEY} の項目に収まらない。
+     *
+     * <p>順次読みでは読んでみるまで番号が決まらない。決まった番号の桁が項目より多ければ、
+     * 番号を返せないので<b>読めなかったことにする</b> (85 規格 VII-3 1.3.4 2B)。
+     * {@code PIC 99} の鍵で 100 本目を読んだときがこれである (RL117A REL-TEST-3)。
+     */
+    public static final String KEY_TOO_LARGE = "14";
     /** 鍵の順序が昇順でない ({@code ACCESS SEQUENTIAL} の {@code WRITE})。 */
     public static final String KEY_SEQUENCE = "21";
     /** 同じ鍵のレコードがすでにある。 */

@@ -154,6 +154,62 @@ class FileIoRelativeTest {
         }
     }
 
+    /** {@code RELATIVE KEY} を 1 桁にした宣言。10 本目の番号が入らない。 */
+    private static String narrowKeyProgram(String... procedure) {
+        String[] head = {
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. RELTEST.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT R-FILE ASSIGN TO RELDD",
+            "        ORGANIZATION IS RELATIVE",
+            "        ACCESS MODE IS SEQUENTIAL",
+            "        RELATIVE KEY IS WS-RRN",
+            "        FILE STATUS IS WS-STATUS.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  R-FILE.",
+            "01  R-REC PIC X(3).",
+            "WORKING-STORAGE SECTION.",
+            "01  WS-STATUS PIC XX.",
+            "01  WS-RRN    PIC 9 COMP.",
+            "PROCEDURE DIVISION.",
+        };
+        String[] all = new String[head.length + procedure.length];
+        System.arraycopy(head, 0, all, 0, head.length);
+        System.arraycopy(procedure, 0, all, head.length, procedure.length);
+        return source(all);
+    }
+
+    /** 3 バイトのレコードを 10 本持つデータセットを作る。 */
+    private static void seedTen(Path directory) {
+        write(directory.resolve("RELDD"), ebcdic("aaabbbcccdddeeefffggghhhiiijjj"));
+        write(directory.resolve("RELDD.meta"),
+                "recfm=F\nlrecl=3\ncodepage=IBM-1047\n".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @DisplayName("番号が RELATIVE KEY に収まらない順次読みは 14 である (FR-101, FR-103)")
+    void aSequentialReadWhoseNumberDoesNotFitIsRejected(@TempDir Path directory) {
+        // 鍵が 1 桁なので 10 本目の番号を返せない。黙って切り詰めると、
+        // 読み手は<b>0 本目を読んだ</b>と思い込む (RL117A REL-TEST-3、
+        // 85 規格 VII-3 1.3.4 2B)
+        seedTen(directory);
+        assertEquals("00|9|14|9|", run(directory, narrowKeyProgram(
+                "    OPEN INPUT R-FILE.",
+                "    PERFORM 9 TIMES",
+                "        READ R-FILE AT END CONTINUE END-READ",
+                "    END-PERFORM.",
+                "    DISPLAY WS-STATUS.",
+                "    DISPLAY WS-RRN.",
+                "    READ R-FILE AT END CONTINUE END-READ.",
+                "    DISPLAY WS-STATUS.",
+                "    DISPLAY WS-RRN.",
+                "    CLOSE R-FILE.",
+                "    STOP RUN.")));
+    }
+
     @Test
     @DisplayName("番号で読める (FR-101)")
     void recordsAreReadByNumber(@TempDir Path directory) {

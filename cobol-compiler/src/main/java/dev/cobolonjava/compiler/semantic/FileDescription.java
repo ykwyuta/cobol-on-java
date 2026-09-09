@@ -53,8 +53,10 @@ public record FileDescription(String name, String ddName, Organization organizat
      * @param top     上の余白の行数
      * @param bottom  下の余白の行数
      * @param counter {@code LINAGE-COUNTER} の置き場
+     * @param started この頁にもう何か置いたかどうかの置き場。開いた直後は 0 である
      */
-    public record Linage(DataReference counter, Slot page, Slot footing, Slot top, Slot bottom) {
+    public record Linage(DataReference counter, Slot page, Slot footing, Slot top, Slot bottom,
+                         Slot started) {
 
         /**
          * 頁の形の値 1 つ。
@@ -487,11 +489,12 @@ public record FileDescription(String name, String ddName, Organization organizat
         Linage.Slot footingSlot = slotOf(resolver, one, "LNG-FOOT$", footing, diagnostics);
         Linage.Slot topSlot = slotOf(resolver, one, "LNG-TOP$", top, diagnostics);
         Linage.Slot bottomSlot = slotOf(resolver, one, "LNG-BOTTOM$", bottom, diagnostics);
+        Linage.Slot startedSlot = slotOf(resolver, one, "LNG-START$", null, diagnostics);
         if (counter == null || pageSlot == null || footingSlot == null
-                || topSlot == null || bottomSlot == null) {
+                || topSlot == null || bottomSlot == null || startedSlot == null) {
             return null;
         }
-        return new Linage(counter, pageSlot, footingSlot, topSlot, bottomSlot);
+        return new Linage(counter, pageSlot, footingSlot, topSlot, bottomSlot, startedSlot);
     }
 
     /** 頁の形の値 1 つと、その置き場を結び付ける。 */
