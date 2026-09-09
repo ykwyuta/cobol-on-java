@@ -1,7 +1,9 @@
 package dev.cobolonjava.compiler.source;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 固定形式ソースの読み取りと正規化 (要件 FR-002, FR-003, FR-094)。
@@ -60,6 +62,22 @@ public final class FixedFormatReader implements SourceReader {
     @Override
     public SourceReader withDebuggingMode() {
         return debuggingMode ? this : new FixedFormatReader(true);
+    }
+
+    @Override
+    public boolean debuggingMode() {
+        return debuggingMode;
+    }
+
+    @Override
+    public Set<Integer> debugLines(String source) {
+        Set<Integer> lines = new LinkedHashSet<>();
+        for (SourceLine line : split("", source)) {
+            if (line.indicator() == LineIndicator.DEBUG) {
+                lines.add(line.lineNumber());
+            }
+        }
+        return lines;
     }
 
     /** 物理行の並びをカラムで分解する。 */

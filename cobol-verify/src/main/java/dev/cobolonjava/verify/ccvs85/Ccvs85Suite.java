@@ -52,15 +52,53 @@ public final class Ccvs85Suite {
      * @param skipped 差し込み札が足りず、流さなかったもの。名前 → 足りない番号
      */
     public record Prepared(List<CorpusRunner.Source> sources, Map<String, List<Integer>> skipped,
-                           Map<String, String> copybooks) {
+                           Map<String, String> copybooks, XCards cards) {
 
         /** 写し句を引ける形にする。CCVS85 の {@code SM} モジュールが使う。 */
         public CopyBookResolver resolver() {
             MapCopyBookResolver resolver = new MapCopyBookResolver();
             copybooks.forEach(resolver::put);
+            for (Placement placement : PLACEMENTS) {
+                String library = cards.text(placement.card());
+                String text = copybooks.get(placement.member());
+                if (library != null && text != null) {
+                    resolver.put(library, placement.textName(), text);
+                }
+            }
             return resolver;
         }
     }
+
+    /**
+     * 原本を置き場へ置く指示。
+     *
+     * @param card     置き場の名前を決める差し込み札の番号
+     * @param textName 置き場の中での原本の名前
+     * @param member   配布物の中の原本の名前
+     */
+    private record Placement(int card, String textName, String member) {
+    }
+
+    /**
+     * 原本と置き場の結び付け (要件 NFR-040)。
+     *
+     * <p>配布物の原本はふつう 1 つの置き場に入っていればよい。ただし SM207A だけは
+     * <b>同じ原本名を 2 つの置き場から引き分ける</b>ことを試す。指示は SM207A の冒頭に
+     * 文章で書いてある。
+     *
+     * <pre>
+     * X-47 の置き場 ← 原本 ALTLB
+     * X-48 の置き場 ← 原本 ALTL1 を、ALTLB という名前で
+     * </pre>
+     *
+     * <p>置き場の名前を決めるのは差し込み札 047 / 048 であり、そこに何と書くかは
+     * こちらの自由である。だから結び付けも道具の側で決めるほかない。決めておかないと
+     * 2 つめの {@code COPY ALTLB IN <X-48>} が 1 つめと同じ原本を引き、
+     * <b>道具が処理系の失敗を作る</b> (SM207A QUAL-TEST-02)。
+     */
+    private static final List<Placement> PLACEMENTS = List.of(
+            new Placement(47, "ALTLB", "ALTLB"),
+            new Placement(48, "ALTLB", "ALTL1"));
 
     /**
      * 配布物を読み、翻訳にかけられる形へ起こす。
@@ -91,6 +129,7 @@ public final class Ccvs85Suite {
             sources.add(new CorpusRunner.Source(program.name() + ".cbl", program.module(),
                     program.source()));
         }
-        return new Prepared(List.copyOf(sources), Map.copyOf(skipped), Map.copyOf(copybooks));
+        return new Prepared(List.copyOf(sources), Map.copyOf(skipped), Map.copyOf(copybooks),
+                population.cards());
     }
 }

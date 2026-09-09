@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.verify.VerifySupport;
 import dev.cobolonjava.verify.corpus.CorpusReport;
 import dev.cobolonjava.verify.corpus.CorpusRunner;
@@ -90,6 +91,26 @@ class Ccvs85SuiteTest {
         }
         // 入出力のモジュールは札を用意していないので、流さないほうへ回る
         assertFalse(prepared.skipped().isEmpty(), "nothing skipped");
+    }
+
+    @Test
+    @DisplayName("同じ原本名を 2 つの置き場から引き分けられる (NFR-040)")
+    void theSameTextNameIsResolvedFromTwoLibraries() {
+        // SM207A は COPY ALTLB OF <X-47> と COPY ALTLB IN <X-48> を書き、
+        // <b>違う中身が来ること</b>を確かめる。置き場の名前を決めるのは差し込み札
+        // なので、原本と置き場の結び付けは道具の側が決めるほかない。
+        // 決めておかないと 2 つめが 1 つめと同じ原本を引き、道具が処理系の失敗を作る
+        Path archive = VerifySupport.requireCcvs85();
+        XCards cards = XCards.defaults();
+
+        Ccvs85Suite.Prepared prepared = Ccvs85Suite.prepare(archive, Population.plain(cards));
+        CopyBookResolver resolver = prepared.resolver();
+
+        String first = resolver.resolve("ALTLB", cards.text(47)).orElseThrow().text();
+        String second = resolver.resolve("ALTLB", cards.text(48)).orElseThrow().text();
+
+        assertTrue(first.contains("PERFORM PASS"), first);
+        assertTrue(second.contains("WRONG LIBRARY"), second);
     }
 
     @Test

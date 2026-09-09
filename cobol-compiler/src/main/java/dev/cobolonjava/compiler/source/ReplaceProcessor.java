@@ -56,8 +56,10 @@ public final class ReplaceProcessor {
             }
 
             TextReplacement matched = null;
+            int length = -1;
             for (TextReplacement replacement : active) {
-                if (TextReplacements.matchesAt(words, i, replacement.from())) {
+                length = TextReplacements.matchLength(words, i, replacement.from());
+                if (length >= 0) {
                     matched = replacement;
                     break;
                 }
@@ -72,7 +74,8 @@ public final class ReplaceProcessor {
                 TextWord word = to.get(k);
                 out.add(k == 0 ? word.withPrecededBySpace(words.get(i).precededBySpace()) : word);
             }
-            i += matched.from().size();
+            // 読み飛ばした区切りのぶん、擬似テキストより長く消費することがある
+            i += length;
         }
         return out;
     }

@@ -254,6 +254,56 @@ class CopyExpanderTest {
                 "COPY CUSTREC SUPPRESS REPLACING ==OLD-REC== BY ==NEW-REC==.").text());
     }
 
+    /** 7 桁目に {@code D} を置いたデバッグ行。 */
+    private static String debugLine(String content) {
+        return "      D" + content;
+    }
+
+    @Test
+    @DisplayName("原本のデバッグ行の語も置換の照合に加わる (FR-090, FR-193)")
+    void wordsOnADebugLineTakePartInTheMatching() {
+        // 85 規格 XII 2.4 は「7 桁目の D が無いものとして照合に参加する」と決めている。
+        // 注釈行 (PST-TEST-007) とは扱いが違う (SM206A PST-TEST-009)
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("KP008",
+                line("PERFORM FAIL.") + "\n"
+                + debugLine("    THIS IS GARBAGE.") + "\n"
+                + line("SUBTRACT 1 FROM ERROR-COUNTER.") + "\n");
+
+        assertEquals("PERFORM PASS.", expand(resolver,
+                "COPY KP008 REPLACING",
+                "==FAIL. THIS IS GARBAGE. SUBTRACT 1 FROM ERROR-COUNTER. ==",
+                "BY ==PASS. ==.").text());
+    }
+
+    @Test
+    @DisplayName("置換で消えなかったデバッグ行は落とす (FR-090, FR-193)")
+    void aDebugLineThatSurvivesTheReplacementIsDropped() {
+        // 照合のあいだだけ生かしておく。WITH DEBUGGING MODE が書かれていなければ
+        // デバッグ行は注釈と同じであり、ふつうの文としてプログラムへ入ってはならない
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("KP008",
+                line("PERFORM FAIL.") + "\n"
+                + debugLine("    THIS IS GARBAGE.") + "\n"
+                + line("SUBTRACT 1 FROM ERROR-COUNTER.") + "\n");
+
+        assertEquals("PERFORM FAIL. SUBTRACT 1 FROM ERROR-COUNTER.",
+                expand(resolver, "COPY KP008.").text());
+    }
+
+    @Test
+    @DisplayName("注釈行の語は照合に加わらない (FR-090)")
+    void wordsOnACommentLineDoNotTakePartInTheMatching() {
+        // KP007 がこれを試している (SM206A PST-TEST-007)
+        MapCopyBookResolver resolver = new MapCopyBookResolver().put("KP007",
+                line("PERFORM FAIL.") + "\n"
+                + "      *    THIS COMMENT SHOULD NOT AFFECT MATCHING." + "\n"
+                + line("SUBTRACT 1 FROM ERROR-COUNTER.") + "\n");
+
+        assertEquals("PERFORM PASS.", expand(resolver,
+                "COPY KP007 REPLACING",
+                "==FAIL. SUBTRACT 1 FROM ERROR-COUNTER. ==",
+                "BY ==PASS. ==.").text());
+    }
+
     @Test
     @DisplayName("SUPPRESS はリストから落とすコピー句を示す (FR-090, FR-094)")
     void suppressNamesTheCopybooksToLeaveOutOfTheListing() {
