@@ -208,7 +208,13 @@ public final class IndexedDataSet implements KeyedDataSet {
         }
     }
 
-    /** 索引はデータから導ける。開いたときと変えたときに組み直す。 */
+    /**
+     * 索引はデータから導ける。<b>開いたときだけ</b>組み直す。
+     *
+     * <p>ファイルはレコードだけを主鍵の順に持っているので、組み直した索引では
+     * 同じ副鍵のレコードが主鍵の順に並ぶ。開いたあとの並びは、書いた順・書き換えた順で
+     * 動く (暫定判断 P-087)。
+     */
     private void rebuildIndexes() {
         indexes = new ArrayList<>();
         for (Key alternate : alternates) {
@@ -218,6 +224,61 @@ public final class IndexedDataSet implements KeyedDataSet {
                         .add(entry.getKey());
             }
             indexes.add(index);
+        }
+    }
+
+    /**
+     * 索引にレコードを 1 本足す。同じ副鍵の並びの<b>末尾</b>に付く。
+     *
+     * <p>{@code WITH DUPLICATES} の副鍵で同じ値のレコードを順に読むと、
+     * <b>索引に入った順</b>に返る。並び全体を組み直してしまうと主鍵の順に戻ってしまい、
+     * あとから入ったレコードが先に返る (IX215A START-TEST-GF-09)。
+     */
+    private void indexInsert(ByteKey key, byte[] record) {
+        for (int i = 0; i < alternates.size(); i++) {
+            indexes.get(i)
+                    .computeIfAbsent(keyOf(record, alternates.get(i)), k -> new ArrayList<>())
+                    .add(key);
+        }
+    }
+
+    /** 索引からレコードを 1 本外す。 */
+    private void indexRemove(ByteKey key, byte[] record) {
+        for (int i = 0; i < alternates.size(); i++) {
+            removeFromChain(indexes.get(i), keyOf(record, alternates.get(i)), key);
+        }
+    }
+
+    /**
+     * 書き換えを索引へ映す。
+     *
+     * <p>値が変わらなかった副鍵は<b>並びを動かさない</b>。変わった副鍵では、元の並びから
+     * 外して新しい並びの末尾へ付ける。ホストの副索引も、鍵が変わった項目だけを
+     * 入れ替える。
+     */
+    private void indexUpdate(ByteKey key, byte[] before, byte[] after) {
+        for (int i = 0; i < alternates.size(); i++) {
+            Key alternate = alternates.get(i);
+            ByteKey was = keyOf(before, alternate);
+            ByteKey now = keyOf(after, alternate);
+            if (was.equals(now)) {
+                continue;
+            }
+            TreeMap<ByteKey, List<ByteKey>> index = indexes.get(i);
+            removeFromChain(index, was, key);
+            index.computeIfAbsent(now, k -> new ArrayList<>()).add(key);
+        }
+    }
+
+    private static void removeFromChain(TreeMap<ByteKey, List<ByteKey>> index, ByteKey value,
+                                        ByteKey key) {
+        List<ByteKey> keys = index.get(value);
+        if (keys == null) {
+            return;
+        }
+        keys.remove(key);
+        if (keys.isEmpty()) {
+            index.remove(value);
         }
     }
 
@@ -493,7 +554,7 @@ public final class IndexedDataSet implements KeyedDataSet {
             return conflict;
         }
         records.put(key, from.clone());
-        rebuildIndexes();
+        indexInsert(key, records.get(key));
         lastLength = from.length;
         current = null;
         return FileStatus.OK;
@@ -564,15 +625,14 @@ public final class IndexedDataSet implements KeyedDataSet {
     }
 
     private String replace(ByteKey key, byte[] from) {
-        byte[] previous = records.put(key, from.clone());
-        rebuildIndexes();
+        // 副鍵のぶつかりは<b>書き換える前に</b>見る。索引を組み直して確かめてから戻すと、
+        // 同じ副鍵の並びが主鍵の順に戻ってしまう
         String conflict = alternateConflict(key, from);
         if (conflict != null) {
-            // 副鍵がぶつかるなら、書き換えはなかったことにする
-            records.put(key, previous);
-            rebuildIndexes();
             return conflict;
         }
+        byte[] previous = records.put(key, from.clone());
+        indexUpdate(key, previous, records.get(key));
         lastLength = from.length;
         current = null;
         return FileStatus.OK;
@@ -606,8 +666,10 @@ public final class IndexedDataSet implements KeyedDataSet {
     }
 
     private void remove(ByteKey key) {
-        records.remove(key);
-        rebuildIndexes();
+        byte[] record = records.remove(key);
+        if (record != null) {
+            indexRemove(key, record);
+        }
         current = null;
     }
 

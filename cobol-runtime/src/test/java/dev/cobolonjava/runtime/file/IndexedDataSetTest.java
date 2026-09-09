@@ -187,6 +187,44 @@ class IndexedDataSetTest {
     }
 
     @Test
+    @DisplayName("副鍵を書き換えたレコードは、同じ値の並びの末尾へ移る (FR-102)")
+    void rewritingAnAlternateKeyMovesTheRecordToTheEndOfItsChain() {
+        // 索引はレコードから導けるが、<b>並びまでは導けない</b>。組み直すと主鍵の順に
+        // 戻ってしまい、あとから入ったレコードが先に返る (IX215A START-TEST-GF-09)
+        IndexedDataSet.Key alternate = new IndexedDataSet.Key(3, 2, true);
+        IndexedDataSet file = seeded("K.DAT", alternate);
+
+        file.open(OpenMode.IO, false);
+        byte[] record = area();
+        // BBB の副鍵を y1 から x1 へ変える。x1 の並びはすでに AAA / CCC である
+        assertEquals(FileStatus.OK, file.rewriteKey(record("BBB", "x1", "two")));
+
+        assertEquals(FileStatus.OK, file.readKey(1, key("x1"), record));
+        assertEquals("AAAx1one", decode(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("CCCx1thr", decode(record));
+        // 主鍵の順なら BBB が CCC より先に来る。書き換えた順だから末尾である
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("BBBx1two", decode(record));
+    }
+
+    @Test
+    @DisplayName("副鍵の値が変わらない書き換えは並びを動かさない (FR-102)")
+    void rewritingWithoutChangingTheAlternateKeyKeepsThePosition() {
+        IndexedDataSet.Key alternate = new IndexedDataSet.Key(3, 2, true);
+        IndexedDataSet file = seeded("K.DAT", alternate);
+
+        file.open(OpenMode.IO, false);
+        byte[] record = area();
+        assertEquals(FileStatus.OK, file.rewriteKey(record("AAA", "x1", "ONE")));
+
+        assertEquals(FileStatus.OK, file.readKey(1, key("x1"), record));
+        assertEquals("AAAx1ONE", decode(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("CCCx1thr", decode(record));
+    }
+
+    @Test
     @DisplayName("重複を許さない副鍵は同じ値を 2 つ持てない (FR-103)")
     void anAlternateWithoutDuplicatesRejectsTheSecond() {
         IndexedDataSet.Key alternate = new IndexedDataSet.Key(3, 2, false);
