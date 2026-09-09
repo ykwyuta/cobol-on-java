@@ -250,10 +250,12 @@ public final class RelativeDataSet implements KeyedDataSet {
         }
         if (position == damagedAt) {
             // 切り分けが行き詰まった場所である。ここから先は読めない
+            current = -1;
             return FileStatus.IO_ERROR;
         }
         if (position >= slots.size()) {
             atEnd = true;
+            current = -1;
             return FileStatus.AT_END;
         }
         return take(position++, into);
@@ -268,9 +270,11 @@ public final class RelativeDataSet implements KeyedDataSet {
         int slot = number - 1;
         if (slot >= 0 && slot == damagedAt) {
             // 「そのスロットが無い」ではない。読めないのである
+            current = -1;
             return FileStatus.IO_ERROR;
         }
         if (slot < 0 || slot >= slots.size() || slots.get(slot) == null) {
+            current = -1;
             return FileStatus.NO_RECORD;
         }
         // 番号で読んだあとの順次読みは、その次から続く
@@ -279,14 +283,24 @@ public final class RelativeDataSet implements KeyedDataSet {
         return take(slot, into);
     }
 
+    /**
+     * 読める状態か。読めないなら状態コードを返す。
+     *
+     * <p>読めなかったら、直前に読んだレコードは<b>もう現在のものではない</b>。
+     * 規格は {@code REWRITE} と {@code DELETE} の前の入出力文が「成功した
+     * {@code READ}」であることを求めている (85 規格 VII-51, 4.6.4(5))。
+     */
     private String readable() {
         if (mode == null) {
+            current = -1;
             return FileStatus.NOT_OPEN;
         }
         if (!mode.canRead()) {
+            current = -1;
             return FileStatus.READ_NOT_ALLOWED;
         }
         if (atEnd) {
+            current = -1;
             return FileStatus.NOT_READABLE;
         }
         return null;

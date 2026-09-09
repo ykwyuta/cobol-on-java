@@ -276,6 +276,7 @@ public final class IndexedDataSet implements KeyedDataSet {
         ByteKey key = active == 0 ? takeNextPrimary() : takeNextAlternate();
         if (key == null) {
             atEnd = true;
+            current = null;
             return FileStatus.AT_END;
         }
         return take(key, into);
@@ -330,6 +331,7 @@ public final class IndexedDataSet implements KeyedDataSet {
             }
         }
         if (found == null) {
+            current = null;
             return FileStatus.NO_RECORD;
         }
         // 鍵で読んだあとの順次読みは、その索引の続きから始まる
@@ -338,14 +340,27 @@ public final class IndexedDataSet implements KeyedDataSet {
         return take(found, into);
     }
 
+    /**
+     * 読める状態か。読めないなら状態コードを返す。
+     *
+     * <p>読めなかったら、直前に読んだレコードは<b>もう現在のものではない</b>。
+     * 規格は {@code REWRITE} と {@code DELETE} の前の入出力文が「成功した
+     * {@code READ}」であることを求めている (85 規格 VII-51, 4.6.4(5))。
+     */
     private String readable() {
         if (mode == null) {
+            current = null;
             return FileStatus.NOT_OPEN;
         }
         if (!mode.canRead()) {
+            current = null;
             return FileStatus.READ_NOT_ALLOWED;
         }
-        return atEnd ? FileStatus.NOT_READABLE : null;
+        if (atEnd) {
+            current = null;
+            return FileStatus.NOT_READABLE;
+        }
+        return null;
     }
 
     private String take(ByteKey key, byte[] into) {

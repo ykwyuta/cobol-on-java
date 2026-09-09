@@ -169,22 +169,30 @@ public final class SequentialDataSet implements DataSet {
      * @return ファイル状態コード
      */
     public String read(byte[] into) {
-        if (mode == null) {
-            return FileStatus.NOT_OPEN;
-        }
-        if (!mode.canRead()) {
+        if (mode == null || !mode.canRead()) {
+            // 開いていないのは「読める開き方ではない」に含まれる。規格の 47 は
+            // 「INPUT でも I-O でもないファイルへの READ」であり、閉じたファイルも
+            // そこに入る (85 規格 VII-5, 1.3.5(4)F)。42 は CLOSE のための番号である
+            current = -1;
             return FileStatus.READ_NOT_ALLOWED;
         }
+        // 読めなかったら、直前に読んだレコードは<b>もう現在のものではない</b>。
+        // 規格は REWRITE の前の入出力文が「成功した READ」であることを求めている
+        // (85 規格 VII-51, 4.6.4(5))。消しておかないと、終わりまで読んだあとの
+        // REWRITE が 1 本前のレコードを書き換えてしまう
         if (atEnd) {
             // 終わりまで読んだあとにまた読むのは、位置が定まっていない
+            current = -1;
             return FileStatus.NOT_READABLE;
         }
         if (position == damagedAt) {
             // 切り分けが途中で行き詰まった場所である。ここから先は読めない
+            current = -1;
             return FileStatus.IO_ERROR;
         }
         if (position >= records.size()) {
             atEnd = true;
+            current = -1;
             return FileStatus.AT_END;
         }
         byte[] record = records.get(position++);
@@ -216,10 +224,10 @@ public final class SequentialDataSet implements DataSet {
      * @return ファイル状態コード
      */
     public String write(byte[] from) {
-        if (mode == null) {
-            return FileStatus.NOT_OPEN;
-        }
-        if (!mode.canWrite()) {
+        // 順編成の WRITE は OUTPUT か EXTEND だけである。I-O で開いたファイルへは
+        // 書けない——読みながら書き戻すのは REWRITE の仕事だからである。
+        // 開いていないのも同じ番号に入る (85 規格 VII-5, 1.3.5(4)G)
+        if (mode != OpenMode.OUTPUT && mode != OpenMode.EXTEND) {
             return FileStatus.WRITE_NOT_ALLOWED;
         }
         if (allocation.exceeded(written(), sizeOf(from))) {
@@ -251,9 +259,11 @@ public final class SequentialDataSet implements DataSet {
         if (current < 0) {
             return FileStatus.NO_CURRENT_RECORD;
         }
-        if (attributes.format() == RecordFormat.FIXED
-                && from.length != records.get(current).length) {
-            // 固定長では長さを変えられない。あとのレコードの位置がずれてしまう
+        if (from.length != records.get(current).length) {
+            // 順編成では<b>長さを変えられない</b>。あとのレコードの位置がずれてしまう。
+            // 可変長でも同じである——規格は「書き換えるレコードの文字位置の数は、
+            // 置き換えられるレコードの文字位置の数と等しくなければならない」と決めて
+            // いる (85 規格 VII-48)。CCVS85 の SQ227A / SQ228A がここを見ている
             return FileStatus.REWRITE_LENGTH;
         }
         records.set(current, from.clone());

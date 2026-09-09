@@ -230,13 +230,52 @@ class SequentialDataSetTest {
     }
 
     @Test
-    @DisplayName("開いていなければ 42 になる (FR-103)")
+    @DisplayName("開いていないファイルへの操作は、文ごとに違う番号になる (FR-103)")
     void usingAClosedFileFails() {
+        // 42 は<b>CLOSE のための番号</b>である。READ は「INPUT でも I-O でもない
+        // ファイルへの READ」なので 47、WRITE は同じ理屈で 48 になる
+        // (85 規格 VII-5, 1.3.5(4)F・G)。CCVS85 の SQ147A / SQ151A がここを見ている
         SequentialDataSet file = SequentialDataSet.at(directory.resolve("F.DAT"));
 
-        assertEquals(FileStatus.NOT_OPEN, file.read(area(3)));
-        assertEquals(FileStatus.NOT_OPEN, file.write(area(3)));
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.read(area(3)));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.write(area(3)));
         assertEquals(FileStatus.NOT_OPEN, file.close());
+    }
+
+    @Test
+    @DisplayName("順編成の WRITE は I-O では書けない (FR-103)")
+    void writingToAsequentialFileOpenedForIoIsRefused() {
+        // 読みながら書き戻すのは REWRITE の仕事である。順編成の WRITE は
+        // OUTPUT か EXTEND だけである (CCVS85 の SQ156A)
+        SequentialDataSet out = SequentialDataSet.at(directory.resolve("IO.DAT"));
+        out.open(OpenMode.OUTPUT);
+        out.write(area(3));
+        out.close();
+
+        SequentialDataSet file = SequentialDataSet.at(directory.resolve("IO.DAT"));
+        assertEquals(FileStatus.OK, file.open(OpenMode.IO));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.write(area(3)));
+    }
+
+    @Test
+    @DisplayName("読めなかったあとの REWRITE は 43 になる (FR-103)")
+    void rewritingAfterAnUnsuccessfulReadIsRefused() {
+        // 規格は REWRITE の前の入出力文が<b>成功した READ</b> であることを求めている
+        // (85 規格 VII-51, 4.6.4(5))。終わりまで読んだあとは何も指していない。
+        // 消しておかないと、1 本前のレコードを書き換えてしまう (CCVS85 の SQ144A)
+        Path path = directory.resolve("E.DAT");
+        DataSetAttributes attributes =
+                new DataSetAttributes(RecordFormat.FIXED, 3, CodePages.DEFAULT);
+        SequentialDataSet out = new SequentialDataSet(path, attributes);
+        out.open(OpenMode.OUTPUT);
+        out.write(CodePages.DEFAULT.encode("abc"));
+        out.close();
+
+        SequentialDataSet file = new SequentialDataSet(path, attributes);
+        file.open(OpenMode.IO);
+        assertEquals(FileStatus.OK, file.read(area(3)));
+        assertEquals(FileStatus.AT_END, file.read(area(3)));
+        assertEquals(FileStatus.NO_CURRENT_RECORD, file.rewrite(CodePages.DEFAULT.encode("xyz")));
     }
 
     @Test
@@ -396,8 +435,12 @@ class SequentialDataSetTest {
     }
 
     @Test
-    @DisplayName("可変長の REWRITE は長さを変えられる (FR-102, FR-106)")
-    void rewritingAVariableRecordMayChangeItsLength() {
+    @DisplayName("可変長でも REWRITE は長さを変えられない (FR-102, FR-106)")
+    void rewritingAVariableRecordCannotChangeItsLength() {
+        // 規格は「書き換えるレコードの文字位置の数は、置き換えられるレコードの
+        // 文字位置の数と等しくなければならない」と決めている (85 規格 VII-48)。
+        // 順編成では可変長でも同じである——あとのレコードの位置がずれてしまう。
+        // CCVS85 の SQ227A / SQ228A がここを見ている
         Path path = directory.resolve("V.DAT");
         DataSetAttributes attributes =
                 new DataSetAttributes(RecordFormat.VARIABLE, 10, CodePages.DEFAULT);
@@ -410,14 +453,16 @@ class SequentialDataSetTest {
         SequentialDataSet file = new SequentialDataSet(path, attributes);
         file.open(OpenMode.IO);
         file.read(area(10));
-        assertEquals(FileStatus.OK, file.rewrite(CodePages.DEFAULT.encode("x")));
+        assertEquals(FileStatus.REWRITE_LENGTH, file.rewrite(CodePages.DEFAULT.encode("x")));
+        // 同じ長さなら書き換えられる
+        assertEquals(FileStatus.OK, file.rewrite(CodePages.DEFAULT.encode("zzzz")));
         file.close();
 
         SequentialDataSet back = new SequentialDataSet(path, attributes);
         back.open(OpenMode.INPUT);
         byte[] record = area(10);
         back.read(record);
-        assertEquals(1, back.lastLength());
+        assertEquals(4, back.lastLength());
         back.read(record);
         assertEquals(2, back.lastLength());
     }
