@@ -196,13 +196,14 @@ class CorrespondingArithmeticTest {
     }
 
     @Test
-    @DisplayName("数値の組が 1 つもなければ誤りとして報告する (FR-044)")
-    void anEmptyCorrespondenceIsReported() {
+    @DisplayName("数値の組が 1 つもなければ、告げて通す (FR-044, FR-183)")
+    void anEmptyCorrespondenceIsWarnedAboutAndNothingIsComputed() {
+        // 移す組が無いのと同じで、書き間違いとは限らない。何も出さないのが正しい訳である
         CobolCompiler.Result result = compile(
                 List.of("01 WS-A.", "   05 X PIC X.", "01 WS-B.", "   05 X PIC X."),
                 "ADD CORRESPONDING WS-A TO WS-B.");
 
-        assertFalse(result.succeeded());
+        assertTrue(result.succeeded(), result.diagnostics().toString());
         assertTrue(result.diagnostics().get(0).message().contains("no numeric elementary pairs"),
                 result.diagnostics().toString());
     }

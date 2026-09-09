@@ -1675,7 +1675,14 @@ public final class DataDivisionBuilder {
         return picture.size();
     }
 
-    /** 数値項目の長さ。ランタイムの記述子にそのまま尋ねる。 */
+    /**
+     * 数値項目の長さ。ランタイムの記述子にそのまま尋ねる。
+     *
+     * <p>断るときは<b>何を読んだのか</b>まで書く。ランタイムの例文は数値だけを持って
+     * いて、どの項目のどの PICTURE でそうなったかを知らない。{@code PIC P} のように
+     * 桁を 1 つも持たない書き方は規格が許していないが、「digits must be positive: 0」
+     * だけでは原文のどこが悪いのか読み取れない。
+     */
     private int numericLength(DataItem item, Picture picture, Usage usage) {
         try {
             NumericItem descriptor = NumericItem.of(picture.source(), usage);
@@ -1684,7 +1691,8 @@ public final class DataDivisionBuilder {
             }
             return descriptor.byteLength();
         } catch (RuntimeException e) {
-            report(item.origin(), e.getMessage());
+            report(item.origin(), "PICTURE " + picture.source() + " cannot describe "
+                    + (item.name() == null ? "FILLER" : item.name()) + ": " + e.getMessage());
             return 0;
         }
     }

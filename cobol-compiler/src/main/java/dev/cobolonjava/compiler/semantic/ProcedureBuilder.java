@@ -3719,9 +3719,10 @@ public final class ProcedureBuilder {
                     List.of(new Statement.Arithmetic.Target(to, rounded)), null, origin));
         }
         if (operations.isEmpty()) {
-            report(origin, "CORRESPONDING found no numeric elementary pairs between "
-                    + describe(source) + " and " + describe(target));
-            return null;
+            // 移す組が無いのと同じで、書き間違いとは限らない。告げて通す
+            warn(origin, "CORRESPONDING found no numeric elementary pairs between "
+                    + describe(source) + " and " + describe(target) + "; nothing is computed");
+            return new Statement.Sequence(List.of(), origin);
         }
         return new Statement.ArithmeticGroup(operations, sizeErrorOf(phrases), origin);
     }
@@ -3982,10 +3983,14 @@ public final class ProcedureBuilder {
         List<Correspondence.Pair> pairs =
                 Correspondence.of(source.item(), target.item());
         if (pairs.isEmpty()) {
-            // 何も移さない MOVE は書き間違いである。黙って通さない
-            report(origin, "MOVE CORRESPONDING found no corresponding items between "
-                    + describe(source) + " and " + describe(target));
-            return null;
+            // 組が 1 つも無いのは<b>書き間違いとは限らない</b>。名前が同じでも修飾が
+            // 違えば対応しないので、そう書いて「何も移らないこと」を確かめる原文が
+            // ある。CCVS85 の NC209A がまさにそれで、原文に
+            // 「NOTE NO MOVES SHOULD TAKE PLACE.」と書いてある。
+            // 断らずに<b>告げて通す</b> — 何も出さないのが正しい訳である
+            warn(origin, "MOVE CORRESPONDING found no corresponding items between "
+                    + describe(source) + " and " + describe(target) + "; nothing is moved");
+            return List.of();
         }
         List<Statement> moves = new ArrayList<>();
         for (Correspondence.Pair pair : pairs) {
@@ -4819,5 +4824,10 @@ public final class ProcedureBuilder {
 
     private void report(Origin origin, String message) {
         diagnostics.add(new Diagnostic(origin, message));
+    }
+
+    /** 告げるだけで翻訳を続ける診断 (要件 FR-183)。 */
+    private void warn(Origin origin, String message) {
+        diagnostics.add(Diagnostic.warning(origin, message));
     }
 }
