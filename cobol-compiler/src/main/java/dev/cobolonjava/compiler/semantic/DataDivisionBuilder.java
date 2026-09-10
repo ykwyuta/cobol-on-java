@@ -1,5 +1,6 @@
 package dev.cobolonjava.compiler.semantic;
 
+import dev.cobolonjava.cics.CicsEib;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.parser.OriginToken;
@@ -1469,7 +1470,31 @@ public final class DataDivisionBuilder {
         returnCode.setSection(DataSection.SPECIAL_REGISTER);
         returnCode.setOffset(SpecialRegisterArea.RETURN_CODE_OFFSET);
         returnCode.setLength(returnCode.picture().size());
-        return Map.of("RETURN-CODE", returnCode);
+        Map<String, DataItem> registers = new LinkedHashMap<>();
+        registers.put("RETURN-CODE", returnCode);
+        registers.put("EIBTRNID", eibItem("EIBTRNID", "X(4)", Usage.DISPLAY,
+                CicsEib.EIBTRNID_OFFSET));
+        registers.put("EIBCALEN", eibItem("EIBCALEN", "S9(4)", Usage.COMP,
+                CicsEib.EIBCALEN_OFFSET));
+        registers.put("EIBRESP", eibItem("EIBRESP", "S9(8)", Usage.COMP,
+                CicsEib.EIBRESP_OFFSET));
+        registers.put("EIBRESP2", eibItem("EIBRESP2", "S9(8)", Usage.COMP,
+                CicsEib.EIBRESP2_OFFSET));
+        return Map.copyOf(registers);
+    }
+
+    private static DataItem eibItem(String name, String pictureText, Usage usage, int offset) {
+        DataItem item = new DataItem(INDEPENDENT_LEVEL, name, null);
+        Picture picture = PictureParser.parse(pictureText);
+        item.setPicture(picture);
+        item.setUsage(usage);
+        item.setSection(DataSection.CICS_EIB);
+        item.setOffset(offset);
+        item.setLength(picture.isNumeric()
+                ? NumericItem.of(pictureText, usage).byteLength()
+                : picture.size());
+        item.markReadOnly();
+        return item;
     }
 
     private static void collectTables(DataItem item, List<DataItem> tables) {

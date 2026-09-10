@@ -182,6 +182,14 @@ public final class ReferenceResolver {
     public DataReference resolveName(String name, Origin origin) {
         List<DataItem> found = layout.findAll(name);
         if (found.isEmpty()) {
+            DataItem index = layout.findIndex(name);
+            if (index != null) {
+                return new DataReference(index, List.of(), null, origin);
+            }
+            DataItem register = layout.findRegister(name);
+            if (register != null) {
+                return new DataReference(register, List.of(), null, origin);
+            }
             report(origin, "undefined data item: " + name);
             return null;
         }

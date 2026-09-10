@@ -2921,7 +2921,7 @@ in-memory storeはreference / test用に限定する。コンパイラは静的P
 構造化原因のままtask boundaryへ渡す。
 
 **どこがずれうるか**: `CicsTaskCoordinator`はclaim、program port、RETURN結果、会話mutation、UOW、
-abort、cleanupを順序付けるが、production program portはdeadline / cooperative cancel、EIB、task-local arena、
+abort、cleanupを順序付けるが、production program portはdeadline / cooperative cancel、task-local arena、
 condition handlingをまだ実装しない。
 `CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
 commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
@@ -2933,7 +2933,16 @@ leaseにはrenewalがなく、task timeoutとlease期限の設定を誤ると実
 caller提供の`Instant`はcluster node間の時計ずれを吸収せず、in-memory CASはprocess再起動やclusterで
 共有されない。`load`は排他権を与えず、誤用すると二重実行になる。payload生成後の上限検査だけでは
 HTTP body受信時のmemory枯渇を防げない。ownerは安全なbinding値に変換済みであることをadapter側が保証する。
-STRICT原子保存、NON_ATOMIC outcome journal、EIBRESP詳細、channel、BMS snapshot、CICS条件処理は未実装である。
+STRICT原子保存、NON_ATOMIC outcome journal、channel、BMS snapshot、CICS条件処理は未実装である。
+
+EIBはIBM DFHEIBLKと同じ85byteのtask-local領域を持ち、初期subsetとして`EIBTRNID`、`EIBCALEN`、
+`EIBRESP`、`EIBRESP2`を暗黙の読み取り専用項目として生成COBOLへ公開する。TRANSIDは実行時code pageで
+4byteにspace paddingし、CALENは初期COMMAREA長をsigned halfword、RESP / RESP2は各command outcomeを
+signed fullwordで保持する。COBOL文からの書込みは翻訳時に拒否する。未対応fieldはbinary zeroのままである。
+`EIBAID`、`EIBDATE`、`EIBTIME`、`EIBTASKN`、端末情報は、HTTP taskに対する正しい由来とhost比較vectorが
+未確定のため推測値を設定しない。`ABEND`は正常outcomeを返さず構造化例外で終了するため、そのcommand自体の
+RESP / RESP2更新は行わない。現command構文は`RESP` / `RESP2` optionをまだ受けず、非normal outcomeは
+EIBへ反映後にruntime例外となる。
 
 **解消条件**: ABEND / condition / EIBを含む生成CICS命令の終了・rollback・cleanup traceを通し、
 実CICS vectorで初期subsetのCOMMAREA長、RESP、制御移送を照合する。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を

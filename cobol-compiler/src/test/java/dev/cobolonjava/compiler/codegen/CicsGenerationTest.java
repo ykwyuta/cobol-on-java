@@ -137,6 +137,42 @@ class CicsGenerationTest {
                 "duplicate EXEC CICS option");
     }
 
+    @Test
+    @DisplayName("生成COBOLからtask-local EIBのTRANSID、CALEN、RESPを参照する")
+    void readsImplicitEibFields() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> main = compile(loader, "EIBMAIN", List.of(
+                "EXEC CICS LINK PROGRAM('EIBCHILD') COMMAREA(LK-AREA) LENGTH(4) END-EXEC",
+                "IF EIBCALEN = 4 AND EIBRESP = 0 AND EIBRESP2 = 0 "
+                        + "MOVE EIBTRNID TO LK-AREA",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) LENGTH(4) END-EXEC"));
+        Supplier<CobolProgram> child = compile(loader, "EIBCHILD", List.of("GOBACK"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("EIBMAIN", main)
+                .cobolProgram("EIBCHILD", child)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("EIBMAIN"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("TX01", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("EIB fieldをCOBOL文の受取側に指定すると翻訳を拒否する")
+    void rejectsWritesToEibFields() {
+        assertRejected("MOVE 1 TO EIBRESP", "EIBRESP is read-only");
+        assertRejected("ADD 1 TO EIBRESP2", "EIBRESP2 is read-only");
+        assertRejected("CALL 'CHILD' USING EIBTRNID", "EIBTRNID is read-only");
+        assertRejected("EXEC CICS LINK PROGRAM('CHILD') COMMAREA(EIBTRNID) "
+                + "LENGTH(4) END-EXEC", "EIBTRNID is read-only");
+    }
+
     private static void assertRejected(String command, String expected) {
         CobolCompiler.Result result = compileResult("REJECT", List.of(command));
         assertFalse(result.succeeded());

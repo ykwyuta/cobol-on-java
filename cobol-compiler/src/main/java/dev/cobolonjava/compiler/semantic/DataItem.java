@@ -45,6 +45,7 @@ public final class DataItem {
     private final List<String> indexNames = new ArrayList<>();
     private final List<SearchKey> searchKeys = new ArrayList<>();
     private boolean index;
+    private boolean readOnly;
 
     DataItem(int level, String name, Origin origin) {
         this.level = level;
@@ -164,6 +165,16 @@ public final class DataItem {
 
     public boolean isIndex() {
         return index;
+    }
+
+    /** runtimeだけが更新でき、COBOL文の受取側にはできない項目か。 */
+    public boolean readOnly() {
+        for (DataItem current = this; current != null; current = current.parent) {
+            if (current.readOnly) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean external;
@@ -386,6 +397,10 @@ public final class DataItem {
 
     void markIndex() {
         this.index = true;
+    }
+
+    void markReadOnly() {
+        this.readOnly = true;
     }
 
     void setSection(DataSection value) {

@@ -946,10 +946,46 @@ public final class ProcedureBuilder {
             }
         } else if (statement instanceof Statement.StringStatement text) {
             out.add(text.target());
+            if (text.pointer() != null) {
+                out.add(text.pointer());
+            }
         } else if (statement instanceof Statement.Unstring unstring) {
-            unstring.targets().forEach(t -> out.add(t.field()));
+            unstring.targets().forEach(t -> {
+                out.add(t.field());
+                if (t.delimiter() != null) {
+                    out.add(t.delimiter());
+                }
+                if (t.count() != null) {
+                    out.add(t.count());
+                }
+            });
+            if (unstring.pointer() != null) {
+                out.add(unstring.pointer());
+            }
+            if (unstring.tallying() != null) {
+                out.add(unstring.tallying());
+            }
         } else if (statement instanceof Statement.Read read && read.into() != null) {
             read.into().targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Return returned && returned.into() != null) {
+            returned.into().targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Call call) {
+            call.arguments().stream()
+                    .filter(argument -> !argument.byContent())
+                    .map(Statement.Call.Argument::value)
+                    .filter(Operand.Reference.class::isInstance)
+                    .map(Operand.Reference.class::cast)
+                    .forEach(reference -> out.add(reference.reference()));
+        } else if (statement instanceof Statement.Cics cics
+                && cics.operation() == Statement.CicsOperation.LINK
+                && cics.commarea() != null) {
+            out.add(cics.commarea());
+        } else if (statement instanceof Statement.Search search && search.varying() != null) {
+            out.add(search.varying());
+        } else if (statement instanceof Statement.Sequence sequence) {
+            sequence.statements().forEach(child -> out.addAll(receivingOf(child)));
+        } else if (statement instanceof Statement.Perform perform) {
+            perform.varying().forEach(varying -> out.add(varying.target()));
         }
         // レコード名は書き換わる側である。FROM を書けば転記され、書かなくても
         // 出力の対象そのものである
@@ -1229,7 +1265,8 @@ public final class ProcedureBuilder {
      */
     private Statement statementOf(CobolParser.StatementContext context) {
         if (inDebugSection || !watchesItems()) {
-            return builtStatementOf(context);
+            return rejectReadOnlyReceivers(
+                    builtStatementOf(context), ReferenceResolver.originOf(context));
         }
         resolver.pushTrace();
         Statement built;
@@ -1243,6 +1280,10 @@ public final class ProcedureBuilder {
             return null;
         }
         Origin at = ReferenceResolver.originOf(context);
+        built = rejectReadOnlyReceivers(built, at);
+        if (built == null) {
+            return null;
+        }
         List<Statement> entries = itemDebugEntries(built, referenced, at);
         if (entries.isEmpty()) {
             return built;
@@ -1266,6 +1307,19 @@ public final class ProcedureBuilder {
             body.addAll(entries);
         }
         return new Statement.Sequence(List.copyOf(body), at);
+    }
+
+    private Statement rejectReadOnlyReceivers(Statement statement, Origin origin) {
+        if (statement == null) {
+            return null;
+        }
+        for (DataReference receiver : receivingOf(statement)) {
+            if (receiver.item().readOnly()) {
+                report(origin, describe(receiver) + " is read-only and cannot receive a value");
+                return null;
+            }
+        }
+        return statement;
     }
 
     private Statement builtStatementOf(CobolParser.StatementContext context) {

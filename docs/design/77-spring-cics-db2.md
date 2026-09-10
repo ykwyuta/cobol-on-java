@@ -55,8 +55,9 @@ COMMAREA copy-back、次TRANSIDを固定した。生成ABENDは検証済みcode�
 `CicsAbend`となり、同じ原因のまま`CicsTaskBoundary.abort`へ渡る。
 
 このCICS増分は中立構造契約である。Spring MVC / Session adapter、lease更新、
-STRICT会話表とNON_ATOMIC outcome journal、EIB、BMS、動的CICS option、RESP / condition handling、
+STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、RESP / condition handling、
 channel / container、実CICS比較は未実装である。
+EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBRESP`、`EIBRESP2`を実装済みである。
 ABENDの`CANCEL`は構造化して保持するが、`HANDLE ABEND`を実装するまでは実際のhandler取消しは発生しない。
 `load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
 
@@ -250,6 +251,13 @@ HTTP クライアント切断は COBOL の安全な即時停止と同義では�
 EIB は task ごとの固定レイアウト storage として生成する。サーバ時計とタイムゾーンは `ClockPort`、
 利用者は `IdentityPort`、端末情報は `TerminalPort` から供給し、テストで固定できるようにする。
 `EIBRESP` / `EIBRESP2` は CICS command outcome から設定し、HTTP status を直接格納しない。
+
+初期実装はIBM DFHEIBLK互換の85byte領域を`CicsExecution`がtaskごとに一つ持つ。生成COBOLには
+`EIBTRNID` (`PIC X(4)`、offset 0x08)、`EIBCALEN` (`PIC S9(4) COMP`、offset 0x18)、
+`EIBRESP` / `EIBRESP2` (`PIC S9(8) COMP`、offset 0x4c / 0x50)を暗黙項目として公開する。
+これらはCOBOLから読み取り専用であり、受取側に指定した文は翻訳時に拒否する。command outcomeは
+制御結果を解釈する前にRESP / RESP2へ反映する。未対応fieldはbinary zeroとし、AID、日時、端末、
+task番号は対応するportとhost比較vectorを得るまで推測値を設定しない。
 
 BMS マクロは翻訳時に `BmsMapDefinition` へ変換する。実行時の `BmsScreenModel` は mapset / map、
 端末 profile、画面サイズ、field、literal、cursor、send option を持つ。画面表示技術を交換しても

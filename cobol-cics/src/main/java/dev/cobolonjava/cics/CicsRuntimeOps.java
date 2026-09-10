@@ -3,6 +3,7 @@ package dev.cobolonjava.cics;
 import dev.cobolonjava.runtime.interop.ProgramId;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
+import dev.cobolonjava.runtime.storage.Storage;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -13,14 +14,14 @@ public final class CicsRuntimeOps {
     }
 
     public static void link(ProgramContext context, String program, DataView commarea) {
-        CicsCommandOutcome outcome = execution(context).execute(
+        CicsCommandOutcome outcome = execute(context,
                 new LinkCommand(ProgramId.of(program), payload(commarea)));
         ContinueControl control = requireControl(outcome, ContinueControl.class, "LINK");
         copyBack(commarea, control.payload(), "LINK");
     }
 
     public static void xctl(ProgramContext context, String program, DataView commarea) {
-        CicsCommandOutcome outcome = execution(context).execute(
+        CicsCommandOutcome outcome = execute(context,
                 new XctlCommand(ProgramId.of(program), payload(commarea)));
         throw new CicsProgramTransfer(
                 requireControl(outcome, TransferControl.class, "XCTL"));
@@ -31,14 +32,14 @@ public final class CicsRuntimeOps {
         ReturnCommand command = nextTransaction == null
                 ? new ReturnCommand(java.util.Optional.empty(), payload(commarea))
                 : ReturnCommand.next(TransId.of(nextTransaction), payload(commarea));
-        CicsCommandOutcome outcome = execution(context).execute(command);
+        CicsCommandOutcome outcome = execute(context, command);
         throw new CicsProgramTransfer(
                 requireControl(outcome, TaskCompletion.class, "RETURN"));
     }
 
     public static void syncpoint(ProgramContext context, boolean rollback) {
         SyncpointAction action = rollback ? SyncpointAction.ROLLBACK : SyncpointAction.COMMIT;
-        CicsCommandOutcome outcome = execution(context).execute(new SyncpointCommand(action));
+        CicsCommandOutcome outcome = execute(context, new SyncpointCommand(action));
         requireControl(outcome, SyncpointCompletion.class, "SYNCPOINT");
     }
 
@@ -50,6 +51,21 @@ public final class CicsRuntimeOps {
                         cancelHandlers, noDump);
         execution(context).execute(command);
         throw new CicsTaskStateException("ABEND command returned without terminating the task");
+    }
+
+    /** 生成コードが暗黙EIB項目を参照するためのtask-local storage。 */
+    public static Storage eibStorage(ProgramContext context) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        return execution(required).eib(required.codePage()).storage();
+    }
+
+    private static CicsCommandOutcome execute(ProgramContext context, CicsCommand command) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        CicsCommandOutcome outcome = execution.execute(command);
+        execution.eib(required.codePage()).updateResponse(
+                outcome.responseCode(), outcome.responseCode2());
+        return outcome;
     }
 
     private static CicsExecution execution(ProgramContext context) {

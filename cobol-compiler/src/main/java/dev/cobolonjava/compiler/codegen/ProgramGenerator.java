@@ -5568,6 +5568,16 @@ public final class ProgramGenerator {
                 offset.run();
             };
         }
+        if (record.section() == DataSection.CICS_EIB) {
+            return () -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        Type.getInternalName(CicsRuntimeOps.class), "eibStorage",
+                        "(L" + Type.getInternalName(ProgramContext.class) + ";)L" + STORAGE + ";",
+                        false);
+                offset.run();
+            };
+        }
         if (record.section() != DataSection.LINKAGE) {
             return () -> {
                 run.visitVarInsn(Opcodes.ALOAD, 1);

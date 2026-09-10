@@ -39,7 +39,7 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                     "task TRANSID disagrees with transaction definition");
         }
         definition.validate(input);
-        CicsExecution execution = new CicsExecution(task);
+        CicsExecution execution = new CicsExecution(task, input.commareaLength());
         RuntimeServices services = RuntimeServices.builder()
                 .service(CicsExecution.class, execution)
                 .build();
