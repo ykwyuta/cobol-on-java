@@ -23,6 +23,8 @@
     <module>cobol-runtime</module>
     <module>cobol-cics</module>
     <module>cobol-db2</module>
+    <module>cobol-db2-jdbc</module>
+    <module>cobol-spring-boot-4-autoconfigure</module>
     <module>cobol-oracle</module>
     <module>cobol-compiler</module>
     <module>cobol-junit</module>
@@ -36,6 +38,8 @@
     <junit.version>5.11.4</junit.version>
     <antlr.version>4.13.2</antlr.version>
     <asm.version>9.7.1</asm.version>
+    <spring-boot.version>4.1.1</spring-boot.version>
+    <db2-jcc.version>12.1.4.0</db2-jcc.version>
   </properties>
 
   <dependencyManagement>
@@ -54,6 +58,13 @@
         <groupId>org.junit</groupId>
         <artifactId>junit-bom</artifactId>
         <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>

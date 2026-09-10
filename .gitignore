@@ -3,3 +3,4 @@ target/
 .idea/
 *.iml
 .vscode/
+infra/db2/.env

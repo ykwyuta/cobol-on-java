@@ -8,9 +8,13 @@
 | 置換対象 | [ADR-0009](0009-db2-spring-managed-unit-of-work.md)の `WITH HOLD` に関する決定 |
 | 関連設計 | [設計 77](../design/77-spring-cics-db2.md) |
 
-> **実装状況（2026-09-10）:** 中立`Db2TaskRuntime`でprofile混在拒否、遅延UOW、commit間の
-> `ResourceLeaseId` pin、全終了経路のport closeまで実装した。これはopaque IDによる構造契約であり、
-> Db2 JDBC driverの同一物理connection、holdability、commit後FETCHはまだ実装・実機検証していない。
+> **実装状況（2026-09-11）:** `cobol-db2-jdbc`に専用provider / lease契約とdriver-managed UOWを追加した。
+> 最初のUOWで一度だけ取得した同一JDBC `Connection`を複数commit間で保持し、auto-commit、read-only、
+> holdabilityの設定・検証、hold / 非hold資源cleanup、取得時属性へのreset、障害時DISCARDまでH2で構造検証した。
+> Db2 Community 12.1.5.0とIBM JCC 12.1.4.0を使う適合性試験で、同一JDBC `Connection` object、
+> `HOLD_CURSORS_OVER_COMMIT`、commit後FETCH、rollback / task終了時cleanupを確認した。
+> native SQL executorからのDML / SELECT、COBOL host variable出力、`WITH HOLD`のOPEN / FETCH /
+> CLOSEも実Db2で確認した。接続断・プロセス停止、`-911` / `-913`を含む障害試験は未実装・未検証である。
 
 ## 文脈
 

@@ -2891,14 +2891,32 @@ task-scoped `UnitOfWorkPort.close()`を呼ぶ。SQLCAは全fieldを`EXACT` / `DE
 基本結果ではSQLCODE / SQLSTATEと導出可能なrow count以外を未提供とする。
 
 **どこがずれうるか**: `ResourceLeaseId`はadapterの自己申告であり同一物理Connectionを証明しない。
-現`SqlPlan` / `SqlBindings`はparameter descriptor、null indicator、出力のall-or-nothing反映、static packageを
-まだ表現しない。SQLCA field値のCOBOL storageも未実装である。cursor handleとStatement / ResultSetのclose順、
-timeout、cancel、warning chain採取はadapter契約に未接続である。Spring／JDBC型を含まないことは構造上維持するが、
+現`SqlPlan` / `SqlBindings`は型付きhost variable、null indicator、出力のall-or-nothing反映を表現するが、
+static packageとVARCHAR group等はまだ表現しない。SQLCA field値のCOBOL storageも未実装である。
+Spring adapterは非hold cursorのhandle、Statement / ResultSetのclose順、transaction timeout、warning chainを
+接続したが、statement cancel、session単独close、`CANCEL`連動、高機能cursorは未実装である。
+Spring／JDBC型を含まないことは構造上維持するが、
 公開recordは実Db2 vectorが揃うまで互換APIとして凍結しない。
 
+Spring Boot 4.1.1用の通常UOW adapterは、同一`DataSource`のJDBC transaction manager、
+`REQUIRES_NEW`、timeout / read-only、commit / rollback / cleanup、rollback-only、thread所有までを
+H2で検証した。初期SQL executorは同じ`DataSource`のtransaction-bound connectionを使い、固定長文字、
+COMP-3、数字DISPLAY、BINARY、null indicatorによるDML / 単一行SELECTを実行する。出力は全項目を
+符号化してから反映し、損失変換を拒否する。JDBC diagnostic chainは値を含めず最大64件に制限する。
+非hold・forward-only・read-only cursorのOPEN / FETCH / CLOSEと、UOW完了前の逆順cleanupも接続した。
+これはH2の構造試験であり、Db2 SQLCA、暗黙UOW rollback、Db2固有cursor挙動を証明しない。
+
+`cobol-db2-jdbc`のdriver-managed UOWは専用providerからtaskごとに一度だけleaseを取得し、同じJDBC
+`Connection` objectとlease IDをcommit後の次UOWでも使用する。hold資源はcommitを越えて保持し、rollback / task closeで
+閉じる。取得時connection属性へのresetに成功した場合だけ再利用を許し、UOW完了、resource close、resetの
+いずれかが失敗すればleaseを破棄する。Db2 Community 12.1.5.0 / IBM JCC 12.1.4.0の限定試験で、
+同一object、`HOLD_CURSORS_OVER_COMMIT`、commit後FETCH、rollback / task closeのcleanupを確認した。
+native SQL executorからのDML / SELECT、COBOL host variable出力、`WITH HOLD` cursor操作も実Db2で確認した。
+接続断・プロセス停止、競合・deadlock、SQLCA全fieldの適合性試験はまだない。
+
 **解消条件**: Spring JDBC adapterとdriver-managed adapterへ同じcontract suiteを適用する。
-manager / DataSource identity、同一物理Connection、holdability、commit後FETCH、全cleanup、SQLWarning、
-SQLCA field値を実Db2で検証する。host variable descriptorとcodec、cursor registry、statement timeoutを実装し、
+manager / DataSource identity、poolを含む同一物理connectionの確認、全cleanup、SQLWarning、
+SQLCA field値、障害時の再接続禁止を実Db2で検証する。残るcursor lifecycle、statement cancelと型を実装し、
 G-AR4 / G-AR5を合格させる。
 
 ## P-097 CICS第1増分は中立commandと単一JVM会話CASに限定する

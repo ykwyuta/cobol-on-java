@@ -6,7 +6,9 @@
 | ステータス | P0-a 第 1 増分 実装済。V2 検証が稼働中 |
 
 Java 連携とJUnitの第1増分は実装済みである。Db2とCICSは中立coreの第1増分へ着手し、
-Spring adapter、BMSは設計済み・未実装である。
+Spring Boot 4 adapterは通常Db2 UOW、初期non-cursor SQL executor、非hold cursorを実装した。
+driver管理`WITH HOLD`はtask専用connection lease / UOWまで実装し、native SQL executorと実Db2試験は未実装である。
+高機能cursor、CICS Web / Session、BMSも設計済み・未実装である。
 [敵対的設計レビュー](../reviews/2026-09-09-interop-adversarial-review.md)の P0 gate を満たすまでは
 experimental とする。特に IBM 非 OO Java static call と OO COBOL / Java 連携、Db2 `WITH HOLD`、
 SQLCA fidelity、BMS の「忠実」互換性は確定済みとは扱わない。
@@ -29,8 +31,10 @@ Maven のマルチモジュール構成とする。
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済 ([設計 25](25-verification.md))。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-junit` | JUnit 5 からの COBOL 実行、fixture、プログラム・SECTION の Mock / spy | program Mock、SECTION Mock/spy、class埋込みmetadata検査、単一deploy catalog読込み、制限付き直接SECTION実行を実装 ([設計 76](76-junit-testing.md)) |
 | `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、同一sessionのLINK / XCTL / RETURN実行、版・lease付き疑似会話store、初期EIB field、RESP / RESP2を実装 ([設計 77](77-spring-cics-db2.md)) |
-| `cobol-db2` | SQL 計画、ホスト変数、SQLCA、カーソル、UOW ポートのフレームワーク非依存モデル | experimentalなprofile固定、遅延UOW、WITH HOLD方針、SQLCA fidelity行列を実装 ([設計 77](77-spring-cics-db2.md)) |
-| `cobol-spring-boot-4-autoconfigure` / `starter` | Spring Boot 4.1 の MVC、Session、JDBC、transaction、Actuator を中立ポートへ接続 | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
+| `cobol-db2` | SQL 計画、ホスト変数、SQLCA、カーソル、UOW ポートのフレームワーク非依存モデル | experimentalなprofile固定、遅延UOW、WITH HOLD方針、型付きhost variable / codec、SQLCA fidelity行列を実装 ([設計 77](77-spring-cics-db2.md)) |
+| `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection leaseとdriver-managed UOW | task専用lease、同一connectionのcommit跨ぎ、hold / 非hold資源cleanup、reset / discardを実装。native SQL executorと実Db2試験は未実装 ([ADR-0012](../decisions/0012-db2-driver-managed-uow-for-required-hold-cursors.md)) |
+| `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.1 の MVC、Session、JDBC、transaction、Actuator を中立ポートへ接続 | `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS、Actuatorは未実装 ([設計 77](77-spring-cics-db2.md)) |
+| `cobol-spring-boot-4-starter` | 利用者向け依存関係と標準設定メタデータ | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 中立画面を Thymeleaf、terminal JavaScript、固定セル CSS で 3270 互換表示する任意 UI adapter | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-cli` | コンパイラ・ジョブ実行のコマンドライン入口 | 各モジュールの `Main` が暫定の入口である |
 

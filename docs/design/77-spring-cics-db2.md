@@ -5,7 +5,7 @@
 | 対応要件 | FR-150〜156, FR-160〜167, NFR-032, NFR-034〜036 |
 | 関連 ADR | [ADR-0007](../decisions/0007-framework-neutral-subsystem-ports.md), [ADR-0008](../decisions/0008-cics-on-spring-mvc-and-session.md), [ADR-0009](../decisions/0009-db2-spring-managed-unit-of-work.md), [ADR-0010](../decisions/0010-bms-thymeleaf-terminal-ui.md), [ADR-0012](../decisions/0012-db2-driver-managed-uow-for-required-hold-cursors.md) |
 | 関連レビュー | [敵対的レビュー](../reviews/2026-09-09-interop-adversarial-review.md) |
-| ステータス | 敵対的レビュー済み。`cobol-db2` / `cobol-cics`中立コア第1増分をexperimentalとして実装。P0 gate未合格 |
+| ステータス | 敵対的レビュー済み。中立コアと`SPRING_MANAGED` UOW adapterの第1増分をexperimentalとして実装。P0 gate未合格 |
 | 基準環境 | Java 21、Spring Boot 4.1.x、Spring Framework 7.0.x |
 
 ## 1. 目的と範囲
@@ -26,7 +26,7 @@
 アクセスパスやロック性能を再現するものでもない。Web UI は画面セルと操作意味論の互換を目標とし、
 実端末との pixel 単位の同一性を保証しない。
 
-### 1.1 実装状況（2026-09-10）
+### 1.1 実装状況（2026-09-11）
 
 `cobol-cics`を追加し、許可リスト型`CicsTransactionRegistry`、COMMAREA / containerのcopy分離と
 入力上限、`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`のcommand/control、同一thread・同一
@@ -88,9 +88,43 @@ Java例外に変換しない。handlerを省略したHANDLEは既定処置へ戻
 `ResourceLeaseId`をcommit間でpinし、leaseが変われば拒否する。静的inventoryと動的OPENの双方で、
 未承認またはprofile不一致の`WITH HOLD`をUOW開始前に拒否する。
 
-この増分はfake adapterでのV1構造契約であり、Spring Boot 4.1、JDBC、実Db2へまだ接続していない。
-SQLコプロセッサ、host variable descriptor / codec、SQLCA値storage、warning採取、cursor registry、
-Spring-managed adapter、driver-managed lease adapter、実Db2でのcommit後FETCHは未実装である。
+`cobol-spring-boot-4-autoconfigure`の第1増分はSpring Boot 4.1.1を基準に、同一`DataSource`の
+`JdbcTransactionManager` / `DataSourceTransactionManager`を中立`UnitOfWorkPort`へ接続する。
+UOWはprototype beanでtaskごとに生成し、`PROPAGATION_REQUIRES_NEW`、timeout、read-only、
+commit / rollback / cleanup、thread所有を写像する。異なるDataSource、未知のtransaction manager、
+`DB2_DRIVER_MANAGED_HOLD`との混在は開始前に拒否する。H2によるadapter試験でJDBC資源参加と
+外側transactionのsuspend / resumeを確認したが、これは実Db2の適合性証拠ではない。
+
+次の増分で、固定長文字、COMP-3、数字DISPLAY、BINARY、2byte null indicatorを表す中立host variable
+descriptor / codecと、Spring transaction-bound `Connection`を使うSQL executorを追加した。
+`PreparedStatement`の値binding、transaction timeout、`INSERT` / `UPDATE` / `DELETE`、単一行`SELECT`、
+該当なし`+100`、複数行`-811`、全出力検証後の一括storage反映、値非包含のJDBC exception / warning
+chain採取を実装した。UOWとexecutorの`DataSource` identityおよびthread所有もSQL取得前に検査する。
+
+非`WITH HOLD`のforward-only / insensitive / read-only cursorについて、Spring adapter内に
+COBOL session identityとcursor名をキーとするtask-scoped registryを追加した。`OPEN`はSpringの
+transaction-bound connection上にPreparedStatement / ResultSetを保持し、`FETCH`は出力を全項目検証してから
+storageへ反映し、終端を`+100`として値を変更しない。明示`CLOSE`に加え、commit / rollback / task close前に
+UOW登録資源を逆順で閉じる。資源close失敗時はcommitせずrollbackし、主障害とsuppressed causeを保持する。
+Spring経路の`WITH HOLD`はOPEN前に拒否し、native profileとの境界を維持する。sessionだけをtask/UOWより
+先に単独closeした場合の即時cursor closeとCOBOL `CANCEL`連動は未実装であり、通常のtask coordinator経路では
+Db2TaskRuntimeの完了処理を先に行う。
+
+SQLコプロセッサ、VARCHAR group、日付・時刻・LOB、SQLCA値storage、Db2固有diagnostic mapper、
+scroll / sensitive / update / LOB cursorは未実装である。
+`cobol-db2-jdbc`にはSpringへ依存しない専用provider / lease契約とdriver-managed UOW adapterを追加した。
+同じ物理connectionを複数commit間で保持し、`autoCommit=false`、read-only、
+`HOLD_CURSORS_OVER_COMMIT`を検証する。commitでは非hold資源だけ、rollback / task closeでは全資源を閉じ、
+task終了時に取得時属性へresetできた場合だけleaseを`REUSABLE`で返す。commit、rollback、resource close、
+resetの失敗時は`DISCARD`とする。Db2 Community 12.1.5.0とIBM JCC 12.1.4.0による適合性試験で、
+同一JDBC `Connection` object、`HOLD_CURSORS_OVER_COMMIT`、commit後FETCH、rollback時cursor close、
+task終了時connection closeを確認した。コンテナ再起動後にも同じ試験を通した。
+native SQL executorは同じlease上でDML、単一行SELECT、forward-only / read-only cursorを実行し、
+task timeoutをstatement timeoutへ写像する。SQLSTATE class `08`とJDBC resource close失敗ではleaseを
+再利用せず破棄する。中立`SqlPlan`とCOBOL host variableを通る実Db2試験で、
+INSERT / SELECTと`OPEN WITH HOLD` / commit後FETCH / CLOSEを確認した。
+databaseがUOWを暗黙rollbackしたかの判定、接続断・プロセス停止、`-911` / `-913`、SQLWARN各fieldは
+未保証である。この限定試験だけでDb2適合性全体を保証しない。
 
 ## 2. 設計原則
 

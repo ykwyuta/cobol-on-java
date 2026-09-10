@@ -1,11 +1,10 @@
 package dev.cobolonjava.db2;
 
-import dev.cobolonjava.runtime.storage.DataView;
 import java.util.List;
 import java.util.Objects;
 
-/** COBOL storage上のhost variableを順序付きで渡す低レベルbinding。 */
-public record SqlBindings(List<DataView> values) {
+/** 型・方向・null indicatorを伴うhost variableをSQL記載順に渡すbinding。 */
+public record SqlBindings(List<SqlHostVariable> values) {
 
     public static final SqlBindings NONE = new SqlBindings(List.of());
 

@@ -181,6 +181,11 @@ public final class CobolSession implements AutoCloseable {
         return failed;
     }
 
+    /** subsystem adapterが外部資源へ触れる前にsession状態とthread所有を検査する。 */
+    public void verifyUsable() {
+        checkUsable();
+    }
+
     private synchronized void checkUsable() {
         if (closed) {
             throw new CobolSessionStateException("COBOL session is closed");

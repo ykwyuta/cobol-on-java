@@ -60,6 +60,16 @@ CICS 外の Java / バッチ呼び出しは、`CICS_TASK`、`EXPLICIT`、`HOST_M
 JTA/XA adapter、または保証が異なる outbox 等の方針を明示する。複数資源を local transaction だけで
 原子的と表現しない。
 
+## 実装状況（2026-09-11）
+
+`cobol-spring-boot-4-autoconfigure`の第1増分で、同一`DataSource`の
+`JdbcTransactionManager` / `DataSourceTransactionManager`を使う`UnitOfWorkPort`を実装した。
+H2ではJDBC資源参加、明示commit / rollback、cleanup rollback、外側transactionのsuspend / resume、
+rollback-only、timeout / read-only写像を確認済みである。続く増分で同じtransaction-bound connectionを使う
+non-cursor SQL executorと型付きhost variable codecを実装した。さらに非hold・forward-only・read-only
+cursorのOPEN / FETCH / CLOSEとUOW完了時cleanupを実装した。高機能cursor、Db2固有diagnostic mapper、
+実Db2試験は未実装であり、本ADR全体の適合完了を意味しない。
+
 ## 影響
 
 - COBOL と Spring Java コードの Db2 更新を一つの Spring 管理 UOW にできる。

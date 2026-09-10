@@ -37,4 +37,12 @@ public record SqlCaFidelityMatrix(Map<SqlCaField, DiagnosticFidelity> fields) {
         }
         return new SqlCaFidelityMatrix(fields);
     }
+
+    /** result cardinalityからSQLCODEを導出したSELECT結果。 */
+    public static SqlCaFidelityMatrix derivedSqlCode(boolean rowCountAvailable) {
+        EnumMap<SqlCaField, DiagnosticFidelity> fields =
+                new EnumMap<>(basic(rowCountAvailable).fields());
+        fields.put(SqlCaField.SQLCODE, DiagnosticFidelity.DERIVED);
+        return new SqlCaFidelityMatrix(fields);
+    }
 }
