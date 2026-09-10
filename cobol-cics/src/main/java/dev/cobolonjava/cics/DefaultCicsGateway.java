@@ -52,6 +52,7 @@ public final class DefaultCicsGateway implements CicsGateway {
                 syncpoints.syncpoint(syncpoint.action(), task);
                 yield normal(new SyncpointCompletion(syncpoint.action()));
             }
+            case AbendCommand abend -> throw new CicsAbend(task.taskId(), abend);
         };
     }
 

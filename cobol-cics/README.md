@@ -27,9 +27,13 @@ COBOLを実行する入口は、必ず期待versionとownerを指定して`claim
 通常の例外を返したadapterも安全側で`UNKNOWN`相当として扱う。
 
 `cobol-compiler`の初期`EXEC CICS`変換は、静的`PROGRAM` / `TRANSID`、単純データ名の`COMMAREA`、
-正の数値定数`LENGTH`を使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT [ROLLBACK]`だけを対象とする。
+正の数値定数`LENGTH`を使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT [ROLLBACK]`と、静的`ABCODE`、
+`CANCEL`、`NODUMP`を使う`ABEND`だけを対象とする。ABENDはtask ID、正規化済みcode、handler取消し、
+dump要求を持つ`CicsAbend`としてtask boundaryのabortへ渡す。
 未知optionを無視せず翻訳エラーにする。動的target / length、`RESP` / `RESP2`、condition handling、
-channel / container、EIB更新は未対応である。
+channel / container、EIB更新は未対応である。`CANCEL`は記録するが、`HANDLE ABEND`自体が未実装のため
+取消すhandlerはまだ存在しない。`dumpRequested`も後続adapterへ渡す要求情報であり、現増分はtransaction
+dumpの採取・永続化を行わない。
 
 `InMemoryConversationStore`はcluster、process再起動、Spring Session連携、業務Db2との原子commitを
 保証しない。本番用ではない。Spring Boot 4.1の`CicsTaskBoundary` adapter、STRICT会話表、

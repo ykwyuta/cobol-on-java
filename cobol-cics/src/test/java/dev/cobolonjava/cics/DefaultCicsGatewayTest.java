@@ -82,6 +82,43 @@ class DefaultCicsGatewayTest {
     }
 
     @Test
+    @DisplayName("ABENDはtask ID、code、CANCEL、dump方針を持つ構造化異常になる")
+    void terminatesTaskWithStructuredAbend() {
+        try (CobolSession session = emptySession()) {
+            DefaultCicsGateway gateway = gateway(session, (action, task) -> { });
+
+            CicsAbend failure = assertThrows(CicsAbend.class, () -> gateway.execute(
+                    AbendCommand.user(CicsAbendCode.of("B123"), true, true), task()));
+
+            assertEquals(task().taskId(), failure.taskId());
+            assertEquals(CicsAbendCode.of("B123"), failure.code());
+            assertEquals(true, failure.cancelHandlers());
+            assertEquals(false, failure.dumpRequested());
+        }
+    }
+
+    @Test
+    @DisplayName("ABCODE未指定は????かつNODUMP相当として異常終了する")
+    void appliesUnspecifiedAbendDefaults() {
+        try (CobolSession session = emptySession()) {
+            CicsAbend failure = assertThrows(CicsAbend.class, () -> gateway(
+                    session, (action, task) -> { }).execute(
+                            AbendCommand.unspecified(false), task()));
+
+            assertEquals("????", failure.code().value());
+            assertEquals(false, failure.dumpRequested());
+        }
+    }
+
+    @Test
+    @DisplayName("application ABCODEは予約済みA始まりと安全でない文字を拒否する")
+    void rejectsInvalidApplicationAbendCodes() {
+        assertThrows(IllegalArgumentException.class, () -> AbendCommand.user(
+                CicsAbendCode.of("A123"), false, false));
+        assertThrows(IllegalArgumentException.class, () -> CicsAbendCode.of("B 12"));
+    }
+
+    @Test
     @DisplayName("別taskと別threadからのgateway利用を資源アクセス前に拒否する")
     void rejectsWrongTaskAndThread() {
         try (CobolSession session = emptySession()) {

@@ -2,8 +2,10 @@ package dev.cobolonjava.compiler.codegen;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.cobolonjava.cics.CicsAbend;
 import dev.cobolonjava.cics.CicsPayload;
 import dev.cobolonjava.cics.CicsTaskContext;
 import dev.cobolonjava.cics.CicsTaskId;
@@ -99,6 +101,40 @@ class CicsGenerationTest {
         assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
                         diagnostic.message().contains("LENGTH exceeds COMMAREA")),
                 result.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("生成COBOLのABENDはcode、CANCEL、NODUMPをtask異常へ写像する")
+    void executesGeneratedCicsAbend() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "ABENDPGM", List.of(
+                "EXEC CICS ABEND ABCODE('B123') CANCEL NODUMP END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("ABENDPGM", program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("ABENDPGM"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+
+        CicsAbend failure = assertThrows(CicsAbend.class, () -> new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { }));
+
+        assertEquals("B123", failure.code().value());
+        assertEquals(true, failure.cancelHandlers());
+        assertEquals(false, failure.dumpRequested());
+    }
+
+    @Test
+    @DisplayName("ABENDの予約code、動的ABCODE、重複flagを翻訳時に拒否する")
+    void rejectsUnsupportedAbendForms() {
+        assertRejected("EXEC CICS ABEND ABCODE('A123') END-EXEC",
+                "must not start with reserved letter A");
+        assertRejected("EXEC CICS ABEND ABCODE(WS-CODE) END-EXEC",
+                "ABCODE(WS-CODE)");
+        assertRejected("EXEC CICS ABEND CANCEL CANCEL END-EXEC",
+                "duplicate EXEC CICS option");
     }
 
     private static void assertRejected(String command, String expected) {

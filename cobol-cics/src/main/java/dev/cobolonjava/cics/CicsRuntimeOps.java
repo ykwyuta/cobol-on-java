@@ -4,6 +4,7 @@ import dev.cobolonjava.runtime.interop.ProgramId;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
 import java.util.Objects;
+import java.util.Optional;
 
 /** 生成コードがCICS commandへ使う低レベルruntime操作。 */
 public final class CicsRuntimeOps {
@@ -39,6 +40,16 @@ public final class CicsRuntimeOps {
         SyncpointAction action = rollback ? SyncpointAction.ROLLBACK : SyncpointAction.COMMIT;
         CicsCommandOutcome outcome = execution(context).execute(new SyncpointCommand(action));
         requireControl(outcome, SyncpointCompletion.class, "SYNCPOINT");
+    }
+
+    public static void abend(
+            ProgramContext context, String code, boolean cancelHandlers, boolean noDump) {
+        AbendCommand command = code == null
+                ? AbendCommand.unspecified(cancelHandlers)
+                : new AbendCommand(Optional.of(CicsAbendCode.of(code)),
+                        cancelHandlers, noDump);
+        execution(context).execute(command);
+        throw new CicsTaskStateException("ABEND command returned without terminating the task");
     }
 
     private static CicsExecution execution(ProgramContext context) {

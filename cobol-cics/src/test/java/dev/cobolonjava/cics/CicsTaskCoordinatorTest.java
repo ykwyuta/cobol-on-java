@@ -138,6 +138,24 @@ class CicsTaskCoordinatorTest {
     }
 
     @Test
+    @DisplayName("CICS ABENDを構造化原因のままtask boundaryのabortへ渡す")
+    void passesStructuredAbendToBoundaryAbort() {
+        Fixture fixture = fixture((definition, input, task, syncpoints) -> {
+            throw new CicsAbend(task.taskId(),
+                    AbendCommand.user(CicsAbendCode.of("B123"), false, true));
+        });
+
+        CicsAbend failure = assertThrows(CicsAbend.class,
+                () -> fixture.coordinator.launch(
+                        request(Optional.empty(), new byte[0])));
+
+        assertEquals(failure, fixture.boundary.abortCause);
+        assertEquals("B123", failure.code().value());
+        assertEquals(1, fixture.boundary.abortCount);
+        assertTrue(fixture.boundary.commits.isEmpty());
+    }
+
+    @Test
     @DisplayName("明示NOT_COMMITTEDだけabortしUNKNOWNではleaseを保持して自動再実行を防ぐ")
     void distinguishesKnownRollbackFromUnknownCommitOutcome() {
         Fixture notCommitted = fixture(returningNext());
@@ -358,6 +376,7 @@ class CicsTaskCoordinatorTest {
         private RuntimeException commitFailure;
         private RuntimeException abortFailure;
         private RuntimeException closeFailure;
+        private Throwable abortCause;
         private int abortCount;
         private int closeCount;
 
@@ -389,6 +408,7 @@ class CicsTaskCoordinatorTest {
         @Override
         public void abort(Optional<ConversationLease> lease, Throwable failure, Instant now) {
             abortCount++;
+            abortCause = failure;
             if (abortFailure != null) {
                 throw abortFailure;
             }

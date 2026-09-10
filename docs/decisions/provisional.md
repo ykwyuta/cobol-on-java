@@ -2916,15 +2916,19 @@ G-AR4 / G-AR5を合格させる。
 公開境界では閉じたcontrol結果へ変換する。疑似会話はversion / owner / expiry / idempotency keyを持ち、COBOL起動前の
 原子的claimで期限付きleaseを一件だけ取得する。saveはIDとownerを維持して版を一つだけ進める。
 in-memory storeはreference / test用に限定する。コンパイラは静的PROGRAM / TRANSID、単純COMMAREA、
-数値LENGTHに限って`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`を変換し、それ以外は黙って無視せず拒否する。
+数値LENGTHに限った`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`と、静的ABCODE / CANCEL / NODUMPの
+`ABEND`を変換し、それ以外は黙って無視せず拒否する。ABENDは検証済みcodeとdump / cancel方針を持つ
+構造化原因のままtask boundaryへ渡す。
 
 **どこがずれうるか**: `CicsTaskCoordinator`はclaim、program port、RETURN結果、会話mutation、UOW、
 abort、cleanupを順序付けるが、production program portはdeadline / cooperative cancel、EIB、task-local arena、
 condition handlingをまだ実装しない。
 `CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
 commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
-生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH、`RESP` / `RESP2`、
-`HANDLE CONDITION` / `NOHANDLE`、channel / containerを扱わない。静的PROGRAM名の許可catalog照合は実行時である。
+生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH / ABCODE、`RESP` / `RESP2`、
+`HANDLE CONDITION` / `HANDLE ABEND` / `NOHANDLE`、channel / containerを扱わない。ABEND `CANCEL`は
+handler取消し要求として記録するだけである。dump要求も構造化するだけで、transaction dumpの採取、mask、
+保存、保持期限は未実装である。静的PROGRAM名の許可catalog照合は実行時である。
 leaseにはrenewalがなく、task timeoutとlease期限の設定を誤ると実行中に別要求が再claimしうる。
 caller提供の`Instant`はcluster node間の時計ずれを吸収せず、in-memory CASはprocess再起動やclusterで
 共有されない。`load`は排他権を与えず、誤用すると二重実行になる。payload生成後の上限検査だけでは

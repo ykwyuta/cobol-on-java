@@ -48,13 +48,16 @@ TRANSID一致を再検査する。
 
 コンパイラはisland token化した`EXEC CICS`の初期subsetを中立runtime操作へ変換する。対象は静的な
 `PROGRAM('...')` / `TRANSID('...')`、単純データ名`COMMAREA`、正の数値`LENGTH`を持つ`LINK`、`XCTL`、
-`RETURN`、および`SYNCPOINT [ROLLBACK]`である。未知option、重複option、範囲外LENGTH、未定義COMMAREA、
-不正TRANSIDはfail-closedで翻訳を拒否する。生成した3 programを通すLINK→XCTL→SYNCPOINT→RETURNの
-結合試験で、session共有、COMMAREA copy-back、次TRANSIDを固定した。
+`RETURN`、`SYNCPOINT [ROLLBACK]`、および静的`ABCODE` / `CANCEL` / `NODUMP`の`ABEND`である。
+未知option、重複option、範囲外LENGTH、未定義COMMAREA、不正TRANSID / ABCODEはfail-closedで
+翻訳を拒否する。生成した3 programを通すLINK→XCTL→SYNCPOINT→RETURNの結合試験で、session共有、
+COMMAREA copy-back、次TRANSIDを固定した。生成ABENDは検証済みcode、task ID、CANCEL、dump方針を持つ
+`CicsAbend`となり、同じ原因のまま`CicsTaskBoundary.abort`へ渡る。
 
 このCICS増分は中立構造契約である。Spring MVC / Session adapter、lease更新、
 STRICT会話表とNON_ATOMIC outcome journal、EIB、BMS、動的CICS option、RESP / condition handling、
 channel / container、実CICS比較は未実装である。
+ABENDの`CANCEL`は構造化して保持するが、`HANDLE ABEND`を実装するまでは実際のhandler取消しは発生しない。
 `load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
 
 `cobol-db2`を追加し、二つの`Db2ExecutionProfile`、task-scoped `UnitOfWorkPort`、中立`SqlPlan` /

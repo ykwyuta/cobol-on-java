@@ -777,6 +777,18 @@ public final class ProgramGenerator {
                             "(" + CONTEXT + "Z)V", false);
                     return;
                 }
+                case ABEND -> {
+                    if (statement.target() == null) {
+                        run.visitInsn(Opcodes.ACONST_NULL);
+                    } else {
+                        run.visitLdcInsn(statement.target());
+                    }
+                    run.visitInsn(statement.cancel() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                    run.visitInsn(statement.noDump() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "abend",
+                            "(" + CONTEXT + "Ljava/lang/String;ZZ)V", false);
+                    return;
+                }
             }
             if (commarea == null) {
                 run.visitInsn(Opcodes.ACONST_NULL);
@@ -787,7 +799,7 @@ public final class ProgramGenerator {
                 case LINK -> "link";
                 case XCTL -> "xctl";
                 case RETURN -> "returnTask";
-                case SYNCPOINT -> throw new IllegalStateException();
+                case SYNCPOINT, ABEND -> throw new IllegalStateException();
             };
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
                     "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";)V", false);

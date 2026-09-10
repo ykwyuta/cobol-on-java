@@ -23,6 +23,8 @@ public sealed interface Statement {
             DataReference commarea,
             int length,
             boolean rollback,
+            boolean cancel,
+            boolean noDump,
             Origin origin) implements Statement {
     }
 
@@ -30,7 +32,8 @@ public sealed interface Statement {
         LINK,
         XCTL,
         RETURN,
-        SYNCPOINT
+        SYNCPOINT,
+        ABEND
     }
 
     /**

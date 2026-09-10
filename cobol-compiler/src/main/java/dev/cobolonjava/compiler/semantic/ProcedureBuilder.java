@@ -1,5 +1,7 @@
 package dev.cobolonjava.compiler.semantic;
 
+import dev.cobolonjava.cics.AbendCommand;
+import dev.cobolonjava.cics.CicsAbendCode;
 import dev.cobolonjava.cics.TransId;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
@@ -1412,9 +1414,12 @@ public final class ProcedureBuilder {
                 case RETURN -> parsed.target() == null
                         ? null : TransId.of(parsed.target()).value();
                 case SYNCPOINT -> null;
+                case ABEND -> parsed.target() == null ? null
+                        : AbendCommand.user(CicsAbendCode.of(parsed.target()),
+                                parsed.cancel(), parsed.noDump()).effectiveCode().value();
             };
             return new Statement.Cics(parsed.operation(), target, commarea,
-                    parsed.length(), parsed.rollback(), origin);
+                    parsed.length(), parsed.rollback(), parsed.cancel(), parsed.noDump(), origin);
         } catch (IllegalArgumentException invalid) {
             report(origin, invalid.getMessage());
             return null;

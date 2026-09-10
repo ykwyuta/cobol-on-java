@@ -15,14 +15,15 @@ import org.junit.jupiter.api.Test;
 class CicsCommandModelTest {
 
     @Test
-    @DisplayName("LINK、XCTL、RETURN、SYNCPOINTを例外でなく閉じたcommand/controlとして表す")
+    @DisplayName("LINK、XCTL、RETURN、SYNCPOINT、ABENDを閉じたcommand型として表す")
     void exposesClosedCommandAndControlModels() {
         CicsPayload payload = CicsPayload.ofCommarea(new byte[] {1});
         CicsCommand[] commands = {
             new LinkCommand(ProgramId.of("CHILD"), payload),
             new XctlCommand(ProgramId.of("NEXT"), payload),
             ReturnCommand.next(TransId.of("NXT1"), payload),
-            new SyncpointCommand(SyncpointAction.COMMIT)
+            new SyncpointCommand(SyncpointAction.COMMIT),
+            AbendCommand.user(CicsAbendCode.of("B123"), true, false)
         };
         CicsControl[] controls = {
             new ContinueControl(payload),
@@ -31,11 +32,14 @@ class CicsCommandModelTest {
             new SyncpointCompletion(SyncpointAction.COMMIT)
         };
 
-        assertEquals(4, commands.length);
+        assertEquals(5, commands.length);
         assertEquals(4, controls.length);
         assertInstanceOf(ReturnCommand.class, commands[2]);
         assertInstanceOf(TaskCompletion.class, controls[2]);
         assertTrue(ReturnCommand.complete().nextTransaction().isEmpty());
+        AbendCommand abend = assertInstanceOf(AbendCommand.class, commands[4]);
+        assertEquals("B123", abend.effectiveCode().value());
+        assertTrue(abend.dumpRequested());
     }
 
     @Test
