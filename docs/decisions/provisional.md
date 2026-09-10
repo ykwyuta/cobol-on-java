@@ -2917,38 +2917,63 @@ G-AR4 / G-AR5を合格させる。
 原子的claimで期限付きleaseを一件だけ取得する。saveはIDとownerを維持して版を一つだけ進める。
 in-memory storeはreference / test用に限定する。コンパイラは静的PROGRAM / TRANSID、単純COMMAREA、
 数値LENGTHに限った`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`と、静的ABCODE / CANCEL / NODUMPの
-`ABEND`を変換し、それ以外は黙って無視せず拒否する。ABENDは検証済みcodeとdump / cancel方針を持つ
+`ABEND`、4byte英数字領域への`ASSIGN ABCODE`を変換し、それ以外は黙って無視せず拒否する。
+ABENDは検証済みcodeとdump / cancel方針を持つ
 構造化原因のままtask boundaryへ渡す。
 
 **どこがずれうるか**: `CicsTaskCoordinator`はclaim、program port、RETURN結果、会話mutation、UOW、
-abort、cleanupを順序付けるが、production program portはdeadline / cooperative cancel、task-local arena、
-condition handlingをまだ実装しない。
+abort、cleanupを順序付けるが、production program portはdeadline / cooperative cancelとtask-local arenaを
+まだ実装しない。condition handlingは下記の
+PGMIDERR / generalized ERROR初期subsetと、明示ABENDに対するCOBOL LABEL形式のabend exitに限定する。
 `CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
 commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
 生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH / ABCODE、
-`HANDLE CONDITION` / `IGNORE CONDITION` / `HANDLE ABEND`、channel / containerを扱わない。ABEND `CANCEL`は
-handler取消し要求として記録するだけである。dump要求も構造化するだけで、transaction dumpの採取、mask、
+`HANDLE ABEND PROGRAM`、channel / containerを扱わない。`HANDLE ABEND LABEL` / `CANCEL` / `RESET`は
+明示ABENDだけを対象とし、Java例外やCICS内部異常をabend exitへ分類しない。dump要求も構造化するだけで、transaction dumpの採取、mask、
 保存、保持期限は未実装である。静的PROGRAM名の許可catalog照合は実行時である。
 leaseにはrenewalがなく、task timeoutとlease期限の設定を誤ると実行中に別要求が再claimしうる。
 caller提供の`Instant`はcluster node間の時計ずれを吸収せず、in-memory CASはprocess再起動やclusterで
 共有されない。`load`は排他権を与えず、誤用すると二重実行になる。payload生成後の上限検査だけでは
 HTTP body受信時のmemory枯渇を防げない。ownerは安全なbinding値に変換済みであることをadapter側が保証する。
-STRICT原子保存、NON_ATOMIC outcome journal、channel、BMS snapshot、CICS条件処理は未実装である。
+STRICT原子保存、NON_ATOMIC outcome journal、channel、BMS snapshot、CICS条件処理の残りは未実装である。
 
 EIBはIBM DFHEIBLKと同じ85byteのtask-local領域を持ち、初期subsetとして`EIBTRNID`、`EIBCALEN`、
-`EIBRESP`、`EIBRESP2`を暗黙の読み取り専用項目として生成COBOLへ公開する。TRANSIDは実行時code pageで
+`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`を暗黙の読み取り専用項目として生成COBOLへ公開する。TRANSIDは実行時code pageで
 4byteにspace paddingし、CALENは初期COMMAREA長をsigned halfword、RESP / RESP2は各command outcomeを
-signed fullwordで保持する。COBOL文からの書込みは翻訳時に拒否する。未対応fieldはbinary zeroのままである。
+signed fullwordで保持する。完了した対応commandはEIBFNを更新し、プログラム制御群のPGMIDERRは
+6byte EIBRCODEを`01 00 00 00 00 00`とする。サービス群ごとに対応値が違うため未分類RESPは推測せず拒否する。
+COBOL文からの書込みは翻訳時に拒否する。未対応fieldはbinary zeroのままである。
+ABENDコードはEIBRCODEではなく`ASSIGN ABCODE`で取得する。初期subsetは単純データ名の
+4byte英数字受取領域だけを許可する。明示ABENDを捕捉した時点で現在codeをtask-localに記録し、
+handler移送後のASSIGNで右側space paddingした4文字を返す。abend未発生時はspace 4byteを返す。
+完了時は`EIBFN=02 08`、RESP / RESP2はNORMALとし、RESP等の共通optionはまだ受け付けない。
 `EIBAID`、`EIBDATE`、`EIBTIME`、`EIBTASKN`、端末情報は、HTTP taskに対する正しい由来とhost比較vectorが
 未確定のため推測値を設定しない。`ABEND`は正常outcomeを返さず構造化例外で終了するため、そのcommand自体の
 RESP / RESP2更新は行わない。command構文は`RESP`、RESPに付随する`RESP2`、`NOHANDLE`を受け、受取項目を
 4byte binary整数に限定する。RESPまたはNOHANDLE指定時はそのcommandの既定例外処理を抑止し、EIBへ
 結果を反映する。RESPはさらに指定項目へ転記する。どちらもない非normal outcomeは従来どおり
 runtime例外となる。初期condition mappingは
-LINK対象そのものが未登録の場合の`PGMIDERR(27), RESP2=1`だけである。LINK先program内部の未解決CALLは
+LINK / XCTL対象そのものが未登録の場合の`PGMIDERR(27), RESP2=1`である。XCTLは移送元を失う前に
+session固定resolverへ解決可能性をprobeし、標準catalog / legacy resolverではfactory生成、class初期化、
+WORKING-STORAGE割当を行わない。独自resolverの互換defaultは`resolve`を使うため、副作用なしの判定が
+必要なら`isResolvable`をoverrideする。LINK先program内部の未解決CALLや登録済みXCTL先の生成・実行障害は
 PGMIDERRへ丸めず実行障害として維持する。`DFHRESP`は`NORMAL`と`PGMIDERR`だけを翻訳時定数へ変換し、
-それ以外のcondition名を拒否する。`HANDLE CONDITION`、`IGNORE CONDITION`、XCTL先未登録を含む
+それ以外のcondition名を拒否する。`PGMIDERR`とgeneralized `ERROR`の`HANDLE CONDITION`、handler省略による
+既定処置への復帰、`IGNORE CONDITION`を実装する。個別conditionが未登録ならERRORへfallbackするが、
+個別handlerを明示的に省略した状態はERRORより優先してCICS既定処置を選ぶ。一commandには最大16 conditionを
+空白区切りで列挙でき、重複、空リスト、IGNOREのlabelを拒否する。handler tableはCICS LINK levelごとに分離し、LINK先は呼出元の
+handlerを継承しない。RESP / NOHANDLE指定commandは登録済みhandlerを一回だけ迂回する。handler段落への
+移動は生成programの段落state machineへ段落番号を返して行い、Java例外とは区別する。
+`PUSH HANDLE` / `POP HANDLE`は現在のLINK level内でcondition tableとabend exitをLIFO退避・復元し、PUSHから
+POPまでは退避した処置の効果を停止する。退避stackもLINK level間で分離する。対応するPUSHのないPOPは、
+現時点ではCICS conditionへ変換せず実行時に拒否する。
+`HANDLE ABEND LABEL`はowner programと段落番号を一件登録し、`CANCEL`（option省略時も同じ）で無効化、
+`RESET`で再有効化する。明示ABEND時は現在levelから上位へ最初の有効なexitを選び、再入防止のため
+選択時に無効化する。`ABEND CANCEL`は全levelのexitを迂回する。`HANDLE ABEND PROGRAM`は未実装である。
 他conditionの分類は未実装である。
+同じLINK levelの通常COBOL CALLではtableを共有する。別programから登録元programのhandler段落へ戻る
+非局所移送は、runtime中立のowner付き`ProgramTargetTransfer`をCALL境界で伝播し、owner programの
+段落state machineへ戻す。中間program frameは各CALL境界で外し、業務例外やsession failureとは区別する。
 
 **解消条件**: ABEND / condition / EIBを含む生成CICS命令の終了・rollback・cleanup traceを通し、
 実CICS vectorで初期subsetのCOMMAREA長、RESP、制御移送を照合する。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を

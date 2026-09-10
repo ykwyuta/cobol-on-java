@@ -620,6 +620,20 @@ public final class ProcedureBuilder {
         return keyOf(simple, null);
     }
 
+    /** island parserが取り出した修飾なしの手続き名を、一意の呼び名へ直す。 */
+    private String procedureNameOf(String name, Origin origin) {
+        String simple = name.toUpperCase(Locale.ROOT);
+        if (!Boolean.FALSE.equals(uniqueNames.get(simple))) {
+            return keyOf(simple, null);
+        }
+        if (currentSectionName != null
+                && procedureNames.contains(new ProcedureName(simple, currentSectionName))) {
+            return keyOf(simple, currentSectionName);
+        }
+        report(origin, simple + " is ambiguous; qualify it with OF or IN");
+        return keyOf(simple, null);
+    }
+
     /** いま組み立てている節の名前。修飾の無い手続き名がここを先に見る。 */
     private String currentSectionName;
 
@@ -982,6 +996,8 @@ public final class ProcedureBuilder {
                 && cics.operation() == Statement.CicsOperation.LINK
                 && cics.commarea() != null) {
             out.add(cics.commarea());
+        } else if (statement instanceof Statement.CicsAssignAbcode assign) {
+            out.add(assign.target());
         } else if (statement instanceof Statement.Search search && search.varying() != null) {
             out.add(search.varying());
         } else if (statement instanceof Statement.Sequence sequence) {
@@ -1460,6 +1476,47 @@ public final class ProcedureBuilder {
         }
         try {
             CicsBlockParser.Parsed parsed = CicsBlockParser.parse(text);
+            if (parsed.assignAbcodeTarget() != null) {
+                DataReference receiver = resolver.resolveName(parsed.assignAbcodeTarget(), origin);
+                if (receiver == null) {
+                    return null;
+                }
+                if (receiver.constantLength().isEmpty()
+                        || receiver.constantLength().getAsInt() != 4
+                        || !DataCategory.of(receiver).isAlphanumericLike()) {
+                    throw new IllegalArgumentException(
+                            "ASSIGN ABCODE receiver must be a 4-byte alphanumeric data area");
+                }
+                return new Statement.CicsAssignAbcode(receiver, origin);
+            }
+            if (parsed.handleStackAction() != null) {
+                return new Statement.CicsHandleStack(parsed.handleStackAction(), origin);
+            }
+            if (parsed.abendHandlerAction() != null) {
+                String handler = parsed.abendHandlerTarget() == null
+                        ? null : procedureNameOf(parsed.abendHandlerTarget(), origin);
+                return new Statement.CicsAbendHandler(
+                        parsed.abendHandlerAction(), handler, origin);
+            }
+            if (parsed.conditionAction() != null) {
+                for (CicsBlockParser.ConditionSpec condition : parsed.conditions()) {
+                    if (!"PGMIDERR".equals(condition.name())
+                            && !"ERROR".equals(condition.name())) {
+                        throw new IllegalArgumentException(
+                                "initial HANDLE/IGNORE CONDITION support is limited to PGMIDERR and ERROR");
+                    }
+                }
+                List<Statement> conditions = new ArrayList<>();
+                for (CicsBlockParser.ConditionSpec condition : parsed.conditions()) {
+                    int responseCode = CicsResponseCode.handlerKey(condition.name());
+                    String handler = condition.target() == null
+                            ? null : procedureNameOf(condition.target(), origin);
+                    conditions.add(new Statement.CicsCondition(
+                            parsed.conditionAction(), responseCode, handler, origin));
+                }
+                return conditions.size() == 1
+                        ? conditions.get(0) : new Statement.Sequence(conditions, origin);
+            }
             DataReference commarea = parsed.commarea() == null
                     ? null : resolver.resolveName(parsed.commarea().toUpperCase(java.util.Locale.ROOT), origin);
             if (parsed.commarea() != null && commarea == null) {

@@ -52,7 +52,10 @@ class DefaultCicsGatewayTest {
     @Test
     @DisplayName("XCTLとRETURNはprogramを直接起動せずtask coordinator向け制御結果へ変換する")
     void mapsNonReturningControlCommands() {
-        try (CobolSession session = emptySession()) {
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("NEXT", MutatingProgram::new)
+                .build();
+        try (CobolSession session = CobolRuntime.builder(catalog).build().openSession()) {
             DefaultCicsGateway gateway = gateway(session, (action, task) -> { });
             CicsPayload payload = CicsPayload.ofCommarea(new byte[] {1});
 
@@ -179,6 +182,49 @@ class DefaultCicsGatewayTest {
             assertEquals(1, outcome.responseCode2());
             ContinueControl control = assertInstanceOf(ContinueControl.class, outcome.control());
             assertArrayEquals(new byte[] {1, 2}, control.payload().commarea());
+        }
+    }
+
+    @Test
+    @DisplayName("未登録XCTL先を移送前にPGMIDERRとして返す")
+    void mapsMissingXctlTargetToPgmiderrBeforeTransfer() {
+        try (CobolSession session = emptySession()) {
+            CicsPayload payload = CicsPayload.ofCommarea(new byte[] {1, 2});
+
+            CicsCommandOutcome outcome = gateway(session, (action, task) -> { }).execute(
+                    new XctlCommand(ProgramId.of("MISSING"), payload), task());
+
+            assertEquals(CicsResponseCode.PGMIDERR, outcome.responseCode());
+            assertEquals(1, outcome.responseCode2());
+            ContinueControl control = assertInstanceOf(
+                    ContinueControl.class, outcome.control());
+            assertArrayEquals(new byte[] {1, 2}, control.payload().commarea());
+            assertEquals(false, session.failed());
+        }
+    }
+
+    @Test
+    @DisplayName("XCTLの解決probeは登録済みprogramのfactoryを先行実行しない")
+    void doesNotInstantiateXctlTargetWhileProbingAvailability() {
+        int[] creations = {0};
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("TARGET", () -> {
+                    creations[0]++;
+                    throw new ProgramNotFoundException(
+                            "NESTED", new ClassNotFoundException("nested dependency"));
+                })
+                .build();
+        try (CobolSession session = CobolRuntime.builder(catalog).build().openSession()) {
+            DefaultCicsGateway gateway = gateway(session, (action, task) -> { });
+
+            CicsCommandOutcome outcome = gateway.execute(new XctlCommand(
+                    ProgramId.of("TARGET"), CicsPayload.empty()), task());
+
+            assertInstanceOf(TransferControl.class, outcome.control());
+            assertEquals(0, creations[0]);
+            assertThrows(ProgramNotFoundException.class,
+                    () -> session.runMain("TARGET"));
+            assertEquals(1, creations[0]);
         }
     }
 

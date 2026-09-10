@@ -49,19 +49,36 @@ TRANSID一致を再検査する。
 コンパイラはisland token化した`EXEC CICS`の初期subsetを中立runtime操作へ変換する。対象は静的な
 `PROGRAM('...')` / `TRANSID('...')`、単純データ名`COMMAREA`、正の数値`LENGTH`を持つ`LINK`、`XCTL`、
 `RETURN`、`SYNCPOINT [ROLLBACK]`、および静的`ABCODE` / `CANCEL` / `NODUMP`の`ABEND`である。
+abend exit向けに4byte英数字領域を受取側とする`ASSIGN ABCODE`も扱う。
 未知option、重複option、範囲外LENGTH、未定義COMMAREA、不正TRANSID / ABCODEはfail-closedで
 翻訳を拒否する。生成した3 programを通すLINK→XCTL→SYNCPOINT→RETURNの結合試験で、session共有、
 COMMAREA copy-back、次TRANSIDを固定した。生成ABENDは検証済みcode、task ID、CANCEL、dump方針を持つ
 `CicsAbend`となり、同じ原因のまま`CicsTaskBoundary.abort`へ渡る。
 
 このCICS増分は中立構造契約である。Spring MVC / Session adapter、lease更新、
-STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、condition handler table、
+STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、condition handlerの拡張、
 channel / container、実CICS比較は未実装である。
-EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBRESP`、`EIBRESP2`を実装済みである。
+EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`を
+実装済みである。
 `RESP` / `RESP2`は静的な単純データ名と4byte binary受取項目に限定し、`NOHANDLE`はcommand単位の
 既定処理抑止として実装済みであり、
-標準gatewayはLINK対象未登録を`PGMIDERR(27), RESP2=1`として返す。
-ABENDの`CANCEL`は構造化して保持するが、`HANDLE ABEND`を実装するまでは実際のhandler取消しは発生しない。
+標準gatewayはLINK / XCTL対象未登録を`PGMIDERR(27), RESP2=1`として返す。
+`HANDLE CONDITION` / `IGNORE CONDITION`は初期subsetとして`PGMIDERR`とgeneralized `ERROR`を扱い、handler tableを
+CICS LINK levelごとに分離する。handler段落への移動は既存のCOBOL段落state machineへ返す制御結果であり、
+Java例外に変換しない。handlerを省略したHANDLEは既定処置へ戻し、RESP / NOHANDLEは登録済みhandlerも
+そのcommandだけ迂回する。一つのcommandには最大16 conditionを列挙でき、重複は翻訳時に拒否する。
+`HANDLE ABEND`はCOBOL `LABEL`、`CANCEL`（option省略時の既定）、`RESET`を実装し、明示ABEND時に
+現在levelから上位levelへ最初の有効なexitを選ぶ。選択時にexitを無効化して再入を防止し、RESETで
+再有効化する。`ABEND CANCEL`は全levelのexitを無効化してhandlerへ移さず、構造化異常をtask境界へ渡す。
+`PUSH HANDLE`は現在のLINK levelのcondition tableとabend exitをLIFO stackへ退避したうえで現在状態を空にして効果を
+一時停止し、`POP HANDLE`は最後の退避値を復元する。退避stackもLINK levelごとに分離し、対応するPUSHの
+ないPOPは実行時に拒否する。
+完了した対応commandは2byte `EIBFN`を更新する。6byte `EIBRCODE`は現在、プログラム制御群の
+`PGMIDERR`を`01 00 00 00 00 00`へ変換し、NORMAL時は全zeroとする。サービス群で値が異なるため、
+未分類RESPをEIBRESPの下位byteで代用せずfail-closedにする。ABENDコード自体はEIBRCODEではなく
+`ASSIGN ABCODE`の対象である。初期subsetの`ASSIGN ABCODE(data-area)`は4byte英数字受取領域だけを
+許可し、現在codeを右側space paddingして返す。abend未発生時はspace 4byte、完了時のEIBFNは`02 08`である。
+`HANDLE ABEND PROGRAM`、暗黙的なJava例外・CICS内部異常からabend exitへの変換は未実装である。
 `load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
 
 `cobol-db2`を追加し、二つの`Db2ExecutionProfile`、task-scoped `UnitOfWorkPort`、中立`SqlPlan` /
@@ -269,8 +286,38 @@ EIBRESPから指定された4byte binary項目へ転記する。`RESP2(name)`は
 検査する。`RESP`は`NOHANDLE`を暗黙に含むため、両optionは同じruntimeフラグへ正規化する。
 `DFHRESP(condition-name)`はCICS translator組込み構文として扱い、初期subsetでは`NORMAL(0)`と
 `PGMIDERR(27)`を翻訳時の数値定数へ置換する。結果を生成できないcondition名は推測値へ変換せず拒否する。
-初期condition mappingは、標準gatewayが安全に識別できるLINK対象そのものの未登録だけである。
-LINK先へ制御が入ったあとの未解決CALLや業務例外はPGMIDERRへ丸めず、その原因を維持する。
+初期condition mappingは、標準gatewayが安全に識別できるLINK / XCTL対象そのものの未登録である。
+XCTLは移送元programを失う前にsession固定catalogの`ProgramResolver.isResolvable`でprobeする。
+明示catalogとlegacy class resolverはfactory生成、class初期化、WORKING-STORAGE割当を行わずに判定する。
+独自resolverの互換defaultは`resolve`を呼ぶため、副作用なしのprobeが必要なadapterは必ずoverrideする。
+LINK先へ制御が入ったあとの未解決CALLや業務例外、および登録済みXCTL targetの生成・実行障害は
+PGMIDERRへ丸めず、その原因を維持する。
+
+`HANDLE CONDITION PGMIDERR(paragraph)`は現在のCICS LINK levelに登録programと段落番号を記録する。
+LINKで作る新しいlevelは別tableであり、呼出元のhandlerをLINK先へ継承しない。condition発生時はEIBを
+先に更新し、commandにRESP / NOHANDLEがあれば次の文へ、なければIGNORE、handler段落、既定異常処置の
+順に決める。個別conditionの登録がなければgeneralized `ERROR`へfallbackする。
+`HANDLE CONDITION PGMIDERR`のように個別handlerを省略した状態は単なる登録なしと区別し、
+`ERROR` handlerがあってもCICS既定処置を強制する。初期parserは一commandにつき最大16件を空白区切りで
+列挙できる。ただし現在分類できるconditionは`PGMIDERR`と`ERROR`に限り、重複、空リスト、IGNOREのlabel、
+区切りのないoptionをfail-closedで拒否する。
+`PUSH HANDLE` / `POP HANDLE`は同じLINK level内でcondition tableとabend exitをLIFO退避・復元し、PUSHからPOPまで
+退避した処置の効果を停止する。
+LINK時は退避stackも空の新規levelへ切り替えるため、呼出元の退避値をLINK先からPOPできない。
+対応するPUSHのないPOPは、未分類のCICS condition値を推測せず
+`CicsTaskStateException`でfail-closedにする。
+`HANDLE ABEND LABEL(paragraph)`はowner programと段落番号をlevelへ一件登録し、`CANCEL`は無効化、
+`RESET`は再有効化する。明示ABENDを受けると現在levelから上位へ検索し、選択exitを実行前に無効化する。
+同じprogramまたは上位LINK levelのLABELへ既存のowner付き段落移送を使って戻す。`ABEND CANCEL`は
+全levelを迂回する。別programを起動してCOMMAREAを渡す`HANDLE ABEND PROGRAM`と、明示ABEND以外の
+runtime障害をCICS abend codeへ分類する処理は、実CICS比較vectorを追加するまでfail-closedで拒否する。
+明示ABENDを捕捉するとtask-localな現在codeをhandler移送前に記録する。`ASSIGN ABCODE`はそのcodeを
+4文字領域へ返し、まだabendがなければspaceを返す。再ABEND時は新しいcodeで置き換える。
+通常のCOBOL `CALL`は新しいCICS LINK levelを作らないためtableを共有する。別の生成programでconditionが
+発生した場合、登録ownerと段落番号を持つ`ProgramTargetTransfer`をCALL境界だけで伝播する。各境界では
+呼び終えたprogram frameを正常なsubsystem制御として外し、ownerが一致するprogramで段落番号を既存の
+state machineへ返す。これにより中間CALLを重ねても登録元handlerへ戻り、別programの同じ段落番号を
+誤って実行しない。生成classが依存するtransfer型はruntime中立型とし、CICS未使用classへCICS依存を加えない。
 
 BMS マクロは翻訳時に `BmsMapDefinition` へ変換する。実行時の `BmsScreenModel` は mapset / map、
 端末 profile、画面サイズ、field、literal、cursor、send option を持つ。画面表示技術を交換しても
@@ -931,6 +978,9 @@ Session store outage、disk full、spool limit、browser retry を crash point �
 - [IBM Db2 for z/OS: Held and non-held cursors](https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=cursors-held-non-held)
 - [IBM CICS: Synchronization points](https://www.ibm.com/docs/en/cics-ts/6.x?topic=work-synchronization-points)
 - [IBM CICS: RESP and RESP2 options](https://www.ibm.com/docs/en/cics-ts/5.6.0?topic=format-resp-resp2-options)
+- [IBM CICS: Using the HANDLE CONDITION command](https://www.ibm.com/docs/en/cics-ts/6.x?topic=handling-using-handle-condition-command)
+- [IBM CICS: How CICS keeps track of what to do](https://www.ibm.com/docs/en/cics-ts/6.x?topic=handling-how-cics-keeps-track-what-do)
+- [IBM CICS: Rules for calling subprograms](https://www.ibm.com/docs/en/cics-ts/6.x?topic=programs-rules-calling-subprograms)
 - [IBM CICS: EIB fields](https://www.ibm.com/docs/en/cics-ts/6.x?topic=areas-eib-exec-interface-block)
 - [IBM CICS: Defining map fields by using DFHMDF](https://www.ibm.com/docs/en/cics-ts/6.x?topic=map-defining-fields)
 - [IBM CICS: BMS macro DFHMDF](https://www.ibm.com/docs/en/cics-ts/6.x?topic=macros-dfhmdf)

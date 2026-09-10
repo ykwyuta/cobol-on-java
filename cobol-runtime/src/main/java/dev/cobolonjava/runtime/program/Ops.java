@@ -38,6 +38,7 @@ import dev.cobolonjava.runtime.verb.StringVerb;
 import dev.cobolonjava.runtime.verb.UnstringVerb;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import dev.cobolonjava.runtime.verb.Move;
 
 /**
@@ -1508,6 +1509,10 @@ public final class Ops {
             target.program().run(target.storage(), context, arguments);
         } catch (ProgramReturn returned) {
             // 呼ばれた側が戻っただけである
+        } catch (ProgramControlTransfer transfer) {
+            // subsystemの正常な非局所移送。呼ばれた側の入口だけを抜いて呼出元へ伝える
+            context.leave();
+            throw transfer;
         }
         // 異常終了で抜けたときは積まれたまま残す (要件 FR-142)
         context.leave();
@@ -1517,6 +1522,19 @@ public final class Ops {
     public static void call(ProgramContext context, byte[] name, ClassLoader loader,
                             DataView[] arguments) {
         call(context, context.codePage().decode(name).trim(), loader, arguments);
+    }
+
+    /**
+     * CALL先から戻った非局所transferが現在のprogram宛てなら段落番号へ戻す。
+     * さらに外側のprogram宛てなら、そのCALL境界までsignalを伝播する。
+     */
+    public static int resumeTransfer(ProgramContext context, ProgramTargetTransfer transfer) {
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(transfer, "transfer");
+        if (!transfer.ownedBy(context.currentInvocationToken())) {
+            throw transfer;
+        }
+        return transfer.target();
     }
 
     /**

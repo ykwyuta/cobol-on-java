@@ -22,4 +22,16 @@ public final class LegacyClassNameResolver implements ProgramResolver {
             throw new ProgramNotFoundException(id.value(), e);
         }
     }
+
+    /** classを初期化・instantiateせずlegacy生成classの存在と型だけを確認する。 */
+    @Override
+    public boolean isResolvable(ProgramId id, ClassLoader loader) {
+        String className = ProgramSupport.classNameOf(id.value());
+        try {
+            Class<?> type = Class.forName(className, false, loader);
+            return CobolProgram.class.isAssignableFrom(type);
+        } catch (ClassNotFoundException missing) {
+            return false;
+        }
+    }
 }

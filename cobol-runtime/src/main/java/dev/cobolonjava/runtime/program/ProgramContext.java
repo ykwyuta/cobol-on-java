@@ -227,6 +227,26 @@ public final class ProgramContext {
         return Boolean.TRUE.equals(calledFrames.peek());
     }
 
+    /**
+     * 現在のprogram入口を識別する、実行中だけ有効なtokenを返す。
+     *
+     * <p>CICS condition handlerの段落番号が、登録したprogram以外の段落番号として
+     * 誤解釈されるのを防ぐために使う。tokenの型と内容は公開せず、同一性だけを比較すること。
+     */
+    public Object currentInvocationToken() {
+        Object token = externalFrames.peek();
+        if (token == null) {
+            throw new IllegalStateException("no active COBOL program invocation");
+        }
+        return token;
+    }
+
+    /** 現在のresolverでprogramを起動せず解決可能性だけを確認する。 */
+    public boolean isProgramResolvable(String name, ClassLoader loader) {
+        return programResolver.isResolvable(
+                ProgramId.of(name), java.util.Objects.requireNonNull(loader, "loader"));
+    }
+
     // ---- EXTERNAL (要件 FR-014) ----
 
     /** 実行単位で 1 つずつ持つ {@code EXTERNAL} の中身。データ名で引く。 */

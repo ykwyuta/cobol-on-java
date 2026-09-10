@@ -42,6 +42,11 @@ public final class DefaultCicsGateway implements CicsGateway {
             case LinkCommand link -> executeLink(link);
             case XctlCommand xctl -> {
                 definition.validate(xctl.payload());
+                if (!session.isProgramResolvable(xctl.target().value())) {
+                    yield new CicsCommandOutcome(
+                            CicsResponseCode.PGMIDERR, 1,
+                            new ContinueControl(xctl.payload()));
+                }
                 yield normal(new TransferControl(xctl.target(), xctl.payload()));
             }
             case ReturnCommand returned -> {

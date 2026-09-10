@@ -56,6 +56,14 @@ public final class CobolSession implements AutoCloseable {
     }
 
     /**
+     * programを起動せず、このsessionの固定catalog / class loaderで解決できるか確認する。
+     */
+    public boolean isProgramResolvable(String name) {
+        checkUsable();
+        return context.isProgramResolvable(name, classLoader);
+    }
+
+    /**
      * manifestで検証済みの通常SECTIONを合成的なPERFORMとして直接起動する。
      * 対象SECTION自身のhookは通らず、その内側の明示的PERFORMは通常どおりhookを通る。
      */

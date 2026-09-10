@@ -21,6 +21,10 @@ public final class CicsEib {
     public static final int EIBTRNID_LENGTH = 4;
     public static final int EIBCALEN_OFFSET = 0x18;
     public static final int EIBCALEN_LENGTH = 2;
+    public static final int EIBFN_OFFSET = 0x1B;
+    public static final int EIBFN_LENGTH = 2;
+    public static final int EIBRCODE_OFFSET = 0x1D;
+    public static final int EIBRCODE_LENGTH = 6;
     public static final int EIBRESP_OFFSET = 0x4C;
     public static final int EIBRESP_LENGTH = 4;
     public static final int EIBRESP2_OFFSET = 0x50;
@@ -55,6 +59,28 @@ public final class CicsEib {
     public void updateResponse(int responseCode, int responseCode2) {
         putFullword(EIBRESP_OFFSET, responseCode);
         putFullword(EIBRESP2_OFFSET, responseCode2);
+    }
+
+    /** 完了したcommandのfunction codeと、現在分類できる応答表現を一括反映する。 */
+    public void completeCommand(int functionCode, int responseCode, int responseCode2) {
+        if (functionCode < 0 || functionCode > 0xFFFF) {
+            throw new IllegalArgumentException(
+                    "EIBFN must be an unsigned halfword: " + functionCode);
+        }
+        byte[] response = new byte[EIBRCODE_LENGTH];
+        if (responseCode == CicsResponseCode.PGMIDERR) {
+            if ((functionCode & 0xFF00) != 0x0E00) {
+                throw new IllegalArgumentException(
+                        "PGMIDERR EIBRCODE is only classified for program control commands");
+            }
+            response[0] = 0x01;
+        } else if (responseCode != CicsResponseCode.NORMAL) {
+            throw new IllegalArgumentException(
+                    "EIBRCODE mapping is not defined for RESP=" + responseCode);
+        }
+        putHalfword(EIBFN_OFFSET, functionCode);
+        storage.view(EIBRCODE_OFFSET, EIBRCODE_LENGTH).setBytes(response);
+        updateResponse(responseCode, responseCode2);
     }
 
     private void putHalfword(int offset, int value) {

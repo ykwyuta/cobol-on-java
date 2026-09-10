@@ -47,6 +47,15 @@ public final class ProgramCatalog implements ProgramResolver {
         return missing(id);
     }
 
+    /** 明示登録はfactoryを生成せず判定し、fallbackにも同じprobe契約を委譲する。 */
+    @Override
+    public boolean isResolvable(ProgramId id, ClassLoader loader) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(loader, "loader");
+        return definitions.containsKey(id)
+                || (fallback != null && fallback.isResolvable(id, loader));
+    }
+
     @Override
     public ProgramSignature signature(ProgramId id) {
         ProgramDefinition definition = definitions.get(id);

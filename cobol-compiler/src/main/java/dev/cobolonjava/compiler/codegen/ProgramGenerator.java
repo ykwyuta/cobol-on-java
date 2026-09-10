@@ -46,6 +46,7 @@ import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.program.ProgramSupport;
+import dev.cobolonjava.runtime.program.ProgramTargetTransfer;
 import dev.cobolonjava.runtime.procedure.ProcedureBoundary;
 import dev.cobolonjava.runtime.procedure.ProcedureDescriptor;
 import dev.cobolonjava.runtime.procedure.ProcedureId;
@@ -95,6 +96,8 @@ public final class ProgramGenerator {
     private static final String DATA_VIEW = Type.getInternalName(DataView.class);
     private static final String OPS = Type.getInternalName(Ops.class);
     private static final String CICS_OPS = Type.getInternalName(CicsRuntimeOps.class);
+    private static final String PROGRAM_TARGET_TRANSFER =
+            Type.getInternalName(ProgramTargetTransfer.class);
     private static final String STORAGE_MAP = "L" + Type.getInternalName(StorageMap.class) + ";";
     private static final String EXTERNAL_REGION_INTERNAL =
             Type.getInternalName(CobolProgram.ExternalRegion.class);
@@ -748,6 +751,14 @@ public final class ProgramGenerator {
                 continue;
             } else if (statement instanceof Statement.Cics cics) {
                 planCics(cics, body);
+            } else if (statement instanceof Statement.CicsCondition condition) {
+                planCicsCondition(condition, body);
+            } else if (statement instanceof Statement.CicsHandleStack handleStack) {
+                planCicsHandleStack(handleStack, body);
+            } else if (statement instanceof Statement.CicsAbendHandler abendHandler) {
+                planCicsAbendHandler(abendHandler, body);
+            } else if (statement instanceof Statement.CicsAssignAbcode assignAbcode) {
+                planCicsAssignAbcode(assignAbcode, body);
             } else {
                 report(statement.origin(), "statement is not supported by the generator yet");
             }
@@ -775,8 +786,9 @@ public final class ProgramGenerator {
                     run.visitInsn(statement.rollback() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                     run.visitInsn(statement.suppressDefaultHandling()
                             ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
-                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "syncpoint",
-                            "(" + CONTEXT + "ZZ)V", false);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "syncpointCondition",
+                            "(" + CONTEXT + "ZZ)I", false);
+                    emitCicsConditionTransfer();
                     return;
                 }
                 case ABEND -> {
@@ -787,8 +799,9 @@ public final class ProgramGenerator {
                     }
                     run.visitInsn(statement.cancel() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                     run.visitInsn(statement.noDump() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
-                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "abend",
-                            "(" + CONTEXT + "Ljava/lang/String;ZZ)V", false);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "abendCondition",
+                            "(" + CONTEXT + "Ljava/lang/String;ZZ)I", false);
+                    emitCicsConditionTransfer();
                     return;
                 }
             }
@@ -800,13 +813,99 @@ public final class ProgramGenerator {
             run.visitInsn(statement.suppressDefaultHandling()
                     ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             String method = switch (statement.operation()) {
-                case LINK -> "link";
-                case XCTL -> "xctl";
-                case RETURN -> "returnTask";
+                case LINK -> "linkCondition";
+                case XCTL -> "xctlCondition";
+                case RETURN -> "returnTaskCondition";
                 case SYNCPOINT, ABEND -> throw new IllegalStateException();
             };
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
-                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";Z)V", false);
+                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    /** 戻り値が段落番号なら現在の段落methodから返し、-1なら次の文へ進む。 */
+    private void emitCicsConditionTransfer() {
+        Label continues = new Label();
+        run.visitInsn(Opcodes.DUP);
+        run.visitJumpInsn(Opcodes.IFLT, continues);
+        run.visitInsn(Opcodes.IRETURN);
+        run.visitLabel(continues);
+        run.visitInsn(Opcodes.POP);
+    }
+
+    private void planCicsCondition(Statement.CicsCondition statement, List<Runnable> body) {
+        int target = statement.target() == null ? -1 : paragraphNames.indexOf(statement.target());
+        if (statement.target() != null && target < 0) {
+            report(statement.origin(), "undefined CICS condition handler: " + statement.target());
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            push(statement.responseCode());
+            if (statement.action() == Statement.CicsConditionAction.IGNORE) {
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "ignoreCondition",
+                        "(" + CONTEXT + "I)V", false);
+            } else if (statement.target() == null) {
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "resetCondition",
+                        "(" + CONTEXT + "I)V", false);
+            } else {
+                push(target);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "handleCondition",
+                        "(" + CONTEXT + "II)V", false);
+            }
+        });
+    }
+
+    private void planCicsHandleStack(
+            Statement.CicsHandleStack statement, List<Runnable> body) {
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            String method = statement.action() == Statement.CicsHandleStackAction.PUSH
+                    ? "pushHandle" : "popHandle";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
+                    "(" + CONTEXT + ")V", false);
+        });
+    }
+
+    private void planCicsAbendHandler(
+            Statement.CicsAbendHandler statement, List<Runnable> body) {
+        int target = statement.target() == null ? -1 : paragraphNames.indexOf(statement.target());
+        if (statement.target() != null && target < 0) {
+            report(statement.origin(), "undefined CICS abend handler: " + statement.target());
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            String method = switch (statement.action()) {
+                case LABEL -> {
+                    push(target);
+                    yield "handleAbend";
+                }
+                case CANCEL -> "cancelAbendHandler";
+                case RESET -> "resetAbendHandler";
+            };
+            String descriptor = statement.action() == Statement.CicsAbendHandlerAction.LABEL
+                    ? "(" + CONTEXT + "I)V" : "(" + CONTEXT + ")V";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method, descriptor, false);
+        });
+    }
+
+    private void planCicsAssignAbcode(
+            Statement.CicsAssignAbcode statement, List<Runnable> body) {
+        Runnable address = planAddress(statement.target(), statement.origin());
+        OptionalInt length = lengthOf(statement.target(), statement.origin());
+        if (address == null || length.isEmpty() || length.getAsInt() != 4) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            address.run();
+            push(4);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "byReference",
+                    "(L" + STORAGE + ";II)L" + DATA_VIEW + ";", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "assignAbcode",
+                    "(" + CONTEXT + "L" + DATA_VIEW + ";)V", false);
         });
     }
 
@@ -2884,11 +2983,39 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "call", descriptor, false);
         };
 
+        Runnable transferAware = planCallTransfer(invoke);
         if (statement.exception() == null) {
-            body.add(invoke);
+            body.add(transferAware);
             return;
         }
-        planCheckedCall(statement, invoke, body);
+        planCheckedCall(statement, transferAware, body);
+    }
+
+    /**
+     * CALL先を越えて戻るsubsystem制御を、所有programの段落移送へ変換する。
+     * 別の外側program宛てならOpsが同じsignalを投げ直す。
+     */
+    private Runnable planCallTransfer(Runnable invoke) {
+        int transfer = nextLocal++;
+        return () -> {
+            Label start = new Label();
+            Label called = new Label();
+            Label handler = new Label();
+            Label complete = new Label();
+            run.visitTryCatchBlock(start, called, handler, PROGRAM_TARGET_TRANSFER);
+            run.visitLabel(start);
+            invoke.run();
+            run.visitLabel(called);
+            run.visitJumpInsn(Opcodes.GOTO, complete);
+            run.visitLabel(handler);
+            run.visitVarInsn(Opcodes.ASTORE, transfer);
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitVarInsn(Opcodes.ALOAD, transfer);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "resumeTransfer",
+                    "(" + CONTEXT + "L" + PROGRAM_TARGET_TRANSFER + ";)I", false);
+            run.visitInsn(Opcodes.IRETURN);
+            run.visitLabel(complete);
+        };
     }
 
     /**

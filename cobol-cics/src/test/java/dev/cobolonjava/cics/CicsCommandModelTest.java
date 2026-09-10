@@ -59,6 +59,10 @@ class CicsCommandModelTest {
     void resolvesSupportedResponseConditionNames() {
         assertEquals(CicsResponseCode.NORMAL, CicsResponseCode.forCondition("normal"));
         assertEquals(CicsResponseCode.PGMIDERR, CicsResponseCode.forCondition(" PGMIDERR "));
+        assertEquals(CicsResponseCode.ERROR_HANDLER_KEY,
+                CicsResponseCode.handlerKey("error"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CicsResponseCode.forCondition("ERROR"));
         assertThrows(IllegalArgumentException.class,
                 () -> CicsResponseCode.forCondition("NOTFND"));
     }

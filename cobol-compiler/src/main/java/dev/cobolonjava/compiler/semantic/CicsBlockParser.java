@@ -1,7 +1,11 @@
 package dev.cobolonjava.compiler.semantic;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -10,6 +14,20 @@ final class CicsBlockParser {
 
     private static final Pattern BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(LINK|XCTL|RETURN|SYNCPOINT|ABEND)\\b(.*?)END-EXEC\\s*$");
+    private static final Pattern CONDITION_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(HANDLE|IGNORE)\\s+CONDITION\\b"
+                    + "(.*?)END-EXEC\\s*$");
+    private static final Pattern HANDLE_STACK_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(PUSH|POP)\\s+HANDLE\\s*END-EXEC\\s*$");
+    private static final Pattern HANDLE_ABEND_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+HANDLE\\s+ABEND\\b(.*?)END-EXEC\\s*$");
+    private static final Pattern HANDLE_ABEND_LABEL = Pattern.compile(
+            "(?is)^\\s*LABEL\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)\\s*$");
+    private static final Pattern ASSIGN_ABCODE_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+ASSIGN\\s+ABCODE\\s*"
+                    + "\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)\\s*END-EXEC\\s*$");
+    private static final Pattern CONDITION_OPTION = Pattern.compile(
+            "(?is)\\s*([A-Z0-9][A-Z0-9-]*)(?:\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\))?");
     private static final Pattern QUOTED_OPTION = Pattern.compile(
             "(?is)\\b(PROGRAM|TRANSID|ABCODE)\\s*\\(\\s*(['\"])(.*?)\\2\\s*\\)");
     private static final Pattern NAME_OPTION = Pattern.compile(
@@ -26,6 +44,47 @@ final class CicsBlockParser {
 
     static Parsed parse(String source) {
         Objects.requireNonNull(source, "source");
+        Matcher assignAbcode = ASSIGN_ABCODE_BLOCK.matcher(source);
+        if (assignAbcode.matches()) {
+            return new Parsed(null, null, null, -1, null, null,
+                    false, false, false, false, null, List.of(), null, null, null,
+                    assignAbcode.group(1).toUpperCase(Locale.ROOT));
+        }
+        Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
+        if (handleStack.matches()) {
+            Statement.CicsHandleStackAction action = Statement.CicsHandleStackAction.valueOf(
+                    handleStack.group(1).toUpperCase(Locale.ROOT));
+            return new Parsed(null, null, null, -1, null, null,
+                    false, false, false, false, null, List.of(), action, null, null, null);
+        }
+        Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
+        if (handleAbend.matches()) {
+            String option = handleAbend.group(1).strip();
+            Statement.CicsAbendHandlerAction action;
+            String target = null;
+            Matcher label = HANDLE_ABEND_LABEL.matcher(option);
+            if (label.matches()) {
+                action = Statement.CicsAbendHandlerAction.LABEL;
+                target = label.group(1).toUpperCase(Locale.ROOT);
+            } else if (option.isEmpty() || option.equalsIgnoreCase("CANCEL")) {
+                action = Statement.CicsAbendHandlerAction.CANCEL;
+            } else if (option.equalsIgnoreCase("RESET")) {
+                action = Statement.CicsAbendHandlerAction.RESET;
+            } else {
+                throw new IllegalArgumentException(
+                        "initial HANDLE ABEND support accepts LABEL, CANCEL, or RESET");
+            }
+            return new Parsed(null, null, null, -1, null, null,
+                    false, false, false, false, null, List.of(), null, action, target, null);
+        }
+        Matcher condition = CONDITION_BLOCK.matcher(source);
+        if (condition.matches()) {
+            Statement.CicsConditionAction action = Statement.CicsConditionAction.valueOf(
+                    condition.group(1).toUpperCase(Locale.ROOT));
+            List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
+            return new Parsed(null, null, null, -1, null, null,
+                    false, false, false, false, action, conditions, null, null, null, null);
+        }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
             throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
@@ -108,7 +167,52 @@ final class CicsBlockParser {
         };
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
-                noHandle, rollback, cancel, noDump);
+                noHandle, rollback, cancel, noDump, null, List.of(), null, null, null, null);
+    }
+
+    private static List<ConditionSpec> parseConditions(
+            Statement.CicsConditionAction action, String source) {
+        List<ConditionSpec> conditions = new ArrayList<>();
+        Set<String> names = new HashSet<>();
+        Matcher option = CONDITION_OPTION.matcher(source);
+        int position = 0;
+        while (position < source.length()) {
+            if (source.substring(position).isBlank()) {
+                break;
+            }
+            if (position > 0 && !Character.isWhitespace(source.charAt(position))) {
+                throw new IllegalArgumentException(
+                        "CICS conditions must be separated by whitespace");
+            }
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException(
+                        "unsupported or malformed HANDLE/IGNORE CONDITION option: "
+                                + source.substring(position).strip());
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            String target = option.group(2) == null
+                    ? null : option.group(2).toUpperCase(Locale.ROOT);
+            if (!names.add(name)) {
+                throw new IllegalArgumentException(
+                        "duplicate CICS condition in one command: " + name);
+            }
+            if (action == Statement.CicsConditionAction.IGNORE && target != null) {
+                throw new IllegalArgumentException(
+                        "IGNORE CONDITION does not accept a handler paragraph");
+            }
+            conditions.add(new ConditionSpec(name, target));
+            if (conditions.size() > 16) {
+                throw new IllegalArgumentException(
+                        "HANDLE/IGNORE CONDITION accepts no more than 16 conditions");
+            }
+            position = option.end();
+        }
+        if (conditions.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "HANDLE/IGNORE CONDITION requires at least one condition");
+        }
+        return List.copyOf(conditions);
     }
 
     private static void validate(
@@ -201,7 +305,19 @@ final class CicsBlockParser {
             boolean noHandle,
             boolean rollback,
             boolean cancel,
-            boolean noDump) {
+            boolean noDump,
+            Statement.CicsConditionAction conditionAction,
+            List<ConditionSpec> conditions,
+            Statement.CicsHandleStackAction handleStackAction,
+            Statement.CicsAbendHandlerAction abendHandlerAction,
+            String abendHandlerTarget,
+            String assignAbcodeTarget) {
+        Parsed {
+            conditions = List.copyOf(conditions);
+        }
+    }
+
+    record ConditionSpec(String name, String target) {
     }
 
     private record ParsedOption<T>(T value, String remainder) {

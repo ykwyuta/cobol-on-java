@@ -1476,6 +1476,10 @@ public final class DataDivisionBuilder {
                 CicsEib.EIBTRNID_OFFSET));
         registers.put("EIBCALEN", eibItem("EIBCALEN", "S9(4)", Usage.COMP,
                 CicsEib.EIBCALEN_OFFSET));
+        registers.put("EIBFN", eibItem("EIBFN", "X(2)", Usage.DISPLAY,
+                CicsEib.EIBFN_OFFSET));
+        registers.put("EIBRCODE", eibItem("EIBRCODE", "X(6)", Usage.DISPLAY,
+                CicsEib.EIBRCODE_OFFSET));
         registers.put("EIBRESP", eibItem("EIBRESP", "S9(8)", Usage.COMP,
                 CicsEib.EIBRESP_OFFSET));
         registers.put("EIBRESP2", eibItem("EIBRESP2", "S9(8)", Usage.COMP,

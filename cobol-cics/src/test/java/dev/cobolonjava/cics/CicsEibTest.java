@@ -27,6 +27,10 @@ class CicsEibTest {
                 .view(CicsEib.EIBTRNID_OFFSET, CicsEib.EIBTRNID_LENGTH).toByteArray()));
         assertArrayEquals(new byte[] {0x01, 0x02}, eib.storage()
                 .view(CicsEib.EIBCALEN_OFFSET, CicsEib.EIBCALEN_LENGTH).toByteArray());
+        assertArrayEquals(new byte[] {0, 0}, eib.storage()
+                .view(CicsEib.EIBFN_OFFSET, CicsEib.EIBFN_LENGTH).toByteArray());
+        assertArrayEquals(new byte[6], eib.storage()
+                .view(CicsEib.EIBRCODE_OFFSET, CicsEib.EIBRCODE_LENGTH).toByteArray());
         assertEquals(0, fullword(eib, CicsEib.EIBRESP_OFFSET));
         assertEquals(0, fullword(eib, CicsEib.EIBRESP2_OFFSET));
         assertEquals(0, eib.storage().array()[0]);
@@ -41,6 +45,35 @@ class CicsEibTest {
 
         assertEquals(27, fullword(eib, CicsEib.EIBRESP_OFFSET));
         assertEquals(-42, fullword(eib, CicsEib.EIBRESP2_OFFSET));
+    }
+
+    @Test
+    @DisplayName("program controlのPGMIDERRをEIBFNと6byte EIBRCODEへ反映する")
+    void completesProgramControlCommandFields() {
+        CicsEib eib = new CicsEib(task("TX01"), 0, CodePages.IBM_1047);
+
+        eib.completeCommand(0x0E02, CicsResponseCode.PGMIDERR, 1);
+
+        assertArrayEquals(new byte[] {0x0E, 0x02}, eib.storage()
+                .view(CicsEib.EIBFN_OFFSET, CicsEib.EIBFN_LENGTH).toByteArray());
+        assertArrayEquals(new byte[] {0x01, 0, 0, 0, 0, 0}, eib.storage()
+                .view(CicsEib.EIBRCODE_OFFSET, CicsEib.EIBRCODE_LENGTH).toByteArray());
+        assertEquals(27, fullword(eib, CicsEib.EIBRESP_OFFSET));
+        assertEquals(1, fullword(eib, CicsEib.EIBRESP2_OFFSET));
+    }
+
+    @Test
+    @DisplayName("未分類RESPのEIBRCODEを推測せず拒否する")
+    void rejectsUnknownEibrcodeMapping() {
+        CicsEib eib = new CicsEib(task("TX01"), 0, CodePages.IBM_1047);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> eib.completeCommand(0x0E02, 999, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> eib.completeCommand(0x1602, CicsResponseCode.PGMIDERR, 0));
+
+        assertArrayEquals(new byte[] {0, 0}, eib.storage()
+                .view(CicsEib.EIBFN_OFFSET, CicsEib.EIBFN_LENGTH).toByteArray());
     }
 
     @Test
@@ -60,6 +93,34 @@ class CicsEibTest {
         CicsEib eib = execution.eib(context.codePage());
         assertEquals(27, fullword(eib, CicsEib.EIBRESP_OFFSET));
         assertEquals(42, fullword(eib, CicsEib.EIBRESP2_OFFSET));
+        assertArrayEquals(new byte[] {0x0E, 0x02}, eib.storage()
+                .view(CicsEib.EIBFN_OFFSET, CicsEib.EIBFN_LENGTH).toByteArray());
+        assertArrayEquals(new byte[] {0x01, 0, 0, 0, 0, 0}, eib.storage()
+                .view(CicsEib.EIBRCODE_OFFSET, CicsEib.EIBRCODE_LENGTH).toByteArray());
+    }
+
+    @Test
+    @DisplayName("ASSIGN ABCODEは現在codeまたは空白を返してEIBFNを更新する")
+    void assignsCurrentAbendCodeAndUpdatesFunction() {
+        CicsExecution execution = new CicsExecution(task("TX01"), 0);
+        ProgramContext context = ProgramContext.standard().withServices(RuntimeServices.builder()
+                .service(CicsExecution.class, execution)
+                .build());
+        Storage receiver = Storage.allocate(4);
+
+        CicsRuntimeOps.assignAbcode(context, receiver.whole());
+        assertEquals("    ", context.codePage().decode(receiver.array()));
+
+        execution.recordAbend(CicsAbendCode.of("B7"));
+        CicsRuntimeOps.assignAbcode(context, receiver.whole());
+
+        assertEquals("B7  ", context.codePage().decode(receiver.array()));
+        CicsEib eib = execution.eib(context.codePage());
+        assertArrayEquals(new byte[] {0x02, 0x08}, eib.storage()
+                .view(CicsEib.EIBFN_OFFSET, CicsEib.EIBFN_LENGTH).toByteArray());
+        assertEquals(0, fullword(eib, CicsEib.EIBRESP_OFFSET));
+        assertThrows(IllegalArgumentException.class,
+                () -> CicsRuntimeOps.assignAbcode(context, Storage.allocate(3).whole()));
     }
 
     @Test
