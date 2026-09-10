@@ -2911,24 +2911,28 @@ G-AR4 / G-AR5を合格させる。
 
 **暫定の扱い**: 外部TRANSIDは1〜4文字の保守的な許可文字へ正規化し、不変registryからだけ
 初期programを解決する。task定義はCOMMAREA、container件数、単体長、合計長をcommand実行前に検査する。
-`LINK`は同じthreadと`CobolSession`で実行し、`XCTL` / `RETURN` / `SYNCPOINT`はJava例外でなく閉じた
-control結果へ変換する。疑似会話はversion / owner / expiry / idempotency keyを持ち、COBOL起動前の
+`CobolCicsTaskProgram`は一つのsessionで初期programを実行し、`LINK`は同じthreadとsessionで呼び、
+`XCTL`はJava stackを増やさずloopで移送する。`XCTL` / `RETURN`の内部stack unwindはsession failureにせず、
+公開境界では閉じたcontrol結果へ変換する。疑似会話はversion / owner / expiry / idempotency keyを持ち、COBOL起動前の
 原子的claimで期限付きleaseを一件だけ取得する。saveはIDとownerを維持して版を一つだけ進める。
-in-memory storeはreference / test用に限定する。
+in-memory storeはreference / test用に限定する。コンパイラは静的PROGRAM / TRANSID、単純COMMAREA、
+数値LENGTHに限って`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`を変換し、それ以外は黙って無視せず拒否する。
 
 **どこがずれうるか**: `CicsTaskCoordinator`はclaim、program port、RETURN結果、会話mutation、UOW、
-abort、cleanupを順序付けるが、初期programとXCTL loopを実行するproduction program portは未実装である。
+abort、cleanupを順序付けるが、production program portはdeadline / cooperative cancel、EIB、task-local arena、
+condition handlingをまだ実装しない。
 `CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
 commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
-生成COBOLの`EXEC CICS`はまだgatewayを呼ばない。
+生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH、`RESP` / `RESP2`、
+`HANDLE CONDITION` / `NOHANDLE`、channel / containerを扱わない。静的PROGRAM名の許可catalog照合は実行時である。
 leaseにはrenewalがなく、task timeoutとlease期限の設定を誤ると実行中に別要求が再claimしうる。
 caller提供の`Instant`はcluster node間の時計ずれを吸収せず、in-memory CASはprocess再起動やclusterで
 共有されない。`load`は排他権を与えず、誤用すると二重実行になる。payload生成後の上限検査だけでは
 HTTP body受信時のmemory枯渇を防げない。ownerは安全なbinding値に変換済みであることをadapter側が保証する。
 STRICT原子保存、NON_ATOMIC outcome journal、EIBRESP詳細、channel、BMS snapshot、CICS条件処理は未実装である。
 
-**解消条件**: production program portと生成CICS命令を接続し、LINK / XCTL / RETURN / ABEND / SYNCPOINTの
-終了・rollback・cleanup traceを通す。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を
+**解消条件**: ABEND / condition / EIBを含む生成CICS命令の終了・rollback・cleanup traceを通し、
+実CICS vectorで初期subsetのCOMMAREA長、RESP、制御移送を照合する。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を
 実装する。Spring Session JDBCのSTRICT adapterとNON_ATOMIC adapterへ同じ並行・crash・expiry・logout・
 冪等再送contract suiteを適用し、複数instanceで検証する。EIB、BMS snapshot、実CICS比較vectorを追加し、
 G-AR1 / G-AR2 / G-AR3を合格させる。

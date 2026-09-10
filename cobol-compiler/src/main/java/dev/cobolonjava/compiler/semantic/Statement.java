@@ -16,6 +16,23 @@ public sealed interface Statement {
     /** ソース上の位置。 */
     Origin origin();
 
+    /** 専用translatorが解析した最小EXEC CICS command。 */
+    record Cics(
+            CicsOperation operation,
+            String target,
+            DataReference commarea,
+            int length,
+            boolean rollback,
+            Origin origin) implements Statement {
+    }
+
+    enum CicsOperation {
+        LINK,
+        XCTL,
+        RETURN,
+        SYNCPOINT
+    }
+
     /**
      * {@code MOVE} 文。
      *

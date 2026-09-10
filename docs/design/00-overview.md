@@ -24,11 +24,11 @@ Maven のマルチモジュール構成とする。
 | --- | --- | --- |
 | `cobol-runtime` | データ表現・10 進演算・編集移送・文字コード変換・データセットの意味論。**コード生成に一切依存しない** | 第 1 増分 実装済 ([設計 10](10-runtime-p0a.md))。データセットは[設計 80](80-file-io.md) |
 | `cobol-oracle` | Hercules 用テストの生成 (`.tst`) と期待値の採取・照合 | 第 1 増分 実装済 ([設計 20](20-oracle.md))。**V2 検証が稼働中** |
-| `cobol-compiler` | プリプロセッサ、構文解析、意味解析、ASM によるコード生成 | P0-b 着手。固定形式の読み取りと継続処理を実装済 ([設計 30](30-compiler-preprocessor.md)) |
+| `cobol-compiler` | プリプロセッサ、構文解析、意味解析、ASM によるコード生成 | P0-b 着手。固定形式の読み取りと継続処理、初期`EXEC CICS`変換を実装済 ([設計 30](30-compiler-preprocessor.md), [設計 77](77-spring-cics-db2.md)) |
 | `cobol-job` | 内部ジョブモデルと実行機構、記述形式のフロントエンド | 内部モデルと宣言的形式を実装済 ([設計 90](90-job.md)) |
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済 ([設計 25](25-verification.md))。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-junit` | JUnit 5 からの COBOL 実行、fixture、プログラム・SECTION の Mock / spy | program Mock、SECTION Mock/spy、class埋込みmetadata検査、単一deploy catalog読込み、制限付き直接SECTION実行を実装 ([設計 76](76-junit-testing.md)) |
-| `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、LINK gateway、版・lease付き疑似会話storeを実装 ([設計 77](77-spring-cics-db2.md)) |
+| `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、同一sessionのLINK / XCTL / RETURN実行、版・lease付き疑似会話storeを実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-db2` | SQL 計画、ホスト変数、SQLCA、カーソル、UOW ポートのフレームワーク非依存モデル | experimentalなprofile固定、遅延UOW、WITH HOLD方針、SQLCA fidelity行列を実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-autoconfigure` / `starter` | Spring Boot 4.1 の MVC、Session、JDBC、transaction、Actuator を中立ポートへ接続 | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 中立画面を Thymeleaf、terminal JavaScript、固定セル CSS で 3270 互換表示する任意 UI adapter | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
@@ -51,15 +51,16 @@ Spring Boot の更新と別フレームワークへの交換が、生成 COBOL �
 `cobol-cics` の中立 `BmsScreenModel` に維持する。JavaScript は端末操作を補助するが、入力値は
 同じ BMS 規則でサーバ側でも再検証する。
 
-依存の向きは `cobol-compiler` → `cobol-runtime` と `cobol-job` → `cobol-runtime` の
-一方向のみとする。`cobol-verify` は測る側なので `cobol-compiler` に依存するが、
+依存の向きは `cobol-compiler` → `cobol-runtime` / 中立subsystem APIと
+`cobol-job` → `cobol-runtime` の一方向のみとする。`cobol-verify` は測る側なので `cobol-compiler` に依存するが、
 <b>誰からも依存されない</b>葉である。`cobol-runtime` はコンパイラを知らず、`cobol-job` は翻訳系を知らない。
 ジョブ実行が動かすのは<b>翻訳済みのクラス</b>であり、どう翻訳されたかは関わりがない。これは要件 ARC-7 の
 「意味論のバグかコード生成のバグかを切り分けられること」を成立させるための構造的な制約であり、
 `cobol-runtime` から他モジュールへの依存が生じた時点でこの性質は失われる。
 `cobol-junit` はテスト側の葉として `cobol-compiler` と `cobol-runtime` に依存するが、製品モジュールは
 `cobol-junit` および JUnit API に依存しない。
-`cobol-cics` と `cobol-db2` は `cobol-runtime` だけへ依存し、Spring Boot アダプタが両者を実装する。
+`cobol-cics` と `cobol-db2` は `cobol-runtime` だけへ依存し、コンパイラは生成コードの中立命令を
+出すため該当subsystem APIへ依存する。Spring Boot アダプタがその外部portを実装する。
 生成コードおよび中立モジュールは Spring、Servlet、JDBC、特定の接続プールの型へ依存しない。
 
 ## cobol-runtime のパッケージ構成

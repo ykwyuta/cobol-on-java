@@ -9,6 +9,8 @@ Spring、Servlet、Db2 JDBCへ依存しないCICS実行境界のexperimental実�
 - copy-in/copy-outの`CicsPayload`
 - `LINK`、`XCTL`、`RETURN`、`SYNCPOINT`の閉じたcommand/controlモデル
 - 同一thread・同一`CobolSession`で`LINK`する`DefaultCicsGateway`
+- 初期programを起動し、Java stackを増やさず`XCTL`を反復する`CobolCicsTaskProgram`
+- task-scopedな`CicsExecution`を生成COBOLへ渡す型付きruntime service境界
 - version、owner、期限、冪等keyを持つ`ConversationEnvelope`
 - COBOL起動前の排他claimと、lease付きsave/complete/releaseを持つ`ConversationStorePort`
 - claim、program実行、RETURN会話変更、UOW完了、abort、cleanupを順序付ける`CicsTaskCoordinator`
@@ -24,6 +26,11 @@ COBOLを実行する入口は、必ず期待versionとownerを指定して`claim
 `UNKNOWN`ではcoordinatorはrollbackもlease解放も行わず、冪等keyとoutcome journalによる照会へ委ねる。
 通常の例外を返したadapterも安全側で`UNKNOWN`相当として扱う。
 
+`cobol-compiler`の初期`EXEC CICS`変換は、静的`PROGRAM` / `TRANSID`、単純データ名の`COMMAREA`、
+正の数値定数`LENGTH`を使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT [ROLLBACK]`だけを対象とする。
+未知optionを無視せず翻訳エラーにする。動的target / length、`RESP` / `RESP2`、condition handling、
+channel / container、EIB更新は未対応である。
+
 `InMemoryConversationStore`はcluster、process再起動、Spring Session連携、業務Db2との原子commitを
 保証しない。本番用ではない。Spring Boot 4.1の`CicsTaskBoundary` adapter、STRICT会話表、
-NON_ATOMIC outcome journal、lease renewal、EIB、BMS、CICS compiler translationは後続増分である。
+NON_ATOMIC outcome journal、lease renewal、EIB、BMSは後続増分である。

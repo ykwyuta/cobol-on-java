@@ -52,7 +52,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-oracle` | Hercules 用テストの生成と期待値の採取 | 第 1 増分 実装済 |
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
-| `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。`WRITE ... ADVANCING` による行送りを含む。`MOVE`・算術文 (`CORRESPONDING` を含む)・`COMPUTE`・`IF`・`EVALUATE`・`PERFORM` (`VARYING` を含む)・`GO TO`・`CALL`・`INITIALIZE`・`SEARCH` / `SEARCH ALL`・`ACCEPT`・`DISPLAY`・`INSPECT`・`STRING`・`UNSTRING` を含むプログラムが、ソースからクラスファイルまで通って動く |
+| `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
 
 ## ビルド
 

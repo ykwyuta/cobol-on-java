@@ -24,6 +24,7 @@ import dev.cobolonjava.runtime.file.SequentialDataSet;
 import dev.cobolonjava.runtime.interop.LegacyClassNameResolver;
 import dev.cobolonjava.runtime.interop.ProgramId;
 import dev.cobolonjava.runtime.interop.ProgramResolver;
+import dev.cobolonjava.runtime.interop.RuntimeServices;
 import dev.cobolonjava.runtime.procedure.ProcedureBoundary;
 import dev.cobolonjava.runtime.procedure.ProcedureDecision;
 import dev.cobolonjava.runtime.procedure.ProcedureHook;
@@ -66,6 +67,8 @@ public final class ProgramContext {
     private final ProgramResolver programResolver;
     /** 明示的な外部形式PERFORMの境界。通常実行ではNOOPである。 */
     private final ProcedureHook procedureHook;
+    /** CICS / SQL等の任意subsystemをruntimeへ逆依存させずに渡すtask-scoped service。 */
+    private final RuntimeServices services;
     /** hook呼び出しのセッション内通番。 */
     private long procedureSequence;
     /** 日付と時刻の特殊レジスタが見る時計。試験では固定する。 */
@@ -326,7 +329,8 @@ public final class ProgramContext {
                            Charset outputCharset, Map<String, Loaded> loaded, Clock clock,
                            Supplier<String> input, Storage registers,
                            DataSetCatalog catalog, Map<String, DataSet> files,
-                           ProgramResolver programResolver, ProcedureHook procedureHook) {
+                           ProgramResolver programResolver, ProcedureHook procedureHook,
+                           RuntimeServices services) {
         this.codePage = codePage;
         this.out = out;
         this.error = error;
@@ -339,6 +343,7 @@ public final class ProgramContext {
         this.files = files;
         this.programResolver = programResolver;
         this.procedureHook = procedureHook;
+        this.services = java.util.Objects.requireNonNull(services, "services");
     }
 
     /**
@@ -418,27 +423,39 @@ public final class ProgramContext {
      */
     public ProgramContext withOutput(OutputStream value) {
         return new ProgramContext(codePage, value, value, outputCharset, loaded, clock, input,
-                registers, catalog, files, programResolver, procedureHook);
+                registers, catalog, files, programResolver, procedureHook, services);
     }
 
     /** 目録を差し替えた構成を返す。 */
     public ProgramContext withCatalog(DataSetCatalog value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
-                registers, value, files, programResolver, procedureHook);
+                registers, value, files, programResolver, procedureHook, services);
     }
 
     /** プログラム解決境界を差し替えた構成を返す。読み込み済み状態は引き継ぐ。 */
     public ProgramContext withProgramResolver(ProgramResolver value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
                 registers, catalog, files, java.util.Objects.requireNonNull(value, "value"),
-                procedureHook);
+                procedureHook, services);
     }
 
     /** 明示的PERFORMのhookを差し替えた構成を返す。 */
     public ProgramContext withProcedureHook(ProcedureHook value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
                 registers, catalog, files, programResolver,
+                java.util.Objects.requireNonNull(value, "value"), services);
+    }
+
+    /** task-scoped subsystem serviceを差し替えた構成を返す。 */
+    public ProgramContext withServices(RuntimeServices value) {
+        return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, input,
+                registers, catalog, files, programResolver, procedureHook,
                 java.util.Objects.requireNonNull(value, "value"));
+    }
+
+    /** 生成コードが必要とするtask-scoped subsystem serviceを取得する。 */
+    public <T> T service(Class<T> type) {
+        return services.require(type);
     }
 
     /** 生成コードが明示的PERFORMへ入る直前に呼ぶ。 */
@@ -505,7 +522,7 @@ public final class ProgramContext {
                 Charset.defaultCharset(), new HashMap<>(), Clock.systemDefaultZone(),
                 ProgramContext::readStandardInput, Storage.allocate(SpecialRegisterArea.SIZE),
                 DataSetCatalog.standard(), new HashMap<>(), LegacyClassNameResolver.INSTANCE,
-                ProcedureHook.NOOP);
+                ProcedureHook.NOOP, RuntimeServices.EMPTY);
     }
 
     /** 出力を捕まえる構成。試験で使う。 */
@@ -513,7 +530,8 @@ public final class ProgramContext {
         return new ProgramContext(CodePages.DEFAULT, sink, sink, StandardCharsets.UTF_8,
                 new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput,
                 Storage.allocate(SpecialRegisterArea.SIZE), DataSetCatalog.standard(),
-                new HashMap<>(), LegacyClassNameResolver.INSTANCE, ProcedureHook.NOOP);
+                new HashMap<>(), LegacyClassNameResolver.INSTANCE, ProcedureHook.NOOP,
+                RuntimeServices.EMPTY);
     }
 
     /**
@@ -523,7 +541,7 @@ public final class ProgramContext {
      */
     public ProgramContext withCodePage(CodePage value) {
         return new ProgramContext(value, out, error, outputCharset, loaded, clock, input,
-                registers, catalog, files, programResolver, procedureHook);
+                registers, catalog, files, programResolver, procedureHook, services);
     }
 
     /**
@@ -533,13 +551,13 @@ public final class ProgramContext {
      */
     public ProgramContext withClock(Clock value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, value, input,
-                registers, catalog, files, programResolver, procedureHook);
+                registers, catalog, files, programResolver, procedureHook, services);
     }
 
     /** {@code ACCEPT} が読む行の出どころを差し替えた構成を返す。 */
     public ProgramContext withInput(Supplier<String> value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, value,
-                registers, catalog, files, programResolver, procedureHook);
+                registers, catalog, files, programResolver, procedureHook, services);
     }
 
     /** 日付と時刻の特殊レジスタが見る時計。 */

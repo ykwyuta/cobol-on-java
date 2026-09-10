@@ -2,6 +2,7 @@ package dev.cobolonjava.runtime.interop;
 
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
+import dev.cobolonjava.runtime.program.ProgramControlTransfer;
 import dev.cobolonjava.runtime.program.ProgramReturn;
 import dev.cobolonjava.runtime.program.ProgramStop;
 import dev.cobolonjava.runtime.procedure.NonLocalProcedureTransferException;
@@ -101,6 +102,9 @@ public final class CobolSession implements AutoCloseable {
             normalBoundary = true;
             termination = Termination.STOP_RUN;
             terminated = true;
+        } catch (ProgramControlTransfer transfer) {
+            normalBoundary = true;
+            throw transfer;
         } catch (RuntimeException | Error failure) {
             failed = true;
             throw failure;
@@ -135,6 +139,9 @@ public final class CobolSession implements AutoCloseable {
             normalBoundary = true;
             termination = Termination.STOP_RUN;
             terminated = true;
+        } catch (ProgramControlTransfer transfer) {
+            normalBoundary = true;
+            throw transfer;
         } catch (RuntimeException | Error e) {
             failed = true;
             throw e;

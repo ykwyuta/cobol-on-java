@@ -37,13 +37,29 @@ public final class CobolRuntime {
 
     /** 標準入出力を使う実行単位を開く。 */
     public CobolSession openSession() {
-        return new CobolSession(context(ProgramContext.standard()), classLoader, catalog.revision());
+        return openSession(RuntimeServices.EMPTY);
+    }
+
+    /** task固有のsubsystem serviceを持つ実行単位を開く。 */
+    public CobolSession openSession(RuntimeServices services) {
+        Objects.requireNonNull(services, "services");
+        return new CobolSession(context(ProgramContext.standard()).withServices(services),
+                classLoader, catalog.revision());
     }
 
     /** 標準出力と標準エラーを同じ stream へ捕捉する実行単位を開く。 */
     public CobolSession openSession(OutputStream output) {
         Objects.requireNonNull(output, "output");
         return new CobolSession(context(ProgramContext.standard().withOutput(output)),
+                classLoader, catalog.revision());
+    }
+
+    /** 捕捉出力とtask固有subsystem serviceを持つ実行単位を開く。 */
+    public CobolSession openSession(OutputStream output, RuntimeServices services) {
+        Objects.requireNonNull(output, "output");
+        Objects.requireNonNull(services, "services");
+        return new CobolSession(
+                context(ProgramContext.standard().withOutput(output)).withServices(services),
                 classLoader, catalog.revision());
     }
 

@@ -53,6 +53,7 @@ import dev.cobolonjava.runtime.procedure.ProcedureKind;
 import dev.cobolonjava.runtime.procedure.ProcedureManifest;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
+import dev.cobolonjava.cics.CicsRuntimeOps;
 import dev.cobolonjava.runtime.verb.InspectScan;
 import dev.cobolonjava.runtime.verb.Region;
 import dev.cobolonjava.runtime.verb.StringVerb;
@@ -93,6 +94,7 @@ public final class ProgramGenerator {
 
     private static final String DATA_VIEW = Type.getInternalName(DataView.class);
     private static final String OPS = Type.getInternalName(Ops.class);
+    private static final String CICS_OPS = Type.getInternalName(CicsRuntimeOps.class);
     private static final String STORAGE_MAP = "L" + Type.getInternalName(StorageMap.class) + ";";
     private static final String EXTERNAL_REGION_INTERNAL =
             Type.getInternalName(CobolProgram.ExternalRegion.class);
@@ -744,11 +746,78 @@ public final class ProgramGenerator {
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
+            } else if (statement instanceof Statement.Cics cics) {
+                planCics(cics, body);
             } else {
                 report(statement.origin(), "statement is not supported by the generator yet");
             }
         }
         return body;
+    }
+
+    private void planCics(Statement.Cics statement, List<Runnable> body) {
+        Runnable commarea = planCicsCommarea(statement);
+        if (statement.commarea() != null && commarea == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            switch (statement.operation()) {
+                case LINK, XCTL -> run.visitLdcInsn(statement.target());
+                case RETURN -> {
+                    if (statement.target() == null) {
+                        run.visitInsn(Opcodes.ACONST_NULL);
+                    } else {
+                        run.visitLdcInsn(statement.target());
+                    }
+                }
+                case SYNCPOINT -> {
+                    run.visitInsn(statement.rollback() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "syncpoint",
+                            "(" + CONTEXT + "Z)V", false);
+                    return;
+                }
+            }
+            if (commarea == null) {
+                run.visitInsn(Opcodes.ACONST_NULL);
+            } else {
+                commarea.run();
+            }
+            String method = switch (statement.operation()) {
+                case LINK -> "link";
+                case XCTL -> "xctl";
+                case RETURN -> "returnTask";
+                case SYNCPOINT -> throw new IllegalStateException();
+            };
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
+                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";)V", false);
+        });
+    }
+
+    private Runnable planCicsCommarea(Statement.Cics statement) {
+        if (statement.commarea() == null) {
+            return null;
+        }
+        OptionalInt available = lengthOf(statement.commarea(), statement.origin());
+        if (available.isEmpty()) {
+            report(statement.origin(), "EXEC CICS COMMAREA must have a compile-time length");
+            return null;
+        }
+        if (statement.length() > available.getAsInt()) {
+            report(statement.origin(), "EXEC CICS LENGTH exceeds COMMAREA: length="
+                    + statement.length() + ", available=" + available.getAsInt());
+            return null;
+        }
+        Runnable address = planAddress(statement.commarea(), statement.origin());
+        if (address == null) {
+            return null;
+        }
+        return () -> {
+            address.run();
+            push(statement.length());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "byReference",
+                    "(L" + STORAGE + ";II)L" + DATA_VIEW + ";", false);
+        };
     }
 
     /**

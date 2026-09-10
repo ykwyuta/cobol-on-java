@@ -1,5 +1,6 @@
 package dev.cobolonjava.compiler.semantic;
 
+import dev.cobolonjava.cics.TransId;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
@@ -7,6 +8,7 @@ import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.OpenMode;
+import dev.cobolonjava.runtime.interop.ProgramId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -1265,6 +1267,9 @@ public final class ProcedureBuilder {
     }
 
     private Statement builtStatementOf(CobolParser.StatementContext context) {
+        if (context.execStatement() != null) {
+            return cicsOf(context.execStatement());
+        }
         if (context.moveStatement() != null) {
             return moveOf(context.moveStatement());
         }
@@ -1386,6 +1391,34 @@ public final class ProcedureBuilder {
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;
+    }
+
+    private Statement cicsOf(CobolParser.ExecStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String text = context.EXEC_BLOCK().getText();
+        if (!text.regionMatches(true, 0, "EXEC CICS", 0, "EXEC CICS".length())) {
+            report(origin, "EXEC processor is not supported yet");
+            return null;
+        }
+        try {
+            CicsBlockParser.Parsed parsed = CicsBlockParser.parse(text);
+            DataReference commarea = parsed.commarea() == null
+                    ? null : resolver.resolveName(parsed.commarea().toUpperCase(java.util.Locale.ROOT), origin);
+            if (parsed.commarea() != null && commarea == null) {
+                return null;
+            }
+            String target = switch (parsed.operation()) {
+                case LINK, XCTL -> ProgramId.of(parsed.target()).value();
+                case RETURN -> parsed.target() == null
+                        ? null : TransId.of(parsed.target()).value();
+                case SYNCPOINT -> null;
+            };
+            return new Statement.Cics(parsed.operation(), target, commarea,
+                    parsed.length(), parsed.rollback(), origin);
+        } catch (IllegalArgumentException invalid) {
+            report(origin, invalid.getMessage());
+            return null;
+        }
     }
 
     // ---- 報告書の文 (要件 FR-214) ----

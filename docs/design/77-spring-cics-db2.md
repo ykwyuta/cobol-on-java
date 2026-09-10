@@ -41,8 +41,20 @@ save / complete / releaseをport契約へ追加した。単一JVM用reference st
 commit失敗は`NOT_COMMITTED`と`UNKNOWN`を区別し、`UNKNOWN`では危険な自動rollback、lease解放、
 program再実行を行わない。開始前、program失敗、commit失敗、close失敗の各cleanup traceをfakeで固定した。
 
-このCICS増分は中立構造契約である。Spring MVC / Session adapter、実program executor、lease更新、
-STRICT会話表とNON_ATOMIC outcome journal、EIB、BMS、EXEC CICS翻訳、実CICS比較は未実装である。
+`CobolCicsTaskProgram`はtaskごとに一つの`CobolSession`と型付き`RuntimeServices`を生成し、初期programを
+起動して`XCTL`をloopで反復する。`LINK`は同じsessionの通常呼出し、`XCTL` / `RETURN`はsessionを
+失敗状態にしない内部control transferとして外側のtask結果へ戻す。公開実行境界でも入力上限とtask / 定義の
+TRANSID一致を再検査する。
+
+コンパイラはisland token化した`EXEC CICS`の初期subsetを中立runtime操作へ変換する。対象は静的な
+`PROGRAM('...')` / `TRANSID('...')`、単純データ名`COMMAREA`、正の数値`LENGTH`を持つ`LINK`、`XCTL`、
+`RETURN`、および`SYNCPOINT [ROLLBACK]`である。未知option、重複option、範囲外LENGTH、未定義COMMAREA、
+不正TRANSIDはfail-closedで翻訳を拒否する。生成した3 programを通すLINK→XCTL→SYNCPOINT→RETURNの
+結合試験で、session共有、COMMAREA copy-back、次TRANSIDを固定した。
+
+このCICS増分は中立構造契約である。Spring MVC / Session adapter、lease更新、
+STRICT会話表とNON_ATOMIC outcome journal、EIB、BMS、動的CICS option、RESP / condition handling、
+channel / container、実CICS比較は未実装である。
 `load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
 
 `cobol-db2`を追加し、二つの`Db2ExecutionProfile`、task-scoped `UnitOfWorkPort`、中立`SqlPlan` /
@@ -217,8 +229,8 @@ HTTP クライアント切断は COBOL の安全な即時停止と同義では�
 
 | CICS 概念 | Java 上の設計 |
 | --- | --- |
-| `LINK` | `ProgramCatalog` を同一 `CobolSession` で呼ぶ。COMMAREA view は長さ検査後に共有する |
-| `XCTL` | 内部制御結果 `TransferControl` を task coordinator へ返し、呼出スタックを増やさず次 program へ移る |
+| `LINK` | `ProgramCatalog` を同一 `CobolSession` で呼ぶ。COMMAREA は長さ検査後にcopy-in / copy-outし変更を呼出元へ戻す |
+| `XCTL` | 内部制御結果 `TransferControl` をtask program executorへ返し、呼出スタックを増やさず次programへ移る |
 | `RETURN` | `TaskCompletion`。`TRANSID` / COMMAREA / channel があれば次 envelope を生成する |
 | `LOAD` / `RELEASE` | immutable な program catalog の lease。任意 class loading は許可しない |
 | `GETMAIN` / `FREEMAIN` | task-local storage arena。タスク終了で一括解放、use-after-free を診断する |
@@ -227,8 +239,8 @@ HTTP クライアント切断は COBOL の安全な即時停止と同義では�
 | `SYNCPOINT` | `UnitOfWorkPort` の commit / rollback と cursor policy を実行する |
 | file / queue | `CicsFilePort`、`TemporaryStoragePort` 等へ委譲する |
 
-`XCTL` や `RETURN` は通常の Java 例外として利用者コードへ漏らさず、COBOL 制御終了として
-[設計 75](75-java-interop.md)の終了モデルへ統合する。
+`XCTL` や `RETURN` は内部ではstack unwind専用signalを使うが、session failureや通常のJava障害として
+利用者コードへ漏らさず、task program executorでCOBOL制御結果へ変換する。
 
 ### 4.5 EIB と BMS Web UI
 

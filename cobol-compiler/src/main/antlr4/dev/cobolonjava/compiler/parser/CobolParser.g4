@@ -782,7 +782,8 @@ sentence
     ;
 
 statement
-    : moveStatement
+    : execStatement
+    | moveStatement
     | ifStatement
     | evaluateStatement
     | stopStatement
@@ -820,6 +821,11 @@ statement
     | initiateStatement
     | generateStatement
     | terminateStatement
+    ;
+
+// EXECの内部は専用translatorが厳格に解析する。
+execStatement
+    : EXEC_BLOCK
     ;
 
 // ---- 報告書の文 (要件 FR-214) ----
