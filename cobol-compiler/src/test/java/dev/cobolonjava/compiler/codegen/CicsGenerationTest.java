@@ -83,8 +83,6 @@ class CicsGenerationTest {
     void rejectsUnsupportedOptionsAndDynamicTargets() {
         assertRejected("EXEC CICS LINK PROGRAM(WS-PGM) COMMAREA(LK-AREA) LENGTH(4) END-EXEC",
                 "PROGRAM(WS-PGM)");
-        assertRejected("EXEC CICS LINK PROGRAM('CHILD') COMMAREA(LK-AREA) LENGTH(4) NOHANDLE END-EXEC",
-                "unsupported EXEC CICS option");
         assertRejected("EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC",
                 "numeric LENGTH");
         assertRejected("EXEC CICS RETURN TRANSID('TOO-LONG') END-EXEC",
@@ -198,6 +196,88 @@ class CicsGenerationTest {
                         task(), (action, ignored) -> { });
 
         assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("NOHANDLE指定時は非正常結果をEIBへ残して次のCOBOL文へ進む")
+    void suppressesDefaultHandlingWithNohandle() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "NOHMAIN", List.of(
+                "EXEC CICS LINK PROGRAM('MISSING') COMMAREA(LK-AREA) LENGTH(4) NOHANDLE END-EXEC",
+                "IF EIBRESP = DFHRESP(PGMIDERR) AND EIBRESP2 = 1 MOVE 'PASS' TO LK-AREA",
+                "GOBACK"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("NOHMAIN", program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("NOHMAIN"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("DFHRESPの対応condition名を翻訳時のfullword値として利用する")
+    void translatesSupportedDfhrespConditions() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "DFHRMAIN", List.of(
+                "MOVE DFHRESP(PGMIDERR) TO WS-RESP",
+                "IF DFHRESP(NORMAL) = 0 AND WS-RESP = 27 MOVE 'PASS' TO LK-AREA",
+                "GOBACK"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("DFHRMAIN", program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("DFHRMAIN"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("未分類のDFHRESP condition名を推測せず翻訳時に拒否する")
+    void rejectsUnsupportedDfhrespCondition() {
+        assertRejected("IF EIBRESP = DFHRESP(NOTFND) CONTINUE",
+                "unsupported CICS condition name: NOTFND");
+    }
+
+    @Test
+    @DisplayName("宣言済みのDFHRESPという表名は通常のCOBOLデータ項目として優先する")
+    void preservesDeclaredDataItemNamedDfhresp() {
+        List<String> source = List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. DATAITEM.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 DFHRESP PIC S9(8) COMP OCCURS 2 TIMES.",
+                "01 WS-RESP PIC S9(8) COMP.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    MOVE DFHRESP(1) TO WS-RESP.",
+                "    GOBACK.");
+
+        CobolCompiler.Result result = CobolCompiler.standard().compile("DATAITEM.cbl",
+                source.stream().map(line -> "       " + line + "\n")
+                        .reduce("", String::concat));
+
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+    }
+
+    @Test
+    @DisplayName("NOHANDLEの重複指定を翻訳時に拒否する")
+    void rejectsDuplicateNohandle() {
+        assertRejected("EXEC CICS SYNCPOINT NOHANDLE NOHANDLE END-EXEC",
+                "duplicate EXEC CICS option");
     }
 
     @Test

@@ -28,13 +28,17 @@ COBOLを実行する入口は、必ず期待versionとownerを指定して`claim
 
 `cobol-compiler`の初期`EXEC CICS`変換は、静的`PROGRAM` / `TRANSID`、単純データ名の`COMMAREA`、
 正の数値定数`LENGTH`を使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT [ROLLBACK]`と、静的`ABCODE`、
-`CANCEL`、`NODUMP`を使う`ABEND`だけを対象とする。ABENDはtask ID、正規化済みcode、handler取消し、
-dump要求を持つ`CicsAbend`としてtask boundaryのabortへ渡す。
-未知optionを無視せず翻訳エラーにする。動的target / length、`RESP` / `RESP2`、condition handling、
-channel / container、EIB更新は未対応である。`CANCEL`は記録するが、`HANDLE ABEND`自体が未実装のため
-取消すhandlerはまだ存在しない。`dumpRequested`も後続adapterへ渡す要求情報であり、現増分はtransaction
-dumpの採取・永続化を行わない。
+`CANCEL`、`NODUMP`を使う`ABEND`を対象とする。task-local EIBの初期subsetとして`EIBTRNID`、
+`EIBCALEN`、`EIBRESP`、`EIBRESP2`を公開し、コマンド単位の`RESP` / `RESP2` / `NOHANDLE`を扱う。
+`RESP`と`NOHANDLE`は既定処理をそのコマンドだけ抑止し、非正常結果をEIBへ残す。`RESP` / `RESP2`の
+受取項目は4byte binary整数に限定する。`DFHRESP`は現在結果を生成できる`NORMAL`と`PGMIDERR`を
+翻訳時の数値定数へ変換し、未分類のcondition名は拒否する。ABENDはtask ID、正規化済みcode、
+handler取消し、dump要求を持つ`CicsAbend`としてtask boundaryのabortへ渡す。
+未知optionを無視せず翻訳エラーにする。動的target / length、`HANDLE CONDITION` / `IGNORE CONDITION`、
+channel / container、残りのEIB fieldは未対応である。`CANCEL`は記録するが、`HANDLE ABEND`自体が
+未実装のため取消すhandlerはまだ存在しない。`dumpRequested`も後続adapterへ渡す要求情報であり、
+現増分はtransaction dumpの採取・永続化を行わない。
 
 `InMemoryConversationStore`はcluster、process再起動、Spring Session連携、業務Db2との原子commitを
 保証しない。本番用ではない。Spring Boot 4.1の`CicsTaskBoundary` adapter、STRICT会話表、
-NON_ATOMIC outcome journal、lease renewal、EIB、BMSは後続増分である。
+NON_ATOMIC outcome journal、lease renewal、残りのEIB field、BMSは後続増分である。

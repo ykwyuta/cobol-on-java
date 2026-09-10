@@ -2925,8 +2925,8 @@ abort、cleanupを順序付けるが、production program portはdeadline / coop
 condition handlingをまだ実装しない。
 `CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
 commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
-生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH / ABCODE、`RESP` / `RESP2`、
-`HANDLE CONDITION` / `HANDLE ABEND` / `NOHANDLE`、channel / containerを扱わない。ABEND `CANCEL`は
+生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH / ABCODE、
+`HANDLE CONDITION` / `IGNORE CONDITION` / `HANDLE ABEND`、channel / containerを扱わない。ABEND `CANCEL`は
 handler取消し要求として記録するだけである。dump要求も構造化するだけで、transaction dumpの採取、mask、
 保存、保持期限は未実装である。静的PROGRAM名の許可catalog照合は実行時である。
 leaseにはrenewalがなく、task timeoutとlease期限の設定を誤ると実行中に別要求が再claimしうる。
@@ -2941,12 +2941,14 @@ EIBはIBM DFHEIBLKと同じ85byteのtask-local領域を持ち、初期subsetと�
 signed fullwordで保持する。COBOL文からの書込みは翻訳時に拒否する。未対応fieldはbinary zeroのままである。
 `EIBAID`、`EIBDATE`、`EIBTIME`、`EIBTASKN`、端末情報は、HTTP taskに対する正しい由来とhost比較vectorが
 未確定のため推測値を設定しない。`ABEND`は正常outcomeを返さず構造化例外で終了するため、そのcommand自体の
-RESP / RESP2更新は行わない。command構文は`RESP`と、RESPに付随する`RESP2`を受け、受取項目を
-4byte binary整数に限定する。RESP指定時はそのcommandの既定例外処理を抑止し、EIBへ反映した値を
-指定項目へ転記する。RESPなしの非normal outcomeは従来どおりruntime例外となる。初期condition mappingは
+RESP / RESP2更新は行わない。command構文は`RESP`、RESPに付随する`RESP2`、`NOHANDLE`を受け、受取項目を
+4byte binary整数に限定する。RESPまたはNOHANDLE指定時はそのcommandの既定例外処理を抑止し、EIBへ
+結果を反映する。RESPはさらに指定項目へ転記する。どちらもない非normal outcomeは従来どおり
+runtime例外となる。初期condition mappingは
 LINK対象そのものが未登録の場合の`PGMIDERR(27), RESP2=1`だけである。LINK先program内部の未解決CALLは
-PGMIDERRへ丸めず実行障害として維持する。`DFHRESP`組込み関数、`NOHANDLE`、`HANDLE CONDITION`、
-XCTL先未登録を含む他conditionの分類は未実装である。
+PGMIDERRへ丸めず実行障害として維持する。`DFHRESP`は`NORMAL`と`PGMIDERR`だけを翻訳時定数へ変換し、
+それ以外のcondition名を拒否する。`HANDLE CONDITION`、`IGNORE CONDITION`、XCTL先未登録を含む
+他conditionの分類は未実装である。
 
 **解消条件**: ABEND / condition / EIBを含む生成CICS命令の終了・rollback・cleanup traceを通し、
 実CICS vectorで初期subsetのCOMMAREA長、RESP、制御移送を照合する。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を

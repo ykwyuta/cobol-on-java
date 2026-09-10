@@ -2,6 +2,7 @@ package dev.cobolonjava.compiler.semantic;
 
 import dev.cobolonjava.cics.AbendCommand;
 import dev.cobolonjava.cics.CicsAbendCode;
+import dev.cobolonjava.cics.CicsResponseCode;
 import dev.cobolonjava.cics.TransId;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
@@ -1474,8 +1475,8 @@ public final class ProcedureBuilder {
                                 parsed.cancel(), parsed.noDump()).effectiveCode().value();
             };
             Statement.Cics command = new Statement.Cics(parsed.operation(), target, commarea,
-                    parsed.length(), parsed.response() != null, parsed.rollback(), parsed.cancel(),
-                    parsed.noDump(), origin);
+                    parsed.length(), parsed.response() != null || parsed.noHandle(),
+                    parsed.rollback(), parsed.cancel(), parsed.noDump(), origin);
             if (parsed.response() == null) {
                 return command;
             }
@@ -4046,8 +4047,44 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
+        if (isDfhresp(context.identifier())) {
+            return dfhrespOf(context.identifier(), origin);
+        }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
+    }
+
+    /** {@code DFHRESP(condition)}をCICS translatorと同じ翻訳時定数へ落とす。 */
+    private Operand dfhrespOf(CobolParser.IdentifierContext context, Origin origin) {
+        if (context.qualifiedDataName().dataName().size() != 1
+                || context.subscripts() == null
+                || context.subscripts().subscript().size() != 1
+                || context.referenceModifier() != null) {
+            report(origin, "DFHRESP requires exactly one unqualified condition name");
+            return null;
+        }
+        CobolParser.SubscriptContext argument = context.subscripts().subscript(0);
+        if (argument.qualifiedDataName() == null
+                || argument.qualifiedDataName().dataName().size() != 1
+                || argument.relativeOffset() != null) {
+            report(origin, "DFHRESP requires exactly one unqualified condition name");
+            return null;
+        }
+        String condition = argument.qualifiedDataName().dataName(0).getText();
+        try {
+            return new Operand.Literal(numberOf(CicsResponseCode.forCondition(condition)));
+        } catch (IllegalArgumentException unsupported) {
+            report(origin, unsupported.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isDfhresp(CobolParser.IdentifierContext context) {
+        return context != null
+                && context.subscripts() != null
+                && layout.findAll("DFHRESP").isEmpty()
+                && context.qualifiedDataName().dataName(0).getText()
+                        .equalsIgnoreCase("DFHRESP");
     }
 
     /** {@code GIVING} がない形で受取項目になる被演算子。 */
@@ -4256,6 +4293,9 @@ public final class ProcedureBuilder {
                 report(origin, "invalid literal: " + context.literal().getText());
                 return null;
             }
+        }
+        if (isDfhresp(context.identifier())) {
+            return dfhrespOf(context.identifier(), origin);
         }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);

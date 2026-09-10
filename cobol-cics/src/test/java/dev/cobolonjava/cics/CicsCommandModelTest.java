@@ -2,6 +2,7 @@ package dev.cobolonjava.cics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.runtime.interop.ProgramId;
@@ -51,5 +52,14 @@ class CicsCommandModelTest {
 
         assertEquals("TX01", task.transactionId().value());
         assertEquals("tenant:user", task.owner());
+    }
+
+    @Test
+    @DisplayName("DFHRESPは保証済みconditionだけを大文字小文字によらず解決する")
+    void resolvesSupportedResponseConditionNames() {
+        assertEquals(CicsResponseCode.NORMAL, CicsResponseCode.forCondition("normal"));
+        assertEquals(CicsResponseCode.PGMIDERR, CicsResponseCode.forCondition(" PGMIDERR "));
+        assertThrows(IllegalArgumentException.class,
+                () -> CicsResponseCode.forCondition("NOTFND"));
     }
 }

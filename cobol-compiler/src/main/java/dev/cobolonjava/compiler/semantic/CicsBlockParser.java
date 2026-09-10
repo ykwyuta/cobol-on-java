@@ -83,6 +83,8 @@ final class CicsBlockParser {
                 RESP2_OPTION, remainder, matcher -> matcher.group(1));
         remainder = response2.remainder;
 
+        ParsedOption<Boolean> noHandleOption = extractFlag("NOHANDLE", remainder);
+        remainder = noHandleOption.remainder;
         ParsedOption<Boolean> rollbackOption = extractFlag("ROLLBACK", remainder);
         remainder = rollbackOption.remainder;
         ParsedOption<Boolean> cancelOption = extractFlag("CANCEL", remainder);
@@ -92,6 +94,7 @@ final class CicsBlockParser {
         boolean rollback = Boolean.TRUE.equals(rollbackOption.value);
         boolean cancel = Boolean.TRUE.equals(cancelOption.value);
         boolean noDump = Boolean.TRUE.equals(noDumpOption.value);
+        boolean noHandle = Boolean.TRUE.equals(noHandleOption.value);
         if (!remainder.isBlank()) {
             throw new IllegalArgumentException(
                     "unsupported EXEC CICS option: " + remainder.strip());
@@ -105,7 +108,7 @@ final class CicsBlockParser {
         };
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
-                rollback, cancel, noDump);
+                noHandle, rollback, cancel, noDump);
     }
 
     private static void validate(
@@ -195,6 +198,7 @@ final class CicsBlockParser {
             int length,
             String response,
             String response2,
+            boolean noHandle,
             boolean rollback,
             boolean cancel,
             boolean noDump) {

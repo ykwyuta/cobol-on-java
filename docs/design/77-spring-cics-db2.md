@@ -55,10 +55,11 @@ COMMAREA copy-back、次TRANSIDを固定した。生成ABENDは検証済みcode�
 `CicsAbend`となり、同じ原因のまま`CicsTaskBoundary.abort`へ渡る。
 
 このCICS増分は中立構造契約である。Spring MVC / Session adapter、lease更新、
-STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、NOHANDLE / condition handling、
+STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、condition handler table、
 channel / container、実CICS比較は未実装である。
 EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBRESP`、`EIBRESP2`を実装済みである。
-`RESP` / `RESP2`は静的な単純データ名と4byte binary受取項目に限定して実装済みであり、
+`RESP` / `RESP2`は静的な単純データ名と4byte binary受取項目に限定し、`NOHANDLE`はcommand単位の
+既定処理抑止として実装済みであり、
 標準gatewayはLINK対象未登録を`PGMIDERR(27), RESP2=1`として返す。
 ABENDの`CANCEL`は構造化して保持するが、`HANDLE ABEND`を実装するまでは実際のhandler取消しは発生しない。
 `load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
@@ -263,7 +264,11 @@ task番号は対応するportとhost比較vectorを得るまで推測値を設�
 
 `RESP(name)`はcommandの既定例外処理をその一回だけ抑止し、command outcomeをEIBへ設定したあと、
 EIBRESPから指定された4byte binary項目へ転記する。`RESP2(name)`はRESPと同時指定の場合だけ許し、
-同様にEIBRESP2から転記する。RESPなしの既存runtime APIは非normal outcomeで従来どおり失敗する。
+同様にEIBRESP2から転記する。RESPもNOHANDLEもない既存runtime APIは非normal outcomeで従来どおり失敗する。
+`NOHANDLE`も同じ一回限りの抑止を行うが受取項目への転記はせず、プログラムはEIBRESP / EIBRESP2を
+検査する。`RESP`は`NOHANDLE`を暗黙に含むため、両optionは同じruntimeフラグへ正規化する。
+`DFHRESP(condition-name)`はCICS translator組込み構文として扱い、初期subsetでは`NORMAL(0)`と
+`PGMIDERR(27)`を翻訳時の数値定数へ置換する。結果を生成できないcondition名は推測値へ変換せず拒否する。
 初期condition mappingは、標準gatewayが安全に識別できるLINK対象そのものの未登録だけである。
 LINK先へ制御が入ったあとの未解決CALLや業務例外はPGMIDERRへ丸めず、その原因を維持する。
 
