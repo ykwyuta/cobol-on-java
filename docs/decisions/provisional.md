@@ -2941,8 +2941,12 @@ EIBはIBM DFHEIBLKと同じ85byteのtask-local領域を持ち、初期subsetと�
 signed fullwordで保持する。COBOL文からの書込みは翻訳時に拒否する。未対応fieldはbinary zeroのままである。
 `EIBAID`、`EIBDATE`、`EIBTIME`、`EIBTASKN`、端末情報は、HTTP taskに対する正しい由来とhost比較vectorが
 未確定のため推測値を設定しない。`ABEND`は正常outcomeを返さず構造化例外で終了するため、そのcommand自体の
-RESP / RESP2更新は行わない。現command構文は`RESP` / `RESP2` optionをまだ受けず、非normal outcomeは
-EIBへ反映後にruntime例外となる。
+RESP / RESP2更新は行わない。command構文は`RESP`と、RESPに付随する`RESP2`を受け、受取項目を
+4byte binary整数に限定する。RESP指定時はそのcommandの既定例外処理を抑止し、EIBへ反映した値を
+指定項目へ転記する。RESPなしの非normal outcomeは従来どおりruntime例外となる。初期condition mappingは
+LINK対象そのものが未登録の場合の`PGMIDERR(27), RESP2=1`だけである。LINK先program内部の未解決CALLは
+PGMIDERRへ丸めず実行障害として維持する。`DFHRESP`組込み関数、`NOHANDLE`、`HANDLE CONDITION`、
+XCTL先未登録を含む他conditionの分類は未実装である。
 
 **解消条件**: ABEND / condition / EIBを含む生成CICS命令の終了・rollback・cleanup traceを通し、
 実CICS vectorで初期subsetのCOMMAREA長、RESP、制御移送を照合する。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を

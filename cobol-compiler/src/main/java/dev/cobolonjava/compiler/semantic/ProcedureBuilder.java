@@ -11,6 +11,7 @@ import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.interop.ProgramId;
+import dev.cobolonjava.runtime.item.Usage;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -1472,12 +1473,62 @@ public final class ProcedureBuilder {
                         : AbendCommand.user(CicsAbendCode.of(parsed.target()),
                                 parsed.cancel(), parsed.noDump()).effectiveCode().value();
             };
-            return new Statement.Cics(parsed.operation(), target, commarea,
-                    parsed.length(), parsed.rollback(), parsed.cancel(), parsed.noDump(), origin);
+            Statement.Cics command = new Statement.Cics(parsed.operation(), target, commarea,
+                    parsed.length(), parsed.response() != null, parsed.rollback(), parsed.cancel(),
+                    parsed.noDump(), origin);
+            if (parsed.response() == null) {
+                return command;
+            }
+            DataReference response = cicsResponseReceiver(parsed.response(), origin);
+            DataReference response2 = parsed.response2() == null
+                    ? null : cicsResponseReceiver(parsed.response2(), origin);
+            if (response == null || (parsed.response2() != null && response2 == null)) {
+                return null;
+            }
+            List<Statement> statements = new ArrayList<>();
+            statements.add(command);
+            if (!addCicsResponseMove("EIBRESP", response, statements, origin)
+                    || (response2 != null
+                    && !addCicsResponseMove("EIBRESP2", response2, statements, origin))) {
+                return null;
+            }
+            return new Statement.Sequence(statements, origin);
         } catch (IllegalArgumentException invalid) {
             report(origin, invalid.getMessage());
             return null;
         }
+    }
+
+    private DataReference cicsResponseReceiver(String name, Origin origin) {
+        DataReference receiver = resolver.resolveName(name.toUpperCase(Locale.ROOT), origin);
+        if (receiver == null) {
+            return null;
+        }
+        Usage usage = receiver.item().usage() == null ? Usage.DISPLAY : receiver.item().usage();
+        if ((usage != Usage.COMP && usage != Usage.COMP_5)
+                || receiver.item().length() != Integer.BYTES
+                || !DataCategory.of(receiver).isNumeric()) {
+            report(origin, name.toUpperCase(Locale.ROOT)
+                    + " used by RESP or RESP2 must be a 4-byte binary integer");
+            return null;
+        }
+        return receiver;
+    }
+
+    private boolean addCicsResponseMove(
+            String eibName, DataReference receiver, List<Statement> statements, Origin origin) {
+        DataReference source = resolver.resolveName(eibName, origin);
+        if (source == null) {
+            return false;
+        }
+        Statement.Move.Target target = checkMove(
+                new Operand.Reference(source), receiver, origin);
+        if (target == null) {
+            return false;
+        }
+        statements.add(new Statement.Move(
+                new Operand.Reference(source), List.of(target), false, origin));
+        return true;
     }
 
     // ---- 報告書の文 (要件 FR-214) ----

@@ -22,6 +22,7 @@ public sealed interface Statement {
             String target,
             DataReference commarea,
             int length,
+            boolean suppressDefaultHandling,
             boolean rollback,
             boolean cancel,
             boolean noDump,

@@ -11,6 +11,7 @@ import dev.cobolonjava.runtime.interop.ProgramCatalog;
 import dev.cobolonjava.runtime.interop.ProgramId;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
+import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.time.Duration;
@@ -163,6 +164,46 @@ class DefaultCicsGatewayTest {
                     new LinkCommand(ProgramId.of("CHILD"),
                             CicsPayload.ofCommarea(new byte[] {1, 2})), task()));
             assertEquals(0, calls[0]);
+        }
+    }
+
+    @Test
+    @DisplayName("未登録LINK先をPGMIDERRとして返しprogram内部障害と区別する")
+    void mapsMissingLinkTargetToPgmiderr() {
+        try (CobolSession session = emptySession()) {
+            CicsCommandOutcome outcome = gateway(session, (action, task) -> { }).execute(
+                    new LinkCommand(ProgramId.of("MISSING"),
+                            CicsPayload.ofCommarea(new byte[] {1, 2})), task());
+
+            assertEquals(CicsResponseCode.PGMIDERR, outcome.responseCode());
+            assertEquals(1, outcome.responseCode2());
+            ContinueControl control = assertInstanceOf(ContinueControl.class, outcome.control());
+            assertArrayEquals(new byte[] {1, 2}, control.payload().commarea());
+        }
+    }
+
+    @Test
+    @DisplayName("LINK先program内部の未解決CALLをPGMIDERRへ誤変換しない")
+    void preservesFailureRaisedInsideLinkedProgram() {
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("CHILD", () -> new CobolProgram() {
+                    @Override
+                    public byte[] initialStorage() {
+                        return new byte[0];
+                    }
+
+                    @Override
+                    public void run(
+                            Storage storage, ProgramContext context, DataView[] arguments) {
+                        throw new ProgramNotFoundException(
+                                "NESTED", new ClassNotFoundException("nested call"));
+                    }
+                }).build();
+        try (CobolSession session = CobolRuntime.builder(catalog).build().openSession()) {
+            DefaultCicsGateway gateway = gateway(session, (action, task) -> { });
+
+            assertThrows(ProgramNotFoundException.class, () -> gateway.execute(
+                    new LinkCommand(ProgramId.of("CHILD"), CicsPayload.empty()), task()));
         }
     }
 

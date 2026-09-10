@@ -773,8 +773,10 @@ public final class ProgramGenerator {
                 }
                 case SYNCPOINT -> {
                     run.visitInsn(statement.rollback() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                    run.visitInsn(statement.suppressDefaultHandling()
+                            ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "syncpoint",
-                            "(" + CONTEXT + "Z)V", false);
+                            "(" + CONTEXT + "ZZ)V", false);
                     return;
                 }
                 case ABEND -> {
@@ -795,6 +797,8 @@ public final class ProgramGenerator {
             } else {
                 commarea.run();
             }
+            run.visitInsn(statement.suppressDefaultHandling()
+                    ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             String method = switch (statement.operation()) {
                 case LINK -> "link";
                 case XCTL -> "xctl";
@@ -802,7 +806,7 @@ public final class ProgramGenerator {
                 case SYNCPOINT, ABEND -> throw new IllegalStateException();
             };
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
-                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";)V", false);
+                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";Z)V", false);
         });
     }
 

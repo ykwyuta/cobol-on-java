@@ -3,6 +3,7 @@ package dev.cobolonjava.cics;
 import dev.cobolonjava.runtime.interop.CobolCallResult;
 import dev.cobolonjava.runtime.interop.CobolSession;
 import dev.cobolonjava.runtime.interop.Termination;
+import dev.cobolonjava.runtime.program.ProgramNotFoundException;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.util.Objects;
@@ -10,7 +11,7 @@ import java.util.Objects;
 /** 同じ同期threadとCobolSessionでCICS制御commandを解釈する標準gateway。 */
 public final class DefaultCicsGateway implements CicsGateway {
 
-    public static final int NORMAL_RESPONSE = 0;
+    public static final int NORMAL_RESPONSE = CicsResponseCode.NORMAL;
 
     private final CicsTaskContext task;
     private final CicsTransactionDefinition definition;
@@ -60,11 +61,21 @@ public final class DefaultCicsGateway implements CicsGateway {
         definition.validate(link.payload());
         Storage commarea = Storage.copyOf(link.payload().commarea());
         CobolCallResult result;
-        if (commarea.size() == 0) {
-            result = session.call(link.target().value());
-        } else {
-            DataView argument = commarea.whole();
-            result = session.call(link.target().value(), argument);
+        try {
+            if (commarea.size() == 0) {
+                result = session.call(link.target().value());
+            } else {
+                DataView argument = commarea.whole();
+                result = session.call(link.target().value(), argument);
+            }
+        } catch (ProgramNotFoundException missing) {
+            if (session.failed()) {
+                // LINK先へ入ったあとの未解決CALLは、そのprogram自身の実行障害である。
+                // LINK対象が未登録だったPGMIDERRへ丸めてはならない。
+                throw missing;
+            }
+            return new CicsCommandOutcome(
+                    CicsResponseCode.PGMIDERR, 1, new ContinueControl(link.payload()));
         }
         if (result.termination() == Termination.STOP_RUN) {
             throw new CicsTaskStateException(

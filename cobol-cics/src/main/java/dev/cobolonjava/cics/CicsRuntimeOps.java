@@ -14,32 +14,67 @@ public final class CicsRuntimeOps {
     }
 
     public static void link(ProgramContext context, String program, DataView commarea) {
+        link(context, program, commarea, false);
+    }
+
+    public static void link(
+            ProgramContext context, String program, DataView commarea,
+            boolean suppressDefaultHandling) {
         CicsCommandOutcome outcome = execute(context,
                 new LinkCommand(ProgramId.of(program), payload(commarea)));
+        if (handledCondition(outcome, suppressDefaultHandling)) {
+            return;
+        }
         ContinueControl control = requireControl(outcome, ContinueControl.class, "LINK");
         copyBack(commarea, control.payload(), "LINK");
     }
 
     public static void xctl(ProgramContext context, String program, DataView commarea) {
+        xctl(context, program, commarea, false);
+    }
+
+    public static void xctl(
+            ProgramContext context, String program, DataView commarea,
+            boolean suppressDefaultHandling) {
         CicsCommandOutcome outcome = execute(context,
                 new XctlCommand(ProgramId.of(program), payload(commarea)));
+        if (handledCondition(outcome, suppressDefaultHandling)) {
+            return;
+        }
         throw new CicsProgramTransfer(
                 requireControl(outcome, TransferControl.class, "XCTL"));
     }
 
     public static void returnTask(
             ProgramContext context, String nextTransaction, DataView commarea) {
+        returnTask(context, nextTransaction, commarea, false);
+    }
+
+    public static void returnTask(
+            ProgramContext context, String nextTransaction, DataView commarea,
+            boolean suppressDefaultHandling) {
         ReturnCommand command = nextTransaction == null
                 ? new ReturnCommand(java.util.Optional.empty(), payload(commarea))
                 : ReturnCommand.next(TransId.of(nextTransaction), payload(commarea));
         CicsCommandOutcome outcome = execute(context, command);
+        if (handledCondition(outcome, suppressDefaultHandling)) {
+            return;
+        }
         throw new CicsProgramTransfer(
                 requireControl(outcome, TaskCompletion.class, "RETURN"));
     }
 
     public static void syncpoint(ProgramContext context, boolean rollback) {
+        syncpoint(context, rollback, false);
+    }
+
+    public static void syncpoint(
+            ProgramContext context, boolean rollback, boolean suppressDefaultHandling) {
         SyncpointAction action = rollback ? SyncpointAction.ROLLBACK : SyncpointAction.COMMIT;
         CicsCommandOutcome outcome = execute(context, new SyncpointCommand(action));
+        if (handledCondition(outcome, suppressDefaultHandling)) {
+            return;
+        }
         requireControl(outcome, SyncpointCompletion.class, "SYNCPOINT");
     }
 
@@ -72,6 +107,12 @@ public final class CicsRuntimeOps {
         return Objects.requireNonNull(context, "context").service(CicsExecution.class);
     }
 
+    private static boolean handledCondition(
+            CicsCommandOutcome outcome, boolean suppressDefaultHandling) {
+        return suppressDefaultHandling
+                && outcome.responseCode() != CicsResponseCode.NORMAL;
+    }
+
     private static CicsPayload payload(DataView commarea) {
         return commarea == null
                 ? CicsPayload.empty()
@@ -98,7 +139,7 @@ public final class CicsRuntimeOps {
     private static <T extends CicsControl> T requireControl(
             CicsCommandOutcome outcome, Class<T> type, String command) {
         Objects.requireNonNull(outcome, "outcome");
-        if (outcome.responseCode() != DefaultCicsGateway.NORMAL_RESPONSE) {
+        if (outcome.responseCode() != CicsResponseCode.NORMAL) {
             throw new CicsTaskStateException(
                     command + " failed with RESP=" + outcome.responseCode()
                             + " RESP2=" + outcome.responseCode2());

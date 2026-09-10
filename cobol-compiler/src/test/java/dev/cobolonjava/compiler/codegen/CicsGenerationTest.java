@@ -83,7 +83,7 @@ class CicsGenerationTest {
     void rejectsUnsupportedOptionsAndDynamicTargets() {
         assertRejected("EXEC CICS LINK PROGRAM(WS-PGM) COMMAREA(LK-AREA) LENGTH(4) END-EXEC",
                 "PROGRAM(WS-PGM)");
-        assertRejected("EXEC CICS LINK PROGRAM('CHILD') COMMAREA(LK-AREA) LENGTH(4) RESP(WS-RESP) END-EXEC",
+        assertRejected("EXEC CICS LINK PROGRAM('CHILD') COMMAREA(LK-AREA) LENGTH(4) NOHANDLE END-EXEC",
                 "unsupported EXEC CICS option");
         assertRejected("EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC",
                 "numeric LENGTH");
@@ -142,8 +142,11 @@ class CicsGenerationTest {
     void readsImplicitEibFields() {
         GeneratedLoader loader = new GeneratedLoader();
         Supplier<CobolProgram> main = compile(loader, "EIBMAIN", List.of(
-                "EXEC CICS LINK PROGRAM('EIBCHILD') COMMAREA(LK-AREA) LENGTH(4) END-EXEC",
+                "MOVE 99 TO WS-RESP WS-RESP2",
+                "EXEC CICS LINK PROGRAM('EIBCHILD') COMMAREA(LK-AREA) LENGTH(4) "
+                        + "RESP(WS-RESP) RESP2(WS-RESP2) END-EXEC",
                 "IF EIBCALEN = 4 AND EIBRESP = 0 AND EIBRESP2 = 0 "
+                        + "AND WS-RESP = 0 AND WS-RESP2 = 0 "
                         + "MOVE EIBTRNID TO LK-AREA",
                 "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) LENGTH(4) END-EXEC"));
         Supplier<CobolProgram> child = compile(loader, "EIBCHILD", List.of("GOBACK"));
@@ -173,6 +176,41 @@ class CicsGenerationTest {
                 + "LENGTH(4) END-EXEC", "EIBTRNID is read-only");
     }
 
+    @Test
+    @DisplayName("RESP指定時は非正常結果をfullword項目へ返してCOBOL処理を継続する")
+    void returnsHandledResponseToCobolFields() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "RESPMAIN", List.of(
+                "EXEC CICS LINK PROGRAM('MISSING') COMMAREA(LK-AREA) LENGTH(4) "
+                        + "RESP(WS-RESP) RESP2(WS-RESP2) END-EXEC",
+                "IF WS-RESP = 27 AND WS-RESP2 = 1 MOVE 'PASS' TO LK-AREA",
+                "GOBACK"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("RESPMAIN", program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("RESPMAIN"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("RESP2単独指定とfullword binaryでない受取項目を拒否する")
+    void rejectsInvalidResponseOptions() {
+        assertRejected("EXEC CICS SYNCPOINT RESP2(WS-RESP2) END-EXEC",
+                "RESP2 requires RESP");
+        assertRejected("EXEC CICS SYNCPOINT RESP(LK-AREA) END-EXEC",
+                "must be a 4-byte binary integer");
+        assertRejected("EXEC CICS SYNCPOINT RESP(EIBRESP) END-EXEC",
+                "EIBRESP is read-only");
+    }
+
     private static void assertRejected(String command, String expected) {
         CobolCompiler.Result result = compileResult("REJECT", List.of(command));
         assertFalse(result.succeeded());
@@ -200,6 +238,9 @@ class CicsGenerationTest {
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. " + programId + ".",
                 "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-RESP PIC S9(8) COMP.",
+                "01 WS-RESP2 PIC S9(8) COMP.",
                 "LINKAGE SECTION.",
                 "01 LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.",

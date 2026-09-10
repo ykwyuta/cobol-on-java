@@ -16,6 +16,10 @@ final class CicsBlockParser {
             "(?is)\\bCOMMAREA\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
     private static final Pattern LENGTH_OPTION = Pattern.compile(
             "(?is)\\bLENGTH\\s*\\(\\s*(\\d+)\\s*\\)");
+    private static final Pattern RESP_OPTION = Pattern.compile(
+            "(?is)\\bRESP\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
+    private static final Pattern RESP2_OPTION = Pattern.compile(
+            "(?is)\\bRESP2\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
 
     private CicsBlockParser() {
     }
@@ -72,6 +76,12 @@ final class CicsBlockParser {
         ParsedOption<Integer> length = extractOne(
                 LENGTH_OPTION, remainder, matcher -> parseLength(matcher.group(1)));
         remainder = length.remainder;
+        ParsedOption<String> response = extractOne(
+                RESP_OPTION, remainder, matcher -> matcher.group(1));
+        remainder = response.remainder;
+        ParsedOption<String> response2 = extractOne(
+                RESP2_OPTION, remainder, matcher -> matcher.group(1));
+        remainder = response2.remainder;
 
         ParsedOption<Boolean> rollbackOption = extractFlag("ROLLBACK", remainder);
         remainder = rollbackOption.remainder;
@@ -87,19 +97,21 @@ final class CicsBlockParser {
                     "unsupported EXEC CICS option: " + remainder.strip());
         }
         validate(operation, program, transId, abendCode, commarea.value, length.value,
-                rollback, cancel, noDump);
+                response.value, response2.value, rollback, cancel, noDump);
         String target = switch (operation) {
             case RETURN -> transId;
             case ABEND -> abendCode;
             default -> program;
         };
         return new Parsed(operation, target, commarea.value,
-                length.value == null ? -1 : length.value, rollback, cancel, noDump);
+                length.value == null ? -1 : length.value, response.value, response2.value,
+                rollback, cancel, noDump);
     }
 
     private static void validate(
             Statement.CicsOperation operation, String program, String transId, String abendCode,
-            String commarea, Integer length, boolean rollback, boolean cancel, boolean noDump) {
+            String commarea, Integer length, String response, String response2,
+            boolean rollback, boolean cancel, boolean noDump) {
         if ((operation == Statement.CicsOperation.LINK
                 || operation == Statement.CicsOperation.XCTL) && program == null) {
             throw new IllegalArgumentException(operation + " requires static PROGRAM('name')");
@@ -137,6 +149,9 @@ final class CicsBlockParser {
         if (operation == Statement.CicsOperation.RETURN
                 && commarea != null && transId == null) {
             throw new IllegalArgumentException("RETURN COMMAREA requires TRANSID");
+        }
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
         }
     }
 
@@ -178,6 +193,8 @@ final class CicsBlockParser {
             String target,
             String commarea,
             int length,
+            String response,
+            String response2,
             boolean rollback,
             boolean cancel,
             boolean noDump) {

@@ -28,7 +28,7 @@ Maven のマルチモジュール構成とする。
 | `cobol-job` | 内部ジョブモデルと実行機構、記述形式のフロントエンド | 内部モデルと宣言的形式を実装済 ([設計 90](90-job.md)) |
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済 ([設計 25](25-verification.md))。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-junit` | JUnit 5 からの COBOL 実行、fixture、プログラム・SECTION の Mock / spy | program Mock、SECTION Mock/spy、class埋込みmetadata検査、単一deploy catalog読込み、制限付き直接SECTION実行を実装 ([設計 76](76-junit-testing.md)) |
-| `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、同一sessionのLINK / XCTL / RETURN実行、版・lease付き疑似会話store、初期EIB fieldを実装 ([設計 77](77-spring-cics-db2.md)) |
+| `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、同一sessionのLINK / XCTL / RETURN実行、版・lease付き疑似会話store、初期EIB field、RESP / RESP2を実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-db2` | SQL 計画、ホスト変数、SQLCA、カーソル、UOW ポートのフレームワーク非依存モデル | experimentalなprofile固定、遅延UOW、WITH HOLD方針、SQLCA fidelity行列を実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-autoconfigure` / `starter` | Spring Boot 4.1 の MVC、Session、JDBC、transaction、Actuator を中立ポートへ接続 | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 中立画面を Thymeleaf、terminal JavaScript、固定セル CSS で 3270 互換表示する任意 UI adapter | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |

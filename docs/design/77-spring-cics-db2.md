@@ -55,9 +55,11 @@ COMMAREA copy-back、次TRANSIDを固定した。生成ABENDは検証済みcode�
 `CicsAbend`となり、同じ原因のまま`CicsTaskBoundary.abort`へ渡る。
 
 このCICS増分は中立構造契約である。Spring MVC / Session adapter、lease更新、
-STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、RESP / condition handling、
+STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、NOHANDLE / condition handling、
 channel / container、実CICS比較は未実装である。
 EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBRESP`、`EIBRESP2`を実装済みである。
+`RESP` / `RESP2`は静的な単純データ名と4byte binary受取項目に限定して実装済みであり、
+標準gatewayはLINK対象未登録を`PGMIDERR(27), RESP2=1`として返す。
 ABENDの`CANCEL`は構造化して保持するが、`HANDLE ABEND`を実装するまでは実際のhandler取消しは発生しない。
 `load`は観測用でありtask実行には必ず`claim`を使う。in-memory storeを本番・cluster構成に使わない。
 
@@ -258,6 +260,12 @@ EIB は task ごとの固定レイアウト storage として生成する。サ�
 これらはCOBOLから読み取り専用であり、受取側に指定した文は翻訳時に拒否する。command outcomeは
 制御結果を解釈する前にRESP / RESP2へ反映する。未対応fieldはbinary zeroとし、AID、日時、端末、
 task番号は対応するportとhost比較vectorを得るまで推測値を設定しない。
+
+`RESP(name)`はcommandの既定例外処理をその一回だけ抑止し、command outcomeをEIBへ設定したあと、
+EIBRESPから指定された4byte binary項目へ転記する。`RESP2(name)`はRESPと同時指定の場合だけ許し、
+同様にEIBRESP2から転記する。RESPなしの既存runtime APIは非normal outcomeで従来どおり失敗する。
+初期condition mappingは、標準gatewayが安全に識別できるLINK対象そのものの未登録だけである。
+LINK先へ制御が入ったあとの未解決CALLや業務例外はPGMIDERRへ丸めず、その原因を維持する。
 
 BMS マクロは翻訳時に `BmsMapDefinition` へ変換する。実行時の `BmsScreenModel` は mapset / map、
 端末 profile、画面サイズ、field、literal、cursor、send option を持つ。画面表示技術を交換しても
@@ -917,6 +925,8 @@ Session store outage、disk full、spool limit、browser retry を crash point �
 - [IBM Db2 for z/OS: SQLCA fields](https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=sqlca-description-fields)
 - [IBM Db2 for z/OS: Held and non-held cursors](https://www.ibm.com/docs/en/db2-for-zos/13.0.0?topic=cursors-held-non-held)
 - [IBM CICS: Synchronization points](https://www.ibm.com/docs/en/cics-ts/6.x?topic=work-synchronization-points)
+- [IBM CICS: RESP and RESP2 options](https://www.ibm.com/docs/en/cics-ts/5.6.0?topic=format-resp-resp2-options)
+- [IBM CICS: EIB fields](https://www.ibm.com/docs/en/cics-ts/6.x?topic=areas-eib-exec-interface-block)
 - [IBM CICS: Defining map fields by using DFHMDF](https://www.ibm.com/docs/en/cics-ts/6.x?topic=map-defining-fields)
 - [IBM CICS: BMS macro DFHMDF](https://www.ibm.com/docs/en/cics-ts/6.x?topic=macros-dfhmdf)
 - [IBM CICS: Setting the display characteristics](https://www.ibm.com/docs/en/cics-ts/6.x?topic=output-setting-display-characteristics)
