@@ -259,6 +259,7 @@ java -cp "cobol-compiler/target/*;cobol-runtime/target/*" dev.cobolonjava.compil
 ## 7. すぐに実行できるデモ環境
 
 本リポジトリには、Windows 環境ですぐに実行可能なデモ一式が配置されています。
+各デモの詳細および実行方法については [**`demo/guide.md` (デモシナリオガイド)**](file:///d:/workspace/cobol-on-java/demo/guide.md) を参照してください。
 
 * [**`demo/001/` (複数プログラム CALL 連携デモ)**](file:///d:/workspace/cobol-on-java/demo/001/README.md)
   * 主プログラムから副プログラムへの `CALL ... USING` および `LINKAGE SECTION` による計算処理。
@@ -269,6 +270,21 @@ java -cp "cobol-compiler/target/*;cobol-runtime/target/*" dev.cobolonjava.compil
 * [**`demo/003/` (JCL バッチジョブ実行デモ)**](file:///d:/workspace/cobol-on-java/demo/003/README.md)
   * メインフレーム互換 JCL (`SALESJOB.jcl`) による複数ステップのバッチ制御、`IEFBR14` ユーティリティ、`PARM` 渡し、DD 動的割り当て、SYSOUT スプール出力、`IF-THEN` / `COND` による条件分岐。
   * 実行用バッチ: [`demo/003/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/003/run_demo.bat)
+* [**`demo/004/` (JCL ユーティリティ連携デモ)**](file:///d:/workspace/cobol-on-java/demo/004/README.md)
+  * メインフレーム標準ユーティリティ (`SORT`/`DFSORT` でのフィールド並べ替え・`OUTFIL` 抽出、`IEBGENER` でのデータセット複製) の JCL バッチ実行。
+  * 実行用バッチ: [`demo/004/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/004/run_demo.bat)
+* [**`demo/005/` (Java ↔ COBOL 双方向相互運用デモ)**](file:///d:/workspace/cobol-on-java/demo/005/README.md)
+  * Java アプリケーションから `CobolSession` を介した COBOL 呼出、および COBOL `CALL` から Java サービス (`JavaCallable`) へのコールバック。
+  * 実行用バッチ: [`demo/005/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/005/run_demo.bat)
+* [**`demo/006/` (JUnit 5 単体テスト & Mocking デモ)**](file:///d:/workspace/cobol-on-java/demo/006/README.md)
+  * `cobol-junit` (`@RegisterExtension CobolExtension`) による COBOL 単体テスト自動化、外部サブルーチンの Java モック差し替え、セクション単位の Spy 検証。
+  * 実行用バッチ: [`demo/006/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/006/run_demo.bat)
+* [**`demo/007/` (CICS トランザクション & 疑似会話制御デモ)**](file:///d:/workspace/cobol-on-java/demo/007/README.md)
+  * `cobol-cics` による `EXEC CICS LINK` / `XCTL` / `RETURN TRANSID(...) COMMAREA(...)` 制御、EIB 状態管理、疑似会話トランザクション境界。
+  * 実行用バッチ: [`demo/007/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/007/run_demo.bat)
+* [**`demo/008/` (Spring Boot & Db2 SQL 連携デモ)**](file:///d:/workspace/cobol-on-java/demo/008/README.md)
+  * Spring Boot 4.x / Spring Framework 7 トランザクション管理下での Db2 互換 SQL 実行（ホスト変数バインド）と COBOL 連携、コミット/ロールバック制御。
+  * 実行用バッチ: [`demo/008/run_demo.bat`](file:///d:/workspace/cobol-on-java/demo/008/run_demo.bat)
 
 ---
 

@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "revision": "sha256:5c6156e86ce7b2f2ec28d941e83d277180693fa7cd4a409f62c1fc811445d441",
+  "compilerVersion": "development",
+  "runtimeAbiVersion": "1",
+  "allowedPackage": "cobol.generated",
+  "programs": [
+    {"programId": "ACC-PROCESS", "className": "cobol.generated.ACC_PROCESS", "procedureHash": "55874c348d8cdf1485dda25af1ed0a2a7af73d466d4d3de4cc050e282b77c28c", "signature": {"layoutHash": "343e4df8f40f07a94b4dc7200973df320b836947dcbf731ed0bd23edb267d952", "parameters": [{"name": "LNK-ACC-ID", "minimumBytes": 4, "maximumBytes": 4, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "ab1b9a2ca34522f546ff9f5d8fbb1c11c3a62ffec76a561ab5b839f72095bd39"},{"name": "LNK-TX-TYPE", "minimumBytes": 1, "maximumBytes": 1, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "3001dbfda9f48aca7d2d211fc9a257baffe5b9b307d8b5ced7ed3efd79ac6fef"},{"name": "LNK-TX-AMOUNT", "minimumBytes": 7, "maximumBytes": 7, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "f04ce69956afaadd3db7d8cfa6f1a340e4348cf81c4e9bdedc80ea8eed7ae75c"},{"name": "LNK-NEW-BAL", "minimumBytes": 7, "maximumBytes": 7, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "2ad570ed4ad73883129f64a36ce573551768c089feea671b09ec07175b605bbe"},{"name": "LNK-STATUS", "minimumBytes": 2, "maximumBytes": 2, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "308a01d3e4c2bd2b0081ad30dfb6708e75d6dbac7ec767c97ff2801f31082237"}]}} 
+  ]
+}

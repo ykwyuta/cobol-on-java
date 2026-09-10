@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "revision": "sha256:8c866f6585a826f1b3ee2621a6da6af92a7c2b3bdd115d0cc14b13b3d921bd2c",
+  "compilerVersion": "development",
+  "runtimeAbiVersion": "1",
+  "allowedPackage": "cobol.generated",
+  "programs": [
+    {"programId": "ORDER-PROCESS", "className": "cobol.generated.ORDER_PROCESS", "procedureHash": "234d5098c119ca1a463fe4049a275a7f03527c452085d621b91beb203116a119", "signature": {"layoutHash": "7d1b1ff16788c5459e7bec7d088357d06b856d979fc351ac9675306fefceec5a", "parameters": [{"name": "LNK-ORDER-ID", "minimumBytes": 6, "maximumBytes": 6, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "b66fe2c6867d9f3e672cd983488992ffe9bc6c288285f7c92af58da0e356e81f"},{"name": "LNK-AMOUNT-JPY", "minimumBytes": 6, "maximumBytes": 6, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "8aa4a00ad29b34d692c28abe90e68d20c2981c9159b7e0263d5d311ecbe66c5a"},{"name": "LNK-AMOUNT-USD", "minimumBytes": 8, "maximumBytes": 8, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "3d2397e1fc66892bb03afd14bedb2c1d82e368e789cee65bccdef075b19d6b0c"},{"name": "LNK-STATUS", "minimumBytes": 2, "maximumBytes": 2, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "308a01d3e4c2bd2b0081ad30dfb6708e75d6dbac7ec767c97ff2801f31082237"}]}} 
+  ]
+}
