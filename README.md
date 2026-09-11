@@ -23,6 +23,9 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: JUnit による COBOL 単体テスト](docs/design/76-junit-testing.md)
 - [設計: Spring Boot 4.1 による CICS / Db2 連携](docs/design/77-spring-cics-db2.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
+- [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
+- [未対応構文とその理由](docs/unsupported-syntax-and-rationale.md) — 未対応の構文・オプション、設計判断の根拠、代替手段
+- [利用ガイド](docs/guide.md) — コンパイラ起動オプション、単一・複数プログラムの翻訳と実行手順
 - [アーキテクチャ決定記録 (ADR)](docs/decisions/README.md)
 - [敵対的設計レビュー: Java / JUnit / CICS / Db2 / BMS](docs/reviews/2026-09-09-interop-adversarial-review.md)
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
