@@ -4,3 +4,4 @@ target/
 *.iml
 .vscode/
 infra/db2/.env
+reference/
