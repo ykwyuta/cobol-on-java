@@ -22,12 +22,21 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: Java 連携](docs/design/75-java-interop.md)
 - [設計: JUnit による COBOL 単体テスト](docs/design/76-junit-testing.md)
 - [設計: Spring Boot 4.1 による CICS / Db2 連携](docs/design/77-spring-cics-db2.md)
+- [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
 - [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
 - [未対応構文とその理由](docs/unsupported-syntax-and-rationale.md) — 未対応の構文・オプション、設計判断の根拠、代替手段
 - [利用ガイド](docs/guide.md) — コンパイラ起動オプション、単一・複数プログラムの翻訳と実行手順
 - [アーキテクチャ決定記録 (ADR)](docs/decisions/README.md)
 - [敵対的設計レビュー: Java / JUnit / CICS / Db2 / BMS](docs/reviews/2026-09-09-interop-adversarial-review.md)
+- [IMS の概要と対応検討](docs/ims-overview-and-support-scope.md) — IMS (TM/DB) の仕組み、CICS/Db2 との違い、COBOL (DL/I) 連携と移行スコープ
+- [IMS TM と IBM MQ のアーキテクチャ関係解説](docs/ims-tm-and-mq-architecture.md) — メッセージキュー駆動モデル、OTMA 連携、MPP プログラムの仕組み
+- [RabbitMQ + JMS による IMS TM メッセージ基盤の実現検討](docs/ims-tm-rabbitmq-jms-proposal.md) — Docker Compose 環境、JMS 3.0 抽象化、COBOL 透過的実行方式
+- [IMS DB の RDB ストレージエンジン化検討報告](docs/ims-rdb-storage-engine-report.md) — PostgreSQL / Db2 を用いた非正規化・生バイト格納による透過的 DL/I 実現方式
+- [IMS DB 運用管理ツールの設計提案](docs/ims-db-admin-tools-proposal.md) — メインフレーム互換ユーティリティ (DFSURGU0/DFSURGL0) とモダン CLI
+- [IMS MFS と CICS BMS の比較・Web UI 再現検討](docs/ims-mfs-bms-comparison-and-web-ui-proposal.md) — 中立スクリーンモデルと Thymeleaf/CSS Grid による 3270 画面再現
+- [IMS DB のロック競合・デッドロック回避設計](docs/ims-db-locking-and-deadlock-avoidance.md) — ルートアンカーロック、MVCC活用、DMLソート、U0777自動リトライ
+- [DL/I の複雑仕様と実行時セマンティクス詳細検討](docs/ims-dli-complex-semantics-report.md) — コマンドコード (*D/*F/*P)、親境界 (Parentage)、重複キー規則、ステータスコード完全対応
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
 
 ## 主要な技術方針
