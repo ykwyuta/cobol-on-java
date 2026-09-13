@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "revision": "sha256:1ac03d97d47845f33840035ef998b2c1ff932923e22f68779418e3fd53081c3f",
+  "compilerVersion": "development",
+  "runtimeAbiVersion": "1",
+  "allowedPackage": "cobol.generated",
+  "programs": [
+    {"programId": "CICSMENU", "className": "cobol.generated.CICSMENU", "procedureHash": "40c55b09d251a21ea4b6332a1f8a8d51f1ca16eff10191a0711ee84b7b2f5043", "signature": {"layoutHash": "0cab16bc0ac302b19a5b3291577086dd7a9ea64287214ba364143dbfd8f41044", "parameters": [{"name": "DFHCOMMAREA", "minimumBytes": 16, "maximumBytes": 16, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "9791276d742563babde1dadbfb270ee569bb0d7446d1c372bbbbee285b555634"}]}} ,
+    {"programId": "FINPROG", "className": "cobol.generated.FINPROG", "procedureHash": "36a0fe1380792abd4916260ef757677bcc3d7ee2040cb03f8c19a8ef6972a0ce", "signature": {"layoutHash": "8e955b6dba20db9023afbdd33a59fb32d96c2bc123d73da7831354eb0e64071b", "parameters": [{"name": "DFHCOMMAREA", "minimumBytes": 16, "maximumBytes": 16, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "9791276d742563babde1dadbfb270ee569bb0d7446d1c372bbbbee285b555634"}]}} ,
+    {"programId": "INQPROG", "className": "cobol.generated.INQPROG", "procedureHash": "b4fcb1f4b278d204709b829043f58d338a64ddccc12c916c054a73557e862841", "signature": {"layoutHash": "840814b1000efb2597775330fbf3235421a5e1f2e1778d5b76b2052b13811a59", "parameters": [{"name": "DFHCOMMAREA", "minimumBytes": 16, "maximumBytes": 16, "presence": "REQUIRED", "passingMode": "REFERENCE", "direction": "INOUT", "layoutHash": "9791276d742563babde1dadbfb270ee569bb0d7446d1c372bbbbee285b555634"}]}} 
+  ]
+}

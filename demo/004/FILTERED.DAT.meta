@@ -1,0 +1,3 @@
+recfm=F
+lrecl=12
+codepage=IBM-1047

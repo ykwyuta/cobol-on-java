@@ -24,6 +24,13 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <!-- 組み上がった処理系をまとめて測るために要る。翻訳系と実行系と
+           ジョブ実行を 1 本のバッチとして流すのは、ここでしかできない -->
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-job</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>

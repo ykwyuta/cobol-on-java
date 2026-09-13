@@ -214,6 +214,123 @@ class DataDivisionBuilderTest {
     }
 
     @Test
+    @DisplayName("SYNCHRONIZED の 2 進項目は自然な境界へ寄る (FR-021)")
+    void aSynchronizedBinaryItemMovesToItsBoundary() {
+        // 境界は項目の大きさと同じである。S9(4) COMP は 2 バイトなので半語、
+        // S9(9) COMP は 4 バイトなので語、S9(18) COMP は 8 バイトなので倍語である
+        DataLayout layout = layoutOf(
+                "01 WS-REC.",
+                "   05 WS-A PIC X.",
+                "   05 WS-H PIC S9(4) COMP SYNC.",
+                "   05 WS-B PIC X.",
+                "   05 WS-F PIC S9(9) COMP SYNC.",
+                "   05 WS-C PIC X.",
+                "   05 WS-D PIC S9(18) COMP SYNC.");
+
+        // X が 1 バイト。半語へ寄せるので 1 バイトの詰め物が入る
+        assertEquals(2, item(layout, "WS-H").offset());
+        assertEquals(4, item(layout, "WS-B").offset());
+        // 5 から語へ寄せるので 3 バイトの詰め物
+        assertEquals(8, item(layout, "WS-F").offset());
+        assertEquals(12, item(layout, "WS-C").offset());
+        // 13 から倍語へ寄せるので 3 バイトの詰め物
+        assertEquals(16, item(layout, "WS-D").offset());
+        assertEquals(24, item(layout, "WS-REC").length());
+    }
+
+    @Test
+    @DisplayName("SYNCHRONIZED の浮動小数点項目は 4 / 8 の境界へ寄る (FR-021)")
+    void aSynchronizedFloatingPointItemMovesToItsBoundary() {
+        DataLayout layout = layoutOf(
+                "01 WS-REC.",
+                "   05 WS-A PIC X.",
+                "   05 WS-S COMP-1 SYNC.",
+                "   05 WS-B PIC X.",
+                "   05 WS-L COMP-2 SYNC.");
+
+        assertEquals(4, item(layout, "WS-S").offset());
+        assertEquals(8, item(layout, "WS-B").offset());
+        assertEquals(16, item(layout, "WS-L").offset());
+    }
+
+    @Test
+    @DisplayName("SYNCHRONIZED を書かなければ境界へ寄らない (FR-021)")
+    void withoutSynchronizedNothingMoves() {
+        DataLayout layout = layoutOf(
+                "01 WS-REC.",
+                "   05 WS-A PIC X.",
+                "   05 WS-H PIC S9(4) COMP.",
+                "   05 WS-F PIC S9(9) COMP.");
+
+        assertEquals(1, item(layout, "WS-H").offset());
+        assertEquals(3, item(layout, "WS-F").offset());
+        assertEquals(7, item(layout, "WS-REC").length());
+    }
+
+    @Test
+    @DisplayName("表示形式とパック 10 進では SYNCHRONIZED が割り付けを変えない (FR-021)")
+    void synchronizedDoesNotMoveDisplayOrPackedItems() {
+        // 参照実装は 2 進・浮動小数・指標の項目にしか効かせない (暫定判断 P-098)。
+        // CCVS85 の NC107A / NC108M がこの形を書いている
+        DataLayout layout = layoutOf(
+                "01 WS-REC.",
+                "   05 WS-A PIC X.",
+                "   05 WS-N PIC 9(5) SYNC.",
+                "   05 WS-P PIC S9(5) COMP-3 SYNC.");
+
+        assertEquals(1, item(layout, "WS-N").offset());
+        assertEquals(6, item(layout, "WS-P").offset());
+    }
+
+    @Test
+    @DisplayName("群の中に埋まっていても境界へ寄る (FR-021)")
+    void aSynchronizedItemInsideAGroupStillMoves() {
+        // 詰め物が入るのは<b>その項目の手前</b>であり、群の手前ではない
+        DataLayout layout = layoutOf(
+                "01 WS-REC.",
+                "   05 WS-A PIC X.",
+                "   05 WS-GRP.",
+                "      10 WS-B PIC X.",
+                "      10 WS-F PIC S9(9) COMP SYNC.");
+
+        assertEquals(1, item(layout, "WS-GRP").offset());
+        assertEquals(1, item(layout, "WS-B").offset());
+        assertEquals(4, item(layout, "WS-F").offset());
+        // 群は 1 から 8 までなので 7 バイトである
+        assertEquals(7, item(layout, "WS-GRP").length());
+    }
+
+    @Test
+    @DisplayName("繰り返す群は 1 回分を境界の倍数まで伸ばす (FR-021)")
+    void anOccursGroupIsPaddedSoEveryOccurrenceAligns() {
+        // 伸ばさないと 2 回目以降がずれた位置から始まる。詰め物は 1 回分の末尾に入る
+        DataLayout layout = layoutOf(
+                "01 WS-REC.",
+                "   05 WS-T OCCURS 3 TIMES.",
+                "      10 WS-F PIC S9(9) COMP SYNC.",
+                "      10 WS-X PIC X.");
+
+        // 4 + 1 = 5 を語の倍数 8 まで伸ばす
+        assertEquals(8, item(layout, "WS-T").length());
+        assertEquals(24, item(layout, "WS-REC").length());
+    }
+
+    @Test
+    @DisplayName("REDEFINES で重ねた項目には詰め物を入れない (FR-021)")
+    void aRedefiningItemIsNotMovedToABoundary() {
+        // 入れると重ねる先と位置がずれ、重ねた意味がなくなる
+        DataLayout layout = layoutOf(
+                "01 WS-REC.",
+                "   05 WS-A PIC X.",
+                "   05 WS-B PIC X(4).",
+                "   05 WS-F REDEFINES WS-B PIC S9(9) COMP SYNC.");
+
+        assertEquals(1, item(layout, "WS-B").offset());
+        assertEquals(1, item(layout, "WS-F").offset());
+        assertEquals(5, item(layout, "WS-REC").length());
+    }
+
+    @Test
     @DisplayName("PICTURE を持たない浮動小数点項目は 4 / 8 バイトである (FR-032)")
     void floatingPointItemsHaveAFixedLength() {
         DataLayout layout = layoutOf(

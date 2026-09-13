@@ -5,6 +5,7 @@ import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.parser.OriginToken;
 import dev.cobolonjava.compiler.source.Origin;
+import dev.cobolonjava.runtime.data.BinaryDecimal;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.item.NumericItem;
 import dev.cobolonjava.runtime.item.Usage;
@@ -239,6 +240,13 @@ public final class DataDivisionBuilder {
             }
             if (section.reportSection() != null) {
                 // 報告書節は記述の形が違う。割り付けは addReports が作る
+                continue;
+            }
+            if (section.communicationSection() != null) {
+                // 支えていない (制約 C-5)。断るときは<b>何を読んだのか</b>まで書く
+                report(originOf(section.communicationSection()),
+                        "COMMUNICATION SECTION is not supported: "
+                        + "the communication module is not implemented");
                 continue;
             }
             currentSection = sectionOf(section);
@@ -486,8 +494,11 @@ public final class DataDivisionBuilder {
             } else if (clause.globalClause() != null && programName != null) {
                 // 囲まれたプログラムから見えるようになる。実体はこちらが持つ (要件 FR-091)
                 item.setGlobalOwner(programName);
+            } else if (clause.synchronizedClause() != null) {
+                // LEFT / RIGHT は書けるが、参照実装では<b>どちらも同じ</b>である。
+                // 項目は自然な境界に置かれる (暫定判断 P-098)
+                item.setAligned(true);
             }
-            // SYNCHRONIZED は割り付けに効かない
         }
         applyBlankWhenZero(item, origin);
     }
@@ -1690,10 +1701,55 @@ public final class DataDivisionBuilder {
                 && (item.usage() == null || item.usage() == Usage.DISPLAY);
     }
 
+    /**
+     * 項目とその下位に位置を割り当て、<b>手前に入れた詰め物を含めて</b>何バイト進むかを返す。
+     *
+     * <p>詰め物が入るのは {@code SYNCHRONIZED} を書いた項目の手前だけである
+     * (暫定判断 P-098)。入れる位置が 01 レベルの先頭から数えた変位で決まるので、
+     * 左から右へ 1 回で歩けばよい。群のどこに埋まっていても同じ道を通る。
+     */
     private int layout(DataItem item, int offset) {
-        item.setOffset(offset);
-        item.setLength(item.isElementary() ? elementaryLength(item) : groupLength(item, offset));
-        return item.totalLength();
+        int at = offset + slackBefore(item, offset);
+        item.setOffset(at);
+        item.setLength(item.isElementary() ? elementaryLength(item) : groupLength(item, at));
+        return at - offset + item.totalLength();
+    }
+
+    /**
+     * {@code SYNCHRONIZED} を書いた項目の手前に入れる詰め物のバイト数 (要件 FR-021)。
+     *
+     * <p>{@code REDEFINES} で重ねた項目には入れない。重ねる先と<b>同じ位置から</b>
+     * 始まらなければ、重ねた意味がなくなる。
+     */
+    private static int slackBefore(DataItem item, int offset) {
+        int boundary = alignmentOf(item);
+        return boundary == 1 || item.redefinesName() != null
+                ? 0
+                : (boundary - offset % boundary) % boundary;
+    }
+
+    /**
+     * 境界に合わせる幅 (要件 FR-021、暫定判断 P-098)。合わせない項目は 1 である。
+     *
+     * <p>効くのは<b>2 進・浮動小数・指標</b>の項目だけである。表示形式とパック 10 進では
+     * {@code SYNCHRONIZED} を書いても割り付けが変わらない。{@code SYNCHRONIZED} を
+     * 書いていない項目も 1 であり、書いたときだけ位置が動く。
+     *
+     * <p>2 進項目の境界は<b>その項目の大きさ</b>と同じである。桁数で 2 / 4 / 8 バイトに
+     * 分かれるので、境界もそれに従う。
+     */
+    private static int alignmentOf(DataItem item) {
+        if (!item.aligned() || !item.isElementary() || item.usage() == null) {
+            return 1;
+        }
+        return switch (item.usage()) {
+            case COMP, COMP_5 -> item.picture() == null
+                    ? 1
+                    : BinaryDecimal.byteLength(item.picture().digits());
+            case COMP_1 -> 4;
+            case COMP_2 -> 8;
+            default -> 1;
+        };
     }
 
     private int groupLength(DataItem item, int offset) {
@@ -1715,7 +1771,33 @@ public final class DataDivisionBuilder {
                 cursor += used;
             }
         }
-        return end - offset;
+        return paddedForOccurs(item, end - offset);
+    }
+
+    /**
+     * 繰り返す群の 1 回分の長さを、境界へ合うように伸ばす (要件 FR-021、暫定判断 P-098)。
+     *
+     * <p>{@code OCCURS} を書いた群の中に {@code SYNCHRONIZED} の項目があると、
+     * 2 回目以降の回が<b>ずれた位置から始まる</b>。1 回分の長さを、群の中でいちばん
+     * 大きい境界の倍数まで伸ばして揃える。詰め物は 1 回分の<b>末尾</b>に入る。
+     *
+     * <p>繰り返さない群には入れない。入れると、そのぶん親の長さが伸びてしまう。
+     */
+    private static int paddedForOccurs(DataItem item, int length) {
+        if (item.occurs() <= 1) {
+            return length;
+        }
+        int boundary = widestAlignment(item);
+        return boundary == 1 ? length : (length + boundary - 1) / boundary * boundary;
+    }
+
+    /** 配下でいちばん大きい境界。合わせる項目が無ければ 1 である。 */
+    private static int widestAlignment(DataItem item) {
+        int widest = alignmentOf(item);
+        for (DataItem child : item.children()) {
+            widest = Math.max(widest, widestAlignment(child));
+        }
+        return widest;
     }
 
     /** {@code REDEFINES} が指す、同じ親を持つ先行の項目。 */

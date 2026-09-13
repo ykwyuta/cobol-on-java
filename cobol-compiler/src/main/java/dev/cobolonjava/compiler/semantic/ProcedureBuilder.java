@@ -1410,6 +1410,13 @@ public final class ProcedureBuilder {
         if (context.acceptStatement() != null) {
             return acceptOf(context.acceptStatement());
         }
+        if (context.communicationStatement() != null) {
+            // 支えていない (制約 C-5)。断るときは<b>何を読んだのか</b>まで書く
+            report(ReferenceResolver.originOf(context.communicationStatement()),
+                    "the communication module is not supported: "
+                    + context.communicationStatement().getStart().getText());
+            return null;
+        }
         if (context.initializeStatement() != null) {
             return initializeOf(context.initializeStatement());
         }
@@ -2281,6 +2288,11 @@ public final class ProcedureBuilder {
      */
     private Statement acceptOf(CobolParser.AcceptStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
+        if (context.COUNT() != null) {
+            // ACCEPT ... [MESSAGE] COUNT は通信の文である。支えていない (制約 C-5)
+            report(origin, "the communication module is not supported: ACCEPT MESSAGE COUNT");
+            return null;
+        }
         DataReference target = resolver.resolve(context.identifier());
         if (target == null) {
             return null;

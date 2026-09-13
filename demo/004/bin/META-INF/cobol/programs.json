@@ -1,0 +1,11 @@
+{
+  "formatVersion": 1,
+  "revision": "sha256:92f57ef40722c54d16df1132b1a2dc670bc42cee7dde30ca6ac014182b400ef9",
+  "compilerVersion": "development",
+  "runtimeAbiVersion": "1",
+  "allowedPackage": "cobol.generated",
+  "programs": [
+    {"programId": "GEN-TRANS", "className": "cobol.generated.GEN_TRANS", "procedureHash": "3e6b982fbe496187c9ba2f9698269547e85ff8dfb286d695959fc16eadb2ab54", "signature": {"layoutHash": "7518f8f2c2205be856faa4da98c015de186779e2026fedb0ed100f4fff4a2adc", "parameters": []}} ,
+    {"programId": "PRT-REPORT", "className": "cobol.generated.PRT_REPORT", "procedureHash": "5d06b76113f8554d5dc5bcecd6a747faa97de61a9b56962ea4fcbe530cd9dac1", "signature": {"layoutHash": "13013aa1da49c6cbf6b31eb8b9dae170b8c994d6bb30424360493138bf98b480", "parameters": []}} 
+  ]
+}
