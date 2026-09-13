@@ -270,7 +270,7 @@ class DataDivisionBuilderTest {
     @Test
     @DisplayName("表示形式とパック 10 進では SYNCHRONIZED が割り付けを変えない (FR-021)")
     void synchronizedDoesNotMoveDisplayOrPackedItems() {
-        // 参照実装は 2 進・浮動小数・指標の項目にしか効かせない (暫定判断 P-089)。
+        // 参照実装は 2 進・浮動小数・指標の項目にしか効かせない (暫定判断 P-098)。
         // CCVS85 の NC107A / NC108M がこの形を書いている
         DataLayout layout = layoutOf(
                 "01 WS-REC.",

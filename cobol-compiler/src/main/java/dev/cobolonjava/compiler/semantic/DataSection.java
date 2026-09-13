@@ -36,5 +36,8 @@ public enum DataSection {
      * <p>{@code RETURN-CODE} は<b>実行の全体で 1 つ</b>であり、呼ぶ側と呼ばれる側が同じものを
      * 見る。したがってプログラムごとの記憶域には置けない。実行時の入口が持つ置き場を指す。
      */
-    SPECIAL_REGISTER
+    SPECIAL_REGISTER,
+
+    /** CICS taskが持つ読み取り専用のEXEC interface block。 */
+    CICS_EIB
 }

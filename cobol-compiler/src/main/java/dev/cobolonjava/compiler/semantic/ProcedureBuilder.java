@@ -1,5 +1,9 @@
 package dev.cobolonjava.compiler.semantic;
 
+import dev.cobolonjava.cics.AbendCommand;
+import dev.cobolonjava.cics.CicsAbendCode;
+import dev.cobolonjava.cics.CicsResponseCode;
+import dev.cobolonjava.cics.TransId;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
@@ -7,6 +11,8 @@ import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.file.KeyRelation;
 import dev.cobolonjava.runtime.file.Organization;
 import dev.cobolonjava.runtime.file.OpenMode;
+import dev.cobolonjava.runtime.interop.ProgramId;
+import dev.cobolonjava.runtime.item.Usage;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -614,6 +620,20 @@ public final class ProcedureBuilder {
         return keyOf(simple, null);
     }
 
+    /** island parserが取り出した修飾なしの手続き名を、一意の呼び名へ直す。 */
+    private String procedureNameOf(String name, Origin origin) {
+        String simple = name.toUpperCase(Locale.ROOT);
+        if (!Boolean.FALSE.equals(uniqueNames.get(simple))) {
+            return keyOf(simple, null);
+        }
+        if (currentSectionName != null
+                && procedureNames.contains(new ProcedureName(simple, currentSectionName))) {
+            return keyOf(simple, currentSectionName);
+        }
+        report(origin, simple + " is ambiguous; qualify it with OF or IN");
+        return keyOf(simple, null);
+    }
+
     /** いま組み立てている節の名前。修飾の無い手続き名がここを先に見る。 */
     private String currentSectionName;
 
@@ -942,10 +962,48 @@ public final class ProcedureBuilder {
             }
         } else if (statement instanceof Statement.StringStatement text) {
             out.add(text.target());
+            if (text.pointer() != null) {
+                out.add(text.pointer());
+            }
         } else if (statement instanceof Statement.Unstring unstring) {
-            unstring.targets().forEach(t -> out.add(t.field()));
+            unstring.targets().forEach(t -> {
+                out.add(t.field());
+                if (t.delimiter() != null) {
+                    out.add(t.delimiter());
+                }
+                if (t.count() != null) {
+                    out.add(t.count());
+                }
+            });
+            if (unstring.pointer() != null) {
+                out.add(unstring.pointer());
+            }
+            if (unstring.tallying() != null) {
+                out.add(unstring.tallying());
+            }
         } else if (statement instanceof Statement.Read read && read.into() != null) {
             read.into().targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Return returned && returned.into() != null) {
+            returned.into().targets().forEach(t -> out.add(t.reference()));
+        } else if (statement instanceof Statement.Call call) {
+            call.arguments().stream()
+                    .filter(argument -> !argument.byContent())
+                    .map(Statement.Call.Argument::value)
+                    .filter(Operand.Reference.class::isInstance)
+                    .map(Operand.Reference.class::cast)
+                    .forEach(reference -> out.add(reference.reference()));
+        } else if (statement instanceof Statement.Cics cics
+                && cics.operation() == Statement.CicsOperation.LINK
+                && cics.commarea() != null) {
+            out.add(cics.commarea());
+        } else if (statement instanceof Statement.CicsAssignAbcode assign) {
+            out.add(assign.target());
+        } else if (statement instanceof Statement.Search search && search.varying() != null) {
+            out.add(search.varying());
+        } else if (statement instanceof Statement.Sequence sequence) {
+            sequence.statements().forEach(child -> out.addAll(receivingOf(child)));
+        } else if (statement instanceof Statement.Perform perform) {
+            perform.varying().forEach(varying -> out.add(varying.target()));
         }
         // レコード名は書き換わる側である。FROM を書けば転記され、書かなくても
         // 出力の対象そのものである
@@ -1225,7 +1283,8 @@ public final class ProcedureBuilder {
      */
     private Statement statementOf(CobolParser.StatementContext context) {
         if (inDebugSection || !watchesItems()) {
-            return builtStatementOf(context);
+            return rejectReadOnlyReceivers(
+                    builtStatementOf(context), ReferenceResolver.originOf(context));
         }
         resolver.pushTrace();
         Statement built;
@@ -1239,6 +1298,10 @@ public final class ProcedureBuilder {
             return null;
         }
         Origin at = ReferenceResolver.originOf(context);
+        built = rejectReadOnlyReceivers(built, at);
+        if (built == null) {
+            return null;
+        }
         List<Statement> entries = itemDebugEntries(built, referenced, at);
         if (entries.isEmpty()) {
             return built;
@@ -1264,7 +1327,23 @@ public final class ProcedureBuilder {
         return new Statement.Sequence(List.copyOf(body), at);
     }
 
+    private Statement rejectReadOnlyReceivers(Statement statement, Origin origin) {
+        if (statement == null) {
+            return null;
+        }
+        for (DataReference receiver : receivingOf(statement)) {
+            if (receiver.item().readOnly()) {
+                report(origin, describe(receiver) + " is read-only and cannot receive a value");
+                return null;
+            }
+        }
+        return statement;
+    }
+
     private Statement builtStatementOf(CobolParser.StatementContext context) {
+        if (context.execStatement() != null) {
+            return cicsOf(context.execStatement());
+        }
         if (context.moveStatement() != null) {
             return moveOf(context.moveStatement());
         }
@@ -1393,6 +1472,128 @@ public final class ProcedureBuilder {
         }
         report(ReferenceResolver.originOf(context), "statement is not supported yet");
         return null;
+    }
+
+    private Statement cicsOf(CobolParser.ExecStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        String text = context.EXEC_BLOCK().getText();
+        if (!text.regionMatches(true, 0, "EXEC CICS", 0, "EXEC CICS".length())) {
+            report(origin, "EXEC processor is not supported yet");
+            return null;
+        }
+        try {
+            CicsBlockParser.Parsed parsed = CicsBlockParser.parse(text);
+            if (parsed.assignAbcodeTarget() != null) {
+                DataReference receiver = resolver.resolveName(parsed.assignAbcodeTarget(), origin);
+                if (receiver == null) {
+                    return null;
+                }
+                if (receiver.constantLength().isEmpty()
+                        || receiver.constantLength().getAsInt() != 4
+                        || !DataCategory.of(receiver).isAlphanumericLike()) {
+                    throw new IllegalArgumentException(
+                            "ASSIGN ABCODE receiver must be a 4-byte alphanumeric data area");
+                }
+                return new Statement.CicsAssignAbcode(receiver, origin);
+            }
+            if (parsed.handleStackAction() != null) {
+                return new Statement.CicsHandleStack(parsed.handleStackAction(), origin);
+            }
+            if (parsed.abendHandlerAction() != null) {
+                String handler = parsed.abendHandlerTarget() == null
+                        ? null : procedureNameOf(parsed.abendHandlerTarget(), origin);
+                return new Statement.CicsAbendHandler(
+                        parsed.abendHandlerAction(), handler, origin);
+            }
+            if (parsed.conditionAction() != null) {
+                for (CicsBlockParser.ConditionSpec condition : parsed.conditions()) {
+                    if (!"PGMIDERR".equals(condition.name())
+                            && !"ERROR".equals(condition.name())) {
+                        throw new IllegalArgumentException(
+                                "initial HANDLE/IGNORE CONDITION support is limited to PGMIDERR and ERROR");
+                    }
+                }
+                List<Statement> conditions = new ArrayList<>();
+                for (CicsBlockParser.ConditionSpec condition : parsed.conditions()) {
+                    int responseCode = CicsResponseCode.handlerKey(condition.name());
+                    String handler = condition.target() == null
+                            ? null : procedureNameOf(condition.target(), origin);
+                    conditions.add(new Statement.CicsCondition(
+                            parsed.conditionAction(), responseCode, handler, origin));
+                }
+                return conditions.size() == 1
+                        ? conditions.get(0) : new Statement.Sequence(conditions, origin);
+            }
+            DataReference commarea = parsed.commarea() == null
+                    ? null : resolver.resolveName(parsed.commarea().toUpperCase(java.util.Locale.ROOT), origin);
+            if (parsed.commarea() != null && commarea == null) {
+                return null;
+            }
+            String target = switch (parsed.operation()) {
+                case LINK, XCTL -> ProgramId.of(parsed.target()).value();
+                case RETURN -> parsed.target() == null
+                        ? null : TransId.of(parsed.target()).value();
+                case SYNCPOINT -> null;
+                case ABEND -> parsed.target() == null ? null
+                        : AbendCommand.user(CicsAbendCode.of(parsed.target()),
+                                parsed.cancel(), parsed.noDump()).effectiveCode().value();
+            };
+            Statement.Cics command = new Statement.Cics(parsed.operation(), target, commarea,
+                    parsed.length(), parsed.response() != null || parsed.noHandle(),
+                    parsed.rollback(), parsed.cancel(), parsed.noDump(), origin);
+            if (parsed.response() == null) {
+                return command;
+            }
+            DataReference response = cicsResponseReceiver(parsed.response(), origin);
+            DataReference response2 = parsed.response2() == null
+                    ? null : cicsResponseReceiver(parsed.response2(), origin);
+            if (response == null || (parsed.response2() != null && response2 == null)) {
+                return null;
+            }
+            List<Statement> statements = new ArrayList<>();
+            statements.add(command);
+            if (!addCicsResponseMove("EIBRESP", response, statements, origin)
+                    || (response2 != null
+                    && !addCicsResponseMove("EIBRESP2", response2, statements, origin))) {
+                return null;
+            }
+            return new Statement.Sequence(statements, origin);
+        } catch (IllegalArgumentException invalid) {
+            report(origin, invalid.getMessage());
+            return null;
+        }
+    }
+
+    private DataReference cicsResponseReceiver(String name, Origin origin) {
+        DataReference receiver = resolver.resolveName(name.toUpperCase(Locale.ROOT), origin);
+        if (receiver == null) {
+            return null;
+        }
+        Usage usage = receiver.item().usage() == null ? Usage.DISPLAY : receiver.item().usage();
+        if ((usage != Usage.COMP && usage != Usage.COMP_5)
+                || receiver.item().length() != Integer.BYTES
+                || !DataCategory.of(receiver).isNumeric()) {
+            report(origin, name.toUpperCase(Locale.ROOT)
+                    + " used by RESP or RESP2 must be a 4-byte binary integer");
+            return null;
+        }
+        return receiver;
+    }
+
+    private boolean addCicsResponseMove(
+            String eibName, DataReference receiver, List<Statement> statements, Origin origin) {
+        DataReference source = resolver.resolveName(eibName, origin);
+        if (source == null) {
+            return false;
+        }
+        Statement.Move.Target target = checkMove(
+                new Operand.Reference(source), receiver, origin);
+        if (target == null) {
+            return false;
+        }
+        statements.add(new Statement.Move(
+                new Operand.Reference(source), List.of(target), false, origin));
+        return true;
     }
 
     // ---- 報告書の文 (要件 FR-214) ----
@@ -3915,8 +4116,44 @@ public final class ProcedureBuilder {
                 return null;
             }
         }
+        if (isDfhresp(context.identifier())) {
+            return dfhrespOf(context.identifier(), origin);
+        }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
+    }
+
+    /** {@code DFHRESP(condition)}をCICS translatorと同じ翻訳時定数へ落とす。 */
+    private Operand dfhrespOf(CobolParser.IdentifierContext context, Origin origin) {
+        if (context.qualifiedDataName().dataName().size() != 1
+                || context.subscripts() == null
+                || context.subscripts().subscript().size() != 1
+                || context.referenceModifier() != null) {
+            report(origin, "DFHRESP requires exactly one unqualified condition name");
+            return null;
+        }
+        CobolParser.SubscriptContext argument = context.subscripts().subscript(0);
+        if (argument.qualifiedDataName() == null
+                || argument.qualifiedDataName().dataName().size() != 1
+                || argument.relativeOffset() != null) {
+            report(origin, "DFHRESP requires exactly one unqualified condition name");
+            return null;
+        }
+        String condition = argument.qualifiedDataName().dataName(0).getText();
+        try {
+            return new Operand.Literal(numberOf(CicsResponseCode.forCondition(condition)));
+        } catch (IllegalArgumentException unsupported) {
+            report(origin, unsupported.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isDfhresp(CobolParser.IdentifierContext context) {
+        return context != null
+                && context.subscripts() != null
+                && layout.findAll("DFHRESP").isEmpty()
+                && context.qualifiedDataName().dataName(0).getText()
+                        .equalsIgnoreCase("DFHRESP");
     }
 
     /** {@code GIVING} がない形で受取項目になる被演算子。 */
@@ -4125,6 +4362,9 @@ public final class ProcedureBuilder {
                 report(origin, "invalid literal: " + context.literal().getText());
                 return null;
             }
+        }
+        if (isDfhresp(context.identifier())) {
+            return dfhrespOf(context.identifier(), origin);
         }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);

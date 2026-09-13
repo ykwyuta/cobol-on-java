@@ -821,7 +821,8 @@ sentence
     ;
 
 statement
-    : moveStatement
+    : execStatement
+    | moveStatement
     | ifStatement
     | evaluateStatement
     | stopStatement
@@ -866,6 +867,11 @@ statement
 // 中身は読まないので、終止符までを飲む
 communicationStatement
     : (ENABLE | DISABLE | SEND | RECEIVE | PURGE) (~PERIOD)*
+    ;
+
+// EXECの内部は専用translatorが厳格に解析する。
+execStatement
+    : EXEC_BLOCK
     ;
 
 // ---- 報告書の文 (要件 FR-214) ----

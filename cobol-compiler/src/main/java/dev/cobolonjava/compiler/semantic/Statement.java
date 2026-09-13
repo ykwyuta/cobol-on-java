@@ -16,6 +16,66 @@ public sealed interface Statement {
     /** ソース上の位置。 */
     Origin origin();
 
+    /** 専用translatorが解析した最小EXEC CICS command。 */
+    record Cics(
+            CicsOperation operation,
+            String target,
+            DataReference commarea,
+            int length,
+            boolean suppressDefaultHandling,
+            boolean rollback,
+            boolean cancel,
+            boolean noDump,
+            Origin origin) implements Statement {
+    }
+
+    enum CicsOperation {
+        LINK,
+        XCTL,
+        RETURN,
+        SYNCPOINT,
+        ABEND
+    }
+
+    /** EXEC CICS HANDLE/IGNORE CONDITIONによるprogram入口内のcondition処置。 */
+    record CicsCondition(
+            CicsConditionAction action,
+            int responseCode,
+            String target,
+            Origin origin) implements Statement {
+    }
+
+    enum CicsConditionAction {
+        /** target段落へ移る。targetがnullならCICS既定処置へ戻す。 */
+        HANDLE,
+        /** conditionを無視して次の文へ進む。 */
+        IGNORE
+    }
+
+    /** EXEC CICS PUSH/POP HANDLEによるcondition処置一式の退避・復元。 */
+    record CicsHandleStack(CicsHandleStackAction action, Origin origin) implements Statement {
+    }
+
+    enum CicsHandleStackAction {
+        PUSH,
+        POP
+    }
+
+    /** EXEC CICS HANDLE ABENDのCOBOL LABEL形式と有効状態操作。 */
+    record CicsAbendHandler(
+            CicsAbendHandlerAction action, String target, Origin origin) implements Statement {
+    }
+
+    enum CicsAbendHandlerAction {
+        LABEL,
+        CANCEL,
+        RESET
+    }
+
+    /** EXEC CICS ASSIGN ABCODEによる現在のabend code取得。 */
+    record CicsAssignAbcode(DataReference target, Origin origin) implements Statement {
+    }
+
     /**
      * {@code MOVE} 文。
      *

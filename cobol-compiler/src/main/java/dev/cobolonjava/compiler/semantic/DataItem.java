@@ -46,6 +46,7 @@ public final class DataItem {
     private final List<String> indexNames = new ArrayList<>();
     private final List<SearchKey> searchKeys = new ArrayList<>();
     private boolean index;
+    private boolean readOnly;
 
     DataItem(int level, String name, Origin origin) {
         this.level = level;
@@ -106,7 +107,7 @@ public final class DataItem {
      * {@code SYNCHRONIZED} が書かれているか (要件 FR-021)。
      *
      * <p>境界に合わせるのは 2 進・浮動小数・指標の項目だけである。表示形式と
-     * パック 10 進では書いても割り付けが変わらない (暫定判断 P-089)。
+     * パック 10 進では書いても割り付けが変わらない (暫定判断 P-098)。
      */
     public boolean aligned() {
         return aligned;
@@ -175,6 +176,16 @@ public final class DataItem {
 
     public boolean isIndex() {
         return index;
+    }
+
+    /** runtimeだけが更新でき、COBOL文の受取側にはできない項目か。 */
+    public boolean readOnly() {
+        for (DataItem current = this; current != null; current = current.parent) {
+            if (current.readOnly) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean external;
@@ -401,6 +412,10 @@ public final class DataItem {
 
     void markIndex() {
         this.index = true;
+    }
+
+    void markReadOnly() {
+        this.readOnly = true;
     }
 
     void setSection(DataSection value) {

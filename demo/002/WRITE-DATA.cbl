@@ -1,0 +1,40 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. WRITE-DATA.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT CUST-FILE ASSIGN TO CUSTFILE
+               FILE STATUS IS WS-STATUS.
+       DATA DIVISION.
+       FILE SECTION.
+       FD  CUST-FILE.
+       01  CUST-REC.
+           05  CUST-ID    PIC 9(4).
+           05  CUST-NAME  PIC X(10).
+           05  CUST-SALES PIC 9(6).
+       WORKING-STORAGE SECTION.
+       01  WS-STATUS   PIC XX.
+       PROCEDURE DIVISION.
+       MAIN-START.
+           OPEN OUTPUT CUST-FILE.
+           DISPLAY 'OPEN OUTPUT STATUS: ' WS-STATUS.
+           
+           MOVE 1001 TO CUST-ID.
+           MOVE 'ALICE' TO CUST-NAME.
+           MOVE 050000 TO CUST-SALES.
+           WRITE CUST-REC.
+           
+           MOVE 1002 TO CUST-ID.
+           MOVE 'BOB' TO CUST-NAME.
+           MOVE 075000 TO CUST-SALES.
+           WRITE CUST-REC.
+           
+           MOVE 1003 TO CUST-ID.
+           MOVE 'CHARLIE' TO CUST-NAME.
+           MOVE 120000 TO CUST-SALES.
+           WRITE CUST-REC.
+           
+           CLOSE CUST-FILE.
+           DISPLAY 'CLOSE STATUS: ' WS-STATUS.
+           DISPLAY 'FINISHED WRITING 3 RECORDS TO CUSTFILE.'.
+           STOP RUN.

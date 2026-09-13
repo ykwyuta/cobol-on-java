@@ -1,6 +1,8 @@
 package dev.cobolonjava.runtime.program;
 
 import dev.cobolonjava.runtime.abend.StorageMap;
+import dev.cobolonjava.runtime.interop.ProgramSignature;
+import dev.cobolonjava.runtime.procedure.ProcedureManifest;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 
@@ -45,7 +47,7 @@ public interface CobolProgram {
      */
     default Storage runFresh(ProgramContext context, DataView... arguments) {
         Storage storage = Storage.wrap(initialStorage());
-        context.enter(name(), storage, storageMap(), this);
+        context.enterMain(name(), storage, storageMap(), this);
         try {
             run(storage, context, arguments);
         } catch (ProgramStop | ProgramReturn end) {
@@ -74,6 +76,16 @@ public interface CobolProgram {
      */
     default StorageMap storageMap() {
         return StorageMap.EMPTY;
+    }
+
+    /** 生成classへ埋め込まれた主entryのABI署名。旧生成物はnullを返す。 */
+    default ProgramSignature programSignature() {
+        return null;
+    }
+
+    /** 生成classへ埋め込まれた手続きmanifest。旧生成物はnullを返す。 */
+    default ProcedureManifest procedureManifest() {
+        return null;
     }
 
     /** {@code EXTERNAL} を書いた 01 レベルを 1 つも持たないプログラム。 */
@@ -109,6 +121,16 @@ public interface CobolProgram {
                                     ProgramContext context) {
         throw new UnsupportedOperationException(
                 name() + " has no procedure division to run a range of");
+    }
+
+    /**
+     * テスト・デバッガ用に、検証済みの通常SECTION範囲を合成的なPERFORMとして実行する。
+     * 範囲の安全性を判断するのは生成manifestであり、この低レベルSPIは判断を行わない。
+     */
+    default void performProcedureRange(int from, int through, Storage storage,
+                                       ProgramContext context, DataView[] arguments) {
+        throw new UnsupportedOperationException(
+                name() + " has no procedure division to run a test range of");
     }
 
     /**

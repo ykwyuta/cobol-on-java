@@ -2717,7 +2717,302 @@ IX215A が要求しているのは<b>開いているあいだ</b>の並びであ
 **解消条件**: 実機で `LINAGE` を書いたファイルを開き、最初の
 `WRITE ... AFTER ADVANCING n` の位置と `LINAGE-COUNTER` を見る。
 
-## P-089 `SYNCHRONIZED` の境界は、規格の説明から起こしたものである
+## P-089 初期の `ProgramId` はJava文字列を正規化する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `ProgramId` / `ProgramContext.resolve` |
+| 関連要件 | FR-080, FR-083, NFR-052 |
+
+**暫定の扱い**: プログラム名をJava `String`へ復号した後、周囲の空白を除き、
+`Locale.ROOT`で大文字化する。COBOLの英数字項目から来た名前は現在の`CodePage`で復号してから
+同じ規則を適用する。制御文字と空名は拒否する。
+
+**どこがずれうるか**: 方言固有の有効文字、末尾空白、DBCS、raw byteとしては異なるがUnicodeで
+同じになる名前、正規化後の衝突を完全には表現できない。
+
+**解消条件**: `ProgramNameCodec`を導入し、code page・方言ごとのraw byte正規化と衝突を
+互換性test vectorで固定する。
+
+## P-090 呼出しABI署名は主entryの固定長検査までとする
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 一部解決（主entryの引数個数・固定長を実装） |
+| 場所 | `ProgramCatalog` / `ProgramDefinition` / `JavaCallable` |
+| 関連要件 | FR-080〜FR-083, NFR-050, NFR-052 |
+
+**実装後の更新**: コンパイラが主entryの`PROCEDURE DIVISION USING`とLINKAGE 01レベルから
+`ProgramSignature` / `ProgramParameter`を生成する。固定長、子項目境界、USAGE、PICTURE、符号を
+`layoutHash`へ含める。署名付きcatalog定義ではJava入口、COBOL `CALL`、直接SECTION起動、ジョブ起動の
+直前に引数個数とバイト長を検査し、不一致なら呼び先へ入る前に拒否する。署名なし定義は既存生成物の
+移行用互換モードとして残す。catalog revision未指定時は引き続きUUIDを生成する。
+
+**どこがずれうるか**: 現在は主entry、必須、固定長、`BY REFERENCE`だけを生成する。
+`DataView[]`へ変換した後は`BY REFERENCE` / `BY CONTENT`を識別できない。`OMITTED`、`OPTIONAL`、
+`BY VALUE`、`RETURNING`、`ENTRY`、可変長、pointer、呼出し側生成ビューのlayout hash不一致はまだ
+検出できない。コンパイラCLIはsignature、class名、procedure hash、決定的revisionを持つ単一の
+deploy catalog manifestを生成するが、呼出し側ビューのhashは照合しない。manifestを使わない手動catalogの
+revision未指定時はUUIDであり、配備成果物の同一性を示さない。
+
+**解消条件**: entry単位の完全なsignatureとdeploy manifestを生成し、呼出し側ビューを含む互換性検査と
+`OMITTED` / `OPTIONAL` / `RETURNING` / `BY VALUE`のpositive / negative ABI test vectorを通す。
+配備経路ではmanifest由来revisionを必須にする。
+
+## P-091 `cobol-junit` 初期版は低レベルプログラム境界に限定する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `cobol-junit` |
+| 関連要件 | FR-061, FR-194, FR-195, FR-197, FR-198, FR-204 |
+
+**暫定の扱い**: JUnit 5からのソースコンパイル、`call` / `runMain`、出力捕捉、テストごとの
+セッション、低レベル`DataView`、外部プログラムstub / Mock、期待回数、引数スナップショットまでを
+第1増分とする。上書きは最初の実行前に固定する。`PER_CLASS` lifecycleは拒否する。
+
+**実装後の更新**: 明示的な通常SECTIONへの`PERFORM SECTION-NAME`だけを対象にする
+`ProcedureHook`と、JUnitのSECTION Mock / spy、作業場所・引数の前後スナップショットを実装した。
+段落PERFORM、`THRU`、`GO TO`、fall-throughを置換しないことは生成コード試験で固定した。
+program MockとSECTION Mock/spyの記録通番はテストセッション内で共通化した。
+コンパイラの`Compiled`結果にSECTION・段落・宣言部分フラグとSHA-256 `procedureHash`を加え、
+extension内で翻訳した対象はSECTION登録時に実在性を照合するよう更新した。さらに段落範囲、
+source位置、直接起動適格性と不適格理由をmanifestへ加え、適格な通常SECTIONを既存のPERFORM範囲
+実行器で直接起動できるようにした。直接起動ではLINKAGEを参照渡しし、WORKING-STORAGEを通常の
+program instanceと共有する。対象自身のMockは適用せず、内側の明示的PERFORM hookは有効に保つ。
+`GOBACK` / `STOP RUN` / 異常終了もprogram実行と同じ終了種別で記録する。
+
+**どこがずれうるか**: 統合済み`CobolInvocationLog`、開始・終了時刻と深度、copybook directory、
+共有コンパイルcache、型付きview、program spy、
+完全なentry `ProgramSignature`検査、manifestの配備成果物への埋込み、正確なcontrol-flow graph解析、並列・timeout・
+parameterized testを含む全cleanup経路のcontract testは未提供である。現Mock APIは署名を要求せず、
+現行コンパイラ生成classは埋込みmanifestを使えるが、手書き・旧版`program(...)`にはmanifestがなく、
+その対象ではtimes未指定のspyの名前誤りを見逃しうる。
+
+**解消条件**: [設計76](../design/76-junit-testing.md)の第2〜第4段階を実装し、特に安定した
+`ProcedureId` / `procedureHash`と明示的`PERFORM SECTION` hook、JUnit lifecycle matrixを合格させる。
+
+## P-092 手続きmanifestを生成classへ埋め込む
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 一部解決（生成classへの埋込みを実装） |
+| 場所 | `CobolCompiler.Compiled` / `ProcedureManifest` / `cobol-junit` |
+| 関連要件 | FR-061, FR-195, FR-204, NFR-050 |
+
+**実装後の更新**: SECTIONと段落の安定名、種別、宣言部分フラグ、段落範囲、source位置、
+直接起動適格性と不適格理由を持つmanifestを`CobolCompiler.Compiled`へ載せる。種別、名前、範囲、
+宣言部分フラグ、適格性を順序付きでSHA-256へ入れた`procedureHash`を生成する。source位置と理由文は
+ビルド環境や診断文の変更でhashを変えないため意図的に除外する。JUnit extensionがその場で翻訳した
+プログラムについて、通常SECTIONのMock / spy登録名と直接起動対象を実行前に照合する。同じmanifestと
+`ProgramSignature`を生成classのmetadata methodへ埋め込み、コンパイル結果を捨てたclassでも復元する。
+直接起動時には指定descriptorと実行対象class自身のmanifestを完全一致で再照合する。
+
+**どこがずれうるか**: 手書き`CobolProgram`と旧生成classはmetadataを持たない。単一配備catalogは
+program一覧、catalog revision、signatureとprocedure hashを持つが、署名されておらずclass本体のdigestを
+読込み時に再計算しない。metadata構築命令は手続き数に
+比例して生成methodを大きくするため、大規模資産ではJVMのmethod／constant-pool上限がリスクになる。
+また適格性判定は非構造化transferの有無による保守的判定であり、安全なローカル遷移も拒否する。
+
+**解消条件**: control-flow graphから範囲外transferを正確に解析する。大規模manifestを分割または
+resource化し、最大規模test vectorを通す。信頼された署名または配布時digestを検証し、複数catalogを
+明示規則で合成するpositive / negative testを通す。
+
+## P-093 SECTION直接起動は非構造化transferを保守的に拒否する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `CobolCompiler.procedureManifest` / `CobolSession.invokeProcedure` |
+| 関連要件 | FR-061, FR-195, FR-204 |
+
+**暫定の扱い**: 通常SECTION内の任意の深さに`GO TO`、`GO TO ... DEPENDING ON`、`ALTER`、
+`NEXT SENTENCE`があれば`directInvocationEligible=false`とし、直接起動時に
+`NonLocalProcedureTransferException`で拒否する。宣言SECTIONも拒否する。適格なSECTIONは通常の
+PERFORM範囲実行器で起動し、対象自身のMockを迂回する一方、内側の明示的PERFORM hookは維持する。
+実行直前に対象class自身の埋込みmanifestとdescriptorを完全一致で再照合する。
+
+**どこがずれうるか**: SECTION内だけを移動する安全なローカル`GO TO`も直接テストできない。
+現判定はcompiler IRのrecordを反射的に走査して入れ子のstatementを検出するため、新しいIR形状を
+追加した際の網羅性を継続して試験する必要がある。直接入口は本来のcallerやPERFORM stackを再現しない。
+
+**解消条件**: 明示的なcontrol-flow graphで遷移先を分類し、範囲外遷移、宣言節進入、ALTER状態だけを
+拒否する。反射走査を型付きvisitorへ置き換え、安全なローカル遷移のpositive vectorと範囲外遷移の
+negative vectorを固定する。
+
+## P-094 class埋込みmetadataの生成量に上限を設ける
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `ProgramGenerator.emitEmbeddedMetadata` |
+| 関連要件 | NFR-050, NFR-052 |
+
+**暫定の扱い**: `ProgramSignature`と`ProcedureManifest`を、生成classのmetadata methodが不変objectとして
+復元する。旧生成classとのABI互換のため`CobolProgram`の既定実装はnullを返す。metadataはprogram解決時に
+一度取得し、catalog側にもsignatureがあれば完全一致を要求する。
+
+**どこがずれうるか**: 現方式は引数・手続きごとにobject構築命令を生成するので、非常に大きい
+プログラムではJVMのmethod code 64KiB上限またはconstant-pool上限へ達しうる。JUnitの事前コンパイル
+登録はmetadata確認のためfactoryを準備時に一度呼ぶため、factoryに外部副作用がある設計とも両立しない。
+
+**解消条件**: metadataを固定数ごとのhelperへ分割するか、version付きの圧縮resourceとして格納し、
+最大引数数・最大SECTION／段落数の境界testを通す。ProgramFactoryは生成物の構築だけを行う純粋な
+factoryであることを公開契約にし、外部resource取得は実行時adapterへ分離する。
+
+## P-095 初期deploy catalogは単一資源・自己整合性検査に限定する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `DeployCatalogManifest` / `GeneratedProgramArtifact` / `DeployCatalogGenerator` |
+| 関連要件 | NFR-050, NFR-052, NFR-060 |
+
+**暫定の扱い**: コンパイラCLIは一回の起動で生成した全programを
+`META-INF/cobol/programs.json`へ出す。class byte列とmetadataから決定的revisionを生成する。
+readerは4MiB・深さ32を上限とし、未知field、重複JSON key、重複program／class、runtime ABI不一致、
+許可package外classを拒否する。標準資源が0件または複数件なら暗黙選択せず失敗する。class生成後に
+埋込みsignatureとprocedure hashをmanifestへ完全照合する。全ソースの翻訳に失敗した場合も空catalogを
+出力し、以前の成功ビルドのcatalogを残さない。
+
+**どこがずれうるか**: revisionにclass byte列を含めても、runtimeはclass resourceのdigestを再計算しない。
+manifestは署名されていないため、信頼境界を突破した攻撃者がclassとmanifestを同時に差し替える攻撃には
+耐えない。class内metadataの取得にはconstructor実行が必要で、照合前にstatic initializerとconstructorが
+動く。複数COBOL JAR、shaded JAR、JPMS、Spring Boot nested JARの合成規則も未確定である。
+
+**解消条件**: 配布時の署名または信頼されたdigestをclass resourceに対して初期化前に検証する。
+複数catalogについて重複program、revision集合、優先順位なしのmerge規則を定め、通常JAR、Spring Boot
+nested JAR、JPMS moduleのpositive / negative testを通す。constructorを純粋な生成物初期化に限定するか、
+metadataをclass初期化不要のresourceへ移す。
+
+## P-096 Db2第1増分は中立task/UOW構造契約に限定する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `cobol-db2` / `Db2TaskRuntime` / `SqlExecutorPort` / `UnitOfWorkPort` |
+| 関連要件 | FR-153〜FR-156, FR-160, FR-165, NFR-034, NFR-038 |
+
+**暫定の扱い**: `SPRING_MANAGED`と`DB2_DRIVER_MANAGED_HOLD`をtask開始時に固定する。
+UOWとSQL executorのprofile不一致、未承認`WITH HOLD`、native profileでcommit間に
+`ResourceLeaseId`が変わる実装をSQL実行前に拒否する。UOWは最初のSQLまで遅延開始し、明示commit / rollback後も
+次のSQLまで開始しない。正常完了はactive UOWをcommit、ABENDまたは未完了closeはrollbackし、いずれも
+task-scoped `UnitOfWorkPort.close()`を呼ぶ。SQLCAは全fieldを`EXACT` / `DERIVED` / `UNAVAILABLE`へ分類し、
+基本結果ではSQLCODE / SQLSTATEと導出可能なrow count以外を未提供とする。
+
+**どこがずれうるか**: `ResourceLeaseId`はadapterの自己申告であり同一物理Connectionを証明しない。
+現`SqlPlan` / `SqlBindings`は型付きhost variable、null indicator、出力のall-or-nothing反映を表現するが、
+static packageとVARCHAR group等はまだ表現しない。SQLCA field値のCOBOL storageも未実装である。
+Spring adapterは非hold cursorのhandle、Statement / ResultSetのclose順、transaction timeout、warning chainを
+接続したが、statement cancel、session単独close、`CANCEL`連動、高機能cursorは未実装である。
+Spring／JDBC型を含まないことは構造上維持するが、
+公開recordは実Db2 vectorが揃うまで互換APIとして凍結しない。
+
+Spring Boot 4.1.1用の通常UOW adapterは、同一`DataSource`のJDBC transaction manager、
+`REQUIRES_NEW`、timeout / read-only、commit / rollback / cleanup、rollback-only、thread所有までを
+H2で検証した。初期SQL executorは同じ`DataSource`のtransaction-bound connectionを使い、固定長文字、
+COMP-3、数字DISPLAY、BINARY、null indicatorによるDML / 単一行SELECTを実行する。出力は全項目を
+符号化してから反映し、損失変換を拒否する。JDBC diagnostic chainは値を含めず最大64件に制限する。
+非hold・forward-only・read-only cursorのOPEN / FETCH / CLOSEと、UOW完了前の逆順cleanupも接続した。
+これはH2の構造試験であり、Db2 SQLCA、暗黙UOW rollback、Db2固有cursor挙動を証明しない。
+
+`cobol-db2-jdbc`のdriver-managed UOWは専用providerからtaskごとに一度だけleaseを取得し、同じJDBC
+`Connection` objectとlease IDをcommit後の次UOWでも使用する。hold資源はcommitを越えて保持し、rollback / task closeで
+閉じる。取得時connection属性へのresetに成功した場合だけ再利用を許し、UOW完了、resource close、resetの
+いずれかが失敗すればleaseを破棄する。Db2 Community 12.1.5.0 / IBM JCC 12.1.4.0の限定試験で、
+同一object、`HOLD_CURSORS_OVER_COMMIT`、commit後FETCH、rollback / task closeのcleanupを確認した。
+native SQL executorからのDML / SELECT、COBOL host variable出力、`WITH HOLD` cursor操作も実Db2で確認した。
+接続断・プロセス停止、競合・deadlock、SQLCA全fieldの適合性試験はまだない。
+
+**解消条件**: Spring JDBC adapterとdriver-managed adapterへ同じcontract suiteを適用する。
+manager / DataSource identity、poolを含む同一物理connectionの確認、全cleanup、SQLWarning、
+SQLCA field値、障害時の再接続禁止を実Db2で検証する。残るcursor lifecycle、statement cancelと型を実装し、
+G-AR4 / G-AR5を合格させる。
+
+## P-097 CICS第1増分は中立commandと単一JVM会話CASに限定する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 |
+| 場所 | `cobol-cics` / `DefaultCicsGateway` / `ConversationStorePort` |
+| 関連要件 | FR-160〜FR-167, NFR-022, NFR-023, NFR-034 |
+
+**暫定の扱い**: 外部TRANSIDは1〜4文字の保守的な許可文字へ正規化し、不変registryからだけ
+初期programを解決する。task定義はCOMMAREA、container件数、単体長、合計長をcommand実行前に検査する。
+`CobolCicsTaskProgram`は一つのsessionで初期programを実行し、`LINK`は同じthreadとsessionで呼び、
+`XCTL`はJava stackを増やさずloopで移送する。`XCTL` / `RETURN`の内部stack unwindはsession failureにせず、
+公開境界では閉じたcontrol結果へ変換する。疑似会話はversion / owner / expiry / idempotency keyを持ち、COBOL起動前の
+原子的claimで期限付きleaseを一件だけ取得する。saveはIDとownerを維持して版を一つだけ進める。
+in-memory storeはreference / test用に限定する。コンパイラは静的PROGRAM / TRANSID、単純COMMAREA、
+数値LENGTHに限った`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`と、静的ABCODE / CANCEL / NODUMPの
+`ABEND`、4byte英数字領域への`ASSIGN ABCODE`を変換し、それ以外は黙って無視せず拒否する。
+ABENDは検証済みcodeとdump / cancel方針を持つ
+構造化原因のままtask boundaryへ渡す。
+
+**どこがずれうるか**: `CicsTaskCoordinator`はclaim、program port、RETURN結果、会話mutation、UOW、
+abort、cleanupを順序付けるが、production program portはdeadline / cooperative cancelとtask-local arenaを
+まだ実装しない。condition handlingは下記の
+PGMIDERR / generalized ERROR初期subsetと、明示ABENDに対するCOBOL LABEL形式のabend exitに限定する。
+`CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
+commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
+生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH / ABCODE、
+`HANDLE ABEND PROGRAM`、channel / containerを扱わない。`HANDLE ABEND LABEL` / `CANCEL` / `RESET`は
+明示ABENDだけを対象とし、Java例外やCICS内部異常をabend exitへ分類しない。dump要求も構造化するだけで、transaction dumpの採取、mask、
+保存、保持期限は未実装である。静的PROGRAM名の許可catalog照合は実行時である。
+leaseにはrenewalがなく、task timeoutとlease期限の設定を誤ると実行中に別要求が再claimしうる。
+caller提供の`Instant`はcluster node間の時計ずれを吸収せず、in-memory CASはprocess再起動やclusterで
+共有されない。`load`は排他権を与えず、誤用すると二重実行になる。payload生成後の上限検査だけでは
+HTTP body受信時のmemory枯渇を防げない。ownerは安全なbinding値に変換済みであることをadapter側が保証する。
+STRICT原子保存、NON_ATOMIC outcome journal、channel、BMS snapshot、CICS条件処理の残りは未実装である。
+
+EIBはIBM DFHEIBLKと同じ85byteのtask-local領域を持ち、初期subsetとして`EIBTRNID`、`EIBCALEN`、
+`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`を暗黙の読み取り専用項目として生成COBOLへ公開する。TRANSIDは実行時code pageで
+4byteにspace paddingし、CALENは初期COMMAREA長をsigned halfword、RESP / RESP2は各command outcomeを
+signed fullwordで保持する。完了した対応commandはEIBFNを更新し、プログラム制御群のPGMIDERRは
+6byte EIBRCODEを`01 00 00 00 00 00`とする。サービス群ごとに対応値が違うため未分類RESPは推測せず拒否する。
+COBOL文からの書込みは翻訳時に拒否する。未対応fieldはbinary zeroのままである。
+ABENDコードはEIBRCODEではなく`ASSIGN ABCODE`で取得する。初期subsetは単純データ名の
+4byte英数字受取領域だけを許可する。明示ABENDを捕捉した時点で現在codeをtask-localに記録し、
+handler移送後のASSIGNで右側space paddingした4文字を返す。abend未発生時はspace 4byteを返す。
+完了時は`EIBFN=02 08`、RESP / RESP2はNORMALとし、RESP等の共通optionはまだ受け付けない。
+`EIBAID`、`EIBDATE`、`EIBTIME`、`EIBTASKN`、端末情報は、HTTP taskに対する正しい由来とhost比較vectorが
+未確定のため推測値を設定しない。`ABEND`は正常outcomeを返さず構造化例外で終了するため、そのcommand自体の
+RESP / RESP2更新は行わない。command構文は`RESP`、RESPに付随する`RESP2`、`NOHANDLE`を受け、受取項目を
+4byte binary整数に限定する。RESPまたはNOHANDLE指定時はそのcommandの既定例外処理を抑止し、EIBへ
+結果を反映する。RESPはさらに指定項目へ転記する。どちらもない非normal outcomeは従来どおり
+runtime例外となる。初期condition mappingは
+LINK / XCTL対象そのものが未登録の場合の`PGMIDERR(27), RESP2=1`である。XCTLは移送元を失う前に
+session固定resolverへ解決可能性をprobeし、標準catalog / legacy resolverではfactory生成、class初期化、
+WORKING-STORAGE割当を行わない。独自resolverの互換defaultは`resolve`を使うため、副作用なしの判定が
+必要なら`isResolvable`をoverrideする。LINK先program内部の未解決CALLや登録済みXCTL先の生成・実行障害は
+PGMIDERRへ丸めず実行障害として維持する。`DFHRESP`は`NORMAL`と`PGMIDERR`だけを翻訳時定数へ変換し、
+それ以外のcondition名を拒否する。`PGMIDERR`とgeneralized `ERROR`の`HANDLE CONDITION`、handler省略による
+既定処置への復帰、`IGNORE CONDITION`を実装する。個別conditionが未登録ならERRORへfallbackするが、
+個別handlerを明示的に省略した状態はERRORより優先してCICS既定処置を選ぶ。一commandには最大16 conditionを
+空白区切りで列挙でき、重複、空リスト、IGNOREのlabelを拒否する。handler tableはCICS LINK levelごとに分離し、LINK先は呼出元の
+handlerを継承しない。RESP / NOHANDLE指定commandは登録済みhandlerを一回だけ迂回する。handler段落への
+移動は生成programの段落state machineへ段落番号を返して行い、Java例外とは区別する。
+`PUSH HANDLE` / `POP HANDLE`は現在のLINK level内でcondition tableとabend exitをLIFO退避・復元し、PUSHから
+POPまでは退避した処置の効果を停止する。退避stackもLINK level間で分離する。対応するPUSHのないPOPは、
+現時点ではCICS conditionへ変換せず実行時に拒否する。
+`HANDLE ABEND LABEL`はowner programと段落番号を一件登録し、`CANCEL`（option省略時も同じ）で無効化、
+`RESET`で再有効化する。明示ABEND時は現在levelから上位へ最初の有効なexitを選び、再入防止のため
+選択時に無効化する。`ABEND CANCEL`は全levelのexitを迂回する。`HANDLE ABEND PROGRAM`は未実装である。
+他conditionの分類は未実装である。
+同じLINK levelの通常COBOL CALLではtableを共有する。別programから登録元programのhandler段落へ戻る
+非局所移送は、runtime中立のowner付き`ProgramTargetTransfer`をCALL境界で伝播し、owner programの
+段落state machineへ戻す。中間program frameは各CALL境界で外し、業務例外やsession failureとは区別する。
+
+**解消条件**: ABEND / condition / EIBを含む生成CICS命令の終了・rollback・cleanup traceを通し、
+実CICS vectorで初期subsetのCOMMAREA長、RESP、制御移送を照合する。lease renewalまたはtimeout不変条件、DB/server時刻、受付段階のbody上限を
+実装する。Spring Session JDBCのSTRICT adapterとNON_ATOMIC adapterへ同じ並行・crash・expiry・logout・
+冪等再送contract suiteを適用し、複数instanceで検証する。EIB、BMS snapshot、実CICS比較vectorを追加し、
+G-AR1 / G-AR2 / G-AR3を合格させる。
+
+---
+
+## P-098 `SYNCHRONIZED` の境界は、規格の説明から起こしたものである
 
 | 項目 | 内容 |
 | --- | --- |

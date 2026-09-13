@@ -14,13 +14,19 @@
   <name>cobol-compiler</name>
   <description>
     COBOL コンパイラ。プリプロセッサ、構文解析、意味解析、コード生成を担う。
-    依存の向きは cobol-compiler から cobol-runtime への一方向のみである (要件 ARC-4)。
+    依存の向きは cobol-compiler から cobol-runtime と中立 subsystem API への一方向である
+    (要件 ARC-4)。
   </description>
 
   <dependencies>
     <dependency>
       <groupId>dev.cobolonjava</groupId>
       <artifactId>cobol-runtime</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-cics</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>

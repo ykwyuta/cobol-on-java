@@ -1,5 +1,6 @@
 package dev.cobolonjava.compiler.semantic;
 
+import dev.cobolonjava.cics.CicsEib;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.parser.OriginToken;
@@ -495,7 +496,7 @@ public final class DataDivisionBuilder {
                 item.setGlobalOwner(programName);
             } else if (clause.synchronizedClause() != null) {
                 // LEFT / RIGHT は書けるが、参照実装では<b>どちらも同じ</b>である。
-                // 項目は自然な境界に置かれる (暫定判断 P-089)
+                // 項目は自然な境界に置かれる (暫定判断 P-098)
                 item.setAligned(true);
             }
         }
@@ -1480,7 +1481,35 @@ public final class DataDivisionBuilder {
         returnCode.setSection(DataSection.SPECIAL_REGISTER);
         returnCode.setOffset(SpecialRegisterArea.RETURN_CODE_OFFSET);
         returnCode.setLength(returnCode.picture().size());
-        return Map.of("RETURN-CODE", returnCode);
+        Map<String, DataItem> registers = new LinkedHashMap<>();
+        registers.put("RETURN-CODE", returnCode);
+        registers.put("EIBTRNID", eibItem("EIBTRNID", "X(4)", Usage.DISPLAY,
+                CicsEib.EIBTRNID_OFFSET));
+        registers.put("EIBCALEN", eibItem("EIBCALEN", "S9(4)", Usage.COMP,
+                CicsEib.EIBCALEN_OFFSET));
+        registers.put("EIBFN", eibItem("EIBFN", "X(2)", Usage.DISPLAY,
+                CicsEib.EIBFN_OFFSET));
+        registers.put("EIBRCODE", eibItem("EIBRCODE", "X(6)", Usage.DISPLAY,
+                CicsEib.EIBRCODE_OFFSET));
+        registers.put("EIBRESP", eibItem("EIBRESP", "S9(8)", Usage.COMP,
+                CicsEib.EIBRESP_OFFSET));
+        registers.put("EIBRESP2", eibItem("EIBRESP2", "S9(8)", Usage.COMP,
+                CicsEib.EIBRESP2_OFFSET));
+        return Map.copyOf(registers);
+    }
+
+    private static DataItem eibItem(String name, String pictureText, Usage usage, int offset) {
+        DataItem item = new DataItem(INDEPENDENT_LEVEL, name, null);
+        Picture picture = PictureParser.parse(pictureText);
+        item.setPicture(picture);
+        item.setUsage(usage);
+        item.setSection(DataSection.CICS_EIB);
+        item.setOffset(offset);
+        item.setLength(picture.isNumeric()
+                ? NumericItem.of(pictureText, usage).byteLength()
+                : picture.size());
+        item.markReadOnly();
+        return item;
     }
 
     private static void collectTables(DataItem item, List<DataItem> tables) {
@@ -1676,7 +1705,7 @@ public final class DataDivisionBuilder {
      * 項目とその下位に位置を割り当て、<b>手前に入れた詰め物を含めて</b>何バイト進むかを返す。
      *
      * <p>詰め物が入るのは {@code SYNCHRONIZED} を書いた項目の手前だけである
-     * (暫定判断 P-089)。入れる位置が 01 レベルの先頭から数えた変位で決まるので、
+     * (暫定判断 P-098)。入れる位置が 01 レベルの先頭から数えた変位で決まるので、
      * 左から右へ 1 回で歩けばよい。群のどこに埋まっていても同じ道を通る。
      */
     private int layout(DataItem item, int offset) {
@@ -1700,7 +1729,7 @@ public final class DataDivisionBuilder {
     }
 
     /**
-     * 境界に合わせる幅 (要件 FR-021、暫定判断 P-089)。合わせない項目は 1 である。
+     * 境界に合わせる幅 (要件 FR-021、暫定判断 P-098)。合わせない項目は 1 である。
      *
      * <p>効くのは<b>2 進・浮動小数・指標</b>の項目だけである。表示形式とパック 10 進では
      * {@code SYNCHRONIZED} を書いても割り付けが変わらない。{@code SYNCHRONIZED} を
@@ -1746,7 +1775,7 @@ public final class DataDivisionBuilder {
     }
 
     /**
-     * 繰り返す群の 1 回分の長さを、境界へ合うように伸ばす (要件 FR-021、暫定判断 P-089)。
+     * 繰り返す群の 1 回分の長さを、境界へ合うように伸ばす (要件 FR-021、暫定判断 P-098)。
      *
      * <p>{@code OCCURS} を書いた群の中に {@code SYNCHRONIZED} の項目があると、
      * 2 回目以降の回が<b>ずれた位置から始まる</b>。1 回分の長さを、群の中でいちばん

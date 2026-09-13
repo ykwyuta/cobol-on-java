@@ -1,0 +1,20 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. FINPROG.
+       DATA DIVISION.
+       LINKAGE SECTION.
+       01  DFHCOMMAREA       PIC X(16).
+       PROCEDURE DIVISION USING DFHCOMMAREA.
+       MAIN-START.
+           DISPLAY '  [CICS:FINPROG] XCTL target executing in task.'
+           DISPLAY '  [CICS:FINPROG] Received COMMAREA: ' DFHCOMMAREA
+           MOVE 'STATE=NEXT_STEP ' TO DFHCOMMAREA
+
+      * 疑似会話 RETURN: 次回トランザクション NEXT を予約
+           DISPLAY '  [CICS:FINPROG] RETURN TRANSID(NEXT) with COMMAREA'
+           EXEC CICS RETURN TRANSID('NEXT')
+                     COMMAREA(DFHCOMMAREA)
+                     LENGTH(16)
+           END-EXEC
+
+           DISPLAY '  [CICS:FINPROG] SHOULD NOT REACH HERE'
+           GOBACK.
