@@ -28,6 +28,7 @@ public final class DataItem {
     private Usage usage;
     private SignPosition signPosition = SignPosition.UNSIGNED;
     private boolean justified;
+    private boolean aligned;
     private boolean blankWhenZero;
     private int occurs = 1;
     private boolean table;
@@ -99,6 +100,16 @@ public final class DataItem {
 
     public boolean justified() {
         return justified;
+    }
+
+    /**
+     * {@code SYNCHRONIZED} が書かれているか (要件 FR-021)。
+     *
+     * <p>境界に合わせるのは 2 進・浮動小数・指標の項目だけである。表示形式と
+     * パック 10 進では書いても割り付けが変わらない (暫定判断 P-089)。
+     */
+    public boolean aligned() {
+        return aligned;
     }
 
     public boolean blankWhenZero() {
@@ -297,6 +308,10 @@ public final class DataItem {
 
     void setJustified(boolean value) {
         this.justified = value;
+    }
+
+    void setAligned(boolean value) {
+        this.aligned = value;
     }
 
     void setBlankWhenZero(boolean value) {
