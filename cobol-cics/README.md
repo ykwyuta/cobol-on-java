@@ -31,7 +31,7 @@ COBOLを実行する入口は、必ず期待versionとownerを指定して`claim
 通常の例外を返したadapterも安全側で`UNKNOWN`相当として扱う。
 
 `cobol-compiler`の初期`EXEC CICS`変換は、静的`PROGRAM` / `TRANSID`、単純データ名の`COMMAREA`、
-正の数値定数`LENGTH`を使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT [ROLLBACK]`と、静的`ABCODE`、
+正の数値定数または省略した`LENGTH` (省略時はCOMMAREA項目の長さ)、データ名の`PROGRAM`を使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT [ROLLBACK]`と、静的`ABCODE`、
 `CANCEL`、`NODUMP`を使う`ABEND`を対象とする。task-local EIBの初期subsetとして`EIBTRNID`、
 `EIBCALEN`、`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`、`EIBTIME`、`EIBDATE`、`EIBTASKN`、`EIBTRMID`、
 `EIBCPOSN`、`EIBAID`を公開し (日時・task番号・端末fieldの値の出どころは暫定判断P-113)、コマンド単位の

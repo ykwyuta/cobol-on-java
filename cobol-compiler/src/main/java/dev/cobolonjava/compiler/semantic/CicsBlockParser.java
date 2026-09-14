@@ -162,6 +162,14 @@ final class CicsBlockParser {
         remainder = noDumpOption.remainder;
         ParsedOption<Boolean> immediateOption = extractFlag("IMMEDIATE", remainder);
         remainder = immediateOption.remainder;
+        ParsedOption<Boolean> synconreturnOption = extractFlag("SYNCONRETURN", remainder);
+        remainder = synconreturnOption.remainder;
+        if (Boolean.TRUE.equals(synconreturnOption.value)
+                && operation != Statement.CicsOperation.LINK) {
+            throw new IllegalArgumentException("SYNCONRETURN is only supported by LINK");
+        }
+        // SYNCONRETURNは分散プログラムリンクで遠隔regionに同期点を取らせる指定であり、
+        // 同じregion内のLINKでは効果を持たない。このLINKは常にlocalなので保持しない (暫定判断 P-114)
         boolean rollback = Boolean.TRUE.equals(rollbackOption.value);
         boolean cancel = Boolean.TRUE.equals(cancelOption.value);
         boolean noDump = Boolean.TRUE.equals(noDumpOption.value);
@@ -274,9 +282,9 @@ final class CicsBlockParser {
         if (length != null && commarea == null) {
             throw new IllegalArgumentException("LENGTH requires COMMAREA");
         }
-        if (commarea != null && length == null) {
-            throw new IllegalArgumentException("initial EXEC CICS support requires numeric LENGTH");
-        }
+        // COMMAREAだけを書いたときのLENGTHは、COBOLではtranslatorがデータ項目の長さで補う。
+        // 生成側がその長さを使う。LENGTHを必須にしていたのは規則を狭く決めすぎていた
+
         if (operation == Statement.CicsOperation.RETURN
                 && commarea != null && transId == null) {
             throw new IllegalArgumentException("RETURN COMMAREA requires TRANSID");

@@ -2944,8 +2944,9 @@ G-AR4 / G-AR5を合格させる。
 `XCTL`はJava stackを増やさずloopで移送する。`XCTL` / `RETURN`の内部stack unwindはsession failureにせず、
 公開境界では閉じたcontrol結果へ変換する。疑似会話はversion / owner / expiry / idempotency keyを持ち、COBOL起動前の
 原子的claimで期限付きleaseを一件だけ取得する。saveはIDとownerを維持して版を一つだけ進める。
-in-memory storeはreference / test用に限定する。コンパイラは静的PROGRAM / TRANSID、単純COMMAREA、
-数値LENGTHに限った`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`と、静的ABCODE / CANCEL / NODUMPの
+in-memory storeはreference / test用に限定する。コンパイラは静的またはデータ名のPROGRAM、静的TRANSID、
+単純COMMAREA、数値定数または省略したLENGTHを使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`と、
+静的ABCODE / CANCEL / NODUMPの
 `ABEND`、4byte英数字領域への`ASSIGN ABCODE`を変換し、それ以外は黙って無視せず拒否する。
 ABENDは検証済みcodeとdump / cancel方針を持つ
 構造化原因のままtask boundaryへ渡す。
@@ -3491,3 +3492,31 @@ task 番号は task ID (UUID) から作らない。地方時は JVM の既定か
 
 **解消条件**: host の EIB の byte 列 (task 開始直後と `ASKTIME` 後) を採り、符号と時刻の
 更新規則を固定する。端末ポートを入れたら `EIBAID` / `EIBCPOSN` / `EIBTRMID` を入力から設定する。
+
+---
+
+## P-114 LINK の LENGTH 省略と SYNCONRETURN
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `CicsBlockParser`、`ProgramGenerator.planCicsCommarea` |
+| 関連要件 | FR-160 |
+
+**一度狭く決めていた**: 初期 subset は `COMMAREA` に数値定数の `LENGTH` を必須にしていた。
+Bank-of-Z の `LINK` / `RETURN` の `COMMAREA` 146 箇所は<b>すべて LENGTH を書いていない</b>。
+COBOL では CICS translator がデータ項目の長さを補う。全診断を数えて初めて見えた
+(最初に止まった理由だけでは、手前の未対応命令に隠れていた)。自分の試験は狭いほうを
+「拒否すること」として固定していた。
+
+**いまの扱い**: `LENGTH` を省いた `COMMAREA` はデータ項目の翻訳時の長さで渡す。
+`LENGTH(データ名)` と `LENGTH OF` は未対応のまま断る。
+
+`SYNCONRETURN` は `LINK` だけに受け、効果を持たせない。分散プログラムリンクで遠隔 region に
+同期点を取らせる指定であり、この処理系の `LINK` は常に同じ task・同じ UOW で呼ぶためである。
+
+**どこがずれうるか**: host で local LINK に `SYNCONRETURN` を書いたとき、無視されるのか
+`INVREQ` になるのかを確かめていない。遠隔 LINK (`SYSID`) を入れるときは、この扱いを見直す。
+
+**解消条件**: host で local LINK + `SYNCONRETURN` の RESP を採る。遠隔 LINK を設計するときに
+同期点の境界を決め直す。

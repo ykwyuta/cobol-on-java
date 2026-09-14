@@ -98,6 +98,9 @@ Bank-of-Z は `RESP` で判定しており、`EIBRCODE` を読まない。
   名前として正しいが catalog に無ければ、静的名と同じく `PGMIDERR`, `RESP2=1`。
 - 許可は従来どおり catalog が決める。データ名からクラス名や Bean 名を組み立てない
   (設計 77 §7.2)。
+- `COMMAREA` の `LENGTH` を省いたときは、translator と同じくデータ項目の翻訳時の長さを使う。
+  `LENGTH(データ名)` と `LENGTH OF` は後続増分とする。
+- `SYNCONRETURN` は `LINK` だけに受け、local LINK では効果を持たない (暫定判断 P-114)。
 
 ## 5. システム情報: ASSIGN
 

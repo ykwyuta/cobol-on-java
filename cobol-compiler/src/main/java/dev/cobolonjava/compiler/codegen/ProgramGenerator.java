@@ -971,13 +971,15 @@ public final class ProgramGenerator {
                     + statement.length() + ", available=" + available.getAsInt());
             return null;
         }
+        // LENGTHを省いたときはtranslatorと同じくデータ項目の長さを使う
+        int length = statement.length() < 0 ? available.getAsInt() : statement.length();
         Runnable address = planAddress(statement.commarea(), statement.origin());
         if (address == null) {
             return null;
         }
         return () -> {
             address.run();
-            push(statement.length());
+            push(length);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "byReference",
                     "(L" + STORAGE + ";II)L" + DATA_VIEW + ";", false);
         };

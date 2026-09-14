@@ -112,6 +112,31 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("LENGTHを省いたCOMMAREAはデータ項目の長さで渡し、SYNCONRETURNはlocal LINKで効果を持たない")
+    void omittedLengthUsesTheCommareaItemLength() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> main = compile(loader, "MAIN", List.of(
+                "EXEC CICS LINK PROGRAM('CHILD') COMMAREA(LK-AREA) SYNCONRETURN END-EXEC",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC"));
+        Supplier<CobolProgram> child = compile(loader, "CHILD", List.of(
+                "IF EIBCALEN = 4 MOVE 'FULL' TO LK-AREA END-IF",
+                "GOBACK"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("MAIN", main)
+                .cobolProgram("CHILD", child)
+                .build();
+        List<SyncpointAction> syncpoints = new ArrayList<>();
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 8)
+                .execute(definition(), CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> syncpoints.add(action));
+
+        assertEquals("FULL", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertEquals(List.of(), syncpoints);
+    }
+
+    @Test
     @DisplayName("PROGRAMのデータ域が名前として正しくなければPGMIDERRへ丸めず失敗する")
     void rejectsInvalidProgramNameInDataArea() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -188,8 +213,10 @@ class CicsGenerationTest {
                 "duplicate PROGRAM option");
         assertRejected("EXEC CICS RETURN PROGRAM(WS-PGM) END-EXEC",
                 "RETURN does not accept PROGRAM");
-        assertRejected("EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC",
-                "numeric LENGTH");
+        assertRejected("EXEC CICS XCTL PROGRAM('NEXTPGM') SYNCONRETURN END-EXEC",
+                "SYNCONRETURN is only supported by LINK");
+        assertRejected("EXEC CICS LINK PROGRAM('CHILD') LENGTH(4) END-EXEC",
+                "LENGTH requires COMMAREA");
         assertRejected("EXEC CICS RETURN TRANSID('TOO-LONG') END-EXEC",
                 "TRANSID must contain 1 to 4");
     }
