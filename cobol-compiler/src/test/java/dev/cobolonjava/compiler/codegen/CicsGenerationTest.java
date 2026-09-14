@@ -137,6 +137,17 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("EXEC CICSのoptionには修飾したデータ名を書け、修飾が合わなければ断る")
+    void acceptsQualifiedOptionNamesAndDfhbmsca() {
+        CobolCompiler.Result result = compileResult("QUALNM", List.of(
+                "EXEC CICS FORMATTIME ABSTIME(WS-ABS) DDMMYYYY(WS-DATE) TIME(WS-QTIME OF WS-GRP)"
+                        + " DATESEP END-EXEC"));
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) TIME(WS-QTIME OF WS-RESP) END-EXEC",
+                "no WS-QTIME is contained in WS-RESP");
+    }
+
+    @Test
     @DisplayName("ENQで資源を得てDEQで返し、LENGTHの無い形と域を越えるLENGTHは断る")
     void enqueuesAndDequeues() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -1329,6 +1340,8 @@ class CicsGenerationTest {
                 "01 WS-CHAN PIC X(16).",
                 "01 WS-CONT PIC X(16).",
                 "01 WS-FLEN PIC S9(8) COMP.",
+                "01 WS-GRP.",
+                "   03 WS-QTIME PIC 9(6).",
                 "LINKAGE SECTION.",
                 "01 LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.",

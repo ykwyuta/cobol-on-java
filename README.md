@@ -187,12 +187,13 @@ NIST CCVS85 の<b>受理率</b>は 96.9% (458 本中 444 本、壊れたもの 0
 `ACCEPT` のすぐあとで対になる項目と比べており、合否を決めるのはプログラムのほうである。
 配布物の検査プログラムは<b>全数を流している</b> (札が足りずに流せないものは無い)。
 CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資産 32 本を
-`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 24 本</b>である。
+`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 25 本</b>である。
 全診断を数えると、BMS 記号マップ写し句、`DFHAID`、EIB、`RETURN IMMEDIATE`、`PROGRAM(データ名)`、
 `LENGTH` を省いた `COMMAREA`、`ASSIGN`、`ASKTIME` / `FORMATTIME`、`DELAY`、`SEND MAP` / `TEXT` /
 `CONTROL`、`RECEIVE MAP`、`ABEND ABCODE(データ名)`、`BIF DEEDIT`、`EXEC SQL` の初期 subset、
 `USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER`、`ENQ` / `DEQ` はもう止めていない (設計 79)。残る CICS 命令は
-`INQUIRE` / `SET TERMINAL` (各 2)、`INQUIRE ASSOCIATION` (1)、`DFHBMSCA` (1)、`WRITE` (ファイル制御、1) である。
+`INQUIRE` / `SET TERMINAL` (各 2)、`INQUIRE ASSOCIATION` (1)、`LENGTH(LENGTH OF 項目)` (1)、`WRITE` (ファイル制御、1) である。
+`DFHBMSCA` は公開文書の意味を 3270 の属性 byte で表して作る (P-129)。
 言語側では `INCLUDE SQLDA` (1)、LE の `CEEIGZCT` (1) が残っている。浮動小数点項目は `+ - *` の `COMPUTE`、
 転記、比較を扱う (P-127)。BNK1TFN は 28 byte の域に `LENGTH(29)` を書いており、はみ出す 1 byte の中身が
 ホストの記憶域の並びで決まるため、推測せず断ったままにしている。ABNDPROC は `EXEC CICS WRITE` (ファイル制御) で止まる。

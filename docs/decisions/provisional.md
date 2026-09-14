@@ -3929,3 +3929,30 @@ region をまたぐ排他は確かめていない。実機の待ちは DTIMOUT �
 
 **解消条件**: 実機の trace で EIBFN / EIBRCODE と重ねた ENQ の扱いを確かめる。複数 JVM で動かす構成が決まれば、
 共有の排他 (DB の行ロック等) を実装する。
+
+## P-129 DFHBMSCA は公開文書の意味を 3270 の属性 byte で表して作る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。P-112 (CICS の写し句を公開仕様から作る) の続き |
+| 場所 | `CicsSystemCopybooks.ATTRIBUTE_CONSTANTS` / `EXTENDED_CONSTANTS` |
+| 関連要件 | FR-084 |
+
+**暫定の扱い**: IBM の製品の原文は参照しない。CICS の公開文書「BMS constants」は名前と意味 (「Protected and
+MDT set」等) を載せるが値を載せない。そこで意味を 3270 データストリームの属性 byte で表した。
+
+| 名前 | 意味 | 値 |
+| --- | --- | --- |
+| `DFHBMUNP` / `DFHBMUNN` / `DFHBMPRO` / `DFHBMASK` | 非保護 / 非保護数字 / 保護 / 自動 skip | X'40' / X'50' / X'60' / X'F0' |
+| `DFHBMBRY` / `DFHBMDAR` | 明るい / 暗い | X'C8' / X'4C' |
+| `DFHBMFSE` / `DFHBMPRF` / `DFHBMASF` / `DFHBMASB` | MDT / 保護+MDT / 自動 skip+MDT / 自動 skip+明るい | X'C1' / X'61' / X'F1' / X'F8' |
+| 色 `DFHDFCOL`、`DFHBLUE`〜`DFHNEUTR` | 既定、青〜中間色 | X'00'、X'F1'〜X'F7' |
+| 強調 `DFHDFHI`、`DFHBLINK` / `DFHREVRS` / `DFHUNDLN` | 既定、点滅 / 反転 / 下線 | X'00'、X'F1' / X'F2' / X'F4' |
+
+基本属性は印字可能な文字にする変換表で上位の bit が決まる。テストは値を `BmsAttributeCodes` で読み戻し、
+文書の意味と一致することを確かめる。印字制御の `DFHBMPEM` / `DFHBMPNL` と、ここに無い名前は置かないので、
+使えば「未定義」で断る。項目の並びと FILLER は実物と突き合わせていない。
+
+`EXEC CICS` の option の値には `項目 OF 群` の修飾名を書ける (CREACC の `TIME(PROC-TRAN-TIME OF PROCTRAN-AREA)`)。
+
+**解消条件**: 実機の `DFHBMSCA` を翻訳した記号の値と突き合わせる。

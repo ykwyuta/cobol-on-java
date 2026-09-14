@@ -26,9 +26,11 @@ final class CicsBlockParser {
     private static final Pattern SEND_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+SEND\\b(.*?)END-EXEC\\s*$");
     /** SENDのoption。値は引用符つきの名前、データ名、数字、または値なし。 */
+    /** option の値に書くデータ名。{@code 項目 OF 群} の修飾を含む。 */
+    private static final String DATA_NAME = "[A-Z][A-Z0-9-]*(?:\\s+(?:OF|IN)\\s+[A-Z][A-Z0-9-]*)*";
     private static final Pattern SEND_OPTION = Pattern.compile(
             "(?is)\\s*([A-Z0-9][A-Z0-9-]*)"
-                    + "(?:\\s*\\(\\s*(?:'([^']*)'|(\\d{1,9})|([A-Z][A-Z0-9-]*))\\s*\\))?");
+                    + "(?:\\s*\\(\\s*(?:'([^']*)'|(\\d{1,9})|(" + DATA_NAME + "))\\s*\\))?");
     private static final Pattern BMS_NAME = Pattern.compile("[A-Z@#$][A-Z0-9@#$]{0,6}");
     private static final Pattern CONTAINER_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(GET|PUT)\\s+CONTAINER\\b(.*?)END-EXEC\\s*$");
@@ -48,7 +50,7 @@ final class CicsBlockParser {
     /** 時間命令のoption。値はデータ名か1文字の定数、または値なし (DATESEP等)。 */
     private static final Pattern TIME_OPTION = Pattern.compile(
             "(?is)\\s*([A-Z0-9][A-Z0-9-]*)"
-                    + "(?:\\s*\\(\\s*(?:([A-Z0-9][A-Z0-9-]*)|'([^'])')\\s*\\))?");
+                    + "(?:\\s*\\(\\s*(?:(" + DATA_NAME + "|[0-9][A-Z0-9-]*)|'([^'])')\\s*\\))?");
     private static final Pattern ASSIGN_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+ASSIGN\\b(.*?)END-EXEC\\s*$");
     /** ASSIGNのoptionは受取域のデータ名だけをとる。定数やRESPはここで形が合わない。 */

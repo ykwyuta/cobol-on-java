@@ -52,6 +52,7 @@ class CicsSystemCopyBookResolverTest {
         assertTrue(text.contains("02  DFHPF24  PIC X VALUE X'4C'."), text);
         assertEquals(Optional.of(BmsAid.PF13), BmsAid.ofValue(0xC1));
         assertEquals(Optional.empty(), new CicsSystemCopyBookResolver().resolve("DFHAID", "SYSLIB"));
-        assertEquals(Optional.empty(), new CicsSystemCopyBookResolver().resolve("DFHBMSCA", null));
+        // 公開仕様から作れない写し句は「見つからない」のままにする
+        assertEquals(Optional.empty(), new CicsSystemCopyBookResolver().resolve("DFHEIBLK", null));
     }
 }

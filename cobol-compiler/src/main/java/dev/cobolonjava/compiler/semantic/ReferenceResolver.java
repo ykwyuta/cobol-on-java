@@ -180,6 +180,16 @@ public final class ReferenceResolver {
      * データ部のどこにも書かれていない。
      */
     public DataReference resolveName(String name, Origin origin) {
+        String[] parts = name.strip().split("(?i)\\s+(?:OF|IN)\\s+");
+        if (parts.length > 1) {
+            // EXEC ブロックの option には「項目 OF 群」と書ける。構文木を持たないので綴りから分ける
+            List<String> names = new ArrayList<>();
+            for (String part : parts) {
+                names.add(part.toUpperCase(Locale.ROOT));
+            }
+            DataItem item = resolveQualified(names, origin);
+            return item == null ? null : new DataReference(item, List.of(), null, origin);
+        }
         List<DataItem> found = layout.findAll(name);
         if (found.isEmpty()) {
             DataItem index = layout.findIndex(name);
@@ -206,6 +216,11 @@ public final class ReferenceResolver {
         for (CobolParser.DataNameContext name : context.dataName()) {
             names.add(name.getText().toUpperCase(Locale.ROOT));
         }
+        return resolveQualified(names, origin);
+    }
+
+    /** 先頭が目的の名前、続きが修飾の名前である並びから項目 1 個を決める。 */
+    private DataItem resolveQualified(List<String> names, Origin origin) {
         String target = names.get(0);
         List<String> qualifiers = names.subList(1, names.size());
 
