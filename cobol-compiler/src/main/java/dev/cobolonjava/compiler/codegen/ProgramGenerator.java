@@ -1149,9 +1149,10 @@ public final class ProgramGenerator {
             run.visitLdcInsn(statement.mapset());
             run.visitLdcInsn(statement.map());
             into.run();
+            run.visitInsn(statement.asis() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "receiveMapCondition",
-                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + DATA_VIEW + ";Z)I", false);
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + DATA_VIEW + ";ZZ)I", false);
             emitCicsConditionTransfer();
         });
     }

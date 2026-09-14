@@ -441,8 +441,15 @@ final class CicsBlockParser {
             throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
         }
         for (String name : options.keySet()) {
-            if (!Set.of("MAP", "MAPSET", "INTO", "RESP", "RESP2", "NOHANDLE").contains(name)) {
+            if (!Set.of("MAP", "MAPSET", "INTO", "TERMINAL", "ASIS", "RESP", "RESP2", "NOHANDLE").contains(name)) {
                 throw new IllegalArgumentException("unsupported RECEIVE MAP option: " + name);
+            }
+        }
+        // TERMINAL は入力を端末から読む既定の形を明示するだけである。ASIS は大文字変換をしない
+        for (String flag : List.of("TERMINAL", "ASIS")) {
+            String[] value = options.get(flag);
+            if (value != null && (value[0] != null || value[1] != null || value[2] != null)) {
+                throw new IllegalArgumentException(flag + " does not take a value");
             }
         }
         String map = bmsName("MAP", options.get("MAP"));
@@ -463,7 +470,7 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
-                new ReceiveSpec(map, mapset, into), null);
+                new ReceiveSpec(map, mapset, into, options.containsKey("ASIS")), null);
     }
 
     /**
@@ -1087,7 +1094,7 @@ final class CicsBlockParser {
     }
 
     /** RECEIVE MAPの、データ名を解決する前の形。 */
-    record ReceiveSpec(String map, String mapset, String into) {
+    record ReceiveSpec(String map, String mapset, String into, boolean asis) {
     }
 
     /** SEND命令の、データ名を解決する前の形。 */

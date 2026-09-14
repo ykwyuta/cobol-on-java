@@ -1806,7 +1806,7 @@ public final class ProcedureBuilder {
                     throw new IllegalArgumentException(
                             "RECEIVE MAP INTO must be an alphanumeric or group data area");
                 }
-                return withCicsResponse(new Statement.CicsReceiveMap(spec.map(), spec.mapset(), into,
+                return withCicsResponse(new Statement.CicsReceiveMap(spec.map(), spec.mapset(), into, spec.asis(),
                         parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
             }
             if (parsed.send() != null) {

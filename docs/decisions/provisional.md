@@ -3980,7 +3980,9 @@ MDT set」等) を載せるが値を載せない。そこで意味を 3270 デ�
 - 端末が UCTRAN なら、`RECEIVE MAP` の入力の英小文字 a〜z を大文字にしてから読む。TRANIDONLY は map の入力を変えない
 - EIBFN は INQUIRE TERMINAL X'5822'、SET TERMINAL X'5824' とした。実機とは突き合わせていない
 
-**どこがずれうるか**: 国別文字の大文字変換、`RECEIVE MAP ASIS`、transaction の PROFILE による上書きは扱わない。
+- `RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。`TERMINAL` は端末から読む既定の形を明示するだけとする
+
+**どこがずれうるか**: 国別文字の大文字変換、transaction の PROFILE による上書きは扱わない。
 既定の大文字変換は region の構成で変えられるが、実機の TYPETERM と合わせるのは利用者である。
 
 **解消条件**: 実機で `DFHVALUE(UCTRAN)` 等を翻訳した値と EIBFN を確かめる。ほかの端末を扱うなら端末定義の設計を足す。

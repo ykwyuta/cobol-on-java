@@ -702,7 +702,7 @@ public final class CicsRuntimeOps {
      */
     public static int receiveMapCondition(
             ProgramContext context, String mapsetName, String mapName, DataView into,
-            boolean suppressDefaultHandling) {
+            boolean asis, boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
         dev.cobolonjava.cics.bms.BmsMapsetCatalog catalog = execution.environment().mapsets()
@@ -718,7 +718,7 @@ public final class CicsRuntimeOps {
                         "RECEIVE MAP requires terminal input carried by the request;"
                                 + " a conversational RECEIVE cannot wait within one task"));
         // 端末が大文字変換 (UCTRAN) なら、map への入力も大文字にしてから読む。TRANIDONLY は transaction ID だけ
-        boolean uppercase = execution.task().terminalId()
+        boolean uppercase = !asis && execution.task().terminalId()
                 .map(terminal -> execution.environment().terminals().uppercaseTranslation(terminal) == CicsCvda.UCTRAN)
                 .orElse(false);
         dev.cobolonjava.cics.bms.BmsTerminalInput input = uppercase ? carried.uppercased() : carried;

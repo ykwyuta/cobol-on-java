@@ -68,6 +68,7 @@ class CicsTerminalGenerationTest {
             card("         DFHMDF POS=(1,1),LENGTH=5,INITIAL='TITLE',ATTRB=(PROT,NORM)", false),
             card("CUSTNO   DFHMDF POS=(5,17),LENGTH=10,ATTRB=(NORM,NUM,IC)", false),
             card("MESSAGE  DFHMDF POS=(23,1),LENGTH=20,ATTRB=(BRT,PROT)", false),
+            card("NAME     DFHMDF POS=(24,1),LENGTH=8,ATTRB=(UNPROT,NORM)", false),
             card("         DFHMSD TYPE=FINAL", false),
             card("         END", false)) + "\n";
 
@@ -107,7 +108,17 @@ class CicsTerminalGenerationTest {
                 TransId.of("TX01"), "terminal-test", Instant.parse("2026-09-10T03:00:00Z")));
     }
 
+    private static CicsEnvironment environment() {
+        return CicsEnvironment.unconfigured()
+                .withMapsets(BmsMapsetCatalog.of(List.of(BmsParser.parse(BMS))));
+    }
+
     private static TaskCompletion run(CobolCompiler.Result result, String input, CicsTaskContext task) {
+        return run(result, input, task, environment());
+    }
+
+    private static TaskCompletion run(CobolCompiler.Result result, String input, CicsTaskContext task,
+                                      CicsEnvironment environment) {
         assertTrue(result.succeeded(), result.diagnostics().toString());
         Loader loader = new Loader();
         Class<?> type = loader.define(result.className(), result.classFile());
@@ -120,8 +131,6 @@ class CicsTerminalGenerationTest {
                     }
                 })
                 .build();
-        CicsEnvironment environment = CicsEnvironment.unconfigured()
-                .withMapsets(BmsMapsetCatalog.of(List.of(BmsParser.parse(BMS))));
         return new CobolCicsTaskProgram(
                 CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
                 .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("SCREEN1"),
@@ -204,6 +213,31 @@ class CicsTerminalGenerationTest {
     }
 
     @Test
+    @DisplayName("端末がUCTRANならRECEIVE MAPは英小文字を大文字にし、ASISなら変えない")
+    void uppercasesInputForUctranTerminalsUnlessAsis() throws IOException {
+        CobolCompiler compiler = compiler();
+        CobolCompiler.Result plain = compiler.compile("SCREEN1.cbl", program(PROCEDURE));
+        String[] asisProcedure = java.util.Arrays.stream(PROCEDURE)
+                .map(line -> line.replace("INTO(SCRMPI) RESP(WS-RESP)", "INTO(SCRMPI) ASIS RESP(WS-RESP)"))
+                .toArray(String[]::new);
+        CobolCompiler.Result asis = compiler.compile("SCREEN1.cbl", program(asisProcedure));
+        BmsScreenSnapshot sent = ((CicsTerminalScreen.MapScreen) run(plain, "MAP ").screen()
+                .orElseThrow()).snapshot();
+        CicsEnvironment environment = environment();
+        environment.terminals().setUppercaseTranslation("T001", dev.cobolonjava.cics.CicsCvda.UCTRAN);
+        CicsTaskContext task = new CicsTaskContext(new CicsTaskId("task_terminal_uctran"),
+                TransId.of("TX01"), "terminal-test", Instant.parse("2026-09-10T03:00:02Z"))
+                .withTerminalId(Optional.of("T001"))
+                .withTerminal(Optional.of(new BmsTerminalInput(BmsAid.ENTER, 0,
+                        List.of(new BmsTerminalInput.FieldInput("NAME", 1, "smith")))), Optional.of(sent));
+
+        assertEquals("SMITH   ", ((CicsTerminalScreen.MapScreen) run(plain, "RECV", task, environment)
+                .screen().orElseThrow()).snapshot().field("NAME", 1).orElseThrow().data());
+        assertEquals("smith   ", ((CicsTerminalScreen.MapScreen) run(asis, "RECV", task, environment)
+                .screen().orElseThrow()).snapshot().field("NAME", 1).orElseThrow().data());
+    }
+
+    @Test
     @DisplayName("SEND TEXTはmapを持たない画面を作る")
     void sendsText() throws IOException {
         TaskCompletion result = run(compiler().compile("SCREEN1.cbl", program(PROCEDURE)), "TEXT");
@@ -226,8 +260,9 @@ class CicsTerminalGenerationTest {
                 new String[] {"EXEC CICS SEND TEXT ERASE END-EXEC", "SEND TEXT requires FROM"},
                 new String[] {"EXEC CICS SEND MAP('SCRMP') FROM(WS-RESP) END-EXEC",
                         "alphanumeric or group"},
-                new String[] {"EXEC CICS RECEIVE MAP('SCRMP') INTO(SCRMPI) ASIS END-EXEC",
-                        "unsupported RECEIVE MAP option: ASIS"},
+                // 72 桁を越えると END-EXEC が切れる。受けない option の診断は INTO の検査より先に出る
+                new String[] {"EXEC CICS RECEIVE MAP('SCRMP') FROM(SCRMPI) END-EXEC",
+                        "unsupported RECEIVE MAP option: FROM"},
                 new String[] {"EXEC CICS RECEIVE MAP('SCRMP') END-EXEC",
                         "RECEIVE MAP requires INTO"})) {
             CobolCompiler.Result result = compiler.compile("SCREEN1.cbl",

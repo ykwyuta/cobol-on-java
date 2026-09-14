@@ -171,6 +171,11 @@ class CicsGenerationTest {
                 "UCTRANST must be a 4-byte binary integer");
         assertRejected("EXEC CICS INQUIRE TERMINAL(EIBTRMID) ACQSTATUS(WS-RESP) END-EXEC",
                 "unsupported INQUIRE TERMINAL option: ACQSTATUS");
+        CobolCompiler.Result asis = compileResult("RECVAS", List.of(
+                "EXEC CICS RECEIVE MAP('M1') MAPSET('MS1') INTO(WS-DATE) TERMINAL ASIS RESP(WS-RESP) END-EXEC"));
+        assertTrue(asis.succeeded(), () -> "unexpected diagnostics: " + asis.diagnostics());
+        assertRejected("EXEC CICS RECEIVE MAP('M1') INTO(WS-DATE) TERMINAL(WS-PGM) END-EXEC",
+                "TERMINAL does not take a value");
     }
 
     @Test

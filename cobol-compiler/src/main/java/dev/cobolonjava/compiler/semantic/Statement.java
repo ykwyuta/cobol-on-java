@@ -140,6 +140,8 @@ public sealed interface Statement {
             String map,
             String mapset,
             DataReference into,
+            /* ASIS: 端末が UCTRAN でも入力を大文字にしない */
+            boolean asis,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {
     }
