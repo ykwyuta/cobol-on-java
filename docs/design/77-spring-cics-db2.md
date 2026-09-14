@@ -70,7 +70,10 @@ BMSは翻訳時の部分を先に実装した（2026-09-14）。`cobol-cics`の`
 `SEND MAP` / `RECEIVE MAP`、物理マップと画面snapshot、`BmsInputDecoder`、`DFHBMSCA`、
 Thymeleaf renderer、JavaScript terminal state machineは未実装である。
 EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`を
-実装済みである。
+実装済みである。`EIBTIME`、`EIBDATE`、`EIBTASKN`、`EIBTRMID`、`EIBCPOSN`、`EIBAID`も公開位置の
+読み取り専用項目として公開した。`EIBTASKN`は`CicsTaskContext.taskNumber`、`EIBDATE` / `EIBTIME`は
+task開始時刻を`CicsTaskContext.hostZone`の地方時にしたPL4で置き、出どころの無いfieldはbinary zeroの
+ままにする（暫定判断P-113）。端末入力を持つまで`EIBAID` / `EIBCPOSN` / `EIBTRMID`は設定しない。
 `RESP` / `RESP2`は静的な単純データ名と4byte binary受取項目に限定し、`NOHANDLE`はcommand単位の
 既定処理抑止として実装済みであり、
 標準gatewayはLINK / XCTL対象未登録を`PGMIDERR(27), RESP2=1`として返す。

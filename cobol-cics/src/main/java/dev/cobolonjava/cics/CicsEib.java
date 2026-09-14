@@ -17,10 +17,19 @@ public final class CicsEib {
     /** DFHEIBLK全体の長さ。 */
     public static final int SIZE = 0x55;
 
+    public static final int EIBTIME_OFFSET = 0x00;
+    public static final int EIBDATE_OFFSET = 0x04;
     public static final int EIBTRNID_OFFSET = 0x08;
     public static final int EIBTRNID_LENGTH = 4;
+    public static final int EIBTASKN_OFFSET = 0x0C;
+    /** EIBTIME / EIBDATE / EIBTASKN はいずれも PL4 (7桁のpacked decimal) である。 */
+    public static final int PACKED_LENGTH = 4;
+    public static final int EIBTRMID_OFFSET = 0x10;
+    public static final int EIBTRMID_LENGTH = 4;
+    public static final int EIBCPOSN_OFFSET = 0x16;
     public static final int EIBCALEN_OFFSET = 0x18;
     public static final int EIBCALEN_LENGTH = 2;
+    public static final int EIBAID_OFFSET = 0x1A;
     public static final int EIBFN_OFFSET = 0x1B;
     public static final int EIBFN_LENGTH = 2;
     public static final int EIBRCODE_OFFSET = 0x1D;
@@ -48,6 +57,38 @@ public final class CicsEib {
         System.arraycopy(transId, 0, padded, 0, transId.length);
         storage.view(EIBTRNID_OFFSET, EIBTRNID_LENGTH).setBytes(padded);
         putHalfword(EIBCALEN_OFFSET, commareaLength);
+        // 値の出どころを持たないfieldはbinary zeroのままにする。packed decimalとして
+        // 読めない値なので、読んだ文は推測値で進まず失敗する (暫定判断 P-113)
+        task.taskNumber().ifPresent(number -> putPacked(EIBTASKN_OFFSET, number));
+        task.hostZone().ifPresent(zone -> {
+            java.time.ZonedDateTime local = task.startedAt().atZone(zone);
+            // 0CYYDDD: Cは1900年からの世紀、DDDは年の通日
+            int century = (local.getYear() - 1900) / 100;
+            putPacked(EIBDATE_OFFSET,
+                    century * 100_000 + local.getYear() % 100 * 1000 + local.getDayOfYear());
+            // 0HHMMSS
+            putPacked(EIBTIME_OFFSET,
+                    local.getHour() * 10_000 + local.getMinute() * 100 + local.getSecond());
+        });
+    }
+
+    /**
+     * 7桁の正の整数をPL4へ置く。
+     *
+     * <p>符号の半byteは{@code C}とする。hostのEIBが{@code C}と{@code F}のどちらを置くかは
+     * 確かめていない。COBOLの読み取りではどちらも正である (暫定判断 P-113)。
+     */
+    private void putPacked(int offset, int value) {
+        if (value < 0 || value > 9_999_999) {
+            throw new IllegalArgumentException("PL4 EIB field is out of range: " + value);
+        }
+        String digits = String.format("%07d", value);
+        byte[] bytes = storage.array();
+        for (int k = 0; k < PACKED_LENGTH; k++) {
+            int high = Character.digit(digits.charAt(k * 2), 10);
+            int low = k * 2 + 1 < digits.length() ? Character.digit(digits.charAt(k * 2 + 1), 10) : 0xC;
+            bytes[offset + k] = (byte) (high << 4 | low);
+        }
     }
 
     /** 生成COBOLが参照するtask-local領域。 */

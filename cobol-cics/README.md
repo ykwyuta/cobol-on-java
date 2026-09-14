@@ -33,7 +33,8 @@ COBOLを実行する入口は、必ず期待versionとownerを指定して`claim
 `cobol-compiler`の初期`EXEC CICS`変換は、静的`PROGRAM` / `TRANSID`、単純データ名の`COMMAREA`、
 正の数値定数`LENGTH`を使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT [ROLLBACK]`と、静的`ABCODE`、
 `CANCEL`、`NODUMP`を使う`ABEND`を対象とする。task-local EIBの初期subsetとして`EIBTRNID`、
-`EIBCALEN`、`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`を公開し、コマンド単位の
+`EIBCALEN`、`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`、`EIBTIME`、`EIBDATE`、`EIBTASKN`、`EIBTRMID`、
+`EIBCPOSN`、`EIBAID`を公開し (日時・task番号・端末fieldの値の出どころは暫定判断P-113)、コマンド単位の
 `RESP` / `RESP2` / `NOHANDLE`を扱う。
 `RESP`と`NOHANDLE`は既定処理をそのコマンドだけ抑止し、非正常結果をEIBへ残す。`RESP` / `RESP2`の
 受取項目は4byte binary整数に限定する。`DFHRESP`は現在結果を生成できる`NORMAL`と`PGMIDERR`を

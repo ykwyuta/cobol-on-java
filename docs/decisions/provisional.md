@@ -3455,3 +3455,39 @@ host の組立てが警告を出して切るのか、そのまま置くのかは
 
 **解消条件**: `OCCURS` と `TRANSP` を含む BMS を実機で組み立てた写し句と突き合わせる。
 物理マップ (SEND MAP の画面 byte) の実機 trace を得たら、座標と属性の写像も同じ基準で固定する。
+
+---
+
+## P-113 EIB の日時・task 番号・端末 field は、出どころがある値だけを置く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `cobol-cics` / `CicsEib` / `CicsTaskContext`、`cobol-compiler` / `DataDivisionBuilder.specialRegisters` |
+| 関連要件 | FR-161 |
+
+**暫定の扱い**: `EIBTIME` (0)、`EIBDATE` (4)、`EIBTASKN` (12)、`EIBTRMID` (16)、`EIBCPOSN` (22)、
+`EIBAID` (26) を DFHEIBLK の公開された位置で、読み取り専用の暗黙項目として公開する。
+値は次のとおり。
+
+| field | 値の出どころ | 無いとき |
+| --- | --- | --- |
+| `EIBTASKN` | `CicsTaskContext.taskNumber` (adapter が振る 1〜9999999) | binary zero |
+| `EIBDATE` / `EIBTIME` | `startedAt` を `CicsTaskContext.hostZone` の地方時にしたもの。`0CYYDDD` / `0HHMMSS` | binary zero |
+| `EIBAID` / `EIBCPOSN` / `EIBTRMID` | 端末入力 (未実装) | binary zero |
+
+task 番号は task ID (UUID) から作らない。地方時は JVM の既定から推測しない。host の領域が
+どの時間帯で動いていたかは構成でしか分からないからである。
+
+**なぜ binary zero か**: PL4 の binary zero は packed decimal として読めない。`MOVE EIBTASKN TO ...`
+は推測した値で進まず、読んだところで失敗する。0 を packed で置くと、存在しない task 番号 0 を
+黙って返すことになる。`EIBAID` の `X'00'` は `DFHNULL` と同じ byte であり、端末入力の無い task と
+区別できない。端末ポートを入れるまでの扱いである。
+
+**どこがずれうるか**: 符号の半 byte を `C` にしたが、host の EIB が `C` と `F` のどちらを
+置くかは確かめていない。COBOL の読み取りでは両方とも正であり、比較と転記の結果は変わらない。
+16 進で比べる資産があれば差が出る。task の開始時刻を EIB の時刻にしたが、`ASKTIME` で
+更新される規則は未実装である。
+
+**解消条件**: host の EIB の byte 列 (task 開始直後と `ASKTIME` 後) を採り、符号と時刻の
+更新規則を固定する。端末ポートを入れたら `EIBAID` / `EIBCPOSN` / `EIBTRMID` を入力から設定する。

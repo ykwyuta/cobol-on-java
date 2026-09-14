@@ -37,6 +37,44 @@ class CicsEibTest {
     }
 
     @Test
+    @DisplayName("task番号と地方時があればEIBTASKN・EIBDATE・EIBTIMEをPL4で置く")
+    void writesPackedTaskNumberDateAndTime() {
+        CicsTaskContext task = new CicsTaskContext(
+                new CicsTaskId("task_000000000007"), TransId.of("TX01"), "eib-test",
+                Instant.parse("2026-09-10T04:05:06Z"), java.util.OptionalInt.of(123),
+                java.util.Optional.of(java.time.ZoneId.of("Asia/Tokyo")));
+
+        CicsEib eib = new CicsEib(task, 0, CodePages.IBM_1047);
+
+        assertArrayEquals(new byte[] {0x00, 0x00, 0x12, 0x3C}, packed(eib, CicsEib.EIBTASKN_OFFSET));
+        // 2026年9月10日は通日253。C=1 (2000年代)
+        assertArrayEquals(new byte[] {0x01, 0x26, 0x25, 0x3C}, packed(eib, CicsEib.EIBDATE_OFFSET));
+        // 13:05:06 (JST)
+        assertArrayEquals(new byte[] {0x01, 0x30, 0x50, 0x6C}, packed(eib, CicsEib.EIBTIME_OFFSET));
+    }
+
+    @Test
+    @DisplayName("出どころの無いEIBTASKN・EIBDATE・EIBTIME・EIBAID・EIBCPOSN・EIBTRMIDは推測せずbinary zero")
+    void leavesUnsourcedFieldsAsBinaryZero() {
+        CicsEib eib = new CicsEib(task("TX01"), 0, CodePages.IBM_1047);
+
+        assertArrayEquals(new byte[4], packed(eib, CicsEib.EIBTIME_OFFSET));
+        assertArrayEquals(new byte[4], packed(eib, CicsEib.EIBDATE_OFFSET));
+        assertArrayEquals(new byte[4], packed(eib, CicsEib.EIBTASKN_OFFSET));
+        assertArrayEquals(new byte[4], eib.storage()
+                .view(CicsEib.EIBTRMID_OFFSET, CicsEib.EIBTRMID_LENGTH).toByteArray());
+        assertArrayEquals(new byte[2], eib.storage().view(CicsEib.EIBCPOSN_OFFSET, 2).toByteArray());
+        assertEquals(0, eib.storage().array()[CicsEib.EIBAID_OFFSET]);
+        assertThrows(IllegalArgumentException.class, () -> new CicsTaskContext(
+                new CicsTaskId("task_1"), TransId.of("TX01"), "o", Instant.EPOCH,
+                java.util.OptionalInt.of(10_000_000), java.util.Optional.empty()));
+    }
+
+    private static byte[] packed(CicsEib eib, int offset) {
+        return eib.storage().view(offset, CicsEib.PACKED_LENGTH).toByteArray();
+    }
+
+    @Test
     @DisplayName("command結果のRESPとRESP2をsigned fullwordで反映する")
     void updatesCommandResponseFields() {
         CicsEib eib = new CicsEib(task("TX01"), 0, CodePages.IBM_1047);

@@ -80,6 +80,37 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("EIBTASKN・EIBDATE・EIBTIME・EIBAID・EIBCPOSN・EIBTRMIDを読み取り専用で参照する")
+    void readsTaskAndTerminalEibFields() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "EIBEXT", List.of(
+                "MOVE 'FAIL' TO LK-AREA",
+                "IF EIBTASKN = 123 AND EIBDATE = 126253 AND EIBTIME = 130506 "
+                        + "AND EIBAID = X'00' AND EIBCPOSN = 0 AND EIBTRMID = LOW-VALUES "
+                        + "MOVE 'PASS' TO LK-AREA",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) LENGTH(4) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("EIBEXT", program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("EIBEXT"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+        CicsTaskContext numbered = new CicsTaskContext(
+                new CicsTaskId("task_000000000005"), TransId.of("TX01"), "compiler-test",
+                Instant.parse("2026-09-10T04:05:06Z"), java.util.OptionalInt.of(123),
+                Optional.of(java.time.ZoneId.of("Asia/Tokyo")));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        numbered, (action, ignored) -> { });
+
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertRejected("MOVE 1 TO EIBTASKN", "EIBTASKN is read-only");
+        assertRejected("MOVE X'7D' TO EIBAID", "EIBAID is read-only");
+    }
+
+    @Test
     @DisplayName("初期対応外のCICSオプションと動的PROGRAMはfail-closedで拒否する")
     void rejectsUnsupportedOptionsAndDynamicTargets() {
         assertRejected("EXEC CICS LINK PROGRAM(WS-PGM) COMMAREA(LK-AREA) LENGTH(4) END-EXEC",

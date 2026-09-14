@@ -1483,10 +1483,23 @@ public final class DataDivisionBuilder {
         returnCode.setLength(returnCode.picture().size());
         Map<String, DataItem> registers = new LinkedHashMap<>();
         registers.put("RETURN-CODE", returnCode);
+        // 日時・task番号・端末のfieldは、出どころの無いときbinary zeroのままである (暫定判断 P-113)
+        registers.put("EIBTIME", eibItem("EIBTIME", "S9(7)", Usage.COMP_3,
+                CicsEib.EIBTIME_OFFSET));
+        registers.put("EIBDATE", eibItem("EIBDATE", "S9(7)", Usage.COMP_3,
+                CicsEib.EIBDATE_OFFSET));
         registers.put("EIBTRNID", eibItem("EIBTRNID", "X(4)", Usage.DISPLAY,
                 CicsEib.EIBTRNID_OFFSET));
+        registers.put("EIBTASKN", eibItem("EIBTASKN", "S9(7)", Usage.COMP_3,
+                CicsEib.EIBTASKN_OFFSET));
+        registers.put("EIBTRMID", eibItem("EIBTRMID", "X(4)", Usage.DISPLAY,
+                CicsEib.EIBTRMID_OFFSET));
+        registers.put("EIBCPOSN", eibItem("EIBCPOSN", "S9(4)", Usage.COMP,
+                CicsEib.EIBCPOSN_OFFSET));
         registers.put("EIBCALEN", eibItem("EIBCALEN", "S9(4)", Usage.COMP,
                 CicsEib.EIBCALEN_OFFSET));
+        registers.put("EIBAID", eibItem("EIBAID", "X", Usage.DISPLAY,
+                CicsEib.EIBAID_OFFSET));
         registers.put("EIBFN", eibItem("EIBFN", "X(2)", Usage.DISPLAY,
                 CicsEib.EIBFN_OFFSET));
         registers.put("EIBRCODE", eibItem("EIBRCODE", "X(6)", Usage.DISPLAY,
