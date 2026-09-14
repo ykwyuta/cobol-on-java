@@ -37,6 +37,33 @@ public sealed interface Statement {
             implements Statement {
     }
 
+    /** EXEC CICS ASKTIME。受取域を省けばEIBの日時だけを更新する (設計 79 §6.1)。 */
+    record CicsAskTime(DataReference abstime, Origin origin) implements Statement {
+    }
+
+    /**
+     * EXEC CICS FORMATTIME の初期subset (設計 79 §6.2)。
+     *
+     * @param dateSeparator 日付の区切り文字。区切らなければ null
+     * @param timeSeparator 時刻の区切り文字。区切らなければ null
+     */
+    record CicsFormatTime(
+            DataReference abstime,
+            CicsDateOrder dateOrder,
+            DataReference date,
+            String dateSeparator,
+            DataReference time,
+            String timeSeparator,
+            Origin origin) implements Statement {
+    }
+
+    /** FORMATTIMEの日付の並び。 */
+    enum CicsDateOrder {
+        DDMMYYYY,
+        YYYYMMDD,
+        MMDDYYYY
+    }
+
     /** ASSIGNで対応するoptionと、その受取域の長さ (設計 79 §5)。 */
     enum CicsAssignOption {
         ABCODE(4),

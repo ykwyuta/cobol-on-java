@@ -3520,3 +3520,38 @@ COBOL では CICS translator がデータ項目の長さを補う。全診断を
 
 **解消条件**: host で local LINK + `SYNCONRETURN` の RESP を採る。遠隔 LINK を設計するときに
 同期点の境界を決め直す。
+
+---
+
+## P-115 ASKTIME / FORMATTIME の形は公開仕様の記述から起こした
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `CicsBlockParser.parseTime`、`ProcedureBuilder.cicsTimeStatement`、`CicsRuntimeOps.askTime` / `formatTime` |
+| 関連要件 | FR-160, FR-161 |
+
+**暫定の扱い** (設計 79 §6):
+
+- `ASKTIME ABSTIME(x)` は `S9(15) COMP-3` の受取域だけを受け、1900-01-01 00:00 (地方時) からの
+  ミリ秒を符号 `C` の PL8 で置く。同時に `EIBDATE` / `EIBTIME` を同じ時刻へ更新する。
+  地方時は `CicsTaskContext.hostZone`、時計は `CicsEnvironment.clock`。hostZone が無ければ失敗する
+- `FORMATTIME` は `DDMMYYYY` / `YYYYMMDD` / `MMDDYYYY`、`TIME`、`DATESEP[('c')]`、`TIMESEP[('c')]`
+  だけを受ける。区切りの既定は `/` と `:`
+- 書く文字数は区切りの有無で決める (日付 10 / 8、時刻 8 / 6)。受取域がそれより短ければ翻訳を
+  拒否し、長ければ先頭だけを書いて残りを変えない
+- 受取域は英数字か、符号なし整数の表示形式に限る。Bank-of-Z は `TIME` を `PIC 9(6)` で受ける
+- `EIBFN` は ASKTIME `X'1002'`、FORMATTIME `X'104A'` とした
+
+**何を根拠にしたか**: IBM の公開仕様の記述。Bank-of-Z の受取域の宣言
+(`WS-TIME-NOW PIC 9(6)` を 6 byte の 01 群に置く、`WS-ORIG-DATE PIC X(10)` を `DATESEP` で受ける)
+は、区切りの有無で書く長さが決まる読み方と矛盾しない。
+
+**どこがずれうるか**: 公開仕様には日付の受取域を「10 文字の域」と書く記述があり、区切りの無い
+形でも 10 byte を書く (右側を空白で埋める) 可能性を排除できていない。そうであれば
+`YYYYMMDD` 区切りなしで受取域の 9〜10 byte 目が変わる。EIBFN の値、ABSTIME の起点が
+地方時か UTC か、PL8 の符号も実機と突き合わせていない。`YYDDD` 等の形、区切りのデータ名、
+`DAYCOUNT` / `DAYOFWEEK` 等は未対応で断る。
+
+**解消条件**: host で区切りなしの `YYYYMMDD` を 10 byte の受取域へ書かせ、9〜10 byte 目を見る。
+`ASKTIME` 直後の ABSTIME と EIB の byte 列を採る。

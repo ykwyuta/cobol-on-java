@@ -60,16 +60,24 @@ public final class CicsEib {
         // 値の出どころを持たないfieldはbinary zeroのままにする。packed decimalとして
         // 読めない値なので、読んだ文は推測値で進まず失敗する (暫定判断 P-113)
         task.taskNumber().ifPresent(number -> putPacked(EIBTASKN_OFFSET, number));
-        task.hostZone().ifPresent(zone -> {
-            java.time.ZonedDateTime local = task.startedAt().atZone(zone);
-            // 0CYYDDD: Cは1900年からの世紀、DDDは年の通日
-            int century = (local.getYear() - 1900) / 100;
-            putPacked(EIBDATE_OFFSET,
-                    century * 100_000 + local.getYear() % 100 * 1000 + local.getDayOfYear());
-            // 0HHMMSS
-            putPacked(EIBTIME_OFFSET,
-                    local.getHour() * 10_000 + local.getMinute() * 100 + local.getSecond());
-        });
+        task.hostZone().ifPresent(zone -> setDateTime(task.startedAt().atZone(zone).toLocalDateTime()));
+    }
+
+    /**
+     * EIBDATE / EIBTIMEを地方時の日時で置き換える。task開始時と{@code ASKTIME}が使う。
+     */
+    public void setDateTime(java.time.LocalDateTime local) {
+        Objects.requireNonNull(local, "local");
+        // 0CYYDDD: Cは1900年からの世紀、DDDは年の通日
+        int century = (local.getYear() - 1900) / 100;
+        if (century < 0 || century > 9) {
+            throw new IllegalArgumentException("EIBDATE cannot represent year " + local.getYear());
+        }
+        putPacked(EIBDATE_OFFSET,
+                century * 100_000 + local.getYear() % 100 * 1000 + local.getDayOfYear());
+        // 0HHMMSS
+        putPacked(EIBTIME_OFFSET,
+                local.getHour() * 10_000 + local.getMinute() * 100 + local.getSecond());
     }
 
     /**

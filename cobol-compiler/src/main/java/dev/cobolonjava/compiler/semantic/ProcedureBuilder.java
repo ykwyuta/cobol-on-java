@@ -998,6 +998,15 @@ public final class ProcedureBuilder {
             out.add(cics.commarea());
         } else if (statement instanceof Statement.CicsAssign assign) {
             out.add(assign.target());
+        } else if (statement instanceof Statement.CicsAskTime ask && ask.abstime() != null) {
+            out.add(ask.abstime());
+        } else if (statement instanceof Statement.CicsFormatTime format) {
+            if (format.date() != null) {
+                out.add(format.date());
+            }
+            if (format.time() != null) {
+                out.add(format.time());
+            }
         } else if (statement instanceof Statement.Search search && search.varying() != null) {
             out.add(search.varying());
         } else if (statement instanceof Statement.Sequence sequence) {
@@ -1501,6 +1510,9 @@ public final class ProcedureBuilder {
                 }
                 return assigns.size() == 1
                         ? assigns.get(0) : new Statement.Sequence(assigns, origin);
+            }
+            if (parsed.time() != null) {
+                return cicsTimeStatement(parsed.time(), origin);
             }
             if (parsed.handleStackAction() != null) {
                 return new Statement.CicsHandleStack(parsed.handleStackAction(), origin);
@@ -4134,6 +4146,71 @@ public final class ProcedureBuilder {
         }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
+    }
+
+    /**
+     * ASKTIME / FORMATTIME の受取域を検査する (設計 79 §6)。
+     *
+     * <p>CICSは受取域の番地へ決まった形を書く。形の違う項目を受けると、隣の記憶域を
+     * 壊すか読めない値を置くので、翻訳時に断る。
+     */
+    private Statement cicsTimeStatement(CicsBlockParser.TimeSpec spec, Origin origin) {
+        DataReference abstime = spec.abstime() == null
+                ? null : resolver.resolveName(spec.abstime(), origin);
+        if (spec.abstime() != null && abstime == null) {
+            return null;
+        }
+        if (abstime != null && !isAbstimeArea(abstime)) {
+            throw new IllegalArgumentException(
+                    "ABSTIME must be a PACKED-DECIMAL(15) integer data area (PIC S9(15) COMP-3)");
+        }
+        if (spec.ask()) {
+            return new Statement.CicsAskTime(abstime, origin);
+        }
+        DataReference date = timeReceiver(spec.date(), spec.dateSeparator() == null ? 8 : 10,
+                "FORMATTIME " + spec.dateOrder(), origin);
+        DataReference time = timeReceiver(spec.time(), spec.timeSeparator() == null ? 6 : 8,
+                "FORMATTIME TIME", origin);
+        if ((spec.date() != null && date == null) || (spec.time() != null && time == null)) {
+            return null;
+        }
+        return new Statement.CicsFormatTime(abstime, spec.dateOrder(), date,
+                spec.dateSeparator(), time, spec.timeSeparator(), origin);
+    }
+
+    private static boolean isAbstimeArea(DataReference reference) {
+        DataItem item = reference.item();
+        return item.usage() == dev.cobolonjava.runtime.item.Usage.COMP_3
+                && item.picture() != null
+                && item.picture().isNumeric()
+                && item.picture().digits() == 15
+                && item.picture().scale() == 0;
+    }
+
+    /** 日付・時刻を書く受取域。英数字か、符号なし整数の表示形式で、書く文字数以上の長さ。 */
+    private DataReference timeReceiver(String name, int written, String option, Origin origin) {
+        if (name == null) {
+            return null;
+        }
+        DataReference receiver = resolver.resolveName(name, origin);
+        if (receiver == null) {
+            return null;
+        }
+        DataCategory category = DataCategory.of(receiver);
+        DataItem item = receiver.item();
+        boolean unsignedDisplayInteger = category == DataCategory.NUMERIC_INTEGER
+                && (item.usage() == null || item.usage() == dev.cobolonjava.runtime.item.Usage.DISPLAY)
+                && item.picture() != null
+                && !item.picture().signPosition().isSigned();
+        if (!category.isAlphanumericLike() && !unsignedDisplayInteger) {
+            throw new IllegalArgumentException(option
+                    + " receiver must be alphanumeric or an unsigned DISPLAY integer");
+        }
+        if (receiver.constantLength().isEmpty() || receiver.constantLength().getAsInt() < written) {
+            throw new IllegalArgumentException(
+                    option + " receiver must be at least " + written + " bytes");
+        }
+        return receiver;
     }
 
     /** {@code DFHRESP(condition)}をCICS translatorと同じ翻訳時定数へ落とす。 */

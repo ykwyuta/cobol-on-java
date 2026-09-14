@@ -362,6 +362,69 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("ASKTIMEは地方時の1900年起点ミリ秒とEIB日時を置き、FORMATTIMEは区切りの有無で書く文字数を決める")
+    void asksAndFormatsTimeInHostZone() {
+        long expectedAbstime = Duration.between(
+                java.time.LocalDateTime.of(1900, 1, 1, 0, 0),
+                java.time.LocalDateTime.of(2026, 9, 10, 13, 5, 6)).toMillis();
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "TIMEPGM", List.of(
+                "MOVE 'FAIL' TO LK-AREA",
+                "EXEC CICS ASKTIME ABSTIME(WS-ABS) END-EXEC",
+                "EXEC CICS FORMATTIME ABSTIME(WS-ABS) DDMMYYYY(WS-DATE) TIME(WS-TIME) "
+                        + "DATESEP END-EXEC",
+                "IF WS-ABS = " + expectedAbstime + " AND WS-DATE = '10/09/2026' "
+                        + "AND WS-TIME = 130506 AND EIBTIME = 130506 AND EIBDATE = 126253 "
+                        + "MOVE 'PASS' TO LK-AREA END-IF",
+                "EXEC CICS FORMATTIME ABSTIME(WS-ABS) YYYYMMDD(WS-DATE) END-EXEC",
+                "IF WS-DATE NOT = '2026091026' MOVE 'NOSP' TO LK-AREA END-IF",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("TIMEPGM", program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("TIMEPGM"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+        CicsTaskContext zoned = new CicsTaskContext(
+                new CicsTaskId("task_000000000006"), TransId.of("TX01"), "compiler-test",
+                Instant.parse("2026-09-10T00:00:00Z"), java.util.OptionalInt.empty(),
+                Optional.of(java.time.ZoneId.of("Asia/Tokyo")));
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment
+                .unconfigured().withClock(java.time.Clock.fixed(
+                        Instant.parse("2026-09-10T04:05:06Z"), java.time.ZoneOffset.UTC));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        zoned, (action, ignored) -> { });
+
+        // YYYYMMDD 区切りなしは8文字だけを書き、残り2文字 ("26") は直前の値のまま
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("時間命令は受取域の形を翻訳時に検査し、地方時が無ければ実行時に失敗する")
+    void rejectsTimeCommandsWithoutShapeOrZone() {
+        assertRejected("EXEC CICS ASKTIME ABSTIME(WS-RESP) END-EXEC",
+                "PACKED-DECIMAL(15)");
+        assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) YYDDD(WS-DATE) END-EXEC",
+                "unsupported FORMATTIME option: YYDDD");
+        assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) DDMMYYYY(WS-SHORT) DATESEP END-EXEC",
+                "at least 10 bytes");
+        assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) TIME(WS-TIME) DATESEP END-EXEC",
+                "DATESEP requires a date format option");
+        assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) TIME(WS-RESP) END-EXEC",
+                "alphanumeric or an unsigned DISPLAY integer");
+
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "NOZONE", List.of(
+                "EXEC CICS ASKTIME ABSTIME(WS-ABS) END-EXEC"));
+        CicsTaskStateException failure = assertThrows(CicsTaskStateException.class,
+                () -> execute(loader, "NOZONE", program));
+        assertTrue(failure.getMessage().contains("host time zone"), failure.getMessage());
+    }
+
+    @Test
     @DisplayName("APPLIDを構成していないregionのASSIGN APPLIDは推測した名前を返さず失敗する")
     void assignApplidRequiresConfiguration() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -1072,6 +1135,9 @@ class CicsGenerationTest {
                 "01 WS-SHORT PIC X(3).",
                 "01 WS-PGM PIC X(8).",
                 "01 WS-APPL PIC X(8).",
+                "01 WS-ABS PIC S9(15) COMP-3.",
+                "01 WS-DATE PIC X(10).",
+                "01 WS-TIME PIC 9(6).",
                 "LINKAGE SECTION.",
                 "01 LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.",

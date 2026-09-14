@@ -80,6 +80,11 @@ public final class CicsExecution {
         return environment;
     }
 
+    /** このexecutionが属するtask。 */
+    public CicsTaskContext task() {
+        return task;
+    }
+
     /** 初期programまたはXCTL先が、現在のLINK levelのprogramになる。 */
     public synchronized void startProgram(String programName) {
         currentHandleLevel().programName = Objects.requireNonNull(programName, "programName");

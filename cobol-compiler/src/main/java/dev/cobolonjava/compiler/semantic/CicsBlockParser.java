@@ -23,6 +23,12 @@ final class CicsBlockParser {
             "(?is)^\\s*EXEC\\s+CICS\\s+HANDLE\\s+ABEND\\b(.*?)END-EXEC\\s*$");
     private static final Pattern HANDLE_ABEND_LABEL = Pattern.compile(
             "(?is)^\\s*LABEL\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)\\s*$");
+    private static final Pattern TIME_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(ASKTIME|FORMATTIME)\\b(.*?)END-EXEC\\s*$");
+    /** 時間命令のoption。値はデータ名か1文字の定数、または値なし (DATESEP等)。 */
+    private static final Pattern TIME_OPTION = Pattern.compile(
+            "(?is)\\s*([A-Z0-9][A-Z0-9-]*)"
+                    + "(?:\\s*\\(\\s*(?:([A-Z0-9][A-Z0-9-]*)|'([^'])')\\s*\\))?");
     private static final Pattern ASSIGN_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+ASSIGN\\b(.*?)END-EXEC\\s*$");
     /** ASSIGNのoptionは受取域のデータ名だけをとる。定数やRESPはここで形が合わない。 */
@@ -53,14 +59,22 @@ final class CicsBlockParser {
         if (assign.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
-                    parseAssignments(assign.group(1)), null);
+                    parseAssignments(assign.group(1)), null, null);
+        }
+        Matcher time = TIME_BLOCK.matcher(source);
+        if (time.matches()) {
+            return new Parsed(null, null, null, -1, null, null,
+                    false, false, false, false, false, null, List.of(), null, null, null,
+                    List.of(), null,
+                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)));
         }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
         if (handleStack.matches()) {
             Statement.CicsHandleStackAction action = Statement.CicsHandleStackAction.valueOf(
                     handleStack.group(1).toUpperCase(Locale.ROOT));
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, false, null, List.of(), action, null, null, null, null);
+                    false, false, false, false, false, null, List.of(), action, null, null, null, null,
+                    null);
         }
         Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
         if (handleAbend.matches()) {
@@ -80,7 +94,8 @@ final class CicsBlockParser {
                         "initial HANDLE ABEND support accepts LABEL, CANCEL, or RESET");
             }
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, false, null, List.of(), null, action, target, null, null);
+                    false, false, false, false, false, null, List.of(), null, action, target, null, null,
+                    null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {
@@ -88,7 +103,8 @@ final class CicsBlockParser {
                     condition.group(1).toUpperCase(Locale.ROOT));
             List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, false, action, conditions, null, null, null, null, null);
+                    false, false, false, false, false, action, conditions, null, null, null, null, null,
+                    null);
         }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
@@ -192,7 +208,99 @@ final class CicsBlockParser {
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
-                null, List.of(), null, null, null, null, programData.value);
+                null, List.of(), null, null, null, null, programData.value, null);
+    }
+
+    /**
+     * ASKTIME / FORMATTIME のoptionを読む (設計 79 §6)。
+     *
+     * <p>FORMATTIMEは資産が使う日付の並び3つ、TIME、区切りだけを受ける。YYDDD等の
+     * 別の形は書く文字数を確かめていないので、名前をつけて断る。
+     */
+    private static TimeSpec parseTime(String command, String source) {
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = TIME_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate " + command + " option: " + name);
+            }
+            options.put(name, new String[] {
+                    option.group(2) == null ? null : option.group(2).toUpperCase(Locale.ROOT),
+                    option.group(3)});
+            position = option.end();
+        }
+        if (command.equals("ASKTIME")) {
+            for (String name : options.keySet()) {
+                if (!name.equals("ABSTIME")) {
+                    throw new IllegalArgumentException("unsupported ASKTIME option: " + name);
+                }
+            }
+            String abstime = dataName(command, "ABSTIME", options.get("ABSTIME"), false);
+            return new TimeSpec(true, abstime, null, null, null, null, null);
+        }
+        Statement.CicsDateOrder order = null;
+        String date = null;
+        String dateSeparator = null;
+        String time = null;
+        String timeSeparator = null;
+        for (java.util.Map.Entry<String, String[]> entry : options.entrySet()) {
+            String name = entry.getKey();
+            String[] value = entry.getValue();
+            switch (name) {
+                case "ABSTIME" -> { }
+                case "DDMMYYYY", "YYYYMMDD", "MMDDYYYY" -> {
+                    if (order != null) {
+                        throw new IllegalArgumentException(
+                                "FORMATTIME accepts only one date format option");
+                    }
+                    order = Statement.CicsDateOrder.valueOf(name);
+                    date = dataName(command, name, value, true);
+                }
+                case "TIME" -> time = dataName(command, name, value, true);
+                case "DATESEP" -> dateSeparator = separator(name, value, "/");
+                case "TIMESEP" -> timeSeparator = separator(name, value, ":");
+                default -> throw new IllegalArgumentException(
+                        "unsupported FORMATTIME option: " + name);
+            }
+        }
+        String abstime = dataName(command, "ABSTIME", options.get("ABSTIME"), true);
+        if (dateSeparator != null && date == null) {
+            throw new IllegalArgumentException("DATESEP requires a date format option");
+        }
+        if (timeSeparator != null && time == null) {
+            throw new IllegalArgumentException("TIMESEP requires TIME");
+        }
+        if (date == null && time == null) {
+            throw new IllegalArgumentException("FORMATTIME requires a date format option or TIME");
+        }
+        return new TimeSpec(false, abstime, order, date, dateSeparator, time, timeSeparator);
+    }
+
+    private static String dataName(String command, String name, String[] value, boolean required) {
+        if (value == null) {
+            if (required) {
+                throw new IllegalArgumentException(command + " requires " + name + "(data-name)");
+            }
+            return null;
+        }
+        if (value[0] == null) {
+            throw new IllegalArgumentException(command + " " + name + " requires a data name");
+        }
+        return value[0];
+    }
+
+    private static String separator(String name, String[] value, String defaultSeparator) {
+        if (value[0] != null) {
+            // 区切りをデータ名で渡す形は、翻訳時に文字が決まらないので後続増分とする
+            throw new IllegalArgumentException(name + " accepts only a one-character literal");
+        }
+        return value[1] == null ? defaultSeparator : value[1];
     }
 
     /**
@@ -382,7 +490,8 @@ final class CicsBlockParser {
             Statement.CicsAbendHandlerAction abendHandlerAction,
             String abendHandlerTarget,
             List<AssignSpec> assignments,
-            String programData) {
+            String programData,
+            TimeSpec time) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
@@ -390,6 +499,17 @@ final class CicsBlockParser {
     }
 
     record AssignSpec(Statement.CicsAssignOption option, String target) {
+    }
+
+    /** ASKTIME (ask=true) または FORMATTIME の、データ名を解決する前の形。 */
+    record TimeSpec(
+            boolean ask,
+            String abstime,
+            Statement.CicsDateOrder dateOrder,
+            String date,
+            String dateSeparator,
+            String time,
+            String timeSeparator) {
     }
 
     record ConditionSpec(String name, String target) {

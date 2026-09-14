@@ -11,7 +11,8 @@ Spring、Servlet、Db2 JDBCへ依存しないCICS実行境界のexperimental実�
 - 同一thread・同一`CobolSession`で`LINK`する`DefaultCicsGateway`
 - 初期programを起動し、Java stackを増やさず`XCTL`を反復する`CobolCicsTaskProgram`
 - task-scopedな`CicsExecution`を生成COBOLへ渡す型付きruntime service境界
-- regionの構成 (現在はAPPLID) を渡す`CicsEnvironment`と、LINK levelごとに起動program名を記録する
+- `ASKTIME` / `FORMATTIME` の初期subset (時計は`CicsEnvironment`、地方時はtaskのhostZone。暫定判断P-115)
+- regionの構成 (APPLIDと時計) を渡す`CicsEnvironment`と、LINK levelごとに起動program名を記録する
   `ASSIGN PROGRAM` / `ASSIGN APPLID`
 - version、owner、期限、冪等keyを持つ`ConversationEnvelope`
 - COBOL起動前の排他claimと、lease付きsave/complete/releaseを持つ`ConversationStorePort`

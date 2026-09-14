@@ -759,6 +759,10 @@ public final class ProgramGenerator {
                 planCicsAbendHandler(abendHandler, body);
             } else if (statement instanceof Statement.CicsAssign assign) {
                 planCicsAssign(assign, body);
+            } else if (statement instanceof Statement.CicsAskTime askTime) {
+                planCicsAskTime(askTime, body);
+            } else if (statement instanceof Statement.CicsFormatTime formatTime) {
+                planCicsFormatTime(formatTime, body);
             } else {
                 report(statement.origin(), "statement is not supported by the generator yet");
             }
@@ -937,6 +941,71 @@ public final class ProgramGenerator {
                     ? "(" + CONTEXT + "I)V" : "(" + CONTEXT + ")V";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method, descriptor, false);
         });
+    }
+
+    private void planCicsAskTime(Statement.CicsAskTime statement, List<Runnable> body) {
+        Runnable abstime = statement.abstime() == null
+                ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                : planWholeView(statement.abstime(), statement.origin());
+        if (abstime == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            abstime.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "askTime",
+                    "(" + CONTEXT + "L" + DATA_VIEW + ";)V", false);
+        });
+    }
+
+    private void planCicsFormatTime(Statement.CicsFormatTime statement, List<Runnable> body) {
+        Origin origin = statement.origin();
+        Runnable abstime = planSourceDecimal(new Operand.Reference(statement.abstime()), origin);
+        Runnable date = statement.date() == null
+                ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                : planWholeView(statement.date(), origin);
+        Runnable time = statement.time() == null
+                ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                : planWholeView(statement.time(), origin);
+        if (abstime == null || date == null || time == null) {
+            return;
+        }
+        int order = statement.dateOrder() == null ? -1 : statement.dateOrder().ordinal();
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            abstime.run();
+            push(order);
+            date.run();
+            pushNullableString(statement.dateSeparator());
+            time.run();
+            pushNullableString(statement.timeSeparator());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "formatTime",
+                    "(" + CONTEXT + DECIMAL + "IL" + DATA_VIEW + ";Ljava/lang/String;L"
+                            + DATA_VIEW + ";Ljava/lang/String;)V", false);
+        });
+    }
+
+    private void pushNullableString(String value) {
+        if (value == null) {
+            run.visitInsn(Opcodes.ACONST_NULL);
+        } else {
+            run.visitLdcInsn(value);
+        }
+    }
+
+    /** 項目全体を指す {@code DataView} を積む命令。 */
+    private Runnable planWholeView(DataReference reference, Origin origin) {
+        Runnable address = planAddress(reference, origin);
+        OptionalInt length = lengthOf(reference, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        return () -> {
+            address.run();
+            push(length.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "byReference",
+                    "(L" + STORAGE + ";II)L" + DATA_VIEW + ";", false);
+        };
     }
 
     private void planCicsAssign(Statement.CicsAssign statement, List<Runnable> body) {

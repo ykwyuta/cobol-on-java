@@ -19,6 +19,9 @@ public final class CicsRuntimeOps {
     private static final int IGNORE_CONDITION_FUNCTION = 0x020A;
     private static final int PUSH_HANDLE_FUNCTION = 0x020C;
     private static final int POP_HANDLE_FUNCTION = 0x020E;
+    /** 間隔制御群のfunction code。実機のEIBFNとは突き合わせていない (暫定判断 P-115)。 */
+    private static final int ASKTIME_FUNCTION = 0x1002;
+    private static final int FORMATTIME_FUNCTION = 0x104A;
     private static final int LINK_FUNCTION = 0x0E02;
     private static final int XCTL_FUNCTION = 0x0E04;
     private static final int RETURN_FUNCTION = 0x0E08;
@@ -299,6 +302,110 @@ public final class CicsRuntimeOps {
                 .orElse("");
         receiver.setBytes(required.codePage().encode((code + "    ").substring(0, 4)));
         completeLocalCommand(required, ASSIGN_FUNCTION);
+    }
+
+    /** ABSTIMEの起点。1900年1月1日0時 (地方時) からのミリ秒である (設計 79 §6.1)。 */
+    private static final java.time.LocalDateTime ABSTIME_EPOCH =
+            java.time.LocalDateTime.of(1900, 1, 1, 0, 0);
+    /** ABSTIMEの受取域 PACKED-DECIMAL(15) の長さ。 */
+    private static final int ABSTIME_LENGTH = 8;
+
+    /**
+     * ASKTIME。時計を読み、EIBDATE / EIBTIMEを更新し、指定があればABSTIMEを置く。
+     *
+     * <p>地方時はtaskのhostZoneで決める。構成されていなければJVMの既定から推測せず失敗する。
+     *
+     * @param abstime 受取域。ABSTIMEを書かなければ null
+     */
+    public static void askTime(ProgramContext context, DataView abstime) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        java.time.ZoneId zone = execution.task().hostZone().orElseThrow(() ->
+                new CicsTaskStateException("ASKTIME requires a configured host time zone"));
+        java.time.LocalDateTime local = execution.environment().clock().instant()
+                .atZone(zone).toLocalDateTime();
+        if (abstime != null) {
+            if (abstime.length() != ABSTIME_LENGTH) {
+                throw new IllegalArgumentException("ASKTIME ABSTIME target must be exactly 8 bytes");
+            }
+            long millis = java.time.Duration.between(ABSTIME_EPOCH, local).toMillis();
+            abstime.setBytes(packed(millis, ABSTIME_LENGTH));
+        }
+        execution.eib(required.codePage()).setDateTime(local);
+        completeLocalCommand(required, ASKTIME_FUNCTION);
+    }
+
+    /**
+     * FORMATTIME の初期subset (設計 79 §6.2)。
+     *
+     * <p>書くのは区切りの有無で決まる文字数だけであり、受取域の残りは変えない (暫定判断 P-115)。
+     *
+     * @param dateOrder {@code 0}=DDMMYYYY、{@code 1}=YYYYMMDD、{@code 2}=MMDDYYYY。日付を書かなければ無視する
+     */
+    public static void formatTime(
+            ProgramContext context, dev.cobolonjava.runtime.decimal.Decimal abstime,
+            int dateOrder, DataView date, String dateSeparator,
+            DataView time, String timeSeparator) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        long millis;
+        try {
+            millis = Objects.requireNonNull(abstime, "abstime").toBigDecimal().longValueExact();
+        } catch (ArithmeticException notInteger) {
+            throw new CicsTaskStateException("FORMATTIME ABSTIME is not an integer");
+        }
+        if (millis < 0) {
+            throw new CicsTaskStateException("FORMATTIME ABSTIME is negative");
+        }
+        java.time.LocalDateTime local = ABSTIME_EPOCH.plus(java.time.Duration.ofMillis(millis));
+        if (date != null) {
+            String sep = dateSeparator == null ? "" : dateSeparator;
+            String dd = two(local.getDayOfMonth());
+            String mm = two(local.getMonthValue());
+            String yyyy = String.format("%04d", local.getYear());
+            String text = switch (dateOrder) {
+                case 0 -> dd + sep + mm + sep + yyyy;
+                case 1 -> yyyy + sep + mm + sep + dd;
+                case 2 -> mm + sep + dd + sep + yyyy;
+                default -> throw new IllegalArgumentException("unknown FORMATTIME date order");
+            };
+            writePrefix(required, date, text, "FORMATTIME date");
+        }
+        if (time != null) {
+            String sep = timeSeparator == null ? "" : timeSeparator;
+            writePrefix(required, time, two(local.getHour()) + sep + two(local.getMinute())
+                    + sep + two(local.getSecond()), "FORMATTIME TIME");
+        }
+        completeLocalCommand(required, FORMATTIME_FUNCTION);
+    }
+
+    private static String two(int value) {
+        return String.format("%02d", value);
+    }
+
+    private static void writePrefix(
+            ProgramContext context, DataView target, String text, String option) {
+        if (target.length() < text.length()) {
+            throw new IllegalArgumentException(
+                    option + " target is shorter than " + text.length() + " bytes");
+        }
+        target.subView(0, text.length()).setBytes(context.codePage().encode(text));
+    }
+
+    /** 0以上の整数を、符号の半byteをCとしたpacked decimalにする。 */
+    private static byte[] packed(long value, int length) {
+        int digits = length * 2 - 1;
+        String text = Long.toString(value);
+        if (value < 0 || text.length() > digits) {
+            throw new CicsTaskStateException("value does not fit PL" + length + ": " + value);
+        }
+        String padded = "0".repeat(digits - text.length()) + text;
+        byte[] out = new byte[length];
+        for (int k = 0; k < length; k++) {
+            int high = padded.charAt(k * 2) - '0';
+            int low = k * 2 + 1 < digits ? padded.charAt(k * 2 + 1) - '0' : 0xC;
+            out[k] = (byte) (high << 4 | low);
+        }
+        return out;
     }
 
     /**
