@@ -80,6 +80,29 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("RETURN TRANSID IMMEDIATEは次taskを端末入力なしで始める指定をtask結果へ残す")
+    void returnImmediateMarksCompletion() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> immediate = compile(loader, "RETIMM", List.of(
+                "EXEC CICS RETURN TRANSID('OMEN') IMMEDIATE "
+                        + "COMMAREA(LK-AREA) LENGTH(4) END-EXEC"));
+        Supplier<CobolProgram> ordinary = compile(loader, "RETORD", List.of(
+                "EXEC CICS RETURN TRANSID('OMEN') COMMAREA(LK-AREA) LENGTH(4) END-EXEC"));
+
+        TaskCompletion marked = execute(loader, "RETIMM", immediate);
+        TaskCompletion unmarked = execute(loader, "RETORD", ordinary);
+
+        assertEquals(Optional.of(TransId.of("OMEN")), marked.nextTransaction());
+        assertTrue(marked.immediate());
+        assertFalse(unmarked.immediate());
+        assertRejected("EXEC CICS RETURN IMMEDIATE END-EXEC", "RETURN IMMEDIATE requires TRANSID");
+        assertRejected("EXEC CICS LINK PROGRAM('CHILD') IMMEDIATE END-EXEC",
+                "IMMEDIATE is only supported by RETURN");
+        assertThrows(IllegalArgumentException.class, () -> new dev.cobolonjava.cics.ReturnCommand(
+                Optional.empty(), CicsPayload.empty(), true));
+    }
+
+    @Test
     @DisplayName("EIBTASKN・EIBDATE・EIBTIME・EIBAID・EIBCPOSN・EIBTRMIDを読み取り専用で参照する")
     void readsTaskAndTerminalEibFields() {
         GeneratedLoader loader = new GeneratedLoader();

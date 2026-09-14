@@ -7,7 +7,7 @@ Spring、Servlet、Db2 JDBCへ依存しないCICS実行境界のexperimental実�
 - 許可リスト型`CicsTransactionRegistry`と、正規化済み1〜4文字`TransId`
 - task定義ごとのCOMMAREA、container件数、単体長、合計長の検査
 - copy-in/copy-outの`CicsPayload`
-- `LINK`、`XCTL`、`RETURN`、`SYNCPOINT`の閉じたcommand/controlモデル
+- `LINK`、`XCTL`、`RETURN` (`IMMEDIATE`を含む)、`SYNCPOINT`の閉じたcommand/controlモデル
 - 同一thread・同一`CobolSession`で`LINK`する`DefaultCicsGateway`
 - 初期programを起動し、Java stackを増やさず`XCTL`を反復する`CobolCicsTaskProgram`
 - task-scopedな`CicsExecution`を生成COBOLへ渡す型付きruntime service境界

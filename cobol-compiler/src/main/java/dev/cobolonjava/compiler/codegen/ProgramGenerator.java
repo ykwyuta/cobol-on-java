@@ -810,6 +810,10 @@ public final class ProgramGenerator {
             } else {
                 commarea.run();
             }
+            boolean returning = statement.operation() == Statement.CicsOperation.RETURN;
+            if (returning) {
+                run.visitInsn(statement.immediate() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            }
             run.visitInsn(statement.suppressDefaultHandling()
                     ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             String method = switch (statement.operation()) {
@@ -819,7 +823,8 @@ public final class ProgramGenerator {
                 case SYNCPOINT, ABEND -> throw new IllegalStateException();
             };
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
-                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";Z)I", false);
+                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";"
+                            + (returning ? "Z" : "") + "Z)I", false);
             emitCicsConditionTransfer();
         });
     }

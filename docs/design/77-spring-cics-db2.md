@@ -50,6 +50,9 @@ TRANSID一致を再検査する。
 `PROGRAM('...')` / `TRANSID('...')`、単純データ名`COMMAREA`、正の数値`LENGTH`を持つ`LINK`、`XCTL`、
 `RETURN`、`SYNCPOINT [ROLLBACK]`、および静的`ABCODE` / `CANCEL` / `NODUMP`の`ABEND`である。
 abend exit向けに4byte英数字領域を受取側とする`ASSIGN ABCODE`も扱う。
+`RETURN TRANSID(...) IMMEDIATE`は`TaskCompletion.immediate`と`CicsTaskReply.immediateNext`へ残す。
+次taskを端末入力なしで始めるのはtransport adapterの責務であり、coordinatorは同じ要求の中で次のprogramを
+起動しない。TRANSIDの無いIMMEDIATEとRETURN以外のIMMEDIATEは翻訳時に拒否する。
 未知option、重複option、範囲外LENGTH、未定義COMMAREA、不正TRANSID / ABCODEはfail-closedで
 翻訳を拒否する。生成した3 programを通すLINK→XCTL→SYNCPOINT→RETURNの結合試験で、session共有、
 COMMAREA copy-back、次TRANSIDを固定した。生成ABENDは検証済みcode、task ID、CANCEL、dump方針を持つ

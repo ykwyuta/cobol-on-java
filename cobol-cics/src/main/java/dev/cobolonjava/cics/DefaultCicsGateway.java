@@ -52,7 +52,7 @@ public final class DefaultCicsGateway implements CicsGateway {
             case ReturnCommand returned -> {
                 definition.validate(returned.payload());
                 yield normal(new TaskCompletion(
-                        returned.nextTransaction(), returned.payload()));
+                        returned.nextTransaction(), returned.payload(), returned.immediate()));
             }
             case SyncpointCommand syncpoint -> {
                 syncpoints.syncpoint(syncpoint.action(), task);

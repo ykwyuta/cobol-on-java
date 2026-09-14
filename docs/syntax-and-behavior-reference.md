@@ -516,7 +516,7 @@ TERMINATE 報告書名...
 ```cobol
 EXEC CICS LINK PROGRAM('名前') [COMMAREA(項目)] [LENGTH(数値)] [RESP(項目)] [RESP2(項目)] [NOHANDLE] END-EXEC
 EXEC CICS XCTL PROGRAM('名前') [COMMAREA(項目)] [LENGTH(数値)] ... END-EXEC
-EXEC CICS RETURN [TRANSID('名前')] [COMMAREA(項目)] [LENGTH(数値)] END-EXEC
+EXEC CICS RETURN [TRANSID('名前') [IMMEDIATE]] [COMMAREA(項目)] [LENGTH(数値)] END-EXEC
 EXEC CICS SYNCPOINT [ROLLBACK] END-EXEC
 EXEC CICS ABEND [ABCODE('コード')] [CANCEL] [NODUMP] END-EXEC
 EXEC CICS ASSIGN ABCODE(受取項目) END-EXEC
@@ -527,7 +527,9 @@ EXEC CICS PUSH HANDLE END-EXEC
 EXEC CICS POP HANDLE END-EXEC
 ```
 - **振る舞い**:
-  - `DFHEIBLK` (EIB: `EIBTRNID`, `EIBCALEN`, `EIBFN`, `EIBRCODE`, `EIBRESP`, `EIBRESP2`) の各フィールドを CICS コマンド実行の都度忠実に更新します。
+  - `DFHEIBLK` (EIB: `EIBTRNID`, `EIBCALEN`, `EIBFN`, `EIBRCODE`, `EIBRESP`, `EIBRESP2`) の各フィールドを CICS コマンド実行の都度更新します。
+  - `EIBTIME` / `EIBDATE` / `EIBTASKN` / `EIBTRMID` / `EIBCPOSN` / `EIBAID` は読み取り専用で参照できます。値は task 文脈に task 番号・地方時がある場合だけ設定し、出どころの無い field は binary zero のままです (暫定判断 P-113)。
+  - `RETURN TRANSID(...) IMMEDIATE` は、次の task を端末入力なしで始める指定を task 結果 (`CicsTaskReply.immediateNext`) に残します。次の task を起動するのは transport adapter です。
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。
 

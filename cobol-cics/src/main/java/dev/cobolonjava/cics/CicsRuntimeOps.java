@@ -102,9 +102,18 @@ public final class CicsRuntimeOps {
     public static int returnTaskCondition(
             ProgramContext context, String nextTransaction, DataView commarea,
             boolean suppressDefaultHandling) {
+        return returnTaskCondition(context, nextTransaction, commarea, false,
+                suppressDefaultHandling);
+    }
+
+    /** RETURN [IMMEDIATE] を実行し、condition handlerへ移る場合はその段落番号を返す。 */
+    public static int returnTaskCondition(
+            ProgramContext context, String nextTransaction, DataView commarea,
+            boolean immediate, boolean suppressDefaultHandling) {
         ReturnCommand command = nextTransaction == null
                 ? new ReturnCommand(java.util.Optional.empty(), payload(commarea))
-                : ReturnCommand.next(TransId.of(nextTransaction), payload(commarea));
+                : new ReturnCommand(java.util.Optional.of(TransId.of(nextTransaction)),
+                        payload(commarea), immediate);
         CicsCommandOutcome outcome = execute(context, command);
         int target = conditionTarget(context, outcome, suppressDefaultHandling, "RETURN");
         if (target != NO_CONDITION_TRANSFER

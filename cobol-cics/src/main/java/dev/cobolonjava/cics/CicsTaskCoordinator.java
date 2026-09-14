@@ -59,7 +59,8 @@ public final class CicsTaskCoordinator {
             CompletionPlan plan = planCompletion(request, taskId, lease, completion, clock.instant());
             commitStarted = true;
             boundary.commit(plan.mutation, clock.instant());
-            return new CicsTaskReply(taskId, definition.transId(), completion.payload(), plan.next);
+            return new CicsTaskReply(taskId, definition.transId(), completion.payload(), plan.next,
+                    completion.immediate());
         } catch (RuntimeException failure) {
             runtimeFailure = failure;
             cleanupFailure(boundary, lease, failure, commitStarted);

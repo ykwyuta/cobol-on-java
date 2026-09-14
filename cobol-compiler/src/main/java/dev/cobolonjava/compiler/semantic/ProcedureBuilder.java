@@ -1540,7 +1540,7 @@ public final class ProcedureBuilder {
             };
             Statement.Cics command = new Statement.Cics(parsed.operation(), target, commarea,
                     parsed.length(), parsed.response() != null || parsed.noHandle(),
-                    parsed.rollback(), parsed.cancel(), parsed.noDump(), origin);
+                    parsed.rollback(), parsed.cancel(), parsed.noDump(), parsed.immediate(), origin);
             if (parsed.response() == null) {
                 return command;
             }

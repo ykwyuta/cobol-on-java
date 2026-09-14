@@ -26,6 +26,7 @@ public sealed interface Statement {
             boolean rollback,
             boolean cancel,
             boolean noDump,
+            boolean immediate,
             Origin origin) implements Statement {
     }
 

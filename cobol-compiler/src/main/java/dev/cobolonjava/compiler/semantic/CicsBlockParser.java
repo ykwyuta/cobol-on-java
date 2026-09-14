@@ -47,7 +47,7 @@ final class CicsBlockParser {
         Matcher assignAbcode = ASSIGN_ABCODE_BLOCK.matcher(source);
         if (assignAbcode.matches()) {
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, null, List.of(), null, null, null,
+                    false, false, false, false, false, null, List.of(), null, null, null,
                     assignAbcode.group(1).toUpperCase(Locale.ROOT));
         }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
@@ -55,7 +55,7 @@ final class CicsBlockParser {
             Statement.CicsHandleStackAction action = Statement.CicsHandleStackAction.valueOf(
                     handleStack.group(1).toUpperCase(Locale.ROOT));
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, null, List.of(), action, null, null, null);
+                    false, false, false, false, false, null, List.of(), action, null, null, null);
         }
         Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
         if (handleAbend.matches()) {
@@ -75,7 +75,7 @@ final class CicsBlockParser {
                         "initial HANDLE ABEND support accepts LABEL, CANCEL, or RESET");
             }
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, null, List.of(), null, action, target, null);
+                    false, false, false, false, false, null, List.of(), null, action, target, null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {
@@ -83,7 +83,7 @@ final class CicsBlockParser {
                     condition.group(1).toUpperCase(Locale.ROOT));
             List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, action, conditions, null, null, null, null);
+                    false, false, false, false, false, action, conditions, null, null, null, null);
         }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
@@ -150,16 +150,19 @@ final class CicsBlockParser {
         remainder = cancelOption.remainder;
         ParsedOption<Boolean> noDumpOption = extractFlag("NODUMP", remainder);
         remainder = noDumpOption.remainder;
+        ParsedOption<Boolean> immediateOption = extractFlag("IMMEDIATE", remainder);
+        remainder = immediateOption.remainder;
         boolean rollback = Boolean.TRUE.equals(rollbackOption.value);
         boolean cancel = Boolean.TRUE.equals(cancelOption.value);
         boolean noDump = Boolean.TRUE.equals(noDumpOption.value);
         boolean noHandle = Boolean.TRUE.equals(noHandleOption.value);
+        boolean immediate = Boolean.TRUE.equals(immediateOption.value);
         if (!remainder.isBlank()) {
             throw new IllegalArgumentException(
                     "unsupported EXEC CICS option: " + remainder.strip());
         }
         validate(operation, program, transId, abendCode, commarea.value, length.value,
-                response.value, response2.value, rollback, cancel, noDump);
+                response.value, response2.value, rollback, cancel, noDump, immediate);
         String target = switch (operation) {
             case RETURN -> transId;
             case ABEND -> abendCode;
@@ -167,7 +170,8 @@ final class CicsBlockParser {
         };
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
-                noHandle, rollback, cancel, noDump, null, List.of(), null, null, null, null);
+                noHandle, rollback, cancel, noDump, immediate,
+                null, List.of(), null, null, null, null);
     }
 
     private static List<ConditionSpec> parseConditions(
@@ -218,7 +222,14 @@ final class CicsBlockParser {
     private static void validate(
             Statement.CicsOperation operation, String program, String transId, String abendCode,
             String commarea, Integer length, String response, String response2,
-            boolean rollback, boolean cancel, boolean noDump) {
+            boolean rollback, boolean cancel, boolean noDump, boolean immediate) {
+        if (immediate && operation != Statement.CicsOperation.RETURN) {
+            throw new IllegalArgumentException("IMMEDIATE is only supported by RETURN");
+        }
+        if (immediate && transId == null) {
+            // 次に始めるtaskの指定が無ければ、IMMEDIATEは起動するものを持たない
+            throw new IllegalArgumentException("RETURN IMMEDIATE requires TRANSID");
+        }
         if ((operation == Statement.CicsOperation.LINK
                 || operation == Statement.CicsOperation.XCTL) && program == null) {
             throw new IllegalArgumentException(operation + " requires static PROGRAM('name')");
@@ -306,6 +317,7 @@ final class CicsBlockParser {
             boolean rollback,
             boolean cancel,
             boolean noDump,
+            boolean immediate,
             Statement.CicsConditionAction conditionAction,
             List<ConditionSpec> conditions,
             Statement.CicsHandleStackAction handleStackAction,
