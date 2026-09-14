@@ -12,6 +12,8 @@ public final class CicsResponseCode {
     public static final int PGMIDERR = 27;
     /** RECEIVE MAPで送られたfieldが無い。 */
     public static final int MAPFAIL = 36;
+    /** ENQの資源を他のtaskが持っていて、待たない指定だった。 */
+    public static final int ENQBUSY = 55;
     /** 名前のcontainerがchannelに無い。 */
     public static final int CONTAINERERR = 110;
     /** 名前のchannelが無い。 */
@@ -31,6 +33,7 @@ public final class CicsResponseCode {
             case "LENGERR" -> LENGERR;
             case "PGMIDERR" -> PGMIDERR;
             case "MAPFAIL" -> MAPFAIL;
+            case "ENQBUSY" -> ENQBUSY;
             case "CONTAINERERR" -> CONTAINERERR;
             case "CHANNELERR" -> CHANNELERR;
             default -> throw new IllegalArgumentException(

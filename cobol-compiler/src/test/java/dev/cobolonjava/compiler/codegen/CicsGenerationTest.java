@@ -137,6 +137,28 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("ENQで資源を得てDEQで返し、LENGTHの無い形と域を越えるLENGTHは断る")
+    void enqueuesAndDequeues() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "ENQDEQ", List.of(
+                "MOVE 'NAMEDCOUNTER' TO WS-CHAN",
+                "EXEC CICS ENQ RESOURCE(WS-CHAN) LENGTH(16) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'E' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS ENQ RESOURCE(WS-CHAN) LENGTH(16) NOSUSPEND RESP(WS-RESP) END-EXEC",
+                "EXEC CICS DEQ RESOURCE(WS-CHAN) LENGTH(16) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'D' TO LK-AREA(2:1) END-IF"));
+
+        TaskCompletion result = execute(loader, "ENQDEQ", program);
+
+        assertEquals("EDIT", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertRejected("EXEC CICS ENQ RESOURCE(WS-CHAN) END-EXEC", "ENQ requires LENGTH");
+        assertRejected("EXEC CICS ENQ RESOURCE(WS-CHAN) LENGTH(17) END-EXEC",
+                "ENQ LENGTH 17 exceeds the RESOURCE data area of 16 bytes");
+        assertRejected("EXEC CICS DEQ RESOURCE(WS-CHAN) LENGTH(16) LUW END-EXEC",
+                "unsupported DEQ option: LUW");
+    }
+
+    @Test
     @DisplayName("PUT CONTAINERで作ったchannelからGET CONTAINERで読み戻し、無いcontainerはRESPに返る")
     void putsAndGetsContainers() {
         GeneratedLoader loader = new GeneratedLoader();

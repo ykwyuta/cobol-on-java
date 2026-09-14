@@ -191,8 +191,8 @@ CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資�
 全診断を数えると、BMS 記号マップ写し句、`DFHAID`、EIB、`RETURN IMMEDIATE`、`PROGRAM(データ名)`、
 `LENGTH` を省いた `COMMAREA`、`ASSIGN`、`ASKTIME` / `FORMATTIME`、`DELAY`、`SEND MAP` / `TEXT` /
 `CONTROL`、`RECEIVE MAP`、`ABEND ABCODE(データ名)`、`BIF DEEDIT`、`EXEC SQL` の初期 subset、
-`USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER` はもう止めていない (設計 79)。残る CICS 命令は
-`INQUIRE` / `SET TERMINAL` (各 2)、`ENQ` / `DEQ` (各 1)、`INQUIRE ASSOCIATION` (1)、`DFHBMSCA` (1) である。
+`USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER`、`ENQ` / `DEQ` はもう止めていない (設計 79)。残る CICS 命令は
+`INQUIRE` / `SET TERMINAL` (各 2)、`INQUIRE ASSOCIATION` (1)、`DFHBMSCA` (1)、`WRITE` (ファイル制御、1) である。
 言語側では `INCLUDE SQLDA` (1)、LE の `CEEIGZCT` (1) が残っている。浮動小数点項目は `+ - *` の `COMPUTE`、
 転記、比較を扱う (P-127)。BNK1TFN は 28 byte の域に `LENGTH(29)` を書いており、はみ出す 1 byte の中身が
 ホストの記憶域の並びで決まるため、推測せず断ったままにしている。ABNDPROC は `EXEC CICS WRITE` (ファイル制御) で止まる。

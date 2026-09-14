@@ -17,6 +17,12 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
     private final int maxTransfers;
     private final CicsEnvironment environment;
 
+    /** 例外を投げない後始末。 */
+    private interface Release extends AutoCloseable {
+        @Override
+        void close();
+    }
+
     public CobolCicsTaskProgram(CobolRuntime runtime, int maxTransfers) {
         this(runtime, maxTransfers, CicsEnvironment.unconfigured());
     }
@@ -54,7 +60,9 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
         RuntimeServices services = RuntimeServices.builder()
                 .service(CicsExecution.class, execution)
                 .build();
-        try (CobolSession session = runtime.openSession(services)) {
+        // 資源は session より先に返す。task がどう終わっても (ABEND や例外でも) 持ち越さない
+        try (CobolSession session = runtime.openSession(services);
+             Release ignored = () -> environment.enqueues().releaseTask(task.taskId())) {
             execution.bind(new DefaultCicsGateway(task, definition, session, syncpoints));
             ProgramId program = definition.initialProgram();
             CicsPayload payload = input;

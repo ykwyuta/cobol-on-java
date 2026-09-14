@@ -1743,6 +1743,27 @@ public final class ProcedureBuilder {
             if (parsed.container() != null) {
                 return cicsContainerStatement(parsed, origin);
             }
+            if (parsed.enqueue() != null) {
+                CicsBlockParser.EnqueueSpec spec = parsed.enqueue();
+                String command = spec.enqueue() ? "ENQ" : "DEQ";
+                DataReference resource = resolver.resolveName(spec.resource(), origin);
+                if (resource == null) {
+                    return null;
+                }
+                if (resource.constantLength().isEmpty()
+                        || !(DataCategory.of(resource).isAlphanumericLike()
+                                || DataCategory.of(resource) == DataCategory.GROUP)) {
+                    throw new IllegalArgumentException(command
+                            + " RESOURCE must be an alphanumeric or group data area of fixed length");
+                }
+                if (spec.length() > resource.constantLength().getAsInt()) {
+                    throw new IllegalArgumentException(command + " LENGTH " + spec.length()
+                            + " exceeds the RESOURCE data area of " + resource.constantLength().getAsInt() + " bytes");
+                }
+                return withCicsResponse(new Statement.CicsEnqueue(spec.enqueue(), resource, spec.length(),
+                        spec.noSuspend(), spec.taskScope(), parsed.response() != null || parsed.noHandle(),
+                        origin), parsed, origin);
+            }
             if (parsed.receive() != null) {
                 CicsBlockParser.ReceiveSpec spec = parsed.receive();
                 DataReference into = resolver.resolveName(spec.into(), origin);

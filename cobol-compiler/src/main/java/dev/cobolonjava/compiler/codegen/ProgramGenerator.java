@@ -767,6 +767,8 @@ public final class ProgramGenerator {
                 planCicsReceiveMap(receive, body);
             } else if (statement instanceof Statement.CicsContainer container) {
                 planCicsContainer(container, body);
+            } else if (statement instanceof Statement.CicsEnqueue enqueue) {
+                planCicsEnqueue(enqueue, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
                 Runnable field = planWholeView(deedit.field(), deedit.origin());
                 if (field != null) {
@@ -1073,6 +1075,28 @@ public final class ProgramGenerator {
                     statement.put() ? "putContainerCondition" : "getContainerCondition",
                     "(" + CONTEXT + strings + "L" + DATA_VIEW + ";L" + DATA_VIEW + ";"
                             + (statement.put() ? "I" : "") + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    private void planCicsEnqueue(Statement.CicsEnqueue statement, List<Runnable> body) {
+        Runnable address = planAddress(statement.resource(), statement.origin());
+        if (address == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            address.run();
+            push(statement.length());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read", "(L" + STORAGE + ";II)[B", false);
+            if (statement.enqueue()) {
+                run.visitInsn(statement.noSuspend() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            }
+            run.visitInsn(statement.taskScope() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS,
+                    statement.enqueue() ? "enqueueCondition" : "dequeueCondition",
+                    "(" + CONTEXT + "[B" + (statement.enqueue() ? "ZZZ" : "ZZ") + ")I", false);
             emitCicsConditionTransfer();
         });
     }

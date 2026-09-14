@@ -33,6 +33,8 @@ final class CicsBlockParser {
     private static final Pattern CONTAINER_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(GET|PUT)\\s+CONTAINER\\b(.*?)END-EXEC\\s*$");
     private static final Pattern CONTAINER_NAME = Pattern.compile("[A-Z0-9_-]{1,16}");
+    private static final Pattern ENQUEUE_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(ENQ|DEQ)\\b(.*?)END-EXEC\\s*$");
     private static final Pattern RECEIVE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+RECEIVE\\b(.*?)END-EXEC\\s*$");
     private static final Pattern DELAY_BLOCK = Pattern.compile(
@@ -109,6 +111,10 @@ final class CicsBlockParser {
         Matcher receive = RECEIVE_BLOCK.matcher(source);
         if (receive.matches()) {
             return parseReceive(receive.group(1));
+        }
+        Matcher enqueue = ENQUEUE_BLOCK.matcher(source);
+        if (enqueue.matches()) {
+            return parseEnqueue(enqueue.group(1).equalsIgnoreCase("ENQ"), enqueue.group(2));
         }
         Matcher container = CONTAINER_BLOCK.matcher(source);
         if (container.matches()) {
@@ -506,7 +512,76 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
-                null, null, spec);
+                null, null, spec, null);
+    }
+
+    /**
+     * ENQ / DEQ を読む (暫定判断 P-128)。
+     *
+     * <p>{@code LENGTH} を省いた形は、域の<b>番地</b>を資源にする。この処理系は番地を持たないので断る。
+     * {@code LUW}、{@code MAXLIFETIME} は名前をつけて断る。
+     */
+    private static Parsed parseEnqueue(boolean enqueue, String source) {
+        String command = enqueue ? "ENQ" : "DEQ";
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate " + command + " option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        Set<String> allowed = enqueue
+                ? Set.of("RESOURCE", "LENGTH", "NOSUSPEND", "UOW", "TASK", "RESP", "RESP2", "NOHANDLE")
+                : Set.of("RESOURCE", "LENGTH", "UOW", "TASK", "RESP", "RESP2", "NOHANDLE");
+        for (String name : options.keySet()) {
+            if (!allowed.contains(name)) {
+                throw new IllegalArgumentException("unsupported " + command + " option: " + name);
+            }
+        }
+        for (String flag : List.of("NOSUSPEND", "UOW", "TASK", "NOHANDLE")) {
+            String[] value = options.get(flag);
+            if (value != null && (value[0] != null || value[1] != null || value[2] != null)) {
+                throw new IllegalArgumentException(flag + " does not take a value");
+            }
+        }
+        if (options.containsKey("UOW") && options.containsKey("TASK")) {
+            throw new IllegalArgumentException(command + " accepts only one of UOW and TASK");
+        }
+        String resource = sendDataName(options.get("RESOURCE"), "RESOURCE");
+        if (resource == null) {
+            throw new IllegalArgumentException(command + " requires RESOURCE");
+        }
+        String[] length = options.get("LENGTH");
+        if (length == null) {
+            throw new IllegalArgumentException(command
+                    + " requires LENGTH; a resource named by its address is not supported");
+        }
+        if (length[1] == null) {
+            throw new IllegalArgumentException(command + " LENGTH requires an integer literal");
+        }
+        int bytes = Integer.parseInt(length[1]);
+        if (bytes < 1 || bytes > 255) {
+            throw new IllegalArgumentException(command + " LENGTH must be 1 to 255: " + bytes);
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                options.containsKey("NOHANDLE"), false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                null, null, null, new EnqueueSpec(enqueue, resource, bytes,
+                        options.containsKey("NOSUSPEND"), options.containsKey("TASK")));
     }
 
     /** 引用符の名前ならその値、データ名なら null。どちらでもなければ断る。 */
@@ -897,7 +972,8 @@ final class CicsBlockParser {
             SendSpec send,
             ReceiveSpec receive,
             String deedit,
-            ContainerSpec container) {
+            ContainerSpec container,
+            EnqueueSpec enqueue) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
@@ -913,8 +989,12 @@ final class CicsBlockParser {
                SendSpec send, ReceiveSpec receive, String deedit) {
             this(operation, target, commarea, length, response, response2, noHandle, rollback, cancel,
                     noDump, immediate, conditionAction, conditions, handleStackAction, abendHandlerAction,
-                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit, null);
+                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit, null, null);
         }
+    }
+
+    /** ENQ / DEQ の、データ名を解決する前の形。 */
+    record EnqueueSpec(boolean enqueue, String resource, int length, boolean noSuspend, boolean taskScope) {
     }
 
     /** GET / PUT CONTAINER の、データ名を解決する前の形。名前は定数かデータ名のどちらか。 */

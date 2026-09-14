@@ -27,6 +27,9 @@ public final class CicsRuntimeOps {
     /** GET / PUT CONTAINER (CHANNEL)。実機の EIBFN とは突き合わせていない (暫定判断 P-125)。 */
     private static final int GET_CONTAINER_FUNCTION = 0x3414;
     private static final int PUT_CONTAINER_FUNCTION = 0x3416;
+    /** ENQ / DEQ。実機の EIBFN とは突き合わせていない (暫定判断 P-128)。 */
+    private static final int ENQ_FUNCTION = 0x1204;
+    private static final int DEQ_FUNCTION = 0x1206;
     private static final java.util.regex.Pattern CONTAINER_NAME =
             java.util.regex.Pattern.compile("[A-Z0-9_-]{1,16}");
     private static final int DELAY_FUNCTION = 0x1004;
@@ -204,7 +207,40 @@ public final class CicsRuntimeOps {
             return target;
         }
         requireControl(outcome, SyncpointCompletion.class, "SYNCPOINT");
+        // UOW の間だけ持つ ENQ の資源は、SYNCPOINT (ROLLBACK を含む) で返す
+        CicsExecution execution = execution(context);
+        execution.environment().enqueues().releaseUnitOfWork(execution.task().taskId());
         return NO_CONDITION_TRANSFER;
+    }
+
+    /**
+     * ENQ RESOURCE(域) LENGTH(n) (暫定判断 P-128)。
+     *
+     * <p>他の task が持っていれば、{@code NOSUSPEND} が無いかぎり task の期限まで待つ。期限を越えるなら
+     * 失敗させる。{@code NOSUSPEND} なら ENQBUSY。
+     */
+    public static int enqueueCondition(ProgramContext context, byte[] resource,
+            boolean noSuspend, boolean taskScope, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        java.time.Duration maxWait = execution.deadline()
+                .map(deadline -> java.time.Duration.between(execution.environment().clock().instant(), deadline))
+                .orElse(null);
+        boolean held = execution.environment().enqueues().enqueue(
+                execution.task().taskId(), resource, taskScope, !noSuspend, maxWait);
+        return containerOutcome(required, ENQ_FUNCTION,
+                held ? CicsResponseCode.NORMAL : CicsResponseCode.ENQBUSY, 0,
+                suppressDefaultHandling, "ENQ");
+    }
+
+    /** DEQ RESOURCE(域) LENGTH(n)。持っていない資源を返しても NORMAL とする。 */
+    public static int dequeueCondition(ProgramContext context, byte[] resource,
+            boolean taskScope, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        execution.environment().enqueues().dequeue(execution.task().taskId(), resource, taskScope);
+        return containerOutcome(required, DEQ_FUNCTION, CicsResponseCode.NORMAL, 0,
+                suppressDefaultHandling, "DEQ");
     }
 
     /** 現在のCICS LINK levelへcondition handler段落を登録する。 */

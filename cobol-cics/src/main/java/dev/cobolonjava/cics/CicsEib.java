@@ -144,6 +144,11 @@ public final class CicsEib {
             if ((functionCode & 0xFF00) != 0x1800) {
                 throw new IllegalArgumentException("MAPFAIL is only classified for BMS commands");
             }
+        } else if (responseCode == CicsResponseCode.ENQBUSY) {
+            // task 制御の群の EIBRCODE も公開情報から確定できないので binary zero を置く (暫定判断 P-128)
+            if ((functionCode & 0xFF00) != 0x1200) {
+                throw new IllegalArgumentException("ENQBUSY is only classified for task control commands");
+            }
         } else if (responseCode == CicsResponseCode.LENGERR
                 || responseCode == CicsResponseCode.CONTAINERERR
                 || responseCode == CicsResponseCode.CHANNELERR) {

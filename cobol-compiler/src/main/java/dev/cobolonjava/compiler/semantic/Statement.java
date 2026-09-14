@@ -110,6 +110,17 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /** EXEC CICS ENQ / DEQ RESOURCE(域) LENGTH(n)。資源は域の先頭 n byte である (暫定判断 P-128)。 */
+    record CicsEnqueue(
+            boolean enqueue,
+            DataReference resource,
+            int length,
+            boolean noSuspend,
+            boolean taskScope,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     /** EXEC CICS BIF DEEDIT FIELD(x)。英数字の域から数字だけを残して右へ詰める。 */
     record CicsDeedit(DataReference field, Origin origin) implements Statement {
     }

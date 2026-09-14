@@ -3902,3 +3902,30 @@ PUT で同名の container を置き換えることは公開仕様の記述に�
 
 **解消条件**: 実機で COMP-1 / COMP-2 の転記・`COMPUTE`・比較の結果を取り、上の 3 点を確かめる。
 合えば除算とべき乗を浮動小数点の演算 (`HexFloatArithmetic`) で入れる。
+
+## P-128 ENQ / DEQ は region の構成が持つ排他の port で行い、既定は 1 つの JVM の中で効く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsEnqueuePort`、`InMemoryCicsEnqueues`、`CicsRuntimeOps.enqueueCondition` / `dequeueCondition` |
+| 関連要件 | FR-080, FR-084 |
+
+**暫定の扱い**:
+
+- 資源は `RESOURCE` の域の先頭 `LENGTH` byte (1〜255) である。`LENGTH` を省いた形は域の番地を資源にするので断る。
+  `LENGTH` はデータ名を受けず整数定数だけとする
+- 他の task が持っていれば、`NOSUSPEND` が無いかぎり task の期限まで待つ。期限を越えるなら task を失敗させる。
+  `NOSUSPEND` なら `ENQBUSY` (55)。`HANDLE CONDITION ENQBUSY` による「待たない」は、その condition を
+  受けていないので起きない
+- 同じ task が重ねて得ると数が増え、`DEQ` は 1 つ返す。持っていない資源の `DEQ` は NORMAL とする
+- `UOW` (既定) の資源は `SYNCPOINT` (ROLLBACK を含む) で、すべての資源は task の終わり (ABEND・例外を含む) で返す
+- 排他は `CicsEnvironment.enqueues` が持つ。既定の `unconfigured()` は 1 つの JVM の中だけで効く。
+  複数の JVM で動かすなら共有の実装へ差し替える
+- EIBFN は ENQ X'1204'、DEQ X'1206'、ENQBUSY の EIBRCODE は binary zero とした
+
+**どこがずれうるか**: 重ねた `ENQ` の数え方と `DEQ` の対応、`LUW` / `MAXLIFETIME`、`ENQMODEL` による
+region をまたぐ排他は確かめていない。実機の待ちは DTIMOUT で ABEND AKCS になりうるが、ここでは task の期限で失敗させる。
+
+**解消条件**: 実機の trace で EIBFN / EIBRCODE と重ねた ENQ の扱いを確かめる。複数 JVM で動かす構成が決まれば、
+共有の排他 (DB の行ロック等) を実装する。
