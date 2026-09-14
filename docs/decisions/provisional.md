@@ -3555,3 +3555,29 @@ COBOL では CICS translator がデータ項目の長さを補う。全診断を
 
 **解消条件**: host で区切りなしの `YYYYMMDD` を 10 byte の受取域へ書かせ、9〜10 byte 目を見る。
 `ASKTIME` 直後の ABSTIME と EIB の byte 列を採る。
+
+---
+
+## P-116 DELAY は task の期限を越えて待たない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `CicsBlockParser.parseDelay`、`CicsRuntimeOps.delayCondition`、`CicsIntervalPort` |
+| 関連要件 | FR-160 |
+
+**暫定の扱い** (設計 79 §7): `DELAY FOR [HOURS] [MINUTES] [SECONDS] [MILLISECS]` と
+`INTERVAL(hhmmss)` を受ける。値は整数定数か数字項目。option を書かなければ `INTERVAL(0)`。
+1 つの単位だけを書けば上限までその単位で数え、複数書けば下位の単位を 59 (ミリ秒は 999) 以下に
+限る。範囲外は RESP2 を推測せず失敗させる。待ちは `CicsEnvironment.interval` が行い、
+`EIBFN` は `X'1004'` とした。`TIME`、`UNTIL`、`REQID` は断る。
+
+**意図した差**: task の期限 (`startedAt + taskTimeout`) を越える待ちは始めずに失敗させる。
+host の CICS はこの期限の概念を持たず、長い DELAY も待つ。この処理系の task は HTTP 要求に
+束縛された同期処理であり (設計 77 §2)、期限を越えて待つと会話の lease 前提が崩れる。
+
+**どこがずれうるか**: 範囲外で host が返す RESP (`INVREQ`) と RESP2 の値、`EIBFN` の値、
+複数単位の上限は実機と突き合わせていない。待ちの途中の取消し (`CANCEL` / `REQID`) は無い。
+
+**解消条件**: host で範囲外の DELAY の RESP / RESP2 と EIBFN を採る。取消しを設計するときに
+`REQID` と協調的な割り込みを決める。

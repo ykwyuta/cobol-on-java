@@ -403,6 +403,77 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("DELAYはFORの単位とINTERVALを待ちのportへ渡し、RESPへNORMALを置く")
+    void delaysThroughTheIntervalPort() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "DELAYPGM", List.of(
+                "MOVE 'FAIL' TO LK-AREA",
+                "MOVE 2 TO WS-RESP2",
+                "MOVE 99 TO WS-RESP",
+                "EXEC CICS DELAY FOR SECONDS(WS-RESP2) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP NOT = 0 GOBACK END-IF",
+                "EXEC CICS DELAY INTERVAL(000001) END-EXEC",
+                "EXEC CICS DELAY FOR MINUTES(0) SECONDS(3) MILLISECS(250) END-EXEC",
+                "MOVE 'PASS' TO LK-AREA",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC"));
+        List<Duration> waits = new ArrayList<>();
+
+        TaskCompletion result = runWithEnvironment(loader, "DELAYPGM", program,
+                fixedAtTaskStart().withInterval(waits::add), Duration.ofSeconds(30));
+
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertEquals(List.of(Duration.ofSeconds(2), Duration.ofSeconds(1),
+                Duration.ofMillis(3250)), waits);
+    }
+
+    @Test
+    @DisplayName("DELAYは範囲外の値と、task期限を越える待ちを推測で進めず失敗させる")
+    void rejectsDelaysOutOfRangeOrBeyondTheDeadline() {
+        GeneratedLoader loader = new GeneratedLoader();
+        List<Duration> waits = new ArrayList<>();
+        Supplier<CobolProgram> range = compile(loader, "DELAYBAD", List.of(
+                "EXEC CICS DELAY FOR MINUTES(60) SECONDS(1) END-EXEC"));
+        Supplier<CobolProgram> tooLong = compile(loader, "DELAYLNG", List.of(
+                "EXEC CICS DELAY FOR SECONDS(10) END-EXEC"));
+
+        CicsTaskStateException outOfRange = assertThrows(CicsTaskStateException.class,
+                () -> runWithEnvironment(loader, "DELAYBAD", range,
+                        fixedAtTaskStart().withInterval(waits::add), Duration.ofSeconds(30)));
+        CicsTaskStateException beyond = assertThrows(CicsTaskStateException.class,
+                () -> runWithEnvironment(loader, "DELAYLNG", tooLong,
+                        fixedAtTaskStart().withInterval(waits::add), Duration.ofSeconds(5)));
+
+        assertTrue(outOfRange.getMessage().contains("MINUTES is out of range"),
+                outOfRange.getMessage());
+        assertTrue(beyond.getMessage().contains("task deadline"), beyond.getMessage());
+        assertEquals(List.of(), waits);
+        assertRejected("EXEC CICS DELAY TIME(120000) END-EXEC", "unsupported DELAY option: TIME");
+        assertRejected("EXEC CICS DELAY SECONDS(5) END-EXEC", "require FOR");
+        assertRejected("EXEC CICS DELAY FOR END-EXEC", "DELAY FOR requires");
+        assertRejected("EXEC CICS DELAY FOR SECONDS(WS-DATE) END-EXEC",
+                "DELAY SECONDS must be numeric");
+    }
+
+    private static dev.cobolonjava.cics.CicsEnvironment fixedAtTaskStart() {
+        return dev.cobolonjava.cics.CicsEnvironment.unconfigured().withClock(java.time.Clock.fixed(
+                task().startedAt(), java.time.ZoneOffset.UTC));
+    }
+
+    private static TaskCompletion runWithEnvironment(
+            GeneratedLoader loader, String programId, Supplier<CobolProgram> program,
+            dev.cobolonjava.cics.CicsEnvironment environment, Duration timeout) {
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram(programId, program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of(programId), timeout, 16, 0, 0, 0, true);
+        return new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+    }
+
+    @Test
     @DisplayName("時間命令は受取域の形を翻訳時に検査し、地方時が無ければ実行時に失敗する")
     void rejectsTimeCommandsWithoutShapeOrZone() {
         assertRejected("EXEC CICS ASKTIME ABSTIME(WS-RESP) END-EXEC",

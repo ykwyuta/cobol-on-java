@@ -759,6 +759,8 @@ public final class ProgramGenerator {
                 planCicsAbendHandler(abendHandler, body);
             } else if (statement instanceof Statement.CicsAssign assign) {
                 planCicsAssign(assign, body);
+            } else if (statement instanceof Statement.CicsDelay delay) {
+                planCicsDelay(delay, body);
             } else if (statement instanceof Statement.CicsAskTime askTime) {
                 planCicsAskTime(askTime, body);
             } else if (statement instanceof Statement.CicsFormatTime formatTime) {
@@ -940,6 +942,30 @@ public final class ProgramGenerator {
             String descriptor = statement.action() == Statement.CicsAbendHandlerAction.LABEL
                     ? "(" + CONTEXT + "I)V" : "(" + CONTEXT + ")V";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method, descriptor, false);
+        });
+    }
+
+    private void planCicsDelay(Statement.CicsDelay statement, List<Runnable> body) {
+        List<Runnable> values = new ArrayList<>();
+        for (Operand operand : java.util.Arrays.asList(statement.hours(), statement.minutes(),
+                statement.seconds(), statement.millis(), statement.interval())) {
+            if (operand == null) {
+                values.add(() -> run.visitInsn(Opcodes.ACONST_NULL));
+                continue;
+            }
+            Runnable value = planSourceDecimal(operand, statement.origin());
+            if (value == null) {
+                return;
+            }
+            values.add(value);
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            values.forEach(Runnable::run);
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "delayCondition",
+                    "(" + CONTEXT + DECIMAL + DECIMAL + DECIMAL + DECIMAL + DECIMAL + "Z)I", false);
+            emitCicsConditionTransfer();
         });
     }
 

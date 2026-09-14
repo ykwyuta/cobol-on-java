@@ -23,6 +23,12 @@ final class CicsBlockParser {
             "(?is)^\\s*EXEC\\s+CICS\\s+HANDLE\\s+ABEND\\b(.*?)END-EXEC\\s*$");
     private static final Pattern HANDLE_ABEND_LABEL = Pattern.compile(
             "(?is)^\\s*LABEL\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)\\s*$");
+    private static final Pattern DELAY_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+DELAY\\b(.*?)END-EXEC\\s*$");
+    /** DELAYのoption。値はデータ名か符号なし整数、または値なし (FOR、NOHANDLE)。 */
+    private static final Pattern DELAY_OPTION = Pattern.compile(
+            "(?is)\\s*([A-Z0-9][A-Z0-9-]*)"
+                    + "(?:\\s*\\(\\s*(?:(\\d{1,9})|([A-Z][A-Z0-9-]*))\\s*\\))?");
     private static final Pattern TIME_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(ASKTIME|FORMATTIME)\\b(.*?)END-EXEC\\s*$");
     /** 時間命令のoption。値はデータ名か1文字の定数、または値なし (DATESEP等)。 */
@@ -59,14 +65,18 @@ final class CicsBlockParser {
         if (assign.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
-                    parseAssignments(assign.group(1)), null, null);
+                    parseAssignments(assign.group(1)), null, null, null);
         }
         Matcher time = TIME_BLOCK.matcher(source);
         if (time.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
                     List.of(), null,
-                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)));
+                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)), null);
+        }
+        Matcher delay = DELAY_BLOCK.matcher(source);
+        if (delay.matches()) {
+            return parseDelay(delay.group(1));
         }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
         if (handleStack.matches()) {
@@ -74,7 +84,7 @@ final class CicsBlockParser {
                     handleStack.group(1).toUpperCase(Locale.ROOT));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), action, null, null, null, null,
-                    null);
+                    null, null);
         }
         Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
         if (handleAbend.matches()) {
@@ -95,7 +105,7 @@ final class CicsBlockParser {
             }
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, action, target, null, null,
-                    null);
+                    null, null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {
@@ -104,7 +114,7 @@ final class CicsBlockParser {
             List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, action, conditions, null, null, null, null, null,
-                    null);
+                    null, null);
         }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
@@ -208,7 +218,73 @@ final class CicsBlockParser {
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
-                null, List.of(), null, null, null, null, programData.value, null);
+                null, List.of(), null, null, null, null, programData.value, null, null);
+    }
+
+    /**
+     * DELAYを読む (設計 79 §7)。
+     *
+     * <p>{@code FOR}の単位と{@code INTERVAL}を受ける。{@code TIME}、{@code UNTIL}、{@code REQID}は
+     * 時刻の解釈と取消しの設計を持たないので、名前をつけて断る。optionを何も書かなければ
+     * {@code INTERVAL(0)}と同じである。
+     */
+    private static Parsed parseDelay(String source) {
+        java.util.Map<String, String> values = new java.util.LinkedHashMap<>();
+        Matcher option = DELAY_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (values.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate DELAY option: " + name);
+            }
+            String value = option.group(2) != null ? option.group(2)
+                    : option.group(3) == null ? null : option.group(3).toUpperCase(Locale.ROOT);
+            boolean flag = name.equals("FOR") || name.equals("NOHANDLE");
+            switch (name) {
+                case "FOR", "NOHANDLE", "HOURS", "MINUTES", "SECONDS", "MILLISECS",
+                        "INTERVAL", "RESP", "RESP2" -> { }
+                default -> throw new IllegalArgumentException("unsupported DELAY option: " + name);
+            }
+            if (flag != (value == null)) {
+                throw new IllegalArgumentException(flag
+                        ? name + " does not take a value" : name + " requires a value");
+            }
+            values.put(name, value);
+            position = option.end();
+        }
+        boolean units = values.containsKey("HOURS") || values.containsKey("MINUTES")
+                || values.containsKey("SECONDS") || values.containsKey("MILLISECS");
+        if (units && !values.containsKey("FOR")) {
+            throw new IllegalArgumentException("DELAY HOURS, MINUTES, SECONDS and MILLISECS require FOR");
+        }
+        if (values.containsKey("FOR") && !units) {
+            throw new IllegalArgumentException("DELAY FOR requires HOURS, MINUTES, SECONDS or MILLISECS");
+        }
+        if (values.containsKey("FOR") && values.containsKey("INTERVAL")) {
+            throw new IllegalArgumentException("DELAY FOR cannot be combined with INTERVAL");
+        }
+        String response = values.get("RESP");
+        String response2 = values.get("RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        for (String name : List.of("RESP", "RESP2")) {
+            if (values.get(name) != null && values.get(name).chars().allMatch(Character::isDigit)) {
+                throw new IllegalArgumentException(name + " requires a data name");
+            }
+        }
+        DelaySpec spec = units
+                ? new DelaySpec(values.get("HOURS"), values.get("MINUTES"), values.get("SECONDS"),
+                        values.get("MILLISECS"), null)
+                : new DelaySpec(null, null, null, null,
+                        values.getOrDefault("INTERVAL", "0"));
+        return new Parsed(null, null, null, -1, response, response2,
+                values.containsKey("NOHANDLE"), false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, spec);
     }
 
     /**
@@ -491,7 +567,8 @@ final class CicsBlockParser {
             String abendHandlerTarget,
             List<AssignSpec> assignments,
             String programData,
-            TimeSpec time) {
+            TimeSpec time,
+            DelaySpec delay) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
@@ -499,6 +576,10 @@ final class CicsBlockParser {
     }
 
     record AssignSpec(Statement.CicsAssignOption option, String target) {
+    }
+
+    /** DELAYの各値。数字だけなら整数定数、そうでなければデータ名。書かなければ null。 */
+    record DelaySpec(String hours, String minutes, String seconds, String millis, String interval) {
     }
 
     /** ASKTIME (ask=true) または FORMATTIME の、データ名を解決する前の形。 */

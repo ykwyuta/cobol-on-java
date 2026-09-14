@@ -85,6 +85,18 @@ public final class CicsExecution {
         return task;
     }
 
+    /** taskが終わっていなければならない時刻。構成されていなければ期限なし。 */
+    private java.time.Instant deadline;
+
+    /** task programがtransaction定義の期限を渡す。DELAYはこれを越える待ちを始めない。 */
+    public synchronized void limitTo(java.time.Instant value) {
+        deadline = Objects.requireNonNull(value, "deadline");
+    }
+
+    public synchronized Optional<java.time.Instant> deadline() {
+        return Optional.ofNullable(deadline);
+    }
+
     /** 初期programまたはXCTL先が、現在のLINK levelのprogramになる。 */
     public synchronized void startProgram(String programName) {
         currentHandleLevel().programName = Objects.requireNonNull(programName, "programName");

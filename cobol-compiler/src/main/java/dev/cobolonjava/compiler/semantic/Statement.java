@@ -37,6 +37,21 @@ public sealed interface Statement {
             implements Statement {
     }
 
+    /**
+     * EXEC CICS DELAY (設計 79 §7)。書かなかった単位は null。
+     *
+     * @param interval {@code INTERVAL(hhmmss)}。FORの単位と同時には書けない
+     */
+    record CicsDelay(
+            Operand hours,
+            Operand minutes,
+            Operand seconds,
+            Operand millis,
+            Operand interval,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     /** EXEC CICS ASKTIME。受取域を省けばEIBの日時だけを更新する (設計 79 §6.1)。 */
     record CicsAskTime(DataReference abstime, Origin origin) implements Statement {
     }

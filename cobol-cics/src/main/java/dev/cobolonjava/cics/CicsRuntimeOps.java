@@ -21,6 +21,7 @@ public final class CicsRuntimeOps {
     private static final int POP_HANDLE_FUNCTION = 0x020E;
     /** 間隔制御群のfunction code。実機のEIBFNとは突き合わせていない (暫定判断 P-115)。 */
     private static final int ASKTIME_FUNCTION = 0x1002;
+    private static final int DELAY_FUNCTION = 0x1004;
     private static final int FORMATTIME_FUNCTION = 0x104A;
     private static final int LINK_FUNCTION = 0x0E02;
     private static final int XCTL_FUNCTION = 0x0E04;
@@ -376,6 +377,83 @@ public final class CicsRuntimeOps {
                     + sep + two(local.getSecond()), "FORMATTIME TIME");
         }
         completeLocalCommand(required, FORMATTIME_FUNCTION);
+    }
+
+    /**
+     * DELAY (設計 79 §7)。
+     *
+     * <p>{@code FOR} の各単位または {@code INTERVAL(hhmmss)} を受ける。書かなかった単位は null。
+     * 範囲外は RESP2 を推測せず失敗させる。task の期限を越える待ちは始めない。
+     *
+     * @return condition handler へ移るなら段落番号。DELAY は現状 NORMAL だけを返す
+     */
+    public static int delayCondition(
+            ProgramContext context,
+            dev.cobolonjava.runtime.decimal.Decimal hours,
+            dev.cobolonjava.runtime.decimal.Decimal minutes,
+            dev.cobolonjava.runtime.decimal.Decimal seconds,
+            dev.cobolonjava.runtime.decimal.Decimal millis,
+            dev.cobolonjava.runtime.decimal.Decimal interval,
+            boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        java.time.Duration duration = delayDuration(hours, minutes, seconds, millis, interval);
+        CicsExecution execution = execution(required);
+        java.time.Instant now = execution.environment().clock().instant();
+        execution.deadline().ifPresent(deadline -> {
+            if (now.plus(duration).isAfter(deadline)) {
+                throw new CicsTaskStateException("DELAY of " + duration
+                        + " would exceed the task deadline");
+            }
+        });
+        execution.environment().interval().delay(duration);
+        completeLocalCommand(required, DELAY_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    static java.time.Duration delayDuration(
+            dev.cobolonjava.runtime.decimal.Decimal hours,
+            dev.cobolonjava.runtime.decimal.Decimal minutes,
+            dev.cobolonjava.runtime.decimal.Decimal seconds,
+            dev.cobolonjava.runtime.decimal.Decimal millis,
+            dev.cobolonjava.runtime.decimal.Decimal interval) {
+        if (interval != null) {
+            if (hours != null || minutes != null || seconds != null || millis != null) {
+                throw new IllegalArgumentException("DELAY INTERVAL cannot be combined with FOR");
+            }
+            long hhmmss = delayValue(interval, 995_959, "INTERVAL");
+            long mm = hhmmss / 100 % 100;
+            long ss = hhmmss % 100;
+            if (mm > 59 || ss > 59) {
+                throw new CicsTaskStateException("DELAY INTERVAL is not a valid hhmmss value");
+            }
+            return java.time.Duration.ofHours(hhmmss / 10_000).plusMinutes(mm).plusSeconds(ss);
+        }
+        int units = (hours == null ? 0 : 1) + (minutes == null ? 0 : 1)
+                + (seconds == null ? 0 : 1) + (millis == null ? 0 : 1);
+        if (units == 0) {
+            throw new IllegalArgumentException("DELAY requires FOR or INTERVAL");
+        }
+        // 1つの単位だけを書けば上限までその単位で数え、複数書けば下位の単位は桁上がり前に限る
+        boolean single = units == 1;
+        long h = hours == null ? 0 : delayValue(hours, 99, "HOURS");
+        long m = minutes == null ? 0 : delayValue(minutes, single ? 5_999 : 59, "MINUTES");
+        long s = seconds == null ? 0 : delayValue(seconds, single ? 359_999 : 59, "SECONDS");
+        long ms = millis == null ? 0 : delayValue(millis, single ? 359_999_999 : 999, "MILLISECS");
+        return java.time.Duration.ofHours(h).plusMinutes(m).plusSeconds(s).plusMillis(ms);
+    }
+
+    private static long delayValue(
+            dev.cobolonjava.runtime.decimal.Decimal value, long max, String option) {
+        long parsed;
+        try {
+            parsed = value.toBigDecimal().longValueExact();
+        } catch (ArithmeticException notInteger) {
+            throw new CicsTaskStateException("DELAY " + option + " is not an integer");
+        }
+        if (parsed < 0 || parsed > max) {
+            throw new CicsTaskStateException("DELAY " + option + " is out of range: " + parsed);
+        }
+        return parsed;
     }
 
     private static String two(int value) {

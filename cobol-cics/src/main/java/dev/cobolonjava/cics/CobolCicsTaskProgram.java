@@ -46,6 +46,7 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
         }
         definition.validate(input);
         CicsExecution execution = new CicsExecution(task, input.commareaLength(), environment);
+        execution.limitTo(task.startedAt().plus(definition.taskTimeout()));
         RuntimeServices services = RuntimeServices.builder()
                 .service(CicsExecution.class, execution)
                 .build();

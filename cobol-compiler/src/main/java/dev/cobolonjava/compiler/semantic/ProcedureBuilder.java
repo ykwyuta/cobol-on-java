@@ -1514,6 +1514,9 @@ public final class ProcedureBuilder {
             if (parsed.time() != null) {
                 return cicsTimeStatement(parsed.time(), origin);
             }
+            if (parsed.delay() != null) {
+                return cicsDelayStatement(parsed, origin);
+            }
             if (parsed.handleStackAction() != null) {
                 return new Statement.CicsHandleStack(parsed.handleStackAction(), origin);
             }
@@ -1566,27 +1569,70 @@ public final class ProcedureBuilder {
                     commarea,
                     parsed.length(), parsed.response() != null || parsed.noHandle(),
                     parsed.rollback(), parsed.cancel(), parsed.noDump(), parsed.immediate(), origin);
-            if (parsed.response() == null) {
-                return command;
-            }
-            DataReference response = cicsResponseReceiver(parsed.response(), origin);
-            DataReference response2 = parsed.response2() == null
-                    ? null : cicsResponseReceiver(parsed.response2(), origin);
-            if (response == null || (parsed.response2() != null && response2 == null)) {
-                return null;
-            }
-            List<Statement> statements = new ArrayList<>();
-            statements.add(command);
-            if (!addCicsResponseMove("EIBRESP", response, statements, origin)
-                    || (response2 != null
-                    && !addCicsResponseMove("EIBRESP2", response2, statements, origin))) {
-                return null;
-            }
-            return new Statement.Sequence(statements, origin);
+            return withCicsResponse(command, parsed, origin);
         } catch (IllegalArgumentException invalid) {
             report(origin, invalid.getMessage());
             return null;
         }
+    }
+
+    /** RESP / RESP2 があれば、command のあとで EIBRESP / EIBRESP2 を受取項目へ転記する。 */
+    private Statement withCicsResponse(
+            Statement command, CicsBlockParser.Parsed parsed, Origin origin) {
+        if (parsed.response() == null) {
+            return command;
+        }
+        DataReference response = cicsResponseReceiver(parsed.response(), origin);
+        DataReference response2 = parsed.response2() == null
+                ? null : cicsResponseReceiver(parsed.response2(), origin);
+        if (response == null || (parsed.response2() != null && response2 == null)) {
+            return null;
+        }
+        List<Statement> statements = new ArrayList<>();
+        statements.add(command);
+        if (!addCicsResponseMove("EIBRESP", response, statements, origin)
+                || (response2 != null
+                && !addCicsResponseMove("EIBRESP2", response2, statements, origin))) {
+            return null;
+        }
+        return new Statement.Sequence(statements, origin);
+    }
+
+    /** DELAY の値を被演算子にする。数字だけなら整数定数、それ以外は数字項目 (設計 79 §7)。 */
+    private Statement cicsDelayStatement(CicsBlockParser.Parsed parsed, Origin origin) {
+        CicsBlockParser.DelaySpec spec = parsed.delay();
+        Operand hours = delayOperand(spec.hours(), "HOURS", origin);
+        Operand minutes = delayOperand(spec.minutes(), "MINUTES", origin);
+        Operand seconds = delayOperand(spec.seconds(), "SECONDS", origin);
+        Operand millis = delayOperand(spec.millis(), "MILLISECS", origin);
+        Operand interval = delayOperand(spec.interval(), "INTERVAL", origin);
+        if ((spec.hours() != null && hours == null) || (spec.minutes() != null && minutes == null)
+                || (spec.seconds() != null && seconds == null)
+                || (spec.millis() != null && millis == null)
+                || (spec.interval() != null && interval == null)) {
+            return null;
+        }
+        Statement delay = new Statement.CicsDelay(hours, minutes, seconds, millis, interval,
+                parsed.response() != null || parsed.noHandle(), origin);
+        return withCicsResponse(delay, parsed, origin);
+    }
+
+    private Operand delayOperand(String value, String option, Origin origin) {
+        if (value == null) {
+            return null;
+        }
+        if (value.chars().allMatch(Character::isDigit)) {
+            return new Operand.Literal(new LiteralValue.Number(
+                    dev.cobolonjava.runtime.decimal.Decimal.parse(value), value));
+        }
+        DataReference reference = resolver.resolveName(value, origin);
+        if (reference == null) {
+            return null;
+        }
+        if (!DataCategory.of(reference).isNumeric()) {
+            throw new IllegalArgumentException("DELAY " + option + " must be numeric");
+        }
+        return new Operand.Reference(reference);
     }
 
     private DataReference cicsResponseReceiver(String name, Origin origin) {
