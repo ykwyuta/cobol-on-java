@@ -71,11 +71,24 @@
 | `BmsTerminalInputBinder` | form (`aid`、`cursor`、`bms.NAME.occurrence`) を `BmsTerminalInput` にする。形だけを確かめ、画面との照合は `BmsInputDecoder` に任せる |
 | `BmsThymeleafAutoConfiguration` | 上の 2 つの部品を bean にする |
 
-## 5. まだ構成しないもの
+## 5. ブラウザの入口 (第 2 増分)
 
-HTTP 入口 (`POST /cics/{transid}`) は構成しない。設計 77 §4.2 は認証済み principal の検査、CSRF 保護、
-会話 ID と冪等キーの検査、Spring Session による会話ストアを入口の条件にしている。これらを持たない入口を
-既定で開けると、他人の会話を操作できる。Spring Security と Spring Session の adapter を入れる増分で構成する。
+`CicsBrowserController` を `CicsBrowserAutoConfiguration` が構成する。設計 77 §4.2 の条件をこう満たす。
+
+| 条件 | 扱い |
+| --- | --- |
+| 認証 | Spring Security が classpath に無ければ入口を構成しない。principal が無い要求は 401 |
+| CSRF | task は POST だけで動かす。Spring Security の CSRF filter が token の無い POST を 403 にする。GET は開始の画面だけ |
+| 会話 | HTTP session に置くのは会話の ID、版、次の TRANSID だけ。COMMAREA と直前の画面は会話ストアから読む。版が合わなければ 409 で task を動かさない |
+| 会話ストア | 既定は `InMemoryConversationStore` (1 つの JVM の中だけ)。Spring Session は HTTP session を外へ置く形で使え、会話ストアは利用者が bean で替える |
+| UOW | 既定の境界は回復可能な資源を持たない `NonRecoverableTaskBoundaryFactory`。Db2 を使う transaction は UOW を持つ境界を bean で置く |
+| 端末 | HTTP session ごとに `W` + base36 3 文字の端末名を振る。user ID は principal 名が 8 文字の CICS の形に収まるときだけ |
+| IMMEDIATE | 端末入力なしで次の task を続け、8 回を越えれば失敗させる |
+| 失敗 | 応答へ入力の内容や例外の文面を出さない。ABEND だけは code を示す |
+
+設計 77 §3.1 は MVC の入口を `cobol-spring-boot-4-autoconfigure` に置く。ブラウザの入口は画面の描画と切り離せず、
+JSON 専用の構成でこの module を外せるよう、BMS Thymeleaf adapter の側に置いた。JSON API の入口は autoconfigure の
+増分として残す。
 
 ## 6. 未検証の項目 (次の spike)
 

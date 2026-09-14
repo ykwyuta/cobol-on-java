@@ -1,1 +1,2 @@
 dev.cobolonjava.spring.boot4.bms.BmsThymeleafAutoConfiguration
+dev.cobolonjava.spring.boot4.bms.CicsBrowserAutoConfiguration

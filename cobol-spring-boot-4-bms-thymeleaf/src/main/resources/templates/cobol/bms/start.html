@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+  <meta charset="utf-8">
+  <title th:text="${transaction}">CICS transaction</title>
+</head>
+<body>
+<form method="post" th:action="${action}">
+  <input th:if="${_csrf != null}" type="hidden" th:name="${_csrf.parameterName}" th:value="${_csrf.token}">
+  <button type="submit" th:text="${'Start ' + transaction}">Start</button>
+</form>
+</body>
+</html>

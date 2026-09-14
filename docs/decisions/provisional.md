@@ -4068,3 +4068,29 @@ SPI の NOTAUTH の検査は持たない。
 画面端で折り返す field は扱っていない。spike で試作した方式は 1 つで、per-cell DOM と canvas hybrid は比べていない。
 
 **解消条件**: 設計 81 §6 の項目を次の spike で測る。Spring Security / Session の adapter と一緒に HTTP 入口を入れる。
+
+## P-134 ブラウザの入口は Spring Security があるときだけ構成し、会話ストアの既定は 1 つの JVM に限る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。P-133 の「HTTP 入口は構成しない」を置き換える |
+| 場所 | `CicsBrowserController`、`CicsBrowserAutoConfiguration`、`NonRecoverableTaskBoundaryFactory` |
+| 関連要件 | 設計 77 §4.2 / §4.6、設計 81 §5 |
+
+**暫定の扱い**: 設計 81 §5 の表のとおり。要点は次である。
+
+- 利用者は会話ストアの保存先を選んでいない。既定は `InMemoryConversationStore` とし、1 つの JVM の中だけで効く。
+  HTTP session には会話の ID・版・次の TRANSID だけを直列化できる形で置くので、Spring Session (JDBC / Redis) は
+  そのまま使える。複数 JVM では会話ストアも共有の実装に替える必要がある
+- 既定の境界は業務 UOW を持たない。Db2 を使う transaction でこの既定のまま動かすと、SQL と会話の確定が一体に
+  ならない。回復可能な資源を使うなら UOW adapter の境界を bean で置く
+- 冪等キーは要求ごとに server が作る。設計 77 §4.3 の「同じ冪等キーで再送・結果照会」はまだ持たない
+- 1 つの HTTP session は 1 つの会話だけを持つ。複数 tab で同じ会話を動かすと、古い tab の送信は 409 になる
+- 端末名は JVM の中の連番で振る。46656 個を越えると振れず、JVM をまたいだ一意性は保証しない
+- MVC の入口を設計 77 §3.1 の autoconfigure でなく BMS Thymeleaf adapter に置いた (設計 81 §5)
+
+**どこがずれうるか**: 実機の端末名は region の端末定義が決める。ここでは HTTP session の単位で仮に振っている。
+lease の期限 (5 分) と会話の期限 (30 分) は既定値で、transaction の task 期限が 5 分を越えると task が始まらない。
+
+**解消条件**: Spring Session JDBC を業務 UOW と同じ trasaction で保存する `STRICT` の会話ストアを設計 77 §4.6 に沿って入れる。
+冪等キーの再送を入れる。端末名を利用者の端末定義から与える構成を足す。

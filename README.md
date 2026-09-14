@@ -70,7 +70,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。driver管理 `WITH HOLD`、CICS MVC / Session は未実装 |
-| `cobol-spring-boot-4-bms-thymeleaf` | BMS 画面の Thymeleaf view、端末 JavaScript、CSS | 表示モデル、共通 template、端末操作、form の入力変換を実装。Bank-of-Z の 2 画面をブラウザで測り、JavaScript の有無によらず全 field の行・桁・幅が一致 (設計 81)。HTTP 入口 (認証・CSRF・Session) は未構成 |
+| `cobol-spring-boot-4-bms-thymeleaf` | BMS 画面の Thymeleaf view、端末 JavaScript、CSS | 表示モデル、共通 template、端末操作、form の入力変換を実装。Bank-of-Z の 2 画面をブラウザで測り、JavaScript の有無によらず全 field の行・桁・幅が一致 (設計 81)。ブラウザの入口 `POST /cics/{transid}` は Spring Security があるときだけ構成し、COMMAREA と画面は server の会話ストアから読む。会話ストアの既定は 1 つの JVM の中だけ (P-134) |
 
 ## ビルド
 
