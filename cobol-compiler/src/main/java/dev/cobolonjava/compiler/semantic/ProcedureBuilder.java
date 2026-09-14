@@ -1529,8 +1529,14 @@ public final class ProcedureBuilder {
             if (parsed.commarea() != null && commarea == null) {
                 return null;
             }
+            DataReference programData = parsed.programData() == null
+                    ? null : resolver.resolveName(parsed.programData(), origin);
+            if (parsed.programData() != null && programData == null) {
+                return null;
+            }
             String target = switch (parsed.operation()) {
-                case LINK, XCTL -> ProgramId.of(parsed.target()).value();
+                case LINK, XCTL -> parsed.target() == null
+                        ? null : ProgramId.of(parsed.target()).value();
                 case RETURN -> parsed.target() == null
                         ? null : TransId.of(parsed.target()).value();
                 case SYNCPOINT -> null;
@@ -1538,7 +1544,8 @@ public final class ProcedureBuilder {
                         : AbendCommand.user(CicsAbendCode.of(parsed.target()),
                                 parsed.cancel(), parsed.noDump()).effectiveCode().value();
             };
-            Statement.Cics command = new Statement.Cics(parsed.operation(), target, commarea,
+            Statement.Cics command = new Statement.Cics(parsed.operation(), target, programData,
+                    commarea,
                     parsed.length(), parsed.response() != null || parsed.noHandle(),
                     parsed.rollback(), parsed.cancel(), parsed.noDump(), parsed.immediate(), origin);
             if (parsed.response() == null) {

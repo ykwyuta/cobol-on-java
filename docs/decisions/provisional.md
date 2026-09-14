@@ -2956,7 +2956,7 @@ abort、cleanupを順序付けるが、production program portはdeadline / coop
 PGMIDERR / generalized ERROR初期subsetと、明示ABENDに対するCOBOL LABEL形式のabend exitに限定する。
 `CicsTaskBoundary`の原子性はadapterの自己申告で、STRICT / XA / NON_ATOMICの実装証明はまだない。
 commit結果が`UNKNOWN`または通常例外ならleaseを保持して再実行を止めるが、照会・回復jobは未実装である。
-生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的PROGRAM / TRANSID / LENGTH / ABCODE、
+生成COBOLの`EXEC CICS`は初期subsetだけを扱い、動的TRANSID / LENGTH / ABCODE、
 `HANDLE ABEND PROGRAM`、channel / containerを扱わない。`HANDLE ABEND LABEL` / `CANCEL` / `RESET`は
 明示ABENDだけを対象とし、Java例外やCICS内部異常をabend exitへ分類しない。dump要求も構造化するだけで、transaction dumpの採取、mask、
 保存、保持期限は未実装である。静的PROGRAM名の許可catalog照合は実行時である。

@@ -30,6 +30,9 @@ final class CicsBlockParser {
             "(?is)\\s*([A-Z0-9][A-Z0-9-]*)(?:\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\))?");
     private static final Pattern QUOTED_OPTION = Pattern.compile(
             "(?is)\\b(PROGRAM|TRANSID|ABCODE)\\s*\\(\\s*(['\"])(.*?)\\2\\s*\\)");
+    /** 引用符を外したあとに残るPROGRAM(データ名)。静的な名前はQUOTED_OPTIONが先に取る。 */
+    private static final Pattern PROGRAM_DATA_OPTION = Pattern.compile(
+            "(?is)\\bPROGRAM\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
     private static final Pattern NAME_OPTION = Pattern.compile(
             "(?is)\\bCOMMAREA\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
     private static final Pattern LENGTH_OPTION = Pattern.compile(
@@ -48,14 +51,14 @@ final class CicsBlockParser {
         if (assignAbcode.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
-                    assignAbcode.group(1).toUpperCase(Locale.ROOT));
+                    assignAbcode.group(1).toUpperCase(Locale.ROOT), null);
         }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
         if (handleStack.matches()) {
             Statement.CicsHandleStackAction action = Statement.CicsHandleStackAction.valueOf(
                     handleStack.group(1).toUpperCase(Locale.ROOT));
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, false, null, List.of(), action, null, null, null);
+                    false, false, false, false, false, null, List.of(), action, null, null, null, null);
         }
         Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
         if (handleAbend.matches()) {
@@ -75,7 +78,7 @@ final class CicsBlockParser {
                         "initial HANDLE ABEND support accepts LABEL, CANCEL, or RESET");
             }
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, false, null, List.of(), null, action, target, null);
+                    false, false, false, false, false, null, List.of(), null, action, target, null, null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {
@@ -83,7 +86,7 @@ final class CicsBlockParser {
                     condition.group(1).toUpperCase(Locale.ROOT));
             List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
             return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, false, action, conditions, null, null, null, null);
+                    false, false, false, false, false, action, conditions, null, null, null, null, null);
         }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
@@ -130,6 +133,13 @@ final class CicsBlockParser {
         quoted.appendTail(stripped);
         remainder = stripped.toString();
 
+        ParsedOption<String> programData = extractOne(
+                PROGRAM_DATA_OPTION, remainder, matcher -> matcher.group(1).toUpperCase(Locale.ROOT));
+        remainder = programData.remainder;
+        if (program != null && programData.value != null) {
+            throw new IllegalArgumentException("duplicate PROGRAM option");
+        }
+
         ParsedOption<String> commarea = extractOne(NAME_OPTION, remainder, matcher -> matcher.group(1));
         remainder = commarea.remainder;
         ParsedOption<Integer> length = extractOne(
@@ -161,7 +171,8 @@ final class CicsBlockParser {
             throw new IllegalArgumentException(
                     "unsupported EXEC CICS option: " + remainder.strip());
         }
-        validate(operation, program, transId, abendCode, commarea.value, length.value,
+        validate(operation, program != null || programData.value != null, transId, abendCode,
+                commarea.value, length.value,
                 response.value, response2.value, rollback, cancel, noDump, immediate);
         String target = switch (operation) {
             case RETURN -> transId;
@@ -171,7 +182,7 @@ final class CicsBlockParser {
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
-                null, List.of(), null, null, null, null);
+                null, List.of(), null, null, null, null, programData.value);
     }
 
     private static List<ConditionSpec> parseConditions(
@@ -220,9 +231,10 @@ final class CicsBlockParser {
     }
 
     private static void validate(
-            Statement.CicsOperation operation, String program, String transId, String abendCode,
+            Statement.CicsOperation operation, boolean hasProgram, String transId, String abendCode,
             String commarea, Integer length, String response, String response2,
             boolean rollback, boolean cancel, boolean noDump, boolean immediate) {
+        String program = hasProgram ? "" : null;
         if (immediate && operation != Statement.CicsOperation.RETURN) {
             throw new IllegalArgumentException("IMMEDIATE is only supported by RETURN");
         }
@@ -232,7 +244,8 @@ final class CicsBlockParser {
         }
         if ((operation == Statement.CicsOperation.LINK
                 || operation == Statement.CicsOperation.XCTL) && program == null) {
-            throw new IllegalArgumentException(operation + " requires static PROGRAM('name')");
+            throw new IllegalArgumentException(
+                    operation + " requires PROGRAM('name') or PROGRAM(data-name)");
         }
         if (operation != Statement.CicsOperation.LINK
                 && operation != Statement.CicsOperation.XCTL && program != null) {
@@ -323,7 +336,8 @@ final class CicsBlockParser {
             Statement.CicsHandleStackAction handleStackAction,
             Statement.CicsAbendHandlerAction abendHandlerAction,
             String abendHandlerTarget,
-            String assignAbcodeTarget) {
+            String assignAbcodeTarget,
+            String programData) {
         Parsed {
             conditions = List.copyOf(conditions);
         }

@@ -80,6 +80,52 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("PROGRAM(データ名)のLINK・XCTLは実行時の値から名前を決め、未登録はPGMIDERR")
+    void linksAndTransfersToProgramNamedByDataArea() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> main = compile(loader, "MAIN", List.of(
+                "MOVE 'NOPE' TO WS-PGM",
+                "EXEC CICS LINK PROGRAM(WS-PGM) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP NOT = 27 GOBACK END-IF",
+                "MOVE 'CHILD' TO WS-PGM",
+                "EXEC CICS LINK PROGRAM(WS-PGM) COMMAREA(LK-AREA) LENGTH(4) END-EXEC",
+                "MOVE 'NEXTPGM' TO WS-PGM",
+                "EXEC CICS XCTL PROGRAM(WS-PGM) COMMAREA(LK-AREA) LENGTH(4) END-EXEC"));
+        Supplier<CobolProgram> child = compile(loader, "CHILD", List.of(
+                "MOVE 'LINK' TO LK-AREA",
+                "GOBACK"));
+        Supplier<CobolProgram> next = compile(loader, "NEXTPGM", List.of(
+                "IF LK-AREA = 'LINK' MOVE 'DONE' TO LK-AREA END-IF",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) LENGTH(4) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("MAIN", main)
+                .cobolProgram("CHILD", child)
+                .cobolProgram("NEXTPGM", next)
+                .build();
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 8)
+                .execute(definition(), CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("DONE", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("PROGRAMのデータ域が名前として正しくなければPGMIDERRへ丸めず失敗する")
+    void rejectsInvalidProgramNameInDataArea() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "BADNAME", List.of(
+                "MOVE ' CHILD' TO WS-PGM",
+                "EXEC CICS LINK PROGRAM(WS-PGM) RESP(WS-RESP) END-EXEC"));
+
+        CicsTaskStateException failure = assertThrows(CicsTaskStateException.class,
+                () -> execute(loader, "BADNAME", program));
+
+        assertTrue(failure.getMessage().contains("valid program name"), failure.getMessage());
+    }
+
+    @Test
     @DisplayName("RETURN TRANSID IMMEDIATEは次taskを端末入力なしで始める指定をtask結果へ残す")
     void returnImmediateMarksCompletion() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -136,8 +182,12 @@ class CicsGenerationTest {
     @Test
     @DisplayName("初期対応外のCICSオプションと動的PROGRAMはfail-closedで拒否する")
     void rejectsUnsupportedOptionsAndDynamicTargets() {
-        assertRejected("EXEC CICS LINK PROGRAM(WS-PGM) COMMAREA(LK-AREA) LENGTH(4) END-EXEC",
-                "PROGRAM(WS-PGM)");
+        assertRejected("EXEC CICS LINK PROGRAM(WS-RESP) COMMAREA(LK-AREA) LENGTH(4) END-EXEC",
+                "PROGRAM data area must be alphanumeric");
+        assertRejected("EXEC CICS LINK PROGRAM('CHILD') PROGRAM(WS-PGM) END-EXEC",
+                "duplicate PROGRAM option");
+        assertRejected("EXEC CICS RETURN PROGRAM(WS-PGM) END-EXEC",
+                "RETURN does not accept PROGRAM");
         assertRejected("EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC",
                 "numeric LENGTH");
         assertRejected("EXEC CICS RETURN TRANSID('TOO-LONG') END-EXEC",
@@ -940,6 +990,7 @@ class CicsGenerationTest {
                 "01 WS-RESP2 PIC S9(8) COMP.",
                 "01 WS-ABCODE PIC X(4).",
                 "01 WS-SHORT PIC X(3).",
+                "01 WS-PGM PIC X(8).",
                 "LINKAGE SECTION.",
                 "01 LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.",

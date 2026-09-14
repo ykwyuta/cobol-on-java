@@ -20,6 +20,8 @@ public sealed interface Statement {
     record Cics(
             CicsOperation operation,
             String target,
+            /** LINK / XCTL の PROGRAM(データ名)。静的な名前なら null で、target を使う。 */
+            DataReference programData,
             DataReference commarea,
             int length,
             boolean suppressDefaultHandling,

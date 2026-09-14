@@ -60,6 +60,48 @@ public final class CicsRuntimeOps {
         return NO_CONDITION_TRANSFER;
     }
 
+    /** PROGRAM(データ名) のLINK。名前はデータ域のbyte列から実行時に決まる。 */
+    public static int linkCondition(
+            ProgramContext context, byte[] program, DataView commarea,
+            boolean suppressDefaultHandling) {
+        return linkCondition(context, dynamicProgram(context, program, "LINK"), commarea,
+                suppressDefaultHandling);
+    }
+
+    /** PROGRAM(データ名) のXCTL。 */
+    public static int xctlCondition(
+            ProgramContext context, byte[] program, DataView commarea,
+            boolean suppressDefaultHandling) {
+        return xctlCondition(context, dynamicProgram(context, program, "XCTL"), commarea,
+                suppressDefaultHandling);
+    }
+
+    /**
+     * データ域の名前を program 名にする (設計 79 §4)。
+     *
+     * <p>落とすのは末尾の空白だけである。先頭の空白や許可されない文字を推測で直すと、
+     * 別の program を起動しうる。名前として正しくなければ PGMIDERR ではなく失敗させる。
+     * PGMIDERR は「正しい名前だが登録が無い」ことを表すからである。
+     */
+    static String dynamicProgram(ProgramContext context, byte[] name, String command) {
+        String text = Objects.requireNonNull(context, "context").codePage()
+                .decode(Objects.requireNonNull(name, "name"));
+        int end = text.length();
+        while (end > 0 && text.charAt(end - 1) == ' ') {
+            end--;
+        }
+        String candidate = text.substring(0, end);
+        try {
+            if (candidate.isEmpty() || candidate.indexOf(' ') >= 0) {
+                throw new IllegalArgumentException("blank or padded name");
+            }
+            return ProgramId.of(candidate).value();
+        } catch (IllegalArgumentException invalid) {
+            throw new CicsTaskStateException(
+                    command + " PROGRAM data area does not contain a valid program name");
+        }
+    }
+
     public static void xctl(ProgramContext context, String program, DataView commarea) {
         xctl(context, program, commarea, false);
     }

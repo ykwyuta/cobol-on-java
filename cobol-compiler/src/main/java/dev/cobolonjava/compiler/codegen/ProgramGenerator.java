@@ -771,10 +771,20 @@ public final class ProgramGenerator {
         if (statement.commarea() != null && commarea == null) {
             return;
         }
+        Runnable programName = planCicsProgramData(statement);
+        if (statement.programData() != null && programName == null) {
+            return;
+        }
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);
             switch (statement.operation()) {
-                case LINK, XCTL -> run.visitLdcInsn(statement.target());
+                case LINK, XCTL -> {
+                    if (programName == null) {
+                        run.visitLdcInsn(statement.target());
+                    } else {
+                        programName.run();
+                    }
+                }
                 case RETURN -> {
                     if (statement.target() == null) {
                         run.visitInsn(Opcodes.ACONST_NULL);
@@ -822,11 +832,44 @@ public final class ProgramGenerator {
                 case RETURN -> "returnTaskCondition";
                 case SYNCPOINT, ABEND -> throw new IllegalStateException();
             };
+            String name = programName == null ? "Ljava/lang/String;" : "[B";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
-                    "(" + CONTEXT + "Ljava/lang/String;L" + DATA_VIEW + ";"
+                    "(" + CONTEXT + name + "L" + DATA_VIEW + ";"
                             + (returning ? "Z" : "") + "Z)I", false);
             emitCicsConditionTransfer();
         });
+    }
+
+    /**
+     * {@code PROGRAM(データ名)} の byte 列を積む命令 (設計 79 §4)。
+     *
+     * <p>CICS の program 名は 8 文字の英数字のデータ域である。数字項目や群項目を名前として
+     * 読むと、実行時の値の表現に依存した名前ができるので翻訳時に断る。
+     */
+    private Runnable planCicsProgramData(Statement.Cics statement) {
+        DataReference reference = statement.programData();
+        if (reference == null) {
+            return null;
+        }
+        if (DataCategory.of(reference) != DataCategory.ALPHANUMERIC) {
+            report(statement.origin(), "EXEC CICS PROGRAM data area must be alphanumeric");
+            return null;
+        }
+        OptionalInt length = lengthOf(reference, statement.origin());
+        Runnable address = planAddress(reference, statement.origin());
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        if (length.getAsInt() < 1 || length.getAsInt() > 8) {
+            report(statement.origin(), "EXEC CICS PROGRAM data area must be 1 to 8 bytes");
+            return null;
+        }
+        return () -> {
+            address.run();
+            push(length.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read",
+                    "(L" + STORAGE + ";II)[B", false);
+        };
     }
 
     /** 戻り値が段落番号なら現在の段落methodから返し、-1なら次の文へ進む。 */
