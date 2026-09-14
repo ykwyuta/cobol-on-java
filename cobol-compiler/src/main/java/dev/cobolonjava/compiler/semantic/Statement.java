@@ -90,6 +90,26 @@ public sealed interface Statement {
                    int extra) {
     }
 
+    /**
+     * EXEC CICS GET / PUT CONTAINER (設計 79 §9)。
+     *
+     * @param nameData 名前がデータ名なら 16 byte の域、定数なら null で nameLiteral を使う
+     * @param channelLiteral CHANNELも書かなければ channelData とともに null (現在のchannel)
+     * @param lengthLiteral PUT の FLENGTH 定数。書かなければ -1
+     */
+    record CicsContainer(
+            boolean put,
+            String nameLiteral,
+            DataReference nameData,
+            String channelLiteral,
+            DataReference channelData,
+            DataReference area,
+            DataReference lengthData,
+            int lengthLiteral,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     /** EXEC CICS BIF DEEDIT FIELD(x)。英数字の域から数字だけを残して右へ詰める。 */
     record CicsDeedit(DataReference field, Origin origin) implements Statement {
     }

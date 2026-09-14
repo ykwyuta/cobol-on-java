@@ -1011,6 +1011,11 @@ public final class ProcedureBuilder {
             out.add(receive.into());
         } else if (statement instanceof Statement.CicsDeedit deedit) {
             out.add(deedit.field());
+        } else if (statement instanceof Statement.CicsContainer container && !container.put()) {
+            out.add(container.area());
+            if (container.lengthData() != null) {
+                out.add(container.lengthData());
+            }
         } else if (statement instanceof Statement.Sql sql) {
             out.add(sql.sqlca());
             for (Statement.SqlHost host : sql.outputs()) {
@@ -1735,6 +1740,9 @@ public final class ProcedureBuilder {
                 }
                 return new Statement.CicsDeedit(field, origin);
             }
+            if (parsed.container() != null) {
+                return cicsContainerStatement(parsed, origin);
+            }
             if (parsed.receive() != null) {
                 CicsBlockParser.ReceiveSpec spec = parsed.receive();
                 DataReference into = resolver.resolveName(spec.into(), origin);
@@ -1849,6 +1857,63 @@ public final class ProcedureBuilder {
             return null;
         }
         return new Statement.Sequence(statements, origin);
+    }
+
+    /** GET / PUT CONTAINER の名前・域・長さを解決する (設計 79 §9)。 */
+    private Statement cicsContainerStatement(CicsBlockParser.Parsed parsed, Origin origin) {
+        CicsBlockParser.ContainerSpec spec = parsed.container();
+        String command = spec.put() ? "PUT CONTAINER" : "GET CONTAINER";
+        DataReference nameData = null;
+        if (spec.nameData() != null) {
+            nameData = containerNameArea(spec.nameData(), command + " CONTAINER", origin);
+            if (nameData == null) {
+                return null;
+            }
+        }
+        DataReference channelData = null;
+        if (spec.channelData() != null) {
+            channelData = containerNameArea(spec.channelData(), command + " CHANNEL", origin);
+            if (channelData == null) {
+                return null;
+            }
+        }
+        DataReference area = resolver.resolveName(spec.area(), origin);
+        if (area == null) {
+            return null;
+        }
+        if (area.constantLength().isEmpty()
+                || !(DataCategory.of(area).isAlphanumericLike() || DataCategory.of(area) == DataCategory.GROUP)) {
+            throw new IllegalArgumentException(command + (spec.put() ? " FROM" : " INTO")
+                    + " must be an alphanumeric or group data area of fixed length");
+        }
+        DataReference length = null;
+        if (spec.lengthData() != null) {
+            length = resolver.resolveName(spec.lengthData(), origin);
+            if (length == null) {
+                return null;
+            }
+            Usage usage = length.item().usage() == null ? Usage.DISPLAY : length.item().usage();
+            if ((usage != Usage.COMP && usage != Usage.COMP_5) || length.item().length() != Integer.BYTES
+                    || !DataCategory.of(length).isNumeric()) {
+                throw new IllegalArgumentException(command + " FLENGTH must be a 4-byte binary integer");
+            }
+        }
+        return withCicsResponse(new Statement.CicsContainer(spec.put(), spec.nameLiteral(), nameData,
+                spec.channelLiteral(), channelData, area, length, spec.lengthLiteral(),
+                parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+    }
+
+    /** channel / container の名前を持つ域は、公開仕様どおり 16 byte の英数字に限る。 */
+    private DataReference containerNameArea(String name, String option, Origin origin) {
+        DataReference reference = resolver.resolveName(name, origin);
+        if (reference == null) {
+            return null;
+        }
+        if (DataCategory.of(reference) != DataCategory.ALPHANUMERIC
+                || reference.constantLength().isEmpty() || reference.constantLength().getAsInt() != 16) {
+            throw new IllegalArgumentException(option + " data area must be a 16-byte alphanumeric item");
+        }
+        return reference;
     }
 
     /** DELAY の値を被演算子にする。数字だけなら整数定数、それ以外は数字項目 (設計 79 §7)。 */

@@ -144,6 +144,15 @@ public final class CicsEib {
             if ((functionCode & 0xFF00) != 0x1800) {
                 throw new IllegalArgumentException("MAPFAIL is only classified for BMS commands");
             }
+        } else if (responseCode == CicsResponseCode.LENGERR
+                || responseCode == CicsResponseCode.CONTAINERERR
+                || responseCode == CicsResponseCode.CHANNELERR) {
+            // channel 命令の EIBRCODE も公開情報から確定できないので、MAPFAIL と同じく binary zero を置く
+            // (暫定判断 P-125)。LENGERR は他の群でも起きるが、分類したのは channel 命令だけである
+            if ((functionCode & 0xFF00) != 0x3400) {
+                throw new IllegalArgumentException(
+                        "RESP=" + responseCode + " EIBRCODE is only classified for channel commands");
+            }
         } else if (responseCode != CicsResponseCode.NORMAL) {
             throw new IllegalArgumentException(
                     "EIBRCODE mapping is not defined for RESP=" + responseCode);

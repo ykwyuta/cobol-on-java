@@ -137,6 +137,34 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("PUT CONTAINERで作ったchannelからGET CONTAINERで読み戻し、無いcontainerはRESPに返る")
+    void putsAndGetsContainers() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "CONTNR", List.of(
+                "MOVE 'CH1' TO WS-CHAN",
+                "MOVE 'DATA' TO WS-CONT",
+                "MOVE 'ABCD' TO WS-ABCODE",
+                "MOVE 3 TO WS-FLEN",
+                "EXEC CICS PUT CONTAINER('C1') CHANNEL(WS-CHAN) FROM (WS-ABCODE) FLENGTH(WS-FLEN) END-EXEC",
+                "MOVE 4 TO WS-FLEN",
+                "EXEC CICS GET CONTAINER('C1') CHANNEL(WS-CHAN) INTO(LK-AREA) FLENGTH(WS-FLEN)"
+                        + " RESP(WS-RESP) END-EXEC",
+                "IF WS-FLEN NOT = 3 GOBACK END-IF",
+                "EXEC CICS GET CONTAINER(WS-CONT) CHANNEL('CH1') INTO(WS-SHORT) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(CONTAINERERR) MOVE 'E' TO LK-AREA(4:1) END-IF"));
+
+        TaskCompletion result = execute(loader, "CONTNR", program);
+
+        assertEquals("ABCE", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertRejected("EXEC CICS GET CONTAINER('C1') INTO(WS-SHORT) FLENGTH(3) END-EXEC",
+                "GET CONTAINER FLENGTH requires a data name");
+        assertRejected("EXEC CICS PUT CONTAINER('C1') FROM(WS-SHORT) APPEND END-EXEC",
+                "unsupported PUT CONTAINER option: APPEND");
+        assertRejected("EXEC CICS PUT CONTAINER(WS-PGM) FROM(WS-SHORT) END-EXEC",
+                "CONTAINER data area must be a 16-byte alphanumeric item");
+    }
+
+    @Test
     @DisplayName("ABEND ABCODE(データ名)は実行時の値をcodeにし、BIF DEEDITは数字を右へ詰める")
     void abendsWithDataAreaCodeAndDeedits() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -1276,6 +1304,9 @@ class CicsGenerationTest {
                 "01 WS-ABS PIC S9(15) COMP-3.",
                 "01 WS-DATE PIC X(10).",
                 "01 WS-TIME PIC 9(6).",
+                "01 WS-CHAN PIC X(16).",
+                "01 WS-CONT PIC X(16).",
+                "01 WS-FLEN PIC S9(8) COMP.",
                 "LINKAGE SECTION.",
                 "01 LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.",

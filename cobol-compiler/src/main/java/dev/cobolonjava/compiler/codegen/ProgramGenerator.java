@@ -765,6 +765,8 @@ public final class ProgramGenerator {
                 planCicsSend(send, body);
             } else if (statement instanceof Statement.CicsReceiveMap receive) {
                 planCicsReceiveMap(receive, body);
+            } else if (statement instanceof Statement.CicsContainer container) {
+                planCicsContainer(container, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
                 Runnable field = planWholeView(deedit.field(), deedit.origin());
                 if (field != null) {
@@ -1042,6 +1044,54 @@ public final class ProgramGenerator {
             push(values[i]);
             run.visitInsn(Opcodes.IASTORE);
         }
+    }
+
+    private void planCicsContainer(Statement.CicsContainer statement, List<Runnable> body) {
+        Runnable nameData = planAreaBytes(statement.nameData(), statement.origin());
+        Runnable channelData = planAreaBytes(statement.channelData(), statement.origin());
+        Runnable area = planWholeView(statement.area(), statement.origin());
+        Runnable length = statement.lengthData() == null
+                ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                : planWholeView(statement.lengthData(), statement.origin());
+        if (nameData == null || channelData == null || area == null || length == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            pushNullableString(statement.nameLiteral());
+            nameData.run();
+            pushNullableString(statement.channelLiteral());
+            channelData.run();
+            area.run();
+            length.run();
+            if (statement.put()) {
+                push(statement.lengthLiteral());
+            }
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            String strings = "Ljava/lang/String;[BLjava/lang/String;[B";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS,
+                    statement.put() ? "putContainerCondition" : "getContainerCondition",
+                    "(" + CONTEXT + strings + "L" + DATA_VIEW + ";L" + DATA_VIEW + ";"
+                            + (statement.put() ? "I" : "") + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    /** 域の byte 列を積む。域が無ければ null を積む。長さが決まらなければ診断して null を返す。 */
+    private Runnable planAreaBytes(DataReference reference, Origin origin) {
+        if (reference == null) {
+            return () -> run.visitInsn(Opcodes.ACONST_NULL);
+        }
+        OptionalInt length = lengthOf(reference, origin);
+        Runnable address = planAddress(reference, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        return () -> {
+            address.run();
+            push(length.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read", "(L" + STORAGE + ";II)[B", false);
+        };
     }
 
     private void planCicsReceiveMap(Statement.CicsReceiveMap statement, List<Runnable> body) {

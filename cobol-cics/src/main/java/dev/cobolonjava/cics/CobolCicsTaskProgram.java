@@ -47,6 +47,10 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
         definition.validate(input);
         CicsExecution execution = new CicsExecution(task, input.commareaLength(), environment);
         execution.limitTo(task.startedAt().plus(definition.taskTimeout()));
+        if (input.containerCount() > 0) {
+            // 起動要求はchannelの名前を運ばないので、名前の分からない現在のchannelにする
+            execution.openCurrentChannel(null, input.containers());
+        }
         RuntimeServices services = RuntimeServices.builder()
                 .service(CicsExecution.class, execution)
                 .build();
@@ -67,8 +71,11 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                                 "CICS program ended the execution unit with STOP RUN: "
                                         + program.value());
                     }
-                    return new TaskCompletion(Optional.empty(),
-                            new CicsPayload(commarea.array(), payload.containers()))
+                    CicsPayload returned = new CicsPayload(commarea.array(),
+                            execution.currentChannelContainers().orElse(payload.containers()));
+                    // PUT CONTAINERで増えた分も、入力と同じ上限で断る
+                    definition.validate(returned);
+                    return new TaskCompletion(Optional.empty(), returned)
                             .withScreen(execution.terminalScreen());
                 } catch (CicsProgramTransfer transfer) {
                     if (transfer.control() instanceof TaskCompletion completion) {

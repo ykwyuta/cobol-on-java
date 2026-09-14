@@ -187,12 +187,12 @@ NIST CCVS85 の<b>受理率</b>は 96.9% (458 本中 444 本、壊れたもの 0
 `ACCEPT` のすぐあとで対になる項目と比べており、合否を決めるのはプログラムのほうである。
 配布物の検査プログラムは<b>全数を流している</b> (札が足りずに流せないものは無い)。
 CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資産 32 本を
-`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 16 本</b>である。
+`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 21 本</b>である。
 全診断を数えると、BMS 記号マップ写し句、`DFHAID`、EIB、`RETURN IMMEDIATE`、`PROGRAM(データ名)`、
 `LENGTH` を省いた `COMMAREA`、`ASSIGN`、`ASKTIME` / `FORMATTIME`、`DELAY`、`SEND MAP` / `TEXT` /
 `CONTROL`、`RECEIVE MAP`、`ABEND ABCODE(データ名)`、`BIF DEEDIT`、`EXEC SQL` の初期 subset、
-`USAGE POINTER`、`LENGTH OF` はもう止めていない (設計 79)。残る CICS 命令は `GET` / `PUT CONTAINER` (各 5)、
-`INQUIRE` / `SET TERMINAL` (各 2)、`ENQ` / `DEQ` (各 1)、`DFHBMSCA` (1) である。
+`USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER` はもう止めていない (設計 79)。残る CICS 命令は
+`INQUIRE` / `SET TERMINAL` (各 2)、`ENQ` / `DEQ` (各 1)、`INQUIRE ASSOCIATION` (1)、`DFHBMSCA` (1) である。
 言語側では浮動小数点項目 (3)、`NOT=` などの構文解析 (4)、`INCLUDE SQLDA` (1) が残っている。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、

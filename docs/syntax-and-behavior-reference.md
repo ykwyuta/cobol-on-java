@@ -527,6 +527,8 @@ EXEC CICS ASKTIME [ABSTIME(S9(15) COMP-3項目)] END-EXEC
 EXEC CICS FORMATTIME ABSTIME(項目) [DDMMYYYY(項目) | YYYYMMDD(項目) | MMDDYYYY(項目)] [TIME(項目)] [DATESEP[('c')]] [TIMESEP[('c')]] END-EXEC
 EXEC CICS ABEND [ABCODE('コード') | ABCODE(X(4)項目)] [CANCEL] [NODUMP] END-EXEC
 EXEC CICS BIF DEEDIT FIELD(英数字項目) END-EXEC
+EXEC CICS GET CONTAINER('名前' | X(16)項目) [CHANNEL('名前' | X(16)項目)] INTO(域) [FLENGTH(S9(8) COMP項目)] END-EXEC
+EXEC CICS PUT CONTAINER('名前' | X(16)項目) [CHANNEL('名前' | X(16)項目)] FROM(域) [FLENGTH(S9(8) COMP項目 | 整数)] END-EXEC
 EXEC CICS ASSIGN [ABCODE(X(4)項目)] [APPLID(X(8)項目)] [PROGRAM(X(8)項目)] END-EXEC
 EXEC CICS HANDLE CONDITION [条件名(段落名)]... END-EXEC
 EXEC CICS IGNORE CONDITION 条件名... END-EXEC
@@ -541,6 +543,7 @@ EXEC CICS POP HANDLE END-EXEC
   - `RETURN TRANSID(...) IMMEDIATE` は、次の task を端末入力なしで始める指定を task 結果 (`CicsTaskReply.immediateNext`) に残します。次の task を起動するのは transport adapter です。
   - `BIF DEEDIT` は項目から数字以外を除き、数字を右へ詰めて左を `0` で埋めます。末尾が `-` / `CR` なら右端のゾーンを負にします (暫定判断 P-124)。
   - `ABEND ABCODE(項目)` は 4 byte の英数字項目の値を実行時に読んで ABEND コードにします。
+  - `GET` / `PUT CONTAINER` は task 内の channel に container を置き、読みます。GET でデータが受取域より長ければ入る分だけ写して `LENGERR`、container が無ければ `CONTAINERERR`、channel が無ければ `CHANNELERR` です。変換 option (`DATATYPE` 等) は未対応です (設計 79 §9、暫定判断 P-125)。
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。
 

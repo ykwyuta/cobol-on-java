@@ -108,6 +108,69 @@ public final class CicsExecution {
         terminalScreen = Objects.requireNonNull(screen, "screen");
     }
 
+    /**
+     * taskが持つchannel (設計 79 §9)。名前ごとにcontainerの名前と値を持つ。
+     *
+     * <p>現在のchannelは起動時に渡されたもので、名前が分からないこと (null) がある。
+     */
+    private final Map<String, Map<String, byte[]>> channels = new java.util.LinkedHashMap<>();
+    private Map<String, byte[]> currentChannel;
+    private String currentChannelName;
+
+    /** 現在のchannelを置く。名前が分からなければ null を渡す。 */
+    public synchronized void openCurrentChannel(String name, Map<String, byte[]> containers) {
+        Objects.requireNonNull(containers, "containers");
+        if (currentChannel != null) {
+            throw new CicsTaskStateException("current channel is already open");
+        }
+        Map<String, byte[]> copied = new java.util.LinkedHashMap<>();
+        containers.forEach((key, value) -> copied.put(key, value.clone()));
+        currentChannel = copied;
+        currentChannelName = name;
+        if (name != null) {
+            channels.put(name, copied);
+        }
+    }
+
+    /** 現在のchannelのcontainer。channelが無ければ空。 */
+    public synchronized Optional<Map<String, byte[]>> currentChannelContainers() {
+        if (currentChannel == null) {
+            return Optional.empty();
+        }
+        Map<String, byte[]> copy = new java.util.LinkedHashMap<>();
+        currentChannel.forEach((key, value) -> copy.put(key, value.clone()));
+        return Optional.of(copy);
+    }
+
+    /**
+     * 名前のchannelを返す。名前が null なら現在のchannel。
+     *
+     * <p>名前の分からない現在のchannelがあるのに別の名前を指されたとき、それが同じchannelかは
+     * 決まらない。CHANNELERR と推測せず失敗させる。
+     */
+    synchronized Optional<Map<String, byte[]>> channel(String name, boolean create) {
+        if (name == null) {
+            if (currentChannel == null) {
+                throw new CicsTaskStateException("the task has no current channel");
+            }
+            return Optional.of(currentChannel);
+        }
+        Map<String, byte[]> found = channels.get(name);
+        if (found != null) {
+            return Optional.of(found);
+        }
+        if (currentChannel != null && currentChannelName == null) {
+            throw new CicsTaskStateException(
+                    "channel " + name + " cannot be matched with the unnamed current channel");
+        }
+        if (!create) {
+            return Optional.empty();
+        }
+        Map<String, byte[]> created = new java.util.LinkedHashMap<>();
+        channels.put(name, created);
+        return Optional.of(created);
+    }
+
     /** 初期programまたはXCTL先が、現在のLINK levelのprogramになる。 */
     public synchronized void startProgram(String programName) {
         currentHandleLevel().programName = Objects.requireNonNull(programName, "programName");

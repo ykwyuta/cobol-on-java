@@ -3821,3 +3821,27 @@ INQACC は POINTER を `PIC X(8)` と `PIC 9(8) BINARY` (4 byte) の両方で RE
 突き合わせていない。
 
 **解消条件**: CICS の実機か公開の検査結果で、先頭の負号・小数点・全角文字を含む入力の結果と EIBFN を確かめる。
+
+## P-125 GET / PUT CONTAINER は BIT のデータだけを扱い、名前の分からない channel は突き合わせない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsRuntimeOps.getContainerCondition` / `putContainerCondition`、`CicsExecution.channel`、`CicsEib.completeCommand` |
+| 関連要件 | FR-080, FR-084 |
+
+**暫定の扱い**: 規則は設計 79 §9 に書いた。実機と突き合わせていない値は次のとおりである。
+
+- RESP は公開の DFHRESP 値 (`LENGERR`=22、`CONTAINERERR`=110、`CHANNELERR`=122) を使う。
+  RESP2 は公開仕様の記述から GET の channel 無し 2、container 無し 10、受取域不足 11 とした
+- EIBFN は GET X'3414'、PUT X'3416' とした。EIBRCODE は MAPFAIL と同じく binary zero を置く
+- 名前に使える文字は `A-Z 0-9 _ -` に限る。実機はもっと広い文字を許すが、突き合わせていない文字は失敗させる
+- 起動要求の container は名前の分からない現在の channel になる。Bank-of-Z の CRDTAGY は起動された channel を
+  名前 (`CIPCREDCHANN`) で指すので、現在の channel に名前を付ける transport (RUN TRANSID CHANNEL の相当) が
+  入るまでは、その形の GET は実行時に失敗する。CHANNELERR を返すと資産は「無い」と読むので、それはしない
+
+**どこがずれうるか**: `FLENGTH` を省いた GET の長さ、`LENGERR` のときに受取域の残りを書き換えないこと、
+PUT で同名の container を置き換えることは公開仕様の記述による。DATATYPE(CHAR) と code page の変換は持たない。
+
+**解消条件**: 実機の trace で RESP2 / EIBFN / EIBRCODE を確かめる。channel の名前を運ぶ起動要求 (非同期 API の
+`RUN TRANSID`) を設計して、名前の分からない現在の channel を無くす。

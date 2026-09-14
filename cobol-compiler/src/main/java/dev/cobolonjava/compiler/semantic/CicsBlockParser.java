@@ -30,6 +30,9 @@ final class CicsBlockParser {
             "(?is)\\s*([A-Z0-9][A-Z0-9-]*)"
                     + "(?:\\s*\\(\\s*(?:'([^']*)'|(\\d{1,9})|([A-Z][A-Z0-9-]*))\\s*\\))?");
     private static final Pattern BMS_NAME = Pattern.compile("[A-Z@#$][A-Z0-9@#$]{0,6}");
+    private static final Pattern CONTAINER_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(GET|PUT)\\s+CONTAINER\\b(.*?)END-EXEC\\s*$");
+    private static final Pattern CONTAINER_NAME = Pattern.compile("[A-Z0-9_-]{1,16}");
     private static final Pattern RECEIVE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+RECEIVE\\b(.*?)END-EXEC\\s*$");
     private static final Pattern DELAY_BLOCK = Pattern.compile(
@@ -106,6 +109,11 @@ final class CicsBlockParser {
         Matcher receive = RECEIVE_BLOCK.matcher(source);
         if (receive.matches()) {
             return parseReceive(receive.group(1));
+        }
+        Matcher container = CONTAINER_BLOCK.matcher(source);
+        if (container.matches()) {
+            return parseContainer(container.group(1).equalsIgnoreCase("PUT"),
+                    "CONTAINER" + container.group(2));
         }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
         if (handleStack.matches()) {
@@ -429,6 +437,92 @@ final class CicsBlockParser {
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
                 new ReceiveSpec(map, mapset, into), null);
+    }
+
+    /**
+     * GET / PUT CONTAINER を読む (設計 79 §9)。
+     *
+     * <p>CHANNEL つきの形と、現在のchannelを使う形を受ける。DATATYPE、INTOCCSID、SET、NODATA、APPEND などは
+     * 文字の変換や記憶域の番地を伴うので、名前をつけて断る。
+     */
+    private static Parsed parseContainer(boolean put, String source) {
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate CONTAINER option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        String command = put ? "PUT CONTAINER" : "GET CONTAINER";
+        Set<String> allowed = Set.of("CONTAINER", "CHANNEL", put ? "FROM" : "INTO", "FLENGTH",
+                "RESP", "RESP2", "NOHANDLE");
+        for (String name : options.keySet()) {
+            if (!allowed.contains(name)) {
+                throw new IllegalArgumentException("unsupported " + command + " option: " + name);
+            }
+        }
+        String[] name = options.get("CONTAINER");
+        String[] channel = options.get("CHANNEL");
+        String area = sendDataName(options.get(put ? "FROM" : "INTO"), put ? "FROM" : "INTO");
+        if (area == null) {
+            throw new IllegalArgumentException(command + " requires " + (put ? "FROM" : "INTO"));
+        }
+        String[] length = options.get("FLENGTH");
+        int lengthLiteral = -1;
+        String lengthData = null;
+        if (length != null) {
+            if (length[2] != null) {
+                lengthData = length[2];
+            } else if (put && length[1] != null) {
+                lengthLiteral = Integer.parseInt(length[1]);
+            } else {
+                // GET の FLENGTH は長さを返す受取域なので、定数では書けない
+                throw new IllegalArgumentException(command + " FLENGTH requires a data name");
+            }
+        }
+        String[] noHandle = options.get("NOHANDLE");
+        if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
+            throw new IllegalArgumentException("NOHANDLE does not take a value");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        ContainerSpec spec = new ContainerSpec(put,
+                containerLiteral("CONTAINER", name), name[2],
+                channel == null ? null : containerLiteral("CHANNEL", channel),
+                channel == null ? null : channel[2],
+                area, lengthData, lengthLiteral);
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                null, null, spec);
+    }
+
+    /** 引用符の名前ならその値、データ名なら null。どちらでもなければ断る。 */
+    private static String containerLiteral(String option, String[] value) {
+        if (value[2] != null) {
+            return null;
+        }
+        if (value[0] == null) {
+            throw new IllegalArgumentException(option + " requires a quoted name or a data name");
+        }
+        String name = value[0].stripTrailing();
+        if (!CONTAINER_NAME.matcher(name).matches()) {
+            throw new IllegalArgumentException(option + " name must be 1 to 16 characters of A-Z, 0-9, _ or -: "
+                    + value[0]);
+        }
+        return name;
     }
 
     private static String bmsName(String option, String[] value) {
@@ -802,11 +896,31 @@ final class CicsBlockParser {
             DelaySpec delay,
             SendSpec send,
             ReceiveSpec receive,
-            String deedit) {
+            String deedit,
+            ContainerSpec container) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
         }
+
+        /** containerを持たない命令の形。 */
+        Parsed(Statement.CicsOperation operation, String target, String commarea, int length,
+               String response, String response2, boolean noHandle, boolean rollback, boolean cancel,
+               boolean noDump, boolean immediate, Statement.CicsConditionAction conditionAction,
+               List<ConditionSpec> conditions, Statement.CicsHandleStackAction handleStackAction,
+               Statement.CicsAbendHandlerAction abendHandlerAction, String abendHandlerTarget,
+               List<AssignSpec> assignments, String programData, TimeSpec time, DelaySpec delay,
+               SendSpec send, ReceiveSpec receive, String deedit) {
+            this(operation, target, commarea, length, response, response2, noHandle, rollback, cancel,
+                    noDump, immediate, conditionAction, conditions, handleStackAction, abendHandlerAction,
+                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit, null);
+        }
+    }
+
+    /** GET / PUT CONTAINER の、データ名を解決する前の形。名前は定数かデータ名のどちらか。 */
+    record ContainerSpec(boolean put, String nameLiteral, String nameData,
+                         String channelLiteral, String channelData,
+                         String area, String lengthData, int lengthLiteral) {
     }
 
     record AssignSpec(Statement.CicsAssignOption option, String target) {

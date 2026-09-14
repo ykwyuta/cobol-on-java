@@ -240,7 +240,19 @@ HTTP 上の task は「送信して終わる」。`SEND MAP` を発行した tas
 ## 9. チャネルとコンテナ
 
 `PUT` / `GET CONTAINER` は既存の `CicsPayload` の container をチャネル単位へ広げる。
-上限検査は `CicsTransactionDefinition` の値を使う。詳細は後続増分で本書へ追記する。
+上限検査は `CicsTransactionDefinition` の値を使う。
+
+- `CicsExecution` が task 内の channel を名前ごとに持つ。起動要求の container は<b>現在の channel</b> になる。
+  起動要求は channel の名前を運ばないので、現在の channel の名前は分からない (null) ことがある
+- `CHANNEL` を省けば現在の channel を使う。現在の channel が無ければ失敗させる (実機の INVREQ を推測しない)
+- `CHANNEL(名前)` が既知の channel ならそれを使う。名前の分からない現在の channel があるのに未知の名前を
+  指されたら、同じ channel かが決まらないので失敗させる。そうでなければ GET は `CHANNELERR`、PUT は新しく作る
+- GET: `FLENGTH` は入口で受取域の長さ (省けば `INTO` の長さ)、出口で container のデータの長さ。
+  データが長ければ入る分だけ写して `LENGERR`。受取域の残りは書き換えない。container が無ければ `CONTAINERERR`
+- PUT: `FLENGTH` (省けば `FROM` の長さ) の分を写して置く。`FROM` を越える長さは失敗させる
+- 名前は 16 byte の英数字の域か、16 文字以内の定数。末尾の空白だけを落とし、大文字小文字は変えない
+- `DATATYPE`、`INTOCCSID`、`SET`、`NODATA`、`APPEND` などの変換・番地を伴う option は断る
+- task が終われば現在の channel の container を `TaskCompletion` の payload に返し、入力と同じ上限で検査する
 
 ## 10. 実装順序
 

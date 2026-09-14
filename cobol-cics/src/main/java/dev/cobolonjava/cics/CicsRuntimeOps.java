@@ -6,6 +6,7 @@ import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.program.ProgramTargetTransfer;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -23,6 +24,11 @@ public final class CicsRuntimeOps {
     private static final int ASKTIME_FUNCTION = 0x1002;
     /** BIF DEEDIT。実機の EIBFN とは突き合わせていない (暫定判断 P-124)。 */
     private static final int BIF_DEEDIT_FUNCTION = 0x5802;
+    /** GET / PUT CONTAINER (CHANNEL)。実機の EIBFN とは突き合わせていない (暫定判断 P-125)。 */
+    private static final int GET_CONTAINER_FUNCTION = 0x3414;
+    private static final int PUT_CONTAINER_FUNCTION = 0x3416;
+    private static final java.util.regex.Pattern CONTAINER_NAME =
+            java.util.regex.Pattern.compile("[A-Z0-9_-]{1,16}");
     private static final int DELAY_FUNCTION = 0x1004;
     /** BMS 群の function code。実機の EIBFN とは突き合わせていない (暫定判断 P-118)。 */
     private static final int RECEIVE_MAP_FUNCTION = 0x1802;
@@ -262,6 +268,119 @@ public final class CicsRuntimeOps {
             ProgramContext context, String code, boolean cancelHandlers, boolean noDump) {
         requireNoLegacyTransfer(
                 abendCondition(context, code, cancelHandlers, noDump), "ABEND");
+    }
+
+    /**
+     * GET CONTAINER ... INTO (設計 79 §9)。
+     *
+     * <p>FLENGTH は入口で受取域の長さ、出口でcontainerのデータの長さである。データが受取域より長ければ
+     * 入る分だけ写して LENGERR。受取域の残りは書き換えない。変換 (INTOCCSID等) はしない。
+     */
+    public static int getContainerCondition(
+            ProgramContext context, String nameLiteral, byte[] nameData,
+            String channelLiteral, byte[] channelData,
+            DataView into, DataView flength, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        DataView area = Objects.requireNonNull(into, "into");
+        String name = containerName(required, nameLiteral, nameData, "CONTAINER");
+        String channelName = channelData == null && channelLiteral == null
+                ? null : containerName(required, channelLiteral, channelData, "CHANNEL");
+        int limit = area.length();
+        if (flength != null) {
+            limit = fullword(flength);
+            if (limit < 0 || limit > area.length()) {
+                throw new CicsTaskStateException("GET CONTAINER FLENGTH " + limit
+                        + " does not fit the INTO area of " + area.length() + " bytes");
+            }
+        }
+        CicsExecution execution = execution(required);
+        Optional<Map<String, byte[]>> channel = execution.channel(channelName, false);
+        int response = CicsResponseCode.NORMAL;
+        int response2 = 0;
+        if (channel.isEmpty()) {
+            response = CicsResponseCode.CHANNELERR;
+            response2 = 2;
+        } else {
+            byte[] data;
+            synchronized (execution) {
+                data = channel.orElseThrow().get(name);
+            }
+            if (data == null) {
+                response = CicsResponseCode.CONTAINERERR;
+                response2 = 10;
+            } else {
+                int copied = Math.min(limit, data.length);
+                area.subView(0, copied).setBytes(java.util.Arrays.copyOf(data, copied));
+                if (flength != null) {
+                    setFullword(flength, data.length);
+                }
+                if (data.length > limit) {
+                    response = CicsResponseCode.LENGERR;
+                    response2 = 11;
+                }
+            }
+        }
+        return containerOutcome(required, GET_CONTAINER_FUNCTION, response, response2,
+                suppressDefaultHandling, "GET CONTAINER");
+    }
+
+    /** PUT CONTAINER ... FROM (設計 79 §9)。channelが無ければ作る。DATATYPE は BIT だけを扱う。 */
+    public static int putContainerCondition(
+            ProgramContext context, String nameLiteral, byte[] nameData,
+            String channelLiteral, byte[] channelData,
+            DataView from, DataView flength, int flengthLiteral, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        DataView area = Objects.requireNonNull(from, "from");
+        String name = containerName(required, nameLiteral, nameData, "CONTAINER");
+        String channelName = channelData == null && channelLiteral == null
+                ? null : containerName(required, channelLiteral, channelData, "CHANNEL");
+        int length = flength != null ? fullword(flength)
+                : flengthLiteral >= 0 ? flengthLiteral : area.length();
+        if (length < 0 || length > area.length()) {
+            // 域の外を読むことになる長さは、実機では記憶域の内容しだいになる。推測せず断る
+            throw new CicsTaskStateException("PUT CONTAINER FLENGTH " + length
+                    + " does not fit the FROM area of " + area.length() + " bytes");
+        }
+        CicsExecution execution = execution(required);
+        Map<String, byte[]> channel = execution.channel(channelName, true).orElseThrow();
+        byte[] data = area.subView(0, length).toByteArray();
+        synchronized (execution) {
+            channel.put(name, data);
+        }
+        return containerOutcome(required, PUT_CONTAINER_FUNCTION, CicsResponseCode.NORMAL, 0,
+                suppressDefaultHandling, "PUT CONTAINER");
+    }
+
+    private static int containerOutcome(ProgramContext context, int function, int response,
+            int response2, boolean suppressDefaultHandling, String command) {
+        execution(context).eib(context.codePage()).completeCommand(function, response, response2);
+        return conditionTarget(context,
+                new CicsCommandOutcome(response, response2, new ContinueControl(CicsPayload.empty())),
+                suppressDefaultHandling, command);
+    }
+
+    /** channel / container の名前。末尾の空白だけを落とし、大文字小文字は変えない。 */
+    private static String containerName(
+            ProgramContext context, String literal, byte[] data, String option) {
+        String text = literal != null ? literal : context.codePage().decode(data);
+        String name = text.stripTrailing();
+        if (!CONTAINER_NAME.matcher(name).matches()) {
+            // 実機が許す文字はもっと広いが、突き合わせていない文字は通さない (暫定判断 P-125)
+            throw new CicsTaskStateException(option + " name is not supported: '" + text + "'");
+        }
+        return name;
+    }
+
+    private static int fullword(DataView view) {
+        byte[] bytes = view.toByteArray();
+        if (bytes.length != Integer.BYTES) {
+            throw new CicsTaskStateException("FLENGTH must be a 4-byte binary integer");
+        }
+        return java.nio.ByteBuffer.wrap(bytes).getInt();
+    }
+
+    private static void setFullword(DataView view, int value) {
+        view.setBytes(java.nio.ByteBuffer.allocate(Integer.BYTES).putInt(value).array());
     }
 
     /** ABCODE(データ名) の ABEND。4 byte の域を実行時 code page で読み、末尾の空白を落とす。 */

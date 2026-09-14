@@ -7,9 +7,15 @@ import java.util.Objects;
 public final class CicsResponseCode {
 
     public static final int NORMAL = 0;
+    /** 受取域が送られたデータより短い (GET CONTAINER)。 */
+    public static final int LENGERR = 22;
     public static final int PGMIDERR = 27;
     /** RECEIVE MAPで送られたfieldが無い。 */
     public static final int MAPFAIL = 36;
+    /** 名前のcontainerがchannelに無い。 */
+    public static final int CONTAINERERR = 110;
+    /** 名前のchannelが無い。 */
+    public static final int CHANNELERR = 122;
     /** generalized ERROR handlerをcondition tableで識別する内部key。EIBRESP値ではない。 */
     static final int ERROR_HANDLER_KEY = Integer.MIN_VALUE;
 
@@ -22,8 +28,11 @@ public final class CicsResponseCode {
                 .strip().toUpperCase(Locale.ROOT);
         return switch (normalized) {
             case "NORMAL" -> NORMAL;
+            case "LENGERR" -> LENGERR;
             case "PGMIDERR" -> PGMIDERR;
             case "MAPFAIL" -> MAPFAIL;
+            case "CONTAINERERR" -> CONTAINERERR;
+            case "CHANNELERR" -> CHANNELERR;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS condition name: " + normalized);
         };
