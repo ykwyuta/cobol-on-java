@@ -30,4 +30,19 @@ public record BmsTerminalInput(BmsAid aid, int cursorOffset, List<BmsTerminalInp
         Objects.requireNonNull(aid, "aid");
         fields = List.copyOf(fields);
     }
+
+    /**
+     * 端末の大文字変換 (UCTRAN) を当てた入力。
+     *
+     * <p>変えるのは英小文字 a〜z だけである。code page ごとの国別文字の変換は突き合わせていないので
+     * 触らない (暫定判断 P-130)。
+     */
+    public BmsTerminalInput uppercased() {
+        List<FieldInput> translated = fields.stream().map(field -> {
+            StringBuilder out = new StringBuilder(field.value().length());
+            field.value().chars().forEach(c -> out.append(c >= 'a' && c <= 'z' ? (char) (c - 'a' + 'A') : (char) c));
+            return new FieldInput(field.name(), field.occurrence(), out.toString());
+        }).toList();
+        return new BmsTerminalInput(aid, cursorOffset, translated);
+    }
 }

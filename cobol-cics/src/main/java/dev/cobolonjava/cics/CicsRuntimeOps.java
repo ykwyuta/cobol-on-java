@@ -30,6 +30,9 @@ public final class CicsRuntimeOps {
     /** ENQ / DEQ。実機の EIBFN とは突き合わせていない (暫定判断 P-128)。 */
     private static final int ENQ_FUNCTION = 0x1204;
     private static final int DEQ_FUNCTION = 0x1206;
+    /** INQUIRE / SET TERMINAL。実機の EIBFN とは突き合わせていない (暫定判断 P-130)。 */
+    private static final int INQUIRE_TERMINAL_FUNCTION = 0x5822;
+    private static final int SET_TERMINAL_FUNCTION = 0x5824;
     private static final java.util.regex.Pattern CONTAINER_NAME =
             java.util.regex.Pattern.compile("[A-Z0-9_-]{1,16}");
     private static final int DELAY_FUNCTION = 0x1004;
@@ -231,6 +234,47 @@ public final class CicsRuntimeOps {
         return containerOutcome(required, ENQ_FUNCTION,
                 held ? CicsResponseCode.NORMAL : CicsResponseCode.ENQBUSY, 0,
                 suppressDefaultHandling, "ENQ");
+    }
+
+    /**
+     * INQUIRE TERMINAL(名前) UCTRANST(域) (暫定判断 P-130)。
+     *
+     * <p>扱う端末は task を起こした端末だけである。ほかの端末の定義はこの処理系に無く、
+     * TERMIDERR を返すと「その端末は無い」と推測したことになるので失敗させる。
+     */
+    public static int inquireTerminalCondition(ProgramContext context, String terminalLiteral,
+            byte[] terminalData, DataView uctranst, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        String terminal = ownTerminal(required, terminalLiteral, terminalData, "INQUIRE TERMINAL");
+        setFullword(Objects.requireNonNull(uctranst, "uctranst"),
+                execution(required).environment().terminals().uppercaseTranslation(terminal));
+        completeLocalCommand(required, INQUIRE_TERMINAL_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    /** SET TERMINAL(名前) UCTRANST(域)。UCTRAN / NOUCTRAN / TRANIDONLY 以外の値は失敗させる。 */
+    public static int setTerminalCondition(ProgramContext context, String terminalLiteral,
+            byte[] terminalData, DataView uctranst, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        String terminal = ownTerminal(required, terminalLiteral, terminalData, "SET TERMINAL");
+        int value = fullword(Objects.requireNonNull(uctranst, "uctranst"));
+        if (!CicsCvda.isUppercaseTranslation(value)) {
+            // 実機は INVREQ (RESP2 43) である。INVREQ の数値を確かめていないので条件にせず失敗させる
+            throw new CicsTaskStateException("SET TERMINAL UCTRANST has an invalid CVDA value: " + value);
+        }
+        execution(required).environment().terminals().setUppercaseTranslation(terminal, value);
+        completeLocalCommand(required, SET_TERMINAL_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    private static String ownTerminal(ProgramContext context, String literal, byte[] data, String command) {
+        String named = (literal != null ? literal : context.codePage().decode(data)).stripTrailing();
+        String own = execution(context).task().terminalId()
+                .orElseThrow(() -> new CicsTaskStateException(command + " requires a task started from a terminal"));
+        if (!own.equals(named)) {
+            throw new CicsTaskStateException(command + " supports only the task's own terminal: '" + named + "'");
+        }
+        return own;
     }
 
     /** DEQ RESOURCE(域) LENGTH(n)。持っていない資源を返しても NORMAL とする。 */
@@ -669,10 +713,15 @@ public final class CicsRuntimeOps {
         dev.cobolonjava.cics.bms.BmsModel.Map map = mapset.map(mapName)
                 .orElseThrow(() -> new CicsTaskStateException(
                         "map " + mapName + " is not defined in mapset " + mapsetName));
-        dev.cobolonjava.cics.bms.BmsTerminalInput input = execution.task().terminalInput()
+        dev.cobolonjava.cics.bms.BmsTerminalInput carried = execution.task().terminalInput()
                 .orElseThrow(() -> new CicsTaskStateException(
                         "RECEIVE MAP requires terminal input carried by the request;"
                                 + " a conversational RECEIVE cannot wait within one task"));
+        // 端末が大文字変換 (UCTRAN) なら、map への入力も大文字にしてから読む。TRANIDONLY は transaction ID だけ
+        boolean uppercase = execution.task().terminalId()
+                .map(terminal -> execution.environment().terminals().uppercaseTranslation(terminal) == CicsCvda.UCTRAN)
+                .orElse(false);
+        dev.cobolonjava.cics.bms.BmsTerminalInput input = uppercase ? carried.uppercased() : carried;
         dev.cobolonjava.cics.bms.BmsScreenSnapshot screen = execution.task().screen()
                 .orElseThrow(() -> new CicsTaskStateException(
                         "RECEIVE MAP requires the screen sent by the previous task"));

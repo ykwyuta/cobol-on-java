@@ -3956,3 +3956,31 @@ MDT set」等) を載せるが値を載せない。そこで意味を 3270 デ�
 `EXEC CICS` の option の値には `項目 OF 群` の修飾名を書ける (CREACC の `TIME(PROC-TRAN-TIME OF PROCTRAN-AREA)`)。
 
 **解消条件**: 実機の `DFHBMSCA` を翻訳した記号の値と突き合わせる。
+
+## P-130 INQUIRE / SET TERMINAL UCTRANST は task の端末に限り、CVDA は CICS TS の表の数を使う
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsCvda`、`CicsTerminalSettingsPort`、`CicsRuntimeOps.inquireTerminalCondition` / `setTerminalCondition`、`BmsTerminalInput.uppercased` |
+| 関連要件 | FR-080, FR-084 |
+
+**暫定の扱い**:
+
+- `DFHVALUE(名前)` は翻訳時の定数にする。数は CICS TS for z/OS 5.6「CVDAs and numeric values in numeric sequence」
+  による。前後の行 (NOPRTCOPY 450、UCTRAN 451、NOUCTRAN 452、453〜459 は無し、TRANIDONLY 460、MTOM 461) まで読んで
+  確かめた。**TXSeries 9.1 の表は同じ名前に UCTRAN 450、NOUCTRAN 451、TRANIDONLY 452 を載せている**。
+  Bank-of-Z の BNK1DCS の注釈「NOUCTRAN(451)」は TXSeries の数と一致するが、対象は CICS TS なので注釈には従わない。
+  扱う名前はこの 3 つだけで、ほかの名前は断る
+- 端末の名前は adapter が要求 (`CicsTaskRequest.terminalId`) で渡し、EIBTRMID に置く。端末を持たない task は binary zero
+- `INQUIRE` / `SET TERMINAL` が扱うのは task を起こした端末だけである。ほかの端末の定義は持たないので、
+  TERMIDERR (その端末は無い) と推測せず失敗させる。`UCTRANST` に 3 つ以外の値を置けば、実機は INVREQ (RESP2 43)
+  だが、INVREQ の数を確かめていないので失敗させる。SET TERMINAL は SPI であり、NOTAUTH の検査は持たない
+- 設定は region の構成 (`CicsEnvironment.terminals`) が task をまたいで持つ。既定は TYPETERM の `UCTRAN(NO)` にあたる NOUCTRAN
+- 端末が UCTRAN なら、`RECEIVE MAP` の入力の英小文字 a〜z を大文字にしてから読む。TRANIDONLY は map の入力を変えない
+- EIBFN は INQUIRE TERMINAL X'5822'、SET TERMINAL X'5824' とした。実機とは突き合わせていない
+
+**どこがずれうるか**: 国別文字の大文字変換、`RECEIVE MAP ASIS`、transaction の PROFILE による上書きは扱わない。
+既定の大文字変換は region の構成で変えられるが、実機の TYPETERM と合わせるのは利用者である。
+
+**解消条件**: 実機で `DFHVALUE(UCTRAN)` 等を翻訳した値と EIBFN を確かめる。ほかの端末を扱うなら端末定義の設計を足す。

@@ -64,6 +64,14 @@ public final class CicsEib {
         // EIBAID は task を起こした端末入力で決まり、RECEIVE より前から読める
         task.terminalInput().ifPresent(input -> setTerminalInput(
                 input.aid().value(), Math.max(input.cursorOffset(), 0)));
+        // 端末の名前は4文字に空白を詰める。端末を持たないtaskはbinary zeroのままにする
+        task.terminalId().ifPresent(terminal -> {
+            byte[] name = new byte[EIBTRMID_LENGTH];
+            Arrays.fill(name, codePage.space());
+            byte[] encoded = codePage.encode(terminal);
+            System.arraycopy(encoded, 0, name, 0, Math.min(encoded.length, EIBTRMID_LENGTH));
+            storage.view(EIBTRMID_OFFSET, EIBTRMID_LENGTH).setBytes(name);
+        });
     }
 
     /** 端末入力の AID と cursor 位置を置く。 */

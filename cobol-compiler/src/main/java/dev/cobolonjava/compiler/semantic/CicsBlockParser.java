@@ -37,6 +37,9 @@ final class CicsBlockParser {
     private static final Pattern CONTAINER_NAME = Pattern.compile("[A-Z0-9_-]{1,16}");
     private static final Pattern ENQUEUE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(ENQ|DEQ)\\b(.*?)END-EXEC\\s*$");
+    /** INQUIRE / SET TERMINAL。TERMINAL は option として後ろで読む。 */
+    private static final Pattern TERMINAL_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(INQUIRE|SET)\\s+(TERMINAL\\b.*?)END-EXEC\\s*$");
     private static final Pattern RECEIVE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+RECEIVE\\b(.*?)END-EXEC\\s*$");
     private static final Pattern DELAY_BLOCK = Pattern.compile(
@@ -116,6 +119,10 @@ final class CicsBlockParser {
         Matcher receive = RECEIVE_BLOCK.matcher(source);
         if (receive.matches()) {
             return parseReceive(receive.group(1));
+        }
+        Matcher terminal = TERMINAL_BLOCK.matcher(source);
+        if (terminal.matches()) {
+            return parseTerminal(terminal.group(1).equalsIgnoreCase("SET"), terminal.group(2));
         }
         Matcher enqueue = ENQUEUE_BLOCK.matcher(source);
         if (enqueue.matches()) {
@@ -526,7 +533,60 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
-                null, null, spec, null);
+                null, null, spec, null, null);
+    }
+
+    /**
+     * INQUIRE / SET TERMINAL を読む (暫定判断 P-130)。
+     *
+     * <p>扱う属性は {@code UCTRANST} だけである。ほかの属性は、値の意味や CVDA の数を確かめていないので
+     * 名前をつけて断る。
+     */
+    private static Parsed parseTerminal(boolean set, String source) {
+        String command = set ? "SET TERMINAL" : "INQUIRE TERMINAL";
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate " + command + " option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        for (String name : options.keySet()) {
+            if (!Set.of("TERMINAL", "UCTRANST", "RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported " + command + " option: " + name);
+            }
+        }
+        String[] terminal = options.get("TERMINAL");
+        if (terminal == null || (terminal[0] == null && terminal[2] == null)) {
+            throw new IllegalArgumentException(command + " requires TERMINAL('name') or TERMINAL(data-name)");
+        }
+        String uctranst = sendDataName(options.get("UCTRANST"), "UCTRANST");
+        if (uctranst == null) {
+            throw new IllegalArgumentException(command + " requires UCTRANST");
+        }
+        String[] noHandle = options.get("NOHANDLE");
+        if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
+            throw new IllegalArgumentException("NOHANDLE does not take a value");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                null, null, null, null,
+                new TerminalSpec(set, terminal[0] == null ? null : terminal[0].stripTrailing(), terminal[2], uctranst));
     }
 
     /**
@@ -595,7 +655,7 @@ final class CicsBlockParser {
                 options.containsKey("NOHANDLE"), false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
                 null, null, null, new EnqueueSpec(enqueue, resource, bytes,
-                        options.containsKey("NOSUSPEND"), options.containsKey("TASK")));
+                        options.containsKey("NOSUSPEND"), options.containsKey("TASK")), null);
     }
 
     /** 引用符の名前ならその値、データ名なら null。どちらでもなければ断る。 */
@@ -987,7 +1047,8 @@ final class CicsBlockParser {
             ReceiveSpec receive,
             String deedit,
             ContainerSpec container,
-            EnqueueSpec enqueue) {
+            EnqueueSpec enqueue,
+            TerminalSpec terminal) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
@@ -1003,8 +1064,13 @@ final class CicsBlockParser {
                SendSpec send, ReceiveSpec receive, String deedit) {
             this(operation, target, commarea, length, response, response2, noHandle, rollback, cancel,
                     noDump, immediate, conditionAction, conditions, handleStackAction, abendHandlerAction,
-                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit, null, null);
+                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit,
+                    null, null, null);
         }
+    }
+
+    /** INQUIRE / SET TERMINAL の、データ名を解決する前の形。端末は定数かデータ名のどちらか。 */
+    record TerminalSpec(boolean set, String terminalLiteral, String terminalData, String uctranst) {
     }
 
     /** ENQ / DEQ の、データ名を解決する前の形。 */

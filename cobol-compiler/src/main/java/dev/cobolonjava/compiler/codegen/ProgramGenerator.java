@@ -769,6 +769,8 @@ public final class ProgramGenerator {
                 planCicsContainer(container, body);
             } else if (statement instanceof Statement.CicsEnqueue enqueue) {
                 planCicsEnqueue(enqueue, body);
+            } else if (statement instanceof Statement.CicsTerminalUctran terminal) {
+                planCicsTerminal(terminal, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
                 Runnable field = planWholeView(deedit.field(), deedit.origin());
                 if (field != null) {
@@ -1075,6 +1077,25 @@ public final class ProgramGenerator {
                     statement.put() ? "putContainerCondition" : "getContainerCondition",
                     "(" + CONTEXT + strings + "L" + DATA_VIEW + ";L" + DATA_VIEW + ";"
                             + (statement.put() ? "I" : "") + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    private void planCicsTerminal(Statement.CicsTerminalUctran statement, List<Runnable> body) {
+        Runnable terminal = planAreaBytes(statement.terminalData(), statement.origin());
+        Runnable uctranst = planWholeView(statement.uctranst(), statement.origin());
+        if (terminal == null || uctranst == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            pushNullableString(statement.terminalLiteral());
+            terminal.run();
+            uctranst.run();
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS,
+                    statement.set() ? "setTerminalCondition" : "inquireTerminalCondition",
+                    "(" + CONTEXT + "Ljava/lang/String;[BL" + DATA_VIEW + ";Z)I", false);
             emitCicsConditionTransfer();
         });
     }

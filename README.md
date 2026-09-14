@@ -192,7 +192,9 @@ CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資�
 `LENGTH` を省いた `COMMAREA`、`ASSIGN`、`ASKTIME` / `FORMATTIME`、`DELAY`、`SEND MAP` / `TEXT` /
 `CONTROL`、`RECEIVE MAP`、`ABEND ABCODE(データ名)`、`BIF DEEDIT`、`EXEC SQL` の初期 subset、
 `USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER`、`ENQ` / `DEQ` はもう止めていない (設計 79)。残る CICS 命令は
-`INQUIRE` / `SET TERMINAL` (各 2)、`INQUIRE ASSOCIATION` (1)、`LENGTH(LENGTH OF 項目)` (1)、`WRITE` (ファイル制御、1) である。
+`RECEIVE MAP ... TERMINAL` (2)、`INQUIRE ASSOCIATION` (1)、`WRITE` (ファイル制御、1) である。
+`DFHVALUE` と `INQUIRE` / `SET TERMINAL UCTRANST` は task の端末に限って扱う。CVDA の数は CICS TS の表による
+(TXSeries の表は数が違う。P-130)。
 `DFHBMSCA` は公開文書の意味を 3270 の属性 byte で表して作る (P-129)。
 言語側では `INCLUDE SQLDA` (1)、LE の `CEEIGZCT` (1) が残っている。浮動小数点項目は `+ - *` の `COMPUTE`、
 転記、比較を扱う (P-127)。BNK1TFN は 28 byte の域に `LENGTH(29)` を書いており、はみ出す 1 byte の中身が

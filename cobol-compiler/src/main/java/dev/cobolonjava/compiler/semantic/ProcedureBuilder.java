@@ -1011,6 +1011,8 @@ public final class ProcedureBuilder {
             out.add(receive.into());
         } else if (statement instanceof Statement.CicsDeedit deedit) {
             out.add(deedit.field());
+        } else if (statement instanceof Statement.CicsTerminalUctran terminal && !terminal.set()) {
+            out.add(terminal.uctranst());
         } else if (statement instanceof Statement.CicsContainer container && !container.put()) {
             out.add(container.area());
             if (container.lengthData() != null) {
@@ -1742,6 +1744,34 @@ public final class ProcedureBuilder {
             }
             if (parsed.container() != null) {
                 return cicsContainerStatement(parsed, origin);
+            }
+            if (parsed.terminal() != null) {
+                CicsBlockParser.TerminalSpec spec = parsed.terminal();
+                String command = spec.set() ? "SET TERMINAL" : "INQUIRE TERMINAL";
+                DataReference terminal = null;
+                if (spec.terminalData() != null) {
+                    terminal = resolver.resolveName(spec.terminalData(), origin);
+                    if (terminal == null) {
+                        return null;
+                    }
+                    if (DataCategory.of(terminal) != DataCategory.ALPHANUMERIC
+                            || terminal.constantLength().isEmpty() || terminal.constantLength().getAsInt() != 4) {
+                        throw new IllegalArgumentException(command + " TERMINAL data area must be a 4-byte alphanumeric item");
+                    }
+                } else if (spec.terminalLiteral().isEmpty() || spec.terminalLiteral().length() > 4) {
+                    throw new IllegalArgumentException(command + " TERMINAL name must be 1 to 4 characters");
+                }
+                DataReference uctranst = resolver.resolveName(spec.uctranst(), origin);
+                if (uctranst == null) {
+                    return null;
+                }
+                Usage usage = uctranst.item().usage() == null ? Usage.DISPLAY : uctranst.item().usage();
+                if ((usage != Usage.COMP && usage != Usage.COMP_5) || uctranst.item().length() != Integer.BYTES
+                        || !DataCategory.of(uctranst).isNumeric()) {
+                    throw new IllegalArgumentException(command + " UCTRANST must be a 4-byte binary integer");
+                }
+                return withCicsResponse(new Statement.CicsTerminalUctran(spec.set(), spec.terminalLiteral(),
+                        terminal, uctranst, parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
             }
             if (parsed.enqueue() != null) {
                 CicsBlockParser.EnqueueSpec spec = parsed.enqueue();
@@ -4545,6 +4575,9 @@ public final class ProcedureBuilder {
         if (isDfhresp(context.identifier())) {
             return dfhrespOf(context.identifier(), origin);
         }
+        if (isDfhvalue(context.identifier())) {
+            return dfhvalueOf(context.identifier(), origin);
+        }
         if (isLengthOf(context.identifier())) {
             return lengthOfOperand(context.identifier(), origin);
         }
@@ -4672,6 +4705,33 @@ public final class ProcedureBuilder {
             return null;
         }
         return new Operand.Literal(numberOf(reference.constantLength().getAsInt()));
+    }
+
+    /** {@code DFHVALUE(cvda)} を CICS translator と同じ翻訳時定数へ落とす (暫定判断 P-130)。 */
+    private Operand dfhvalueOf(CobolParser.IdentifierContext context, Origin origin) {
+        if (context.qualifiedDataName().dataName().size() != 1
+                || context.subscripts().subscript().size() != 1
+                || context.referenceModifier() != null
+                || context.subscripts().subscript(0).qualifiedDataName() == null
+                || context.subscripts().subscript(0).qualifiedDataName().dataName().size() != 1
+                || context.subscripts().subscript(0).relativeOffset() != null) {
+            report(origin, "DFHVALUE requires exactly one unqualified CVDA name");
+            return null;
+        }
+        String name = context.subscripts().subscript(0).qualifiedDataName().dataName(0).getText();
+        try {
+            return new Operand.Literal(numberOf(dev.cobolonjava.cics.CicsCvda.forName(name)));
+        } catch (IllegalArgumentException unsupported) {
+            report(origin, unsupported.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isDfhvalue(CobolParser.IdentifierContext context) {
+        return context != null
+                && context.subscripts() != null
+                && layout.findAll("DFHVALUE").isEmpty()
+                && context.qualifiedDataName().dataName(0).getText().equalsIgnoreCase("DFHVALUE");
     }
 
     private boolean isDfhresp(CobolParser.IdentifierContext context) {
@@ -4897,6 +4957,9 @@ public final class ProcedureBuilder {
         }
         if (isDfhresp(context.identifier())) {
             return dfhrespOf(context.identifier(), origin);
+        }
+        if (isDfhvalue(context.identifier())) {
+            return dfhvalueOf(context.identifier(), origin);
         }
         if (isLengthOf(context.identifier())) {
             return lengthOfOperand(context.identifier(), origin);

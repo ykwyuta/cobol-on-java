@@ -153,6 +153,27 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("DFHVALUEはCICS TSのCVDAの数になり、INQUIRE / SET TERMINAL UCTRANSTを翻訳できる")
+    void translatesDfhvalueAndTerminalUctranst() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "CVDAS", List.of(
+                "MOVE DFHVALUE(NOUCTRAN) TO WS-RESP",
+                "IF WS-RESP = 452 MOVE 'N' TO LK-AREA(1:1) END-IF",
+                "IF DFHVALUE(UCTRAN) = 451 AND DFHVALUE(TRANIDONLY) = 460 MOVE 'U' TO LK-AREA(2:1) END-IF"));
+
+        assertEquals("NUIT", CodePages.DEFAULT.decode(execute(loader, "CVDAS", program).payload().commarea()));
+        CobolCompiler.Result terminal = compileResult("TERMUC", List.of(
+                "EXEC CICS INQUIRE TERMINAL(EIBTRMID) UCTRANST(WS-RESP) RESP(WS-RESP2) END-EXEC",
+                "EXEC CICS SET TERMINAL(EIBTRMID) UCTRANST(WS-RESP) END-EXEC"));
+        assertTrue(terminal.succeeded(), () -> "unexpected diagnostics: " + terminal.diagnostics());
+        assertRejected("MOVE DFHVALUE(ACQUIRED) TO WS-RESP", "unsupported CVDA name: ACQUIRED");
+        assertRejected("EXEC CICS INQUIRE TERMINAL(EIBTRMID) UCTRANST(WS-DATE) END-EXEC",
+                "UCTRANST must be a 4-byte binary integer");
+        assertRejected("EXEC CICS INQUIRE TERMINAL(EIBTRMID) ACQSTATUS(WS-RESP) END-EXEC",
+                "unsupported INQUIRE TERMINAL option: ACQSTATUS");
+    }
+
+    @Test
     @DisplayName("ENQで資源を得てDEQで返し、LENGTHの無い形と域を越えるLENGTHは断る")
     void enqueuesAndDequeues() {
         GeneratedLoader loader = new GeneratedLoader();
