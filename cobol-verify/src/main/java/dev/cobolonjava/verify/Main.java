@@ -8,13 +8,17 @@ import dev.cobolonjava.verify.corpus.CorpusRunner;
 import dev.cobolonjava.verify.corpus.SourceDirectory;
 import dev.cobolonjava.verify.execute.ExecutionReport;
 import dev.cobolonjava.verify.execute.ProgramRunner;
+import dev.cobolonjava.compiler.source.CopyBookResolver;
+import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 検証基盤の起動口 (要件 NFR-040, NFR-042)。
@@ -22,7 +26,7 @@ import java.util.Map;
  * <pre>
  * verify ccvs85     &lt;newcob.val&gt; [-x 差し込み札] [-o 出力先]   翻訳が通るかを数える
  * verify ccvs85-run &lt;newcob.val&gt; [-x 差し込み札] [-o 出力先]   動かして合否を数える
- * verify corpus     &lt;置き場&gt;      [-o 出力先]
+ * verify corpus     &lt;置き場&gt;      [-I 写し句の置き場]... [-o 出力先]
  * </pre>
  *
  * <p>どちらも<b>数だけ</b>を出す。コーパスの中身は出さないし、同梱もしない
@@ -45,7 +49,7 @@ public final class Main {
         if (args.length < 2) {
             System.err.println("usage: verify ccvs85     <newcob.val> [-x x-cards] [-o out]");
             System.err.println("       verify ccvs85-run <newcob.val> [-x x-cards] [-o out]");
-            System.err.println("       verify corpus     <directory> [-o out]");
+            System.err.println("       verify corpus     <directory> [-I copybooks]... [-o out]");
             System.exit(2);
             return;
         }
@@ -53,7 +57,7 @@ public final class Main {
         String text = switch (args[0]) {
             case "ccvs85" -> ccvs85(Path.of(args[1]), option(args, "-x"));
             case "ccvs85-run" -> ccvs85Run(Path.of(args[1]), option(args, "-x"));
-            case "corpus" -> corpus(Path.of(args[1]));
+            case "corpus" -> corpus(Path.of(args[1]), options(args, "-I"));
             default -> null;
         };
         if (text == null) {
@@ -124,16 +128,47 @@ public final class Main {
         return Ccvs85Suite.prepare(archive, Population.plain(xcards));
     }
 
-    /** 資産の置き場を流す。 */
-    private static String corpus(Path root) {
+    /**
+     * 資産の置き場を流す。
+     *
+     * <p>{@code -I} は何度でも書ける。CICS の資産は業務の写し句と、BMS から作る記号マップの
+     * 写し句を別の場所に持つ。写し句が引けないまま流すと、<b>処理系の失敗を道具が作る</b>
+     * (覚え書き 6)。
+     */
+    private static String corpus(Path root, List<Path> includes) {
         if (!Files.isDirectory(root)) {
             System.err.println("置き場が無い: " + root);
             System.err.println("tools/verify/fetch-corpus.sh で取ってくること");
             System.exit(1);
         }
         List<CorpusRunner.Source> sources = SourceDirectory.read(root);
-        CorpusReport report = CorpusRunner.standard().run(sources);
+        CorpusRunner runner = includes.isEmpty()
+                ? CorpusRunner.standard()
+                : CorpusRunner.with(resolverOf(includes));
+        CorpusReport report = runner.run(sources);
         return report.text("OSS コーパス (要件 NFR-042)") + '\n' + report.csv();
+    }
+
+    /** 書かれた順に探す。先に見つかったものを使うのは、ホストの連結ライブラリと同じである。 */
+    private static CopyBookResolver resolverOf(List<Path> includes) {
+        List<CopyBookResolver> chain = includes.stream()
+                .<CopyBookResolver>map(DirectoryCopyBookResolver::new)
+                .toList();
+        return (textName, libraryName) -> chain.stream()
+                .map(resolver -> resolver.resolve(textName, libraryName))
+                .flatMap(Optional::stream)
+                .findFirst();
+    }
+
+    /** 同じ指定を何度でも読む。 */
+    private static List<Path> options(String[] args, String name) {
+        List<Path> out = new ArrayList<>();
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals(name)) {
+                out.add(Path.of(args[i + 1]));
+            }
+        }
+        return List.copyOf(out);
     }
 
     /**
