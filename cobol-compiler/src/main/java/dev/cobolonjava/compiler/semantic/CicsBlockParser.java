@@ -40,6 +40,9 @@ final class CicsBlockParser {
     /** INQUIRE / SET TERMINAL。TERMINAL は option として後ろで読む。 */
     private static final Pattern TERMINAL_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(INQUIRE|SET)\\s+(TERMINAL\\b.*?)END-EXEC\\s*$");
+    /** INQUIRE ASSOCIATION。ASSOCIATION は option として後ろで読む。 */
+    private static final Pattern ASSOCIATION_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+INQUIRE\\s+(ASSOCIATION\\b.*?)END-EXEC\\s*$");
     /** WRITE (file control)。WRITEQ は別の語なので当たらない。 */
     private static final Pattern WRITE_FILE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+WRITE\\b(.*?)END-EXEC\\s*$");
@@ -122,6 +125,10 @@ final class CicsBlockParser {
         Matcher receive = RECEIVE_BLOCK.matcher(source);
         if (receive.matches()) {
             return parseReceive(receive.group(1));
+        }
+        Matcher association = ASSOCIATION_BLOCK.matcher(source);
+        if (association.matches()) {
+            return parseAssociation(association.group(1));
         }
         Matcher writeFile = WRITE_FILE_BLOCK.matcher(source);
         if (writeFile.matches()) {
@@ -547,7 +554,62 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
-                null, null, spec, null, null, null);
+                null, null, spec, null, null, null, null);
+    }
+
+    /**
+     * INQUIRE ASSOCIATION を読む (暫定判断 P-132)。
+     *
+     * <p>{@code ASSOCIATION(EIBTASKN)}、すなわち task 自身の association だけを受ける。ほかの task の
+     * origin data は持たず、TASKIDERR の数も確かめていないので断る。
+     */
+    private static Parsed parseAssociation(String source) {
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate INQUIRE ASSOCIATION option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        for (String name : options.keySet()) {
+            if (!Set.of("ASSOCIATION", "ODAPPLID", "ODUSERID", "ODFACILNAME", "ODNETWORKID", "ODFACILTYPE",
+                    "RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported INQUIRE ASSOCIATION option: " + name);
+            }
+        }
+        String[] association = options.get("ASSOCIATION");
+        if (association == null || !"EIBTASKN".equals(association[2])) {
+            throw new IllegalArgumentException(
+                    "INQUIRE ASSOCIATION is supported only for ASSOCIATION(EIBTASKN), the task's own association");
+        }
+        AssociationSpec spec = new AssociationSpec(
+                sendDataName(options.get("ODAPPLID"), "ODAPPLID"),
+                sendDataName(options.get("ODUSERID"), "ODUSERID"),
+                sendDataName(options.get("ODFACILNAME"), "ODFACILNAME"),
+                sendDataName(options.get("ODNETWORKID"), "ODNETWORKID"),
+                sendDataName(options.get("ODFACILTYPE"), "ODFACILTYPE"));
+        String[] noHandle = options.get("NOHANDLE");
+        if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
+            throw new IllegalArgumentException("NOHANDLE does not take a value");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                null, null, null, null, null, null, spec);
     }
 
     /**
@@ -609,7 +671,7 @@ final class CicsBlockParser {
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
                 null, null, null, null, null,
-                new FileWriteSpec(fileLiteral, file[2], from, ridfld, length, keyLength));
+                new FileWriteSpec(fileLiteral, file[2], from, ridfld, length, keyLength), null);
     }
 
     /** 整数定数だけを受ける option。書かなければ -1。 */
@@ -674,7 +736,7 @@ final class CicsBlockParser {
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
                 null, null, null, null,
                 new TerminalSpec(set, terminal[0] == null ? null : terminal[0].stripTrailing(), terminal[2], uctranst),
-                null);
+                null, null);
     }
 
     /**
@@ -743,7 +805,7 @@ final class CicsBlockParser {
                 options.containsKey("NOHANDLE"), false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
                 null, null, null, new EnqueueSpec(enqueue, resource, bytes,
-                        options.containsKey("NOSUSPEND"), options.containsKey("TASK")), null, null);
+                        options.containsKey("NOSUSPEND"), options.containsKey("TASK")), null, null, null);
     }
 
     /** 引用符の名前ならその値、データ名なら null。どちらでもなければ断る。 */
@@ -1137,7 +1199,8 @@ final class CicsBlockParser {
             ContainerSpec container,
             EnqueueSpec enqueue,
             TerminalSpec terminal,
-            FileWriteSpec writeFile) {
+            FileWriteSpec writeFile,
+            AssociationSpec association) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
@@ -1154,8 +1217,13 @@ final class CicsBlockParser {
             this(operation, target, commarea, length, response, response2, noHandle, rollback, cancel,
                     noDump, immediate, conditionAction, conditions, handleStackAction, abendHandlerAction,
                     abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit,
-                    null, null, null, null);
+                    null, null, null, null, null);
         }
+    }
+
+    /** INQUIRE ASSOCIATION の受取域の名前。書かれていない option は null。 */
+    record AssociationSpec(String applid, String userid, String facilityName, String networkId,
+                           String facilityType) {
     }
 
     /** WRITE FILE の、データ名を解決する前の形。LENGTH / KEYLENGTH は書かなければ -1。 */

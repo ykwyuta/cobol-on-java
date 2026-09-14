@@ -179,6 +179,21 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("INQUIRE ASSOCIATIONはtask自身のEIBTASKNに限って翻訳し、ほかのtaskと未対応のoptionは断る")
+    void translatesInquireAssociationForTheOwnTask() {
+        CobolCompiler.Result result = compileResult("ASSOC", List.of(
+                "EXEC CICS INQUIRE ASSOCIATION(EIBTASKN) ODAPPLID(WS-APPL) ODUSERID(WS-PGM)"
+                        + " ODFACILNAME(WS-APPL) ODNETWORKID(WS-PGM) ODFACILTYPE(WS-RESP) END-EXEC"));
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        assertRejected("EXEC CICS INQUIRE ASSOCIATION(WS-RESP) ODAPPLID(WS-APPL) END-EXEC",
+                "supported only for ASSOCIATION(EIBTASKN)");
+        assertRejected("EXEC CICS INQUIRE ASSOCIATION(EIBTASKN) ODTRANSID(WS-ABCODE) END-EXEC",
+                "unsupported INQUIRE ASSOCIATION option: ODTRANSID");
+        assertRejected("EXEC CICS INQUIRE ASSOCIATION(EIBTASKN) ODAPPLID(WS-ABCODE) END-EXEC",
+                "origin data area must be an 8-byte alphanumeric item");
+    }
+
+    @Test
     @DisplayName("WRITE FILEは定義の無いfileでFILENOTFOUNDをRESPに返し、file control以外のWRITEは断る")
     void writesFileAndReportsFileNotFound() {
         GeneratedLoader loader = new GeneratedLoader();

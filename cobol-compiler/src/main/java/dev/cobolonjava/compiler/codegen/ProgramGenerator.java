@@ -773,6 +773,8 @@ public final class ProgramGenerator {
                 planCicsTerminal(terminal, body);
             } else if (statement instanceof Statement.CicsWriteFile writeFile) {
                 planCicsWriteFile(writeFile, body);
+            } else if (statement instanceof Statement.CicsInquireAssociation association) {
+                planCicsInquireAssociation(association, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
                 Runnable field = planWholeView(deedit.field(), deedit.origin());
                 if (field != null) {
@@ -1079,6 +1081,28 @@ public final class ProgramGenerator {
                     statement.put() ? "putContainerCondition" : "getContainerCondition",
                     "(" + CONTEXT + strings + "L" + DATA_VIEW + ";L" + DATA_VIEW + ";"
                             + (statement.put() ? "I" : "") + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    private void planCicsInquireAssociation(Statement.CicsInquireAssociation statement, List<Runnable> body) {
+        List<Runnable> areas = new ArrayList<>();
+        for (DataReference area : java.util.Arrays.asList(statement.applid(), statement.userid(),
+                statement.facilityName(), statement.networkId(), statement.facilityType())) {
+            Runnable view = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                    : planWholeView(area, statement.origin());
+            if (view == null) {
+                return;
+            }
+            areas.add(view);
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            areas.forEach(Runnable::run);
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            String view = "L" + DATA_VIEW + ";";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "inquireAssociationCondition",
+                    "(" + CONTEXT + view + view + view + view + view + "Z)I", false);
             emitCicsConditionTransfer();
         });
     }

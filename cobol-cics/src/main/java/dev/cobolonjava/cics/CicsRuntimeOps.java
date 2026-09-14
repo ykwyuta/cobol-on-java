@@ -35,6 +35,8 @@ public final class CicsRuntimeOps {
     private static final int SET_TERMINAL_FUNCTION = 0x5204;
     /** WRITE (file control)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int WRITE_FILE_FUNCTION = 0x0604;
+    /** INQUIRE ASSOCIATION (SPI)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int INQUIRE_ASSOCIATION_FUNCTION = 0xC402;
     private static final java.util.regex.Pattern CONTAINER_NAME =
             java.util.regex.Pattern.compile("[A-Z0-9_-]{1,16}");
     private static final int DELAY_FUNCTION = 0x1004;
@@ -309,6 +311,52 @@ public final class CicsRuntimeOps {
         execution.eib(required.codePage()).setDataset(file, required.codePage());
         return containerOutcome(required, WRITE_FILE_FUNCTION, result.response(), result.response2(),
                 suppressDefaultHandling, "WRITE FILE");
+    }
+
+    /**
+     * INQUIRE ASSOCIATION(EIBTASKN) の origin data (暫定判断 P-132)。
+     *
+     * <p>端末から起きた task 自身の association を返す。書かれた受取域だけを埋め、値の出どころ
+     * (region の APPLID、network ID、task の user ID、端末) が無ければ空白と推測せず失敗させる。
+     * 受取域が無い option は null で渡る。
+     */
+    public static int inquireAssociationCondition(ProgramContext context, DataView applid, DataView userid,
+            DataView facilityName, DataView networkId, DataView facilityType, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        CicsTaskContext task = execution.task();
+        if (applid != null) {
+            putOriginText(required, applid, execution.environment().applid()
+                    .orElseThrow(() -> new CicsTaskStateException("INQUIRE ASSOCIATION ODAPPLID requires a configured APPLID")));
+        }
+        if (userid != null) {
+            putOriginText(required, userid, task.userId()
+                    .orElseThrow(() -> new CicsTaskStateException("INQUIRE ASSOCIATION ODUSERID requires the task user ID")));
+        }
+        if (facilityName != null || facilityType != null) {
+            String terminal = task.terminalId().orElseThrow(() -> new CicsTaskStateException(
+                    "INQUIRE ASSOCIATION origin facility is known only for tasks started from a terminal"));
+            if (facilityName != null) {
+                putOriginText(required, facilityName, terminal);
+            }
+            if (facilityType != null) {
+                setFullword(facilityType, CicsCvda.TERMINAL);
+            }
+        }
+        if (networkId != null) {
+            putOriginText(required, networkId, execution.environment().networkId()
+                    .orElseThrow(() -> new CicsTaskStateException("INQUIRE ASSOCIATION ODNETWORKID requires a configured network ID")));
+        }
+        completeLocalCommand(required, INQUIRE_ASSOCIATION_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    /** origin data の 8 文字の値を、空白を詰めて置く。 */
+    private static void putOriginText(ProgramContext context, DataView area, String value) {
+        if (area.length() != 8 || value.length() > 8) {
+            throw new CicsTaskStateException("INQUIRE ASSOCIATION origin value must fit an 8-byte area: " + value);
+        }
+        area.setBytes(context.codePage().encode(value + " ".repeat(8 - value.length())));
     }
 
     /** KEYLENGTH を省いたときの鍵の長さ。file 定義を知らない port では RIDFLD の長さとする。 */

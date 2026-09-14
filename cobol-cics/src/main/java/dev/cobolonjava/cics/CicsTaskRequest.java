@@ -9,6 +9,7 @@ import java.util.Optional;
  *
  * @param terminalInput 端末から届いたAID、cursor、変更field。直前の画面との照合はRECEIVE MAPが行う
  * @param terminalId    要求を出した端末の名前 (EIBTRMID)。adapterが利用者の端末ごとに決める
+ * @param userId        要求を出した利用者のCICS user ID。adapterが認証から決める
  */
 public record CicsTaskRequest(
         String transactionId,
@@ -17,7 +18,8 @@ public record CicsTaskRequest(
         Optional<ConversationReference> conversation,
         IdempotencyKey idempotencyKey,
         Optional<BmsTerminalInput> terminalInput,
-        Optional<String> terminalId) {
+        Optional<String> terminalId,
+        Optional<String> userId) {
 
     public CicsTaskRequest {
         Objects.requireNonNull(transactionId, "transactionId");
@@ -27,6 +29,14 @@ public record CicsTaskRequest(
         Objects.requireNonNull(idempotencyKey, "idempotencyKey");
         Objects.requireNonNull(terminalInput, "terminalInput");
         Objects.requireNonNull(terminalId, "terminalId");
+        Objects.requireNonNull(userId, "userId");
+    }
+
+    public CicsTaskRequest(String transactionId, String owner, CicsPayload payload,
+                           Optional<ConversationReference> conversation, IdempotencyKey idempotencyKey,
+                           Optional<BmsTerminalInput> terminalInput, Optional<String> terminalId) {
+        this(transactionId, owner, payload, conversation, idempotencyKey, terminalInput, terminalId,
+                Optional.empty());
     }
 
     public CicsTaskRequest(String transactionId, String owner, CicsPayload payload,

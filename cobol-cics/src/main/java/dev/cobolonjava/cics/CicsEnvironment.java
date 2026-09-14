@@ -20,6 +20,7 @@ import java.util.regex.Pattern;
  * @param enqueues  {@code ENQ} / {@code DEQ}の資源の排他。regionのtaskどうしで分け合う
  * @param terminals 端末定義のうちtaskをまたいで残る設定 ({@code SET TERMINAL})
  * @param files     file control ({@code WRITE FILE})。定義の無いregionではFILENOTFOUNDになる
+ * @param networkId 端末が属するnetworkのID ({@code INQUIRE ASSOCIATION ODNETWORKID})
  */
 public record CicsEnvironment(
         Optional<String> applid,
@@ -28,7 +29,8 @@ public record CicsEnvironment(
         Optional<BmsMapsetCatalog> mapsets,
         CicsEnqueuePort enqueues,
         CicsTerminalSettingsPort terminals,
-        CicsFilePort files) {
+        CicsFilePort files,
+        Optional<String> networkId) {
 
     /** APPLIDはVTAMの名前規則に合わせ、1〜8文字の英大文字・数字・国別文字に限る。 */
     private static final Pattern APPLID = Pattern.compile("[A-Z@#$][A-Z0-9@#$]{0,7}");
@@ -41,9 +43,15 @@ public record CicsEnvironment(
         Objects.requireNonNull(enqueues, "enqueues");
         Objects.requireNonNull(terminals, "terminals");
         Objects.requireNonNull(files, "files");
+        Objects.requireNonNull(networkId, "networkId");
         applid.ifPresent(value -> {
             if (!APPLID.matcher(value).matches()) {
                 throw new IllegalArgumentException("APPLID has an unsupported format: " + value);
+            }
+        });
+        networkId.ifPresent(value -> {
+            if (!APPLID.matcher(value).matches()) {
+                throw new IllegalArgumentException("network ID has an unsupported format: " + value);
             }
         });
     }
@@ -59,7 +67,7 @@ public record CicsEnvironment(
     public static CicsEnvironment unconfigured() {
         return new CicsEnvironment(Optional.empty(), Clock.systemUTC(),
                 CicsIntervalPort.sleeping(), Optional.empty(), CicsEnqueuePort.inMemory(),
-                CicsTerminalSettingsPort.inMemory(CicsCvda.NOUCTRAN), CicsFilePort.none());
+                CicsTerminalSettingsPort.inMemory(CicsCvda.NOUCTRAN), CicsFilePort.none(), Optional.empty());
     }
 
     public static CicsEnvironment withApplid(String applid) {
@@ -67,36 +75,44 @@ public record CicsEnvironment(
     }
 
     private CicsEnvironment withApplidValue(String value) {
-        return new CicsEnvironment(Optional.of(value), clock, interval, mapsets, enqueues, terminals, files);
+        return new CicsEnvironment(Optional.of(value), clock, interval, mapsets, enqueues, terminals, files,
+                networkId);
     }
 
     /** 時計だけを替えた構成。試験で時刻を固定するときに使う。 */
     public CicsEnvironment withClock(Clock value) {
-        return new CicsEnvironment(applid, value, interval, mapsets, enqueues, terminals, files);
+        return new CicsEnvironment(applid, value, interval, mapsets, enqueues, terminals, files, networkId);
     }
 
     /** 待ちだけを替えた構成。 */
     public CicsEnvironment withInterval(CicsIntervalPort value) {
-        return new CicsEnvironment(applid, clock, value, mapsets, enqueues, terminals, files);
+        return new CicsEnvironment(applid, clock, value, mapsets, enqueues, terminals, files, networkId);
     }
 
     /** mapsetの定義を持たせた構成。 */
     public CicsEnvironment withMapsets(BmsMapsetCatalog value) {
-        return new CicsEnvironment(applid, clock, interval, Optional.of(value), enqueues, terminals, files);
+        return new CicsEnvironment(applid, clock, interval, Optional.of(value), enqueues, terminals, files,
+                networkId);
     }
 
     /** 資源の排他を替えた構成。複数のJVMで分け合うときに使う。 */
     public CicsEnvironment withEnqueues(CicsEnqueuePort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, value, terminals, files);
+        return new CicsEnvironment(applid, clock, interval, mapsets, value, terminals, files, networkId);
     }
 
     /** 端末の設定を替えた構成。 */
     public CicsEnvironment withTerminals(CicsTerminalSettingsPort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, value, files);
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, value, files, networkId);
     }
 
     /** file controlを替えた構成。 */
     public CicsEnvironment withFiles(CicsFilePort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, value);
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, value, networkId);
+    }
+
+    /** 端末が属するnetworkのIDを持たせた構成。 */
+    public CicsEnvironment withNetworkId(String value) {
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
+                Optional.of(value));
     }
 }

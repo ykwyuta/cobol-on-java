@@ -46,7 +46,8 @@ public final class CicsTaskCoordinator {
                 taskId, definition.transId(), request.owner(), startedAt)
                 .withTerminal(request.terminalInput(),
                         lease.flatMap(claimed -> claimed.envelope().screen()))
-                .withTerminalId(request.terminalId());
+                .withTerminalId(request.terminalId())
+                .withUserId(request.userId());
         CicsTaskBoundary boundary = null;
         RuntimeException runtimeFailure = null;
         Error errorFailure = null;

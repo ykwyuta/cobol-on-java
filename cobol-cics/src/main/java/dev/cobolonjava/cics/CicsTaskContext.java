@@ -19,6 +19,8 @@ import java.util.regex.Pattern;
  * @param terminalInput 要求が運んだ端末入力。EIBAID / EIBCPOSNとRECEIVE MAPが読む
  * @param screen        直前のtaskが送った画面。RECEIVE MAPが入力と照合する
  * @param terminalId    taskを起こした端末の名前 (EIBTRMID)。adapterが決める。端末が無ければ空
+ * @param userId        taskを起こした利用者のCICS user ID (8文字まで)。{@link #owner()}とは別に
+ *                      adapterが認証から決める。分からなければ空
  */
 public record CicsTaskContext(
         CicsTaskId taskId,
@@ -29,12 +31,15 @@ public record CicsTaskContext(
         Optional<ZoneId> hostZone,
         Optional<BmsTerminalInput> terminalInput,
         Optional<BmsScreenSnapshot> screen,
-        Optional<String> terminalId) {
+        Optional<String> terminalId,
+        Optional<String> userId) {
 
     /** EIBTASKNの桁数 (PL4に入る7桁)。 */
     public static final int MAX_TASK_NUMBER = 9_999_999;
     /** 端末の名前は1〜4文字の英大文字・数字・国別文字とする。 */
     private static final Pattern TERMINAL_ID = Pattern.compile("[A-Z0-9@#$]{1,4}");
+    /** CICSのuser IDは1〜8文字の英大文字・数字・国別文字とする。 */
+    private static final Pattern USER_ID = Pattern.compile("[A-Z0-9@#$]{1,8}");
 
     public CicsTaskContext {
         Objects.requireNonNull(taskId, "taskId");
@@ -46,6 +51,7 @@ public record CicsTaskContext(
         Objects.requireNonNull(terminalInput, "terminalInput");
         Objects.requireNonNull(screen, "screen");
         Objects.requireNonNull(terminalId, "terminalId");
+        Objects.requireNonNull(userId, "userId");
         if (taskNumber.isPresent()
                 && (taskNumber.getAsInt() < 1 || taskNumber.getAsInt() > MAX_TASK_NUMBER)) {
             throw new IllegalArgumentException(
@@ -56,13 +62,18 @@ public record CicsTaskContext(
                 throw new IllegalArgumentException("terminal ID has an unsupported format: " + value);
             }
         });
+        userId.ifPresent(value -> {
+            if (!USER_ID.matcher(value).matches()) {
+                throw new IllegalArgumentException("user ID has an unsupported format: " + value);
+            }
+        });
     }
 
     /** 端末を持たない文脈。 */
     public CicsTaskContext(CicsTaskId taskId, TransId transactionId, String owner, Instant startedAt,
                            OptionalInt taskNumber, Optional<ZoneId> hostZone) {
         this(taskId, transactionId, owner, startedAt, taskNumber, hostZone,
-                Optional.empty(), Optional.empty(), Optional.empty());
+                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
     }
 
     /** task番号と地方時を持たない文脈。EIBTASKN / EIBDATE / EIBTIMEは設定しない。 */
@@ -74,13 +85,19 @@ public record CicsTaskContext(
     public CicsTaskContext withTerminal(
             Optional<BmsTerminalInput> input, Optional<BmsScreenSnapshot> previousScreen) {
         return new CicsTaskContext(taskId, transactionId, owner, startedAt, taskNumber, hostZone,
-                input, previousScreen, terminalId);
+                input, previousScreen, terminalId, userId);
     }
 
     /** 端末の名前を持たせた文脈。 */
     public CicsTaskContext withTerminalId(Optional<String> value) {
         return new CicsTaskContext(taskId, transactionId, owner, startedAt, taskNumber, hostZone,
-                terminalInput, screen, value);
+                terminalInput, screen, value, userId);
+    }
+
+    /** CICSのuser IDを持たせた文脈。 */
+    public CicsTaskContext withUserId(Optional<String> value) {
+        return new CicsTaskContext(taskId, transactionId, owner, startedAt, taskNumber, hostZone,
+                terminalInput, screen, terminalId, value);
     }
 
     private static String requireText(String value, String name) {

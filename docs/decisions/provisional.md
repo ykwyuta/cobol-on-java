@@ -4018,3 +4018,28 @@ MDT set」等) を載せるが値を載せない。そこで意味を 3270 デ�
 READ / REWRITE / DELETE / browse は後続増分とする。
 
 **解消条件**: 実機で DUPREC / LENGERR / INVREQ の RESP2 と EIBRCODE を採る。recoverable file の設計を UOW と合わせて入れる。
+
+## P-132 INQUIRE ASSOCIATION は task 自身に限り、origin data の出どころが無ければ失敗させる
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsRuntimeOps.inquireAssociationCondition`、`CicsTaskContext.userId`、`CicsEnvironment.networkId` |
+| 関連要件 | FR-080 |
+
+**暫定の扱い**:
+
+- 受けるのは `ASSOCIATION(EIBTASKN)`、すなわち task 自身の association だけである。ほかの task の origin data は
+  持たず、TASKIDERR (RESP2 1) の RESP の数も確かめていないので翻訳時に断る
+- 端末から起きた task の origin は task 自身とする。ODAPPLID は region の APPLID、ODUSERID は要求が運ぶ
+  CICS user ID (`CicsTaskRequest.userId`)、ODFACILNAME は端末の名前、ODFACILTYPE は TERMINAL、ODNETWORKID は
+  region に構成した network ID である。8 文字の値は空白を詰める
+- 値の出どころが無い option (APPLID / network ID の構成が無い、user ID を運ばない、端末の無い task) は、
+  文書の「該当しなければ空白」と読み替えず失敗させる。該当するのに分からないだけだからである
+- CVDA TERMINAL は CICS TS 5.6 の表で 214 (前後 213 FULL、215 NOTERMINAL)、EIBFN は `X'C402'` (SPI) である
+- 対応する option は ODAPPLID、ODUSERID、ODFACILNAME、ODNETWORKID、ODFACILTYPE だけで、ほかは名前をつけて断る
+
+**どこがずれうるか**: START や LINK で連なった task の origin (最初の task の値を引き継ぐ) は扱わない。
+SPI の NOTAUTH の検査は持たない。
+
+**解消条件**: 実機で端末から起きた task の origin data と、START で起きた task の値を採る。

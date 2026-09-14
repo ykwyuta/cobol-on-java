@@ -12,6 +12,8 @@ import java.util.Objects;
  */
 public final class CicsCvda {
 
+    /** origin の facility が端末である ({@code ODFACILTYPE})。表で前後 (213 FULL、215 NOTERMINAL) まで確かめた。 */
+    public static final int TERMINAL = 214;
     /** 端末の入力をすべて大文字にする。 */
     public static final int UCTRAN = 451;
     /** 端末の入力を大文字にしない。 */
@@ -26,6 +28,7 @@ public final class CicsCvda {
     public static int forName(String name) {
         String normalized = Objects.requireNonNull(name, "name").strip().toUpperCase(Locale.ROOT);
         return switch (normalized) {
+            case "TERMINAL" -> TERMINAL;
             case "UCTRAN" -> UCTRAN;
             case "NOUCTRAN" -> NOUCTRAN;
             case "TRANIDONLY" -> TRANIDONLY;

@@ -1013,6 +1013,10 @@ public final class ProcedureBuilder {
             out.add(deedit.field());
         } else if (statement instanceof Statement.CicsTerminalUctran terminal && !terminal.set()) {
             out.add(terminal.uctranst());
+        } else if (statement instanceof Statement.CicsInquireAssociation association) {
+            java.util.stream.Stream.of(association.applid(), association.userid(), association.facilityName(),
+                    association.networkId(), association.facilityType()).filter(java.util.Objects::nonNull)
+                    .forEach(out::add);
         } else if (statement instanceof Statement.CicsContainer container && !container.put()) {
             out.add(container.area());
             if (container.lengthData() != null) {
@@ -1744,6 +1748,39 @@ public final class ProcedureBuilder {
             }
             if (parsed.container() != null) {
                 return cicsContainerStatement(parsed, origin);
+            }
+            if (parsed.association() != null) {
+                CicsBlockParser.AssociationSpec spec = parsed.association();
+                DataReference[] texts = new DataReference[4];
+                String[] names = {spec.applid(), spec.userid(), spec.facilityName(), spec.networkId()};
+                for (int i = 0; i < names.length; i++) {
+                    if (names[i] == null) {
+                        continue;
+                    }
+                    texts[i] = resolver.resolveName(names[i], origin);
+                    if (texts[i] == null) {
+                        return null;
+                    }
+                    if (DataCategory.of(texts[i]) != DataCategory.ALPHANUMERIC
+                            || texts[i].constantLength().isEmpty() || texts[i].constantLength().getAsInt() != 8) {
+                        throw new IllegalArgumentException(
+                                "INQUIRE ASSOCIATION origin data area must be an 8-byte alphanumeric item: " + names[i]);
+                    }
+                }
+                DataReference facilityType = null;
+                if (spec.facilityType() != null) {
+                    facilityType = resolver.resolveName(spec.facilityType(), origin);
+                    if (facilityType == null) {
+                        return null;
+                    }
+                    Usage usage = facilityType.item().usage() == null ? Usage.DISPLAY : facilityType.item().usage();
+                    if ((usage != Usage.COMP && usage != Usage.COMP_5) || facilityType.item().length() != Integer.BYTES
+                            || !DataCategory.of(facilityType).isNumeric()) {
+                        throw new IllegalArgumentException("INQUIRE ASSOCIATION ODFACILTYPE must be a 4-byte binary integer");
+                    }
+                }
+                return withCicsResponse(new Statement.CicsInquireAssociation(texts[0], texts[1], texts[2], texts[3],
+                        facilityType, parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
             }
             if (parsed.writeFile() != null) {
                 CicsBlockParser.FileWriteSpec spec = parsed.writeFile();
