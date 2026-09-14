@@ -137,6 +137,51 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("USINGを書かないCICS programはDFHCOMMAREAを暗黙の引数にし、COMMAREAの無いtaskも起動できる")
+    void implicitDfhcommareaParameter() throws ReflectiveOperationException {
+        String source = String.join("\n",
+                "       IDENTIFICATION DIVISION.",
+                "       PROGRAM-ID. NOUSING.",
+                "       DATA DIVISION.",
+                "       LINKAGE SECTION.",
+                "       01  DFHCOMMAREA PIC X(8).",
+                "       PROCEDURE DIVISION.",
+                "           IF EIBCALEN = 0",
+                "               EXEC CICS RETURN END-EXEC",
+                "           END-IF",
+                "           MOVE 'DONE' TO DFHCOMMAREA(1:4)",
+                "           EXEC CICS RETURN TRANSID('NXT1')",
+                "                COMMAREA(DFHCOMMAREA) LENGTH(4)",
+                "           END-EXEC.") + "\n";
+        CobolCompiler.Result result = CobolCompiler.standard().compile("NOUSING.cbl", source);
+        assertTrue(result.succeeded(), result.diagnostics().toString());
+        GeneratedLoader loader = new GeneratedLoader();
+        Class<?> type = loader.define(result.className(), result.classFile());
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("NOUSING", () -> {
+                    try {
+                        return (CobolProgram) type.getDeclaredConstructor().newInstance();
+                    } catch (ReflectiveOperationException failure) {
+                        throw new IllegalStateException(failure);
+                    }
+                })
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("NOUSING"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        CobolCicsTaskProgram programs = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2);
+
+        TaskCompletion withArea = programs.execute(definition,
+                CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (a, b) -> { });
+        TaskCompletion withoutArea = programs.execute(definition, CicsPayload.empty(), task(),
+                (a, b) -> { });
+
+        assertEquals("DONE", CodePages.DEFAULT.decode(withArea.payload().commarea()));
+        assertEquals(Optional.empty(), withoutArea.nextTransaction());
+        assertEquals(0, withoutArea.payload().commareaLength());
+    }
+
+    @Test
     @DisplayName("PROGRAMのデータ域が名前として正しくなければPGMIDERRへ丸めず失敗する")
     void rejectsInvalidProgramNameInDataArea() {
         GeneratedLoader loader = new GeneratedLoader();

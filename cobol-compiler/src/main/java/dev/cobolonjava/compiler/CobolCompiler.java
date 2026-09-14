@@ -441,7 +441,9 @@ public final class CobolCompiler {
         globals.put(programNameOf(program).toUpperCase(Locale.ROOT),
                 globalDeclarativesOf(programNameOf(program), procedure));
 
-        ProgramSignature signature = programSignature(programNameOf(program), procedure);
+        ProgramSignature signature = programSignature(programNameOf(program), procedure,
+                program.procedureDivision() != null
+                        && program.procedureDivision().procedureParameter().isEmpty());
         ProcedureManifest manifest = procedureManifest(programNameOf(program), procedure);
         ProgramGenerator.Result generated = ProgramGenerator.generate(
                 programNameOf(program), fileName, procedure, image, data.layout(),
@@ -458,11 +460,20 @@ public final class CobolCompiler {
         return new Result(null, null, layout, null, null, List.copyOf(diagnostics));
     }
 
+    /**
+     * @param implicitUsing USING を書いていない。引数は CICS translator が補う DFHCOMMAREA だけである
+     */
     private static ProgramSignature programSignature(
-            String program, ProcedureBuilder.Result procedure) {
+            String program, ProcedureBuilder.Result procedure, boolean implicitUsing) {
         List<ProgramParameter> parameters = procedure.parameters().stream()
-                .map(item -> ProgramParameter.fixedReference(
-                        item.name(), item.totalLength(), dataItemHash(item)))
+                .map(item -> implicitUsing
+                        // CICS は COMMAREA を渡さないこと (EIBCALEN=0) も、宣言と違う長さで渡すこともある。
+                        // 範囲外を読んだときに失敗させ、入口では断らない (暫定判断 P-122)
+                        ? new ProgramParameter(item.name(), 0, Short.MAX_VALUE,
+                                ProgramParameter.Presence.OPTIONAL, ProgramParameter.PassingMode.REFERENCE,
+                                ProgramParameter.Direction.INOUT, dataItemHash(item))
+                        : ProgramParameter.fixedReference(
+                                item.name(), item.totalLength(), dataItemHash(item)))
                 .toList();
         return ProgramSignature.of(program, parameters);
     }

@@ -239,6 +239,14 @@ public final class ProcedureBuilder {
             builder.declareSqlInDataDivision(unit);
             if (unit.procedureDivision() != null) {
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
+                if (unit.procedureDivision().procedureParameter().isEmpty()) {
+                    // CICS translator は USING を書かない program に USING DFHEIBLK DFHCOMMAREA を補う。
+                    // EIB は暗黙項目なので、引数になるのは DFHCOMMAREA だけである (暫定判断 P-122)
+                    builder.layout.findAll("DFHCOMMAREA").stream()
+                            .filter(item -> item.section() == DataSection.LINKAGE && item == item.record())
+                            .findFirst()
+                            .ifPresent(parameters::add);
+                }
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs, sections,
                         declaratives);
             }

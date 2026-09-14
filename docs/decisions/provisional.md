@@ -3741,3 +3741,28 @@ SQLCA の SQLWARN、SQLERRD(1,2,4〜6)、SQLERRM を実 Db2 と突き合わせ�
 
 **解消条件**: 実 Db2 の SQLCA field 値を statement ごとに採る (設計 77 §11 の SQLCA gate)。
 CICS task での SQL COMMIT / ROLLBACK の扱いを決める。WHENEVER と動的 SQL を入れる。
+
+---
+
+## P-122 USING を書かない program では DFHCOMMAREA を暗黙の引数にする
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `ProcedureBuilder.build`、`CobolCompiler.programSignature` |
+| 関連要件 | FR-160, FR-163 |
+
+**一度狭く決めていた**: 連絡節の項目は `PROCEDURE DIVISION USING` に並べなければ参照できない、と
+していた。CICS の program は USING を書かず、CICS translator が `USING DFHEIBLK DFHCOMMAREA` を補う。
+Bank-of-Z では 78 箇所がこの規則で止まっていた。
+
+**いまの扱い**: `PROCEDURE DIVISION` に USING が無く、連絡節に 01 レベルの `DFHCOMMAREA` があれば、
+それを唯一の引数にする。EIB はこの処理系では暗黙項目なので引数にしない。引数の検査は
+`OPTIONAL`、長さ 0〜32767 byte とし、COMMAREA を渡さない task (EIBCALEN=0) も、宣言と違う長さの
+COMMAREA も入口では断らない。渡された範囲を越えて読めば実行時に失敗する。
+
+**どこがずれうるか**: `DFHCOMMAREA` 以外の名前の連絡節項目を USING なしで使う program (ADDRESS で
+番地を置く等) は、従来どおり断る。host で COMMAREA より長い DFHCOMMAREA を読んだときの振る舞い
+(記憶域の中身が見える) は再現しない。
+
+**解消条件**: `SET ADDRESS` / `ADDRESS OF` を入れるときに、USING 以外で番地を持つ連絡節項目を扱う。
