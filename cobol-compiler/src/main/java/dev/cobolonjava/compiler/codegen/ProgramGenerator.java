@@ -4129,6 +4129,49 @@ public final class ProgramGenerator {
         return planStore(target, value, "TRUNCATION", origin);
     }
 
+    /** 積んだ {@link Decimal} を浮動小数点項目へ書き込む命令。 */
+    private Runnable planStoreFloat(DataReference target, Runnable value, Origin origin) {
+        Runnable offset = planAddress(target, origin);
+        OptionalInt length = lengthOf(target, origin);
+        if (value == null || offset == null || length.isEmpty()) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            offset.run();
+            push(length.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "storeFloat",
+                    "(" + DECIMAL + "L" + STORAGE + ";II)V", false);
+        };
+    }
+
+    private static boolean isFloating(DataReference reference) {
+        Usage usage = reference.item().usage();
+        return reference.item().isElementary() && usage != null && usage.isFloatingPoint();
+    }
+
+    private static boolean isFloating(Operand operand) {
+        return operand instanceof Operand.Reference reference && isFloating(reference.reference());
+    }
+
+    private static boolean hasFloating(Expression expression) {
+        return switch (expression) {
+            case Expression.Value value -> isFloating(value.operand());
+            case Expression.Negate negate -> hasFloating(negate.operand());
+            case Expression.Binary binary -> hasFloating(binary.left()) || hasFloating(binary.right());
+        };
+    }
+
+    private static boolean hasDivisionOrPower(Expression expression) {
+        return switch (expression) {
+            case Expression.Value ignored -> false;
+            case Expression.Negate negate -> hasDivisionOrPower(negate.operand());
+            case Expression.Binary binary -> binary.operator() == Expression.Operator.DIVIDE
+                    || binary.operator() == Expression.Operator.POWER
+                    || hasDivisionOrPower(binary.left()) || hasDivisionOrPower(binary.right());
+        };
+    }
+
     /** 積んだ {@link Decimal} を数値項目へ書き込む命令。 */
     private Runnable planStore(DataReference target, Runnable value, String rounding,
                                Origin origin) {
@@ -5299,6 +5342,22 @@ public final class ProgramGenerator {
             return;
         }
         DataItem item = target.reference().item();
+        if (isFloating(target.reference())) {
+            Runnable store = planStoreFloat(target.reference(), source, move.origin());
+            if (store != null) {
+                body.add(store);
+            }
+            return;
+        }
+        if (isFloating(move.source())) {
+            // 浮動小数点から固定小数点への変換は、受取項目の最下位の桁で丸める
+            // (Enterprise COBOL Programming Guide「Conversions and precision」、暫定判断 P-127)
+            Runnable store = planStore(target.reference(), source, "NEAREST_AWAY_FROM_ZERO", move.origin());
+            if (store != null) {
+                body.add(store);
+            }
+            return;
+        }
         String field = numericItemConstant(item, move.origin());
         if (field == null) {
             return;
@@ -5314,6 +5373,10 @@ public final class ProgramGenerator {
 
     private void planEditedMove(Statement.Move move, Statement.Move.Target target,
                                 Runnable offset, List<Runnable> body) {
+        if (isFloating(move.source())) {
+            report(move.origin(), "MOVE of a floating-point item to a numeric-edited item is not supported yet");
+            return;
+        }
         Runnable source = planSourceDecimal(move.source(), move.origin());
         if (source == null) {
             return;
@@ -5359,6 +5422,18 @@ public final class ProgramGenerator {
 
     private void planCompute(Statement.Compute statement, IntermediateDigits digits,
                              List<Runnable> body) {
+        boolean floating = hasFloating(statement.value())
+                || statement.targets().stream().anyMatch(target -> isFloating(target.reference()));
+        if (floating && hasDivisionOrPower(statement.value())) {
+            // 浮動小数点で評価される式の中間結果の精度は、除算とべき乗で 10 進と食い違う。近い値を返さない
+            report(statement.origin(),
+                    "COMPUTE with floating-point items supports only +, - and * yet (P-127)");
+            return;
+        }
+        if (floating && statement.isChecked()) {
+            report(statement.origin(), "ON SIZE ERROR with floating-point items is not supported yet");
+            return;
+        }
         Runnable value = planExpression(statement.value(), digits, statement.origin());
         if (value == null) {
             return;
@@ -5367,12 +5442,16 @@ public final class ProgramGenerator {
             planCheckedCompute(statement, value, body);
             return;
         }
+        boolean floatingOperand = hasFloating(statement.value());
         int slot = nextLocal++;
         List<Runnable> stores = new ArrayList<>();
         for (Statement.Arithmetic.Target target : statement.targets()) {
-            Runnable store = planStore(target.reference(),
-                    () -> run.visitVarInsn(Opcodes.ALOAD, slot),
-                    target.rounded() ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION",
+            Runnable load = () -> run.visitVarInsn(Opcodes.ALOAD, slot);
+            Runnable store = isFloating(target.reference())
+                    ? planStoreFloat(target.reference(), load, statement.origin())
+                    : planStore(target.reference(), load,
+                    // 浮動小数点の結果を固定小数点へ入れるときは丸める (P-127)
+                    target.rounded() || floatingOperand ? "NEAREST_AWAY_FROM_ZERO" : "TRUNCATION",
                     statement.origin());
             if (store == null) {
                 return;
@@ -5583,6 +5662,12 @@ public final class ProgramGenerator {
     }
 
     private void planArithmeticBody(Statement.Arithmetic statement, List<Runnable> body) {
+        if (statement.operands().stream().anyMatch(ProgramGenerator::isFloating)
+                || statement.targets().stream().anyMatch(target -> isFloating(target.reference()))) {
+            report(statement.origin(),
+                    "ADD / SUBTRACT / MULTIPLY / DIVIDE with floating-point items is not supported yet; use COMPUTE");
+            return;
+        }
         if (statement.isChecked()) {
             planCheckedArithmetic(statement, body);
             return;
@@ -6389,6 +6474,14 @@ public final class ProgramGenerator {
                 loadCodePage();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "deEdit",
                         "(L" + STORAGE + ";III" + CODE_PAGE + ")" + DECIMAL, false);
+            };
+        }
+        if (isFloating(reference)) {
+            return () -> {
+                offset.run();
+                push(length.getAsInt());
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readFloat",
+                        "(L" + STORAGE + ";II)" + DECIMAL, false);
             };
         }
         if (!DataCategory.of(reference).isNumeric()) {

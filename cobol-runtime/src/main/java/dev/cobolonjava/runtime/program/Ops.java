@@ -1720,6 +1720,29 @@ public final class Ops {
                 value, rounding);
     }
 
+    /**
+     * 浮動小数点項目 ({@code COMP-1} は 4 バイト、{@code COMP-2} は 8 バイト) を読む (要件 FR-032)。
+     *
+     * <p>HFP の値は有限の 2 進小数なので、10 進へ<b>厳密に</b>直せる。近似は入れない。
+     */
+    public static Decimal readFloat(Storage storage, int offset, int length) {
+        java.math.BigDecimal value = floating(length).decode(read(storage, offset, length));
+        return Decimal.parse(value.stripTrailingZeros().toPlainString());
+    }
+
+    /** 浮動小数点項目へ格納する。表せない桁は切り捨てる (暫定判断 P-018)。 */
+    public static void storeFloat(Decimal value, Storage storage, int offset, int length) {
+        storage.view(offset, length).setBytes(floating(length).encode(value.toBigDecimal()));
+    }
+
+    private static dev.cobolonjava.runtime.item.FloatingItem floating(int length) {
+        return switch (length) {
+            case 4 -> dev.cobolonjava.runtime.item.FloatingItem.comp1();
+            case 8 -> dev.cobolonjava.runtime.item.FloatingItem.comp2();
+            default -> throw new IllegalArgumentException("floating-point item must be 4 or 8 bytes: " + length);
+        };
+    }
+
     /** 算術文の結果を受取項目へ格納する。上位桁は黙って切り捨てられる。 */
     public static void store(Decimal value, NumericItem target, Storage storage, int offset,
                              CobolRounding rounding) {
