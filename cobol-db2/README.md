@@ -24,6 +24,8 @@ task-scoped portを必ずcloseする。
 型付きhost variable / codecを追加した。通常UOW、non-cursor SQL subset、非hold cursorの
 `OPEN` / `FETCH` / `CLOSE`は
 `cobol-spring-boot-4-autoconfigure`のSpring Boot 4.1.1 adapterへ接続済みである。
-Db2 JDBC driver管理のconnection lease / UOWは`cobol-db2-jdbc`へ接続済みである。native SQL executor、
-SQLコプロセッサ、VARCHAR group、日付・時刻・LOB、
+Db2 JDBC driver管理のconnection lease / UOWは`cobol-db2-jdbc`へ接続済みである。
+生成COBOLの`EXEC SQL`は`Db2RuntimeOps`が`Db2Execution` (task runtimeとsession) を通して実行し、
+SQLCODE / SQLSTATE / SQLERRD(3)をSQLCAへ書き戻す (SQLコプロセッサの初期subset、暫定判断P-121)。
+native SQL executor、動的SQL、VARCHAR group、日付・時刻・LOB、
 SQLCA値の完全な構築、高機能cursor、実Db2でのcommit後FETCHは未実装・未検証である。

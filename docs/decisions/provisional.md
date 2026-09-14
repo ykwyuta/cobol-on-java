@@ -3707,3 +3707,37 @@ Bank-of-Z の XFRFUN は SQLDA を INCLUDE するが項目を使っておらず�
 
 **解消条件**: precompiler の出力 (SQLCA の宣言) と突き合わせる。POINTER と動的 SQL を入れるときに
 SQLDA を作る。
+
+---
+
+## P-121 SQL コプロセッサの初期 subset は、文の種類と host variable だけを読む
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `SqlBlockParser`、`ProcedureBuilder.sqlOf`、`Db2RuntimeOps`、`Db2Execution`、文法 `execDeclaration` |
+| 関連要件 | FR-150, FR-151, FR-152, FR-153, FR-154 |
+
+**暫定の扱い**: SQL の文法全体は解析せず、先頭の語で文の種類を決める。
+
+- 受ける文: `SELECT ... INTO ... FROM`、`INSERT`、`UPDATE`、`DELETE`、`DECLARE c CURSOR [WITH HOLD] FOR SELECT`、
+  `OPEN`、`FETCH [NEXT] [FROM] c INTO`、`CLOSE`、`COMMIT [WORK]`、`ROLLBACK [WORK]`、`DECLARE t TABLE`
+- host variable `:名前`、`:名前:標識`、`:名前 INDICATOR :標識` を `?` に置き換え、INTO 句を出力へ分ける。
+  SQL の残りは空白を 1 つに畳むだけで、そのままデータベースへ渡す (`FETCH FIRST`、`COUNT(*)` 等)
+- `DECLARE t TABLE` は precompiler が SQL を照合するための宣言であり、実行時の効果は無いので何もしない。
+  データ部にも書けるよう文法に `execDeclaration` を足した
+- cursor の入力は `OPEN` のときに渡す。`WITH HOLD` は承認された方針を持つまで実行しない (設計 77 §5.5)
+- host variable の形は翻訳時に決める: 固定長文字、COMP-3、ゾーン 10 進、2 進 (COMP は TRUNC(STD)、
+  COMP-5 は BIN)。群 (VARCHAR の 49 レベル)、編集項目、浮動小数は断る
+- 実行は `Db2Execution` (Db2TaskRuntime と session) を runtime service から得て `SqlPlan` で行う。
+  結果は SQLCA へ書く: SQLCAID、SQLCABC、SQLCODE、SQLSTATE、行数が分かれば SQLERRD(3)。
+  SQLERRM、SQLERRP、SQLWARN は空白、他の SQLERRD は 0 (fidelity UNAVAILABLE)
+- 断る文: `PREPARE` / `EXECUTE` 等の動的 SQL、`WHENEVER`、`WHERE CURRENT OF`、`FOR UPDATE`、
+  修飾された host variable (`:A.B`)、INTO の無い SELECT
+
+**どこがずれうるか**: SQL の語を `-` を含む名前として読むので、空白を置かない引き算 (`A-B`) を
+1 語と読む。CICS task の中の SQL `COMMIT` は Db2 では -925 になるが、現状はそのまま UOW を確定する。
+SQLCA の SQLWARN、SQLERRD(1,2,4〜6)、SQLERRM を実 Db2 と突き合わせていない。
+
+**解消条件**: 実 Db2 の SQLCA field 値を statement ごとに採る (設計 77 §11 の SQLCA gate)。
+CICS task での SQL COMMIT / ROLLBACK の扱いを決める。WHENEVER と動的 SQL を入れる。

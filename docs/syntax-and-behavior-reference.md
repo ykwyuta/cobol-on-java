@@ -543,6 +543,7 @@ EXEC CICS POP HANDLE END-EXEC
 
 #### `EXEC SQL` (Db2 連携)
 
+- `SELECT ... INTO ... FROM`、`INSERT`、`UPDATE`、`DELETE`、`DECLARE c CURSOR FOR SELECT`、`OPEN` / `FETCH ... INTO` / `CLOSE`、`COMMIT [WORK]` / `ROLLBACK [WORK]`、`DECLARE t TABLE` を翻訳します。host variable (`:名前`、`:名前:標識`) は固定長文字・COMP-3・ゾーン 10 進・2 進に限ります。結果は SQLCA の SQLCODE / SQLSTATE / SQLERRD(3) に置きます。動的 SQL、`WHENEVER`、`WHERE CURRENT OF`、`FOR UPDATE` は未対応です (暫定判断 P-121)。
 - `EXEC SQL INCLUDE 名前 END-EXEC` は前処理で `COPY 名前` と同じに取り込みます。`SQLCA` は置き場に無ければ公開の宣言 (136 byte) から作ります。`SQLDA` は未対応です (暫定判断 P-120)。
 - `cobol-db2` / `cobol-spring-boot-4-autoconfigure` により、`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `OPEN`, `FETCH`, `CLOSE`, `COMMIT`, `ROLLBACK` の静的 SQL を中立トランザクション境界へ写像し、`SQLCA` (`SQLCODE`, `SQLSTATE`) のステータスを更新します。
 

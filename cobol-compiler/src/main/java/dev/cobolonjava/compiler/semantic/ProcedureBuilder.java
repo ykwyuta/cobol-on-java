@@ -236,6 +236,7 @@ public final class ProcedureBuilder {
         List<Declarative> declaratives = new ArrayList<>();
         List<DataItem> parameters = new ArrayList<>();
         for (CobolParser.ProgramUnitContext unit : List.of(program)) {
+            builder.declareSqlInDataDivision(unit);
             if (unit.procedureDivision() != null) {
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs, sections,
@@ -1000,6 +1001,14 @@ public final class ProcedureBuilder {
             out.add(assign.target());
         } else if (statement instanceof Statement.CicsReceiveMap receive) {
             out.add(receive.into());
+        } else if (statement instanceof Statement.Sql sql) {
+            out.add(sql.sqlca());
+            for (Statement.SqlHost host : sql.outputs()) {
+                out.add(host.value());
+                if (host.indicator() != null) {
+                    out.add(host.indicator());
+                }
+            }
         } else if (statement instanceof Statement.CicsAskTime ask && ask.abstime() != null) {
             out.add(ask.abstime());
         } else if (statement instanceof Statement.CicsFormatTime format) {
@@ -1485,9 +1494,195 @@ public final class ProcedureBuilder {
         return null;
     }
 
+    /** プログラムの中で宣言された SQL cursor。DECLARE は OPEN より前に書かれる。 */
+    private final Map<String, SqlBlockParser.CursorDeclaration> sqlCursors = new java.util.HashMap<>();
+
+    /** データ部に書かれた EXEC SQL の宣言を読む。 */
+    private void declareSqlInDataDivision(CobolParser.ProgramUnitContext unit) {
+        if (unit.dataDivision() == null) {
+            return;
+        }
+        for (CobolParser.DataDivisionSectionContext section : unit.dataDivision().dataDivisionSection()) {
+            List<CobolParser.ExecDeclarationContext> declarations;
+            if (section.workingStorageSection() != null) {
+                declarations = section.workingStorageSection().execDeclaration();
+            } else if (section.localStorageSection() != null) {
+                declarations = section.localStorageSection().execDeclaration();
+            } else if (section.linkageSection() != null) {
+                declarations = section.linkageSection().execDeclaration();
+            } else {
+                continue;
+            }
+            for (CobolParser.ExecDeclarationContext declaration : declarations) {
+                Origin origin = ReferenceResolver.originOf(declaration);
+                String text = declaration.EXEC_BLOCK().getText();
+                if (!text.regionMatches(true, 0, "EXEC SQL", 0, "EXEC SQL".length())) {
+                    report(origin, "only EXEC SQL declarations may appear in the DATA DIVISION");
+                    continue;
+                }
+                Statement declared = sqlOf(text, origin);
+                if (declared != null && !(declared instanceof Statement.Continue)) {
+                    report(origin, "only EXEC SQL DECLARE may appear in the DATA DIVISION");
+                }
+            }
+        }
+    }
+
+    /** EXEC SQL の 1 文を作る (要件 FR-150)。宣言は何もしない文になる。 */
+    private Statement sqlOf(String text, Origin origin) {
+        SqlBlockParser.Parsed parsed;
+        try {
+            parsed = SqlBlockParser.parse(text);
+        } catch (IllegalArgumentException invalid) {
+            report(origin, invalid.getMessage());
+            return null;
+        }
+        if (parsed instanceof SqlBlockParser.TableDeclaration) {
+            // precompiler が SQL を照合するための宣言であり、実行時の効果は無い (暫定判断 P-121)
+            return new Statement.Continue(origin);
+        }
+        if (parsed instanceof SqlBlockParser.CursorDeclaration cursor) {
+            if (sqlCursors.putIfAbsent(cursor.cursor(), cursor) != null) {
+                report(origin, "SQL cursor is declared twice: " + cursor.cursor());
+                return null;
+            }
+            return new Statement.Continue(origin);
+        }
+        DataReference sqlca = sqlcaOf(origin);
+        if (sqlca == null) {
+            return null;
+        }
+        String statementId = origin.fileName() + ":" + origin.line();
+        if (parsed instanceof SqlBlockParser.Transaction transaction) {
+            return new Statement.Sql(transaction.commit() ? Statement.SqlKind.COMMIT
+                    : Statement.SqlKind.ROLLBACK, statementId, null, null, null, false,
+                    List.of(), List.of(), sqlca, origin);
+        }
+        SqlBlockParser.Executable executable = (SqlBlockParser.Executable) parsed;
+        String sql = executable.sql();
+        boolean withHold = false;
+        List<SqlBlockParser.HostRef> inputRefs = executable.inputs();
+        if (executable.cursor() != null) {
+            SqlBlockParser.CursorDeclaration declared = sqlCursors.get(executable.cursor());
+            if (declared == null) {
+                report(origin, "SQL cursor is not declared before use: " + executable.cursor());
+                return null;
+            }
+            sql = declared.sql();
+            withHold = declared.withHold();
+            // cursor の入力は OPEN のときに値を渡す
+            inputRefs = executable.operation() == dev.cobolonjava.db2.SqlOperation.OPEN_CURSOR
+                    ? declared.inputs() : List.of();
+        }
+        List<Statement.SqlHost> inputs = sqlHostsOf(inputRefs, origin);
+        List<Statement.SqlHost> outputs = sqlHostsOf(executable.outputs(), origin);
+        if (inputs == null || outputs == null) {
+            return null;
+        }
+        return new Statement.Sql(Statement.SqlKind.EXECUTE, statementId, executable.operation(), sql,
+                executable.cursor(), withHold, inputs, outputs, sqlca, origin);
+    }
+
+    private DataReference sqlcaOf(Origin origin) {
+        if (layout.findAll("SQLCA").isEmpty()) {
+            report(origin, "EXEC SQL requires EXEC SQL INCLUDE SQLCA END-EXEC");
+            return null;
+        }
+        DataReference sqlca = resolver.resolveName("SQLCA", origin);
+        if (sqlca != null && (sqlca.constantLength().isEmpty()
+                || sqlca.constantLength().getAsInt() != dev.cobolonjava.db2.Db2RuntimeOps.SQLCA_LENGTH)) {
+            report(origin, "SQLCA must be " + dev.cobolonjava.db2.Db2RuntimeOps.SQLCA_LENGTH + " bytes");
+            return null;
+        }
+        return sqlca;
+    }
+
+    private List<Statement.SqlHost> sqlHostsOf(List<SqlBlockParser.HostRef> refs, Origin origin) {
+        List<Statement.SqlHost> out = new ArrayList<>();
+        for (SqlBlockParser.HostRef ref : refs) {
+            Statement.SqlHost host = sqlHostOf(ref, origin);
+            if (host == null) {
+                return null;
+            }
+            out.add(host);
+        }
+        return out;
+    }
+
+    /**
+     * host variable の形を翻訳時に決める (要件 FR-152)。
+     *
+     * <p>固定長文字、パック 10 進、ゾーン 10 進、2 進だけを受ける。VARCHAR の群 (49 レベル) や
+     * 日付型を推測で文字として渡すと、長さや null の扱いが変わるので断る。
+     */
+    private Statement.SqlHost sqlHostOf(SqlBlockParser.HostRef ref, Origin origin) {
+        DataReference value = resolver.resolveName(ref.name(), origin);
+        if (value == null) {
+            return null;
+        }
+        DataItem item = value.item();
+        DataCategory category = DataCategory.of(value);
+        if (value.constantLength().isEmpty()) {
+            report(origin, "SQL host variable must have a fixed length: " + ref.name());
+            return null;
+        }
+        int kind;
+        int digits = 0;
+        int scale = 0;
+        int extra = 0;
+        if (category == DataCategory.ALPHANUMERIC || category == DataCategory.ALPHABETIC) {
+            kind = dev.cobolonjava.db2.Db2RuntimeOps.CHARACTER;
+        } else if ((category == DataCategory.NUMERIC_INTEGER
+                || category == DataCategory.NUMERIC_NONINTEGER) && item.picture() != null) {
+            Usage usage = item.usage() == null ? Usage.DISPLAY : item.usage();
+            digits = item.picture().digits();
+            scale = item.picture().scale();
+            switch (usage) {
+                case COMP_3 -> {
+                    kind = dev.cobolonjava.db2.Db2RuntimeOps.PACKED;
+                    extra = item.picture().signPosition().isSigned() ? 1 : 0;
+                }
+                case DISPLAY -> {
+                    kind = dev.cobolonjava.db2.Db2RuntimeOps.ZONED;
+                    extra = item.picture().signPosition().ordinal();
+                }
+                // COMP-5 は桁で切り詰めない。COMP / BINARY は TRUNC(STD) である
+                case COMP -> kind = dev.cobolonjava.db2.Db2RuntimeOps.BINARY;
+                case COMP_5 -> {
+                    kind = dev.cobolonjava.db2.Db2RuntimeOps.BINARY;
+                    extra = 1;
+                }
+                default -> {
+                    report(origin, "SQL host variable usage is not supported yet: " + ref.name());
+                    return null;
+                }
+            }
+        } else {
+            report(origin, "SQL host variable must be CHAR, packed, zoned or binary: " + ref.name());
+            return null;
+        }
+        DataReference indicator = null;
+        if (ref.indicator() != null) {
+            indicator = resolver.resolveName(ref.indicator(), origin);
+            if (indicator == null) {
+                return null;
+            }
+            Usage usage = indicator.item().usage();
+            if ((usage != Usage.COMP && usage != Usage.COMP_5)
+                    || indicator.constantLength().orElse(0) != 2) {
+                report(origin, "SQL null indicator must be a 2-byte binary integer: " + ref.indicator());
+                return null;
+            }
+        }
+        return new Statement.SqlHost(value, indicator, kind, digits, scale, extra);
+    }
+
     private Statement cicsOf(CobolParser.ExecStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
         String text = context.EXEC_BLOCK().getText();
+        if (text.regionMatches(true, 0, "EXEC SQL", 0, "EXEC SQL".length())) {
+            return sqlOf(text, origin);
+        }
         if (!text.regionMatches(true, 0, "EXEC CICS", 0, "EXEC CICS".length())) {
             report(origin, "EXEC processor is not supported yet");
             return null;

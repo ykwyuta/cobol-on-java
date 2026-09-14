@@ -765,6 +765,8 @@ public final class ProgramGenerator {
                 planCicsSend(send, body);
             } else if (statement instanceof Statement.CicsReceiveMap receive) {
                 planCicsReceiveMap(receive, body);
+            } else if (statement instanceof Statement.Sql sql) {
+                planSql(sql, body);
             } else if (statement instanceof Statement.CicsAskTime askTime) {
                 planCicsAskTime(askTime, body);
             } else if (statement instanceof Statement.CicsFormatTime formatTime) {
@@ -947,6 +949,80 @@ public final class ProgramGenerator {
                     ? "(" + CONTEXT + "I)V" : "(" + CONTEXT + ")V";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method, descriptor, false);
         });
+    }
+
+    private static final String DB2_OPS = "dev/cobolonjava/db2/Db2RuntimeOps";
+
+    /** EXEC SQL を実行する命令 (要件 FR-150)。host variable の形は翻訳時の整数の組で渡す。 */
+    private void planSql(Statement.Sql statement, List<Runnable> body) {
+        Runnable sqlca = planWholeView(statement.sqlca(), statement.origin());
+        if (sqlca == null) {
+            return;
+        }
+        if (statement.kind() != Statement.SqlKind.EXECUTE) {
+            String method = statement.kind() == Statement.SqlKind.COMMIT ? "commit" : "rollback";
+            body.add(() -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                sqlca.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, DB2_OPS, method,
+                        "(" + CONTEXT + "L" + DATA_VIEW + ";)V", false);
+            });
+            return;
+        }
+        List<Statement.SqlHost> hosts = new ArrayList<>(statement.inputs());
+        hosts.addAll(statement.outputs());
+        List<Runnable> values = new ArrayList<>();
+        List<Runnable> indicators = new ArrayList<>();
+        int[] shape = new int[hosts.size() * dev.cobolonjava.db2.Db2RuntimeOps.SHAPE_WIDTH];
+        for (int i = 0; i < hosts.size(); i++) {
+            Statement.SqlHost host = hosts.get(i);
+            Runnable value = planWholeView(host.value(), statement.origin());
+            if (value == null) {
+                return;
+            }
+            values.add(value);
+            if (host.indicator() == null) {
+                indicators.add(() -> run.visitInsn(Opcodes.ACONST_NULL));
+            } else {
+                Runnable indicator = planWholeView(host.indicator(), statement.origin());
+                if (indicator == null) {
+                    return;
+                }
+                indicators.add(indicator);
+            }
+            int base = i * dev.cobolonjava.db2.Db2RuntimeOps.SHAPE_WIDTH;
+            shape[base] = host.kind();
+            shape[base + 1] = host.digits();
+            shape[base + 2] = host.scale();
+            shape[base + 3] = host.extra();
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(statement.statementId());
+            push(statement.operation().ordinal());
+            run.visitLdcInsn(statement.sql());
+            pushNullableString(statement.cursor());
+            run.visitInsn(statement.withHold() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            emitArray(values, DATA_VIEW);
+            emitArray(indicators, DATA_VIEW);
+            emitIntArray(shape);
+            push(statement.inputs().size());
+            sqlca.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, DB2_OPS, "execute",
+                    "(" + CONTEXT + "Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Z[L"
+                            + DATA_VIEW + ";[L" + DATA_VIEW + ";[IIL" + DATA_VIEW + ";)V", false);
+        });
+    }
+
+    private void emitIntArray(int[] values) {
+        push(values.length);
+        run.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_INT);
+        for (int i = 0; i < values.length; i++) {
+            run.visitInsn(Opcodes.DUP);
+            push(i);
+            push(values[i]);
+            run.visitInsn(Opcodes.IASTORE);
+        }
     }
 
     private void planCicsReceiveMap(Statement.CicsReceiveMap statement, List<Runnable> body) {

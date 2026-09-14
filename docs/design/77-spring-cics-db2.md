@@ -127,8 +127,14 @@ Spring経路の`WITH HOLD`はOPEN前に拒否し、native profileとの境界を
 先に単独closeした場合の即時cursor closeとCOBOL `CANCEL`連動は未実装であり、通常のtask coordinator経路では
 Db2TaskRuntimeの完了処理を先に行う。
 
-SQLコプロセッサ、VARCHAR group、日付・時刻・LOB、SQLCA値storage、Db2固有diagnostic mapper、
-scroll / sensitive / update / LOB cursorは未実装である。
+SQLコプロセッサの初期subsetを実装した（2026-09-15、暫定判断P-120 / P-121）。`EXEC SQL INCLUDE`は前処理で
+COPYとして取り込み、SQLCAは公開の宣言から作る。`SqlBlockParser`はSELECT INTO / INSERT / UPDATE /
+DELETE / DECLARE CURSOR / OPEN / FETCH / CLOSE / COMMIT / ROLLBACKを文の種類とhost variableに分け、
+`?`に置き換えたSQLを`SqlPlan`として`Db2RuntimeOps`へ渡す。host variableの形（固定長文字、COMP-3、
+ゾーン10進、2進）は翻訳時に決め、実行結果はSQLCAのSQLCODE / SQLSTATE / SQLERRD(3)へ書く。
+`DECLARE TABLE`は実行時の効果を持たない宣言として受ける。動的SQL、WHENEVER、positioned UPDATE、
+VARCHAR group、日付・時刻・LOB、Db2固有diagnostic mapper、scroll / sensitive / update / LOB cursorは
+未実装である。
 `cobol-db2-jdbc`にはSpringへ依存しない専用provider / lease契約とdriver-managed UOW adapterを追加した。
 同じ物理connectionを複数commit間で保持し、`autoCommit=false`、read-only、
 `HOLD_CURSORS_OVER_COMMIT`を検証する。commitでは非hold資源だけ、rollback / task closeでは全資源を閉じ、

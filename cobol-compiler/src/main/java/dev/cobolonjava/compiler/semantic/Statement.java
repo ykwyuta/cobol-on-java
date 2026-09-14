@@ -55,6 +55,41 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /**
+     * EXEC SQL の 1 文 (要件 FR-150)。
+     *
+     * @param operation   EXECUTE のときの操作。COMMIT / ROLLBACK では null
+     * @param statementId 診断と計画の識別に使う原文の位置
+     * @param sqlca       結果を書き戻す SQLCA
+     */
+    record Sql(
+            SqlKind kind,
+            String statementId,
+            dev.cobolonjava.db2.SqlOperation operation,
+            String sql,
+            String cursor,
+            boolean withHold,
+            List<SqlHost> inputs,
+            List<SqlHost> outputs,
+            DataReference sqlca,
+            Origin origin) implements Statement {
+    }
+
+    enum SqlKind {
+        EXECUTE,
+        COMMIT,
+        ROLLBACK
+    }
+
+    /**
+     * host variable 1 個。形は翻訳時に決めた {@code Db2RuntimeOps} の shape である。
+     *
+     * @param indicator null 標識。無ければ null
+     */
+    record SqlHost(DataReference value, DataReference indicator, int kind, int digits, int scale,
+                   int extra) {
+    }
+
     /** EXEC CICS RECEIVE MAP (設計 79 §8.4)。INTO は入力側の記号マップ。 */
     record CicsReceiveMap(
             String map,

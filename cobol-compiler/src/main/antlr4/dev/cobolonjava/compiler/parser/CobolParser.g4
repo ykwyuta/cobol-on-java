@@ -475,15 +475,21 @@ recordVaryingClause
     ;
 
 workingStorageSection
-    : WORKING_STORAGE SECTION PERIOD dataDescriptionEntry*
+    : WORKING_STORAGE SECTION PERIOD (dataDescriptionEntry | execDeclaration)*
     ;
 
 localStorageSection
-    : LOCAL_STORAGE SECTION PERIOD dataDescriptionEntry*
+    : LOCAL_STORAGE SECTION PERIOD (dataDescriptionEntry | execDeclaration)*
     ;
 
 linkageSection
-    : LINKAGE SECTION PERIOD dataDescriptionEntry*
+    : LINKAGE SECTION PERIOD (dataDescriptionEntry | execDeclaration)*
+    ;
+
+// データ部の EXEC SQL DECLARE。precompiler はデータ部にも SQL の宣言を置ける (要件 FR-153)。
+// 記憶域を持たないので、項目の記述とは別に集め、中身は手続き部の翻訳が読む
+execDeclaration
+    : EXEC_BLOCK PERIOD?
     ;
 
 // ---- 報告書節 (要件 FR-214) ----
