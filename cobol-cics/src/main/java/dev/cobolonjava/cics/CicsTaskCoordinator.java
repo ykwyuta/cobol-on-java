@@ -40,10 +40,12 @@ public final class CicsTaskCoordinator {
         CicsTransactionDefinition definition = transactions.resolve(request.transactionId());
         definition.validate(request.payload());
         CicsTaskId taskId = CicsTaskId.create();
-        CicsTaskContext task = new CicsTaskContext(
-                taskId, definition.transId(), request.owner(), startedAt);
-
+        // 直前の画面は会話にある。claim してから task 文脈へ入れる
         Optional<ConversationLease> lease = claim(request, definition, startedAt);
+        CicsTaskContext task = new CicsTaskContext(
+                taskId, definition.transId(), request.owner(), startedAt)
+                .withTerminal(request.terminalInput(),
+                        lease.flatMap(claimed -> claimed.envelope().screen()));
         CicsTaskBoundary boundary = null;
         RuntimeException runtimeFailure = null;
         Error errorFailure = null;
@@ -112,6 +114,14 @@ public final class CicsTaskCoordinator {
         return Optional.of(lease);
     }
 
+    /** 会話へ残すのは map の画面だけである。文字だけの画面は RECEIVE MAP と照合できない。 */
+    private static Optional<dev.cobolonjava.cics.bms.BmsScreenSnapshot> mapScreenOf(
+            TaskCompletion completion) {
+        return completion.screen()
+                .filter(CicsTerminalScreen.MapScreen.class::isInstance)
+                .map(screen -> ((CicsTerminalScreen.MapScreen) screen).snapshot());
+    }
+
     private CompletionPlan planCompletion(
             CicsTaskRequest request,
             CicsTaskId taskId,
@@ -139,14 +149,14 @@ public final class CicsTaskCoordinator {
             ConversationLease claimed = lease.orElseThrow();
             ConversationEnvelope next = claimed.envelope().next(
                     nextTransaction, completion.payload(), expiresAt,
-                    request.idempotencyKey(), outcome);
+                    request.idempotencyKey(), outcome).withScreen(mapScreenOf(completion));
             return new CompletionPlan(
                     new ConversationMutation.Save(claimed, next), Optional.of(next));
         }
         ConversationEnvelope initial = new ConversationEnvelope(
                 Objects.requireNonNull(conversationIds.create(), "conversation ID"),
                 0, request.owner(), nextTransaction, completion.payload(), expiresAt,
-                request.idempotencyKey(), outcome);
+                request.idempotencyKey(), outcome).withScreen(mapScreenOf(completion));
         return new CompletionPlan(
                 new ConversationMutation.Create(initial), Optional.of(initial));
     }

@@ -1,15 +1,21 @@
 package dev.cobolonjava.cics;
 
+import dev.cobolonjava.cics.bms.BmsTerminalInput;
 import java.util.Objects;
 import java.util.Optional;
 
-/** transport検証とBMS decodeを完了した後の中立task入力。 */
+/**
+ * transport検証とBMS decodeを完了した後の中立task入力。
+ *
+ * @param terminalInput 端末から届いたAID、cursor、変更field。直前の画面との照合はRECEIVE MAPが行う
+ */
 public record CicsTaskRequest(
         String transactionId,
         String owner,
         CicsPayload payload,
         Optional<ConversationReference> conversation,
-        IdempotencyKey idempotencyKey) {
+        IdempotencyKey idempotencyKey,
+        Optional<BmsTerminalInput> terminalInput) {
 
     public CicsTaskRequest {
         Objects.requireNonNull(transactionId, "transactionId");
@@ -17,6 +23,12 @@ public record CicsTaskRequest(
         Objects.requireNonNull(payload, "payload");
         Objects.requireNonNull(conversation, "conversation");
         Objects.requireNonNull(idempotencyKey, "idempotencyKey");
+        Objects.requireNonNull(terminalInput, "terminalInput");
+    }
+
+    public CicsTaskRequest(String transactionId, String owner, CicsPayload payload,
+                           Optional<ConversationReference> conversation, IdempotencyKey idempotencyKey) {
+        this(transactionId, owner, payload, conversation, idempotencyKey, Optional.empty());
     }
 
     private static String requireOwner(String value) {

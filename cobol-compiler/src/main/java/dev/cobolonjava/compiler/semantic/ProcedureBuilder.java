@@ -998,6 +998,8 @@ public final class ProcedureBuilder {
             out.add(cics.commarea());
         } else if (statement instanceof Statement.CicsAssign assign) {
             out.add(assign.target());
+        } else if (statement instanceof Statement.CicsReceiveMap receive) {
+            out.add(receive.into());
         } else if (statement instanceof Statement.CicsAskTime ask && ask.abstime() != null) {
             out.add(ask.abstime());
         } else if (statement instanceof Statement.CicsFormatTime format) {
@@ -1517,6 +1519,21 @@ public final class ProcedureBuilder {
             if (parsed.delay() != null) {
                 return cicsDelayStatement(parsed, origin);
             }
+            if (parsed.receive() != null) {
+                CicsBlockParser.ReceiveSpec spec = parsed.receive();
+                DataReference into = resolver.resolveName(spec.into(), origin);
+                if (into == null) {
+                    return null;
+                }
+                if (into.constantLength().isEmpty()
+                        || !(DataCategory.of(into).isAlphanumericLike()
+                                || DataCategory.of(into) == DataCategory.GROUP)) {
+                    throw new IllegalArgumentException(
+                            "RECEIVE MAP INTO must be an alphanumeric or group data area");
+                }
+                return withCicsResponse(new Statement.CicsReceiveMap(spec.map(), spec.mapset(), into,
+                        parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+            }
             if (parsed.send() != null) {
                 CicsBlockParser.SendSpec spec = parsed.send();
                 DataReference from = null;
@@ -1548,9 +1565,10 @@ public final class ProcedureBuilder {
             if (parsed.conditionAction() != null) {
                 for (CicsBlockParser.ConditionSpec condition : parsed.conditions()) {
                     if (!"PGMIDERR".equals(condition.name())
+                            && !"MAPFAIL".equals(condition.name())
                             && !"ERROR".equals(condition.name())) {
                         throw new IllegalArgumentException(
-                                "initial HANDLE/IGNORE CONDITION support is limited to PGMIDERR and ERROR");
+                                "initial HANDLE/IGNORE CONDITION support is limited to PGMIDERR, MAPFAIL and ERROR");
                     }
                 }
                 List<Statement> conditions = new ArrayList<>();

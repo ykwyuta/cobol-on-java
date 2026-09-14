@@ -1,5 +1,7 @@
 package dev.cobolonjava.cics;
 
+import dev.cobolonjava.cics.bms.BmsScreenSnapshot;
+import dev.cobolonjava.cics.bms.BmsTerminalInput;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Objects;
@@ -9,10 +11,12 @@ import java.util.OptionalInt;
 /**
  * 一つの同期要求に固定される、framework非依存のtask文脈。
  *
- * @param taskNumber EIBTASKNへ出すtask番号。hostの領域ごとの連番に当たるものは
- *                   adapterだけが知っている。{@link #taskId()}から作らない
- * @param hostZone   EIBDATE / EIBTIMEを出す地方時。hostの領域が動いていた時間帯は
- *                   構成でしか分からないので、JVMの既定から推測しない
+ * @param taskNumber    EIBTASKNへ出すtask番号。hostの領域ごとの連番に当たるものは
+ *                      adapterだけが知っている。{@link #taskId()}から作らない
+ * @param hostZone      EIBDATE / EIBTIMEを出す地方時。hostの領域が動いていた時間帯は
+ *                      構成でしか分からないので、JVMの既定から推測しない
+ * @param terminalInput 要求が運んだ端末入力。EIBAID / EIBCPOSNとRECEIVE MAPが読む
+ * @param screen        直前のtaskが送った画面。RECEIVE MAPが入力と照合する
  */
 public record CicsTaskContext(
         CicsTaskId taskId,
@@ -20,7 +24,9 @@ public record CicsTaskContext(
         String owner,
         Instant startedAt,
         OptionalInt taskNumber,
-        Optional<ZoneId> hostZone) {
+        Optional<ZoneId> hostZone,
+        Optional<BmsTerminalInput> terminalInput,
+        Optional<BmsScreenSnapshot> screen) {
 
     /** EIBTASKNの桁数 (PL4に入る7桁)。 */
     public static final int MAX_TASK_NUMBER = 9_999_999;
@@ -32,6 +38,8 @@ public record CicsTaskContext(
         Objects.requireNonNull(startedAt, "startedAt");
         Objects.requireNonNull(taskNumber, "taskNumber");
         Objects.requireNonNull(hostZone, "hostZone");
+        Objects.requireNonNull(terminalInput, "terminalInput");
+        Objects.requireNonNull(screen, "screen");
         if (taskNumber.isPresent()
                 && (taskNumber.getAsInt() < 1 || taskNumber.getAsInt() > MAX_TASK_NUMBER)) {
             throw new IllegalArgumentException(
@@ -39,9 +47,23 @@ public record CicsTaskContext(
         }
     }
 
+    /** 端末を持たない文脈。 */
+    public CicsTaskContext(CicsTaskId taskId, TransId transactionId, String owner, Instant startedAt,
+                           OptionalInt taskNumber, Optional<ZoneId> hostZone) {
+        this(taskId, transactionId, owner, startedAt, taskNumber, hostZone,
+                Optional.empty(), Optional.empty());
+    }
+
     /** task番号と地方時を持たない文脈。EIBTASKN / EIBDATE / EIBTIMEは設定しない。 */
     public CicsTaskContext(CicsTaskId taskId, TransId transactionId, String owner, Instant startedAt) {
         this(taskId, transactionId, owner, startedAt, OptionalInt.empty(), Optional.empty());
+    }
+
+    /** 端末入力と直前の画面を持たせた文脈。 */
+    public CicsTaskContext withTerminal(
+            Optional<BmsTerminalInput> input, Optional<BmsScreenSnapshot> previousScreen) {
+        return new CicsTaskContext(taskId, transactionId, owner, startedAt, taskNumber, hostZone,
+                input, previousScreen);
     }
 
     private static String requireText(String value, String name) {

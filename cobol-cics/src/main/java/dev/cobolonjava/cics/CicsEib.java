@@ -61,6 +61,21 @@ public final class CicsEib {
         // 読めない値なので、読んだ文は推測値で進まず失敗する (暫定判断 P-113)
         task.taskNumber().ifPresent(number -> putPacked(EIBTASKN_OFFSET, number));
         task.hostZone().ifPresent(zone -> setDateTime(task.startedAt().atZone(zone).toLocalDateTime()));
+        // EIBAID は task を起こした端末入力で決まり、RECEIVE より前から読める
+        task.terminalInput().ifPresent(input -> setTerminalInput(
+                input.aid().value(), Math.max(input.cursorOffset(), 0)));
+    }
+
+    /** 端末入力の AID と cursor 位置を置く。 */
+    public void setTerminalInput(int aid, int cursorPosition) {
+        if (aid < 0 || aid > 0xFF) {
+            throw new IllegalArgumentException("EIBAID must be one byte: " + aid);
+        }
+        if (cursorPosition < 0 || cursorPosition > Short.MAX_VALUE) {
+            throw new IllegalArgumentException("EIBCPOSN must fit a halfword: " + cursorPosition);
+        }
+        storage.array()[EIBAID_OFFSET] = (byte) aid;
+        putHalfword(EIBCPOSN_OFFSET, cursorPosition);
     }
 
     /**
@@ -123,6 +138,12 @@ public final class CicsEib {
                         "PGMIDERR EIBRCODE is only classified for program control commands");
             }
             response[0] = 0x01;
+        } else if (responseCode == CicsResponseCode.MAPFAIL) {
+            // BMS 群の EIBRCODE の byte は公開情報から確定できない。fidelity UNAVAILABLE として
+            // binary zero を置く (設計 79 §3.3)。資産は RESP で判定している
+            if ((functionCode & 0xFF00) != 0x1800) {
+                throw new IllegalArgumentException("MAPFAIL is only classified for BMS commands");
+            }
         } else if (responseCode != CicsResponseCode.NORMAL) {
             throw new IllegalArgumentException(
                     "EIBRCODE mapping is not defined for RESP=" + responseCode);

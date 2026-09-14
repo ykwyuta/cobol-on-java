@@ -23,6 +23,7 @@ public final class CicsRuntimeOps {
     private static final int ASKTIME_FUNCTION = 0x1002;
     private static final int DELAY_FUNCTION = 0x1004;
     /** BMS 群の function code。実機の EIBFN とは突き合わせていない (暫定判断 P-118)。 */
+    private static final int RECEIVE_MAP_FUNCTION = 0x1802;
     private static final int SEND_MAP_FUNCTION = 0x1804;
     private static final int SEND_TEXT_FUNCTION = 0x1806;
     private static final int SEND_CONTROL_FUNCTION = 0x1812;
@@ -441,6 +442,60 @@ public final class CicsRuntimeOps {
         }
         execution.showScreen(new CicsTerminalScreen.MapScreen(snapshot));
         completeLocalCommand(required, SEND_MAP_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    /**
+     * RECEIVE MAP (設計 79 §8.2, §8.4)。
+     *
+     * <p>入力は要求が運んだ端末入力、照合する画面は直前の task が会話へ残した画面である。
+     * どちらも無ければ、同じ task の中で入力を待つ会話型の RECEIVE であり、同期 HTTP の task では
+     * 表せないので失敗させる。送られた field が無ければ MAPFAIL。
+     */
+    public static int receiveMapCondition(
+            ProgramContext context, String mapsetName, String mapName, DataView into,
+            boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        dev.cobolonjava.cics.bms.BmsMapsetCatalog catalog = execution.environment().mapsets()
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "RECEIVE MAP requires a configured BMS mapset catalog"));
+        dev.cobolonjava.cics.bms.BmsModel.Mapset mapset = catalog.mapset(mapsetName)
+                .orElseThrow(() -> new CicsTaskStateException("mapset is not defined: " + mapsetName));
+        dev.cobolonjava.cics.bms.BmsModel.Map map = mapset.map(mapName)
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "map " + mapName + " is not defined in mapset " + mapsetName));
+        dev.cobolonjava.cics.bms.BmsTerminalInput input = execution.task().terminalInput()
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "RECEIVE MAP requires terminal input carried by the request;"
+                                + " a conversational RECEIVE cannot wait within one task"));
+        dev.cobolonjava.cics.bms.BmsScreenSnapshot screen = execution.task().screen()
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "RECEIVE MAP requires the screen sent by the previous task"));
+        dev.cobolonjava.cics.bms.BmsInputDecoder.Result result;
+        try {
+            result = dev.cobolonjava.cics.bms.BmsInputDecoder.receive(
+                    mapset, map, screen, input, required.codePage());
+        } catch (IllegalStateException | IllegalArgumentException invalid) {
+            throw new CicsTaskStateException("RECEIVE MAP " + mapName + ": " + invalid.getMessage());
+        }
+        if (result instanceof dev.cobolonjava.cics.bms.BmsInputDecoder.MapFail) {
+            CicsCommandOutcome outcome = new CicsCommandOutcome(
+                    CicsResponseCode.MAPFAIL, 0, new ContinueControl(CicsPayload.empty()));
+            execution.eib(required.codePage()).completeCommand(
+                    RECEIVE_MAP_FUNCTION, CicsResponseCode.MAPFAIL, 0);
+            return conditionTarget(required, outcome, suppressDefaultHandling, "RECEIVE MAP");
+        }
+        dev.cobolonjava.cics.bms.BmsInputDecoder.Received received =
+                (dev.cobolonjava.cics.bms.BmsInputDecoder.Received) result;
+        byte[] symbolic = received.symbolic();
+        if (Objects.requireNonNull(into, "into").length() != symbolic.length) {
+            throw new CicsTaskStateException("RECEIVE MAP " + mapName + " INTO length " + into.length()
+                    + " does not match the map (" + symbolic.length + ")");
+        }
+        into.setBytes(symbolic);
+        execution.showScreen(new CicsTerminalScreen.MapScreen(received.screen()));
+        completeLocalCommand(required, RECEIVE_MAP_FUNCTION);
         return NO_CONDITION_TRANSFER;
     }
 

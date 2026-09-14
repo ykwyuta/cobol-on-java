@@ -3647,3 +3647,37 @@ host の CICS はこの期限の概念を持たず、長い DELAY も待つ。�
 
 **解消条件**: host で SEND MAP / TEXT / CONTROL の EIBFN と、定義の無い map・長さ違いの RESP を採る。
 端末 profile を入れるときに画面の大きさと SEND TEXT の分割を決める。
+
+---
+
+## P-119 RECEIVE MAP は要求の端末入力と、会話に残した直前の画面から作る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `BmsInputDecoder`、`CicsRuntimeOps.receiveMapCondition`、`CicsTaskContext.terminalInput` / `screen`、`ConversationEnvelope.screen`、`CicsTaskCoordinator` |
+| 関連要件 | FR-161, FR-163, FR-167 |
+
+**暫定の扱い** (設計 79 §8.2, §8.4):
+
+- 端末入力 (`BmsTerminalInput`: AID、cursor、変更 field) は要求が運ぶ。直前の画面は task が
+  完了したときに会話 (`ConversationEnvelope.screen`) へ残し、次の task の文脈へ渡す。
+  文字だけの画面は会話へ残さない
+- `EIBAID` / `EIBCPOSN` は task 開始時に入力から置く。RECEIVE より前から読める
+- 入力は直前の画面と照合して再検証する: 画面に無い field、保護 field、長さ超過、NUM field の
+  数字・`.`・`-`・空白以外、制御文字は RECEIVE を失敗させる
+- 入力側の記号マップ: L は入力の文字数、消去した field は F=`X'80'`、送られなかった field は
+  L=0 / F=`X'00'` / データ `X'00'`。データは `JUSTIFY` の既定で左寄せ空白、`RIGHT` は右寄せ `0`。
+  FSET の field は画面の値 (末尾の空白を除く) を送る
+- AID が CLEAR / PA1〜3、または送られた field が無ければ `MAPFAIL` (RESP 36)。EIBRCODE は
+  値を確定できないので binary zero (設計 79 §3.3)。`DFHRESP(MAPFAIL)` と
+  `HANDLE CONDITION MAPFAIL` を受ける
+- 入力が要求に無い RECEIVE (同じ task で入力を待つ会話型) は失敗させる
+- `INTO` は書くことを求める。`ASIS`、`SET`、`TERMINAL`、`FROM` 等は断る。EIBFN は `X'1802'`
+
+**どこがずれうるか**: JUSTIFY の既定の詰め文字、NUM field で許す文字、FSET field の末尾空白、
+消去した field のデータ部の値、MAPFAIL の EIBRCODE、EIBFN は実機と突き合わせていない。
+入力の再検証は byte 長ではなく文字数で行っており、DBCS は扱わない。
+
+**解消条件**: host の 3270 入力データストリームと RECEIVE MAP 後の記号マップの byte 列を
+採って照合する。DBCS を扱うときに cell 数と byte 数を分けて検証する。

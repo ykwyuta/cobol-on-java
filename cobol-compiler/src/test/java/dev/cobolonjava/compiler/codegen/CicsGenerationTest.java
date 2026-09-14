@@ -1066,7 +1066,7 @@ class CicsGenerationTest {
                 "undefined CICS condition handler");
         assertRejected("EXEC CICS HANDLE CONDITION PGMIDERR(ON-ERROR) "
                         + "NOTFND(ON-ERROR) END-EXEC",
-                "limited to PGMIDERR and ERROR");
+                "limited to PGMIDERR, MAPFAIL and ERROR");
         assertRejected("EXEC CICS IGNORE CONDITION PGMIDERR(ON-ERROR) END-EXEC",
                 "does not accept a handler paragraph");
         assertRejected("EXEC CICS HANDLE CONDITION PGMIDERR(ON-ERROR) "

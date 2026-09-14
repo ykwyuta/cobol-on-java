@@ -55,6 +55,15 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /** EXEC CICS RECEIVE MAP (設計 79 §8.4)。INTO は入力側の記号マップ。 */
+    record CicsReceiveMap(
+            String map,
+            String mapset,
+            DataReference into,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     enum CicsSendKind {
         MAP,
         TEXT,

@@ -14,6 +14,8 @@ Spring、Servlet、Db2 JDBCへ依存しないCICS実行境界のexperimental実�
 - `ASKTIME` / `FORMATTIME` の初期subset (時計は`CicsEnvironment`、地方時はtaskのhostZone。暫定判断P-115)
 - `SEND MAP` / `SEND TEXT` / `SEND CONTROL`。記号マップと物理マップから中立な画面snapshotを合成し
   (`BmsScreenComposer`)、task結果 (`TaskCompletion.screen`) としてadapterへ渡す。暫定判断P-117 / P-118
+- `RECEIVE MAP`。要求の端末入力 (`BmsTerminalInput`) を会話に残した直前の画面と照合して再検証し
+  (`BmsInputDecoder`)、入力側の記号マップ、EIBAID / EIBCPOSN、`MAPFAIL`を置く。暫定判断P-119
 - `DELAY` の`FOR`単位と`INTERVAL`。待ちは`CicsIntervalPort`が行い、task期限を越える待ちは始めない
 - regionの構成 (APPLID、時計、待ち) を渡す`CicsEnvironment`と、LINK levelごとに起動program名を記録する
   `ASSIGN PROGRAM` / `ASSIGN APPLID`

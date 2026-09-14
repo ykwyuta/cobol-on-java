@@ -30,6 +30,8 @@ final class CicsBlockParser {
             "(?is)\\s*([A-Z0-9][A-Z0-9-]*)"
                     + "(?:\\s*\\(\\s*(?:'([^']*)'|(\\d{1,9})|([A-Z][A-Z0-9-]*))\\s*\\))?");
     private static final Pattern BMS_NAME = Pattern.compile("[A-Z@#$][A-Z0-9@#$]{0,6}");
+    private static final Pattern RECEIVE_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+RECEIVE\\b(.*?)END-EXEC\\s*$");
     private static final Pattern DELAY_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+DELAY\\b(.*?)END-EXEC\\s*$");
     /** DELAYのoption。値はデータ名か符号なし整数、または値なし (FOR、NOHANDLE)。 */
@@ -72,14 +74,14 @@ final class CicsBlockParser {
         if (assign.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
-                    parseAssignments(assign.group(1)), null, null, null, null);
+                    parseAssignments(assign.group(1)), null, null, null, null, null);
         }
         Matcher time = TIME_BLOCK.matcher(source);
         if (time.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
                     List.of(), null,
-                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)), null, null);
+                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)), null, null, null);
         }
         Matcher delay = DELAY_BLOCK.matcher(source);
         if (delay.matches()) {
@@ -89,13 +91,17 @@ final class CicsBlockParser {
         if (send.matches()) {
             return parseSend(send.group(1));
         }
+        Matcher receive = RECEIVE_BLOCK.matcher(source);
+        if (receive.matches()) {
+            return parseReceive(receive.group(1));
+        }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
         if (handleStack.matches()) {
             Statement.CicsHandleStackAction action = Statement.CicsHandleStackAction.valueOf(
                     handleStack.group(1).toUpperCase(Locale.ROOT));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), action, null, null, null, null,
-                    null, null, null);
+                    null, null, null, null);
         }
         Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
         if (handleAbend.matches()) {
@@ -116,7 +122,7 @@ final class CicsBlockParser {
             }
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, action, target, null, null,
-                    null, null, null);
+                    null, null, null, null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {
@@ -125,7 +131,7 @@ final class CicsBlockParser {
             List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, action, conditions, null, null, null, null, null,
-                    null, null, null);
+                    null, null, null, null);
         }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
@@ -229,7 +235,7 @@ final class CicsBlockParser {
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
-                null, List.of(), null, null, null, null, programData.value, null, null, null);
+                null, List.of(), null, null, null, null, programData.value, null, null, null, null);
     }
 
     /**
@@ -348,7 +354,59 @@ final class CicsBlockParser {
         SendSpec spec = new SendSpec(kind, map, mapset, from, flags, cursor);
         return new Parsed(null, null, null, -1, response, response2,
                 flag.test("NOHANDLE"), false, false, false, false,
-                null, List.of(), null, null, null, List.of(), null, null, null, spec);
+                null, List.of(), null, null, null, List.of(), null, null, null, spec, null);
+    }
+
+    /**
+     * RECEIVE MAP を読む (設計 79 §8.4)。
+     *
+     * <p>{@code INTO} は書くことを求める。省いた INTO を map 名 + "I" で補う規則と、
+     * {@code SET} による番地渡しは確かめていない。{@code ASIS} 等は名前をつけて断る。
+     */
+    private static Parsed parseReceive(String source) {
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate RECEIVE option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        if (!options.containsKey("MAP")) {
+            throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+        }
+        for (String name : options.keySet()) {
+            if (!Set.of("MAP", "MAPSET", "INTO", "RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported RECEIVE MAP option: " + name);
+            }
+        }
+        String map = bmsName("MAP", options.get("MAP"));
+        String mapset = options.containsKey("MAPSET") ? bmsName("MAPSET", options.get("MAPSET")) : map;
+        String into = sendDataName(options.get("INTO"), "INTO");
+        if (into == null) {
+            throw new IllegalArgumentException("RECEIVE MAP requires INTO");
+        }
+        String[] noHandle = options.get("NOHANDLE");
+        if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
+            throw new IllegalArgumentException("NOHANDLE does not take a value");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                new ReceiveSpec(map, mapset, into));
     }
 
     private static String bmsName(String option, String[] value) {
@@ -435,7 +493,7 @@ final class CicsBlockParser {
                         values.getOrDefault("INTERVAL", "0"));
         return new Parsed(null, null, null, -1, response, response2,
                 values.containsKey("NOHANDLE"), false, false, false, false,
-                null, List.of(), null, null, null, List.of(), null, null, spec, null);
+                null, List.of(), null, null, null, List.of(), null, null, spec, null, null);
     }
 
     /**
@@ -720,7 +778,8 @@ final class CicsBlockParser {
             String programData,
             TimeSpec time,
             DelaySpec delay,
-            SendSpec send) {
+            SendSpec send,
+            ReceiveSpec receive) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
@@ -728,6 +787,10 @@ final class CicsBlockParser {
     }
 
     record AssignSpec(Statement.CicsAssignOption option, String target) {
+    }
+
+    /** RECEIVE MAPの、データ名を解決する前の形。 */
+    record ReceiveSpec(String map, String mapset, String into) {
     }
 
     /** SEND命令の、データ名を解決する前の形。 */

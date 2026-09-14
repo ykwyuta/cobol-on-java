@@ -188,9 +188,12 @@ NIST CCVS85 の<b>受理率</b>は 96.9% (458 本中 444 本、壊れたもの 0
 配布物の検査プログラムは<b>全数を流している</b> (札が足りずに流せないものは無い)。
 CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資産 32 本を
 `verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 2 本</b>である。
-BMS 記号マップ写し句、`DFHAID`、EIB の日時・task 番号・端末 field、`RETURN IMMEDIATE` は
-もう止めていない。いま最初に止めているのは `EXEC SQL INCLUDE` (14)、未対応の `EXEC CICS` 命令
-(10: `DELAY` 5、`SEND CONTROL` 4、`SEND MAP` 1)、`USAGE POINTER` (3) である。
+全診断を数えると、BMS 記号マップ写し句、`DFHAID`、EIB、`RETURN IMMEDIATE`、`PROGRAM(データ名)`、
+`LENGTH` を省いた `COMMAREA`、`ASSIGN`、`ASKTIME` / `FORMATTIME`、`DELAY`、`SEND MAP` / `TEXT` /
+`CONTROL`、`RECEIVE MAP` はもう止めていない (設計 79)。残る CICS 命令は `GET` / `PUT CONTAINER` (各 5)、
+`BIF DEEDIT` (4)、`INQUIRE` / `SET TERMINAL` (各 2)、`DFHBMSCA` (1) である。
+言語側の `EXEC SQL INCLUDE` (14 本の構文解析を止める)、`LENGTH OF` (10)、`USAGE POINTER` (6) が
+その手前にあり、これらが通るまで翻訳が通る本数は増えない。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ

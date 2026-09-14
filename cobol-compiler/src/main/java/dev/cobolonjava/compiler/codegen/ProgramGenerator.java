@@ -763,6 +763,8 @@ public final class ProgramGenerator {
                 planCicsDelay(delay, body);
             } else if (statement instanceof Statement.CicsSend send) {
                 planCicsSend(send, body);
+            } else if (statement instanceof Statement.CicsReceiveMap receive) {
+                planCicsReceiveMap(receive, body);
             } else if (statement instanceof Statement.CicsAskTime askTime) {
                 planCicsAskTime(askTime, body);
             } else if (statement instanceof Statement.CicsFormatTime formatTime) {
@@ -944,6 +946,23 @@ public final class ProgramGenerator {
             String descriptor = statement.action() == Statement.CicsAbendHandlerAction.LABEL
                     ? "(" + CONTEXT + "I)V" : "(" + CONTEXT + ")V";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method, descriptor, false);
+        });
+    }
+
+    private void planCicsReceiveMap(Statement.CicsReceiveMap statement, List<Runnable> body) {
+        Runnable into = planWholeView(statement.into(), statement.origin());
+        if (into == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitLdcInsn(statement.mapset());
+            run.visitLdcInsn(statement.map());
+            into.run();
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "receiveMapCondition",
+                    "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L" + DATA_VIEW + ";Z)I", false);
+            emitCicsConditionTransfer();
         });
     }
 

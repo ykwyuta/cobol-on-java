@@ -13,7 +13,9 @@ import dev.cobolonjava.cics.CicsTransactionDefinition;
 import dev.cobolonjava.cics.CobolCicsTaskProgram;
 import dev.cobolonjava.cics.TaskCompletion;
 import dev.cobolonjava.cics.TransId;
+import dev.cobolonjava.cics.bms.BmsAid;
 import dev.cobolonjava.cics.bms.BmsMapsetCatalog;
+import dev.cobolonjava.cics.bms.BmsTerminalInput;
 import dev.cobolonjava.cics.bms.BmsParser;
 import dev.cobolonjava.cics.bms.BmsScreenSnapshot;
 import dev.cobolonjava.compiler.CobolCompiler;
@@ -101,6 +103,11 @@ class CicsTerminalGenerationTest {
     }
 
     private static TaskCompletion run(CobolCompiler.Result result, String input) {
+        return run(result, input, new CicsTaskContext(new CicsTaskId("task_terminal_gen"),
+                TransId.of("TX01"), "terminal-test", Instant.parse("2026-09-10T03:00:00Z")));
+    }
+
+    private static TaskCompletion run(CobolCompiler.Result result, String input, CicsTaskContext task) {
         assertTrue(result.succeeded(), result.diagnostics().toString());
         Loader loader = new Loader();
         Class<?> type = loader.define(result.className(), result.classFile());
@@ -120,12 +127,25 @@ class CicsTerminalGenerationTest {
                 .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("SCREEN1"),
                                 Duration.ofSeconds(5), 16, 0, 0, 0, true),
                         CicsPayload.ofCommarea(CodePages.DEFAULT.encode(input)),
-                        new CicsTaskContext(new CicsTaskId("task_terminal_gen"), TransId.of("TX01"),
-                                "terminal-test", Instant.parse("2026-09-10T03:00:00Z")),
-                        (action, ignored) -> { });
+                        task, (action, ignored) -> { });
     }
 
     private static final String[] PROCEDURE = {
+        "IF LK-AREA = 'RECV'",
+        "    EXEC CICS RECEIVE MAP('SCRMP') MAPSET('SCRSET')",
+        "         INTO(SCRMPI) RESP(WS-RESP)",
+        "    END-EXEC",
+        "    MOVE 'FAIL' TO LK-AREA",
+        "    IF WS-RESP = DFHRESP(MAPFAIL)",
+        "        MOVE 'MFAL' TO LK-AREA",
+        "    END-IF",
+        "    IF WS-RESP = 0 AND EIBAID = DFHENTER AND CUSTNOL = 3",
+        "       AND CUSTNOI = '042'",
+        "        MOVE 'GOT ' TO LK-AREA",
+        "    END-IF",
+        "    EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA)",
+        "    END-EXEC",
+        "END-IF",
         "IF LK-AREA = 'TEXT'",
         "    EXEC CICS SEND TEXT FROM(WS-TEXT) ERASE FREEKB",
         "    END-EXEC",
@@ -161,6 +181,29 @@ class CicsTerminalGenerationTest {
     }
 
     @Test
+    @DisplayName("RECEIVE MAPは要求の端末入力を直前の画面と照合して入力側の記号マップへ置き、CLEARはMAPFAIL")
+    void receivesMapFromTheTerminalInput() throws IOException {
+        CobolCompiler.Result compiled = compiler().compile("SCREEN1.cbl", program(PROCEDURE));
+        BmsScreenSnapshot sent = ((CicsTerminalScreen.MapScreen) run(compiled, "MAP ").screen()
+                .orElseThrow()).snapshot();
+        CicsTaskContext base = new CicsTaskContext(new CicsTaskId("task_terminal_recv"),
+                TransId.of("TX01"), "terminal-test", Instant.parse("2026-09-10T03:00:01Z"));
+
+        TaskCompletion entered = run(compiled, "RECV", base.withTerminal(
+                Optional.of(new BmsTerminalInput(BmsAid.ENTER, 4 * 80 + 20,
+                        List.of(new BmsTerminalInput.FieldInput("CUSTNO", 1, "042")))),
+                Optional.of(sent)));
+        TaskCompletion cleared = run(compiled, "RECV", base.withTerminal(
+                Optional.of(new BmsTerminalInput(BmsAid.CLEAR, -1, List.of())),
+                Optional.of(sent)));
+
+        assertEquals("GOT ", CodePages.DEFAULT.decode(entered.payload().commarea()));
+        assertEquals("042       ", ((CicsTerminalScreen.MapScreen) entered.screen().orElseThrow())
+                .snapshot().field("CUSTNO", 1).orElseThrow().data());
+        assertEquals("MFAL", CodePages.DEFAULT.decode(cleared.payload().commarea()));
+    }
+
+    @Test
     @DisplayName("SEND TEXTはmapを持たない画面を作る")
     void sendsText() throws IOException {
         TaskCompletion result = run(compiler().compile("SCREEN1.cbl", program(PROCEDURE)), "TEXT");
@@ -182,7 +225,11 @@ class CicsTerminalGenerationTest {
                 new String[] {"EXEC CICS SEND CONTROL CURSOR END-EXEC", "requires a position"},
                 new String[] {"EXEC CICS SEND TEXT ERASE END-EXEC", "SEND TEXT requires FROM"},
                 new String[] {"EXEC CICS SEND MAP('SCRMP') FROM(WS-RESP) END-EXEC",
-                        "alphanumeric or group"})) {
+                        "alphanumeric or group"},
+                new String[] {"EXEC CICS RECEIVE MAP('SCRMP') INTO(SCRMPI) ASIS END-EXEC",
+                        "unsupported RECEIVE MAP option: ASIS"},
+                new String[] {"EXEC CICS RECEIVE MAP('SCRMP') END-EXEC",
+                        "RECEIVE MAP requires INTO"})) {
             CobolCompiler.Result result = compiler.compile("SCREEN1.cbl",
                     program(rejected[0], "GOBACK."));
 

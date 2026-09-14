@@ -8,6 +8,8 @@ public final class CicsResponseCode {
 
     public static final int NORMAL = 0;
     public static final int PGMIDERR = 27;
+    /** RECEIVE MAPで送られたfieldが無い。 */
+    public static final int MAPFAIL = 36;
     /** generalized ERROR handlerをcondition tableで識別する内部key。EIBRESP値ではない。 */
     static final int ERROR_HANDLER_KEY = Integer.MIN_VALUE;
 
@@ -21,6 +23,7 @@ public final class CicsResponseCode {
         return switch (normalized) {
             case "NORMAL" -> NORMAL;
             case "PGMIDERR" -> PGMIDERR;
+            case "MAPFAIL" -> MAPFAIL;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS condition name: " + normalized);
         };
@@ -32,6 +35,7 @@ public final class CicsResponseCode {
                 .strip().toUpperCase(Locale.ROOT);
         return switch (normalized) {
             case "PGMIDERR" -> PGMIDERR;
+            case "MAPFAIL" -> MAPFAIL;
             case "ERROR" -> ERROR_HANDLER_KEY;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS handler condition: " + normalized);
