@@ -196,9 +196,11 @@ CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資�
 `DFHVALUE` と `INQUIRE` / `SET TERMINAL UCTRANST` は task の端末に限って扱う。CVDA の数は CICS TS の表による
 (TXSeries の表は数が違う。P-130)。
 `DFHBMSCA` は公開文書の意味を 3270 の属性 byte で表して作る (P-129)。
-言語側では `INCLUDE SQLDA` (1)、LE の `CEEIGZCT` (1) が残っている。浮動小数点項目は `+ - *` の `COMPUTE`、
-転記、比較を扱う (P-127)。BNK1TFN は 28 byte の域に `LENGTH(29)` を書いており、はみ出す 1 byte の中身が
-ホストの記憶域の並びで決まるため、推測せず断ったままにしている。ABNDPROC は `EXEC CICS WRITE` (ファイル制御) で止まる。
+言語側では `INCLUDE SQLDA` (1)、LE の `CEEIGZCT` (1) が残っている。XFRFUN は SQLDA を INCLUDE するだけで使わず、
+仮の写し句を置けば翻訳が通る。ただし Db2 for z/OS の COBOL 向け SQLDA の宣言を公開文書から取れていないので、
+形を推測して置かず断ったままにしている。浮動小数点項目は `+ - *` の `COMPUTE`、
+転記、比較を扱う (P-127)。BNK1TFN は 28 byte の域に `LENGTH(29)`、BNK1CCS は 5 byte の域に `LENGTH(248)` を
+書いており、はみ出す byte の中身がホストの記憶域の並びで決まるため、推測せず断ったままにしている。ABNDPROC は `EXEC CICS WRITE` (ファイル制御) で止まる。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
