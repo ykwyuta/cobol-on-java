@@ -16,6 +16,10 @@ Spring、Servlet、Db2 JDBCへ依存しないCICS実行境界のexperimental実�
 - claim、program実行、RETURN会話変更、UOW完了、abort、cleanupを順序付ける`CicsTaskCoordinator`
 - 会話変更と業務UOWを各整合性profileで確定する`CicsTaskBoundary`
 - 単一JVM用`InMemoryConversationStore` reference adapter
+- BMSマクロ (DFHMSD / DFHMDI / DFHMDF) を読むfail-closedの`BmsParser`と、Thymeleaf等に依存しない
+  中立画面定義`BmsModel`
+- COBOL記号マップ写し句を作る`BmsSymbolicMapWriter`と、公開仕様のAID値から作る`DFHAID`
+  (`CicsSystemCopybooks`)。形の根拠と未確認点は暫定判断P-112
 
 `ConversationStorePort.load`は表示・診断用の読み取りであり、task実行権を与えない。会話を使って
 COBOLを実行する入口は、必ず期待versionとownerを指定して`claim`し、成功したleaseだけを

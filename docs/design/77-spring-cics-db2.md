@@ -56,8 +56,19 @@ COMMAREA copy-back、次TRANSIDを固定した。生成ABENDは検証済みcode�
 `CicsAbend`となり、同じ原因のまま`CicsTaskBoundary.abort`へ渡る。
 
 このCICS増分は中立構造契約である。Spring MVC / Session adapter、lease更新、
-STRICT会話表とNON_ATOMIC outcome journal、BMS、動的CICS option、condition handlerの拡張、
+STRICT会話表とNON_ATOMIC outcome journal、動的CICS option、condition handlerの拡張、
 channel / container、実CICS比較は未実装である。
+
+BMSは翻訳時の部分を先に実装した（2026-09-14）。`cobol-cics`の`BmsParser`がBMSマクロ
+（DFHMSD / DFHMDI / DFHMDF）をThymeleaf、HTML、DOMに依存しない`BmsModel`へ読み、座標、
+画面サイズ、基本・拡張属性、INITIAL、PICIN / PICOUT、JUSTIFY、OCCURSを保持する。未知のoperandと値、
+`GRPNAME`、`POS=数値`、LANG=COBOL以外、TIOAPFXの省略は行番号つきで断る。`cobol-compiler`の
+`BmsCopyBookResolver`は`COPY mapset`が引かれたときに`BmsSymbolicMapWriter`で記号マップ写し句を
+その場で作り、生成物を置き場へ書き出さない。写し句の形はBank-of-Zに同梱された組立て済み
+記号マップ写し句3本を外の基準にした（暫定判断P-112）。`DFHAID`はIBM提供写し句の原文を参照せず、
+3270データストリームの公開AID値から16進定数で作る（`CicsSystemCopybooks`）。
+`SEND MAP` / `RECEIVE MAP`、物理マップと画面snapshot、`BmsInputDecoder`、`DFHBMSCA`、
+Thymeleaf renderer、JavaScript terminal state machineは未実装である。
 EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`を
 実装済みである。
 `RESP` / `RESP2`は静的な単純データ名と4byte binary受取項目に限定し、`NOHANDLE`はcommand単位の

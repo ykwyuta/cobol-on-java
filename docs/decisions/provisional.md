@@ -3407,3 +3407,51 @@ CCVS85 は `SYNCHRONIZED` を書いた本を 4 本 (NC105A / NC106A / NC107A / N
 - ファイル節のレコードでも同じか
 
 **解消条件**: 実機で `SYNC` を書いた複写句を翻訳し、項目の変位とレコードの長さを見る。
+
+---
+
+## P-112 BMS 記号マップの形は、同梱されていた組立て済み写し句 3 本から起こした
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `cobol-cics` / `BmsParser` / `BmsSymbolicMapWriter` / `CicsSystemCopybooks`、`cobol-compiler` / `BmsCopyBookResolver` / `CicsSystemCopyBookResolver` |
+| 関連要件 | FR-160, FR-162 |
+
+**暫定の扱い**: BMS マクロ (DFHMSD / DFHMDI / DFHMDF) の COBOL 向け初期 subset を中立モデル
+`BmsModel` へ読み、`COPY mapset` が引かれたときに記号マップ写し句をその場で作る。
+写し句の置き場へ生成物を書き出さないのは、BMS を直したのに写し句が古い、というずれを
+作らないためである。知らない operand・値、`GRPNAME`、`POS=数値`、LANG=COBOL 以外、
+TIOAPFX の省略は行番号つきで断る。
+
+**何を根拠にしたか**: Bank-of-Z には BMS 原文の無い mapset について、組立て済みの記号マップ
+写し句が 3 本 (`BNK1DDM` / `BANKMAP` / `CUSTMAP`) 同梱されていた。これを<b>外の基準</b>として
+次を固定した。
+
+- 入力側: `nL COMP PIC S9(4)`、`nF PICTURE X`、`FILLER REDEFINES nF` の下に `nA`、
+  拡張属性の数だけの `FILLER`、`nI`
+- 出力側: 入力側を `REDEFINES` し、L と F の 3 byte を飛ばして拡張属性 byte、`nO`
+- 拡張属性 byte の並びは `C P H V U M`。DSATTS の書き順には依らない
+- TIOAPFX=YES で先頭に 12 byte
+
+**一度狭く決めていた**: 初めは `INITIAL` が `LENGTH` より長ければ断っていた。測定 1 回目で
+`BNK1MAI` がこれで止まった (`LENGTH=43` に 44 文字)。host で組み立てて動いている資産なので、
+規則はこちらが狭かった。書かれたとおり保持し、画面へ出すときに LENGTH で切る扱いに改めた。
+host の組立てが警告を出して切るのか、そのまま置くのかは確かめていない。
+
+**どこがずれうるか**: 次は実物を見ていない。
+
+- `T` (TRANSP) を末尾に置くこと
+- `OCCURS` の形 (`DFHMSn OCCURS k TIMES` の群。入出力で番号を別に振る)
+- EXTATT=YES で DSATTS を省いたときの属性集合 (COLOR / HILIGHT / PS / VALIDN)
+- ATTRB の既定 (省略で ASKIP,NORM、保護を書かなければ UNPROT、輝度を書かなければ NORM)
+- PICIN / PICOUT の桁数が LENGTH と合うかを検査していない
+- field の重なり、画面端の折り返しの診断が無い
+- `DFHAID` は IBM 提供の写し句であり原文を参照しない。3270 データストリームの公開仕様にある
+  AID byte 値から作り、値は 16 進定数で書く。項目の並び順は実物と突き合わせていない
+
+同梱の 3 本は DSATTS に 6 属性を持つ mapset のもので、Bank-of-Z の BMS 原文 10 本
+(5 属性、`VALIDN` なし) と同じ mapset ではない。5 属性の形は並び規則からの推定である。
+
+**解消条件**: `OCCURS` と `TRANSP` を含む BMS を実機で組み立てた写し句と突き合わせる。
+物理マップ (SEND MAP の画面 byte) の実機 trace を得たら、座標と属性の写像も同じ基準で固定する。

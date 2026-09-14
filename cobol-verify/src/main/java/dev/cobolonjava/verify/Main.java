@@ -8,6 +8,8 @@ import dev.cobolonjava.verify.corpus.CorpusRunner;
 import dev.cobolonjava.verify.corpus.SourceDirectory;
 import dev.cobolonjava.verify.execute.ExecutionReport;
 import dev.cobolonjava.verify.execute.ProgramRunner;
+import dev.cobolonjava.compiler.source.BmsCopyBookResolver;
+import dev.cobolonjava.compiler.source.CicsSystemCopyBookResolver;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
 import java.io.IOException;
@@ -149,10 +151,19 @@ public final class Main {
         return report.text("OSS コーパス (要件 NFR-042)") + '\n' + report.csv();
     }
 
-    /** 書かれた順に探す。先に見つかったものを使うのは、ホストの連結ライブラリと同じである。 */
+    /**
+     * 書かれた順に探す。先に見つかったものを使うのは、ホストの連結ライブラリと同じである。
+     *
+     * <p>同じ置き場に BMS の原文があれば、記号マップの写し句をその場で作る。
+     */
     private static CopyBookResolver resolverOf(List<Path> includes) {
-        List<CopyBookResolver> chain = includes.stream()
-                .<CopyBookResolver>map(DirectoryCopyBookResolver::new)
+        List<CopyBookResolver> chain = java.util.stream.Stream.concat(
+                includes.stream().<CopyBookResolver>mapMulti((include, sink) -> {
+                    sink.accept(new DirectoryCopyBookResolver(include));
+                    sink.accept(new BmsCopyBookResolver(include));
+                }),
+                // CICS 提供の写し句は最後に引く。資産が自前のものを置いていればそちらを使う
+                java.util.stream.Stream.of(new CicsSystemCopyBookResolver()))
                 .toList();
         return (textName, libraryName) -> chain.stream()
                 .map(resolver -> resolver.resolve(textName, libraryName))

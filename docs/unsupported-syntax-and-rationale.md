@@ -68,7 +68,7 @@
 
 | 未対応構文 / 項目 | 構文例 | 未対応の理由・設計判断 | 今後の方針・暫定対応 |
 | --- | --- | --- | --- |
-| **CICS BMS (Basic Mapping Support) 画面入出力** | `EXEC CICS SEND MAP('...') END-EXEC`<br>`EXEC CICS RECEIVE MAP('...') END-EXEC` | 3270 端末プロトコルおよび BMS データストリームは再現しない設計（C-7, ADR-0010）。中立モデルとしての `BmsScreenModel` および Thymeleaf / HTML テンプレートへの変換は設計中（設計 77）。 | Spring Boot / Thymeleaf ベースの Web 画面アダプタとして段階実装中。 |
+| **CICS BMS (Basic Mapping Support) 画面入出力** | `EXEC CICS SEND MAP('...') END-EXEC`<br>`EXEC CICS RECEIVE MAP('...') END-EXEC` | 3270 端末プロトコルおよび BMS データストリームは再現しない設計（C-7, ADR-0010）。BMS マクロ (DFHMSD / DFHMDI / DFHMDF) の中立モデル `BmsModel` への解析、`COPY mapset` による記号マップ写し句の生成、`DFHAID` は実装済み（P-112）。`SEND MAP` / `RECEIVE MAP` / `SEND TEXT` / `SEND CONTROL` の命令、`DFHBMSCA`、Thymeleaf 画面は未実装。 | 端末ポートと Web 画面アダプタとして段階実装中。 |
 | **動的 CICS オプション (`PROGRAM(項目名)`)** | `EXEC CICS LINK PROGRAM(WS-PGM) END-EXEC` | 現在の `EXEC CICS` パーサ（初期サブセット）は、フェイルクローズドで安全性を担保するため、静的文字列リテラル (`PROGRAM('PGM')`, `TRANSID('TRN')`, `ABCODE('CODE')`) に限定して受理（P-097）。 | 動的データ項目参照を許容するパーサ拡張を予定。 |
 | **CICS チャネル・コンテナ (`CHANNEL` / `CONTAINER`)** | `EXEC CICS LINK PROGRAM('...') CHANNEL('...') END-EXEC` | 32KB を超える大容量データ受け渡し用のチャネル・コンテナ機構は初期サブセットに含まれず未対応。 | COMMAREA（32KB 上限）の検証完了後、次期マイルストーンで対応予定。 |
 | **`HANDLE ABEND PROGRAM(...)`** | `EXEC CICS HANDLE ABEND PROGRAM('ERRPRG') END-EXEC` | `HANDLE ABEND LABEL(段落名)`, `CANCEL`, `RESET` は実装済みだが、異常終了時に別プログラムを起動して回復を試みる形式は未対応（設計 77）。 | CICS タスク境界でのプログラム起動回復フックを追加予定。 |

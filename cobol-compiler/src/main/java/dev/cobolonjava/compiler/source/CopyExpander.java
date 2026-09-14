@@ -94,7 +94,17 @@ public final class CopyExpander {
                     "COPY nesting exceeds " + MAX_DEPTH + " levels");
         }
 
-        Optional<CopyBook> book = resolver.resolve(statement.textName(), statement.libraryName());
+        Optional<CopyBook> book;
+        try {
+            book = resolver.resolve(statement.textName(), statement.libraryName());
+        } catch (SourceFormatException unreadable) {
+            // 写し句を作る解決器 (BMS 等) は COPY 文の位置を知らない。断った理由に位置を付ける
+            if (unreadable.origin() != null) {
+                throw unreadable;
+            }
+            throw new SourceFormatException(statement.origin(),
+                    "COPY " + statement.textName() + ": " + unreadable.getMessage());
+        }
         if (book.isEmpty()) {
             throw new SourceFormatException(statement.origin(),
                     "copybook not found: " + statement.textName()
