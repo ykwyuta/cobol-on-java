@@ -3581,3 +3581,38 @@ host の CICS はこの期限の概念を持たず、長い DELAY も待つ。�
 
 **解消条件**: host で範囲外の DELAY の RESP / RESP2 と EIBFN を採る。取消しを設計するときに
 `REQID` と協調的な割り込みを決める。
+
+---
+
+## P-117 SEND MAP の合成は 1 画面 1 map とし、属性 byte は公開値だけを読む
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `cobol-cics` / `BmsSymbolicLayout` / `BmsScreenComposer` / `BmsAttributeCodes` / `BmsScreenSnapshot` |
+| 関連要件 | FR-162, FR-166, FR-167 |
+
+**暫定の扱い** (設計 79 §8.3):
+
+- 記号マップの byte 位置は `BmsSymbolicMapWriter` と同じ規則から計算する (P-112 の形)。
+  `FROM` の長さが位置表の長さと違えば送らずに失敗する。PICIN / PICOUT の桁数が LENGTH と
+  違う BMS は写し句を作る段階で断る (P-112 の「検査していない」を解消)
+- 属性 byte は 3270 データストリームの公開値で読む: `X'20'` 保護、`X'10'` 数字 (保護と合わせて
+  ASKIP)、`X'0C'` の 2 bit で輝度 (`X'08'` 明るい、`X'0C'` 非表示)、`X'01'` MDT。
+  印字可能な形を表す `X'40'` の bit を持たない値は属性ではないとして断る
+- 拡張色は `X'F1'`〜`X'F7'`、強調は `X'F0'` / `F1` / `F2` / `F4`。`X'00'` は「変えない」。
+  それ以外の値、PS / VALIDN / OUTLINE / SOSI / TRANSP の非零値は断る
+- データの先頭 byte が `X'00'` の field は送らず、物理マップ (DATAONLY なら画面) の値を残す。
+  データ中の `X'00'` は空白として見せる
+- 1 画面に 1 map を持つ。別の map の上に ERASE なしで重ねる形、LINE / COLUMN が 1 以外の map は断る
+- 値なしの `CURSOR` は L に -1 を置いた最初の field のデータ位置。無ければ、DATAONLY では
+  画面の cursor、それ以外は IC の field、どちらも無ければ画面の先頭
+- keyboard 解除と警報は、option と mapset / map の CTRL のどちらかに書いてあれば立てる
+
+**どこがずれうるか**: 記号 cursor に -1 が無いときの位置、データ中の `X'00'` の見せ方、
+複数 map の重ね合わせ、`ERASEAUP` 等の未対応 option は実機と突き合わせていない。
+属性 byte の「印字可能な形」の bit を必須にしたのは、`DFHBMSCA` の定数がその形で書かれる
+という理解による。host がそれを持たない値をどう扱うかは確かめていない。
+
+**解消条件**: 実機の SEND MAP の 3270 データストリーム (記号 cursor の有無、X'00' データ、
+属性 byte) を採り、合成結果の field 属性・データ・cursor と突き合わせる。

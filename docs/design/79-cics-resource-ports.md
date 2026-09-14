@@ -5,7 +5,7 @@
 | 対応要件 | FR-160, FR-161, FR-162, FR-163, FR-166, FR-167, NFR-034, NFR-036, NFR-037 |
 | 関連 ADR | [ADR-0007](../decisions/0007-framework-neutral-subsystem-ports.md), [ADR-0008](../decisions/0008-cics-on-spring-mvc-and-session.md), [ADR-0010](../decisions/0010-bms-thymeleaf-terminal-ui.md) |
 | 関連設計 | [設計 77](77-spring-cics-db2.md) (task 境界、会話、BMS の UI 方針) |
-| ステータス | 起草 (2026-09-14)。§10 の 1 (動的 PROGRAM) 、2 (ASSIGN APPLID / PROGRAM、`CicsEnvironment` の APPLID)、3 (ASKTIME / FORMATTIME、`CicsEnvironment` の時計)、4 (DELAY、`CicsIntervalPort`) を実装済み |
+| ステータス | 起草 (2026-09-14)。§10 の 1 (動的 PROGRAM) 、2 (ASSIGN APPLID / PROGRAM、`CicsEnvironment` の APPLID)、3 (ASKTIME / FORMATTIME、`CicsEnvironment` の時計)、4 (DELAY、`CicsIntervalPort`) を実装済み。5 は中立な合成部 (`BmsSymbolicLayout` / `BmsScreenComposer` / `BmsScreenSnapshot`) まで実装済み |
 | 証拠レベル | 断りのない限り V1 (IBM 公開仕様の記述) または V0。実 CICS の trace とは突き合わせていない |
 
 ## 1. 目的と範囲
@@ -213,8 +213,10 @@ HTTP 上の task は「送信して終わる」。`SEND MAP` を発行した tas
 - データ (O) の先頭 byte が `X'00'` の field は、データを送らず物理マップの値を使う。
 - 属性 (A) が `X'00'` なら物理マップの属性を使う。それ以外は 3270 属性 byte として読む。
 - 拡張属性 (C / H / P / V / U / M / T) も `X'00'` は「変えない」。
-- 記号マップの byte 位置は `BmsSymbolicMapWriter` と同じ規則から計算する。写し句の文字列を
-  実行時に解析しない。
+- 記号マップの byte 位置は `BmsSymbolicMapWriter` と同じ規則から計算する (`BmsSymbolicLayout`)。
+  写し句の文字列を実行時に解析しない。
+- 画面は 1 つの map を単位に持つ。別の map へ ERASE なしで重ねる形は、画面の field が map を
+  またいで混ざるので初期実装では断る。属性 byte の読み方と未確認点は暫定判断 P-117。
 
 ### 8.4 RECEIVE MAP の分解規則
 

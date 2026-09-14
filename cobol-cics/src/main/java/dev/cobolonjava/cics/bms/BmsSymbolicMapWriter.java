@@ -55,6 +55,9 @@ public final class BmsSymbolicMapWriter {
                             "named field " + field.name().orElseThrow()
                                     + " must have a positive LENGTH");
                 }
+                // PICTURE の桁数が LENGTH と違えば、記号マップの byte 位置が物理マップとずれる
+                requirePictureLength(field, field.pictureIn(), "PICIN");
+                requirePictureLength(field, field.pictureOut(), "PICOUT");
             }
             if (input) {
                 line(AREA_A + "01  " + map.name() + "I.");
@@ -86,6 +89,24 @@ public final class BmsSymbolicMapWriter {
                 }
             }
             return groups;
+        }
+
+        private static void requirePictureLength(
+                Field field, java.util.Optional<String> picture, String option) {
+            if (picture.isEmpty()) {
+                return;
+            }
+            int size;
+            try {
+                size = dev.cobolonjava.runtime.picture.PictureParser.parse(picture.get()).size();
+            } catch (RuntimeException invalid) {
+                throw new BmsDefinitionException(field.line(),
+                        option + " is not a valid PICTURE: " + picture.get());
+            }
+            if (size != field.length()) {
+                throw new BmsDefinitionException(field.line(), option + " '" + picture.get()
+                        + "' occupies " + size + " bytes but LENGTH is " + field.length());
+            }
         }
 
         private void prefix(Mapset mapset) {
