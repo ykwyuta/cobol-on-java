@@ -542,6 +542,8 @@ EXEC CICS POP HANDLE END-EXEC
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。
 
 #### `EXEC SQL` (Db2 連携)
+
+- `EXEC SQL INCLUDE 名前 END-EXEC` は前処理で `COPY 名前` と同じに取り込みます。`SQLCA` は置き場に無ければ公開の宣言 (136 byte) から作ります。`SQLDA` は未対応です (暫定判断 P-120)。
 - `cobol-db2` / `cobol-spring-boot-4-autoconfigure` により、`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `OPEN`, `FETCH`, `CLOSE`, `COMMIT`, `ROLLBACK` の静的 SQL を中立トランザクション境界へ写像し、`SQLCA` (`SQLCODE`, `SQLSTATE`) のステータスを更新します。
 
 ---

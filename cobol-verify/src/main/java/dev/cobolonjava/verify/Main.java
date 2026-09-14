@@ -163,7 +163,8 @@ public final class Main {
                     sink.accept(new BmsCopyBookResolver(include));
                 }),
                 // CICS 提供の写し句は最後に引く。資産が自前のものを置いていればそちらを使う
-                java.util.stream.Stream.of(new CicsSystemCopyBookResolver()))
+                java.util.stream.Stream.of(new CicsSystemCopyBookResolver(),
+                        new dev.cobolonjava.compiler.source.Db2SystemCopyBookResolver()))
                 .toList();
         return (textName, libraryName) -> chain.stream()
                 .map(resolver -> resolver.resolve(textName, libraryName))

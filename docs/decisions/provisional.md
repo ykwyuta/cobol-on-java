@@ -3681,3 +3681,29 @@ host の CICS はこの期限の概念を持たず、長い DELAY も待つ。�
 
 **解消条件**: host の 3270 入力データストリームと RECEIVE MAP 後の記号マップの byte 列を
 採って照合する。DBCS を扱うときに cell 数と byte 数を分けて検証する。
+
+---
+
+## P-120 EXEC SQL INCLUDE は前処理で COPY として取り込み、SQLCA は公開の形から作る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CopyExpander.parseSqlInclude`、`Db2SystemCopyBookResolver` |
+| 関連要件 | FR-151, FR-153 |
+
+**暫定の扱い**: `EXEC SQL INCLUDE 名前 END-EXEC` を前処理で `COPY 名前` と同じに扱う。
+Bank-of-Z はデータ部に INCLUDE を書き、構文解析は EXEC ブロックをデータ部に置けないので
+14 本が構文解析で止まっていた。`END-EXEC` の後ろの終止符は読み捨てる。
+
+`SQLCA` は利用者の置き場に無ければ、Db2 for z/OS の公開文書にある COBOL 向けの宣言
+(136 byte: SQLCAID、SQLCABC、SQLCODE、SQLERRM、SQLERRP、SQLERRD×6、SQLWARN0〜A、SQLSTATE) から作る。
+2 進項目は COMP-5 とした。`SQLDA` は POINTER 項目を持つ動的 SQL の記述子であり、POINTER も動的 SQL も
+無いので名前をつけて断る。
+
+**どこがずれうるか**: precompiler が生成する SQLCA の USAGE (COMP / COMP-4 / COMP-5) と、
+手続き部に書いた INCLUDE の終止符の扱い (文の区切りとして残るか) を確かめていない。
+Bank-of-Z の XFRFUN は SQLDA を INCLUDE するが項目を使っておらず、この扱いで翻訳が止まる。
+
+**解消条件**: precompiler の出力 (SQLCA の宣言) と突き合わせる。POINTER と動的 SQL を入れるときに
+SQLDA を作る。

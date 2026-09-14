@@ -43,6 +43,25 @@ class CopyExpanderTest {
     }
 
     @Test
+    @DisplayName("EXEC SQL INCLUDE は COPY と同じく取り込み、END-EXEC の後ろの終止符を読み捨てる (FR-153)")
+    void sqlIncludeIsExpandedLikeCopy() {
+        MapCopyBookResolver resolver = new MapCopyBookResolver()
+                .put("ACCDB2", source("01 HOST-ACCOUNT.", "   05 HV-NO PIC X(8)."));
+
+        assertEquals("01 A PIC X. 01 HOST-ACCOUNT. 05 HV-NO PIC X(8). 01 B PIC X.",
+                expand(resolver, "01 A PIC X.", "EXEC SQL INCLUDE ACCDB2 END-EXEC.",
+                        "01 B PIC X.").text());
+        assertEquals("01 HOST-ACCOUNT. 05 HV-NO PIC X(8). 01 B PIC X.",
+                expand(resolver, "EXEC SQL", "   INCLUDE ACCDB2", "END-EXEC", "01 B PIC X.").text());
+        // INCLUDE 以外の EXEC SQL は構文解析の島として残す
+        assertEquals("EXEC SQL COMMIT WORK END-EXEC.",
+                expand(resolver, "EXEC SQL COMMIT WORK END-EXEC.").text());
+        SourceFormatException malformed = assertThrows(SourceFormatException.class,
+                () -> expand(resolver, "EXEC SQL INCLUDE END-EXEC."));
+        assertTrue(malformed.getMessage().contains("member name"), malformed.getMessage());
+    }
+
+    @Test
     @DisplayName("PICTURE の括弧の前後に空白が入らない (FR-090)")
     void parenthesesKeepTheirSpacing() {
         // 語の間の空白の有無を保たないと PIC 9(5) が PIC 9 ( 5 ) になってしまう

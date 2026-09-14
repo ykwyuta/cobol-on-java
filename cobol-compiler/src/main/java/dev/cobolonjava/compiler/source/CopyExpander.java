@@ -69,6 +69,12 @@ public final class CopyExpander {
         List<TextWord> out = new ArrayList<>();
         int i = 0;
         while (i < words.size()) {
+            if (isSqlInclude(words, i)) {
+                CopyStatement statement = parseSqlInclude(words, i);
+                out.addAll(expandCopyBook(statement, stack, suppressed));
+                i = statement.endIndex() + 1;
+                continue;
+            }
             if (!words.get(i).isWord("COPY")) {
                 out.add(words.get(i));
                 i++;
@@ -222,6 +228,38 @@ public final class CopyExpander {
             throw new SourceFormatException(origin, "COPY must be terminated by a period");
         }
         return new CopyStatement(textName, libraryName, suppress, replacements, i, origin);
+    }
+
+    private static boolean isSqlInclude(List<TextWord> words, int start) {
+        return start + 2 < words.size()
+                && words.get(start).isWord("EXEC")
+                && words.get(start + 1).isWord("SQL")
+                && words.get(start + 2).isWord("INCLUDE");
+    }
+
+    /**
+     * {@code EXEC SQL INCLUDE 名前 END-EXEC} を {@code COPY 名前} と同じに扱う (要件 FR-153)。
+     *
+     * <p>Db2 の precompiler は INCLUDE を翻訳の前に取り込む。データ部に書かれるので、構文解析まで
+     * 残すと EXEC ブロックの置き場が無い。{@code END-EXEC} の後ろの終止符は COPY と同じく
+     * 文の一部として読み捨てる。取り込んだ写し句は自前の終止符を持つからである (暫定判断 P-120)。
+     */
+    private CopyStatement parseSqlInclude(List<TextWord> words, int start) {
+        Origin origin = words.get(start).origin();
+        int nameIndex = start + 3;
+        if (nameIndex + 1 >= words.size()
+                || (words.get(nameIndex).kind() != TextWordKind.WORD
+                        && words.get(nameIndex).kind() != TextWordKind.LITERAL)
+                || words.get(nameIndex).isWord("END-EXEC")
+                || !words.get(nameIndex + 1).isWord("END-EXEC")) {
+            throw new SourceFormatException(origin,
+                    "EXEC SQL INCLUDE requires a member name followed by END-EXEC");
+        }
+        int end = nameIndex + 1;
+        if (end + 1 < words.size() && words.get(end + 1).isSeparator('.')) {
+            end++;
+        }
+        return new CopyStatement(unquote(words.get(nameIndex)), null, false, List.of(), end, origin);
     }
 
     private static String unquote(TextWord word) {
