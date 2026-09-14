@@ -525,7 +525,8 @@ EXEC CICS SEND CONTROL [ERASE] [FREEKB] [ALARM] [FRSET] [CURSOR(n)] [RESP(項目
 EXEC CICS DELAY [FOR [HOURS(n)] [MINUTES(n)] [SECONDS(n)] [MILLISECS(n)] | INTERVAL(hhmmss)] [RESP(項目)] [RESP2(項目)] [NOHANDLE] END-EXEC
 EXEC CICS ASKTIME [ABSTIME(S9(15) COMP-3項目)] END-EXEC
 EXEC CICS FORMATTIME ABSTIME(項目) [DDMMYYYY(項目) | YYYYMMDD(項目) | MMDDYYYY(項目)] [TIME(項目)] [DATESEP[('c')]] [TIMESEP[('c')]] END-EXEC
-EXEC CICS ABEND [ABCODE('コード')] [CANCEL] [NODUMP] END-EXEC
+EXEC CICS ABEND [ABCODE('コード') | ABCODE(X(4)項目)] [CANCEL] [NODUMP] END-EXEC
+EXEC CICS BIF DEEDIT FIELD(英数字項目) END-EXEC
 EXEC CICS ASSIGN [ABCODE(X(4)項目)] [APPLID(X(8)項目)] [PROGRAM(X(8)項目)] END-EXEC
 EXEC CICS HANDLE CONDITION [条件名(段落名)]... END-EXEC
 EXEC CICS IGNORE CONDITION 条件名... END-EXEC
@@ -538,12 +539,14 @@ EXEC CICS POP HANDLE END-EXEC
   - `EIBTIME` / `EIBDATE` / `EIBTASKN` / `EIBTRMID` / `EIBCPOSN` / `EIBAID` は読み取り専用で参照できます。値は task 文脈に task 番号・地方時がある場合だけ設定し、出どころの無い field は binary zero のままです (暫定判断 P-113)。
   - `ASSIGN PROGRAM` は現在の LINK level で CICS が起動した program (初期 program、LINK 先、XCTL 先) の名前を返します。COBOL の `CALL` で呼んだ副 program の名前にはなりません。`ASSIGN APPLID` は region に構成した APPLID を返し、構成が無ければ実行時に失敗します (設計 79 §5)。
   - `RETURN TRANSID(...) IMMEDIATE` は、次の task を端末入力なしで始める指定を task 結果 (`CicsTaskReply.immediateNext`) に残します。次の task を起動するのは transport adapter です。
+  - `BIF DEEDIT` は項目から数字以外を除き、数字を右へ詰めて左を `0` で埋めます。末尾が `-` / `CR` なら右端のゾーンを負にします (暫定判断 P-124)。
+  - `ABEND ABCODE(項目)` は 4 byte の英数字項目の値を実行時に読んで ABEND コードにします。
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。
 
 #### `USAGE POINTER` と `LENGTH OF`
 
-- `USAGE POINTER` は 4 byte の項目で、`SET 項目 TO NULL` だけを扱います。`ADDRESS OF` と POINTER の MOVE は未対応です。
+- `USAGE POINTER` は 4 byte の項目で、`SET 項目 TO NULL` と `SET 項目 TO 別のPOINTER` だけを扱います。`ADDRESS OF` と POINTER の MOVE は未対応です。
 - `LENGTH OF 項目` は、長さが翻訳時に決まる項目の長さの整数定数になります (暫定判断 P-123)。
 
 #### `EXEC SQL` (Db2 連携)

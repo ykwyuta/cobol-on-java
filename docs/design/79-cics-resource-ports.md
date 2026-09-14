@@ -106,7 +106,7 @@ Bank-of-Z は `RESP` で判定しており、`EIBRCODE` を読まない。
 
 | option | 受取域 | 値 | 構成が無いとき |
 | --- | --- | --- | --- |
-| `ABCODE` | `X(4)` | 実装済み | — |
+| `ABCODE` | `X(4)` | 実装済み (`ASSIGN` の受取側、`ABEND` の送り側) | P-124 |
 | `APPLID` | `X(8)` | `CicsEnvironment.applid` を右空白詰め | 実行時失敗 |
 | `PROGRAM` | `X(8)` | **その ASSIGN を実行している program** の catalog 上の名前 | — |
 

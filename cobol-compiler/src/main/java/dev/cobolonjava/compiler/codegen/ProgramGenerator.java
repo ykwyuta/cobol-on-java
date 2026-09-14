@@ -765,6 +765,16 @@ public final class ProgramGenerator {
                 planCicsSend(send, body);
             } else if (statement instanceof Statement.CicsReceiveMap receive) {
                 planCicsReceiveMap(receive, body);
+            } else if (statement instanceof Statement.CicsDeedit deedit) {
+                Runnable field = planWholeView(deedit.field(), deedit.origin());
+                if (field != null) {
+                    body.add(() -> {
+                        run.visitVarInsn(Opcodes.ALOAD, 2);
+                        field.run();
+                        run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "deedit",
+                                "(" + CONTEXT + "L" + DATA_VIEW + ";)V", false);
+                    });
+                }
             } else if (statement instanceof Statement.Sql sql) {
                 planSql(sql, body);
             } else if (statement instanceof Statement.CicsAskTime askTime) {
@@ -814,7 +824,9 @@ public final class ProgramGenerator {
                     return;
                 }
                 case ABEND -> {
-                    if (statement.target() == null) {
+                    if (programName != null) {
+                        programName.run();
+                    } else if (statement.target() == null) {
                         run.visitInsn(Opcodes.ACONST_NULL);
                     } else {
                         run.visitLdcInsn(statement.target());
@@ -822,7 +834,8 @@ public final class ProgramGenerator {
                     run.visitInsn(statement.cancel() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                     run.visitInsn(statement.noDump() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "abendCondition",
-                            "(" + CONTEXT + "Ljava/lang/String;ZZ)I", false);
+                            "(" + CONTEXT + (programName != null ? "[B" : "Ljava/lang/String;")
+                                    + "ZZ)I", false);
                     emitCicsConditionTransfer();
                     return;
                 }
@@ -872,7 +885,13 @@ public final class ProgramGenerator {
         if (address == null || length.isEmpty()) {
             return null;
         }
-        if (length.getAsInt() < 1 || length.getAsInt() > 8) {
+        if (statement.operation() == Statement.CicsOperation.ABEND) {
+            // ABEND コードは 4 文字の域である
+            if (length.getAsInt() != 4) {
+                report(statement.origin(), "EXEC CICS ABCODE data area must be exactly 4 bytes");
+                return null;
+            }
+        } else if (length.getAsInt() < 1 || length.getAsInt() > 8) {
             report(statement.origin(), "EXEC CICS PROGRAM data area must be 1 to 8 bytes");
             return null;
         }

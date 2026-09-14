@@ -137,6 +137,28 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("ABEND ABCODE(データ名)は実行時の値をcodeにし、BIF DEEDITは数字を右へ詰める")
+    void abendsWithDataAreaCodeAndDeedits() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "ABDATA", List.of(
+                "MOVE '1,234.50' TO WS-DATE",
+                "EXEC CICS BIF DEEDIT FIELD(WS-DATE) END-EXEC",
+                "IF WS-DATE NOT = '0000123450' GOBACK END-IF",
+                "MOVE 'B999' TO WS-ABCODE",
+                "EXEC CICS ABEND ABCODE(WS-ABCODE) NODUMP END-EXEC"));
+
+        CicsAbend failure = assertThrows(CicsAbend.class, () -> execute(loader, "ABDATA", program));
+
+        assertEquals("B999", failure.code().value());
+        assertRejected("EXEC CICS ABEND ABCODE(WS-PGM) END-EXEC",
+                "ABCODE data area must be exactly 4 bytes");
+        assertRejected("EXEC CICS ABEND ABCODE('B123') ABCODE(WS-ABCODE) END-EXEC",
+                "duplicate ABCODE option");
+        assertRejected("EXEC CICS BIF DEEDIT FIELD(WS-RESP) END-EXEC",
+                "BIF DEEDIT FIELD must be an alphanumeric");
+    }
+
+    @Test
     @DisplayName("USINGを書かないCICS programはDFHCOMMAREAを暗黙の引数にし、COMMAREAの無いtaskも起動できる")
     void implicitDfhcommareaParameter() throws ReflectiveOperationException {
         String source = String.join("\n",
@@ -687,12 +709,12 @@ class CicsGenerationTest {
     }
 
     @Test
-    @DisplayName("ABENDの予約code、動的ABCODE、重複flagを翻訳時に拒否する")
+    @DisplayName("ABENDの予約code、未定義のABCODEデータ名、重複flagを翻訳時に拒否する")
     void rejectsUnsupportedAbendForms() {
         assertRejected("EXEC CICS ABEND ABCODE('A123') END-EXEC",
                 "must not start with reserved letter A");
         assertRejected("EXEC CICS ABEND ABCODE(WS-CODE) END-EXEC",
-                "ABCODE(WS-CODE)");
+                "undefined data item: WS-CODE");
         assertRejected("EXEC CICS ABEND CANCEL CANCEL END-EXEC",
                 "duplicate EXEC CICS option");
         assertRejected("EXEC CICS HANDLE ABEND PROGRAM('EXITPGM') END-EXEC",

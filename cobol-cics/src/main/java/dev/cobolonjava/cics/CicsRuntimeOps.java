@@ -21,6 +21,8 @@ public final class CicsRuntimeOps {
     private static final int POP_HANDLE_FUNCTION = 0x020E;
     /** 間隔制御群のfunction code。実機のEIBFNとは突き合わせていない (暫定判断 P-115)。 */
     private static final int ASKTIME_FUNCTION = 0x1002;
+    /** BIF DEEDIT。実機の EIBFN とは突き合わせていない (暫定判断 P-124)。 */
+    private static final int BIF_DEEDIT_FUNCTION = 0x5802;
     private static final int DELAY_FUNCTION = 0x1004;
     /** BMS 群の function code。実機の EIBFN とは突き合わせていない (暫定判断 P-118)。 */
     private static final int RECEIVE_MAP_FUNCTION = 0x1802;
@@ -260,6 +262,53 @@ public final class CicsRuntimeOps {
             ProgramContext context, String code, boolean cancelHandlers, boolean noDump) {
         requireNoLegacyTransfer(
                 abendCondition(context, code, cancelHandlers, noDump), "ABEND");
+    }
+
+    /** ABCODE(データ名) の ABEND。4 byte の域を実行時 code page で読み、末尾の空白を落とす。 */
+    public static int abendCondition(
+            ProgramContext context, byte[] code, boolean cancelHandlers, boolean noDump) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        String text = required.codePage().decode(Objects.requireNonNull(code, "code")).stripTrailing();
+        if (text.isEmpty()) {
+            // 空白の域を「コード無し」と読むと別の終わり方になる。推測せず失敗させる
+            throw new CicsTaskStateException("ABEND ABCODE data area is blank");
+        }
+        return abendCondition(required, text, cancelHandlers, noDump);
+    }
+
+    /**
+     * BIF DEEDIT。数字以外の文字を除き、残った数字を右へ詰めて左を 0 で埋める。
+     *
+     * <p>公開仕様の記述による (V1)。域が負号 {@code -} または {@code CR} で終われば、右端の byte に
+     * 負のゾーン ({@code X'D'}) を置く。ゾーンは EBCDIC の数字の形なので、それ以外の code page では
+     * 推測せず失敗させる (暫定判断 P-124)。
+     */
+    public static void deedit(ProgramContext context, DataView field) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        DataView target = Objects.requireNonNull(field, "field");
+        dev.cobolonjava.runtime.codepage.CodePage codePage = required.codePage();
+        String text = codePage.decode(target.toByteArray());
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= '0' && c <= '9') {
+                digits.append(c);
+            }
+        }
+        String trimmed = text.stripTrailing();
+        boolean negative = trimmed.endsWith("-") || trimmed.endsWith("CR");
+        int length = target.length();
+        String kept = digits.length() > length
+                ? digits.substring(digits.length() - length) : digits.toString();
+        byte[] out = codePage.encode("0".repeat(length - kept.length()) + kept);
+        if (negative && length > 0) {
+            if ((codePage.digit(0) & 0xF0) != 0xF0) {
+                throw new CicsTaskStateException("BIF DEEDIT sign handling requires an EBCDIC code page");
+            }
+            out[length - 1] = (byte) ((out[length - 1] & 0x0F) | 0xD0);
+        }
+        target.setBytes(out);
+        completeLocalCommand(required, BIF_DEEDIT_FUNCTION);
     }
 
     /** ABENDを実行し、LABEL形式のabend exitへ移る場合はその段落番号を返す。 */

@@ -56,6 +56,12 @@ final class CicsBlockParser {
     /** 引用符を外したあとに残るPROGRAM(データ名)。静的な名前はQUOTED_OPTIONが先に取る。 */
     private static final Pattern PROGRAM_DATA_OPTION = Pattern.compile(
             "(?is)\\bPROGRAM\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
+    /** 引用符を外したあとに残るABCODE(データ名)。 */
+    private static final Pattern ABCODE_DATA_OPTION = Pattern.compile(
+            "(?is)\\bABCODE\\s*\\(\\s*([A-Z][A-Z0-9-]*)\\s*\\)");
+    private static final Pattern BIF_DEEDIT_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+BIF\\s+DEEDIT\\s+FIELD\\s*\\(\\s*([A-Z][A-Z0-9-]*)\\s*\\)"
+                    + "\\s*END-EXEC\\s*$");
     private static final Pattern NAME_OPTION = Pattern.compile(
             "(?is)\\bCOMMAREA\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
     private static final Pattern LENGTH_OPTION = Pattern.compile(
@@ -74,14 +80,20 @@ final class CicsBlockParser {
         if (assign.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
-                    parseAssignments(assign.group(1)), null, null, null, null, null);
+                    parseAssignments(assign.group(1)), null, null, null, null, null, null);
+        }
+        Matcher deedit = BIF_DEEDIT_BLOCK.matcher(source);
+        if (deedit.matches()) {
+            return new Parsed(null, null, null, -1, null, null,
+                    false, false, false, false, false, null, List.of(), null, null, null,
+                    List.of(), null, null, null, null, null, deedit.group(1).toUpperCase(Locale.ROOT));
         }
         Matcher time = TIME_BLOCK.matcher(source);
         if (time.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
                     List.of(), null,
-                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)), null, null, null);
+                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)), null, null, null, null);
         }
         Matcher delay = DELAY_BLOCK.matcher(source);
         if (delay.matches()) {
@@ -101,7 +113,7 @@ final class CicsBlockParser {
                     handleStack.group(1).toUpperCase(Locale.ROOT));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), action, null, null, null, null,
-                    null, null, null, null);
+                    null, null, null, null, null);
         }
         Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
         if (handleAbend.matches()) {
@@ -122,7 +134,7 @@ final class CicsBlockParser {
             }
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, action, target, null, null,
-                    null, null, null, null);
+                    null, null, null, null, null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {
@@ -131,7 +143,7 @@ final class CicsBlockParser {
             List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, action, conditions, null, null, null, null, null,
-                    null, null, null, null);
+                    null, null, null, null, null);
         }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
@@ -184,6 +196,12 @@ final class CicsBlockParser {
         if (program != null && programData.value != null) {
             throw new IllegalArgumentException("duplicate PROGRAM option");
         }
+        ParsedOption<String> abcodeData = extractOne(
+                ABCODE_DATA_OPTION, remainder, matcher -> matcher.group(1).toUpperCase(Locale.ROOT));
+        remainder = abcodeData.remainder;
+        if (abendCode != null && abcodeData.value != null) {
+            throw new IllegalArgumentException("duplicate ABCODE option");
+        }
 
         ParsedOption<String> commarea = extractOne(NAME_OPTION, remainder, matcher -> matcher.group(1));
         remainder = commarea.remainder;
@@ -224,7 +242,8 @@ final class CicsBlockParser {
             throw new IllegalArgumentException(
                     "unsupported EXEC CICS option: " + remainder.strip());
         }
-        validate(operation, program != null || programData.value != null, transId, abendCode,
+        validate(operation, program != null || programData.value != null, transId,
+                abendCode != null ? abendCode : abcodeData.value,
                 commarea.value, length.value,
                 response.value, response2.value, rollback, cancel, noDump, immediate);
         String target = switch (operation) {
@@ -235,7 +254,10 @@ final class CicsBlockParser {
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
-                null, List.of(), null, null, null, null, programData.value, null, null, null, null);
+                null, List.of(), null, null, null, null,
+                // LINK / XCTL の PROGRAM と ABEND の ABCODE は、同じ「名前を持つデータ域」として渡す
+                operation == Statement.CicsOperation.ABEND ? abcodeData.value : programData.value,
+                null, null, null, null, null);
     }
 
     /**
@@ -354,7 +376,7 @@ final class CicsBlockParser {
         SendSpec spec = new SendSpec(kind, map, mapset, from, flags, cursor);
         return new Parsed(null, null, null, -1, response, response2,
                 flag.test("NOHANDLE"), false, false, false, false,
-                null, List.of(), null, null, null, List.of(), null, null, null, spec, null);
+                null, List.of(), null, null, null, List.of(), null, null, null, spec, null, null);
     }
 
     /**
@@ -406,7 +428,7 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
-                new ReceiveSpec(map, mapset, into));
+                new ReceiveSpec(map, mapset, into), null);
     }
 
     private static String bmsName(String option, String[] value) {
@@ -493,7 +515,7 @@ final class CicsBlockParser {
                         values.getOrDefault("INTERVAL", "0"));
         return new Parsed(null, null, null, -1, response, response2,
                 values.containsKey("NOHANDLE"), false, false, false, false,
-                null, List.of(), null, null, null, List.of(), null, null, spec, null, null);
+                null, List.of(), null, null, null, List.of(), null, null, spec, null, null, null);
     }
 
     /**
@@ -779,7 +801,8 @@ final class CicsBlockParser {
             TimeSpec time,
             DelaySpec delay,
             SendSpec send,
-            ReceiveSpec receive) {
+            ReceiveSpec receive,
+            String deedit) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);

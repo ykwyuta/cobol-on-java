@@ -55,7 +55,8 @@ class PointerAndLengthOfTest {
         CobolCompiler.Result result = CobolCompiler.standard().compile("PTRLEN.cbl", source(STORAGE,
                 "MOVE ALL 'Z' TO PB",
                 "MOVE ALL 'Y' TO G",
-                "SET P Q TO NULL",
+                "SET Q TO NULL",
+                "SET P TO Q",
                 "MOVE LENGTH OF G TO N",
                 "COMPUTE N = N + LENGTH OF R",
                 "GOBACK."));

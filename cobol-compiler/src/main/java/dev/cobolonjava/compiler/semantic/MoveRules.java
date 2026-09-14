@@ -78,8 +78,10 @@ public final class MoveRules {
             case NUMERIC_INTEGER, NUMERIC_NONINTEGER -> sender.isNumeric()
                     || sender == DataCategory.ALPHANUMERIC
                     || sender == DataCategory.NUMERIC_EDITED;
+            // 数字編集項目どうしは、送り側の編集を解いた値を受取側で編集し直す
             case NUMERIC_EDITED -> sender.isNumeric()
-                    || sender == DataCategory.ALPHANUMERIC;
+                    || sender == DataCategory.ALPHANUMERIC
+                    || sender == DataCategory.NUMERIC_EDITED;
             case GROUP -> true;
         };
     }

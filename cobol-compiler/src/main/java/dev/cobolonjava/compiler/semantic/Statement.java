@@ -20,7 +20,7 @@ public sealed interface Statement {
     record Cics(
             CicsOperation operation,
             String target,
-            /** LINK / XCTL の PROGRAM(データ名)。静的な名前なら null で、target を使う。 */
+            /** LINK / XCTL の PROGRAM(データ名)、ABEND の ABCODE(データ名)。静的な名前なら null で、target を使う。 */
             DataReference programData,
             DataReference commarea,
             int length,
@@ -88,6 +88,10 @@ public sealed interface Statement {
      */
     record SqlHost(DataReference value, DataReference indicator, int kind, int digits, int scale,
                    int extra) {
+    }
+
+    /** EXEC CICS BIF DEEDIT FIELD(x)。英数字の域から数字だけを残して右へ詰める。 */
+    record CicsDeedit(DataReference field, Origin origin) implements Statement {
     }
 
     /** EXEC CICS RECEIVE MAP (設計 79 §8.4)。INTO は入力側の記号マップ。 */

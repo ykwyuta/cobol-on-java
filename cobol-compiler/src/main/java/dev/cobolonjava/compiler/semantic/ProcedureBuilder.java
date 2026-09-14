@@ -1009,6 +1009,8 @@ public final class ProcedureBuilder {
             out.add(assign.target());
         } else if (statement instanceof Statement.CicsReceiveMap receive) {
             out.add(receive.into());
+        } else if (statement instanceof Statement.CicsDeedit deedit) {
+            out.add(deedit.field());
         } else if (statement instanceof Statement.Sql sql) {
             out.add(sql.sqlca());
             for (Statement.SqlHost host : sql.outputs()) {
@@ -1721,6 +1723,17 @@ public final class ProcedureBuilder {
             }
             if (parsed.delay() != null) {
                 return cicsDelayStatement(parsed, origin);
+            }
+            if (parsed.deedit() != null) {
+                DataReference field = resolver.resolveName(parsed.deedit(), origin);
+                if (field == null) {
+                    return null;
+                }
+                if (field.constantLength().isEmpty() || !DataCategory.of(field).isAlphanumericLike()) {
+                    throw new IllegalArgumentException(
+                            "BIF DEEDIT FIELD must be an alphanumeric data area of fixed length");
+                }
+                return new Statement.CicsDeedit(field, origin);
             }
             if (parsed.receive() != null) {
                 CicsBlockParser.ReceiveSpec spec = parsed.receive();
@@ -2906,8 +2919,12 @@ public final class ProcedureBuilder {
                 boolean isNull = value instanceof Operand.Literal literal
                         && literal.value() instanceof LiteralValue.Figure figure
                         && figure.constant() == LiteralValue.FigurativeConstant.NULL;
-                if (stepping || !isNull) {
-                    report(origin, "SET of a POINTER item supports only TO NULL: " + describe(reference));
+                // 別の POINTER の値を写すのは番地を作らないので扱える
+                boolean fromPointer = value instanceof Operand.Reference sent
+                        && sent.reference().item().isPointer();
+                if (stepping || !(isNull || fromPointer)) {
+                    report(origin, "SET of a POINTER item supports only TO NULL or another POINTER: "
+                            + describe(reference));
                     return null;
                 }
                 targets.add(new Statement.Arithmetic.Target(reference, false));
