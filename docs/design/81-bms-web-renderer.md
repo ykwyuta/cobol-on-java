@@ -73,7 +73,9 @@
 
 ## 5. ブラウザの入口 (第 2 増分)
 
-`CicsBrowserController` を `CicsBrowserAutoConfiguration` が構成する。設計 77 §4.2 の条件をこう満たす。
+`CicsBrowserController` を `CicsBrowserAutoConfiguration` が構成する。coordinator、会話ストア、task の境界は
+base の `cobol-spring-boot-4-autoconfigure` の `CicsTaskAutoConfiguration` が作り、JSON の入口 (P-135) と分け合う。
+設計 77 §4.2 の条件をこう満たす。
 
 | 条件 | 扱い |
 | --- | --- |

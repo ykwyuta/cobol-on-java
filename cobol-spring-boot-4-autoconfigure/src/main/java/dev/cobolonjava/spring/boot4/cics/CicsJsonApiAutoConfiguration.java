@@ -1,4 +1,4 @@
-package dev.cobolonjava.spring.boot4.bms;
+package dev.cobolonjava.spring.boot4.cics;
 
 import dev.cobolonjava.cics.CicsTaskCoordinator;
 import dev.cobolonjava.cics.ConversationStorePort;
@@ -13,28 +13,23 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.context.annotation.Bean;
 
 /**
- * ブラウザから CICS の疑似会話を動かす入口を構成する (設計 81 §5、暫定判断 P-134)。
+ * JSON client の入口 ({@code POST /api/cics/{transid}}) を構成する (暫定判断 P-135)。
  *
- * <p>Spring Security が無ければ構成しない。CSRF と認証を持たない入口を既定で開けないためである。
- * coordinator と会話ストアは base の自動構成 ({@code CicsTaskAutoConfiguration}) が作るものを使う。
+ * <p>Spring Security が classpath に無ければ構成しない。認証と CSRF を持たない入口を既定で開けないためである。
  */
-@AutoConfiguration(after = BmsThymeleafAutoConfiguration.class,
-        afterName = "dev.cobolonjava.spring.boot4.cics.CicsTaskAutoConfiguration")
+@AutoConfiguration(after = CicsTaskAutoConfiguration.class)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnClass(name = {
         "org.springframework.security.web.SecurityFilterChain",
-        "org.springframework.web.servlet.DispatcherServlet",
-        "org.thymeleaf.TemplateEngine"})
+        "org.springframework.web.servlet.DispatcherServlet"})
 @ConditionalOnBean({CicsTaskCoordinator.class, ConversationStorePort.class})
-public class CicsBrowserAutoConfiguration {
+public class CicsJsonApiAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    CicsBrowserController cobolCicsBrowserController(CicsTaskCoordinator coordinator,
+    CicsJsonApiController cobolCicsJsonApiController(CicsTaskCoordinator coordinator,
                                                      ConversationStorePort conversations,
-                                                     BmsScreenViewFactory views, BmsTerminalInputBinder binder,
                                                      @Qualifier("cobolCicsClock") ObjectProvider<Clock> clock) {
-        return new CicsBrowserController(coordinator, conversations, views, binder,
-                clock.getIfAvailable(Clock::systemUTC));
+        return new CicsJsonApiController(coordinator, conversations, clock.getIfAvailable(Clock::systemUTC));
     }
 }

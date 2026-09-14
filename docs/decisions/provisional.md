@@ -4074,7 +4074,7 @@ SPI の NOTAUTH の検査は持たない。
 | 項目 | 内容 |
 | --- | --- |
 | 状態 | 未解決 (2026-09-15)。P-133 の「HTTP 入口は構成しない」を置き換える |
-| 場所 | `CicsBrowserController`、`CicsBrowserAutoConfiguration`、`NonRecoverableTaskBoundaryFactory` |
+| 場所 | `CicsBrowserController`、`CicsBrowserAutoConfiguration`、`CicsTaskAutoConfiguration` (base)、`NonRecoverableTaskBoundaryFactory` |
 | 関連要件 | 設計 77 §4.2 / §4.6、設計 81 §5 |
 
 **暫定の扱い**: 設計 81 §5 の表のとおり。要点は次である。
@@ -4094,3 +4094,33 @@ lease の期限 (5 分) と会話の期限 (30 分) は既定値で、transactio
 
 **解消条件**: Spring Session JDBC を業務 UOW と同じ trasaction で保存する `STRICT` の会話ストアを設計 77 §4.6 に沿って入れる。
 冪等キーの再送を入れる。端末名を利用者の端末定義から与える構成を足す。
+
+## P-135 JSON の入口は別の path に置き、byte 列は base64 の文字列で受け渡す
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsJsonApiController`、`CicsApiRequest` / `CicsApiReply`、`CicsJsonApiAutoConfiguration` |
+| 関連要件 | 設計 77 §4.2 |
+
+**暫定の扱い**:
+
+- 設計 77 §4.2 は content negotiation か別 endpoint を許す。ブラウザの form の入口と取り違えないよう、
+  `POST /api/cics/{transid}` (`application/json`) に分けた。base の `cobol-spring-boot-4-autoconfigure` に置き、
+  BMS Thymeleaf adapter を外した JSON 専用の構成でも動く
+- COMMAREA と container は base64 の文字列で受け、decode してから中立層へ渡す。不正な base64 や長すぎる値は 400。
+  Jackson の型も注釈も使わず、record の形だけで受け渡す
+- 会話を続ける要求の COMMAREA と画面は会話ストアから読む。会話と COMMAREA を一緒に送った要求は 400、
+  版が合わなければ 409。会話の owner は認証した principal で、coordinator の claim が照合する
+- 冪等キーは client が送れる (`[A-Za-z0-9_.:-]{8,128}`)。送らなければ server が作る。同じ key の再送はまだ持たない
+- JSON client の task は端末を持たない (EIBTRMID は binary zero)。画面は map の field の位置・属性・値を返し、
+  DRK の field の値は返さない
+- 失敗は Problem Details (`application/problem+json`) で返し、入力の内容や例外の文面を出さない。ABEND の code だけは返す
+- CSRF は Spring Security の既定に従う。cookie の session を使う client は token を送る。token 認証の構成で
+  CSRF を外すかは利用者の security の構成が決める
+- Spring Boot 4.1 の test 基盤が JUnit 6 を要るので、この module の JUnit を 6.0.3 に揃えた
+
+**どこがずれうるか**: 実機の CICS の web 系 (CICS Web Support、JSON transformer) の要求の形とは合わせていない。
+container の data type (BIT / CHAR) と code page の変換は持たない。
+
+**解消条件**: 冪等キーの再送と結果照会を入れる。JSON の型付き DTO (記号マップから生成) を設計する。
