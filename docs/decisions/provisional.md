@@ -2947,7 +2947,7 @@ G-AR4 / G-AR5を合格させる。
 in-memory storeはreference / test用に限定する。コンパイラは静的またはデータ名のPROGRAM、静的TRANSID、
 単純COMMAREA、数値定数または省略したLENGTHを使う`LINK` / `XCTL` / `RETURN` / `SYNCPOINT`と、
 静的ABCODE / CANCEL / NODUMPの
-`ABEND`、4byte英数字領域への`ASSIGN ABCODE`を変換し、それ以外は黙って無視せず拒否する。
+`ABEND`、英数字の受取域への`ASSIGN ABCODE` (4byte) / `APPLID` / `PROGRAM` (8byte) を変換し、それ以外は黙って無視せず拒否する。
 ABENDは検証済みcodeとdump / cancel方針を持つ
 構造化原因のままtask boundaryへ渡す。
 

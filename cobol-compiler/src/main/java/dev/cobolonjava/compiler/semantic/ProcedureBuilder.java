@@ -996,7 +996,7 @@ public final class ProcedureBuilder {
                 && cics.operation() == Statement.CicsOperation.LINK
                 && cics.commarea() != null) {
             out.add(cics.commarea());
-        } else if (statement instanceof Statement.CicsAssignAbcode assign) {
+        } else if (statement instanceof Statement.CicsAssign assign) {
             out.add(assign.target());
         } else if (statement instanceof Statement.Search search && search.varying() != null) {
             out.add(search.varying());
@@ -1483,18 +1483,24 @@ public final class ProcedureBuilder {
         }
         try {
             CicsBlockParser.Parsed parsed = CicsBlockParser.parse(text);
-            if (parsed.assignAbcodeTarget() != null) {
-                DataReference receiver = resolver.resolveName(parsed.assignAbcodeTarget(), origin);
-                if (receiver == null) {
-                    return null;
+            if (!parsed.assignments().isEmpty()) {
+                List<Statement> assigns = new ArrayList<>();
+                for (CicsBlockParser.AssignSpec spec : parsed.assignments()) {
+                    DataReference receiver = resolver.resolveName(spec.target(), origin);
+                    if (receiver == null) {
+                        return null;
+                    }
+                    int length = spec.option().length();
+                    if (receiver.constantLength().isEmpty()
+                            || receiver.constantLength().getAsInt() != length
+                            || !DataCategory.of(receiver).isAlphanumericLike()) {
+                        throw new IllegalArgumentException("ASSIGN " + spec.option()
+                                + " receiver must be a " + length + "-byte alphanumeric data area");
+                    }
+                    assigns.add(new Statement.CicsAssign(spec.option(), receiver, origin));
                 }
-                if (receiver.constantLength().isEmpty()
-                        || receiver.constantLength().getAsInt() != 4
-                        || !DataCategory.of(receiver).isAlphanumericLike()) {
-                    throw new IllegalArgumentException(
-                            "ASSIGN ABCODE receiver must be a 4-byte alphanumeric data area");
-                }
-                return new Statement.CicsAssignAbcode(receiver, origin);
+                return assigns.size() == 1
+                        ? assigns.get(0) : new Statement.Sequence(assigns, origin);
             }
             if (parsed.handleStackAction() != null) {
                 return new Statement.CicsHandleStack(parsed.handleStackAction(), origin);

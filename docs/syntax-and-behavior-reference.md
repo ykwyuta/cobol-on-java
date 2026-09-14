@@ -519,7 +519,7 @@ EXEC CICS XCTL PROGRAM('名前' | 英数字項目) [COMMAREA(項目)] [LENGTH(�
 EXEC CICS RETURN [TRANSID('名前') [IMMEDIATE]] [COMMAREA(項目)] [LENGTH(数値)] END-EXEC
 EXEC CICS SYNCPOINT [ROLLBACK] END-EXEC
 EXEC CICS ABEND [ABCODE('コード')] [CANCEL] [NODUMP] END-EXEC
-EXEC CICS ASSIGN ABCODE(受取項目) END-EXEC
+EXEC CICS ASSIGN [ABCODE(X(4)項目)] [APPLID(X(8)項目)] [PROGRAM(X(8)項目)] END-EXEC
 EXEC CICS HANDLE CONDITION [条件名(段落名)]... END-EXEC
 EXEC CICS IGNORE CONDITION 条件名... END-EXEC
 EXEC CICS HANDLE ABEND (LABEL(段落名) | CANCEL | RESET) END-EXEC
@@ -529,6 +529,7 @@ EXEC CICS POP HANDLE END-EXEC
 - **振る舞い**:
   - `DFHEIBLK` (EIB: `EIBTRNID`, `EIBCALEN`, `EIBFN`, `EIBRCODE`, `EIBRESP`, `EIBRESP2`) の各フィールドを CICS コマンド実行の都度更新します。
   - `EIBTIME` / `EIBDATE` / `EIBTASKN` / `EIBTRMID` / `EIBCPOSN` / `EIBAID` は読み取り専用で参照できます。値は task 文脈に task 番号・地方時がある場合だけ設定し、出どころの無い field は binary zero のままです (暫定判断 P-113)。
+  - `ASSIGN PROGRAM` は現在の LINK level で CICS が起動した program (初期 program、LINK 先、XCTL 先) の名前を返します。COBOL の `CALL` で呼んだ副 program の名前にはなりません。`ASSIGN APPLID` は region に構成した APPLID を返し、構成が無ければ実行時に失敗します (設計 79 §5)。
   - `RETURN TRANSID(...) IMMEDIATE` は、次の task を端末入力なしで始める指定を task 結果 (`CicsTaskReply.immediateNext`) に残します。次の task を起動するのは transport adapter です。
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。

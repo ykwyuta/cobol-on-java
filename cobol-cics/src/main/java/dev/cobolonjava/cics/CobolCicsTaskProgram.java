@@ -15,13 +15,19 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
 
     private final CobolRuntime runtime;
     private final int maxTransfers;
+    private final CicsEnvironment environment;
 
     public CobolCicsTaskProgram(CobolRuntime runtime, int maxTransfers) {
+        this(runtime, maxTransfers, CicsEnvironment.unconfigured());
+    }
+
+    public CobolCicsTaskProgram(CobolRuntime runtime, int maxTransfers, CicsEnvironment environment) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         if (maxTransfers <= 0) {
             throw new IllegalArgumentException("maxTransfers must be positive");
         }
         this.maxTransfers = maxTransfers;
+        this.environment = Objects.requireNonNull(environment, "environment");
     }
 
     @Override
@@ -39,7 +45,7 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                     "task TRANSID disagrees with transaction definition");
         }
         definition.validate(input);
-        CicsExecution execution = new CicsExecution(task, input.commareaLength());
+        CicsExecution execution = new CicsExecution(task, input.commareaLength(), environment);
         RuntimeServices services = RuntimeServices.builder()
                 .service(CicsExecution.class, execution)
                 .build();
@@ -50,6 +56,7 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
             int transfers = 0;
             while (true) {
                 Storage commarea = Storage.copyOf(payload.commarea());
+                execution.startProgram(program.value());
                 try {
                     CobolCallResult result = commarea.size() == 0
                             ? session.runMain(program.value())

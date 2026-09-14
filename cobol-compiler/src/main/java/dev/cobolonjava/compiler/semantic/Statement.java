@@ -32,6 +32,28 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /** EXEC CICS ASSIGNの1つのoption。受取域へ置く値の種類と長さ。 */
+    record CicsAssign(CicsAssignOption option, DataReference target, Origin origin)
+            implements Statement {
+    }
+
+    /** ASSIGNで対応するoptionと、その受取域の長さ (設計 79 §5)。 */
+    enum CicsAssignOption {
+        ABCODE(4),
+        APPLID(8),
+        PROGRAM(8);
+
+        private final int length;
+
+        CicsAssignOption(int length) {
+            this.length = length;
+        }
+
+        public int length() {
+            return length;
+        }
+    }
+
     enum CicsOperation {
         LINK,
         XCTL,
@@ -76,8 +98,6 @@ public sealed interface Statement {
     }
 
     /** EXEC CICS ASSIGN ABCODEによる現在のabend code取得。 */
-    record CicsAssignAbcode(DataReference target, Origin origin) implements Statement {
-    }
 
     /**
      * {@code MOVE} 文。

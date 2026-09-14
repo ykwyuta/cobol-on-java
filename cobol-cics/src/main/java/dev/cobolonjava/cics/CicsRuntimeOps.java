@@ -301,6 +301,40 @@ public final class CicsRuntimeOps {
         completeLocalCommand(required, ASSIGN_FUNCTION);
     }
 
+    /**
+     * regionのAPPLIDを8文字で返す (設計 79 §5)。
+     *
+     * <p>構成されていなければ推測した名前を返さず失敗する。
+     */
+    public static void assignApplid(ProgramContext context, DataView target) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        String applid = execution(required).environment().applid()
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "ASSIGN APPLID requires a configured APPLID"));
+        assignText(required, target, applid, 8, "ASSIGN APPLID");
+    }
+
+    /** 現在のLINK levelでCICSが起動したprogramの名前を8文字で返す (設計 79 §5)。 */
+    public static void assignProgram(ProgramContext context, DataView target) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        assignText(required, target, execution(required).currentProgram(), 8, "ASSIGN PROGRAM");
+    }
+
+    private static void assignText(
+            ProgramContext context, DataView target, String value, int length, String command) {
+        DataView receiver = Objects.requireNonNull(target, "target");
+        if (receiver.length() != length) {
+            throw new IllegalArgumentException(
+                    command + " target must be exactly " + length + " bytes");
+        }
+        if (value.length() > length) {
+            throw new CicsTaskStateException(command + " value is longer than " + length);
+        }
+        receiver.setBytes(context.codePage().encode(
+                value + " ".repeat(length - value.length())));
+        completeLocalCommand(context, ASSIGN_FUNCTION);
+    }
+
     /** 生成コードが暗黙EIB項目を参照するためのtask-local storage。 */
     public static Storage eibStorage(ProgramContext context) {
         ProgramContext required = Objects.requireNonNull(context, "context");

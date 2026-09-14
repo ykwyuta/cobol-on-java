@@ -318,7 +318,60 @@ class CicsGenerationTest {
         assertRejected("EXEC CICS ASSIGN ABCODE('B123') END-EXEC",
                 "unsupported or malformed EXEC CICS block");
         assertRejected("EXEC CICS ASSIGN ABCODE(WS-ABCODE) RESP(WS-RESP) END-EXEC",
-                "unsupported or malformed EXEC CICS block");
+                "unsupported ASSIGN option: RESP");
+        assertRejected("EXEC CICS ASSIGN APPLID(WS-ABCODE) END-EXEC",
+                "must be a 8-byte alphanumeric data area");
+        assertRejected("EXEC CICS ASSIGN PROGRAM(WS-PGM) PROGRAM(WS-APPL) END-EXEC",
+                "duplicate ASSIGN option: PROGRAM");
+        assertRejected("EXEC CICS ASSIGN SYSID(WS-PGM) END-EXEC",
+                "unsupported ASSIGN option: SYSID");
+    }
+
+    @Test
+    @DisplayName("ASSIGN PROGRAMはLINK levelごとにCICSが起動したprogramを、APPLIDは構成値を返す")
+    void assignsProgramPerLinkLevelAndConfiguredApplid() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> main = compile(loader, "MAIN", List.of(
+                "EXEC CICS ASSIGN PROGRAM(WS-PGM) APPLID(WS-APPL) END-EXEC",
+                "IF WS-PGM NOT = 'MAIN' OR WS-APPL NOT = 'CICSA1' GOBACK END-IF",
+                "EXEC CICS LINK PROGRAM('CHILD') COMMAREA(LK-AREA) END-EXEC",
+                "EXEC CICS ASSIGN PROGRAM(WS-PGM) END-EXEC",
+                "IF WS-PGM NOT = 'MAIN' OR LK-AREA NOT = 'KID ' GOBACK END-IF",
+                "EXEC CICS XCTL PROGRAM('NEXTPGM') COMMAREA(LK-AREA) END-EXEC"));
+        Supplier<CobolProgram> child = compile(loader, "CHILD", List.of(
+                "EXEC CICS ASSIGN PROGRAM(WS-PGM) END-EXEC",
+                "IF WS-PGM = 'CHILD' MOVE 'KID ' TO LK-AREA END-IF",
+                "GOBACK"));
+        Supplier<CobolProgram> next = compile(loader, "NEXTPGM", List.of(
+                "EXEC CICS ASSIGN PROGRAM(WS-PGM) END-EXEC",
+                "IF WS-PGM = 'NEXTPGM' MOVE 'DONE' TO LK-AREA END-IF",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("MAIN", main)
+                .cobolProgram("CHILD", child)
+                .cobolProgram("NEXTPGM", next)
+                .build();
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 8,
+                dev.cobolonjava.cics.CicsEnvironment.withApplid("CICSA1"))
+                .execute(definition(), CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("DONE", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("APPLIDを構成していないregionのASSIGN APPLIDは推測した名前を返さず失敗する")
+    void assignApplidRequiresConfiguration() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "NOAPPL", List.of(
+                "EXEC CICS ASSIGN APPLID(WS-APPL) END-EXEC"));
+
+        CicsTaskStateException failure = assertThrows(CicsTaskStateException.class,
+                () -> execute(loader, "NOAPPL", program));
+
+        assertTrue(failure.getMessage().contains("configured APPLID"), failure.getMessage());
     }
 
     @Test
@@ -1018,6 +1071,7 @@ class CicsGenerationTest {
                 "01 WS-ABCODE PIC X(4).",
                 "01 WS-SHORT PIC X(3).",
                 "01 WS-PGM PIC X(8).",
+                "01 WS-APPL PIC X(8).",
                 "LINKAGE SECTION.",
                 "01 LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.",

@@ -757,8 +757,8 @@ public final class ProgramGenerator {
                 planCicsHandleStack(handleStack, body);
             } else if (statement instanceof Statement.CicsAbendHandler abendHandler) {
                 planCicsAbendHandler(abendHandler, body);
-            } else if (statement instanceof Statement.CicsAssignAbcode assignAbcode) {
-                planCicsAssignAbcode(assignAbcode, body);
+            } else if (statement instanceof Statement.CicsAssign assign) {
+                planCicsAssign(assign, body);
             } else {
                 report(statement.origin(), "statement is not supported by the generator yet");
             }
@@ -939,20 +939,25 @@ public final class ProgramGenerator {
         });
     }
 
-    private void planCicsAssignAbcode(
-            Statement.CicsAssignAbcode statement, List<Runnable> body) {
+    private void planCicsAssign(Statement.CicsAssign statement, List<Runnable> body) {
+        int expected = statement.option().length();
         Runnable address = planAddress(statement.target(), statement.origin());
         OptionalInt length = lengthOf(statement.target(), statement.origin());
-        if (address == null || length.isEmpty() || length.getAsInt() != 4) {
+        if (address == null || length.isEmpty() || length.getAsInt() != expected) {
             return;
         }
+        String method = switch (statement.option()) {
+            case ABCODE -> "assignAbcode";
+            case APPLID -> "assignApplid";
+            case PROGRAM -> "assignProgram";
+        };
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);
             address.run();
-            push(4);
+            push(expected);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "byReference",
                     "(L" + STORAGE + ";II)L" + DATA_VIEW + ";", false);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "assignAbcode",
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method,
                     "(" + CONTEXT + "L" + DATA_VIEW + ";)V", false);
         });
     }

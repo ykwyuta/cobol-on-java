@@ -13,6 +13,7 @@ public final class CicsExecution {
 
     private final CicsTaskContext task;
     private final int commareaLength;
+    private final CicsEnvironment environment;
     private CicsGateway gateway;
     private CicsEib eib;
     private CodePage eibCodePage;
@@ -48,19 +49,49 @@ public final class CicsExecution {
 
     /** 一つのCICS LINK levelに属する現在値とPUSH HANDLEの退避値。 */
     private static final class HandleLevel {
+        /**
+         * このlevelでCICSが起動したprogramの名前 (ASSIGN PROGRAM)。
+         *
+         * <p>COBOLのCALLで呼んだ副programはCICSから見えないので、ここを変えない。
+         */
+        private String programName;
         private final Map<Integer, ConditionHandler> handlers = new HashMap<>();
         private AbendHandler abendHandler;
         private final Deque<HandleSnapshot> savedHandlers = new ArrayDeque<>();
     }
 
     public CicsExecution(CicsTaskContext task, int commareaLength) {
+        this(task, commareaLength, CicsEnvironment.unconfigured());
+    }
+
+    public CicsExecution(CicsTaskContext task, int commareaLength, CicsEnvironment environment) {
         this.task = Objects.requireNonNull(task, "task");
         if (commareaLength < 0 || commareaLength > Short.MAX_VALUE) {
             throw new IllegalArgumentException(
                     "commareaLength must fit EIBCALEN: " + commareaLength);
         }
         this.commareaLength = commareaLength;
+        this.environment = Objects.requireNonNull(environment, "environment");
         handleLevels.push(new HandleLevel());
+    }
+
+    /** regionの構成。 */
+    public CicsEnvironment environment() {
+        return environment;
+    }
+
+    /** 初期programまたはXCTL先が、現在のLINK levelのprogramになる。 */
+    public synchronized void startProgram(String programName) {
+        currentHandleLevel().programName = Objects.requireNonNull(programName, "programName");
+    }
+
+    /** 現在のLINK levelでCICSが起動したprogramの名前。起動記録が無ければ失敗する。 */
+    public synchronized String currentProgram() {
+        String name = currentHandleLevel().programName;
+        if (name == null) {
+            throw new CicsTaskStateException("no CICS program is recorded for the current LINK level");
+        }
+        return name;
     }
 
     public synchronized void bind(CicsGateway gateway) {
@@ -83,7 +114,9 @@ public final class CicsExecution {
         boolean link = command instanceof LinkCommand;
         if (link) {
             synchronized (this) {
-                handleLevels.push(new HandleLevel());
+                HandleLevel level = new HandleLevel();
+                level.programName = ((LinkCommand) command).target().value();
+                handleLevels.push(level);
             }
         }
         try {

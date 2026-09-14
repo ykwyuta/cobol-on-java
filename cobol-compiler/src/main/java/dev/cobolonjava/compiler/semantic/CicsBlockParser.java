@@ -23,9 +23,11 @@ final class CicsBlockParser {
             "(?is)^\\s*EXEC\\s+CICS\\s+HANDLE\\s+ABEND\\b(.*?)END-EXEC\\s*$");
     private static final Pattern HANDLE_ABEND_LABEL = Pattern.compile(
             "(?is)^\\s*LABEL\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)\\s*$");
-    private static final Pattern ASSIGN_ABCODE_BLOCK = Pattern.compile(
-            "(?is)^\\s*EXEC\\s+CICS\\s+ASSIGN\\s+ABCODE\\s*"
-                    + "\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)\\s*END-EXEC\\s*$");
+    private static final Pattern ASSIGN_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+ASSIGN\\b(.*?)END-EXEC\\s*$");
+    /** ASSIGNのoptionは受取域のデータ名だけをとる。定数やRESPはここで形が合わない。 */
+    private static final Pattern ASSIGN_OPTION = Pattern.compile(
+            "(?is)\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
     private static final Pattern CONDITION_OPTION = Pattern.compile(
             "(?is)\\s*([A-Z0-9][A-Z0-9-]*)(?:\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\))?");
     private static final Pattern QUOTED_OPTION = Pattern.compile(
@@ -47,11 +49,11 @@ final class CicsBlockParser {
 
     static Parsed parse(String source) {
         Objects.requireNonNull(source, "source");
-        Matcher assignAbcode = ASSIGN_ABCODE_BLOCK.matcher(source);
-        if (assignAbcode.matches()) {
+        Matcher assign = ASSIGN_BLOCK.matcher(source);
+        if (assign.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
-                    assignAbcode.group(1).toUpperCase(Locale.ROOT), null);
+                    parseAssignments(assign.group(1)), null);
         }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
         if (handleStack.matches()) {
@@ -191,6 +193,41 @@ final class CicsBlockParser {
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
                 null, List.of(), null, null, null, null, programData.value);
+    }
+
+    /**
+     * ASSIGNのoptionを読む (設計 79 §5)。
+     *
+     * <p>対応するoptionごとに受取域の長さが決まっている。知らないoptionを捨てると
+     * 受取域が書き換わらないまま進むので、名前をつけて断る。
+     */
+    private static List<AssignSpec> parseAssignments(String source) {
+        List<AssignSpec> out = new ArrayList<>();
+        Set<Statement.CicsAssignOption> seen = new HashSet<>();
+        Matcher option = ASSIGN_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            Statement.CicsAssignOption kind;
+            try {
+                kind = Statement.CicsAssignOption.valueOf(name);
+            } catch (IllegalArgumentException unknown) {
+                throw new IllegalArgumentException("unsupported ASSIGN option: " + name);
+            }
+            if (!seen.add(kind)) {
+                throw new IllegalArgumentException("duplicate ASSIGN option: " + name);
+            }
+            out.add(new AssignSpec(kind, option.group(2).toUpperCase(Locale.ROOT)));
+            position = option.end();
+        }
+        if (out.isEmpty()) {
+            throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+        }
+        return List.copyOf(out);
     }
 
     private static List<ConditionSpec> parseConditions(
@@ -344,11 +381,15 @@ final class CicsBlockParser {
             Statement.CicsHandleStackAction handleStackAction,
             Statement.CicsAbendHandlerAction abendHandlerAction,
             String abendHandlerTarget,
-            String assignAbcodeTarget,
+            List<AssignSpec> assignments,
             String programData) {
         Parsed {
             conditions = List.copyOf(conditions);
+            assignments = assignments == null ? List.of() : List.copyOf(assignments);
         }
+    }
+
+    record AssignSpec(Statement.CicsAssignOption option, String target) {
     }
 
     record ConditionSpec(String name, String target) {
