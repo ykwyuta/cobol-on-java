@@ -65,6 +65,27 @@ parser grammar CobolParser;
         }
         return false;
     }
+
+    /**
+     * いまの位置で部か節が始まるか。
+     *
+     * <p>通信節を読み飛ばす終わりを決めるために使う。支えていない節でも、
+     * <b>どこまでがその節か</b>は決められる。決めておかないと構文解析器の内部の
+     * 文面で断ることになり、原文のどこが悪いのか読めない (制約 C-5、要件 FR-190)。
+     */
+    private boolean divisionAhead() {
+        int type = _input.LA(1);
+        if (type == Token.EOF || type == PROCEDURE || type == IDENTIFICATION || type == ID) {
+            return true;
+        }
+        // <b>裸の END は終わりではない</b>。CD の中に END KEY IS ... と書ける
+        if (type == END) {
+            return _input.LA(2) == PROGRAM;
+        }
+        return (type == FILE || type == WORKING_STORAGE || type == LOCAL_STORAGE
+                || type == LINKAGE || type == REPORT || type == COMMUNICATION)
+                && _input.LA(2) == SECTION;
+    }
 }
 
 tokens {
@@ -131,6 +152,10 @@ tokens {
 
     // データ部
     DATA, SECTION, WORKING_STORAGE, LOCAL_STORAGE, LINKAGE, FILE,
+
+    // 通信 (制約 C-5)。支えていないが<b>切れ目は読む</b>。読めなければ
+    // 「支えていない」と言えず、構文解析器の内部の文面で断ることになる
+    COMMUNICATION, ENABLE, DISABLE, SEND, RECEIVE, PURGE, MESSAGE,
 
     // データ記述項
     FILLER, REDEFINES, RENAMES, PICTURE, PIC, USAGE,
@@ -374,6 +399,20 @@ dataDivisionSection
     | localStorageSection
     | linkageSection
     | reportSection
+    | communicationSection
+    ;
+
+// 通信節は支えていない (制約 C-5)。中身は読まずに<b>節ごと受け取り</b>、
+// 意味解析で断る。ここで受け取らないと「extraneous input 'COMMUNICATION'」と
+// しか言えず、支えていないのか書き方が悪いのかが読む側に分からない
+communicationSection
+    : COMMUNICATION SECTION PERIOD communicationWord*
+    ;
+
+// 部の始まりは字面だけで見分けられるので、述語を待たずに繰り返しを抜けられる。
+// 節の始まりと END PROGRAM は 2 語目まで見ないと決まらないので述語で見る
+communicationWord
+    : {!divisionAhead()}? ~(PROCEDURE | IDENTIFICATION | ID)
     ;
 
 // FD のレコード記述項は、その FD のレコード領域を表す
@@ -821,6 +860,13 @@ statement
     | initiateStatement
     | generateStatement
     | terminateStatement
+    | communicationStatement
+    ;
+
+// 通信の文は支えていない (制約 C-5)。文ごと受け取って意味解析で断る。
+// 中身は読まないので、終止符までを飲む
+communicationStatement
+    : (ENABLE | DISABLE | SEND | RECEIVE | PURGE) (~PERIOD)*
     ;
 
 // EXECの内部は専用translatorが厳格に解析する。
@@ -1268,7 +1314,8 @@ searchWhen
 
 // ACCEPT は日付と時刻の特殊レジスタか、端末からの 1 行を受け取る
 acceptStatement
-    : ACCEPT identifier (FROM acceptSource)?
+    : ACCEPT identifier MESSAGE? COUNT
+    | ACCEPT identifier (FROM acceptSource)?
     ;
 
 acceptSource
