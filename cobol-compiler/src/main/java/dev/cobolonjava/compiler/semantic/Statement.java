@@ -110,6 +110,18 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /** EXEC CICS WRITE FILE (暫定判断 P-131)。LENGTH / KEYLENGTH は書かなければ -1。 */
+    record CicsWriteFile(
+            String fileLiteral,
+            DataReference fileData,
+            DataReference from,
+            DataReference ridfld,
+            int length,
+            int keyLength,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     /** EXEC CICS INQUIRE / SET TERMINAL UCTRANST (暫定判断 P-130)。 */
     record CicsTerminalUctran(
             boolean set,

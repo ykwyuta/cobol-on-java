@@ -771,6 +771,8 @@ public final class ProgramGenerator {
                 planCicsEnqueue(enqueue, body);
             } else if (statement instanceof Statement.CicsTerminalUctran terminal) {
                 planCicsTerminal(terminal, body);
+            } else if (statement instanceof Statement.CicsWriteFile writeFile) {
+                planCicsWriteFile(writeFile, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
                 Runnable field = planWholeView(deedit.field(), deedit.origin());
                 if (field != null) {
@@ -1077,6 +1079,28 @@ public final class ProgramGenerator {
                     statement.put() ? "putContainerCondition" : "getContainerCondition",
                     "(" + CONTEXT + strings + "L" + DATA_VIEW + ";L" + DATA_VIEW + ";"
                             + (statement.put() ? "I" : "") + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    private void planCicsWriteFile(Statement.CicsWriteFile statement, List<Runnable> body) {
+        Runnable file = planAreaBytes(statement.fileData(), statement.origin());
+        Runnable from = planWholeView(statement.from(), statement.origin());
+        Runnable ridfld = planWholeView(statement.ridfld(), statement.origin());
+        if (file == null || from == null || ridfld == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            pushNullableString(statement.fileLiteral());
+            file.run();
+            from.run();
+            ridfld.run();
+            push(statement.length());
+            push(statement.keyLength());
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "writeFileCondition",
+                    "(" + CONTEXT + "Ljava/lang/String;[BL" + DATA_VIEW + ";L" + DATA_VIEW + ";IIZ)I", false);
             emitCicsConditionTransfer();
         });
     }

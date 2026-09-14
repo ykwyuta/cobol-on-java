@@ -22,17 +22,19 @@ public final class CicsRuntimeOps {
     private static final int POP_HANDLE_FUNCTION = 0x020E;
     /** 間隔制御群のfunction code。実機のEIBFNとは突き合わせていない (暫定判断 P-115)。 */
     private static final int ASKTIME_FUNCTION = 0x1002;
-    /** BIF DEEDIT。実機の EIBFN とは突き合わせていない (暫定判断 P-124)。 */
-    private static final int BIF_DEEDIT_FUNCTION = 0x5802;
+    /** BIF DEEDIT。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int BIF_DEEDIT_FUNCTION = 0x2002;
     /** GET / PUT CONTAINER (CHANNEL)。実機の EIBFN とは突き合わせていない (暫定判断 P-125)。 */
     private static final int GET_CONTAINER_FUNCTION = 0x3414;
     private static final int PUT_CONTAINER_FUNCTION = 0x3416;
     /** ENQ / DEQ。実機の EIBFN とは突き合わせていない (暫定判断 P-128)。 */
     private static final int ENQ_FUNCTION = 0x1204;
     private static final int DEQ_FUNCTION = 0x1206;
-    /** INQUIRE / SET TERMINAL。実機の EIBFN とは突き合わせていない (暫定判断 P-130)。 */
-    private static final int INQUIRE_TERMINAL_FUNCTION = 0x5822;
-    private static final int SET_TERMINAL_FUNCTION = 0x5824;
+    /** INQUIRE / SET TERMINAL (SPI)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int INQUIRE_TERMINAL_FUNCTION = 0x5202;
+    private static final int SET_TERMINAL_FUNCTION = 0x5204;
+    /** WRITE (file control)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int WRITE_FILE_FUNCTION = 0x0604;
     private static final java.util.regex.Pattern CONTAINER_NAME =
             java.util.regex.Pattern.compile("[A-Z0-9_-]{1,16}");
     private static final int DELAY_FUNCTION = 0x1004;
@@ -41,7 +43,8 @@ public final class CicsRuntimeOps {
     private static final int SEND_MAP_FUNCTION = 0x1804;
     private static final int SEND_TEXT_FUNCTION = 0x1806;
     private static final int SEND_CONTROL_FUNCTION = 0x1812;
-    private static final int FORMATTIME_FUNCTION = 0x104A;
+    /** CICS TS 5.6「Function codes of EXEC CICS commands」の表で X'4A04'。X'104A' と取り違えていた。 */
+    private static final int FORMATTIME_FUNCTION = 0x4A04;
     private static final int LINK_FUNCTION = 0x0E02;
     private static final int XCTL_FUNCTION = 0x0E04;
     private static final int RETURN_FUNCTION = 0x0E08;
@@ -275,6 +278,44 @@ public final class CicsRuntimeOps {
             throw new CicsTaskStateException(command + " supports only the task's own terminal: '" + named + "'");
         }
         return own;
+    }
+
+    /**
+     * WRITE FILE(名前) FROM(域) RIDFLD(域) (暫定判断 P-131)。
+     *
+     * @param length    LENGTH の定数。書かなければ -1 で、FROM の長さを使う
+     * @param keyLength KEYLENGTH の定数。書かなければ -1 で、file 定義の鍵の長さを使う
+     */
+    public static int writeFileCondition(ProgramContext context, String fileLiteral, byte[] fileData,
+            DataView from, DataView ridfld, int length, int keyLength, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        String file = (fileLiteral != null ? fileLiteral : required.codePage().decode(fileData)).stripTrailing();
+        DataView area = Objects.requireNonNull(from, "from");
+        int recordLength = length < 0 ? area.length() : length;
+        if (recordLength > area.length()) {
+            throw new CicsTaskStateException("WRITE FILE(" + file + ") LENGTH " + recordLength
+                    + " exceeds the FROM area of " + area.length() + " bytes");
+        }
+        byte[] record = area.subView(0, recordLength).toByteArray();
+        byte[] ridfldBytes = Objects.requireNonNull(ridfld, "ridfld").toByteArray();
+        int effectiveKey = keyLength < 0 ? Math.min(ridfldBytes.length, keyLengthOf(required, file, ridfldBytes))
+                : keyLength;
+        if (effectiveKey > ridfldBytes.length) {
+            throw new CicsTaskStateException("WRITE FILE(" + file + ") KEYLENGTH exceeds the RIDFLD area");
+        }
+        CicsExecution execution = execution(required);
+        CicsFilePort.Result result = execution.environment().files()
+                .write(file, java.util.Arrays.copyOf(ridfldBytes, effectiveKey), record);
+        execution.eib(required.codePage()).setDataset(file, required.codePage());
+        return containerOutcome(required, WRITE_FILE_FUNCTION, result.response(), result.response2(),
+                suppressDefaultHandling, "WRITE FILE");
+    }
+
+    /** KEYLENGTH を省いたときの鍵の長さ。file 定義を知らない port では RIDFLD の長さとする。 */
+    private static int keyLengthOf(ProgramContext context, String file, byte[] ridfld) {
+        return execution(context).environment().files() instanceof CicsFileKeyLengths lengths
+                ? lengths.keyLength(file).orElse(ridfld.length)
+                : ridfld.length;
     }
 
     /** DEQ RESOURCE(域) LENGTH(n)。持っていない資源を返しても NORMAL とする。 */

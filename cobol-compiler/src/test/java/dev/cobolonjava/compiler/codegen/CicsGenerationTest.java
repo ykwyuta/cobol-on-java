@@ -179,6 +179,24 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("WRITE FILEは定義の無いfileでFILENOTFOUNDをRESPに返し、file control以外のWRITEは断る")
+    void writesFileAndReportsFileNotFound() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "WRFILE", List.of(
+                "MOVE '000042' TO WS-QTIME",
+                "EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(FILENOTFOUND) MOVE 'F' TO LK-AREA(1:1) END-IF"));
+
+        assertEquals("FNIT", CodePages.DEFAULT.decode(execute(loader, "WRFILE", program).payload().commarea()));
+        assertRejected("EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) MASSINSERT END-EXEC",
+                "unsupported WRITE FILE option: MASSINSERT");
+        assertRejected("EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) LENGTH(7) END-EXEC",
+                "WRITE FILE LENGTH 7 exceeds the FROM data area of 6 bytes");
+        assertRejected("EXEC CICS WRITE OPERATOR TEXT(WS-DATE) END-EXEC",
+                "WRITE requires FILE");
+    }
+
+    @Test
     @DisplayName("ENQで資源を得てDEQで返し、LENGTHの無い形と域を越えるLENGTHは断る")
     void enqueuesAndDequeues() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -1273,8 +1291,9 @@ class CicsGenerationTest {
     @Test
     @DisplayName("未分類のDFHRESP condition名を推測せず翻訳時に拒否する")
     void rejectsUnsupportedDfhrespCondition() {
-        assertRejected("IF EIBRESP = DFHRESP(NOTFND) CONTINUE",
-                "unsupported CICS condition name: NOTFND");
+        // NOTFND は公開の表で数を確かめたので受ける。表から読めなかった NOTOPEN は断る
+        assertRejected("IF EIBRESP = DFHRESP(NOTOPEN) CONTINUE",
+                "unsupported CICS condition name: NOTOPEN");
     }
 
     @Test

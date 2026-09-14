@@ -19,6 +19,7 @@ import java.util.regex.Pattern;
  * @param mapsets   {@code SEND MAP} / {@code RECEIVE MAP}が引くmapsetの定義
  * @param enqueues  {@code ENQ} / {@code DEQ}の資源の排他。regionのtaskどうしで分け合う
  * @param terminals 端末定義のうちtaskをまたいで残る設定 ({@code SET TERMINAL})
+ * @param files     file control ({@code WRITE FILE})。定義の無いregionではFILENOTFOUNDになる
  */
 public record CicsEnvironment(
         Optional<String> applid,
@@ -26,7 +27,8 @@ public record CicsEnvironment(
         CicsIntervalPort interval,
         Optional<BmsMapsetCatalog> mapsets,
         CicsEnqueuePort enqueues,
-        CicsTerminalSettingsPort terminals) {
+        CicsTerminalSettingsPort terminals,
+        CicsFilePort files) {
 
     /** APPLIDはVTAMの名前規則に合わせ、1〜8文字の英大文字・数字・国別文字に限る。 */
     private static final Pattern APPLID = Pattern.compile("[A-Z@#$][A-Z0-9@#$]{0,7}");
@@ -38,6 +40,7 @@ public record CicsEnvironment(
         Objects.requireNonNull(mapsets, "mapsets");
         Objects.requireNonNull(enqueues, "enqueues");
         Objects.requireNonNull(terminals, "terminals");
+        Objects.requireNonNull(files, "files");
         applid.ifPresent(value -> {
             if (!APPLID.matcher(value).matches()) {
                 throw new IllegalArgumentException("APPLID has an unsupported format: " + value);
@@ -51,11 +54,12 @@ public record CicsEnvironment(
      * <p>時計はUTCのsystem clockとする。時計の値そのものは地方時に依らず、地方時の
      * 解釈はtaskのhostZoneが決めるので、ここで推測は起きない。資源の排他と端末の設定は
      * 1つのJVMの中で効き、端末の大文字変換はTYPETERMの既定と同じNOUCTRANから始まる。
+     * fileは1つも定義しない。
      */
     public static CicsEnvironment unconfigured() {
         return new CicsEnvironment(Optional.empty(), Clock.systemUTC(),
                 CicsIntervalPort.sleeping(), Optional.empty(), CicsEnqueuePort.inMemory(),
-                CicsTerminalSettingsPort.inMemory(CicsCvda.NOUCTRAN));
+                CicsTerminalSettingsPort.inMemory(CicsCvda.NOUCTRAN), CicsFilePort.none());
     }
 
     public static CicsEnvironment withApplid(String applid) {
@@ -63,31 +67,36 @@ public record CicsEnvironment(
     }
 
     private CicsEnvironment withApplidValue(String value) {
-        return new CicsEnvironment(Optional.of(value), clock, interval, mapsets, enqueues, terminals);
+        return new CicsEnvironment(Optional.of(value), clock, interval, mapsets, enqueues, terminals, files);
     }
 
     /** 時計だけを替えた構成。試験で時刻を固定するときに使う。 */
     public CicsEnvironment withClock(Clock value) {
-        return new CicsEnvironment(applid, value, interval, mapsets, enqueues, terminals);
+        return new CicsEnvironment(applid, value, interval, mapsets, enqueues, terminals, files);
     }
 
     /** 待ちだけを替えた構成。 */
     public CicsEnvironment withInterval(CicsIntervalPort value) {
-        return new CicsEnvironment(applid, clock, value, mapsets, enqueues, terminals);
+        return new CicsEnvironment(applid, clock, value, mapsets, enqueues, terminals, files);
     }
 
     /** mapsetの定義を持たせた構成。 */
     public CicsEnvironment withMapsets(BmsMapsetCatalog value) {
-        return new CicsEnvironment(applid, clock, interval, Optional.of(value), enqueues, terminals);
+        return new CicsEnvironment(applid, clock, interval, Optional.of(value), enqueues, terminals, files);
     }
 
     /** 資源の排他を替えた構成。複数のJVMで分け合うときに使う。 */
     public CicsEnvironment withEnqueues(CicsEnqueuePort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, value, terminals);
+        return new CicsEnvironment(applid, clock, interval, mapsets, value, terminals, files);
     }
 
     /** 端末の設定を替えた構成。 */
     public CicsEnvironment withTerminals(CicsTerminalSettingsPort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, value);
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, value, files);
+    }
+
+    /** file controlを替えた構成。 */
+    public CicsEnvironment withFiles(CicsFilePort value) {
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, value);
     }
 }

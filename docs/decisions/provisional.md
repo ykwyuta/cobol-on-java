@@ -3541,7 +3541,8 @@ COBOL では CICS translator がデータ項目の長さを補う。全診断を
 - 書く文字数は区切りの有無で決める (日付 10 / 8、時刻 8 / 6)。受取域がそれより短ければ翻訳を
   拒否し、長ければ先頭だけを書いて残りを変えない
 - 受取域は英数字か、符号なし整数の表示形式に限る。Bank-of-Z は `TIME` を `PIC 9(6)` で受ける
-- `EIBFN` は ASKTIME `X'1002'`、FORMATTIME `X'104A'` とした
+- `EIBFN` は ASKTIME `X'1002'`、FORMATTIME `X'4A04'` である。CICS TS 5.6「Function codes of EXEC CICS commands」の表による
+  (FORMATTIME を最初 `X'104A'` と取り違えていた)
 
 **何を根拠にしたか**: IBM の公開仕様の記述。Bank-of-Z の受取域の宣言
 (`WS-TIME-NOW PIC 9(6)` を 6 byte の 01 群に置く、`WS-ORIG-DATE PIC X(10)` を `DATESEP` で受ける)
@@ -3570,7 +3571,7 @@ COBOL では CICS translator がデータ項目の長さを補う。全診断を
 `INTERVAL(hhmmss)` を受ける。値は整数定数か数字項目。option を書かなければ `INTERVAL(0)`。
 1 つの単位だけを書けば上限までその単位で数え、複数書けば下位の単位を 59 (ミリ秒は 999) 以下に
 限る。範囲外は RESP2 を推測せず失敗させる。待ちは `CicsEnvironment.interval` が行い、
-`EIBFN` は `X'1004'` とした。`TIME`、`UNTIL`、`REQID` は断る。
+`EIBFN` は `X'1004'` で、CICS TS 5.6 の function code の表と一致する。`TIME`、`UNTIL`、`REQID` は断る。
 
 **意図した差**: task の期限 (`startedAt + taskTimeout`) を越える待ちは始めずに失敗させる。
 host の CICS はこの期限の概念を持たず、長い DELAY も待つ。この処理系の task は HTTP 要求に
@@ -3639,7 +3640,7 @@ host の CICS はこの期限の概念を持たず、長い DELAY も待つ。�
 - 送った画面は `CicsExecution` が task に 1 つ持ち、`TaskCompletion.screen` と
   `CicsTaskReply.screen` で adapter へ渡す。会話への保存と RECEIVE MAP は次の増分
 - mapset の定義は `CicsEnvironment.mapsets` から得る。構成が無ければ実行時に失敗する
-- `EIBFN` は SEND MAP `X'1804'`、SEND TEXT `X'1806'`、SEND CONTROL `X'1812'` とした
+- `EIBFN` は SEND MAP `X'1804'`、SEND TEXT `X'1806'`、SEND CONTROL `X'1812'` で、CICS TS 5.6 の function code の表と一致する
 
 **どこがずれうるか**: `EIBFN` の値、SEND TEXT の改行・頁分割、画面の大きさ (端末 profile を
 持たず 24x80 に固定)、SEND 系の非正常 condition (`INVMPSZ`、`MAPFAIL` 等) は実機と突き合わせて
@@ -3673,7 +3674,8 @@ host の CICS はこの期限の概念を持たず、長い DELAY も待つ。�
   値を確定できないので binary zero (設計 79 §3.3)。`DFHRESP(MAPFAIL)` と
   `HANDLE CONDITION MAPFAIL` を受ける
 - 入力が要求に無い RECEIVE (同じ task で入力を待つ会話型) は失敗させる
-- `INTO` は書くことを求める。`ASIS`、`SET`、`TERMINAL`、`FROM` 等は断る。EIBFN は `X'1802'`
+- `INTO` は書くことを求める。`TERMINAL` と `ASIS` は受ける (P-130)。`SET`、`FROM` 等は断る。EIBFN は `X'1802'`
+  (CICS TS 5.6 の function code の表と一致する)
 
 **どこがずれうるか**: JUSTIFY の既定の詰め文字、NUM field で許す文字、FSET field の末尾空白、
 消去した field のデータ部の値、MAPFAIL の EIBRCODE、EIBFN は実機と突き合わせていない。
@@ -3811,7 +3813,8 @@ INQACC は POINTER を `PIC X(8)` と `PIC 9(8) BINARY` (4 byte) の両方で RE
   域から数字以外の文字を除き、残った数字を右へ詰めて左を `0` で埋める。数字が域より多ければ左を落とす
 - 域が (末尾の空白を除いて) `-` または `CR` で終われば、右端の byte のゾーンを `X'D'` にする。
   これは EBCDIC の数字の形なので、数字が `X'F0'` から始まらない code page では推測せず実行時に失敗させる
-- EIBFN には `X'5802'` を置く。実機の値とは突き合わせていない
+- EIBFN には `X'2002'` を置く。CICS TS 5.6「Function codes of EXEC CICS commands」の表による
+  (最初は `X'5802'` と推測で置いていた。表を引いて直した)
 - `ABEND ABCODE(データ名)` は、長さがちょうど 4 byte の域に限る。実行時に code page で読み、末尾の空白を落とす。
   空白だけなら「コード無し」とは読まずに失敗させる。予約文字 `A` の検査は静的な ABCODE と同じ規則を通す
 - 数字編集項目から数字編集項目への MOVE は、送り側の編集を解いた値を受取側の編集で書き直す (規格の de-editing の道)
@@ -3834,7 +3837,7 @@ INQACC は POINTER を `PIC X(8)` と `PIC 9(8) BINARY` (4 byte) の両方で RE
 
 - RESP は公開の DFHRESP 値 (`LENGERR`=22、`CONTAINERERR`=110、`CHANNELERR`=122) を使う。
   RESP2 は公開仕様の記述から GET の channel 無し 2、container 無し 10、受取域不足 11 とした
-- EIBFN は GET X'3414'、PUT X'3416' とした。EIBRCODE は MAPFAIL と同じく binary zero を置く
+- EIBFN は GET X'3414'、PUT X'3416' で、CICS TS 5.6 の function code の表と一致する。EIBRCODE は MAPFAIL と同じく binary zero を置く
 - 名前に使える文字は `A-Z 0-9 _ -` に限る。実機はもっと広い文字を許すが、突き合わせていない文字は失敗させる
 - 起動要求の container は名前の分からない現在の channel になる。Bank-of-Z の CRDTAGY は起動された channel を
   名前 (`CIPCREDCHANN`) で指すので、現在の channel に名前を付ける transport (RUN TRANSID CHANNEL の相当) が
@@ -3922,7 +3925,7 @@ PUT で同名の container を置き換えることは公開仕様の記述に�
 - `UOW` (既定) の資源は `SYNCPOINT` (ROLLBACK を含む) で、すべての資源は task の終わり (ABEND・例外を含む) で返す
 - 排他は `CicsEnvironment.enqueues` が持つ。既定の `unconfigured()` は 1 つの JVM の中だけで効く。
   複数の JVM で動かすなら共有の実装へ差し替える
-- EIBFN は ENQ X'1204'、DEQ X'1206'、ENQBUSY の EIBRCODE は binary zero とした
+- EIBFN は ENQ X'1204'、DEQ X'1206' で、CICS TS 5.6 の function code の表と一致する。ENQBUSY の EIBRCODE は binary zero とした
 
 **どこがずれうるか**: 重ねた `ENQ` の数え方と `DEQ` の対応、`LUW` / `MAXLIFETIME`、`ENQMODEL` による
 region をまたぐ排他は確かめていない。実機の待ちは DTIMOUT で ABEND AKCS になりうるが、ここでは task の期限で失敗させる。
@@ -3978,7 +3981,8 @@ MDT set」等) を載せるが値を載せない。そこで意味を 3270 デ�
   だが、INVREQ の数を確かめていないので失敗させる。SET TERMINAL は SPI であり、NOTAUTH の検査は持たない
 - 設定は region の構成 (`CicsEnvironment.terminals`) が task をまたいで持つ。既定は TYPETERM の `UCTRAN(NO)` にあたる NOUCTRAN
 - 端末が UCTRAN なら、`RECEIVE MAP` の入力の英小文字 a〜z を大文字にしてから読む。TRANIDONLY は map の入力を変えない
-- EIBFN は INQUIRE TERMINAL X'5822'、SET TERMINAL X'5824' とした。実機とは突き合わせていない
+- EIBFN は INQUIRE TERMINAL X'5202'、SET TERMINAL X'5204' (SPI) である。CICS TS 5.6 の function code の表による
+  (最初は X'5822' / X'5824' と推測で置いていた)
 
 - `RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。`TERMINAL` は端末から読む既定の形を明示するだけとする
 
@@ -3986,3 +3990,31 @@ MDT set」等) を載せるが値を載せない。そこで意味を 3270 デ�
 既定の大文字変換は region の構成で変えられるが、実機の TYPETERM と合わせるのは利用者である。
 
 **解消条件**: 実機で `DFHVALUE(UCTRAN)` 等を翻訳した値と EIBFN を確かめる。ほかの端末を扱うなら端末定義の設計を足す。
+
+## P-131 WRITE FILE は固定長 KSDS へ鍵で書く形だけを扱い、数を確かめた condition だけを返す
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsFilePort`、`CicsFileDefinition`、`CicsRuntimeOps.writeFileCondition`、`CicsEib.setDataset` |
+| 関連要件 | FR-080, FR-101 |
+
+**暫定の扱い**:
+
+- file の定義 (`CicsFileDefinition`: 名前、データセット、鍵の位置と長さ、固定長) は region の構成 (`CicsEnvironment.files`)
+  が持つ。レコードはバッチと同じ `IndexedDataSet` に置くので、ジョブのデータセットとして読める
+- 定義の無い region (`unconfigured()`) ではどの file も FILENOTFOUND (RESP 12、RESP2 1: 名前が CICS に定義されていない) である
+- 同じ鍵が既にあれば DUPREC (14、RESP2 150)。データセットの上限を越えれば NOSPACE (18、RESP2 100)
+- RESP の数は CICS TS 6.x「Response codes of EXEC CICS commands」、RESP2 の意味は「WRITE」の頁、EIBFN (`X'0604'`)
+  は CICS TS 5.6「Function codes of EXEC CICS commands」の表による。EIBDS に file の名前を置く
+- レコード長が定義の固定長と違う形は、実機では切り詰めか詰め物をして LENGERR (RESP2 14) になる。
+  RIDFLD とレコードの鍵が違う形は INVREQ だが RESP2 を確かめていない。どちらも推測せず失敗させる
+- `KEYLENGTH` を省けば定義の鍵の長さぶんを RIDFLD の先頭から取る。`LENGTH` を省けば FROM の長さ
+- MASSINSERT、SYSID、RBA / RRN / XRBA、NOSUSPEND、`WRITE OPERATOR` / `WRITE JOURNALNAME` は断る
+- 書いたレコードは直ちにデータセットへ残す。recoverable file の SYNCPOINT / ROLLBACK との一体化は持たない
+- EIBRCODE は binary zero を置く (表の EIBRCODE の列は確かめきれていない)
+
+**どこがずれうるか**: NOTOPEN / DISABLED の数は表から読めなかったので返さない。可変長レコード、ESDS / RRDS、
+READ / REWRITE / DELETE / browse は後続増分とする。
+
+**解消条件**: 実機で DUPREC / LENGERR / INVREQ の RESP2 と EIBRCODE を採る。recoverable file の設計を UOW と合わせて入れる。

@@ -7,6 +7,18 @@ import java.util.Objects;
 public final class CicsResponseCode {
 
     public static final int NORMAL = 0;
+    /**
+     * file control の condition。数は CICS TS 6.x「Response codes of EXEC CICS commands」の表による
+     * (暫定判断 P-131)。
+     */
+    public static final int FILENOTFOUND = 12;
+    public static final int NOTFND = 13;
+    public static final int DUPREC = 14;
+    public static final int INVREQ = 16;
+    public static final int IOERR = 17;
+    public static final int NOSPACE = 18;
+    public static final int ILLOGIC = 21;
+    public static final int NOTAUTH = 70;
     /** 受取域が送られたデータより短い (GET CONTAINER)。 */
     public static final int LENGERR = 22;
     public static final int PGMIDERR = 27;
@@ -30,6 +42,14 @@ public final class CicsResponseCode {
                 .strip().toUpperCase(Locale.ROOT);
         return switch (normalized) {
             case "NORMAL" -> NORMAL;
+            case "FILENOTFOUND" -> FILENOTFOUND;
+            case "NOTFND" -> NOTFND;
+            case "DUPREC" -> DUPREC;
+            case "INVREQ" -> INVREQ;
+            case "IOERR" -> IOERR;
+            case "NOSPACE" -> NOSPACE;
+            case "ILLOGIC" -> ILLOGIC;
+            case "NOTAUTH" -> NOTAUTH;
             case "LENGERR" -> LENGERR;
             case "PGMIDERR" -> PGMIDERR;
             case "MAPFAIL" -> MAPFAIL;

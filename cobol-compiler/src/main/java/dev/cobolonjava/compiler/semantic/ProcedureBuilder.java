@@ -1745,6 +1745,43 @@ public final class ProcedureBuilder {
             if (parsed.container() != null) {
                 return cicsContainerStatement(parsed, origin);
             }
+            if (parsed.writeFile() != null) {
+                CicsBlockParser.FileWriteSpec spec = parsed.writeFile();
+                DataReference fileData = null;
+                if (spec.fileData() != null) {
+                    fileData = resolver.resolveName(spec.fileData(), origin);
+                    if (fileData == null) {
+                        return null;
+                    }
+                    if (DataCategory.of(fileData) != DataCategory.ALPHANUMERIC
+                            || fileData.constantLength().isEmpty() || fileData.constantLength().getAsInt() != 8) {
+                        throw new IllegalArgumentException("WRITE FILE data area must be an 8-byte alphanumeric item");
+                    }
+                }
+                DataReference from = resolver.resolveName(spec.from(), origin);
+                DataReference ridfld = resolver.resolveName(spec.ridfld(), origin);
+                if (from == null || ridfld == null) {
+                    return null;
+                }
+                for (DataReference area : List.of(from, ridfld)) {
+                    if (area.constantLength().isEmpty()
+                            || !(DataCategory.of(area).isAlphanumericLike() || DataCategory.of(area) == DataCategory.GROUP)) {
+                        throw new IllegalArgumentException(
+                                "WRITE FILE FROM and RIDFLD must be alphanumeric or group data areas of fixed length");
+                    }
+                }
+                if (spec.length() > from.constantLength().getAsInt()) {
+                    throw new IllegalArgumentException("WRITE FILE LENGTH " + spec.length()
+                            + " exceeds the FROM data area of " + from.constantLength().getAsInt() + " bytes");
+                }
+                if (spec.keyLength() > ridfld.constantLength().getAsInt()) {
+                    throw new IllegalArgumentException("WRITE FILE KEYLENGTH " + spec.keyLength()
+                            + " exceeds the RIDFLD data area of " + ridfld.constantLength().getAsInt() + " bytes");
+                }
+                return withCicsResponse(new Statement.CicsWriteFile(spec.fileLiteral(), fileData, from, ridfld,
+                        spec.length(), spec.keyLength(), parsed.response() != null || parsed.noHandle(), origin),
+                        parsed, origin);
+            }
             if (parsed.terminal() != null) {
                 CicsBlockParser.TerminalSpec spec = parsed.terminal();
                 String command = spec.set() ? "SET TERMINAL" : "INQUIRE TERMINAL";

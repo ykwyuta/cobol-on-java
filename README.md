@@ -187,12 +187,13 @@ NIST CCVS85 の<b>受理率</b>は 96.9% (458 本中 444 本、壊れたもの 0
 `ACCEPT` のすぐあとで対になる項目と比べており、合否を決めるのはプログラムのほうである。
 配布物の検査プログラムは<b>全数を流している</b> (札が足りずに流せないものは無い)。
 CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資産 32 本を
-`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 26 本</b>である。
+`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 27 本</b>である。
 全診断を数えると、BMS 記号マップ写し句、`DFHAID`、EIB、`RETURN IMMEDIATE`、`PROGRAM(データ名)`、
 `LENGTH` を省いた `COMMAREA`、`ASSIGN`、`ASKTIME` / `FORMATTIME`、`DELAY`、`SEND MAP` / `TEXT` /
 `CONTROL`、`RECEIVE MAP`、`ABEND ABCODE(データ名)`、`BIF DEEDIT`、`EXEC SQL` の初期 subset、
 `USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER`、`ENQ` / `DEQ` はもう止めていない (設計 79)。残る CICS 命令は
-`INQUIRE ASSOCIATION` (1)、`WRITE` (ファイル制御、1) である。`RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。
+`INQUIRE ASSOCIATION` (1) である。`WRITE FILE` は固定長 KSDS へ鍵で書く形を、バッチと同じ索引編成の
+データセットで扱う (P-131)。`RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。
 `DFHVALUE` と `INQUIRE` / `SET TERMINAL UCTRANST` は task の端末に限って扱う。CVDA の数は CICS TS の表による
 (TXSeries の表は数が違う。P-130)。
 `DFHBMSCA` は公開文書の意味を 3270 の属性 byte で表して作る (P-129)。

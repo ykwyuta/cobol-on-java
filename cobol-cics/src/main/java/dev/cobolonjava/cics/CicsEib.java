@@ -34,6 +34,9 @@ public final class CicsEib {
     public static final int EIBFN_LENGTH = 2;
     public static final int EIBRCODE_OFFSET = 0x1D;
     public static final int EIBRCODE_LENGTH = 6;
+    /** file control が指した file の名前。EIBRCODE の直後の 8 byte である。 */
+    public static final int EIBDS_OFFSET = 0x23;
+    public static final int EIBDS_LENGTH = 8;
     public static final int EIBRESP_OFFSET = 0x4C;
     public static final int EIBRESP_LENGTH = 4;
     public static final int EIBRESP2_OFFSET = 0x50;
@@ -72,6 +75,18 @@ public final class CicsEib {
             System.arraycopy(encoded, 0, name, 0, Math.min(encoded.length, EIBTRMID_LENGTH));
             storage.view(EIBTRMID_OFFSET, EIBTRMID_LENGTH).setBytes(name);
         });
+    }
+
+    /** file control が指した file の名前を EIBDS に置く。8 文字に空白を詰める。 */
+    public void setDataset(String file, CodePage codePage) {
+        byte[] name = new byte[EIBDS_LENGTH];
+        Arrays.fill(name, codePage.space());
+        byte[] encoded = codePage.encode(Objects.requireNonNull(file, "file"));
+        if (encoded.length > EIBDS_LENGTH) {
+            throw new IllegalArgumentException("file name exceeds EIBDS: " + file);
+        }
+        System.arraycopy(encoded, 0, name, 0, encoded.length);
+        storage.view(EIBDS_OFFSET, EIBDS_LENGTH).setBytes(name);
     }
 
     /** 端末入力の AID と cursor 位置を置く。 */
@@ -151,6 +166,14 @@ public final class CicsEib {
             // binary zero を置く (設計 79 §3.3)。資産は RESP で判定している
             if ((functionCode & 0xFF00) != 0x1800) {
                 throw new IllegalArgumentException("MAPFAIL is only classified for BMS commands");
+            }
+        } else if (responseCode == CicsResponseCode.FILENOTFOUND
+                || responseCode == CicsResponseCode.DUPREC
+                || responseCode == CicsResponseCode.NOSPACE) {
+            // file control の群の EIBRCODE の byte は確かめていないので binary zero を置く (暫定判断 P-131)
+            if ((functionCode & 0xFF00) != 0x0600) {
+                throw new IllegalArgumentException(
+                        "RESP=" + responseCode + " EIBRCODE is only classified for file control commands");
             }
         } else if (responseCode == CicsResponseCode.ENQBUSY) {
             // task 制御の群の EIBRCODE も公開情報から確定できないので binary zero を置く (暫定判断 P-128)
