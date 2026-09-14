@@ -569,6 +569,11 @@ public final class DataDivisionBuilder {
             item.markIndexDeclared();
             return;
         }
+        if (name.equals("POINTER")) {
+            // 大きさを決めるのは木ができてからである (暫定判断 P-123)
+            item.markPointer();
+            return;
+        }
         Usage usage = switch (name) {
             case "DISPLAY" -> Usage.DISPLAY;
             case "PACKED-DECIMAL", "COMP-3", "COMPUTATIONAL-3" -> Usage.COMP_3;
@@ -595,6 +600,22 @@ public final class DataDivisionBuilder {
      * <p>{@code PICTURE} が書かれていれば誤りとして報せる。黙って通すと、書いた人の
      * 思った大きさと違う項目ができる。
      */
+    /**
+     * {@code USAGE POINTER} の基本項目 (暫定判断 P-123)。
+     *
+     * <p>31 bit の番地を持つ 4 byte の領域とする。この処理系は記憶域の番地を持たないので、
+     * 置ける値は NULL ({@code X'00000000'}) だけである。領域は英数字として割り付け、
+     * 手続き部では SET と群の転記だけを許す。
+     */
+    private void applyPointerUsage(DataItem item) {
+        if (item.picture() != null) {
+            report(item.origin(), "USAGE POINTER cannot have a PICTURE: " + describe(item));
+            return;
+        }
+        item.setPicture(PictureParser.parse("X(4)"));
+        item.setUsage(Usage.DISPLAY);
+    }
+
     private void applyIndexUsage(DataItem item, Origin origin) {
         if (item.picture() != null) {
             report(origin, "USAGE INDEX cannot have a PICTURE: " + item.name());
@@ -1661,9 +1682,15 @@ public final class DataDivisionBuilder {
         if (item.isElementary()) {
             if (index) {
                 applyIndexUsage(item, item.origin());
+            } else if (item.isPointer()) {
+                applyPointerUsage(item);
             } else if (item.usage() == null && usage != null) {
                 item.setUsage(usage);
             }
+            return;
+        }
+        if (item.isPointer()) {
+            report(item.origin(), "USAGE POINTER on a group item is not supported yet: " + describe(item));
             return;
         }
         for (DataItem child : item.children()) {

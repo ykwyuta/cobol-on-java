@@ -541,6 +541,11 @@ EXEC CICS POP HANDLE END-EXEC
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。
 
+#### `USAGE POINTER` と `LENGTH OF`
+
+- `USAGE POINTER` は 4 byte の項目で、`SET 項目 TO NULL` だけを扱います。`ADDRESS OF` と POINTER の MOVE は未対応です。
+- `LENGTH OF 項目` は、長さが翻訳時に決まる項目の長さの整数定数になります (暫定判断 P-123)。
+
 #### `EXEC SQL` (Db2 連携)
 
 - `SELECT ... INTO ... FROM`、`INSERT`、`UPDATE`、`DELETE`、`DECLARE c CURSOR FOR SELECT`、`OPEN` / `FETCH ... INTO` / `CLOSE`、`COMMIT [WORK]` / `ROLLBACK [WORK]`、`DECLARE t TABLE` を翻訳します。host variable (`:名前`、`:名前:標識`) は固定長文字・COMP-3・ゾーン 10 進・2 進に限ります。結果は SQLCA の SQLCODE / SQLSTATE / SQLERRD(3) に置きます。動的 SQL、`WHENEVER`、`WHERE CURRENT OF`、`FOR UPDATE` は未対応です (暫定判断 P-121)。

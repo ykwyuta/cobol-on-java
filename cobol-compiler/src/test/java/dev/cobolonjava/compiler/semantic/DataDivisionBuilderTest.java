@@ -413,11 +413,12 @@ class DataDivisionBuilderTest {
     @Test
     @DisplayName("未対応の USAGE は黙って通さない (P-006)")
     void anUnsupportedUsageIsReported() {
+        // POINTER は NULL だけを置ける 4 byte 項目として受けるようになった (暫定判断 P-123)
         DataDivisionBuilder.Result result = build(
                 "01 WS-REC.",
-                "   05 WS-P POINTER.");
+                "   05 WS-P PIC X(2) USAGE DISPLAY-1.");
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("POINTER"),
+        assertTrue(result.diagnostics().get(0).message().contains("DISPLAY-1"),
                 result.diagnostics().toString());
     }
 
@@ -439,7 +440,7 @@ class DataDivisionBuilderTest {
         DataDivisionBuilder.Result result = build(
                 "01 WS-REC.",
                 "   05 WS-A PIC X.",
-                "   05 WS-B POINTER.");
+                "   05 WS-B PIC X(2) USAGE DISPLAY-1.");
 
         Diagnostic first = result.diagnostics().get(0);
         assertEquals(FILE, first.origin().fileName());

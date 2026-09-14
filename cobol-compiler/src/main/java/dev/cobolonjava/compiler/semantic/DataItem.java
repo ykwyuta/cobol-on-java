@@ -174,6 +174,17 @@ public final class DataItem {
 
     private boolean indexDeclared;
 
+    /** {@code USAGE POINTER} と書かれたか。番地を持つ項目であり、SET と群の転記でだけ扱う。 */
+    private boolean pointer;
+
+    public boolean isPointer() {
+        return pointer;
+    }
+
+    void markPointer() {
+        this.pointer = true;
+    }
+
     public boolean isIndex() {
         return index;
     }

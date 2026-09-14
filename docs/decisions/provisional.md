@@ -3766,3 +3766,32 @@ COMMAREA も入口では断らない。渡された範囲を越えて読めば�
 (記憶域の中身が見える) は再現しない。
 
 **解消条件**: `SET ADDRESS` / `ADDRESS OF` を入れるときに、USING 以外で番地を持つ連絡節項目を扱う。
+
+---
+
+## P-123 USAGE POINTER は NULL だけを置ける 4 byte 項目、LENGTH OF は翻訳時の定数とする
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。P-006 の POINTER の部分を狭めて解消 |
+| 場所 | `DataDivisionBuilder.applyPointerUsage`、`ProcedureBuilder.indexSetOf` / `checkMove` / `lengthOfOperand` |
+| 関連要件 | FR-020, FR-084 |
+
+**暫定の扱い**: Bank-of-Z が POINTER に対して行うのは宣言と `SET x TO NULL` だけであり、
+`ADDRESS OF` は使っていない。そこで次に限った。
+
+- `USAGE POINTER` (USAGE を省いた `POINTER` を含む) の基本項目は 31 bit の番地を表す 4 byte とする。
+  PICTURE を書けば断る。群に書いた POINTER は断る
+- 置ける値は NULL (`X'00000000'`) だけで、`SET ... TO NULL` で置く。この処理系は記憶域の番地を
+  持たないので、`ADDRESS OF`、`SET ADDRESS OF`、NULL 以外の SET は扱わない
+- 基本項目の POINTER は MOVE の送り側にも受取側にもしない。群としての転記と REDEFINES では byte として見える
+
+`LENGTH OF 項目` は、`LENGTH` という名前の項目が無いとき特殊レジスタとして扱い、翻訳時に長さが
+決まる項目の長さの整数定数にする。修飾名、添字つき、可変長の項目は断る。
+
+**どこがずれうるか**: Enterprise COBOL の `LP(64)` では POINTER は 8 byte である。Bank-of-Z の
+INQACC は POINTER を `PIC X(8)` と `PIC 9(8) BINARY` (4 byte) の両方で REDEFINES しており、
+どちらを前提にしたかは決まらない。NULL との比較、`ADDRESS OF`、`LENGTH OF` の添字つき・修飾名は未対応。
+
+**解消条件**: 番地を扱う連絡節の設計 (P-122) と合わせて `ADDRESS OF` を入れる。LP の既定を資産の
+コンパイル option から決める。

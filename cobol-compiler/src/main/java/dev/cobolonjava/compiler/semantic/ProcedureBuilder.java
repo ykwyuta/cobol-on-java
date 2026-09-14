@@ -2901,6 +2901,18 @@ public final class ProcedureBuilder {
             if (reference == null) {
                 return null;
             }
+            if (reference.item().isPointer()) {
+                // 番地を持たないので、置けるのは NULL だけである (暫定判断 P-123)
+                boolean isNull = value instanceof Operand.Literal literal
+                        && literal.value() instanceof LiteralValue.Figure figure
+                        && figure.constant() == LiteralValue.FigurativeConstant.NULL;
+                if (stepping || !isNull) {
+                    report(origin, "SET of a POINTER item supports only TO NULL: " + describe(reference));
+                    return null;
+                }
+                targets.add(new Statement.Arithmetic.Target(reference, false));
+                continue;
+            }
             if (stepping && !reference.item().isIndex()) {
                 report(origin, "SET UP/DOWN BY requires an index name: " + describe(reference));
                 return null;
@@ -4430,6 +4442,9 @@ public final class ProcedureBuilder {
         if (isDfhresp(context.identifier())) {
             return dfhrespOf(context.identifier(), origin);
         }
+        if (isLengthOf(context.identifier())) {
+            return lengthOfOperand(context.identifier(), origin);
+        }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
     }
@@ -4522,6 +4537,38 @@ public final class ProcedureBuilder {
             report(origin, unsupported.getMessage());
             return null;
         }
+    }
+
+    /**
+     * {@code LENGTH OF 項目} (暫定判断 P-123)。
+     *
+     * <p>構文解析は {@code LENGTH OF X} を修飾名として読む。{@code LENGTH} という名前の項目が
+     * 無いときだけ特殊レジスタとして扱い、長さが翻訳時に決まる項目の長さの定数にする。
+     */
+    private boolean isLengthOf(CobolParser.IdentifierContext context) {
+        return context != null
+                && context.subscripts() == null
+                && context.referenceModifier() == null
+                && context.qualifiedDataName().dataName().size() >= 2
+                && context.qualifiedDataName().dataName(0).getText().equalsIgnoreCase("LENGTH")
+                && layout.findAll("LENGTH").isEmpty();
+    }
+
+    private Operand lengthOfOperand(CobolParser.IdentifierContext context, Origin origin) {
+        if (context.qualifiedDataName().dataName().size() != 2) {
+            report(origin, "LENGTH OF a qualified name is not supported yet");
+            return null;
+        }
+        String name = context.qualifiedDataName().dataName(1).getText().toUpperCase(Locale.ROOT);
+        DataReference reference = resolver.resolveName(name, origin);
+        if (reference == null) {
+            return null;
+        }
+        if (reference.constantLength().isEmpty()) {
+            report(origin, "LENGTH OF requires an item with a fixed length: " + name);
+            return null;
+        }
+        return new Operand.Literal(numberOf(reference.constantLength().getAsInt()));
     }
 
     private boolean isDfhresp(CobolParser.IdentifierContext context) {
@@ -4695,6 +4742,12 @@ public final class ProcedureBuilder {
             report(origin, "an index name cannot receive a MOVE: " + describe(target));
             return null;
         }
+        if (!allowIndex && (target.item().isPointer()
+                || (source instanceof Operand.Reference sent && sent.reference().item().isPointer()))) {
+            // 基本項目の POINTER は転記の送り側にも受取側にもならない。SET だけが扱う
+            report(origin, "a POINTER item cannot be used in a MOVE: " + describe(target));
+            return null;
+        }
         DataCategory receiver = DataCategory.of(target);
         DataCategory sender = categoryOf(source, receiver);
         if (!MoveRules.isAllowed(sender, receiver)) {
@@ -4741,6 +4794,9 @@ public final class ProcedureBuilder {
         }
         if (isDfhresp(context.identifier())) {
             return dfhrespOf(context.identifier(), origin);
+        }
+        if (isLengthOf(context.identifier())) {
+            return lengthOfOperand(context.identifier(), origin);
         }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
