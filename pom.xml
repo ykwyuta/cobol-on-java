@@ -25,6 +25,7 @@
     <module>cobol-db2</module>
     <module>cobol-db2-jdbc</module>
     <module>cobol-spring-boot-4-autoconfigure</module>
+    <module>cobol-spring-boot-4-bms-thymeleaf</module>
     <module>cobol-oracle</module>
     <module>cobol-compiler</module>
     <module>cobol-junit</module>

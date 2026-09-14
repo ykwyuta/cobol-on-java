@@ -71,7 +71,8 @@ BMSは翻訳時の部分を先に実装した（2026-09-14）。`cobol-cics`の`
 記号マップ写し句3本を外の基準にした（暫定判断P-112）。`DFHAID`はIBM提供写し句の原文を参照せず、
 3270データストリームの公開AID値から16進定数で作る（`CicsSystemCopybooks`）。
 `SEND MAP` / `RECEIVE MAP`、物理マップと画面snapshot、`BmsInputDecoder`、`DFHBMSCA`、
-Thymeleaf renderer、JavaScript terminal state machineは未実装である。
+Thymeleaf renderer と JavaScript の端末操作は第 1 増分を `cobol-spring-boot-4-bms-thymeleaf` に実装した
+(設計 81)。renderer spike で方式を決め、HTTP 入口は認証・CSRF・Session の adapter と一緒に入れる。
 EIBは初期subsetとして`EIBTRNID`、`EIBCALEN`、`EIBFN`、`EIBRCODE`、`EIBRESP`、`EIBRESP2`を
 実装済みである。`EIBTIME`、`EIBDATE`、`EIBTASKN`、`EIBTRMID`、`EIBCPOSN`、`EIBAID`も公開位置の
 読み取り専用項目として公開した。`EIBTASKN`は`CicsTaskContext.taskNumber`、`EIBDATE` / `EIBTIME`は

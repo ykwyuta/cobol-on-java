@@ -1,0 +1,218 @@
+/* BMS 画面 (設計 77 §4.5.2、設計 81)。行と桁は server が並べる。JavaScript が無くても等幅で揃う。 */
+.bms-terminal {
+  --bms-cell-height: 1.35em;
+  --bms-background: #000;
+  --bms-neutral: #e0e0e0;
+  font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 16px;
+  background: var(--bms-background);
+  color: var(--bms-neutral);
+  display: inline-block;
+  padding: 0.5em;
+  overflow: auto;
+  max-width: 100%;
+}
+
+.bms-screen {
+  line-height: var(--bms-cell-height);
+}
+
+/* flex の中では要素の間の空白の文字は捨てられる。template の改行が桁をずらさない */
+.bms-row {
+  display: flex;
+  height: var(--bms-cell-height);
+}
+
+.bms-space,
+.bms-field {
+  flex: none;
+  font: inherit;
+  white-space: pre;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  letter-spacing: 0;
+}
+
+input.bms-field {
+  box-sizing: content-box;
+  height: var(--bms-cell-height);
+  line-height: var(--bms-cell-height);
+  outline: none;
+  caret-color: currentColor;
+}
+
+input.bms-field:focus {
+  box-shadow: inset 0 -2px 0 currentColor;
+}
+
+.bms-normal { font-weight: normal; }
+/* 太字にすると等幅でも幅が変わる書体があるので、明るさは色で表す */
+.bms-bright { filter: brightness(1.4); }
+.bms-dark { color: transparent; }
+
+.bms-color-blue { color: #7890f0; }
+.bms-color-red { color: #f07878; }
+.bms-color-pink { color: #f078f0; }
+.bms-color-green { color: #78f078; }
+.bms-color-turquoise { color: #78f0f0; }
+.bms-color-yellow { color: #f0f078; }
+.bms-color-neutral { color: var(--bms-neutral); }
+
+.bms-hl-underline { text-decoration: underline; }
+.bms-hl-reverse { background: currentColor; filter: invert(1); }
+.bms-hl-blink { animation: bms-blink 1s steps(1) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bms-hl-blink { animation: none; text-decoration: underline double; }
+}
+
+@keyframes bms-blink {
+  50% { visibility: hidden; }
+}
+
+.bms-keys {
+  margin-top: 0.5em;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25em;
+}
+
+.bms-terminal[data-locked="true"] .bms-keys button { opacity: 0.5; }
+
+/* 入力 field の幅。生成した列挙の class だけを使い、任意の style は書かない */
+.bms-len-1 { width: 1ch; }
+.bms-len-2 { width: 2ch; }
+.bms-len-3 { width: 3ch; }
+.bms-len-4 { width: 4ch; }
+.bms-len-5 { width: 5ch; }
+.bms-len-6 { width: 6ch; }
+.bms-len-7 { width: 7ch; }
+.bms-len-8 { width: 8ch; }
+.bms-len-9 { width: 9ch; }
+.bms-len-10 { width: 10ch; }
+.bms-len-11 { width: 11ch; }
+.bms-len-12 { width: 12ch; }
+.bms-len-13 { width: 13ch; }
+.bms-len-14 { width: 14ch; }
+.bms-len-15 { width: 15ch; }
+.bms-len-16 { width: 16ch; }
+.bms-len-17 { width: 17ch; }
+.bms-len-18 { width: 18ch; }
+.bms-len-19 { width: 19ch; }
+.bms-len-20 { width: 20ch; }
+.bms-len-21 { width: 21ch; }
+.bms-len-22 { width: 22ch; }
+.bms-len-23 { width: 23ch; }
+.bms-len-24 { width: 24ch; }
+.bms-len-25 { width: 25ch; }
+.bms-len-26 { width: 26ch; }
+.bms-len-27 { width: 27ch; }
+.bms-len-28 { width: 28ch; }
+.bms-len-29 { width: 29ch; }
+.bms-len-30 { width: 30ch; }
+.bms-len-31 { width: 31ch; }
+.bms-len-32 { width: 32ch; }
+.bms-len-33 { width: 33ch; }
+.bms-len-34 { width: 34ch; }
+.bms-len-35 { width: 35ch; }
+.bms-len-36 { width: 36ch; }
+.bms-len-37 { width: 37ch; }
+.bms-len-38 { width: 38ch; }
+.bms-len-39 { width: 39ch; }
+.bms-len-40 { width: 40ch; }
+.bms-len-41 { width: 41ch; }
+.bms-len-42 { width: 42ch; }
+.bms-len-43 { width: 43ch; }
+.bms-len-44 { width: 44ch; }
+.bms-len-45 { width: 45ch; }
+.bms-len-46 { width: 46ch; }
+.bms-len-47 { width: 47ch; }
+.bms-len-48 { width: 48ch; }
+.bms-len-49 { width: 49ch; }
+.bms-len-50 { width: 50ch; }
+.bms-len-51 { width: 51ch; }
+.bms-len-52 { width: 52ch; }
+.bms-len-53 { width: 53ch; }
+.bms-len-54 { width: 54ch; }
+.bms-len-55 { width: 55ch; }
+.bms-len-56 { width: 56ch; }
+.bms-len-57 { width: 57ch; }
+.bms-len-58 { width: 58ch; }
+.bms-len-59 { width: 59ch; }
+.bms-len-60 { width: 60ch; }
+.bms-len-61 { width: 61ch; }
+.bms-len-62 { width: 62ch; }
+.bms-len-63 { width: 63ch; }
+.bms-len-64 { width: 64ch; }
+.bms-len-65 { width: 65ch; }
+.bms-len-66 { width: 66ch; }
+.bms-len-67 { width: 67ch; }
+.bms-len-68 { width: 68ch; }
+.bms-len-69 { width: 69ch; }
+.bms-len-70 { width: 70ch; }
+.bms-len-71 { width: 71ch; }
+.bms-len-72 { width: 72ch; }
+.bms-len-73 { width: 73ch; }
+.bms-len-74 { width: 74ch; }
+.bms-len-75 { width: 75ch; }
+.bms-len-76 { width: 76ch; }
+.bms-len-77 { width: 77ch; }
+.bms-len-78 { width: 78ch; }
+.bms-len-79 { width: 79ch; }
+.bms-len-80 { width: 80ch; }
+.bms-len-81 { width: 81ch; }
+.bms-len-82 { width: 82ch; }
+.bms-len-83 { width: 83ch; }
+.bms-len-84 { width: 84ch; }
+.bms-len-85 { width: 85ch; }
+.bms-len-86 { width: 86ch; }
+.bms-len-87 { width: 87ch; }
+.bms-len-88 { width: 88ch; }
+.bms-len-89 { width: 89ch; }
+.bms-len-90 { width: 90ch; }
+.bms-len-91 { width: 91ch; }
+.bms-len-92 { width: 92ch; }
+.bms-len-93 { width: 93ch; }
+.bms-len-94 { width: 94ch; }
+.bms-len-95 { width: 95ch; }
+.bms-len-96 { width: 96ch; }
+.bms-len-97 { width: 97ch; }
+.bms-len-98 { width: 98ch; }
+.bms-len-99 { width: 99ch; }
+.bms-len-100 { width: 100ch; }
+.bms-len-101 { width: 101ch; }
+.bms-len-102 { width: 102ch; }
+.bms-len-103 { width: 103ch; }
+.bms-len-104 { width: 104ch; }
+.bms-len-105 { width: 105ch; }
+.bms-len-106 { width: 106ch; }
+.bms-len-107 { width: 107ch; }
+.bms-len-108 { width: 108ch; }
+.bms-len-109 { width: 109ch; }
+.bms-len-110 { width: 110ch; }
+.bms-len-111 { width: 111ch; }
+.bms-len-112 { width: 112ch; }
+.bms-len-113 { width: 113ch; }
+.bms-len-114 { width: 114ch; }
+.bms-len-115 { width: 115ch; }
+.bms-len-116 { width: 116ch; }
+.bms-len-117 { width: 117ch; }
+.bms-len-118 { width: 118ch; }
+.bms-len-119 { width: 119ch; }
+.bms-len-120 { width: 120ch; }
+.bms-len-121 { width: 121ch; }
+.bms-len-122 { width: 122ch; }
+.bms-len-123 { width: 123ch; }
+.bms-len-124 { width: 124ch; }
+.bms-len-125 { width: 125ch; }
+.bms-len-126 { width: 126ch; }
+.bms-len-127 { width: 127ch; }
+.bms-len-128 { width: 128ch; }
+.bms-len-129 { width: 129ch; }
+.bms-len-130 { width: 130ch; }
+.bms-len-131 { width: 131ch; }
+.bms-len-132 { width: 132ch; }

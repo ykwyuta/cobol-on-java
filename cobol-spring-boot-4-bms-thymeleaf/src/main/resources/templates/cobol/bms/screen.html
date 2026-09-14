@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+  <meta charset="utf-8">
+  <title th:text="${screen.mapset + ' ' + screen.map}">BMS screen</title>
+  <link rel="stylesheet" th:href="${bmsAssets + '/bms.css'}">
+</head>
+<body>
+<form class="bms-terminal" method="post"
+      th:action="${action}"
+      th:attr="data-rows=${screen.rows},data-columns=${screen.columns},data-cursor-row=${screen.cursorRow},data-cursor-column=${screen.cursorColumn},data-alarm=${screen.alarm},data-keyboard-restored=${screen.keyboardRestored}">
+  <div class="bms-screen" role="group" th:attr="aria-label=${screen.map}">
+    <div class="bms-row" th:each="line : ${screen.lines}">
+      <th:block th:each="item : ${line.items}">
+        <span th:if="${item.segment == null}" class="bms-space" th:text="${item.blank}"></span>
+        <th:block th:unless="${item.segment == null}" th:with="segment=${item.segment}">
+          <input th:if="${segment.input}"
+                 th:type="${segment.dark} ? 'password' : 'text'"
+                 th:name="${segment.parameterName}"
+                 th:value="${segment.text}"
+                 th:class="${segment.cssClass}"
+                 th:attr="maxlength=${segment.length},data-row=${segment.row},data-column=${segment.column},data-length=${segment.length},data-numeric=${segment.numeric},data-fset=${segment.modified},aria-label=${segment.label}"
+                 autocomplete="off" spellcheck="false">
+          <span th:unless="${segment.input}"
+                th:text="${segment.text}"
+                th:class="${segment.cssClass}"
+                th:attr="data-row=${segment.row},data-column=${segment.column},data-length=${segment.length}"></span>
+        </th:block>
+      </th:block>
+    </div>
+  </div>
+  <input type="hidden" name="cursor" value="-1">
+  <input th:if="${_csrf != null}" type="hidden" th:name="${_csrf.parameterName}" th:value="${_csrf.token}">
+  <div class="bms-keys" role="toolbar" aria-label="Terminal keys">
+    <button type="submit" name="aid" value="ENTER">Enter</button>
+    <button type="submit" name="aid" value="CLEAR">Clear</button>
+    <button th:each="n : ${#numbers.sequence(1, 12)}" type="submit" name="aid"
+            th:value="${'PF' + n}" th:text="${'PF' + n}">PF</button>
+  </div>
+</form>
+<script type="module" th:src="${bmsAssets + '/terminal.js'}"></script>
+</body>
+</html>

@@ -4043,3 +4043,28 @@ READ / REWRITE / DELETE / browse は後続増分とする。
 SPI の NOTAUTH の検査は持たない。
 
 **解消条件**: 実機で端末から起きた task の origin data と、START で起きた task の値を採る。
+
+## P-133 BMS の Web 描画は server が行を並べ、属性は列挙した class だけで表す
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `cobol-spring-boot-4-bms-thymeleaf` (`BmsScreenViewFactory`、`screen.html`、`bms.css`、`terminal.js`) |
+| 関連要件 | 設計 77 §4.5.2〜4.5.5、設計 81 |
+
+**暫定の扱い**:
+
+- 行と桁は server が「空白の並び」と「field」の列にして並べる。JavaScript が読めなくても画面は崩れない。
+  最初の試作 (JavaScript で grid に置く形) は、script が読めないと全 field が 1 行に詰まった (設計 81 §3.1)
+- 入力 field の幅は `bms-len-1`〜`bms-len-132` の列挙 class で決める。style 属性、任意の class、`th:utext` は使わない
+- DRK の値は DOM に出さない。入力は `type="password"` で値を空に、出力は長さぶんの空白にする
+  (空にすると幅が 0 になり後ろの field がずれることを spike の測定で見つけた)
+- BRT は太字でなく明るさで表す。書体によっては太字で等幅の幅が変わるからである
+- 名前の無い非保護 field は RECEIVE MAP へ届かないので出力として描く。画面端をまたぐ field と重なる field は断る
+- HTTP 入口は構成しない。認証、CSRF、会話 ID と冪等キーの検査、Spring Session を持たない入口は既定で開けない
+- JavaScript を使えない利用者は MDT を送れず、全入力 field を送る。FSET と変更の区別は server の照合に任せる
+
+**どこがずれうるか**: 3270 の insert / overwrite、Tab / Backtab、erase EOF、IME / DBCS、font の読み込み前後の cell 幅、
+画面端で折り返す field は扱っていない。spike で試作した方式は 1 つで、per-cell DOM と canvas hybrid は比べていない。
+
+**解消条件**: 設計 81 §6 の項目を次の spike で測る。Spring Security / Session の adapter と一緒に HTTP 入口を入れる。

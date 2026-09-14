@@ -23,6 +23,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: JUnit による COBOL 単体テスト](docs/design/76-junit-testing.md)
 - [設計: Spring Boot 4.1 による CICS / Db2 連携](docs/design/77-spring-cics-db2.md)
 - [設計: CICS 資源ポート (時間・間隔・端末・システム情報) と BMS 実行時](docs/design/79-cics-resource-ports.md)
+- [設計: BMS 画面の Web 描画 (Thymeleaf adapter) と renderer spike](docs/design/81-bms-web-renderer.md)
 - [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
 - [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
@@ -69,6 +70,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。driver管理 `WITH HOLD`、CICS MVC / Session は未実装 |
+| `cobol-spring-boot-4-bms-thymeleaf` | BMS 画面の Thymeleaf view、端末 JavaScript、CSS | 表示モデル、共通 template、端末操作、form の入力変換を実装。Bank-of-Z の 2 画面をブラウザで測り、JavaScript の有無によらず全 field の行・桁・幅が一致 (設計 81)。HTTP 入口 (認証・CSRF・Session) は未構成 |
 
 ## ビルド
 
