@@ -436,7 +436,9 @@ public final class SpecialNames {
                     "invalid literal: " + entry.literal().getText()));
             return null;
         }
-        if (!(value instanceof LiteralValue.Text text) || text.text().length() != 1) {
+        // 通貨記号は PICTURE の中の文字として読む。16 進定数では文字が決まらない
+        if (!(value instanceof LiteralValue.Text text) || text.isHex()
+                || text.text().length() != 1) {
             diagnostics.add(new Diagnostic(origin,
                     "CURRENCY SIGN requires a one-character alphanumeric literal"));
             return null;

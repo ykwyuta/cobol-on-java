@@ -41,6 +41,11 @@ public final class PreprocessorLexer {
             } else if (c == '\'' || c == '"') {
                 kind = TextWordKind.LITERAL;
                 i = scanLiteral(text, i, c, source);
+            } else if ((c == 'X' || c == 'x') && i + 1 < text.length()
+                    && (text.charAt(i + 1) == '\'' || text.charAt(i + 1) == '"')) {
+                // 16 進定数は 1 個の定数である。X を語として切ると REPLACING ==X== が掴んでしまう
+                kind = TextWordKind.LITERAL;
+                i = scanLiteral(text, i + 1, text.charAt(i + 1), source);
             } else if (SEPARATOR_CHARS.indexOf(c) >= 0) {
                 kind = TextWordKind.SEPARATOR;
                 i++;

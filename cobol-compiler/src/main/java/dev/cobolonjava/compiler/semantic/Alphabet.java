@@ -258,6 +258,14 @@ final class Alphabet {
             diagnostics.add(new Diagnostic(origin, "invalid literal: " + context.getText()));
             return null;
         }
+        if (value instanceof LiteralValue.Text text && text.isHex()) {
+            // 16 進定数はバイトそのものを指す。code page を通さない
+            List<Byte> characters = new ArrayList<>();
+            for (byte b : text.hex()) {
+                characters.add(b);
+            }
+            return characters;
+        }
         if (value instanceof LiteralValue.Text text && text.text().length() > 1) {
             List<Byte> characters = new ArrayList<>();
             for (int i = 0; i < text.text().length(); i++) {
@@ -293,7 +301,10 @@ final class Alphabet {
                 default -> null;
             };
         }
-        if (value instanceof LiteralValue.Text text && text.text().length() == 1) {
+        if (value instanceof LiteralValue.Text text && text.isHex() && text.hex().length == 1) {
+            return text.hex()[0];
+        }
+        if (value instanceof LiteralValue.Text text && !text.isHex() && text.text().length() == 1) {
             return CODE_PAGE.ch(text.text().charAt(0));
         }
         if (value instanceof LiteralValue.Number number) {

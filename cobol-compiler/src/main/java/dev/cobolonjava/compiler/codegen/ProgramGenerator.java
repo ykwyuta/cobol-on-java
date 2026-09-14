@@ -3069,7 +3069,8 @@ public final class ProgramGenerator {
      */
     private Runnable planCallTarget(Operand target, Origin origin) {
         if (target instanceof Operand.Literal literal) {
-            if (!(literal.value() instanceof LiteralValue.Text text)) {
+            if (!(literal.value() instanceof LiteralValue.Text text) || text.isHex()) {
+                // 名前は文字として読む。16 進定数の文字は実行時の code page を知らないと決まらない
                 report(origin, "a program name must be an alphanumeric literal");
                 return null;
             }
@@ -6087,10 +6088,10 @@ public final class ProgramGenerator {
     /** 定数を受取項目の長さまで広げたバイト列。図形定数と {@code ALL} はここで埋める。 */
     private byte[] literalBytes(LiteralValue value, int targetLength) {
         if (value instanceof LiteralValue.Text text) {
-            return codePage.encode(text.text());
+            return text.bytes(codePage);
         }
         if (value instanceof LiteralValue.Repeated repeated) {
-            byte[] unit = codePage.encode(repeated.text());
+            byte[] unit = repeated.bytes(codePage);
             byte[] out = new byte[targetLength];
             for (int i = 0; i < targetLength; i++) {
                 out[i] = unit[i % unit.length];

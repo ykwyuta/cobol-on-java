@@ -310,10 +310,10 @@ public final class InitialImage {
 
     private byte[] textBytes(DataItem item, LiteralValue value, int length) {
         if (value instanceof LiteralValue.Text text) {
-            return codePage.encode(text.text());
+            return text.bytes(codePage);
         }
         if (value instanceof LiteralValue.Repeated repeated) {
-            return repeatToLength(codePage.encode(repeated.text()), length);
+            return repeatToLength(repeated.bytes(codePage), length);
         }
         if (value instanceof LiteralValue.Figure figure) {
             byte[] filled = new byte[length];

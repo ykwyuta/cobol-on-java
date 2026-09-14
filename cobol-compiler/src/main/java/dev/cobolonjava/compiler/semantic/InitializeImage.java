@@ -286,7 +286,7 @@ public final class InitializeImage {
     /** 英数字項目へ入れるバイト列。図形定数は項目の長さいっぱいまで埋める。 */
     private byte[] textOf(LiteralValue value, int length) {
         if (value instanceof LiteralValue.Text text) {
-            return codePage.encode(text.text());
+            return text.bytes(codePage);
         }
         if (value instanceof LiteralValue.Number number) {
             // 英数字の受取項目では<b>英数字定数として扱う</b>。値に直すと先頭の 0 が消える
@@ -294,7 +294,7 @@ public final class InitializeImage {
         }
         byte[] out = new byte[length];
         if (value instanceof LiteralValue.Repeated repeated) {
-            byte[] unit = codePage.encode(repeated.text());
+            byte[] unit = repeated.bytes(codePage);
             for (int i = 0; i < length; i++) {
                 out[i] = unit[i % unit.length];
             }

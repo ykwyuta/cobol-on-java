@@ -72,6 +72,12 @@ public final class Tokenizer {
                 emit(SourceTokenKind.LITERAL, i, scanLiteral(i));
                 continue;
             }
+            if (isHexLiteralStart(i)) {
+                int end = scanLiteral(i + 1);
+                requireHexDigits(i, end);
+                emit(SourceTokenKind.LITERAL, i, end);
+                continue;
+            }
             if (ALWAYS_SEPARATOR.indexOf(c) >= 0 || isSeparatorPunctuation(i)) {
                 emit(SourceTokenKind.SEPARATOR, i, i + 1);
                 continue;
@@ -176,6 +182,32 @@ public final class Tokenizer {
             return false;
         }
         return j + 1 >= text.length() || text.charAt(j + 1) == ' ';
+    }
+
+    /**
+     * 位置 {@code j} から 16 進定数 ({@code X'7D'}) が始まるか。
+     *
+     * <p>語の途中からは始まらない。語は引用符の手前で切れるので、ここへ来るのは
+     * いつも字句の先頭である。
+     */
+    private boolean isHexLiteralStart(int j) {
+        char c = text.charAt(j);
+        return (c == 'X' || c == 'x') && j + 1 < text.length()
+                && (text.charAt(j + 1) == '\'' || text.charAt(j + 1) == '"');
+    }
+
+    /** 16 進定数の中身は、偶数個の 16 進の桁でなければならない。1 バイトに満たない桁を推測で埋めない。 */
+    private void requireHexDigits(int start, int end) {
+        int from = start + 2;
+        int to = end - 1;
+        boolean valid = to > from && (to - from) % 2 == 0;
+        for (int k = from; valid && k < to; k++) {
+            valid = Character.digit(text.charAt(k), 16) >= 0;
+        }
+        if (!valid) {
+            throw new SourceFormatException(source.originOf(start),
+                    "a hexadecimal literal requires an even number of hexadecimal digits");
+        }
     }
 
     private int scanLiteral(int start) {
