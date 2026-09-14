@@ -761,6 +761,8 @@ public final class ProgramGenerator {
                 planCicsAssign(assign, body);
             } else if (statement instanceof Statement.CicsDelay delay) {
                 planCicsDelay(delay, body);
+            } else if (statement instanceof Statement.CicsSend send) {
+                planCicsSend(send, body);
             } else if (statement instanceof Statement.CicsAskTime askTime) {
                 planCicsAskTime(askTime, body);
             } else if (statement instanceof Statement.CicsFormatTime formatTime) {
@@ -942,6 +944,47 @@ public final class ProgramGenerator {
             String descriptor = statement.action() == Statement.CicsAbendHandlerAction.LABEL
                     ? "(" + CONTEXT + "I)V" : "(" + CONTEXT + ")V";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method, descriptor, false);
+        });
+    }
+
+    private void planCicsSend(Statement.CicsSend statement, List<Runnable> body) {
+        Runnable from = statement.from() == null
+                ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                : planWholeView(statement.from(), statement.origin());
+        if (from == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            String descriptor;
+            String method;
+            switch (statement.kind()) {
+                case MAP -> {
+                    run.visitLdcInsn(statement.mapset());
+                    run.visitLdcInsn(statement.map());
+                    from.run();
+                    push(statement.flags());
+                    push(statement.cursor());
+                    method = "sendMapCondition";
+                    descriptor = "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L"
+                            + DATA_VIEW + ";IIZ)I";
+                }
+                case TEXT -> {
+                    from.run();
+                    push(statement.flags());
+                    method = "sendTextCondition";
+                    descriptor = "(" + CONTEXT + "L" + DATA_VIEW + ";IZ)I";
+                }
+                default -> {
+                    push(statement.flags());
+                    push(statement.cursor());
+                    method = "sendControlCondition";
+                    descriptor = "(" + CONTEXT + "IIZ)I";
+                }
+            }
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, method, descriptor, false);
+            emitCicsConditionTransfer();
         });
     }
 

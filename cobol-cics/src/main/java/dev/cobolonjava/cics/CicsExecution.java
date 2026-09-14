@@ -97,6 +97,17 @@ public final class CicsExecution {
         return Optional.ofNullable(deadline);
     }
 
+    /** taskが端末へ最後に送った画面。LINK levelをまたいで1つである。 */
+    private CicsTerminalScreen terminalScreen;
+
+    public synchronized Optional<CicsTerminalScreen> terminalScreen() {
+        return Optional.ofNullable(terminalScreen);
+    }
+
+    synchronized void showScreen(CicsTerminalScreen screen) {
+        terminalScreen = Objects.requireNonNull(screen, "screen");
+    }
+
     /** 初期programまたはXCTL先が、現在のLINK levelのprogramになる。 */
     public synchronized void startProgram(String programName) {
         currentHandleLevel().programName = Objects.requireNonNull(programName, "programName");

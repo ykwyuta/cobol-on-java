@@ -1517,6 +1517,25 @@ public final class ProcedureBuilder {
             if (parsed.delay() != null) {
                 return cicsDelayStatement(parsed, origin);
             }
+            if (parsed.send() != null) {
+                CicsBlockParser.SendSpec spec = parsed.send();
+                DataReference from = null;
+                if (spec.from() != null) {
+                    from = resolver.resolveName(spec.from(), origin);
+                    if (from == null) {
+                        return null;
+                    }
+                    if (from.constantLength().isEmpty()
+                            || !(DataCategory.of(from).isAlphanumericLike()
+                                    || DataCategory.of(from) == DataCategory.GROUP)) {
+                        throw new IllegalArgumentException(
+                                "SEND FROM must be an alphanumeric or group data area");
+                    }
+                }
+                return withCicsResponse(new Statement.CicsSend(spec.kind(), spec.map(),
+                        spec.mapset(), from, spec.flags(), spec.cursor(),
+                        parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+            }
             if (parsed.handleStackAction() != null) {
                 return new Statement.CicsHandleStack(parsed.handleStackAction(), origin);
             }

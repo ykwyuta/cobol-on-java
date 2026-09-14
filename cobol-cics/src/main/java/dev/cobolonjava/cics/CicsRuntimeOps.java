@@ -22,6 +22,10 @@ public final class CicsRuntimeOps {
     /** 間隔制御群のfunction code。実機のEIBFNとは突き合わせていない (暫定判断 P-115)。 */
     private static final int ASKTIME_FUNCTION = 0x1002;
     private static final int DELAY_FUNCTION = 0x1004;
+    /** BMS 群の function code。実機の EIBFN とは突き合わせていない (暫定判断 P-118)。 */
+    private static final int SEND_MAP_FUNCTION = 0x1804;
+    private static final int SEND_TEXT_FUNCTION = 0x1806;
+    private static final int SEND_CONTROL_FUNCTION = 0x1812;
     private static final int FORMATTIME_FUNCTION = 0x104A;
     private static final int LINK_FUNCTION = 0x0E02;
     private static final int XCTL_FUNCTION = 0x0E04;
@@ -377,6 +381,122 @@ public final class CicsRuntimeOps {
                     + sep + two(local.getSecond()), "FORMATTIME TIME");
         }
         completeLocalCommand(required, FORMATTIME_FUNCTION);
+    }
+
+    /** SEND 命令の option を 1 つの int へ畳んだ bit。生成コードの引数を増やさないためである。 */
+    public static final int SEND_ERASE = 1;
+    public static final int SEND_MAPONLY = 2;
+    public static final int SEND_DATAONLY = 4;
+    public static final int SEND_FREEKB = 8;
+    public static final int SEND_ALARM = 16;
+    public static final int SEND_FRSET = 32;
+    /** CURSOR を書かなかった。 */
+    public static final int CURSOR_NONE = -1;
+    /** 値を持たない CURSOR (記号 cursor)。 */
+    public static final int CURSOR_SYMBOLIC = -2;
+    /** SEND TEXT が置ける画面の大きさ。端末 profile を持つまで 24x80 に限る。 */
+    private static final int TEXT_SCREEN_SIZE = 24 * 80;
+
+    /**
+     * SEND MAP (設計 79 §8.3)。
+     *
+     * @param from 記号マップ。MAPONLY なら null
+     */
+    public static int sendMapCondition(
+            ProgramContext context, String mapsetName, String mapName, DataView from,
+            int flags, int cursor, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        dev.cobolonjava.cics.bms.BmsMapsetCatalog catalog = execution.environment().mapsets()
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "SEND MAP requires a configured BMS mapset catalog"));
+        dev.cobolonjava.cics.bms.BmsModel.Mapset mapset = catalog.mapset(mapsetName)
+                .orElseThrow(() -> new CicsTaskStateException("mapset is not defined: " + mapsetName));
+        dev.cobolonjava.cics.bms.BmsModel.Map map = mapset.map(mapName)
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "map " + mapName + " is not defined in mapset " + mapsetName));
+        boolean erase = (flags & SEND_ERASE) != 0;
+        boolean dataOnly = (flags & SEND_DATAONLY) != 0;
+        Optional<CicsTerminalScreen> shown = execution.terminalScreen();
+        if (shown.isPresent() && shown.get() instanceof CicsTerminalScreen.TextScreen
+                && !erase) {
+            throw new CicsTaskStateException("SEND MAP over a text screen requires ERASE");
+        }
+        Optional<dev.cobolonjava.cics.bms.BmsScreenSnapshot> current = shown
+                .filter(CicsTerminalScreen.MapScreen.class::isInstance)
+                .map(screen -> ((CicsTerminalScreen.MapScreen) screen).snapshot());
+        dev.cobolonjava.cics.bms.BmsScreenComposer.SendOptions options =
+                new dev.cobolonjava.cics.bms.BmsScreenComposer.SendOptions(
+                        erase, (flags & SEND_MAPONLY) != 0, dataOnly,
+                        (flags & SEND_FREEKB) != 0, (flags & SEND_ALARM) != 0,
+                        (flags & SEND_FRSET) != 0,
+                        cursor >= 0 ? java.util.OptionalInt.of(cursor) : java.util.OptionalInt.empty(),
+                        cursor == CURSOR_SYMBOLIC);
+        dev.cobolonjava.cics.bms.BmsScreenSnapshot snapshot;
+        try {
+            snapshot = dev.cobolonjava.cics.bms.BmsScreenComposer.send(mapset, map, current,
+                    from == null ? null : from.toByteArray(), options, required.codePage());
+        } catch (IllegalStateException | IllegalArgumentException invalid) {
+            throw new CicsTaskStateException("SEND MAP " + mapName + ": " + invalid.getMessage());
+        }
+        execution.showScreen(new CicsTerminalScreen.MapScreen(snapshot));
+        completeLocalCommand(required, SEND_MAP_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    /** SEND TEXT (設計 79 §8.5)。初期は 1 画面に収まる文字だけを受ける。 */
+    public static int sendTextCondition(
+            ProgramContext context, DataView from, int flags, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        if (Objects.requireNonNull(from, "from").length() > TEXT_SCREEN_SIZE) {
+            throw new CicsTaskStateException("SEND TEXT longer than one 24x80 screen is not supported yet");
+        }
+        if (execution.terminalScreen().isPresent() && (flags & SEND_ERASE) == 0) {
+            throw new CicsTaskStateException("SEND TEXT over an existing screen requires ERASE");
+        }
+        String text = required.codePage().decode(from.toByteArray()).replace(' ', ' ');
+        execution.showScreen(new CicsTerminalScreen.TextScreen(text,
+                (flags & SEND_FREEKB) != 0, (flags & SEND_ALARM) != 0));
+        completeLocalCommand(required, SEND_TEXT_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    /** SEND CONTROL (設計 79 §8.5)。ERASE は画面を空にし、それ以外は画面の内容を変えない。 */
+    public static int sendControlCondition(
+            ProgramContext context, int flags, int cursor, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        boolean freeKeyboard = (flags & SEND_FREEKB) != 0;
+        boolean alarm = (flags & SEND_ALARM) != 0;
+        Optional<CicsTerminalScreen> shown = execution.terminalScreen();
+        CicsTerminalScreen next;
+        if ((flags & SEND_ERASE) != 0 || shown.isEmpty()) {
+            if (cursor >= 0) {
+                throw new CicsTaskStateException("SEND CONTROL CURSOR requires a map on the screen");
+            }
+            next = new CicsTerminalScreen.TextScreen("", freeKeyboard, alarm);
+        } else if (shown.get() instanceof CicsTerminalScreen.MapScreen mapScreen) {
+            try {
+                next = new CicsTerminalScreen.MapScreen(
+                        dev.cobolonjava.cics.bms.BmsScreenComposer.control(mapScreen.snapshot(),
+                                freeKeyboard, alarm, (flags & SEND_FRSET) != 0,
+                                cursor >= 0 ? java.util.OptionalInt.of(cursor)
+                                        : java.util.OptionalInt.empty()));
+            } catch (IllegalStateException invalid) {
+                throw new CicsTaskStateException("SEND CONTROL: " + invalid.getMessage());
+            }
+        } else {
+            CicsTerminalScreen.TextScreen text = (CicsTerminalScreen.TextScreen) shown.get();
+            if (cursor >= 0) {
+                throw new CicsTaskStateException("SEND CONTROL CURSOR requires a map on the screen");
+            }
+            next = new CicsTerminalScreen.TextScreen(text.text(),
+                    text.keyboardRestored() || freeKeyboard, text.alarm() || alarm);
+        }
+        execution.showScreen(next);
+        completeLocalCommand(required, SEND_CONTROL_FUNCTION);
+        return NO_CONDITION_TRANSFER;
     }
 
     /**

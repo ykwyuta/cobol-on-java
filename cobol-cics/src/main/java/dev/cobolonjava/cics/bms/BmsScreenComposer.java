@@ -108,6 +108,27 @@ public final class BmsScreenComposer {
                 options.alarm() || controls.contains(Control.ALARM));
     }
 
+    /**
+     * SEND CONTROL を map の画面へ効かせる (設計 79 §8.5)。画面の内容は変えない。
+     */
+    public static BmsScreenSnapshot control(
+            BmsScreenSnapshot current, boolean freeKeyboard, boolean alarm,
+            boolean resetModified, OptionalInt cursor) {
+        Objects.requireNonNull(current, "current");
+        Objects.requireNonNull(cursor, "cursor");
+        List<FieldState> fields = new ArrayList<>(current.fields());
+        if (resetModified) {
+            fields.replaceAll(field -> field.withModified(false));
+        }
+        int position = cursor.orElse(current.cursorOffset());
+        if (position < -1 || position >= current.rows() * current.columns()) {
+            throw new IllegalStateException("CURSOR is outside the screen: " + position);
+        }
+        return new BmsScreenSnapshot(current.mapset(), current.map(), current.rows(),
+                current.columns(), fields, position,
+                current.keyboardRestored() || freeKeyboard, current.alarm() || alarm);
+    }
+
     private static List<FieldState> fromDefinition(BmsModel.Map map, CodePage codePage) {
         List<FieldState> out = new ArrayList<>();
         for (Field field : map.fields()) {

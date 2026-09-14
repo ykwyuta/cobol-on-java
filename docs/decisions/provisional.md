@@ -3616,3 +3616,34 @@ host の CICS はこの期限の概念を持たず、長い DELAY も待つ。�
 
 **解消条件**: 実機の SEND MAP の 3270 データストリーム (記号 cursor の有無、X'00' データ、
 属性 byte) を採り、合成結果の field 属性・データ・cursor と突き合わせる。
+
+---
+
+## P-118 SEND 命令の翻訳と、task 結果に残す画面
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-14) |
+| 場所 | `CicsBlockParser.parseSend`、`CicsRuntimeOps.sendMapCondition` / `sendTextCondition` / `sendControlCondition`、`CicsTerminalScreen`、`TaskCompletion.screen` |
+| 関連要件 | FR-160, FR-166 |
+
+**暫定の扱い** (設計 79 §8):
+
+- `SEND MAP('m') [MAPSET('s')] FROM(x)` と `ERASE` / `DATAONLY` / `MAPONLY` / `CURSOR[(n)]` /
+  `FREEKB` / `ALARM` / `FRSET`、`RESP` / `RESP2` / `NOHANDLE` を受ける。`MAPSET` を省けば map 名。
+  `FROM` は `MAPONLY` のとき以外は書くことを求める (省いた FROM を map 名 + `O` で補う規則を
+  確かめていない)。`ERASEAUP`、`ACCUM`、`PAGING`、`CURSOR(データ名)` 等は断る
+- `SEND TEXT FROM(x)` は 24x80 に収まる長さに限り、既存の画面の上では `ERASE` を求める
+- `SEND CONTROL` の `ERASE` は画面を空にし、それ以外は画面の内容を変えず keyboard・警報・MDT・
+  cursor だけを変える。map の無い画面への `CURSOR(n)` は断る
+- 送った画面は `CicsExecution` が task に 1 つ持ち、`TaskCompletion.screen` と
+  `CicsTaskReply.screen` で adapter へ渡す。会話への保存と RECEIVE MAP は次の増分
+- mapset の定義は `CicsEnvironment.mapsets` から得る。構成が無ければ実行時に失敗する
+- `EIBFN` は SEND MAP `X'1804'`、SEND TEXT `X'1806'`、SEND CONTROL `X'1812'` とした
+
+**どこがずれうるか**: `EIBFN` の値、SEND TEXT の改行・頁分割、画面の大きさ (端末 profile を
+持たず 24x80 に固定)、SEND 系の非正常 condition (`INVMPSZ`、`MAPFAIL` 等) は実機と突き合わせて
+いない。定義や記号マップの長さの誤りは condition へ分類せず、task を失敗させる。
+
+**解消条件**: host で SEND MAP / TEXT / CONTROL の EIBFN と、定義の無い map・長さ違いの RESP を採る。
+端末 profile を入れるときに画面の大きさと SEND TEXT の分割を決める。

@@ -68,10 +68,11 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                                         + program.value());
                     }
                     return new TaskCompletion(Optional.empty(),
-                            new CicsPayload(commarea.array(), payload.containers()));
+                            new CicsPayload(commarea.array(), payload.containers()))
+                            .withScreen(execution.terminalScreen());
                 } catch (CicsProgramTransfer transfer) {
                     if (transfer.control() instanceof TaskCompletion completion) {
-                        return completion;
+                        return completion.withScreen(execution.terminalScreen());
                     }
                     TransferControl control = (TransferControl) transfer.control();
                     if (++transfers > maxTransfers) {

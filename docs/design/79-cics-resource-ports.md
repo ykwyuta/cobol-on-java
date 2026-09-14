@@ -5,7 +5,7 @@
 | 対応要件 | FR-160, FR-161, FR-162, FR-163, FR-166, FR-167, NFR-034, NFR-036, NFR-037 |
 | 関連 ADR | [ADR-0007](../decisions/0007-framework-neutral-subsystem-ports.md), [ADR-0008](../decisions/0008-cics-on-spring-mvc-and-session.md), [ADR-0010](../decisions/0010-bms-thymeleaf-terminal-ui.md) |
 | 関連設計 | [設計 77](77-spring-cics-db2.md) (task 境界、会話、BMS の UI 方針) |
-| ステータス | 起草 (2026-09-14)。§10 の 1 (動的 PROGRAM) 、2 (ASSIGN APPLID / PROGRAM、`CicsEnvironment` の APPLID)、3 (ASKTIME / FORMATTIME、`CicsEnvironment` の時計)、4 (DELAY、`CicsIntervalPort`) を実装済み。5 は中立な合成部 (`BmsSymbolicLayout` / `BmsScreenComposer` / `BmsScreenSnapshot`) まで実装済み |
+| ステータス | 起草 (2026-09-14)。§10 の 1 (動的 PROGRAM) 、2 (ASSIGN APPLID / PROGRAM、`CicsEnvironment` の APPLID)、3 (ASKTIME / FORMATTIME、`CicsEnvironment` の時計)、4 (DELAY、`CicsIntervalPort`) を実装済み、5 (中立な合成部 `BmsSymbolicLayout` / `BmsScreenComposer` と、`SEND MAP` / `SEND TEXT` / `SEND CONTROL`、task 結果の画面) を実装済み |
 | 証拠レベル | 断りのない限り V1 (IBM 公開仕様の記述) または V0。実 CICS の trace とは突き合わせていない |
 
 ## 1. 目的と範囲

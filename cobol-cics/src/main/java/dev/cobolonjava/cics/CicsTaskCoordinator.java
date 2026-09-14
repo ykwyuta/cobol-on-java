@@ -60,7 +60,7 @@ public final class CicsTaskCoordinator {
             commitStarted = true;
             boundary.commit(plan.mutation, clock.instant());
             return new CicsTaskReply(taskId, definition.transId(), completion.payload(), plan.next,
-                    completion.immediate());
+                    completion.immediate(), completion.screen());
         } catch (RuntimeException failure) {
             runtimeFailure = failure;
             cleanupFailure(boundary, lease, failure, commitStarted);

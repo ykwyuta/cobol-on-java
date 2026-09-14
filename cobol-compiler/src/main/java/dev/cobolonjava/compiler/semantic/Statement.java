@@ -38,6 +38,30 @@ public sealed interface Statement {
     }
 
     /**
+     * EXEC CICS SEND MAP / SEND TEXT / SEND CONTROL (設計 79 §8)。
+     *
+     * @param flags  {@code CicsRuntimeOps.SEND_*} の bit
+     * @param cursor 画面位置、{@code CURSOR_NONE}、または {@code CURSOR_SYMBOLIC}
+     * @param from   SEND MAP の記号マップ、SEND TEXT の文字。書かなければ null
+     */
+    record CicsSend(
+            CicsSendKind kind,
+            String map,
+            String mapset,
+            DataReference from,
+            int flags,
+            int cursor,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
+    enum CicsSendKind {
+        MAP,
+        TEXT,
+        CONTROL
+    }
+
+    /**
      * EXEC CICS DELAY (設計 79 §7)。書かなかった単位は null。
      *
      * @param interval {@code INTERVAL(hhmmss)}。FORの単位と同時には書けない

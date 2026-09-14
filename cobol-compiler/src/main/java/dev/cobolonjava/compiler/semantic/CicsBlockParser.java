@@ -23,6 +23,13 @@ final class CicsBlockParser {
             "(?is)^\\s*EXEC\\s+CICS\\s+HANDLE\\s+ABEND\\b(.*?)END-EXEC\\s*$");
     private static final Pattern HANDLE_ABEND_LABEL = Pattern.compile(
             "(?is)^\\s*LABEL\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)\\s*$");
+    private static final Pattern SEND_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+SEND\\b(.*?)END-EXEC\\s*$");
+    /** SENDのoption。値は引用符つきの名前、データ名、数字、または値なし。 */
+    private static final Pattern SEND_OPTION = Pattern.compile(
+            "(?is)\\s*([A-Z0-9][A-Z0-9-]*)"
+                    + "(?:\\s*\\(\\s*(?:'([^']*)'|(\\d{1,9})|([A-Z][A-Z0-9-]*))\\s*\\))?");
+    private static final Pattern BMS_NAME = Pattern.compile("[A-Z@#$][A-Z0-9@#$]{0,6}");
     private static final Pattern DELAY_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+DELAY\\b(.*?)END-EXEC\\s*$");
     /** DELAYのoption。値はデータ名か符号なし整数、または値なし (FOR、NOHANDLE)。 */
@@ -65,18 +72,22 @@ final class CicsBlockParser {
         if (assign.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
-                    parseAssignments(assign.group(1)), null, null, null);
+                    parseAssignments(assign.group(1)), null, null, null, null);
         }
         Matcher time = TIME_BLOCK.matcher(source);
         if (time.matches()) {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, null, null,
                     List.of(), null,
-                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)), null);
+                    parseTime(time.group(1).toUpperCase(Locale.ROOT), time.group(2)), null, null);
         }
         Matcher delay = DELAY_BLOCK.matcher(source);
         if (delay.matches()) {
             return parseDelay(delay.group(1));
+        }
+        Matcher send = SEND_BLOCK.matcher(source);
+        if (send.matches()) {
+            return parseSend(send.group(1));
         }
         Matcher handleStack = HANDLE_STACK_BLOCK.matcher(source);
         if (handleStack.matches()) {
@@ -84,7 +95,7 @@ final class CicsBlockParser {
                     handleStack.group(1).toUpperCase(Locale.ROOT));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), action, null, null, null, null,
-                    null, null);
+                    null, null, null);
         }
         Matcher handleAbend = HANDLE_ABEND_BLOCK.matcher(source);
         if (handleAbend.matches()) {
@@ -105,7 +116,7 @@ final class CicsBlockParser {
             }
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, action, target, null, null,
-                    null, null);
+                    null, null, null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {
@@ -114,7 +125,7 @@ final class CicsBlockParser {
             List<ConditionSpec> conditions = parseConditions(action, condition.group(2));
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, action, conditions, null, null, null, null, null,
-                    null, null);
+                    null, null, null);
         }
         Matcher block = BLOCK.matcher(source);
         if (!block.matches()) {
@@ -218,7 +229,147 @@ final class CicsBlockParser {
         return new Parsed(operation, target, commarea.value,
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
-                null, List.of(), null, null, null, null, programData.value, null, null);
+                null, List.of(), null, null, null, null, programData.value, null, null, null);
+    }
+
+    /**
+     * SEND MAP / SEND TEXT / SEND CONTROL を読む (設計 79 §8)。
+     *
+     * <p>資産が使う option だけを受ける。{@code ERASEAUP}、{@code ACCUM}、{@code PAGING} 等は
+     * 画面の合成規則を持たないので、名前をつけて断る。
+     */
+    private static Parsed parseSend(String source) {
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate SEND option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        Statement.CicsSendKind kind;
+        java.util.Set<String> allowed;
+        if (options.containsKey("MAP")) {
+            kind = Statement.CicsSendKind.MAP;
+            allowed = Set.of("MAP", "MAPSET", "FROM", "ERASE", "DATAONLY", "MAPONLY", "CURSOR",
+                    "FREEKB", "ALARM", "FRSET", "RESP", "RESP2", "NOHANDLE");
+        } else if (options.containsKey("TEXT")) {
+            kind = Statement.CicsSendKind.TEXT;
+            allowed = Set.of("TEXT", "FROM", "ERASE", "FREEKB", "ALARM", "RESP", "RESP2", "NOHANDLE");
+        } else if (options.containsKey("CONTROL")) {
+            kind = Statement.CicsSendKind.CONTROL;
+            allowed = Set.of("CONTROL", "ERASE", "FREEKB", "ALARM", "FRSET", "CURSOR",
+                    "RESP", "RESP2", "NOHANDLE");
+        } else {
+            throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+        }
+        for (String name : options.keySet()) {
+            if (!allowed.contains(name)) {
+                throw new IllegalArgumentException(
+                        "unsupported SEND " + kind + " option: " + name);
+            }
+        }
+        java.util.function.Predicate<String> flag = name -> {
+            String[] value = options.get(name);
+            if (value == null) {
+                return false;
+            }
+            if (value[0] != null || value[1] != null || value[2] != null) {
+                throw new IllegalArgumentException(name + " does not take a value");
+            }
+            return true;
+        };
+        int flags = (flag.test("ERASE") ? dev.cobolonjava.cics.CicsRuntimeOps.SEND_ERASE : 0)
+                | (flag.test("MAPONLY") ? dev.cobolonjava.cics.CicsRuntimeOps.SEND_MAPONLY : 0)
+                | (flag.test("DATAONLY") ? dev.cobolonjava.cics.CicsRuntimeOps.SEND_DATAONLY : 0)
+                | (flag.test("FREEKB") ? dev.cobolonjava.cics.CicsRuntimeOps.SEND_FREEKB : 0)
+                | (flag.test("ALARM") ? dev.cobolonjava.cics.CicsRuntimeOps.SEND_ALARM : 0)
+                | (flag.test("FRSET") ? dev.cobolonjava.cics.CicsRuntimeOps.SEND_FRSET : 0);
+        if ((flags & dev.cobolonjava.cics.CicsRuntimeOps.SEND_MAPONLY) != 0
+                && (flags & dev.cobolonjava.cics.CicsRuntimeOps.SEND_DATAONLY) != 0) {
+            throw new IllegalArgumentException("MAPONLY and DATAONLY are mutually exclusive");
+        }
+        int cursor = dev.cobolonjava.cics.CicsRuntimeOps.CURSOR_NONE;
+        String[] cursorValue = options.get("CURSOR");
+        if (cursorValue != null) {
+            if (cursorValue[1] != null) {
+                cursor = Integer.parseInt(cursorValue[1]);
+            } else if (cursorValue[0] != null || cursorValue[2] != null) {
+                // CURSOR(データ名) は翻訳時に位置が決まらないので後続増分とする
+                throw new IllegalArgumentException("CURSOR accepts only a numeric position");
+            } else if (kind == Statement.CicsSendKind.MAP) {
+                cursor = dev.cobolonjava.cics.CicsRuntimeOps.CURSOR_SYMBOLIC;
+            } else {
+                throw new IllegalArgumentException("SEND CONTROL CURSOR requires a position");
+            }
+        }
+        String map = null;
+        String mapset = null;
+        if (kind == Statement.CicsSendKind.MAP) {
+            map = bmsName("MAP", options.get("MAP"));
+            mapset = options.containsKey("MAPSET") ? bmsName("MAPSET", options.get("MAPSET")) : map;
+        } else if (kind == Statement.CicsSendKind.TEXT && !flag.test("TEXT")) {
+            throw new IllegalArgumentException("TEXT does not take a value");
+        } else if (kind == Statement.CicsSendKind.CONTROL && !flag.test("CONTROL")) {
+            throw new IllegalArgumentException("CONTROL does not take a value");
+        }
+        String from = null;
+        String[] fromValue = options.get("FROM");
+        if (fromValue != null) {
+            if (fromValue[2] == null) {
+                throw new IllegalArgumentException("FROM requires a data name");
+            }
+            from = fromValue[2];
+        }
+        boolean mapOnly = (flags & dev.cobolonjava.cics.CicsRuntimeOps.SEND_MAPONLY) != 0;
+        if (kind == Statement.CicsSendKind.MAP && from == null && !mapOnly) {
+            // 省いた FROM を map 名 + "O" で補う規則は確かめていないので、書くことを求める
+            throw new IllegalArgumentException("SEND MAP requires FROM unless MAPONLY is specified");
+        }
+        if (kind == Statement.CicsSendKind.MAP && from != null && mapOnly) {
+            throw new IllegalArgumentException("SEND MAP MAPONLY does not accept FROM");
+        }
+        if (kind == Statement.CicsSendKind.TEXT && from == null) {
+            throw new IllegalArgumentException("SEND TEXT requires FROM");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        SendSpec spec = new SendSpec(kind, map, mapset, from, flags, cursor);
+        return new Parsed(null, null, null, -1, response, response2,
+                flag.test("NOHANDLE"), false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, spec);
+    }
+
+    private static String bmsName(String option, String[] value) {
+        if (value[0] == null) {
+            throw new IllegalArgumentException(option + " requires a quoted name");
+        }
+        String name = value[0].strip().toUpperCase(Locale.ROOT);
+        if (!BMS_NAME.matcher(name).matches()) {
+            throw new IllegalArgumentException(option + " must be 1 to 7 characters: " + value[0]);
+        }
+        return name;
+    }
+
+    private static String sendDataName(String[] value, String option) {
+        if (value == null) {
+            return null;
+        }
+        if (value[2] == null) {
+            throw new IllegalArgumentException(option + " requires a data name");
+        }
+        return value[2];
     }
 
     /**
@@ -284,7 +435,7 @@ final class CicsBlockParser {
                         values.getOrDefault("INTERVAL", "0"));
         return new Parsed(null, null, null, -1, response, response2,
                 values.containsKey("NOHANDLE"), false, false, false, false,
-                null, List.of(), null, null, null, List.of(), null, null, spec);
+                null, List.of(), null, null, null, List.of(), null, null, spec, null);
     }
 
     /**
@@ -568,7 +719,8 @@ final class CicsBlockParser {
             List<AssignSpec> assignments,
             String programData,
             TimeSpec time,
-            DelaySpec delay) {
+            DelaySpec delay,
+            SendSpec send) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
@@ -576,6 +728,11 @@ final class CicsBlockParser {
     }
 
     record AssignSpec(Statement.CicsAssignOption option, String target) {
+    }
+
+    /** SEND命令の、データ名を解決する前の形。 */
+    record SendSpec(Statement.CicsSendKind kind, String map, String mapset, String from,
+                    int flags, int cursor) {
     }
 
     /** DELAYの各値。数字だけなら整数定数、そうでなければデータ名。書かなければ null。 */
