@@ -145,6 +145,11 @@ class CicsGenerationTest {
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) TIME(WS-QTIME OF WS-RESP) END-EXEC",
                 "no WS-QTIME is contained in WS-RESP");
+        CobolCompiler.Result lengthOf = compileResult("LENOF", List.of(
+                "EXEC CICS RETURN TRANSID('TX01') COMMAREA(WS-PGM) LENGTH(LENGTH OF WS-PGM) END-EXEC"));
+        assertTrue(lengthOf.succeeded(), () -> "unexpected diagnostics: " + lengthOf.diagnostics());
+        assertRejected("EXEC CICS RETURN TRANSID('TX01') COMMAREA(WS-PGM) LENGTH(LENGTH OF WS-APPL) END-EXEC",
+                "supported only when x is the COMMAREA data area");
     }
 
     @Test

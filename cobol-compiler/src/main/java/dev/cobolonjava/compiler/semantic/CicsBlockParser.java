@@ -71,6 +71,9 @@ final class CicsBlockParser {
                     + "\\s*END-EXEC\\s*$");
     private static final Pattern NAME_OPTION = Pattern.compile(
             "(?is)\\bCOMMAREA\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
+    /** LENGTH(LENGTH OF 項目)。数字だけの LENGTH_OPTION とは重ならない。 */
+    private static final Pattern LENGTH_OF_OPTION = Pattern.compile(
+            "(?is)\\bLENGTH\\s*\\(\\s*LENGTH\\s+OF\\s+([A-Z][A-Z0-9-]*)\\s*\\)");
     private static final Pattern LENGTH_OPTION = Pattern.compile(
             "(?is)\\bLENGTH\\s*\\(\\s*(\\d+)\\s*\\)");
     private static final Pattern RESP_OPTION = Pattern.compile(
@@ -221,6 +224,15 @@ final class CicsBlockParser {
 
         ParsedOption<String> commarea = extractOne(NAME_OPTION, remainder, matcher -> matcher.group(1));
         remainder = commarea.remainder;
+        ParsedOption<String> lengthOf = extractOne(
+                LENGTH_OF_OPTION, remainder, matcher -> matcher.group(1));
+        remainder = lengthOf.remainder;
+        if (lengthOf.value != null
+                && (commarea.value == null || !lengthOf.value.equalsIgnoreCase(commarea.value))) {
+            // COMMAREA 自身の長さなら LENGTH を省いた形と同じである。別の項目の長さは域とずれうるので断る
+            throw new IllegalArgumentException(
+                    "LENGTH(LENGTH OF x) is supported only when x is the COMMAREA data area");
+        }
         ParsedOption<Integer> length = extractOne(
                 LENGTH_OPTION, remainder, matcher -> parseLength(matcher.group(1)));
         remainder = length.remainder;
