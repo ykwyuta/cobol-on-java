@@ -113,8 +113,16 @@ final class SqlBlockParser {
             throw new IllegalArgumentException("DECLARE requires a name");
         }
         String name = words.get(1).text().toUpperCase(Locale.ROOT);
-        if (words.get(2).isWord("TABLE")) {
-            return new TableDeclaration(name);
+        // 表の名前は schema で修飾できる (STTESTER.CONTROL)。カーソルの名前は修飾しない
+        StringBuilder qualified = new StringBuilder(name);
+        int after = 2;
+        while (after + 1 < words.size() && words.get(after).text().equals(".")
+                && words.get(after + 1).kind() == Kind.WORD) {
+            qualified.append('.').append(words.get(after + 1).text().toUpperCase(Locale.ROOT));
+            after += 2;
+        }
+        if (after < words.size() && words.get(after).isWord("TABLE")) {
+            return new TableDeclaration(qualified.toString());
         }
         if (!words.get(2).isWord("CURSOR")) {
             throw new IllegalArgumentException("unsupported DECLARE: " + words.get(2).text());

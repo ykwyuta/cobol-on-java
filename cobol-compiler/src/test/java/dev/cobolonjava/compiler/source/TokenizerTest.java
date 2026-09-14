@@ -46,6 +46,15 @@ class TokenizerTest {
     }
 
     @Test
+    @DisplayName("空白を置かずに = と接した語は分け、>= はそのまま 1 語にする")
+    void anEqualSignTouchingAWordIsSplit() {
+        assertEquals("WORD(IF) WORD(A) WORD(NOT) WORD(=) WORD(DFHRESP) SEPARATOR(() WORD(NORMAL) SEPARATOR())",
+                shape(tokens("IF A NOT= DFHRESP(NORMAL)")));
+        assertEquals("WORD(IF) WORD(A) WORD(=) WORD(B) WORD(>=) WORD(C)",
+                shape(tokens("IF A=B >= C")));
+    }
+
+    @Test
     @DisplayName("括弧はつねに区切り文字である (ARC-8)")
     void parenthesesAreAlwaysSeparators() {
         assertEquals("WORD(IF) SEPARATOR(() WORD(A) SEPARATOR()) SEPARATOR(.)",

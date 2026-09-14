@@ -85,6 +85,11 @@ public final class Tokenizer {
 
             int start = i;
             int end = wordEnd(start);
+            int split = equalSignSplit(start, end);
+            if (split > start) {
+                emit(SourceTokenKind.WORD, start, split);
+                continue;
+            }
             if (equalsIgnoreCase(start, end, EXEC)) {
                 emit(SourceTokenKind.EXEC_BLOCK, start, execBlockEnd(start));
                 continue;
@@ -174,6 +179,37 @@ public final class Tokenizer {
             j++;
         }
         return j;
+    }
+
+    /**
+     * 空白を置かずに {@code =} と接した語を分ける位置。分けなければ {@code start} を返す。
+     *
+     * <p>規格は関係演算子の前後に空白を求めるが、Enterprise COBOL は {@code NOT= DFHRESP(NORMAL)} を
+     * 受け付ける (Bank-of-Z の ABNDPROC がそう書いてホストで翻訳されている)。{@code =} は COBOL 語の
+     * 文字ではないので、語の文字の並びと {@code =} の境目で分けても別の語を作らない。
+     * {@code >=} や {@code <=} は語の文字で始まらないので、ここでは分けない。
+     */
+    private int equalSignSplit(int start, int end) {
+        if (end - start < 2) {
+            return start;
+        }
+        if (text.charAt(start) == '=') {
+            return isCobolWordChar(text.charAt(start + 1)) ? start + 1 : start;
+        }
+        for (int k = start; k < end; k++) {
+            char c = text.charAt(k);
+            if (c == '=') {
+                return k;
+            }
+            if (!isCobolWordChar(c)) {
+                return start;
+            }
+        }
+        return start;
+    }
+
+    private static boolean isCobolWordChar(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
     }
 
     /** 位置 {@code j} の文字が区切りの句読点か。直後に空白が来るときだけそうなる。 */

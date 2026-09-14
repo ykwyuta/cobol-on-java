@@ -3845,3 +3845,25 @@ PUT で同名の container を置き換えることは公開仕様の記述に�
 
 **解消条件**: 実機の trace で RESP2 / EIBFN / EIBRCODE を確かめる。channel の名前を運ぶ起動要求 (非同期 API の
 `RUN TRANSID`) を設計して、名前の分からない現在の channel を無くす。
+
+## P-126 空白を置かずに = と接した語を分け、DECLARE TABLE の schema 修飾名を受ける
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `Tokenizer.equalSignSplit`、`SqlBlockParser.declaration` |
+| 関連要件 | FR-001, FR-150 |
+
+**暫定の扱い**:
+
+- 規格は関係演算子の前後に空白を求める。Bank-of-Z の ABNDPROC は `IF WS-CICS-RESP NOT= DFHRESP(NORMAL)` と書き、
+  ホストで翻訳されている。そこで、COBOL 語の文字 (英字・数字・ハイフン) の並びに空白を置かず `=` が続くとき、
+  その境目で語を分ける。`=` で始まり語の文字が続くときも `=` の後ろで分ける
+- `>=` / `<=` / `<>` は語の文字で始まらないので分けない。`>` や `<` と語が接した形 (`A>B`) は、
+  資産に現れていないので今は分けない
+- `EXEC SQL DECLARE schema.table TABLE` は、修飾名をそのまま表の名前にする。カーソル名は修飾しない
+
+**どこがずれうるか**: `A=B` のような形を Enterprise COBOL が受けるか、警告つきで受けるかは確かめていない。
+受けないなら、この処理系は翻訳を通しすぎる。CCVS85 の翻訳・実行の結果は変わらなかった。
+
+**解消条件**: Enterprise COBOL の翻訳結果で `A=B`、`A>B`、`NOT=B` の扱いを確かめる。

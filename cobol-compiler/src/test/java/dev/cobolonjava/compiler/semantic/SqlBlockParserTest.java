@@ -85,6 +85,8 @@ class SqlBlockParserTest {
                 SqlBlockParser.parse("EXEC SQL OPEN ACC-CURSOR END-EXEC")).operation());
         assertInstanceOf(SqlBlockParser.TableDeclaration.class, SqlBlockParser.parse(
                 "EXEC SQL DECLARE ACCOUNT TABLE ( A CHAR(4), B DECIMAL(4, 2) ) END-EXEC"));
+        assertEquals(new SqlBlockParser.TableDeclaration("STTESTER.CONTROL"), SqlBlockParser.parse(
+                "EXEC SQL DECLARE STTESTER.CONTROL TABLE (CONTROL_NAME CHAR(32) NOT NULL) END-EXEC"));
         assertEquals(new SqlBlockParser.Transaction(true),
                 SqlBlockParser.parse("EXEC SQL COMMIT WORK END-EXEC"));
         assertEquals(new SqlBlockParser.Transaction(false),
