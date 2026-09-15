@@ -12,15 +12,17 @@ import java.util.regex.Pattern;
  * <p>生成COBOLとCICS runtime操作は時計、端末、region名を直接持たない。adapterが構成した値を
  * ここから得る。構成されていない値を使う命令は、推測値で進まず実行時に失敗する。
  *
- * @param applid    {@code ASSIGN APPLID}が返すregionのapplication ID
- * @param clock     {@code ASKTIME}と{@code DELAY}の期限判定が読む時計。地方時は
- *                  {@link CicsTaskContext#hostZone()}で決める
- * @param interval  {@code DELAY}の待ち
- * @param mapsets   {@code SEND MAP} / {@code RECEIVE MAP}が引くmapsetの定義
- * @param enqueues  {@code ENQ} / {@code DEQ}の資源の排他。regionのtaskどうしで分け合う
- * @param terminals 端末定義のうちtaskをまたいで残る設定 ({@code SET TERMINAL})
- * @param files     file control ({@code WRITE FILE})。定義の無いregionではFILENOTFOUNDになる
- * @param networkId 端末が属するnetworkのID ({@code INQUIRE ASSOCIATION ODNETWORKID})
+ * @param applid           {@code ASSIGN APPLID}が返すregionのapplication ID
+ * @param clock            {@code ASKTIME}と{@code DELAY}の期限判定が読む時計。地方時は
+ *                         {@link CicsTaskContext#hostZone()}で決める
+ * @param interval         {@code DELAY}の待ち
+ * @param mapsets          {@code SEND MAP} / {@code RECEIVE MAP}が引くmapsetの定義
+ * @param enqueues         {@code ENQ} / {@code DEQ}の資源の排他。regionのtaskどうしで分け合う
+ * @param terminals        端末定義のうちtaskをまたいで残る設定 ({@code SET TERMINAL})
+ * @param files            file control。定義の無いregionではFILENOTFOUNDになる
+ * @param temporaryStorage 一時記憶のキュー ({@code WRITEQ TS} 等)。定義を要らない
+ * @param transientData    一時データのキュー ({@code WRITEQ TD} 等)。定義の無いキューはQIDERRになる
+ * @param networkId        端末が属するnetworkのID ({@code INQUIRE ASSOCIATION ODNETWORKID})
  */
 public record CicsEnvironment(
         Optional<String> applid,
@@ -30,6 +32,8 @@ public record CicsEnvironment(
         CicsEnqueuePort enqueues,
         CicsTerminalSettingsPort terminals,
         CicsFilePort files,
+        CicsTemporaryStoragePort temporaryStorage,
+        CicsTransientDataPort transientData,
         Optional<String> networkId) {
 
     /** APPLIDはVTAMの名前規則に合わせ、1〜8文字の英大文字・数字・国別文字に限る。 */
@@ -43,6 +47,8 @@ public record CicsEnvironment(
         Objects.requireNonNull(enqueues, "enqueues");
         Objects.requireNonNull(terminals, "terminals");
         Objects.requireNonNull(files, "files");
+        Objects.requireNonNull(temporaryStorage, "temporaryStorage");
+        Objects.requireNonNull(transientData, "transientData");
         Objects.requireNonNull(networkId, "networkId");
         applid.ifPresent(value -> {
             if (!APPLID.matcher(value).matches()) {
@@ -62,12 +68,13 @@ public record CicsEnvironment(
      * <p>時計はUTCのsystem clockとする。時計の値そのものは地方時に依らず、地方時の
      * 解釈はtaskのhostZoneが決めるので、ここで推測は起きない。資源の排他と端末の設定は
      * 1つのJVMの中で効き、端末の大文字変換はTYPETERMの既定と同じNOUCTRANから始まる。
-     * fileは1つも定義しない。
+     * fileと一時データのキューは1つも定義しない。一時記憶のキューは定義を要らないので1つのJVMの中で持つ。
      */
     public static CicsEnvironment unconfigured() {
         return new CicsEnvironment(Optional.empty(), Clock.systemUTC(),
                 CicsIntervalPort.sleeping(), Optional.empty(), CicsEnqueuePort.inMemory(),
-                CicsTerminalSettingsPort.inMemory(CicsCvda.NOUCTRAN), CicsFilePort.none(), Optional.empty());
+                CicsTerminalSettingsPort.inMemory(CicsCvda.NOUCTRAN), CicsFilePort.none(),
+                CicsTemporaryStoragePort.inMemory(), CicsTransientDataPort.none(), Optional.empty());
     }
 
     public static CicsEnvironment withApplid(String applid) {
@@ -76,43 +83,60 @@ public record CicsEnvironment(
 
     private CicsEnvironment withApplidValue(String value) {
         return new CicsEnvironment(Optional.of(value), clock, interval, mapsets, enqueues, terminals, files,
-                networkId);
+                temporaryStorage, transientData, networkId);
     }
 
     /** 時計だけを替えた構成。試験で時刻を固定するときに使う。 */
     public CicsEnvironment withClock(Clock value) {
-        return new CicsEnvironment(applid, value, interval, mapsets, enqueues, terminals, files, networkId);
+        return new CicsEnvironment(applid, value, interval, mapsets, enqueues, terminals, files,
+                temporaryStorage, transientData, networkId);
     }
 
     /** 待ちだけを替えた構成。 */
     public CicsEnvironment withInterval(CicsIntervalPort value) {
-        return new CicsEnvironment(applid, clock, value, mapsets, enqueues, terminals, files, networkId);
+        return new CicsEnvironment(applid, clock, value, mapsets, enqueues, terminals, files,
+                temporaryStorage, transientData, networkId);
     }
 
     /** mapsetの定義を持たせた構成。 */
     public CicsEnvironment withMapsets(BmsMapsetCatalog value) {
         return new CicsEnvironment(applid, clock, interval, Optional.of(value), enqueues, terminals, files,
-                networkId);
+                temporaryStorage, transientData, networkId);
     }
 
     /** 資源の排他を替えた構成。複数のJVMで分け合うときに使う。 */
     public CicsEnvironment withEnqueues(CicsEnqueuePort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, value, terminals, files, networkId);
+        return new CicsEnvironment(applid, clock, interval, mapsets, value, terminals, files,
+                temporaryStorage, transientData, networkId);
     }
 
     /** 端末の設定を替えた構成。 */
     public CicsEnvironment withTerminals(CicsTerminalSettingsPort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, value, files, networkId);
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, value, files,
+                temporaryStorage, transientData, networkId);
     }
 
     /** file controlを替えた構成。 */
     public CicsEnvironment withFiles(CicsFilePort value) {
-        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, value, networkId);
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, value,
+                temporaryStorage, transientData, networkId);
+    }
+
+    /** 一時記憶のキューを替えた構成。複数のJVMで分け合うときに使う。 */
+    public CicsEnvironment withTemporaryStorage(CicsTemporaryStoragePort value) {
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
+                value, transientData, networkId);
+    }
+
+    /** 一時データのキューを替えた構成。 */
+    public CicsEnvironment withTransientData(CicsTransientDataPort value) {
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
+                temporaryStorage, value, networkId);
     }
 
     /** 端末が属するnetworkのIDを持たせた構成。 */
     public CicsEnvironment withNetworkId(String value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
-                Optional.of(value));
+                temporaryStorage, transientData, Optional.of(value));
     }
 }

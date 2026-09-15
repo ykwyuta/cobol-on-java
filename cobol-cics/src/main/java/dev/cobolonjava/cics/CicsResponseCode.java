@@ -27,6 +27,13 @@ public final class CicsResponseCode {
     /** 受取域が送られたデータより短い (GET CONTAINER)。 */
     public static final int LENGERR = 22;
     public static final int PGMIDERR = 27;
+    /**
+     * 一時記憶・一時データの condition (暫定判断 P-137)。QIDERR は 6.x の表、QZERO は READQ TD の頁、
+     * ITEMERR は READQ TS の頁の数による。
+     */
+    public static final int QZERO = 23;
+    public static final int ITEMERR = 26;
+    public static final int QIDERR = 44;
     /** RECEIVE MAPで送られたfieldが無い。 */
     public static final int MAPFAIL = 36;
     /** ENQの資源を他のtaskが持っていて、待たない指定だった。 */
@@ -59,6 +66,9 @@ public final class CicsResponseCode {
             case "LENGERR" -> LENGERR;
             case "PGMIDERR" -> PGMIDERR;
             case "MAPFAIL" -> MAPFAIL;
+            case "QZERO" -> QZERO;
+            case "ITEMERR" -> ITEMERR;
+            case "QIDERR" -> QIDERR;
             case "ENQBUSY" -> ENQBUSY;
             case "CONTAINERERR" -> CONTAINERERR;
             case "CHANNELERR" -> CHANNELERR;
@@ -83,6 +93,10 @@ public final class CicsResponseCode {
             case "NOSPACE" -> NOSPACE;
             case "LENGERR" -> LENGERR;
             case "ENDFILE" -> ENDFILE;
+            // 一時記憶・一時データが返しうる condition (暫定判断 P-137)
+            case "QZERO" -> QZERO;
+            case "ITEMERR" -> ITEMERR;
+            case "QIDERR" -> QIDERR;
             case "ERROR" -> ERROR_HANDLER_KEY;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS handler condition: " + normalized);

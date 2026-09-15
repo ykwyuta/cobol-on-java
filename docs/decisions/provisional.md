@@ -4159,3 +4159,32 @@ file の状態や副索引を持たないので返さない。性能は測って
 
 **解消条件**: 実機で EIBRCODE、固定長の LENGERR 13 のときの域、総称の browse の終わり、EQUAL の browse の位置づけ直しを採る。
 回復可能な file を UOW と合わせて設計する。
+
+## P-137 一時記憶と一時データのキューは 1 つの JVM の中に持ち、回復・遠隔・ATI を持たない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsTemporaryStoragePort`、`CicsTransientDataPort`、`CicsRuntimeOps.queueCommandCondition`、`CicsBlockParser.parseQueueCommand` |
+| 関連要件 | FR-080、設計 82 §4・§5 |
+
+**暫定の扱い**:
+
+- EIBFN は CICS TS 5.6 の表 (WRITEQ / READQ / DELETEQ TS は X'0A02' / X'0A04' / X'0A06'、TD は X'0802' / X'0804' / X'0806')
+- RESP は QIDERR 44 (6.x の表)、QZERO 23 (READQ TD の頁)、ITEMERR 26 (READQ TS の頁)、LENGERR 22、INVREQ 16。
+  RESP2 は頁が値を示さないので 0 とする
+- TS のキューは定義を要らず、region の構成が 1 つの JVM の中で持つ。`QUEUE` の 8 byte の名前と、空白を足した 16 byte の
+  `QNAME` は同じキューとした。頁は名前の長さだけを書き、同じキューかは確かめていない
+- `READQ TS NEXT` は「直前に読まれた record の次」を読む。位置はキューに 1 つで task をまたぎ、`ITEM` で読んだ item も数える。
+  頁の文面をそう読んだ。`ITEM` も `NEXT` も無い形は既定が書かれていないので翻訳で断る
+- TD は region で定義した区画内のキューだけ。読んだ record は消え、切り詰めた record も消える
+- 受取域より短いデータは長さだけを移し、残りは変えない。file control と同じ扱いである
+- CICS が使うと頁にある名前 (X'FA'〜X'FF'、`**`、`$$`、`DF` で始まる) は、条件が書かれていないので失敗させる
+- `SYSID`、`NOSUSPEND`、`SET`、`WRITEQ TS` の `NUMITEMS`、区画外の TD、`TS` / `TD` を省いた形は断る
+- EIBRSRCE は置かない
+
+**どこがずれうるか**: 実機の TS は `AUXILIARY` なら region を再起動しても残り、TSMODEL で回復可能にできる。ここは JVM が止まれば
+消える。TD の trigger level による自動の task の開始 (ATI) が無いので、それに頼る資産は動かない。複数の JVM では分け合わない。
+
+**解消条件**: 実機で `QUEUE` と `QNAME` の名前の同一性、`ITEM` のあとの `NEXT`、`ITEM` / `NEXT` を省いた既定、RESP2 を採る。
+複数の JVM で分け合う実装と、回復可能なキューを UOW と合わせて設計する。

@@ -145,6 +145,28 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /**
+     * EXEC CICS WRITEQ / READQ / DELETEQ の TS / TD (暫定判断 P-137)。
+     *
+     * <p>{@code kind} と {@code flags} は {@code CicsRuntimeOps.QUEUE_*} の値。名前は定数かデータ域のどちらか。
+     * 数の option は、データ名なら域、定数なら literal で持ち、書かなければ域は null、literal は -1。
+     */
+    record CicsQueueCommand(
+            int kind,
+            String nameLiteral,
+            DataReference nameData,
+            int nameLength,
+            DataReference data,
+            DataReference lengthArea,
+            int lengthLiteral,
+            DataReference itemArea,
+            int itemLiteral,
+            DataReference numItems,
+            int flags,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     /** EXEC CICS INQUIRE / SET TERMINAL UCTRANST (暫定判断 P-130)。 */
     record CicsTerminalUctran(
             boolean set,

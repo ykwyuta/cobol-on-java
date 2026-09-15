@@ -47,6 +47,17 @@ final class CicsBlockParser {
     private static final Pattern FILE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(READ|WRITE|REWRITE|DELETE|UNLOCK|STARTBR|READNEXT|READPREV|ENDBR|RESETBR)\\b"
                     + "(.*?)END-EXEC\\s*$");
+    /** 一時記憶・一時データの命令。TS / TD を省いた形は受けない。 */
+    private static final Pattern QUEUE_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(WRITEQ|READQ|DELETEQ)\\s+(TS|TD)\\b(.*?)END-EXEC\\s*$");
+    /** キューの命令ごとに、RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
+    private static final List<Set<String>> QUEUE_OPTIONS = List.of(
+            Set.of("QUEUE", "QNAME", "FROM", "LENGTH", "ITEM", "REWRITE", "MAIN", "AUXILIARY"),
+            Set.of("QUEUE", "QNAME", "INTO", "LENGTH", "ITEM", "NEXT", "NUMITEMS"),
+            Set.of("QUEUE", "QNAME"),
+            Set.of("QUEUE", "FROM", "LENGTH"),
+            Set.of("QUEUE", "INTO", "LENGTH"),
+            Set.of("QUEUE"));
     /** file control の命令ごとに、FILE / RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> FILE_OPTIONS = List.of(
             Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "RRN", "UPDATE", "UNCOMMITTED"),
@@ -146,6 +157,11 @@ final class CicsBlockParser {
         Matcher fileCommand = FILE_BLOCK.matcher(source);
         if (fileCommand.matches()) {
             return parseFileCommand(fileCommand.group(1).toUpperCase(Locale.ROOT), fileCommand.group(2));
+        }
+        Matcher queueCommand = QUEUE_BLOCK.matcher(source);
+        if (queueCommand.matches()) {
+            return parseQueueCommand(queueCommand.group(1).toUpperCase(Locale.ROOT) + " "
+                    + queueCommand.group(2).toUpperCase(Locale.ROOT), queueCommand.group(3));
         }
         Matcher terminal = TERMINAL_BLOCK.matcher(source);
         if (terminal.matches()) {
@@ -739,6 +755,114 @@ final class CicsBlockParser {
                 null);
     }
 
+    /**
+     * 一時記憶・一時データの命令を読む (暫定判断 P-137)。
+     *
+     * <p>SYSID (遠隔・共有のキュー)、NOSUSPEND、SET、WRITEQ TS の NUMITEMS は断る。READQ TS は ITEM か NEXT の
+     * どちらかを求める。どちらも書かない形の既定を頁が示さないからである。
+     */
+    private static Parsed parseQueueCommand(String command, String source) {
+        int kind = dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_COMMANDS.indexOf(command);
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate " + command + " option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        for (String name : options.keySet()) {
+            if (!QUEUE_OPTIONS.get(kind).contains(name) && !Set.of("RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported " + command + " option: " + name);
+            }
+        }
+        boolean transientData = command.endsWith("TD");
+        if (options.containsKey("QUEUE") && options.containsKey("QNAME")) {
+            throw new IllegalArgumentException(command + " QUEUE and QNAME are mutually exclusive");
+        }
+        String nameOption = options.containsKey("QNAME") ? "QNAME" : "QUEUE";
+        String[] name = options.get(nameOption);
+        if (name == null) {
+            throw new IllegalArgumentException(command + " requires QUEUE");
+        }
+        int nameLength = transientData ? 4 : nameOption.equals("QNAME") ? 16 : 8;
+        String nameLiteral = name[0];
+        if (nameLiteral == null && name[2] == null) {
+            throw new IllegalArgumentException(command + " " + nameOption + " requires 'name' or a data name");
+        }
+        if (nameLiteral != null && (nameLiteral.isBlank() || nameLiteral.length() > nameLength
+                || (transientData && !nameLiteral.matches("[A-Z0-9@#$]{1,4}")))) {
+            throw new IllegalArgumentException(command + " " + nameOption + " name must be 1 to " + nameLength
+                    + " characters: " + nameLiteral);
+        }
+        boolean reads = kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TS
+                || kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TD;
+        String dataOption = reads ? "INTO" : "FROM";
+        String data = sendDataName(options.get(dataOption), dataOption);
+        if (data == null && QUEUE_OPTIONS.get(kind).contains(dataOption)) {
+            throw new IllegalArgumentException(command + " requires " + dataOption);
+        }
+        String[] length = options.get("LENGTH");
+        String lengthName = null;
+        int lengthLiteral = -1;
+        if (length != null) {
+            if (length[2] != null) {
+                lengthName = length[2];
+            } else if (length[1] != null && !reads) {
+                lengthLiteral = Integer.parseInt(length[1]);
+            } else {
+                throw new IllegalArgumentException(command + " LENGTH requires "
+                        + (reads ? "a data name" : "an integer literal or a data name"));
+            }
+        }
+        String[] item = fileNumber(options.get("ITEM"), command + " ITEM");
+        int flags = fileFlag(options, "REWRITE", dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_REWRITE)
+                | fileFlag(options, "NEXT", dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_NEXT);
+        // MAIN / AUXILIARY は置き場の指定であり、1 つの JVM の中のキューでは違いが無い
+        fileFlag(options, "MAIN", 0);
+        fileFlag(options, "AUXILIARY", 0);
+        if (options.containsKey("MAIN") && options.containsKey("AUXILIARY")) {
+            throw new IllegalArgumentException(command + " MAIN and AUXILIARY are mutually exclusive");
+        }
+        if (kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_WRITEQ_TS) {
+            if (item[1] != null) {
+                throw new IllegalArgumentException(command + " ITEM requires a data name");
+            }
+            if (options.containsKey("REWRITE") && item[0] == null) {
+                throw new IllegalArgumentException(command + " REWRITE requires ITEM");
+            }
+        }
+        if (kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TS) {
+            if (options.containsKey("ITEM") == options.containsKey("NEXT")) {
+                throw new IllegalArgumentException(command + " requires either ITEM or NEXT");
+            }
+        }
+        String numItems = sendDataName(options.get("NUMITEMS"), "NUMITEMS");
+        String[] noHandle = options.get("NOHANDLE");
+        if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
+            throw new IllegalArgumentException("NOHANDLE does not take a value");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                null, null, null, null, null, null, null,
+                new QueueCommandSpec(kind, nameLiteral, name[2], nameLength, data, lengthName, lengthLiteral,
+                        item[0], item[1] == null ? -1 : Integer.parseInt(item[1]), numItems, flags));
+    }
+
     /** 値を持たない option の印。書かれていなければ 0。 */
     private static int fileFlag(java.util.Map<String, String[]> options, String name, int flag) {
         String[] value = options.get(name);
@@ -1277,10 +1401,26 @@ final class CicsBlockParser {
             EnqueueSpec enqueue,
             TerminalSpec terminal,
             FileCommandSpec fileCommand,
-            AssociationSpec association) {
+            AssociationSpec association,
+            QueueCommandSpec queue) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
+        }
+
+        /** キューの命令でない形。 */
+        Parsed(Statement.CicsOperation operation, String target, String commarea, int length,
+               String response, String response2, boolean noHandle, boolean rollback, boolean cancel,
+               boolean noDump, boolean immediate, Statement.CicsConditionAction conditionAction,
+               List<ConditionSpec> conditions, Statement.CicsHandleStackAction handleStackAction,
+               Statement.CicsAbendHandlerAction abendHandlerAction, String abendHandlerTarget,
+               List<AssignSpec> assignments, String programData, TimeSpec time, DelaySpec delay,
+               SendSpec send, ReceiveSpec receive, String deedit, ContainerSpec container, EnqueueSpec enqueue,
+               TerminalSpec terminal, FileCommandSpec fileCommand, AssociationSpec association) {
+            this(operation, target, commarea, length, response, response2, noHandle, rollback, cancel,
+                    noDump, immediate, conditionAction, conditions, handleStackAction, abendHandlerAction,
+                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit,
+                    container, enqueue, terminal, fileCommand, association, null);
         }
 
         /** containerを持たない命令の形。 */
@@ -1310,6 +1450,15 @@ final class CicsBlockParser {
     record FileCommandSpec(int kind, String fileLiteral, String fileData, String data, String length,
                            int lengthLiteral, String ridfld, String keyLength, int keyLengthLiteral,
                            String reqid, int reqidLiteral, String numrec, int flags) {
+    }
+
+    /**
+     * 一時記憶・一時データの命令の、データ名を解決する前の形。名前は定数かデータ名のどちらかで、nameLength は
+     * QUEUE (TS) 8、QNAME 16、TD 4。数の option は定数を書かなければ -1。{@code data} は INTO か FROM。
+     */
+    record QueueCommandSpec(int kind, String nameLiteral, String nameData, int nameLength, String data,
+                            String length, int lengthLiteral, String item, int itemLiteral, String numItems,
+                            int flags) {
     }
 
     /** INQUIRE / SET TERMINAL の、データ名を解決する前の形。端末は定数かデータ名のどちらか。 */

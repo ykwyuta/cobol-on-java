@@ -1017,6 +1017,22 @@ public final class ProcedureBuilder {
             java.util.stream.Stream.of(association.applid(), association.userid(), association.facilityName(),
                     association.networkId(), association.facilityType()).filter(java.util.Objects::nonNull)
                     .forEach(out::add);
+        } else if (statement instanceof Statement.CicsQueueCommand queue) {
+            int kind = queue.kind();
+            if (kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TS
+                    || kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TD) {
+                out.add(queue.data());
+                if (queue.lengthArea() != null) {
+                    out.add(queue.lengthArea());
+                }
+            }
+            if (queue.numItems() != null) {
+                out.add(queue.numItems());
+            }
+            if (kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_WRITEQ_TS && queue.itemArea() != null
+                    && (queue.flags() & dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_REWRITE) == 0) {
+                out.add(queue.itemArea());
+            }
         } else if (statement instanceof Statement.CicsFileCommand file) {
             int kind = file.kind();
             if (kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READ
@@ -1799,6 +1815,9 @@ public final class ProcedureBuilder {
             if (parsed.fileCommand() != null) {
                 return cicsFileStatement(parsed, origin);
             }
+            if (parsed.queue() != null) {
+                return cicsQueueStatement(parsed, origin);
+            }
             if (parsed.terminal() != null) {
                 CicsBlockParser.TerminalSpec spec = parsed.terminal();
                 String command = spec.set() ? "SET TERMINAL" : "INQUIRE TERMINAL";
@@ -1943,6 +1962,59 @@ public final class ProcedureBuilder {
     }
 
     /** RESP / RESP2 があれば、command のあとで EIBRESP / EIBRESP2 を受取項目へ転記する。 */
+    /** 一時記憶・一時データの命令の域を解決する (暫定判断 P-137)。 */
+    private Statement cicsQueueStatement(CicsBlockParser.Parsed parsed, Origin origin) {
+        CicsBlockParser.QueueCommandSpec spec = parsed.queue();
+        int kind = spec.kind();
+        String label = dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_COMMANDS.get(kind);
+        boolean reads = kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TS
+                || kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TD;
+        DataReference nameData = null;
+        if (spec.nameData() != null) {
+            nameData = resolver.resolveName(spec.nameData(), origin);
+            if (nameData == null) {
+                return null;
+            }
+            if (DataCategory.of(nameData) != DataCategory.ALPHANUMERIC || nameData.constantLength().isEmpty()
+                    || nameData.constantLength().getAsInt() != spec.nameLength()) {
+                throw new IllegalArgumentException(label + " queue name data area must be a " + spec.nameLength()
+                        + "-byte alphanumeric item");
+            }
+        }
+        DataReference data = null;
+        if (spec.data() != null) {
+            data = resolver.resolveName(spec.data(), origin);
+            if (data == null) {
+                return null;
+            }
+            requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+        }
+        DataReference[] numbers = new DataReference[3];
+        String[] names = {spec.length(), spec.item(), spec.numItems()};
+        String[] options = {"LENGTH", "ITEM", "NUMITEMS"};
+        for (int i = 0; i < names.length; i++) {
+            if (names[i] == null) {
+                continue;
+            }
+            numbers[i] = resolver.resolveName(names[i], origin);
+            if (numbers[i] == null) {
+                return null;
+            }
+            Usage usage = numbers[i].item().usage() == null ? Usage.DISPLAY : numbers[i].item().usage();
+            if ((usage != Usage.COMP && usage != Usage.COMP_5) || numbers[i].item().length() != Short.BYTES
+                    || !DataCategory.of(numbers[i]).isNumeric()) {
+                throw new IllegalArgumentException(label + " " + options[i] + " must be a halfword binary data area");
+            }
+        }
+        if (data != null && spec.lengthLiteral() > data.constantLength().getAsInt()) {
+            throw new IllegalArgumentException(label + " LENGTH " + spec.lengthLiteral()
+                    + " exceeds the FROM data area of " + data.constantLength().getAsInt() + " bytes");
+        }
+        return withCicsResponse(new Statement.CicsQueueCommand(kind, spec.nameLiteral(), nameData, spec.nameLength(),
+                data, numbers[0], spec.lengthLiteral(), numbers[1], spec.itemLiteral(), numbers[2], spec.flags(),
+                parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+    }
+
     /** file control の域を解決する (暫定判断 P-131、P-136)。 */
     private Statement cicsFileStatement(CicsBlockParser.Parsed parsed, Origin origin) {
         CicsBlockParser.FileCommandSpec spec = parsed.fileCommand();

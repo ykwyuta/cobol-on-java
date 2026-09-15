@@ -773,6 +773,8 @@ public final class ProgramGenerator {
                 planCicsTerminal(terminal, body);
             } else if (statement instanceof Statement.CicsFileCommand fileCommand) {
                 planCicsFileCommand(fileCommand, body);
+            } else if (statement instanceof Statement.CicsQueueCommand queueCommand) {
+                planCicsQueueCommand(queueCommand, body);
             } else if (statement instanceof Statement.CicsInquireAssociation association) {
                 planCicsInquireAssociation(association, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
@@ -1103,6 +1105,43 @@ public final class ProgramGenerator {
             String view = "L" + DATA_VIEW + ";";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "inquireAssociationCondition",
                     "(" + CONTEXT + view + view + view + view + view + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    private void planCicsQueueCommand(Statement.CicsQueueCommand statement, List<Runnable> body) {
+        Runnable name = planAreaBytes(statement.nameData(), statement.origin());
+        if (name == null) {
+            return;
+        }
+        // 並びは data、LENGTH、ITEM、NUMITEMS
+        List<Runnable> views = new ArrayList<>();
+        for (DataReference area : java.util.Arrays.asList(statement.data(), statement.lengthArea(),
+                statement.itemArea(), statement.numItems())) {
+            Runnable view = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                    : planWholeView(area, statement.origin());
+            if (view == null) {
+                return;
+            }
+            views.add(view);
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            push(statement.kind());
+            pushNullableString(statement.nameLiteral());
+            name.run();
+            push(statement.nameLength());
+            views.get(0).run();
+            views.get(1).run();
+            push(statement.lengthLiteral());
+            views.get(2).run();
+            push(statement.itemLiteral());
+            views.get(3).run();
+            push(statement.flags());
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            String view = "L" + DATA_VIEW + ";";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "queueCommandCondition",
+                    "(" + CONTEXT + "ILjava/lang/String;[BI" + view + view + "I" + view + "I" + view + "IZ)I", false);
             emitCicsConditionTransfer();
         });
     }

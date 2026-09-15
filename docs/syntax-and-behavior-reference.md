@@ -546,6 +546,12 @@ EXEC CICS UNLOCK FILE(名前) END-EXEC
 EXEC CICS (STARTBR | RESETBR) FILE(名前) RIDFLD(域) [KEYLENGTH(n | 項目) [GENERIC]] [GTEQ | EQUAL] [REQID(n | 項目)] [RRN] END-EXEC
 EXEC CICS (READNEXT | READPREV) FILE(名前) INTO(域) RIDFLD(域) [LENGTH(S9(4) COMP項目)] [KEYLENGTH(n | 項目)] [REQID(n | 項目)] [RRN] END-EXEC
 EXEC CICS ENDBR FILE(名前) [REQID(n | 項目)] END-EXEC
+EXEC CICS WRITEQ TS (QUEUE(名前) | QNAME(名前)) FROM(域) [LENGTH(n | 項目)] [ITEM(S9(4) COMP項目) [REWRITE]] [MAIN | AUXILIARY] END-EXEC
+EXEC CICS READQ TS (QUEUE(名前) | QNAME(名前)) INTO(域) [LENGTH(S9(4) COMP項目)] (ITEM(n | 項目) | NEXT) [NUMITEMS(S9(4) COMP項目)] END-EXEC
+EXEC CICS DELETEQ TS (QUEUE(名前) | QNAME(名前)) END-EXEC
+EXEC CICS WRITEQ TD QUEUE(名前) FROM(域) [LENGTH(n | 項目)] END-EXEC
+EXEC CICS READQ TD QUEUE(名前) INTO(域) [LENGTH(S9(4) COMP項目)] END-EXEC
+EXEC CICS DELETEQ TD QUEUE(名前) END-EXEC
 ```
 - **振る舞い**:
   - `DFHEIBLK` (EIB: `EIBTRNID`, `EIBCALEN`, `EIBFN`, `EIBRCODE`, `EIBRESP`, `EIBRESP2`) の各フィールドを CICS コマンド実行の都度更新します。
@@ -555,6 +561,7 @@ EXEC CICS ENDBR FILE(名前) [REQID(n | 項目)] END-EXEC
   - `BIF DEEDIT` は項目から数字以外を除き、数字を右へ詰めて左を `0` で埋めます。末尾が `-` / `CR` なら右端のゾーンを負にします (暫定判断 P-124)。
   - `ABEND ABCODE(項目)` は 4 byte の英数字項目の値を実行時に読んで ABEND コードにします。
   - file control (`READ` / `WRITE` / `REWRITE` / `DELETE` / `UNLOCK` と browse) は、region に定義した KSDS / RRDS (固定長か可変長) を、バッチと同じデータセットとして読み書きします。返す条件は公開文書に RESP2 の書かれたものだけで、書かれていない形 (鍵を変える `REWRITE`、固定長の record を違う長さで読む形など) は失敗させます。`READ UPDATE` で得た record は `REWRITE` / `DELETE` / `UNLOCK`、`SYNCPOINT`、task の終わりで返し、他の task は期限まで待ちます。file は回復不能として扱います (設計 82 §3、暫定判断 P-131、P-136)。
+  - 一時記憶のキュー (`WRITEQ` / `READQ` / `DELETEQ TS`) は定義を要らず、region の中で task どうしが分け合います。`READQ TS NEXT` は直前に読まれた item の次を読み、終わりは `ITEMERR` です。一時データのキュー (`TD`) は region で定義した区画内のキューだけで、先に書いた record から取り出し、空なら `QZERO` です。どちらも回復と遠隔のキューは持ちません (設計 82 §4・§5、暫定判断 P-137)。
   - `GET` / `PUT CONTAINER` は task 内の channel に container を置き、読みます。GET でデータが受取域より長ければ入る分だけ写して `LENGERR`、container が無ければ `CONTAINERERR`、channel が無ければ `CHANNELERR` です。変換 option (`DATATYPE` 等) は未対応です (設計 79 §9、暫定判断 P-125)。
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。

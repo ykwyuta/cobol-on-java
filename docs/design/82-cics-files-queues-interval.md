@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | file control を実装 (§3)。一時記憶・一時データ・間隔制御の開始は後続の節で足す |
+| 状態 | file control (§3)、一時記憶 (§4)、一時データ (§5) を実装。間隔制御の開始は後続の節で足す |
 | 対応要件 | FR-080, FR-101、設計 77 §4、設計 79 |
 | 検証レベル | V1。実機の CICS と突き合わせていない |
 
@@ -103,3 +103,46 @@ Bank-of-Z の CICS 資産 32 本は、この文書の命令をほとんど使わ
 
 `SET` (CICS が持つ域への pointer)、`SYSID`、`RBA` / `XRBA`、`TOKEN`、`NOSUSPEND`、`CONSISTENT` / `REPEATABLE` (RLS)、
 `DEBKEY` / `DEBREC` (BDAM)、`MASSINSERT`、browse の `UPDATE`、ESDS。いずれも表す file や記憶域の設計を持たない。
+
+## 4. 一時記憶のキュー (TS)
+
+`CicsTemporaryStoragePort`。既定の `inMemory()` は 1 つの JVM の中で task どうしが分け合う。
+
+| 項目 | 決めごと | 出典 |
+| --- | --- | --- |
+| 定義 | 要らない。`WRITEQ TS` がキューを作る | WRITEQ TS の頁 |
+| 名前 | 16 byte (QNAME) に空白を詰めて持つ。`QUEUE` の 8 byte の名前は、空白を足した `QNAME` と同じキューとする | 頁は名前の長さだけを書く。同じキューかは確かめていない |
+| item | 番号は 1 から。1 つのキューに 32767 まで、長さは 1〜32763 | WRITEQ TS の頁 |
+| `ITEM` (WRITEQ) | `REWRITE` があれば書き換える item の番号 (入力)、無ければ書いた item の番号 (出力) | WRITEQ TS の頁 |
+| `NEXT` | 「直前に読まれた record の次」。読まれた位置はキューに 1 つで、task をまたぐ。`ITEM` で読んだ item も直前に読まれた record に数える | READQ TS の頁の文面をそのまま読んだ |
+| `MAIN` / `AUXILIARY` | 受けるが違いは無い | — |
+| 回復 | 持たない | — |
+
+| 命令 | EIBFN | 返す条件 (RESP2 はすべて 0。頁が値を示さない) |
+| --- | --- | --- |
+| WRITEQ TS | 0A02 | LENGERR 22 (長さが 0・負・32763 超)、ITEMERR 26 (item の数の上限、REWRITE の番号が範囲外)、QIDERR 44 (REWRITE でキューが無い)、INVREQ 16 (名前がすべて binary zero) |
+| READQ TS | 0A04 | QIDERR 44、ITEMERR 26 (番号が範囲外、NEXT が終わりを越えた)、LENGERR 22 (切り詰めた)、INVREQ 16 |
+| DELETEQ TS | 0A06 | QIDERR 44、INVREQ 16 |
+
+断るもの: `SYSID` (遠隔・共有のキュー)、`NOSUSPEND`、`SET`、`WRITEQ TS` の `NUMITEMS`、`ITEM` も `NEXT` も無い `READQ TS`
+(既定を頁が示さない)、`TS` を省いた形。X'FA'〜X'FF'、`**`、`$$`、`DF` で始まる名前は CICS が使うと頁にあるが、
+条件を示さないので失敗させる。EIBRSRCE は置かない。
+
+## 5. 一時データのキュー (TD)
+
+`CicsTransientDataPort`。region の構成で定義した区画内 (intrapartition) のキューだけを持つ。既定の `none()` はキューを持たない。
+
+| 項目 | 決めごと |
+| --- | --- |
+| 定義 | `CicsTransientDataQueueDefinition` (1〜4 文字の名前、record の最大の長さ)。定義の無い名前は QIDERR |
+| 読み | 先に書いた record から取り出し、読んだ record は消える。切り詰めても record は消え、LENGTH の域には本来の長さを置く |
+| `DELETEQ TD` | キューの record をすべて消す。定義は残る |
+| 回復、ATI | 持たない。trigger level による task の開始は無い |
+
+| 命令 | EIBFN | 返す条件 (RESP2 はすべて 0) |
+| --- | --- | --- |
+| WRITEQ TD | 0802 | QIDERR 44、LENGERR 22 (長さが 0 か定義の最大を越える) |
+| READQ TD | 0804 | QIDERR 44、QZERO 23 (空)、LENGERR 22 (切り詰めた) |
+| DELETEQ TD | 0806 | QIDERR 44 |
+
+断るもの: 区画外 (extrapartition) のキュー、`SYSID`、`NOSUSPEND` (QBUSY)、`SET`。DISABLED はキューの状態を持たないので返さない。

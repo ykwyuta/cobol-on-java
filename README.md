@@ -196,7 +196,8 @@ CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資�
 `USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER`、`ENQ` / `DEQ` はもう止めていない (設計 79)。残る CICS 命令は
 CRECUST の非同期 API と LE の写し句である。file control (`READ` / `WRITE` / `REWRITE` / `DELETE` / `UNLOCK` と browse) は
 KSDS / RRDS を、バッチと同じデータセットで扱う (設計 82、P-131、P-136)。Bank-of-Z はこの命令群をほとんど使わないので、
-振る舞いは CICS TS の命令の頁を基準に試験で固定している。`INQUIRE ASSOCIATION` は task 自身の origin data に限る (P-132)。`RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。
+振る舞いは CICS TS の命令の頁を基準に試験で固定している。一時記憶・一時データのキュー (`WRITEQ` / `READQ` / `DELETEQ`
+の `TS` / `TD`) は 1 つの JVM の中で持つ (P-137)。`INQUIRE ASSOCIATION` は task 自身の origin data に限る (P-132)。`RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。
 `DFHVALUE` と `INQUIRE` / `SET TERMINAL UCTRANST` は task の端末に限って扱う。CVDA の数は CICS TS の表による
 (TXSeries の表は数が違う。P-130)。
 `DFHBMSCA` は公開文書の意味を 3270 の属性 byte で表して作る (P-129)。

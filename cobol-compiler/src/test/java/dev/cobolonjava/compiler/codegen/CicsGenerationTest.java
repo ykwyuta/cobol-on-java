@@ -254,6 +254,48 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLが一時記憶と一時データのキューへ書いて読み、ITEMERRとQZEROを受け取る")
+    void runsTemporaryStorageAndTransientDataQueues() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "QUEUEPGM", List.of(
+                "MOVE '000042' TO WS-QTIME",
+                "EXEC CICS WRITEQ TS QUEUE('SCRATCH') FROM(WS-GRP) ITEM(WS-LEN) END-EXEC",
+                "IF WS-LEN = 1 MOVE 'W' TO LK-AREA(1:1) END-IF",
+                "MOVE ZERO TO WS-QTIME",
+                "EXEC CICS READQ TS QUEUE('SCRATCH') INTO(WS-GRP) NEXT END-EXEC",
+                "IF WS-QTIME = 42 MOVE 'R' TO LK-AREA(2:1) END-IF",
+                "EXEC CICS READQ TS QUEUE('SCRATCH') INTO(WS-GRP) NEXT RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(ITEMERR) MOVE 'E' TO LK-AREA(3:1) END-IF",
+                "EXEC CICS WRITEQ TD QUEUE('CSMT') FROM(WS-GRP) END-EXEC",
+                "EXEC CICS READQ TD QUEUE('CSMT') INTO(WS-GRP) END-EXEC",
+                "EXEC CICS READQ TD QUEUE('CSMT') INTO(WS-GRP) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(QZERO) MOVE 'Z' TO LK-AREA(4:1) END-IF",
+                "EXEC CICS DELETEQ TS QUEUE('SCRATCH') END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("QUEUEPGM", program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("QUEUEPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withTransientData(dev.cobolonjava.cics.CicsTransientDataPort.inMemory(List.of(
+                        new dev.cobolonjava.cics.CicsTransientDataQueueDefinition("CSMT", 6))));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("WREZ", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertRejected("EXEC CICS READQ TS QUEUE('Q') INTO(WS-GRP) END-EXEC", "requires either ITEM or NEXT");
+        assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') FROM(WS-GRP) REWRITE END-EXEC", "REWRITE requires ITEM");
+        assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') QNAME('Q') FROM(WS-GRP) END-EXEC",
+                "QUEUE and QNAME are mutually exclusive");
+        assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') FROM(WS-GRP) SYSID('S1') END-EXEC",
+                "unsupported WRITEQ TS option: SYSID");
+        assertRejected("EXEC CICS READQ TD QUEUE('TOOLONG') INTO(WS-GRP) END-EXEC", "name must be 1 to 4");
+        assertRejected("EXEC CICS WRITEQ TS QUEUE(WS-ABCODE) FROM(WS-GRP) END-EXEC",
+                "queue name data area must be a 8-byte alphanumeric item");
+    }
+
+    @Test
     @DisplayName("file controlの命令は定義の無いfileでFILENOTFOUNDを返し、表せないoptionと形は名前をつけて断る")
     void rejectsUnsupportedFileControlForms() {
         GeneratedLoader loader = new GeneratedLoader();

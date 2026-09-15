@@ -56,6 +56,21 @@ public final class CicsRuntimeOps {
     /** 種類の番号の順の function code。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int[] FILE_FUNCTIONS = {
         0x0602, 0x0604, 0x0606, 0x0608, 0x060A, 0x060C, 0x060E, 0x0610, 0x0612, 0x0614};
+    /** 一時記憶・一時データの命令の種類 (暫定判断 P-137)。生成コードが渡す。 */
+    public static final int QUEUE_WRITEQ_TS = 0;
+    public static final int QUEUE_READQ_TS = 1;
+    public static final int QUEUE_DELETEQ_TS = 2;
+    public static final int QUEUE_WRITEQ_TD = 3;
+    public static final int QUEUE_READQ_TD = 4;
+    public static final int QUEUE_DELETEQ_TD = 5;
+    /** キューの命令の値を持たない option の印。 */
+    public static final int QUEUE_REWRITE = 1;
+    public static final int QUEUE_NEXT = 2;
+    /** 種類の番号の順の命令名。 */
+    public static final java.util.List<String> QUEUE_COMMANDS = java.util.List.of(
+            "WRITEQ TS", "READQ TS", "DELETEQ TS", "WRITEQ TD", "READQ TD", "DELETEQ TD");
+    /** 種類の番号の順の function code。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int[] QUEUE_FUNCTIONS = {0x0A02, 0x0A04, 0x0A06, 0x0802, 0x0804, 0x0806};
     /** INQUIRE ASSOCIATION (SPI)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int INQUIRE_ASSOCIATION_FUNCTION = 0xC402;
     private static final java.util.regex.Pattern CONTAINER_NAME =
@@ -422,6 +437,153 @@ public final class CicsRuntimeOps {
         execution.eib(required.codePage()).setDataset(file, required.codePage());
         return containerOutcome(required, FILE_FUNCTIONS[kind], result.response(), result.response2(),
                 suppressDefaultHandling, command + " FILE");
+    }
+
+    /**
+     * 一時記憶・一時データの命令 (暫定判断 P-137)。
+     *
+     * <p>名前は定数か、データ域の byte 列で渡る。nameLength は QUEUE (TS) なら 8、QNAME なら 16、TD なら 4。
+     * 数の option は、データ名なら域 (半語の 2 進)、定数なら literal で渡り、どちらも無ければ域は null、literal は負である。
+     *
+     * <p>読んだデータの移し方は file control と同じである。LENGTH を書かなければ INTO の長さを最大とし、
+     * 長いデータは切り詰めて LENGERR、LENGTH の域には本来の長さを置く。短いデータは長さだけを移し、INTO の残りは変えない。
+     */
+    public static int queueCommandCondition(ProgramContext context, int kind, String nameLiteral, byte[] nameData,
+            int nameLength, DataView data, DataView lengthArea, int lengthLiteral, DataView itemArea, int itemLiteral,
+            DataView numItems, int flags, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        String command = QUEUE_COMMANDS.get(kind);
+        CicsExecution execution = execution(required);
+        CicsEnvironment environment = execution.environment();
+        int response;
+        int response2 = 0;
+        if (kind == QUEUE_WRITEQ_TS || kind == QUEUE_WRITEQ_TD) {
+            int length = lengthArea != null ? halfword(lengthArea) : lengthLiteral >= 0 ? lengthLiteral : data.length();
+            if (length > data.length() && length <= CicsTemporaryStoragePort.MAX_ITEM_LENGTH) {
+                throw new CicsTaskStateException(command + " LENGTH " + length + " exceeds the FROM area of "
+                        + data.length() + " bytes");
+            }
+            byte[] bytes = length < 1 || length > data.length() ? new byte[0] : data.subView(0, length).toByteArray();
+            if (kind == QUEUE_WRITEQ_TD) {
+                CicsTransientDataPort.Result result = environment.transientData()
+                        .write(transientDataName(required, nameLiteral, nameData), bytes);
+                response = result.response();
+                response2 = result.response2();
+            } else {
+                byte[] name = temporaryStorageName(required, nameLiteral, nameData, nameLength, command);
+                if (name == null) {
+                    // INVREQ: キューの名前がすべて binary zero
+                    response = CicsResponseCode.INVREQ;
+                } else if ((flags & QUEUE_REWRITE) != 0) {
+                    int item = itemArea != null ? halfword(itemArea) : itemLiteral;
+                    CicsTemporaryStoragePort.Result result = environment.temporaryStorage().rewrite(name, item, bytes);
+                    response = result.response();
+                    response2 = result.response2();
+                } else {
+                    CicsTemporaryStoragePort.Written written = environment.temporaryStorage().write(name, bytes);
+                    response = written.response();
+                    response2 = written.response2();
+                    if (written.response() == CicsResponseCode.NORMAL && itemArea != null) {
+                        // REWRITE の無い ITEM は出力であり、書いた item の番号を返す
+                        setHalfword(itemArea, written.item());
+                    }
+                }
+            }
+        } else if (kind == QUEUE_READQ_TS || kind == QUEUE_READQ_TD) {
+            // READQ の頁: LENGTH が負なら 0 とみなす
+            int max = Math.max(0, lengthArea != null ? halfword(lengthArea) : data.length());
+            if (max > data.length()) {
+                throw new CicsTaskStateException(command + " LENGTH " + max + " does not fit the INTO area of "
+                        + data.length() + " bytes");
+            }
+            byte[] record;
+            int items = -1;
+            if (kind == QUEUE_READQ_TD) {
+                CicsTransientDataPort.Read read = environment.transientData()
+                        .read(transientDataName(required, nameLiteral, nameData));
+                response = read.response();
+                response2 = read.response2();
+                record = read.data();
+            } else {
+                byte[] name = temporaryStorageName(required, nameLiteral, nameData, nameLength, command);
+                if (name == null) {
+                    response = CicsResponseCode.INVREQ;
+                    record = null;
+                } else {
+                    boolean next = (flags & QUEUE_NEXT) != 0;
+                    int item = next ? 0 : itemArea != null ? halfword(itemArea) : itemLiteral;
+                    CicsTemporaryStoragePort.Read read = environment.temporaryStorage().read(name, item, next);
+                    response = read.response();
+                    response2 = read.response2();
+                    record = read.data();
+                    items = read.numberOfItems();
+                }
+            }
+            if (response == CicsResponseCode.NORMAL) {
+                int moved = Math.min(record.length, max);
+                data.subView(0, moved).setBytes(java.util.Arrays.copyOf(record, moved));
+                if (lengthArea != null) {
+                    setHalfword(lengthArea, record.length);
+                }
+                if (record.length > max) {
+                    // LENGERR: データが LENGTH より長く、切り詰めた。頁は RESP2 を示さない
+                    response = CicsResponseCode.LENGERR;
+                } else if (numItems != null && items >= 0) {
+                    setHalfword(numItems, items);
+                }
+            }
+        } else if (kind == QUEUE_DELETEQ_TS) {
+            byte[] name = temporaryStorageName(required, nameLiteral, nameData, nameLength, command);
+            if (name == null) {
+                response = CicsResponseCode.INVREQ;
+            } else {
+                CicsTemporaryStoragePort.Result result = environment.temporaryStorage().delete(name);
+                response = result.response();
+                response2 = result.response2();
+            }
+        } else if (kind == QUEUE_DELETEQ_TD) {
+            CicsTransientDataPort.Result result = environment.transientData()
+                    .delete(transientDataName(required, nameLiteral, nameData));
+            response = result.response();
+            response2 = result.response2();
+        } else {
+            throw new IllegalArgumentException("unknown queue command: " + kind);
+        }
+        return containerOutcome(required, QUEUE_FUNCTIONS[kind], response, response2, suppressDefaultHandling, command);
+    }
+
+    /**
+     * 一時記憶のキューの 16 byte の名前。すべて binary zero なら null (INVREQ)。
+     *
+     * <p>X'FA'〜X'FF'、{@code **}、{@code $$}、{@code DF} で始まる名前は CICS が使うので書けないと頁にあるが、
+     * 書いたときの条件は示されていないので失敗させる。
+     */
+    private static byte[] temporaryStorageName(ProgramContext context, String literal, byte[] data, int nameLength,
+            String command) {
+        byte[] given = literal != null ? context.codePage().encode(literal) : data;
+        if (given.length > nameLength || nameLength > CicsTemporaryStoragePort.NAME_LENGTH) {
+            throw new CicsTaskStateException(command + " queue name exceeds " + nameLength + " bytes");
+        }
+        boolean zero = true;
+        for (byte value : given) {
+            zero &= value == 0;
+        }
+        if (zero && literal == null) {
+            return null;
+        }
+        String text = context.codePage().decode(given);
+        if ((given.length > 0 && (given[0] & 0xFF) >= 0xFA)
+                || text.startsWith("**") || text.startsWith("$$") || text.startsWith("DF")) {
+            throw new CicsTaskStateException(command + " queue name is reserved for CICS: '" + text.stripTrailing() + "'");
+        }
+        byte[] name = new byte[CicsTemporaryStoragePort.NAME_LENGTH];
+        java.util.Arrays.fill(name, context.codePage().space());
+        System.arraycopy(given, 0, name, 0, given.length);
+        return name;
+    }
+
+    private static String transientDataName(ProgramContext context, String literal, byte[] data) {
+        return (literal != null ? literal : context.codePage().decode(data)).stripTrailing();
     }
 
     /** 他の task が持つ資源を待てる長さ。task の期限が無ければ null (限りなく待つ)。 */
