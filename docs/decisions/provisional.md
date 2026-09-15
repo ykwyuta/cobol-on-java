@@ -4381,3 +4381,33 @@ driver-managed も H2 の DriverManager の connection で試しただけで、J
 **解消条件**: Spring Session JDBC でも session の削除・失効と一緒に会話を消す (期限切れの session を消す job と会話の
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。実 Db2 で DDL と
 同時実行 (claim の競合、DuplicateKey の写像) を、SPRING_MANAGED と DB2_DRIVER_MANAGED_HOLD (JCC) の両方で試験する。
+
+## P-144 端末へ出す START と TD の ATI は、会話の途中の端末を待ち、同じ owner の端末だけに出し、JDBC の表で複数 JVM に置く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。設計を決めた段階で未実装。利用者が 4 つの問いに答えた |
+| 場所 | 設計 83 |
+| 関連要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
+
+**暫定の扱い**:
+
+- 満了した START TERMID と `ATIFACILITY(TERMINAL)` の task は、端末で task が動いておらず、**疑似会話の途中でもない**ときに起こす
+  (利用者の決定「会話が終わるまで待つ」)
+- START TERMID の端末の owner が START を出した task の owner と違えば、端末が無いのと同じ TERMIDERR 11 とする
+  (利用者の決定「同じ利用者の端末だけ」)
+- 端末、START、TD のキューと trigger の状態は、最初から会話ストアと同じ DataSource の表に置き、各 JVM の dispatcher が
+  CAS で claim して起こす (利用者の決定「最初から JDBC で複数 JVM」)
+- 画面は端末の現在の画面として置き、SSE で版の変化を知らせ、SSE が無ければ次の要求で古い版の入力を動かさず現在の画面を返す
+  (利用者の決定「SSE で押し出し＋次の要求でも表示」)
+- trigger level に「達する」は WRITEQ のあとの数が trigger level 以上と読む
+- START は claim した行を task を起こす前に消し、attach は高々 1 回とする。JVM がその間に止まれば START は失われる
+- 空にする前の ABEND と、期限の過ぎた trigger の task は、次の QZERO まで次の task を起こさない
+
+**どこがずれうるか**: 公開文書は「端末に task が無いとき」とだけ書き、疑似会話の途中の端末を空いているとみなすかを書かない。
+実機が会話の途中でも起こすなら、ここは実機より遅れて (会話が続く限り) task を起こさない。owner の照合は CICS に無い制限であり、
+他人の端末を指す資産は TERMIDERR で止まる。trigger level の比べ方、端末を待っている START の CANCEL、attach のあとの
+region の停止、同じ端末と TRANSID の START をまとめる範囲は推定である。
+
+**解消条件**: 実機で、疑似会話の途中の端末への START TERMID と ATI の振る舞い、trigger level を越えた状態での WRITEQ、
+端末を待つ START の CANCEL を確かめる。他人の端末へ出す資産が見つかれば、構成で許す端末の形を利用者と決め直す。

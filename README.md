@@ -24,6 +24,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: Spring Boot 4.1 による CICS / Db2 連携](docs/design/77-spring-cics-db2.md)
 - [設計: CICS 資源ポート (時間・間隔・端末・システム情報) と BMS 実行時](docs/design/79-cics-resource-ports.md)
 - [設計: BMS 画面の Web 描画 (Thymeleaf adapter) と renderer spike](docs/design/81-bms-web-renderer.md)
+- [設計: 端末へ出す START (TERMID) と一時データの trigger level による ATI](docs/design/83-cics-terminal-start-ati.md) — 未実装
 - [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
 - [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
