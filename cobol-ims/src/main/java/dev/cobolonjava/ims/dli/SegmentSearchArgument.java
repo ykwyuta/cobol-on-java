@@ -11,17 +11,30 @@ import java.util.List;
  * <p>修飾は「AND で結んだ組」を OR で並べた形で持つ。DL/I では AND ({@code *} / {@code &}) が
  * OR ({@code +} / {@code |}) より強く結ぶ。
  *
- * @param segment      名指したセグメント型
- * @param alternatives OR で並べた、AND の組。無限定なら空
+ * @param segment         名指したセグメント型
+ * @param alternatives    OR で並べた、AND の組。無限定なら空
+ * @param commandCodes    コマンドコード (C / D / F / L / N / P)。null の {@code -} と {@code Q} は含めない
+ * @param concatenatedKey {@code *C} の連結キー。{@code *C} でなければ {@code null}
  */
-record SegmentSearchArgument(SegmentDefinition segment, List<List<Qualification>> alternatives) {
+record SegmentSearchArgument(SegmentDefinition segment, List<List<Qualification>> alternatives,
+                             String commandCodes, byte[] concatenatedKey) {
 
     SegmentSearchArgument {
         alternatives = alternatives.stream().map(List::copyOf).toList();
+        concatenatedKey = concatenatedKey == null ? null : concatenatedKey.clone();
     }
 
+    SegmentSearchArgument(SegmentDefinition segment, List<List<Qualification>> alternatives) {
+        this(segment, alternatives, "", null);
+    }
+
+    /** 修飾しているか。{@code *C} の連結キーも修飾である。 */
     boolean qualified() {
-        return !alternatives.isEmpty();
+        return !alternatives.isEmpty() || concatenatedKey != null;
+    }
+
+    boolean has(char commandCode) {
+        return commandCodes.indexOf(commandCode) >= 0;
     }
 
     /** セグメントの値が修飾を満たすか。無限定なら常に真。 */

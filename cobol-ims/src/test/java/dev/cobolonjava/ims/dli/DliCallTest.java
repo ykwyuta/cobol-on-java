@@ -60,7 +60,7 @@ class DliCallTest {
 
         private final ImsRegion region;
         private final DataView mask;
-        private final Storage io = Storage.allocate(16);
+        private final Storage io = Storage.allocate(64);
 
         Pcb(String access, String processingOptions) {
             region = new ImsRegion(PsbParser.parse(psb(processingOptions, 8)),
@@ -180,9 +180,31 @@ class DliCallTest {
         return concat(bytes.toArray(byte[][]::new));
     }
 
-    /** 顧客 2 人。0001 は口座 2 つ (キーの逆順に入れる) と覚え書き、0002 は口座 1 つ。 */
+    /** コマンドコードを付けた SSA。部品が無ければ無限定である。 */
+    private static byte[] coded(String segment, String codes, Object... parts) {
+        if (parts.length == 0) {
+            return text(pad(segment, 8) + "*" + codes + " ");
+        }
+        List<byte[]> bytes = new ArrayList<>();
+        bytes.add(text(pad(segment, 8) + "*" + codes + "("));
+        for (Object part : parts) {
+            bytes.add(part instanceof byte[] raw ? raw : text((String) part));
+        }
+        bytes.add(text(")"));
+        return concat(bytes.toArray(byte[][]::new));
+    }
+
+    private static int intAt(Pcb pcb, int offset) {
+        return ByteBuffer.wrap(pcb.io.view(offset, 4).toByteArray()).getInt();
+    }
+
     private static Pcb bank(String access) {
-        Pcb pcb = new Pcb(access, "A");
+        return bank(access, "A");
+    }
+
+    /** 顧客 2 人。0001 は口座 2 つ (キーの逆順に入れる) と覚え書き、0002 は口座 1 つ。 */
+    private static Pcb bank(String access, String processingOptions) {
+        Pcb pcb = new Pcb(access, processingOptions);
         assertEquals("  ", pcb.insert(cust("0001", "OSAKA"), unqualified("CUST")));
         assertEquals("  ", pcb.insert(acct("A002", -5), unqualified("ACCT")));
         assertEquals("  ", pcb.insert(acct("A001", 100), unqualified("ACCT")));
@@ -405,10 +427,101 @@ class DliCallTest {
         assertEquals("AD", pcb.call("XXXX", null));
 
         DliCallException commandCode = assertThrows(DliCallException.class,
-                () -> pcb.get("GU", text("CUST    *D(CUSTNO  EQ0001)")));
-        assertTrue(commandCode.getMessage().contains("command code D"), commandCode.getMessage());
+                () -> pcb.get("GU", text("CUST    *U(CUSTNO  EQ0001)")));
+        assertTrue(commandCode.getMessage().contains("command code U"), commandCode.getMessage());
+        assertEquals("AJ", pcb.get("GU", text("CUST    *Z(CUSTNO  EQ0001)")));
+        // Q (排他) は級の 1 文字ごと読み飛ばす
+        assertEquals("  ", pcb.get("GU", coded("CUST", "QA", "CUSTNO  EQ", "0001")));
         assertThrows(DliCallException.class,
                 () -> pcb.get("GU", ssa("CUST", "CUSTNO  EQ", "0001", "#", "CITY    EQ", "OSAKA ")));
+    }
+
+    @Test
+    @DisplayName("*F は親の下の最初の出現へ戻って探し、*L は修飾を満たす最後の出現を返す (P-159)")
+    void firstAndLastOccurrence() {
+        Pcb pcb = bank("HIDAM");
+        byte[] first = ssa("CUST", "CUSTNO  EQ", "0001");
+
+        assertEquals("  ", pcb.get("GU", first));
+        assertEquals("  ", pcb.get("GN", unqualified("ACCT")));
+        assertEquals("  ", pcb.get("GN", unqualified("ACCT")));
+        assertEquals("A002", pcb.read(4));
+        assertEquals("  ", pcb.get("GN", coded("ACCT", "F")));
+        assertEquals("A001", pcb.read(4));
+
+        assertEquals("  ", pcb.get("GU", first, coded("ACCT", "L")));
+        assertEquals("A002", pcb.read(4));
+        assertEquals("  ", pcb.get("GU", first, coded("ACCT", "L", "BAL     GT", int4(0))));
+        assertEquals("A001", pcb.read(4));
+    }
+
+    @Test
+    @DisplayName("*C は連結キーで修飾し、*P は親境界をその段に置く (P-159)")
+    void concatenatedKeyAndParentage() {
+        Pcb pcb = bank("HIDAM");
+
+        assertEquals("  ", pcb.get("GU", coded("ACCT", "C", "0002A001")));
+        assertEquals(7, pcb.balance());
+        assertEquals("GE", pcb.get("GU", coded("ACCT", "C", "0003A001")));
+
+        // 親境界が ACCT A002 なら、その下に子は無い
+        assertEquals("  ", pcb.get("GU", ssa("CUST", "CUSTNO  EQ", "0001"), ssa("ACCT", "ACCTNO  EQ", "A002")));
+        assertEquals("GE", pcb.get("GNP"));
+        assertEquals("  ", pcb.get("GU", coded("CUST", "P", "CUSTNO  EQ", "0001"),
+                ssa("ACCT", "ACCTNO  EQ", "A002")));
+        assertEquals("GK", pcb.get("GNP"));
+        assertEquals("N1", pcb.read(2));
+    }
+
+    @Test
+    @DisplayName("*D は道の上のセグメントを上から順に I/O 域へ並べ、PROCOPT に P が無ければ AM (P-159)")
+    void pathRetrieval() {
+        byte[] customer = coded("CUST", "D", "CUSTNO  EQ", "0002");
+        byte[] account = ssa("ACCT", "ACCTNO  EQ", "A001");
+        assertEquals("AM", bank("HIDAM").get("GU", customer, account));
+
+        Pcb pcb = bank("HIDAM", "AP");
+        assertEquals("  ", pcb.get("GU", customer, account));
+        assertEquals("0002TOKYO A001", pcb.read(14));
+        assertEquals(7, intAt(pcb, 14));
+        assertEquals("ACCT", pcb.segmentName());
+    }
+
+    @Test
+    @DisplayName("Get Hold の道を REPL で置き換え、*N を付けた段は置き換えない (P-159)")
+    void pathReplace() {
+        Pcb pcb = bank("HIDAM", "AP");
+        byte[] customer = coded("CUST", "D", "CUSTNO  EQ", "0001");
+        byte[] account = ssa("ACCT", "ACCTNO  EQ", "A001");
+
+        assertEquals("  ", pcb.get("GHU", customer, account));
+        assertEquals("  ", pcb.replace(concat(cust("0001", "KOBE"), acct("A001", 555))));
+        assertEquals("  ", pcb.get("GHU", customer, account));
+        assertEquals("0001KOBE  ", pcb.read(10));
+        assertEquals(555, intAt(pcb, 14));
+
+        assertEquals("  ", pcb.call("REPL", Storage.wrap(concat(cust("0001", "NARA"), acct("A001", 1))).whole(),
+                coded("CUST", "N")));
+        assertEquals("  ", pcb.get("GU", customer, account));
+        assertEquals("0001KOBE  ", pcb.read(10));
+        assertEquals(1, intAt(pcb, 14));
+    }
+
+    @Test
+    @DisplayName("*D の ISRT は I/O 域の道のセグメントをまとめて入れ、*F は挿入規則に勝つ (P-159)")
+    void pathInsertAndPlacement() {
+        Pcb pcb = bank("HIDAM");
+
+        assertEquals("  ", pcb.insert(concat(cust("0003", "NARA"), acct("A009", 9)), coded("CUST", "D"),
+                unqualified("ACCT")));
+        assertEquals("0003A009", pcb.keyFeedback());
+        assertEquals("  ", pcb.get("GU", ssa("ACCT", "ACCTNO  EQ", "A009")));
+        assertEquals(9, pcb.balance());
+
+        // NOTE はキーを持たず、既定の挿入規則は LAST である
+        assertEquals("  ", pcb.insert(note("N0"), ssa("CUST", "CUSTNO  EQ", "0001"), coded("NOTE", "F")));
+        assertEquals("  ", pcb.get("GU", ssa("CUST", "CUSTNO  EQ", "0001"), unqualified("NOTE")));
+        assertEquals("N0", pcb.read(2));
     }
 
     @Test

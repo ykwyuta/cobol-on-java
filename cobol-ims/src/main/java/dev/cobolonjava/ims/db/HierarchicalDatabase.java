@@ -111,11 +111,22 @@ public final class HierarchicalDatabase {
      * @return 入れたセグメント。重ならないキーが重なれば {@code null}
      */
     public Segment insert(Segment parent, SegmentDefinition type, byte[] data) {
+        return insert(parent, type, data, null);
+    }
+
+    /**
+     * セグメントを入れる。
+     *
+     * @param rule 挿入規則の上書き (SSA の {@code *F} / {@code *L})。{@code null} なら DBD の {@code RULES=}
+     * @return 入れたセグメント。重ならないキーが重なれば {@code null}
+     */
+    public Segment insert(Segment parent, SegmentDefinition type, byte[] data, InsertRule rule) {
+        InsertRule effective = rule != null ? rule : type.insertRule();
         List<Segment> twins = twinsFor(parent, type);
         FieldDefinition sequence = type.sequenceField();
         int index;
         if (sequence == null) {
-            index = type.insertRule() == InsertRule.FIRST ? 0 : twins.size();
+            index = effective == InsertRule.FIRST ? 0 : twins.size();
         } else {
             byte[] key = keyOf(type, data);
             int lower = bound(twins, key, false);
@@ -124,7 +135,7 @@ public final class HierarchicalDatabase {
                 return null;
             }
             // HERE は LAST と同じに置く (暫定判断 P-153)
-            index = type.insertRule() == InsertRule.FIRST ? lower : upper;
+            index = effective == InsertRule.FIRST ? lower : upper;
         }
         Segment segment = new Segment(type, parent, data);
         twins.add(index, segment);

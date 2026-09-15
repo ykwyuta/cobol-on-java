@@ -20,8 +20,9 @@ import java.util.Set;
  * 複数の修飾 SEGNAME(F1      EQ値*F2      GT値+F3      LT値)
  * </pre>
  *
- * <p>コマンドコードは翻訳しない。近い結果を返すより止めて知らせる (設計 78 §3.4)。null のコマンドコード
- * ({@code -}) だけは何もしないので受ける。独立 AND ({@code #}) は二次索引を通したときだけ意味を持つので断る。
+ * <p>コマンドコードは C / D / F / L / N / P を読み、null の {@code -} と、排他の {@code Q} (級の 1 文字を含む) は
+ * 読み飛ばす (P-159)。役割を確かめていない {@code U} / {@code V} は止める (P-100)。独立 AND ({@code #}) は
+ * 二次索引を通したときだけ意味を持つので断る。
  */
 final class SsaParser {
 
@@ -44,20 +45,34 @@ final class SsaParser {
             throw new DliStatusException(StatusCode.AJ);
         }
         int p = NAME;
+        StringBuilder codes = new StringBuilder();
         if (p < bytes.length && ch(codePage, bytes[p]) == '*') {
-            StringBuilder codes = new StringBuilder();
             p++;
             while (p < bytes.length && ch(codePage, bytes[p]) != '(' && ch(codePage, bytes[p]) != ' ') {
-                codes.append(ch(codePage, bytes[p]));
+                char code = ch(codePage, bytes[p]);
+                switch (code) {
+                    case '-' -> {
+                    }
+                    case 'C', 'D', 'F', 'L', 'N', 'P' -> codes.append(code);
+                    case 'Q' -> {
+                        // 次の 1 文字は排他の級。排他を持たないので読み飛ばす (P-159)
+                        p++;
+                        if (p >= bytes.length) {
+                            throw new DliStatusException(StatusCode.AJ);
+                        }
+                    }
+                    case 'U', 'V' -> throw new DliCallException("SSA command code " + code + " on segment "
+                            + segmentName + " is not supported yet; its role is not confirmed (provisional P-100)");
+                    default -> throw new DliStatusException(StatusCode.AJ);
+                }
                 p++;
             }
-            if (!codes.toString().replace("-", "").isEmpty()) {
-                throw new DliCallException("SSA command code " + codes + " on segment " + segmentName
-                        + " is not supported yet (design 78 section 3.4)");
-            }
+        }
+        if (codes.indexOf("C") >= 0) {
+            return concatenated(bytes, p, segment, dbd, codes.toString(), codePage);
         }
         if (p >= bytes.length || ch(codePage, bytes[p]) == ' ') {
-            return new SegmentSearchArgument(segment, List.of());
+            return new SegmentSearchArgument(segment, List.of(), codes.toString(), null);
         }
         if (ch(codePage, bytes[p]) != '(') {
             throw new DliStatusException(StatusCode.AJ);
@@ -91,7 +106,7 @@ final class SsaParser {
             switch (connector) {
                 case ')' -> {
                     alternatives.add(group);
-                    return new SegmentSearchArgument(segment, alternatives);
+                    return new SegmentSearchArgument(segment, alternatives, codes.toString(), null);
                 }
                 case '*', '&' -> {
                 }
@@ -104,6 +119,25 @@ final class SsaParser {
                 default -> throw new DliStatusException(StatusCode.AJ);
             }
         }
+    }
+
+    /**
+     * {@code SEGNAME*C(連結キー)}。括弧の中はフィールドの修飾ではなく、根からこのセグメントまでの順序フィールドを
+     * つないだ値である。
+     */
+    private static SegmentSearchArgument concatenated(byte[] bytes, int p, SegmentDefinition segment,
+                                                      DatabaseDefinition dbd, String codes, CodePage codePage) {
+        int length = 0;
+        for (SegmentDefinition at = segment; at != null;
+             at = at.parent() == null ? null : dbd.segment(at.parent())) {
+            length += at.sequenceField() == null ? 0 : at.sequenceField().bytes();
+        }
+        if (length == 0 || p >= bytes.length || ch(codePage, bytes[p]) != '('
+                || p + 1 + length >= bytes.length || ch(codePage, bytes[p + 1 + length]) != ')') {
+            throw new DliStatusException(StatusCode.AJ);
+        }
+        return new SegmentSearchArgument(segment, List.of(), codes,
+                Arrays.copyOfRange(bytes, p + 1, p + 1 + length));
     }
 
     private static char ch(CodePage codePage, byte b) {

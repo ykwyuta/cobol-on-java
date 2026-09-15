@@ -4,6 +4,7 @@ import dev.cobolonjava.ims.db.HierarchicalDatabase;
 import dev.cobolonjava.ims.db.Segment;
 import dev.cobolonjava.ims.dbd.FieldDefinition;
 import dev.cobolonjava.ims.dbd.FieldType;
+import dev.cobolonjava.ims.dbd.InsertRule;
 import dev.cobolonjava.ims.dbd.SegmentDefinition;
 import dev.cobolonjava.ims.psb.PcbDefinition;
 import dev.cobolonjava.ims.psb.SensitiveSegment;
@@ -61,6 +62,8 @@ final class DatabasePcb {
     private boolean atEnd;
     private Segment parentage;
     private Segment held;
+    /** Hold した道 ({@code *D} で取り出した上の段と、取り出したセグメント)。上から順に並ぶ。 */
+    private List<Segment> heldPath = List.of();
     private int lastLevel;
     private String lastType;
 
@@ -101,6 +104,7 @@ final class DatabasePcb {
         // Hold は次の REPL / DLET までしか続かない。間に別の呼び出しがあれば失われる
         if (!function.equals("REPL") && !function.equals("DLET")) {
             held = null;
+            heldPath = List.of();
         }
         String status;
         try {
@@ -127,7 +131,7 @@ final class DatabasePcb {
 
     private String getUnique(DataView io, List<SegmentSearchArgument> ssas, boolean hold) {
         SegmentDefinition target = ssas.isEmpty() ? database.definition().root() : last(ssas).segment();
-        if (!allows('G', target)) {
+        if (!allows('G', target) || !pathAllowed(ssas)) {
             return StatusCode.AM;
         }
         Search found = search(database.first(sensitive), target, ssas, null, Map.of());
@@ -136,19 +140,35 @@ final class DatabasePcb {
             notFound(null);
             return StatusCode.GE;
         }
-        return retrieved(found.segment(), io, hold, true, false);
+        return retrieved(found.segment(), io, hold, true, false, ssas);
     }
 
     private String getNext(DataView io, List<SegmentSearchArgument> ssas, boolean hold) {
-        if (!ssas.isEmpty() && !allows('G', last(ssas).segment())) {
+        if (!ssas.isEmpty() && (!allows('G', last(ssas).segment()) || !pathAllowed(ssas))) {
             return StatusCode.AM;
         }
-        if (atEnd) {
-            notFound(null);
-            return StatusCode.GB;
+        Segment start;
+        Map<Integer, Segment> fixed = Map.of();
+        SegmentSearchArgument first = firstWith(ssas, 'F');
+        if (first != null) {
+            // *F: その段の親の下の最初の出現へ戻る。親より上の段は、SSA が無ければ位置のまま (P-159)
+            int level = first.segment().level();
+            Segment anchor = level == 1 || current == null ? null : current.path().size() >= level - 1
+                    ? current.path().get(level - 2) : null;
+            if (anchor == null) {
+                start = database.first(sensitive);
+            } else {
+                start = database.next(anchor, sensitive);
+                fixed = positionFixed(anchor, ssas);
+            }
+        } else {
+            if (atEnd) {
+                notFound(null);
+                return StatusCode.GB;
+            }
+            start = current == null ? database.first(sensitive)
+                    : before ? current : database.next(current, sensitive);
         }
-        Segment start = current == null ? database.first(sensitive)
-                : before ? current : database.next(current, sensitive);
         if (ssas.isEmpty()) {
             if (start == null) {
                 return reachedEnd();
@@ -156,11 +176,11 @@ final class DatabasePcb {
             if (!allows('G', start.definition())) {
                 return StatusCode.AM;
             }
-            return retrieved(start, io, hold, true, true);
+            return retrieved(start, io, hold, true, true, ssas);
         }
-        Search found = search(start, last(ssas).segment(), ssas, null, Map.of());
+        Search found = search(start, last(ssas).segment(), ssas, null, fixed);
         if (found.segment() != null) {
-            return retrieved(found.segment(), io, hold, true, false);
+            return retrieved(found.segment(), io, hold, true, false, ssas);
         }
         if (found.bounded()) {
             notFound(null);
@@ -182,11 +202,14 @@ final class DatabasePcb {
         if (parentage == null) {
             return StatusCode.GP;
         }
-        if (!ssas.isEmpty() && !allows('G', last(ssas).segment())) {
+        if (!ssas.isEmpty() && (!allows('G', last(ssas).segment()) || !pathAllowed(ssas))) {
             return StatusCode.AM;
         }
         Segment start;
-        if (atEnd) {
+        if (firstWith(ssas, 'F') != null) {
+            // *F: 親境界の下の最初から探し直す
+            start = database.next(parentage, sensitive);
+        } else if (atEnd) {
             start = null;
         } else if (current != null && current.isWithin(parentage)) {
             start = before ? current : database.next(current, sensitive);
@@ -204,24 +227,51 @@ final class DatabasePcb {
             if (!allows('G', start.definition())) {
                 return StatusCode.AM;
             }
-            return retrieved(start, io, hold, false, true);
+            return retrieved(start, io, hold, false, true, ssas);
         }
         Search found = search(start, last(ssas).segment(), ssas, parentage, Map.of());
         if (found.segment() == null) {
             feedback(parentage);
             return StatusCode.GE;
         }
-        return retrieved(found.segment(), io, hold, false, false);
+        return retrieved(found.segment(), io, hold, false, false, ssas);
     }
 
+    /**
+     * 取り出したセグメントを I/O 域へ置き、位置と帰還域を決める。
+     *
+     * <p>{@code *D} を付けた上の段のセグメントを、上から順に取り出したセグメントの前に並べる。{@code *P} を付けた段が
+     * あれば、親境界は (取り出したセグメントではなく) その段に置く。
+     */
     private String retrieved(Segment segment, DataView io, boolean hold, boolean setsParentage,
-                             boolean unqualified) {
-        byte[] data = segment.data();
-        if (io.length() < data.length) {
-            throw new DliCallException("the I/O area (" + io.length() + " bytes) is shorter than segment "
-                    + segment.definition().name() + " (" + data.length + " bytes)");
+                             boolean unqualified, List<SegmentSearchArgument> ssas) {
+        List<Segment> path = new ArrayList<>();
+        Segment parentageAt = null;
+        for (Segment node : segment.path()) {
+            SegmentSearchArgument ssa = ssaFor(ssas, node.definition());
+            if (ssa != null && ssa.has('P')) {
+                parentageAt = node;
+            }
+            if (node != segment && ssa != null && ssa.has('D')) {
+                path.add(node);
+            }
         }
-        io.subView(0, data.length).setBytes(data);
+        path.add(segment);
+        int total = 0;
+        for (Segment node : path) {
+            total += node.data().length;
+        }
+        if (io.length() < total) {
+            throw new DliCallException("the I/O area (" + io.length() + " bytes) is shorter than segment "
+                    + segment.definition().name() + (path.size() > 1 ? " and its path" : "") + " (" + total
+                    + " bytes)");
+        }
+        int offset = 0;
+        for (Segment node : path) {
+            byte[] data = node.data();
+            io.subView(offset, data.length).setBytes(data);
+            offset += data.length;
+        }
         String status = StatusCode.OK;
         if (unqualified && lastType != null) {
             if (segment.level() < lastLevel) {
@@ -232,33 +282,55 @@ final class DatabasePcb {
         }
         moveTo(segment);
         if (setsParentage) {
-            parentage = segment;
+            parentage = parentageAt != null ? parentageAt : segment;
         }
         held = hold ? segment : null;
+        heldPath = hold ? List.copyOf(path) : List.of();
         feedback(segment);
         return status;
     }
 
     // ---- 更新 ----
 
+    /**
+     * ISRT。{@code *D} を付けた段から最後の段までを、I/O 域に上から順に並べたセグメントとしてまとめて入れる。
+     * {@code *F} / {@code *L} はその段の挿入規則に勝つ。
+     */
     private String insert(DataView io, List<SegmentSearchArgument> ssas) {
         if (ssas.isEmpty()) {
             return StatusCode.AJ;
         }
-        SegmentSearchArgument target = last(ssas);
-        SegmentDefinition type = target.segment();
-        if (!allows('I', type)) {
-            return StatusCode.AM;
+        int pathStart = ssas.size() - 1;
+        for (int i = 0; i < ssas.size(); i++) {
+            if (ssas.get(i).has('D')) {
+                pathStart = i;
+                break;
+            }
         }
-        // 入れるセグメント自身の SSA は無限定でなければならない
-        if (target.qualified()) {
-            return StatusCode.AJ;
+        List<SegmentSearchArgument> inserted = ssas.subList(pathStart, ssas.size());
+        for (int i = 0; i < inserted.size(); i++) {
+            SegmentSearchArgument ssa = inserted.get(i);
+            if (!allows('I', ssa.segment())) {
+                return StatusCode.AM;
+            }
+            // 入れるセグメントの SSA は無限定で、道は 1 段ずつ下る
+            if (ssa.qualified() || (i > 0 && !ssa.segment().parent().equals(inserted.get(i - 1).segment().name()))) {
+                return StatusCode.AJ;
+            }
         }
-        byte[] data = segmentData(type, io);
+        List<byte[]> values = new ArrayList<>();
+        int offset = 0;
+        for (SegmentSearchArgument ssa : inserted) {
+            byte[] value = segmentData(ssa.segment(), io, offset);
+            values.add(value);
+            offset += value.length;
+        }
+        SegmentDefinition type = inserted.get(0).segment();
+        byte[] data = values.get(0);
         boolean load = loadMode();
         Segment parent = null;
         if (!type.root()) {
-            parent = parentFor(type, ssas.subList(0, ssas.size() - 1));
+            parent = parentFor(type, ssas.subList(0, pathStart));
             if (parent == null) {
                 notFound(null);
                 return load ? StatusCode.LD : StatusCode.GE;
@@ -269,13 +341,21 @@ final class DatabasePcb {
                 return StatusCode.LC;
             }
         }
-        Segment inserted = database.insert(parent, type, data);
-        if (inserted == null) {
+        Segment at = database.insert(parent, type, data, placement(inserted.get(0)));
+        if (at == null) {
             return load ? StatusCode.LB : StatusCode.II;
         }
-        moveTo(inserted);
-        feedback(inserted);
+        // 下の段は入れたばかりの親の下に入るので、キーが重なることは無い
+        for (int i = 1; i < inserted.size(); i++) {
+            at = database.insert(at, inserted.get(i).segment(), values.get(i), placement(inserted.get(i)));
+        }
+        moveTo(at);
+        feedback(at);
         return StatusCode.OK;
+    }
+
+    private static InsertRule placement(SegmentSearchArgument ssa) {
+        return ssa.has('F') ? InsertRule.FIRST : ssa.has('L') ? InsertRule.LAST : null;
     }
 
     /**
@@ -296,22 +376,44 @@ final class DatabasePcb {
         return search(database.first(sensitive), parentType, parents, null, fixed).segment();
     }
 
+    /**
+     * REPL。Hold した道 ({@code *D} で取り出した段を含む) を、I/O 域に上から順に並べた値で置き換える。
+     * SSA は {@code *N} を付けた無限定のものだけを書け、その段は置き換えない。すべての段を確かめてから置き換える。
+     */
     private String replace(DataView io, List<SegmentSearchArgument> ssas) {
-        if (!ssas.isEmpty()) {
-            return StatusCode.AJ;
-        }
         if (held == null) {
             return StatusCode.DJ;
         }
-        if (!allows('R', held.definition())) {
-            return StatusCode.AM;
+        List<Segment> path = heldPath.isEmpty() ? List.of(held) : heldPath;
+        for (SegmentSearchArgument ssa : ssas) {
+            if (ssa.qualified() || !ssa.commandCodes().equals("N")
+                    || path.stream().noneMatch(node -> node.definition().name().equals(ssa.segment().name()))) {
+                return StatusCode.AJ;
+            }
         }
-        byte[] data = segmentData(held.definition(), io);
-        FieldDefinition sequence = held.definition().sequenceField();
-        if (sequence != null && !Arrays.equals(HierarchicalDatabase.keyOf(held.definition(), data), held.key())) {
-            return StatusCode.DA;
+        List<byte[]> values = new ArrayList<>();
+        int offset = 0;
+        for (Segment node : path) {
+            SegmentDefinition type = node.definition();
+            byte[] value = segmentData(type, io, offset);
+            offset += value.length;
+            values.add(ssaFor(ssas, type) == null ? value : null);
+            if (ssaFor(ssas, type) != null) {
+                continue;
+            }
+            if (!allows('R', type)) {
+                return StatusCode.AM;
+            }
+            FieldDefinition sequence = type.sequenceField();
+            if (sequence != null && !Arrays.equals(HierarchicalDatabase.keyOf(type, value), node.key())) {
+                return StatusCode.DA;
+            }
         }
-        database.replace(held, data);
+        for (int i = 0; i < path.size(); i++) {
+            if (values.get(i) != null) {
+                database.replace(path.get(i), values.get(i));
+            }
+        }
         return StatusCode.OK;
     }
 
@@ -448,7 +550,8 @@ final class DatabasePcb {
         }
     }
 
-    private boolean pathMatches(Segment segment, List<SegmentSearchArgument> ssas, Map<Integer, Segment> fixed) {
+    private boolean pathMatches(Segment segment, List<SegmentSearchArgument> ssas,
+                                Map<Integer, Segment> fixed) {
         for (Segment node : segment.path()) {
             if (!levelMatches(node, ssas, fixed)) {
                 return false;
@@ -457,14 +560,71 @@ final class DatabasePcb {
         return true;
     }
 
-    private static boolean levelMatches(Segment segment, List<SegmentSearchArgument> ssas,
-                                        Map<Integer, Segment> fixed) {
+    private boolean levelMatches(Segment segment, List<SegmentSearchArgument> ssas, Map<Integer, Segment> fixed) {
         SegmentSearchArgument ssa = ssaFor(ssas, segment.definition());
-        if (ssa != null && !ssa.matches(segment.data())) {
-            return false;
+        if (ssa != null) {
+            if (!satisfies(segment, ssa)) {
+                return false;
+            }
+            // *L: 同じ親の下で、あとに修飾を満たす兄弟があれば、これは最後の出現ではない
+            if (ssa.has('L')) {
+                List<Segment> twins = segment.parent() == null
+                        ? database.roots() : segment.parent().children(segment.definition().name());
+                boolean seen = false;
+                for (Segment twin : twins) {
+                    if (seen && satisfies(twin, ssa)) {
+                        return false;
+                    }
+                    seen |= twin == segment;
+                }
+            }
         }
         Segment required = fixed.get(segment.level());
         return required == null || required == segment;
+    }
+
+    /** 修飾と、{@code *C} の連結キーを満たすか。 */
+    private static boolean satisfies(Segment segment, SegmentSearchArgument ssa) {
+        return ssa.matches(segment.data())
+                && (ssa.concatenatedKey() == null || Arrays.equals(concatenatedKey(segment), ssa.concatenatedKey()));
+    }
+
+    private static byte[] concatenatedKey(Segment segment) {
+        ByteArrayOutputStream key = new ByteArrayOutputStream();
+        for (Segment node : segment.path()) {
+            key.writeBytes(node.key());
+        }
+        return key.toByteArray();
+    }
+
+    private static SegmentSearchArgument firstWith(List<SegmentSearchArgument> ssas, char commandCode) {
+        for (SegmentSearchArgument ssa : ssas) {
+            if (ssa.has(commandCode)) {
+                return ssa;
+            }
+        }
+        return null;
+    }
+
+    /** 道の取り出し ({@code *D}) は、その段の PROCOPT に P が要る。 */
+    private boolean pathAllowed(List<SegmentSearchArgument> ssas) {
+        for (SegmentSearchArgument ssa : ssas) {
+            if (ssa.has('D') && options.get(ssa.segment().name()).indexOf('P') < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code anchor} の道のうち、SSA を書いていない段を位置のセグメントに固める。 */
+    private static Map<Integer, Segment> positionFixed(Segment anchor, List<SegmentSearchArgument> ssas) {
+        Map<Integer, Segment> fixed = new HashMap<>();
+        for (Segment node : anchor.path()) {
+            if (ssaFor(ssas, node.definition()) == null) {
+                fixed.put(node.level(), node);
+            }
+        }
+        return fixed;
     }
 
     private static SegmentSearchArgument ssaFor(List<SegmentSearchArgument> ssas, SegmentDefinition type) {
@@ -534,6 +694,17 @@ final class DatabasePcb {
         return false;
     }
 
+    /** I/O 域の {@code offset} からセグメントの値を取る。道の呼び出しでは上の段から順に並ぶ。 */
+    private static byte[] segmentData(SegmentDefinition type, DataView io, int offset) {
+        if (offset == 0) {
+            return segmentData(type, io);
+        }
+        if (offset >= io.length()) {
+            throw new DliCallException("the I/O area (" + io.length() + " bytes) ends before segment " + type.name());
+        }
+        return segmentData(type, io.subView(offset, io.length() - offset));
+    }
+
     /** I/O 域からセグメントの値を取る。可変長なら先頭の LL が長さである。 */
     private static byte[] segmentData(SegmentDefinition type, DataView io) {
         if (type.variableLength()) {
@@ -581,11 +752,7 @@ final class DatabasePcb {
     private void feedback(Segment segment) {
         text(LEVEL, 2, String.format("%02d", segment.level()));
         text(SEGMENT_NAME, 8, segment.definition().name());
-        ByteArrayOutputStream key = new ByteArrayOutputStream();
-        for (Segment node : segment.path()) {
-            key.writeBytes(node.key());
-        }
-        byte[] concatenated = key.toByteArray();
+        byte[] concatenated = concatenatedKey(segment);
         integer(KEY_LENGTH, concatenated.length);
         int room = Math.min(concatenated.length, definition.keyLength());
         mask.view(KEY_FEEDBACK, room).setBytes(Arrays.copyOf(concatenated, room));
