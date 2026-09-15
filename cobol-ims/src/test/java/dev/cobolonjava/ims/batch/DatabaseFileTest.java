@@ -68,15 +68,19 @@ class DatabaseFileTest {
     }
 
     @Test
-    @DisplayName("PARM は領域の種類、プログラム、PSB を読み、PSB を省けばプログラムの名前にする。TM の領域は断る")
+    @DisplayName("PARM は領域の種類、プログラム、PSB を読み、PSB を省けばプログラムの名前にする。電文を読む領域は断る")
     void regionParameters() {
         RegionParameters full = RegionParameters.of(EBCDIC, parm("DLI,LOADCUST,IBLOAD,,,,"));
         assertEquals(new RegionParameters("DLI", "LOADCUST", "IBLOAD"), full);
         assertEquals("REPORT", RegionParameters.of(EBCDIC, parm("DBB,REPORT")).psb());
+        assertTrue(RegionParameters.of(EBCDIC, parm("BMP,REPORT,REPORT,,")).ioPcb());
 
         ImsBatchException online = assertThrows(ImsBatchException.class,
-                () -> RegionParameters.of(EBCDIC, parm("BMP,IBACSUM,IBACSUM")));
+                () -> RegionParameters.of(EBCDIC, parm("MSG,IBACSUM,IBACSUM")));
         assertTrue(online.getMessage().contains("IMS TM"), online.getMessage());
+        ImsBatchException reading = assertThrows(ImsBatchException.class,
+                () -> RegionParameters.of(EBCDIC, parm("BMP,IBACSUM,IBACSUM,IBACSUM")));
+        assertTrue(reading.getMessage().contains("IN=IBACSUM"), reading.getMessage());
     }
 
     private static dev.cobolonjava.runtime.storage.DataView[] parm(String text) {

@@ -4384,6 +4384,26 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-158 DFSRRC00 の BMP は電文を読まない形だけを受け、I/O PCB を常に先頭に置く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-16)。Bank-of-Z に BMP は無い。JCL の試験で、BMP の CHKP と異常終了のあとの巻き戻しを確かめた |
+| 場所 | `cobol-ims` / `RegionParameters.ioPcb`、`Dfsrrc00`、`ImsProgramRunner.run(..., ioPcb)` |
+| 関連要件 | FR-164、設計 78 §7.1、P-155、P-157 |
+
+**暫定の扱い**:
+
+- `PARM='BMP,プログラム,PSB'` を受ける。PSB の `CMPAT` によらず I/O PCB を先頭に置き、基本形の CHKP / SYNC / ROLB を使える
+- 4 つ目 (電文を読む取引コード `IN=`) を書いた BMP は断る。電文の入口 (キュー) がまだ無いからである
+- 電文を読まない BMP の I/O PCB への GU / GN / ISRT / PURG は、キューが無いとして止める (実機の状態コードを確かめていない)
+- 実機の BMP はオンラインの制御領域の下で動き、データベースを他の領域と分け合う。ここではバッチと同じく、ステップの中で
+  データベースを読み書きする。異常終了は最後の CHKP まで戻す (P-157、実機の動的バックアウトにあたる)
+
+**どこがずれうるか**: 同じデータベースを使うオンラインの領域と同時に動かしたときの排他とログは無い。
+
+**解消条件**: 電文のキューを JMS (ADR-0014) にしたら `IN=` を受ける。RDB の置き場を入れたら排他をそちらで持つ。
+
 ## P-157 同期点は I/O PCB への GU・基本 CHKP・SYNC とし、ROLB と異常終了は最後の同期点まで戻す
 
 | 項目 | 内容 |
@@ -4455,8 +4475,8 @@ GU を同期点にしたので、途中で異常終了しても失われるの�
 
 - ジョブ実行は、ユーティリティの次に `ServiceLoader` で `SystemProgramProvider` を引き、`cobol-ims` が `DFSRRC00` を差し込む。
   `cobol-job` も `cobol-ims` も `cobol-runtime` にだけ依存したままにするためである (設計 78 §2.2 と `cobol-job` の決めごと)
-- PARM は `領域の種類,プログラム,PSB` の 3 つだけを読む。`DLI` と `DBB` を受け、`BMP` / `MSG` / `IFP` / `JBP` / `JMP` は
-  IMS TM が無いので断る。`ULU` 等のユーティリティも断る。PSB を省けばプログラムと同じ名前。4 つ目より後ろは読まない
+- PARM は `領域の種類,プログラム,PSB` の 3 つだけを読む。`DLI` と `DBB` を受け、`MSG` / `IFP` / `JBP` / `JMP` は
+  IMS TM が無いので断る (`BMP` は 2026-09-16 に P-158 で電文を読まない形だけ受けた)。`ULU` 等のユーティリティも断る。PSB を省けばプログラムと同じ名前。4 つ目より後ろは読まない
 - `//IMS` の区分データセットに **PSB と DBD の原文**を置く (実機は生成した PSB / DBD / ACB を置く)。PSB が名指す DBD は
   同じライブラリから読む。連結した DD はまだ読まない。メンバは固定長なら 1 レコード 1 行、そうでなければ改行で切る
 - データベースは DBD の `DATASET DD1=` の DD (無ければ DBD 名の DD) に置く。割り当てていなければ始めずに止める

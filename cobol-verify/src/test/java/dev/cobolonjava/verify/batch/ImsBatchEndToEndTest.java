@@ -187,6 +187,79 @@ class ImsBatchEndToEndTest {
             "    CLOSE RPT-FILE.",
             "    GOBACK.");
 
+    /** BMP で 1 件ごとに CHKP する読み込み。入力の都市が ABEND なら、ISRT のあと CHKP の前に止まる。 */
+    private static final String CHECKPOINTED = source(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. BANKBMP.",
+            "ENVIRONMENT DIVISION.",
+            "INPUT-OUTPUT SECTION.",
+            "FILE-CONTROL.",
+            "    SELECT CUST-FILE ASSIGN TO CUSTIN.",
+            "DATA DIVISION.",
+            "FILE SECTION.",
+            "FD  CUST-FILE.",
+            "01  CUST-REC PIC X(10).",
+            "WORKING-STORAGE SECTION.",
+            "77  ISRT PIC X(4) VALUE 'ISRT'.",
+            "77  CHKP PIC X(4) VALUE 'CHKP'.",
+            "77  GU PIC X(4) VALUE 'GU  '.",
+            "77  CHKP-ID PIC X(8) VALUE 'BANKCHKP'.",
+            "77  WS-DONE PIC X VALUE 'N'.",
+            "01  CUST-SSA PIC X(9) VALUE 'CUST     '.",
+            "01  BAD-SSA PIC X(11) VALUE 'CUST    *D '.",
+            "LINKAGE SECTION.",
+            "01  IOPCB.",
+            "    05 LTERM PIC X(8).",
+            "    05 FILLER PIC XX.",
+            "    05 IOSTAT PIC XX.",
+            "01  DBPCB.",
+            "    05 DBDNAME PIC X(8).",
+            "    05 SEGLEVEL PIC XX.",
+            "    05 DBSTAT PIC XX.",
+            "    05 FILLER PIC X(28).",
+            "PROCEDURE DIVISION.",
+            "    ENTRY 'DLITCBL' USING IOPCB DBPCB.",
+            "MAIN-START.",
+            "    OPEN INPUT CUST-FILE.",
+            "    PERFORM UNTIL WS-DONE = 'Y'",
+            "        READ CUST-FILE",
+            "            AT END MOVE 'Y' TO WS-DONE",
+            "            NOT AT END PERFORM ONE-CUSTOMER",
+            "        END-READ",
+            "    END-PERFORM.",
+            "    CLOSE CUST-FILE.",
+            "    GOBACK.",
+            "ONE-CUSTOMER.",
+            "    CALL 'CBLTDLI' USING ISRT DBPCB CUST-REC CUST-SSA.",
+            "    IF CUST-REC(5:6) = 'ABEND '",
+            "        CALL 'CBLTDLI' USING GU DBPCB CUST-REC BAD-SSA",
+            "    END-IF.",
+            "    CALL 'CBLTDLI' USING CHKP IOPCB CHKP-ID.");
+
+    private static final String[] BMP_JOB = {
+        "//BANKBMP  JOB  (ACCT),'IMS BMP'",
+        "//LOAD     EXEC PGM=DFSRRC00,PARM='BMP,BANKBMP,BANKBPSB'",
+        "//IMS      DD   DSN=IMS.PSBLIB,DISP=SHR",
+        "//BANKDD   DD   DSN=BANK.CUSTDB,DISP=(NEW,CATLG)",
+        "//CUSTIN   DD   DSN=BANK.CUSTIN,DISP=SHR",
+    };
+
+    /** 異常終了した段のあとで、別のジョブとしてデータベースを読む。 */
+    private static final String[] REPORT_JOB = {
+        "//BANKRPT  JOB  (ACCT),'IMS REPORT'",
+        "//REPORT   EXEC PGM=DFSRRC00,PARM='DLI,BANKRPT,BANKRPSB'",
+        "//IMS      DD   DSN=IMS.PSBLIB,DISP=SHR",
+        "//BANKDD   DD   DSN=BANK.CUSTDB,DISP=SHR",
+        "//RPTOUT   DD   DSN=BANK.REPORT,DISP=(NEW,CATLG)",
+    };
+
+    private static final String[] BMP_PSB = {
+        "         PCB   TYPE=DB,DBDNAME=BANKDB,PROCOPT=A,KEYLEN=4",
+        "         SENSEG NAME=CUST,PARENT=0",
+        "         PSBGEN PSBNAME=BANKBPSB,LANG=COBOL",
+        "         END",
+    };
+
     private static final String[] JOB = {
         "//BANKJOB  JOB  (ACCT),'IMS BATCH'",
         "//LOAD     EXEC PGM=DFSRRC00,PARM='DLI,BANKLOAD,BANKLPSB'",
@@ -203,6 +276,7 @@ class ImsBatchEndToEndTest {
         member("BANKDB", DBD);
         member("BANKLPSB", LOAD_PSB);
         member("BANKRPSB", REPORT_PSB);
+        member("BANKBPSB", BMP_PSB);
     }
 
     /** 80 桁の札のメンバ。 */
@@ -235,7 +309,7 @@ class ImsBatchEndToEndTest {
     private JobRunner.Result run(String[] cards) {
         Jcl.Result parsed = Jcl.read(String.join("\n", cards));
         assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
-        return JobRunner.at(directory.resolve("work"), compiled(LOAD, REPORT), new ByteArrayOutputStream())
+        return JobRunner.at(directory.resolve("work"), compiled(LOAD, REPORT, CHECKPOINTED), new ByteArrayOutputStream())
                 .withBase(directory)
                 .run(parsed.job());
     }
@@ -262,6 +336,21 @@ class ImsBatchEndToEndTest {
         assertEquals(0, result.step("REPORT").returnCode(), result.toString());
         // HDAM の根はキーの順に置く (P-153)。実機ならランダマイザの順である
         assertEquals("0001TOKYO 0002OSAKA 0003NAGOYA", CodePages.DEFAULT.decode(bytesOf("BANK.REPORT")));
+    }
+
+    @Test
+    @DisplayName("BMP は I/O PCB を受けて CHKP でき、異常終了した段は最後の CHKP までの更新を残す (P-157、P-158)")
+    void aBmpKeepsTheUpdatesUpToItsLastCheckpoint() {
+        library();
+        input("0002OSAKA 0001ABEND 0003NAGOYA");
+
+        JobRunner.Result result = run(BMP_JOB);
+        assertNotEquals(JobRunner.Status.EXECUTED, result.step("LOAD").status(), result.toString());
+
+        JobRunner.Result report = run(REPORT_JOB);
+        assertEquals(0, report.step("REPORT").returnCode(), report.toString());
+        // 0002 は CHKP で確定し、0001 は CHKP の前に止まったので戻る
+        assertEquals("0002OSAKA ", CodePages.DEFAULT.decode(bytesOf("BANK.REPORT")));
     }
 
     @Test

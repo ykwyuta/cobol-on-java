@@ -50,6 +50,16 @@ public final class ImsProgramRunner {
      */
     public static int run(ProgramContext context, ClassLoader loader, String program, String psbName,
                           MessageQueue queue) {
+        return run(context, loader, program, psbName, queue, false);
+    }
+
+    /**
+     * @param queue 電文のキュー。バッチなら {@code null}
+     * @param ioPcb PSB の CMPAT によらず I/O PCB を先頭に置くか (BMP)。キューがあれば常に置く
+     * @return プログラムの復帰コード
+     */
+    public static int run(ProgramContext context, ClassLoader loader, String program, String psbName,
+                          MessageQueue queue, boolean ioPcb) {
         CodePage codePage = context.codePage();
         if (!context.catalog().isAssigned(LIBRARY) || !Files.isDirectory(context.catalog().resolve(LIBRARY))) {
             throw new ImsBatchException("DD IMS must name the library that holds the PSB and DBD sources");
@@ -76,7 +86,8 @@ public final class ImsProgramRunner {
 
         ImsRegion region;
         try {
-            region = new ImsRegion(psb, databases.values(), codePage, queue != null || psb.compatibility(), queue,
+            region = new ImsRegion(psb, databases.values(), codePage, ioPcb || queue != null || psb.compatibility(),
+                    queue,
                     context.clock());
         } catch (IllegalArgumentException e) {
             throw new ImsBatchException(e.getMessage(), e);

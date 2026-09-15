@@ -9,7 +9,7 @@ import dev.cobolonjava.runtime.storage.Storage;
  * {@code DFSRRC00} — IMS のバッチ領域 (設計 78 §7.1、暫定判断 P-155)。
  *
  * <pre>
- * //LOAD     EXEC PGM=DFSRRC00,PARM='DLI,LOADCUST,IBLOAD'
+ * //LOAD     EXEC PGM=DFSRRC00,PARM='DLI,LOADCUST,IBLOAD'     BMP も受ける (電文を読む IN= を除く)
  * //IMS      DD   DSN=IMS.PSBLIB,DISP=SHR        PSB と DBD の原文のライブラリ
  * //CUSTOMER DD   DSN=BANK.CUSTOMER,DISP=OLD     DBD の DATASET DD1= の名前
  * </pre>
@@ -32,6 +32,7 @@ public final class Dfsrrc00 implements CobolProgram {
     @Override
     public void run(Storage storage, ProgramContext context, DataView[] arguments) {
         RegionParameters parameters = RegionParameters.of(context.codePage(), arguments);
-        context.setReturnCode(ImsProgramRunner.run(context, loader, parameters.program(), parameters.psb(), null));
+        context.setReturnCode(ImsProgramRunner.run(context, loader, parameters.program(), parameters.psb(), null,
+                parameters.ioPcb()));
     }
 }
