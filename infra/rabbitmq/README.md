@@ -32,10 +32,15 @@ mvn -pl cobol-ims-jms -am test
 ## 版
 
 - image: `rabbitmq:4.1-management` (管理 UI 込み)
+- digest: `sha256:036dbf561d8040eaed77d0d326b44bd8fa1c9ac382d2310bd7f35970fae70613`
+- ブローカ: RabbitMQ 4.1.8 / Erlang/OTP 27
 - JMS クライアント: `com.rabbitmq.jms:rabbitmq-jms` (Maven の test scope)。版は親 POM で固定する
 - 制限: 2 CPU / 2 GiB、named volume `rabbitmq-data`
 
 ADR-0014 は「依存ライブラリとブローカの版は、実際に依存解決と起動を確認してから固定する」と決めている。
 依存の解決は確認した (`jakarta.jms-api` 3.1.0、`rabbitmq-jms` 3.4.0、`amqp-client` 5.22.0)。
-<b>ブローカの起動と実ブローカの試験は、まだ確認していない</b> (作った環境で docker が動かなかった、暫定判断 P-162)。
-確認した時点で、image の digest と結果をここに書き足す。
+
+<b>ブローカの起動と実ブローカの試験は 2026-09-16 に確認した</b> (暫定判断 P-162)。
+`docker compose up -d --wait` が 7 秒で `healthy` になり、`RABBITMQ_IT_ENABLED=true` で
+`JmsMessageQueueIntegrationTest` の 2 件 (同期点での取り出しと応答の確定、巻き戻しでの再配信) が
+15.49 秒で通った。確認した環境は docker 29.4.0 / compose v5.1.1 である。
