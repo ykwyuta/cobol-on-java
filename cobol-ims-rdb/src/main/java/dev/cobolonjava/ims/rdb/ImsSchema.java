@@ -58,6 +58,11 @@ final class ImsSchema {
                     + "CONSTRAINT PK_IMS_ROOT PRIMARY KEY (DBD_NAME, ROOT_KEY_RAW, ROOT_SEQ))");
             // ルートアンカーロックの行 (ADR-0015、P-161)。キーの根が重なっても 1 行で、確定のたびに版を上げる。
             // 根の行が消えても残すので、消したことも版で分かる
+            // 処理済みの電文 (ADR-0014 の決定 2、P-163)。業務の更新と同じトランザクションで書く
+            statement.execute("CREATE TABLE IF NOT EXISTS IMS_MESSAGE_INBOX ("
+                    + "MESSAGE_ID VARCHAR(255) NOT NULL, "
+                    + "RECORDED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    + "CONSTRAINT PK_IMS_MESSAGE_INBOX PRIMARY KEY (MESSAGE_ID))");
             statement.execute("CREATE TABLE IF NOT EXISTS IMS_ROOT_LOCK ("
                     + "DBD_NAME VARCHAR(8) NOT NULL, "
                     + "ROOT_KEY_RAW " + key + " NOT NULL, "

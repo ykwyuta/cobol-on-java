@@ -1,5 +1,6 @@
 package dev.cobolonjava.ims.dli;
 
+import dev.cobolonjava.ims.store.MessageInbox;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
@@ -58,6 +59,10 @@ final class IoPcb {
     private int nextSegment;
     private List<byte[]> output = new ArrayList<>();
     private int sequence;
+    /** 処理済みを覚える口 (P-163)。無ければ冪等化しない。 */
+    private MessageInbox inbox;
+    /** この同期点までに処理した電文の ID。確定のときに書く。 */
+    private final List<String> processed = new ArrayList<>();
 
     IoPcb(Storage mask, MessageQueue queue, CodePage codePage, Clock clock, SyncPoint syncPoint) {
         this.mask = mask;
@@ -107,6 +112,25 @@ final class IoPcb {
         current = null;
     }
 
+    void inbox(MessageInbox value) {
+        inbox = value;
+    }
+
+    /**
+     * 同期点の直前。この同期点までに処理した電文を、業務の更新と同じトランザクションで書く口へ渡す (P-163)。
+     */
+    void recordProcessed() {
+        if (inbox != null) {
+            processed.forEach(inbox::record);
+        }
+        processed.clear();
+    }
+
+    /** 巻き戻し。処理済みとして書かないので、電文は再配信されてもう一度処理される。 */
+    void forgetProcessed() {
+        processed.clear();
+    }
+
     /**
      * 基本形の CHKP と SYNC。データベースを確定し、位置を捨てる (P-157)。
      *
@@ -140,10 +164,16 @@ final class IoPcb {
         // 次の電文を取り出すところが同期点である。前の電文の更新と応答をここで確定する
         complete();
         syncPoint.commit();
-        current = queue.next();
-        nextSegment = 0;
+        // 処理済みの電文が再配信されていれば、業務を動かさずに捨てて次を読む (ADR-0014 の冪等化、P-163)
+        do {
+            current = queue.next();
+            nextSegment = 0;
+        } while (current != null && !current.id().isBlank() && inbox != null && inbox.seen(current.id()));
         if (current == null) {
             return StatusCode.QC;
+        }
+        if (!current.id().isBlank() && inbox != null) {
+            processed.add(current.id());
         }
         sequence++;
         text(TERMINAL, 8, current.logicalTerminal());

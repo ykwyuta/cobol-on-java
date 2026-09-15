@@ -86,7 +86,8 @@ public final class ImsProgramRunner {
             try {
                 region = new ImsRegion(psb, databases.values(), codePage,
                         ioPcb || queue != null || psb.compatibility(), queue, context.clock())
-                        .onCommit(store::commit);
+                        .onCommit(store::commit)
+                        .withInbox(store.inbox());
             } catch (IllegalArgumentException e) {
                 throw new ImsBatchException(e.getMessage(), e);
             }

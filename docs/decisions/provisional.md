@@ -3220,6 +3220,9 @@ XA (ActiveMQ Artemis 等の XA 対応ブローカ + JTA トランザクション
 原子性は保てるが、Spring Boot は 3.x で Atomikos / Bitronix の自動構成を落としており、
 JTA には第三者スターターの追加が要る。この費用を払うかは利用者の判断とする。
 
+**2026-09-16 の追記**: (a) の冪等化を P-163 で入れた。処理済みの電文の ID を業務の更新と同じトランザクションで書き、
+再配信された電文は業務を動かさずに捨てる。ID を運ぶキュー (JMS) と inbox を持つ置き場 (RDB) がそろっているときに効く。
+
 **解消条件**: 利用者が (a) at-least-once + 冪等化、(b) XA ブローカ + JTA のどちらを採るかを
 決める。決めた側で、電文デキューと DB 更新の間で強制終了させる障害注入テストを通す。
 
@@ -4386,6 +4389,34 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 **解消条件**: Spring Session JDBC でも session の削除・失効と一緒に会話を消す (期限切れの session を消す job と会話の
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
+
+## P-163 処理済みの電文を業務の更新と同じトランザクションで覚え、再配信された電文は業務を動かさずに捨てる
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-16)。ADR-0014 の決定 2 の残り (P-104 の「業務が 2 度呼ばれうる」) を埋めた。H2 で、再配信を読み飛ばすこと・巻き戻した電文は覚えないことを確かめた |
+| 場所 | `cobol-ims` / `MessageInbox`・`DatabaseStore.inbox`・`InputMessage.id`・`IoPcb.getUnique` / `recordProcessed` / `forgetProcessed`・`ImsRegion.withInbox`、`cobol-ims-rdb` / `JdbcDatabaseStore`・`ImsSchema` の `IMS_MESSAGE_INBOX`、`cobol-ims-jms` / `JmsMessageQueue` |
+| 関連要件 | FR-164、ADR-0014、P-104、P-156、P-157、P-160、P-162 |
+
+**暫定の扱い**:
+
+- 電文は ID を持つ。JMS は `JMSMessageID` (再配信されても同じ値)。ID が空の電文は見分けられないので冪等化しない
+  (メモリのキューと、`verify ims-mpp` の電文のファイルは既定で空である)
+- 置き場が `MessageInbox` を持てる。RDB の置き場は表 `IMS_MESSAGE_INBOX` に ID を書き、**業務の更新と同じ
+  JDBC のトランザクション**で確定する (ADR-0014 の決定 2)
+- I/O PCB の GU は、処理済みの ID の電文を取り出したら**業務を動かさずに捨て**、次の電文を読む。捨てた電文も
+  取り出し済みなので、次の同期点で ACK されてキューから消える
+- 処理した電文の ID は同期点で書く。巻き戻し (ROLB、異常終了) では書かないので、再配信されたらもう一度処理する
+- 確定が競合や失敗で終われば、業務の更新も ID も書かれない。同じ電文を 2 つの領域が同時に処理して ID が
+  一意制約に当たれば、競合として止める
+
+**どこがずれうるか**: 実機は電文のデキューと DB の更新を 1 つのトランザクションで確定するので、そもそも 2 度は動かない。
+ここでは「更新と ID を確定したあと、キューを ACK する前」に落ちれば電文が再配信されるが、ID で捨てられる。捨てられるのは
+ID を運ぶキュー (JMS) と、inbox を持つ置き場 (RDB) がそろっているときだけである。**表の刈り取り (保持期間) はまだ無い。**
+ID は無期限に積もる。
+
+**解消条件**: 保持期間と刈り取り (古い ID を消すジョブ) を決める。ID が空のキューでも冪等化できるよう、
+`verify ims-mpp` の電文に ID を書けるようにする。XA を選ぶ構成 (P-104) を入れるなら、そちらでは inbox を止める。
 
 ## P-162 電文のキューは JMS で運び、同期点で取り出しと応答を 1 つのトランザクションとして確定する
 

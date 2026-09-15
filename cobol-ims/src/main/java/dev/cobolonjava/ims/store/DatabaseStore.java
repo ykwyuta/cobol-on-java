@@ -21,6 +21,15 @@ public interface DatabaseStore extends AutoCloseable {
      */
     void commit(Collection<HierarchicalDatabase> databases);
 
+    /**
+     * 処理済みの電文を覚える口 (ADR-0014 の決定 2)。{@link #commit} と同じトランザクションで書く置き場だけが持つ。
+     *
+     * @return 持たなければ {@code null} (再配信された電文はもう一度処理される)
+     */
+    default MessageInbox inbox() {
+        return null;
+    }
+
     @Override
     void close();
 }

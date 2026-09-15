@@ -83,7 +83,10 @@ public final class JmsMessageQueue implements MessageQueue, AutoCloseable {
             byte[] body = new byte[(int) bytes.getBodyLength()];
             bytes.readBytes(body);
             String terminal = message.getStringProperty("IMS_LTERM");
-            return new InputMessage(terminal == null ? "" : terminal, MessageSegments.decode(body));
+            // JMSMessageID は再配信されても同じである。inbox で再配信を捨てるために運ぶ (P-163)
+            String id = message.getJMSMessageID();
+            return new InputMessage(id == null ? "" : id, terminal == null ? "" : terminal,
+                    MessageSegments.decode(body));
         } catch (JMSException e) {
             throw new JmsQueueException("cannot read the next message", e);
         }

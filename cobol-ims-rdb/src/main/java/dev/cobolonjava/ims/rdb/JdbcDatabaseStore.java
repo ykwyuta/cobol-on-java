@@ -7,6 +7,7 @@ import dev.cobolonjava.ims.dbd.SegmentDefinition;
 import dev.cobolonjava.ims.store.DatabaseConflictException;
 import dev.cobolonjava.ims.store.DatabaseStore;
 import dev.cobolonjava.ims.store.DatabaseStoreException;
+import dev.cobolonjava.ims.store.MessageInbox;
 import java.nio.ByteBuffer;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -50,7 +51,7 @@ import java.util.Objects;
  * <p>開くときはデータベース全体をメモリに読む。GH で押さえる形 (ADR-0015 の読みの排他)、競合したときの自動の
  * 再試行 (P-107)、根ごとの遅延読み込みは無い。読み直しは同期点ごとに排他の表を DBD ごとに全件読む。
  */
-public final class JdbcDatabaseStore implements DatabaseStore {
+public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox {
 
     private static final int LL = 2;
     private static final int MAX_LEVELS = 15;
@@ -59,6 +60,8 @@ public final class JdbcDatabaseStore implements DatabaseStore {
     private final Connection connection;
     /** DBD ごとに、この置き場が読んだか書いた根の版。排他の行が無い根は載せない (版 0 とみなす)。 */
     private final Map<String, Map<ByteBuffer, Long>> versions = new HashMap<>();
+    /** 次の確定で処理済みとして書く電文の ID (P-163)。 */
+    private final List<String> inbox = new ArrayList<>();
 
     public JdbcDatabaseStore(Connection connection) {
         this.connection = Objects.requireNonNull(connection, "connection");
@@ -112,16 +115,20 @@ public final class JdbcDatabaseStore implements DatabaseStore {
                 written.put(root, lock(root));
             }
             write(pending);
+            // 処理済みの電文を、業務の更新と同じトランザクションで書く (ADR-0014 の決定 2)
+            writeInbox();
             connection.commit();
         } catch (SQLException e) {
             rollbackQuietly();
+            inbox.clear();
             if (e.getSQLState() != null && e.getSQLState().startsWith("23")) {
-                throw new DatabaseConflictException("another region created the same root at the same time: "
-                        + e.getMessage());
+                throw new DatabaseConflictException("another region created the same root or processed the same"
+                        + " message at the same time: " + e.getMessage());
             }
             throw new DatabaseStoreException("cannot commit to the IMS tables", e);
         } catch (RuntimeException e) {
             rollbackQuietly();
+            inbox.clear();
             throw e;
         }
         for (Map.Entry<Pending, Long> root : written.entrySet()) {
@@ -129,6 +136,47 @@ public final class JdbcDatabaseStore implements DatabaseStore {
                     .put(ByteBuffer.wrap(root.getKey().key()), root.getValue());
         }
         refresh(databases);
+    }
+
+    @Override
+    public MessageInbox inbox() {
+        return this;
+    }
+
+    @Override
+    public boolean seen(String messageId) {
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT 1 FROM IMS_MESSAGE_INBOX WHERE MESSAGE_ID = ?")) {
+            select.setString(1, messageId);
+            try (ResultSet result = select.executeQuery()) {
+                return result.next();
+            }
+        } catch (SQLException e) {
+            rollbackQuietly();
+            throw new DatabaseStoreException("cannot read the message inbox", e);
+        }
+    }
+
+    @Override
+    public void record(String messageId) {
+        inbox.add(messageId);
+    }
+
+    private void writeInbox() throws SQLException {
+        if (inbox.isEmpty()) {
+            return;
+        }
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO IMS_MESSAGE_INBOX (MESSAGE_ID) VALUES (?)")) {
+            for (String messageId : inbox) {
+                // 同じ ID をこの領域が 2 度書くことはないが、読んだあとに他の領域が書けば一意制約に当たる。
+                // それは同じ電文を 2 つの領域が処理したということであり、競合として扱う
+                insert.setString(1, messageId);
+                insert.addBatch();
+            }
+            insert.executeBatch();
+        }
+        inbox.clear();
     }
 
     /**

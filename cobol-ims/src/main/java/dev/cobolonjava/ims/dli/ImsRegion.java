@@ -9,6 +9,7 @@ import dev.cobolonjava.ims.dbd.SegmentDefinition;
 import dev.cobolonjava.ims.psb.PcbDefinition;
 import dev.cobolonjava.ims.psb.ProgramSpecification;
 import dev.cobolonjava.ims.psb.SensitiveSegment;
+import dev.cobolonjava.ims.store.MessageInbox;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.interop.ProgramCatalog;
 import dev.cobolonjava.runtime.interop.ProgramParameter;
@@ -253,10 +254,26 @@ public final class ImsRegion {
     }
 
     /**
+     * 処理済みの電文を覚える口を置く (P-163)。置けば、再配信された電文は I/O PCB の GU で捨てられ、業務は動かない。
+     *
+     * @param inbox 置き場が持たなければ {@code null} (冪等化しない)
+     */
+    public ImsRegion withInbox(MessageInbox inbox) {
+        if (ioPcb != null) {
+            ioPcb.inbox(inbox);
+        }
+        return this;
+    }
+
+    /**
      * 同期点。置き場へ確定し、キューを確定し (ACK)、データベースの変更を確定して、DB PCB の位置を捨てる
      * (P-157、P-160、P-162)。置き場の確定が失敗すればキューは確定しないので、電文は戻って再配信される。
      */
     public void commit() {
+        if (ioPcb != null) {
+            // 処理済みの電文は、業務の更新と同じトランザクションで書く (P-163)
+            ioPcb.recordProcessed();
+        }
         committer.accept(databases.values());
         if (queue != null) {
             queue.commit();
@@ -268,6 +285,9 @@ public final class ImsRegion {
 
     /** 最後の同期点までデータベースとキューを戻し、DB PCB の位置を捨てる (P-157、P-162)。 */
     public void rollback() {
+        if (ioPcb != null) {
+            ioPcb.forgetProcessed();
+        }
         if (queue != null) {
             queue.rollback();
         }
