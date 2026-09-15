@@ -166,12 +166,14 @@ public final class CicsEib {
     /** EIBRCODE を binary zero にする condition と、それが起きてよい EIBFN の群 (上位 byte)。 */
     private static final java.util.Map<Integer, java.util.Set<Integer>> ZERO_RCODE_GROUPS = java.util.Map.ofEntries(
             java.util.Map.entry(CicsResponseCode.FILENOTFOUND, java.util.Set.of(0x0600)),
-            java.util.Map.entry(CicsResponseCode.NOTFND, java.util.Set.of(0x0600, 0x1000)),
-            java.util.Map.entry(CicsResponseCode.TRANSIDERR, java.util.Set.of(0x1000)),
+            java.util.Map.entry(CicsResponseCode.NOTFND, java.util.Set.of(0x0600, 0x1000, 0x3400)),
+            java.util.Map.entry(CicsResponseCode.TRANSIDERR, java.util.Set.of(0x1000, 0x3400)),
+            java.util.Map.entry(CicsResponseCode.NOTFINISHED, java.util.Set.of(0x3400)),
+            java.util.Map.entry(CicsResponseCode.DISABLED, java.util.Set.of(0x3400)),
             java.util.Map.entry(CicsResponseCode.ENDDATA, java.util.Set.of(0x1000)),
             java.util.Map.entry(CicsResponseCode.ENVDEFERR, java.util.Set.of(0x1000)),
             java.util.Map.entry(CicsResponseCode.DUPREC, java.util.Set.of(0x0600)),
-            java.util.Map.entry(CicsResponseCode.INVREQ, java.util.Set.of(0x0600, 0x0A00, 0x1000)),
+            java.util.Map.entry(CicsResponseCode.INVREQ, java.util.Set.of(0x0600, 0x0A00, 0x1000, 0x3400)),
             java.util.Map.entry(CicsResponseCode.QIDERR, java.util.Set.of(0x0800, 0x0A00)),
             java.util.Map.entry(CicsResponseCode.QZERO, java.util.Set.of(0x0800)),
             java.util.Map.entry(CicsResponseCode.ITEMERR, java.util.Set.of(0x0A00)),

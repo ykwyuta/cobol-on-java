@@ -296,6 +296,52 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLがRUN TRANSIDで子を起こし、FETCH ANYのCOMPSTATUSとreply channelのcontainerを読む")
+    void runsAsynchronousChildren() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "ASYNCPGM", List.of(
+                "MOVE 'CIPCREDCHANN' TO WS-CHAN",
+                "MOVE 'CIPA' TO WS-CONT",
+                "EXEC CICS PUT CONTAINER(WS-CONT) CHANNEL(WS-CHAN) FROM(WS-GRP) FLENGTH(6) END-EXEC",
+                "EXEC CICS RUN TRANSID('TX03') CHANNEL(WS-CHAN) CHILD(WS-CHILD) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'R' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS FETCH ANY(WS-CHILD) CHANNEL(WS-FETCHCH) COMPSTATUS(WS-COMPST) ABCODE(WS-ABCODE)"
+                        + " TIMEOUT(5000) RESP(WS-RESP) END-EXEC",
+                "EVALUATE WS-COMPST WHEN DFHVALUE(ABEND) MOVE 'A' TO LK-AREA(2:1)"
+                        + " WHEN DFHVALUE(NORMAL) MOVE 'F' TO LK-AREA(2:1) END-EVALUATE",
+                "MOVE ZERO TO WS-QTIME",
+                "EXEC CICS GET CONTAINER('REPLY') CHANNEL(WS-FETCHCH) INTO(WS-GRP) RESP(WS-RESP) END-EXEC",
+                "IF WS-QTIME = 99 MOVE 'G' TO LK-AREA(3:1) END-IF",
+                "EXEC CICS FETCH ANY(WS-CHILD) NOSUSPEND RESP(WS-RESP) RESP2(WS-RESP2) END-EXEC",
+                "IF WS-RESP = DFHRESP(NOTFND) MOVE 'N' TO LK-AREA(4:1) END-IF"));
+        dev.cobolonjava.cics.CicsTransactionRegistry registry = new dev.cobolonjava.cics.CicsTransactionRegistry(
+                List.of(new CicsTransactionDefinition(TransId.of("TX03"), ProgramId.of("CHILD"),
+                        Duration.ofSeconds(5), 0, 4, 64, 256, true)));
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withAsync(dev.cobolonjava.cics.CicsAsyncPort.inMemory(registry, child -> {
+                    Map<String, byte[]> reply = new java.util.LinkedHashMap<>(child.containers());
+                    reply.put("REPLY", CodePages.DEFAULT.encode("000099"));
+                    return new CicsPayload(new byte[0], reply, child.channelName().orElse(null));
+                }));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("ASYNCPGM", program).build();
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("ASYNCPGM"),
+                                Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (action, ignored) -> { });
+
+        assertEquals("RFGN", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertRejected("EXEC CICS RUN TRANSID('TX03') CHILD(WS-CHILD) USERID('U1') END-EXEC",
+                "unsupported RUN TRANSID option: USERID");
+        assertRejected("EXEC CICS RUN TRANSID('TX03') END-EXEC", "RUN TRANSID requires CHILD");
+        assertRejected("EXEC CICS FETCH ANY(WS-CHILD) NOSUSPEND TIMEOUT(10) END-EXEC", "mutually exclusive");
+        assertRejected("EXEC CICS FETCH ANY(WS-ABCODE) END-EXEC", "ANY data area must be a 16-byte alphanumeric item");
+        assertRejected("EXEC CICS FETCH CHILD(WS-CHILD) COMPSTATUS(WS-LEN) END-EXEC",
+                "COMPSTATUS must be a fullword binary data area");
+    }
+
+    @Test
     @DisplayName("生成COBOLがSTARTとCANCELを出し、起こされたtaskのRETRIEVEがFROMとRTRANSIDを読む")
     void runsStartRetrieveAndCancel() throws InterruptedException {
         GeneratedLoader loader = new GeneratedLoader();
@@ -1581,6 +1627,9 @@ class CicsGenerationTest {
                 "01 WS-CONT PIC X(16).",
                 "01 WS-FLEN PIC S9(8) COMP.",
                 "01 WS-LEN PIC S9(4) COMP.",
+                "01 WS-CHILD PIC X(16).",
+                "01 WS-FETCHCH PIC X(16).",
+                "01 WS-COMPST PIC S9(8) COMP.",
                 "01 WS-GRP.",
                 "   03 WS-QTIME PIC 9(6).",
                 "LINKAGE SECTION.",

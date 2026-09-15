@@ -87,6 +87,15 @@ public final class CicsRuntimeOps {
     private static final int CANCEL_FUNCTION = 0x100C;
     /** これより前までの時刻を指す START は直ちに始まる。「Expiration times」の頁による。 */
     private static final java.time.Duration START_PAST_WINDOW = java.time.Duration.ofHours(6);
+    /** 非同期 API の命令の種類 (暫定判断 P-140)。生成コードが渡す。 */
+    public static final int ASYNC_RUN = 0;
+    public static final int ASYNC_FETCH_ANY = 1;
+    public static final int ASYNC_FETCH_CHILD = 2;
+    public static final int ASYNC_FREE_CHILD = 3;
+    public static final java.util.List<String> ASYNC_COMMANDS = java.util.List.of(
+            "RUN TRANSID", "FETCH ANY", "FETCH CHILD", "FREE CHILD");
+    /** 種類の番号の順の function code。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int[] ASYNC_FUNCTIONS = {0x343E, 0x3444, 0x3442, 0x3446};
     /** INQUIRE ASSOCIATION (SPI)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int INQUIRE_ASSOCIATION_FUNCTION = 0xC402;
     private static final java.util.regex.Pattern CONTAINER_NAME =
@@ -811,6 +820,110 @@ public final class CicsRuntimeOps {
         byte[] encoded = context.codePage().encode(value.orElseThrow());
         if (encoded.length > area.length()) {
             throw new CicsTaskStateException("RETRIEVE " + option + " value does not fit the receiving area");
+        }
+        byte[] padded = new byte[area.length()];
+        java.util.Arrays.fill(padded, context.codePage().space());
+        System.arraycopy(encoded, 0, padded, 0, encoded.length);
+        area.setBytes(padded);
+    }
+
+    /**
+     * 非同期 API の RUN TRANSID / FETCH ANY / FETCH CHILD / FREE CHILD (暫定判断 P-140)。
+     *
+     * <p>RUN の CHANNEL は定数か域の byte 列で、FETCH の CHANNEL は受取域で渡る。token は RUN と FETCH ANY では受取域、
+     * FETCH CHILD と FREE CHILD では入力の域である。受取域の無い option は null。TIMEOUT は、データ名なら域、定数なら literal
+     * で、どちらも無ければ literal は負 (待ちの限り無し)。
+     *
+     * <p>FETCH は子の reply channel を親の task の channel として名前をつけて置き、その名前を CHANNEL の域へ返す。
+     * 子が channel を持たなければ空白を返す。
+     */
+    public static int asyncCommandCondition(ProgramContext context, int kind, String transactionLiteral,
+            byte[] transactionData, String channelLiteral, byte[] channelData, DataView channelOut, DataView token,
+            DataView completionStatus, DataView abendCode, int timeoutLiteral, DataView timeoutArea, boolean noSuspend,
+            boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        String command = ASYNC_COMMANDS.get(kind);
+        CicsExecution execution = execution(required);
+        CicsAsyncPort async = execution.environment().async();
+        CicsTaskContext task = execution.task();
+        int response;
+        int response2;
+        if (kind == ASYNC_RUN) {
+            String transaction = intervalName(required, transactionLiteral, transactionData);
+            TransId transId;
+            try {
+                transId = TransId.of(transaction);
+            } catch (IllegalArgumentException invalid) {
+                throw new CicsTaskStateException("RUN TRANSID has an unsupported format: '" + transaction + "'");
+            }
+            String channelName = channelLiteral == null && channelData == null
+                    ? null : containerName(required, channelLiteral, channelData, "CHANNEL");
+            Map<String, byte[]> containers = new java.util.LinkedHashMap<>();
+            if (channelName != null) {
+                Map<String, byte[]> channel = execution.channel(channelName, false).orElseThrow(() ->
+                        new CicsTaskStateException("RUN TRANSID CHANNEL(" + channelName
+                                + ") does not exist; the condition is not documented"));
+                // 子は RUN を出した時点の container の写しを受け取る (RUN TRANSID の頁)
+                synchronized (execution) {
+                    channel.forEach((name, value) -> containers.put(name, value.clone()));
+                }
+            }
+            CicsAsyncPort.Run run = async.run(task.taskId(), new CicsAsyncChild(transId,
+                    Optional.ofNullable(channelName), containers, task.owner(), task.userId()));
+            response = run.response();
+            response2 = run.response2();
+            if (response == CicsResponseCode.NORMAL) {
+                token.setBytes(run.token());
+            }
+        } else if (kind == ASYNC_FETCH_ANY || kind == ASYNC_FETCH_CHILD) {
+            long timeout = timeoutArea != null ? fullwordValue(timeoutArea, command + " TIMEOUT")
+                    : Math.max(0, timeoutLiteral);
+            CicsAsyncPort.Fetched fetched = async.fetch(task.taskId(),
+                    kind == ASYNC_FETCH_CHILD ? token.toByteArray() : null, noSuspend, timeout, maxWait(execution));
+            response = fetched.response();
+            response2 = fetched.response2();
+            if (response == CicsResponseCode.NORMAL) {
+                if (kind == ASYNC_FETCH_ANY) {
+                    token.setBytes(fetched.token());
+                }
+                if (completionStatus != null) {
+                    setFullword(completionStatus, fetched.completionStatus());
+                }
+                if (abendCode != null) {
+                    putSpacePadded(required, abendCode, fetched.abendCode(), command + " ABCODE");
+                }
+                if (channelOut != null) {
+                    String name = "";
+                    if (fetched.replyChannel().isPresent()) {
+                        name = execution.nextReplyChannelName();
+                        execution.putChannel(name, fetched.replyChannel().orElseThrow());
+                    }
+                    putSpacePadded(required, channelOut, name, command + " CHANNEL");
+                }
+            }
+        } else if (kind == ASYNC_FREE_CHILD) {
+            CicsAsyncPort.Result result = async.free(task.taskId(), token.toByteArray());
+            response = result.response();
+            response2 = result.response2();
+        } else {
+            throw new IllegalArgumentException("unknown asynchronous API command: " + kind);
+        }
+        return containerOutcome(required, ASYNC_FUNCTIONS[kind], response, response2, suppressDefaultHandling, command);
+    }
+
+    private static long fullwordValue(DataView view, String option) {
+        byte[] bytes = view.toByteArray();
+        if (bytes.length != Integer.BYTES) {
+            throw new CicsTaskStateException(option + " must be a fullword binary data area");
+        }
+        return java.nio.ByteBuffer.wrap(bytes).getInt();
+    }
+
+    /** 値を受取域へ空白を詰めて置く。 */
+    private static void putSpacePadded(ProgramContext context, DataView area, String value, String option) {
+        byte[] encoded = context.codePage().encode(value);
+        if (encoded.length > area.length()) {
+            throw new CicsTaskStateException(option + " value does not fit the receiving area");
         }
         byte[] padded = new byte[area.length()];
         java.util.Arrays.fill(padded, context.codePage().space());

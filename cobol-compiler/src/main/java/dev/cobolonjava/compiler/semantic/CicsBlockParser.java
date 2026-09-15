@@ -47,6 +47,9 @@ final class CicsBlockParser {
     private static final Pattern FILE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(READ|WRITE|REWRITE|DELETE|UNLOCK|STARTBR|READNEXT|READPREV|ENDBR|RESETBR)\\b"
                     + "(.*?)END-EXEC\\s*$");
+    /** 非同期 API の RUN TRANSID / FETCH ANY / FETCH CHILD / FREE CHILD。 */
+    private static final Pattern ASYNC_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(RUN|FETCH|FREE)\\s+((?:TRANSID|ANY|CHILD)\\b.*?)END-EXEC\\s*$");
     /** 間隔制御の START / RETRIEVE / CANCEL。STARTBR は file control の語なので当たらない。 */
     private static final Pattern INTERVAL_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(START|RETRIEVE|CANCEL)\\b(.*?)END-EXEC\\s*$");
@@ -166,6 +169,10 @@ final class CicsBlockParser {
         Matcher fileCommand = FILE_BLOCK.matcher(source);
         if (fileCommand.matches()) {
             return parseFileCommand(fileCommand.group(1).toUpperCase(Locale.ROOT), fileCommand.group(2));
+        }
+        Matcher asyncCommand = ASYNC_BLOCK.matcher(source);
+        if (asyncCommand.matches()) {
+            return parseAsyncCommand(asyncCommand.group(1).toUpperCase(Locale.ROOT), asyncCommand.group(2));
         }
         Matcher intervalCommand = INTERVAL_BLOCK.matcher(source);
         if (intervalCommand.matches()) {
@@ -1008,6 +1015,89 @@ final class CicsBlockParser {
                         returnTerminal[0], returnTerminal[1], queue[0], queue[1]));
     }
 
+    /**
+     * 非同期 API の命令を読む (暫定判断 P-140)。
+     *
+     * <p>RUN TRANSID の USERID (別の利用者で動かす) は利用者の認可の設計を持たないので断る。NOSUSPEND と TIMEOUT を
+     * 両方書いた形は、どちらが効くかが頁に無いので断る。
+     */
+    private static Parsed parseAsyncCommand(String verb, String source) {
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate " + verb + " option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        int kind;
+        Set<String> allowed;
+        if (verb.equals("RUN") && options.containsKey("TRANSID")) {
+            kind = dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_RUN;
+            allowed = Set.of("TRANSID", "CHANNEL", "CHILD");
+        } else if (verb.equals("FETCH") && options.containsKey("ANY")) {
+            kind = dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_FETCH_ANY;
+            allowed = Set.of("ANY", "CHANNEL", "COMPSTATUS", "ABCODE", "NOSUSPEND", "TIMEOUT");
+        } else if (verb.equals("FETCH") && options.containsKey("CHILD")) {
+            kind = dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_FETCH_CHILD;
+            allowed = Set.of("CHILD", "CHANNEL", "COMPSTATUS", "ABCODE", "NOSUSPEND", "TIMEOUT");
+        } else if (verb.equals("FREE") && options.containsKey("CHILD")) {
+            kind = dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_FREE_CHILD;
+            allowed = Set.of("CHILD");
+        } else {
+            throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+        }
+        String command = dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_COMMANDS.get(kind);
+        for (String name : options.keySet()) {
+            if (!allowed.contains(name) && !Set.of("RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported " + command + " option: " + name);
+            }
+        }
+        String[] transaction = new String[2];
+        String[] channel = new String[2];
+        if (kind == dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_RUN) {
+            transaction = quotedOrName(options.get("TRANSID"), "RUN TRANSID", 4);
+            channel = quotedOrName(options.get("CHANNEL"), "RUN TRANSID CHANNEL", 16);
+            if (!options.containsKey("CHILD")) {
+                throw new IllegalArgumentException("RUN TRANSID requires CHILD");
+            }
+        } else if (options.containsKey("CHANNEL")) {
+            channel[1] = sendDataName(options.get("CHANNEL"), "CHANNEL");
+        }
+        String tokenOption = kind == dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_FETCH_ANY ? "ANY" : "CHILD";
+        String token = sendDataName(options.get(tokenOption), tokenOption);
+        String completionStatus = sendDataName(options.get("COMPSTATUS"), "COMPSTATUS");
+        String abendCode = sendDataName(options.get("ABCODE"), "ABCODE");
+        boolean noSuspend = fileFlag(options, "NOSUSPEND", 1) != 0;
+        String[] timeout = fileNumber(options.get("TIMEOUT"), command + " TIMEOUT");
+        if (noSuspend && options.containsKey("TIMEOUT")) {
+            throw new IllegalArgumentException(command + " NOSUSPEND and TIMEOUT are mutually exclusive");
+        }
+        String[] noHandle = options.get("NOHANDLE");
+        if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
+            throw new IllegalArgumentException("NOHANDLE does not take a value");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                null, null, null, null, null, null, null, null, null,
+                new AsyncSpec(kind, transaction[0], transaction[1], channel[0], channel[1], token, completionStatus,
+                        abendCode, timeout[1] == null ? -1 : Integer.parseInt(timeout[1]), timeout[0], noSuspend));
+    }
+
     /** 引用符つきの名前かデータ名。{定数, データ名} の形で返し、書かれていなければどちらも null。 */
     private static String[] quotedOrName(String[] value, String option, int max) {
         if (value == null) {
@@ -1576,10 +1666,27 @@ final class CicsBlockParser {
             FileCommandSpec fileCommand,
             AssociationSpec association,
             QueueCommandSpec queue,
-            IntervalSpec intervalCommand) {
+            IntervalSpec intervalCommand,
+            AsyncSpec async) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
+        }
+
+        /** 非同期 API の命令でない形。 */
+        Parsed(Statement.CicsOperation operation, String target, String commarea, int length,
+               String response, String response2, boolean noHandle, boolean rollback, boolean cancel,
+               boolean noDump, boolean immediate, Statement.CicsConditionAction conditionAction,
+               List<ConditionSpec> conditions, Statement.CicsHandleStackAction handleStackAction,
+               Statement.CicsAbendHandlerAction abendHandlerAction, String abendHandlerTarget,
+               List<AssignSpec> assignments, String programData, TimeSpec time, DelaySpec delay,
+               SendSpec send, ReceiveSpec receive, String deedit, ContainerSpec container, EnqueueSpec enqueue,
+               TerminalSpec terminal, FileCommandSpec fileCommand, AssociationSpec association,
+               QueueCommandSpec queue, IntervalSpec intervalCommand) {
+            this(operation, target, commarea, length, response, response2, noHandle, rollback, cancel,
+                    noDump, immediate, conditionAction, conditions, handleStackAction, abendHandlerAction,
+                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit,
+                    container, enqueue, terminal, fileCommand, association, queue, intervalCommand, null);
         }
 
         /** 間隔制御の命令でない形。 */
@@ -1640,6 +1747,15 @@ final class CicsBlockParser {
     record FileCommandSpec(int kind, String fileLiteral, String fileData, String data, String length,
                            int lengthLiteral, String ridfld, String keyLength, int keyLengthLiteral,
                            String reqid, int reqidLiteral, String numrec, int flags) {
+    }
+
+    /**
+     * 非同期 API の命令の、データ名を解決する前の形。RUN の TRANSID / CHANNEL は定数かデータ名。
+     * FETCH の CHANNEL は受取域のデータ名。token は RUN の CHILD、FETCH ANY の ANY、FETCH / FREE CHILD の CHILD。
+     */
+    record AsyncSpec(int kind, String transactionLiteral, String transactionData, String channelLiteral,
+                     String channelData, String token, String completionStatus, String abendCode, int timeoutLiteral,
+                     String timeout, boolean noSuspend) {
     }
 
     /**

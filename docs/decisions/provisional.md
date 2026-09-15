@@ -4248,3 +4248,34 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
 実行すると VSTRING の長さが域を越えるとして止まる。BNK1TFN / BNK1CCS の長すぎる LENGTH と同じ扱いである。
 
 **解消条件**: 実機で z/OS の Case-Sev-Ctl の値、VSTRING の長さが域を越えたときの CEEDAYS、区切りの扱いを採る。
+
+## P-140 非同期 API は 1 つの JVM の中で子を動かし、reply channel は名前を付けて親に置く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsAsyncPort`、`InMemoryCicsAsync`、`CicsAsyncChild`、`CicsRuntimeOps.asyncCommandCondition`、`CicsPayload.channelName`、`CicsTaskAutoConfiguration.cobolAsyncPort` |
+| 関連要件 | FR-080 (Bank-of-Z の CRECUST)、設計 82 §7 |
+
+**暫定の扱い**:
+
+- EIBFN は CICS TS 5.6 の表 (RUN TRANSID X'343E'、FETCH CHILD X'3442'、FETCH ANY X'3444'、FREE CHILD X'3446')。
+  RESP / RESP2 は RUN TRANSID / FETCH ANY / FETCH CHILD / FREE CHILD の頁 (NOTFINISHED 113、DISABLED 84 を足した)。
+  COMPSTATUS は CVDA の表の NORMAL 1016、ABEND 900、SECERROR 1214 (前後の行まで確かめた)
+- 子は RUN の時点の channel の写しを受け、同じ名前で現在の channel を開く。起動要求 (`CicsPayload`) に channel の名前を
+  持たせた。HTTP の入口は名前を運ばないので、これまでどおり名前の分からない現在の channel になる
+- reply channel は子が終えたときの現在の channel とし、FETCH が `JVREPLY` と 9 桁の名前で親の channel として置く。
+  頁は「CICS が作る 16 文字の名前」とだけ書くので、名前の形は推定である
+- 子が ABEND で終われば COMPSTATUS ABEND と ABCODE を返し、CHANNEL は空白とした。ABEND のときの reply channel は頁に無い
+- 子が ABEND 以外で失敗した (Java の例外、入力の上限など) ときの完了の状態は頁に無いので、FETCH した親を失敗させる
+- 子の token は 16 byte の乱数。FREE されていない子を親の task の終わりにすべて返す
+- 待つ FETCH は TIMEOUT か task の期限まで。NOSUSPEND と TIMEOUT の併記、RUN の USERID、存在しない channel を渡す RUN は断る
+- FREE した子は子として数えない。FREE で子がすべて無くなった親の FETCH ANY は INVREQ 52 になる (頁に明示は無い)
+- `EVALUATE ... WHEN DFHVALUE(名前)` / `WHEN DFHRESP(名前)` は、目的語が名前だけの条件の形に読まれ、データ項目として
+  引いて止まっていた (CRECUST)。WHEN の目的語でも翻訳系の定数として読むようにした
+
+**どこがずれうるか**: 実機の子は親と別の region の資源で動き、PURGETHRESH (NOSTART) や認可 (NOTAUTH、SECERROR) がある。
+ここにはどれも無い。子の reply channel の名前の形、ABEND のときの channel は実機と違いうる。
+
+**解消条件**: 実機で reply channel の名前と ABEND のときの CHANNEL、子が失敗したときの COMPSTATUS を採る。
+複数の JVM で子を動かす設計を会話ストアの外部化と合わせて入れる。

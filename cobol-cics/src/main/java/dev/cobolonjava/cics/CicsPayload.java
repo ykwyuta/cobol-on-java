@@ -17,8 +17,18 @@ public final class CicsPayload {
     private final Map<String, byte[]> containers;
     private final int containerTotalLength;
     private final int maxContainerLength;
+    /** containerを入れたchannelの名前。RUN TRANSIDで起こす子のtaskが、同じ名前で現在のchannelを開く。分からなければnull。 */
+    private final String channelName;
 
     public CicsPayload(byte[] commarea, Map<String, byte[]> containers) {
+        this(commarea, containers, null);
+    }
+
+    public CicsPayload(byte[] commarea, Map<String, byte[]> containers, String channelName) {
+        if (channelName != null && !CONTAINER_NAME.matcher(channelName).matches()) {
+            throw new IllegalArgumentException("channel name must contain 1 to 16 supported characters");
+        }
+        this.channelName = channelName;
         this.commarea = Arrays.copyOf(Objects.requireNonNull(commarea, "commarea"), commarea.length);
         Objects.requireNonNull(containers, "containers");
         Map<String, byte[]> copied = new LinkedHashMap<>();
@@ -58,6 +68,11 @@ public final class CicsPayload {
         Map<String, byte[]> copy = new LinkedHashMap<>();
         containers.forEach((name, value) -> copy.put(name, Arrays.copyOf(value, value.length)));
         return Map.copyOf(copy);
+    }
+
+    /** containerを入れたchannelの名前。 */
+    public java.util.Optional<String> channelName() {
+        return java.util.Optional.ofNullable(channelName);
     }
 
     public int commareaLength() {

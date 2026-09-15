@@ -23,6 +23,7 @@ import java.util.regex.Pattern;
  * @param temporaryStorage 一時記憶のキュー ({@code WRITEQ TS} 等)。定義を要らない
  * @param transientData    一時データのキュー ({@code WRITEQ TD} 等)。定義の無いキューはQIDERRになる
  * @param starts           {@code START} / {@code CANCEL}の間隔制御。構成しなければ命令は失敗する
+ * @param async            非同期 API の子の task。構成しなければ命令は失敗する
  * @param networkId        端末が属するnetworkのID ({@code INQUIRE ASSOCIATION ODNETWORKID})
  */
 public record CicsEnvironment(
@@ -36,6 +37,7 @@ public record CicsEnvironment(
         CicsTemporaryStoragePort temporaryStorage,
         CicsTransientDataPort transientData,
         CicsStartPort starts,
+        CicsAsyncPort async,
         Optional<String> networkId) {
 
     /** APPLIDはVTAMの名前規則に合わせ、1〜8文字の英大文字・数字・国別文字に限る。 */
@@ -52,6 +54,7 @@ public record CicsEnvironment(
         Objects.requireNonNull(temporaryStorage, "temporaryStorage");
         Objects.requireNonNull(transientData, "transientData");
         Objects.requireNonNull(starts, "starts");
+        Objects.requireNonNull(async, "async");
         Objects.requireNonNull(networkId, "networkId");
         applid.ifPresent(value -> {
             if (!APPLID.matcher(value).matches()) {
@@ -79,7 +82,7 @@ public record CicsEnvironment(
                 CicsIntervalPort.sleeping(), Optional.empty(), CicsEnqueuePort.inMemory(),
                 CicsTerminalSettingsPort.inMemory(CicsCvda.NOUCTRAN), CicsFilePort.none(),
                 CicsTemporaryStoragePort.inMemory(), CicsTransientDataPort.none(), CicsStartPort.none(),
-                Optional.empty());
+                CicsAsyncPort.none(), Optional.empty());
     }
 
     public static CicsEnvironment withApplid(String applid) {
@@ -88,66 +91,72 @@ public record CicsEnvironment(
 
     private CicsEnvironment withApplidValue(String value) {
         return new CicsEnvironment(Optional.of(value), clock, interval, mapsets, enqueues, terminals, files,
-                temporaryStorage, transientData, starts, networkId);
+                temporaryStorage, transientData, starts, async, networkId);
     }
 
     /** 時計だけを替えた構成。試験で時刻を固定するときに使う。 */
     public CicsEnvironment withClock(Clock value) {
         return new CicsEnvironment(applid, value, interval, mapsets, enqueues, terminals, files,
-                temporaryStorage, transientData, starts, networkId);
+                temporaryStorage, transientData, starts, async, networkId);
     }
 
     /** 待ちだけを替えた構成。 */
     public CicsEnvironment withInterval(CicsIntervalPort value) {
         return new CicsEnvironment(applid, clock, value, mapsets, enqueues, terminals, files,
-                temporaryStorage, transientData, starts, networkId);
+                temporaryStorage, transientData, starts, async, networkId);
     }
 
     /** mapsetの定義を持たせた構成。 */
     public CicsEnvironment withMapsets(BmsMapsetCatalog value) {
         return new CicsEnvironment(applid, clock, interval, Optional.of(value), enqueues, terminals, files,
-                temporaryStorage, transientData, starts, networkId);
+                temporaryStorage, transientData, starts, async, networkId);
     }
 
     /** 資源の排他を替えた構成。複数のJVMで分け合うときに使う。 */
     public CicsEnvironment withEnqueues(CicsEnqueuePort value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, value, terminals, files,
-                temporaryStorage, transientData, starts, networkId);
+                temporaryStorage, transientData, starts, async, networkId);
     }
 
     /** 端末の設定を替えた構成。 */
     public CicsEnvironment withTerminals(CicsTerminalSettingsPort value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, value, files,
-                temporaryStorage, transientData, starts, networkId);
+                temporaryStorage, transientData, starts, async, networkId);
     }
 
     /** file controlを替えた構成。 */
     public CicsEnvironment withFiles(CicsFilePort value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, value,
-                temporaryStorage, transientData, starts, networkId);
+                temporaryStorage, transientData, starts, async, networkId);
     }
 
     /** 一時記憶のキューを替えた構成。複数のJVMで分け合うときに使う。 */
     public CicsEnvironment withTemporaryStorage(CicsTemporaryStoragePort value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
-                value, transientData, starts, networkId);
+                value, transientData, starts, async, networkId);
     }
 
     /** 一時データのキューを替えた構成。 */
     public CicsEnvironment withTransientData(CicsTransientDataPort value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
-                temporaryStorage, value, starts, networkId);
+                temporaryStorage, value, starts, async, networkId);
     }
 
     /** STARTの間隔制御を持たせた構成。 */
     public CicsEnvironment withStarts(CicsStartPort value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
-                temporaryStorage, transientData, value, networkId);
+                temporaryStorage, transientData, value, async, networkId);
+    }
+
+    /** 非同期 API (RUN TRANSID / FETCH) の子の task を持たせた構成。 */
+    public CicsEnvironment withAsync(CicsAsyncPort value) {
+        return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
+                temporaryStorage, transientData, starts, value, networkId);
     }
 
     /** 端末が属するnetworkのIDを持たせた構成。 */
     public CicsEnvironment withNetworkId(String value) {
         return new CicsEnvironment(applid, clock, interval, mapsets, enqueues, terminals, files,
-                temporaryStorage, transientData, starts, Optional.of(value));
+                temporaryStorage, transientData, starts, async, Optional.of(value));
     }
 }

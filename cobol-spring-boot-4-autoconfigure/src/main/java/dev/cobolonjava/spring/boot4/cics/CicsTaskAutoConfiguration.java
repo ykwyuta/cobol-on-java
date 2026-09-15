@@ -1,5 +1,6 @@
 package dev.cobolonjava.spring.boot4.cics;
 
+import dev.cobolonjava.cics.CicsAsyncPort;
 import dev.cobolonjava.cics.CicsStartPort;
 import dev.cobolonjava.cics.CicsTaskBoundaryFactory;
 import dev.cobolonjava.cics.CicsTaskCoordinator;
@@ -76,6 +77,17 @@ public class CicsTaskAutoConfiguration {
             CicsTransactionDefinition definition = transactions.definitions().get(transId);
             return definition != null && definition.enabled();
         }, CicsStartPort.launching(coordinator::getObject));
+    }
+
+    /**
+     * 非同期 API の子の task (暫定判断 P-140)。1 つの JVM の中で、この coordinator で子を起こす。
+     * region の構成 ({@code CicsEnvironment.withAsync}) へ入れるのは利用者である。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    CicsAsyncPort cobolAsyncPort(CicsTransactionRegistry transactions,
+                                 ObjectProvider<CicsTaskCoordinator> coordinator) {
+        return CicsAsyncPort.inMemory(transactions, CicsAsyncPort.launching(coordinator::getObject));
     }
 
     @Bean

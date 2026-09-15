@@ -189,21 +189,21 @@ NIST CCVS85 の<b>受理率</b>は 96.9% (458 本中 444 本、壊れたもの 0
 `ACCEPT` のすぐあとで対になる項目と比べており、合否を決めるのはプログラムのほうである。
 配布物の検査プログラムは<b>全数を流している</b> (札が足りずに流せないものは無い)。
 CICS / BMS は、手元に取得した Bank-of-Z (同梱しない) の CICS 資産 32 本を
-`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 28 本</b>である。
+`verify corpus <cobol> -I <copy> -I <bms>` で流して測っている。<b>翻訳が通るのは 29 本</b>である。
 全診断を数えると、BMS 記号マップ写し句、`DFHAID`、EIB、`RETURN IMMEDIATE`、`PROGRAM(データ名)`、
 `LENGTH` を省いた `COMMAREA`、`ASSIGN`、`ASKTIME` / `FORMATTIME`、`DELAY`、`SEND MAP` / `TEXT` /
 `CONTROL`、`RECEIVE MAP`、`ABEND ABCODE(データ名)`、`BIF DEEDIT`、`EXEC SQL` の初期 subset、
-`USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER`、`ENQ` / `DEQ` はもう止めていない (設計 79)。残る CICS 命令は
-CRECUST の非同期 API と LE の写し句である。file control (`READ` / `WRITE` / `REWRITE` / `DELETE` / `UNLOCK` と browse) は
+`USAGE POINTER`、`LENGTH OF`、`GET` / `PUT CONTAINER`、`ENQ` / `DEQ` はもう止めていない (設計 79)。CRECUST も非同期 API と
+LE の写し句を入れて通るようになり、翻訳を止める CICS 命令は残っていない。file control (`READ` / `WRITE` / `REWRITE` / `DELETE` / `UNLOCK` と browse) は
 KSDS / RRDS を、バッチと同じデータセットで扱う (設計 82、P-131、P-136)。Bank-of-Z はこの命令群をほとんど使わないので、
 振る舞いは CICS TS の命令の頁を基準に試験で固定している。一時記憶・一時データのキュー (`WRITEQ` / `READQ` / `DELETEQ`
 の `TS` / `TD`) は 1 つの JVM の中で持つ (P-137)。`START` / `RETRIEVE` / `CANCEL` は region に構成した間隔制御が
 端末を持たない task を起こす (P-138)。LE の `CEEIGZCT` (CEE000 だけ) と `CEEDAYS` / `CEELOCT` を持つ (P-139)。
-CRECUST はこれで写し句を越え、非同期 API (`RUN TRANSID` / `FETCH ANY`) で止まる。`INQUIRE ASSOCIATION` は task 自身の origin data に限る (P-132)。`RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。
+非同期 API (`RUN TRANSID` / `FETCH ANY` / `FETCH CHILD` / `FREE CHILD`) は region に構成した port が子の task を動かす (P-140)。`INQUIRE ASSOCIATION` は task 自身の origin data に限る (P-132)。`RECEIVE MAP ... ASIS` は端末が UCTRAN でも大文字にしない。
 `DFHVALUE` と `INQUIRE` / `SET TERMINAL UCTRANST` は task の端末に限って扱う。CVDA の数は CICS TS の表による
 (TXSeries の表は数が違う。P-130)。
 `DFHBMSCA` は公開文書の意味を 3270 の属性 byte で表して作る (P-129)。
-言語側では `INCLUDE SQLDA` (1)、LE の `CEEIGZCT` (1) が残っている。XFRFUN は SQLDA を INCLUDE するだけで使わず、
+言語側では `INCLUDE SQLDA` (1) が残っている。XFRFUN は SQLDA を INCLUDE するだけで使わず、
 仮の写し句を置けば翻訳が通る。ただし Db2 for z/OS の COBOL 向け SQLDA の宣言を公開文書から取れていないので、
 形を推測して置かず断ったままにしている。浮動小数点項目は `+ - *` の `COMPUTE`、
 転記、比較を扱う (P-127)。BNK1TFN は 28 byte の域に `LENGTH(29)`、BNK1CCS は 5 byte の域に `LENGTH(248)` を

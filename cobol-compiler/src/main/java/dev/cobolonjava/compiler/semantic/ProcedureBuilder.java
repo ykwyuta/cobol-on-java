@@ -1017,6 +1017,15 @@ public final class ProcedureBuilder {
             java.util.stream.Stream.of(association.applid(), association.userid(), association.facilityName(),
                     association.networkId(), association.facilityType()).filter(java.util.Objects::nonNull)
                     .forEach(out::add);
+        } else if (statement instanceof Statement.CicsAsyncCommand async
+                && async.kind() != dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_FREE_CHILD) {
+            if (async.kind() != dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_FETCH_CHILD) {
+                out.add(async.token());
+            }
+            if (async.kind() != dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_RUN) {
+                java.util.stream.Stream.of(async.channelData(), async.completionStatus(), async.abendCode())
+                        .filter(java.util.Objects::nonNull).forEach(out::add);
+            }
         } else if (statement instanceof Statement.CicsIntervalCommand interval
                 && interval.kind() == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
             java.util.stream.Stream.of(interval.data(), interval.lengthArea(), interval.returnTransactionData(),
@@ -1826,6 +1835,9 @@ public final class ProcedureBuilder {
             if (parsed.intervalCommand() != null) {
                 return cicsIntervalStatement(parsed, origin);
             }
+            if (parsed.async() != null) {
+                return cicsAsyncStatement(parsed, origin);
+            }
             if (parsed.terminal() != null) {
                 CicsBlockParser.TerminalSpec spec = parsed.terminal();
                 String command = spec.set() ? "SET TERMINAL" : "INQUIRE TERMINAL";
@@ -1970,6 +1982,54 @@ public final class ProcedureBuilder {
     }
 
     /** RESP / RESP2 があれば、command のあとで EIBRESP / EIBRESP2 を受取項目へ転記する。 */
+    /** 非同期 API の域を解決する (暫定判断 P-140)。 */
+    private Statement cicsAsyncStatement(CicsBlockParser.Parsed parsed, Origin origin) {
+        CicsBlockParser.AsyncSpec spec = parsed.async();
+        int kind = spec.kind();
+        String label = dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_COMMANDS.get(kind);
+        // 並びは TRANSID、CHANNEL、token、ABCODE
+        String[] names = {spec.transactionData(), spec.channelData(), spec.token(), spec.abendCode()};
+        int[] lengths = {4, 16, 16, 4};
+        String[] options = {"TRANSID", "CHANNEL",
+            kind == dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_FETCH_ANY ? "ANY" : "CHILD", "ABCODE"};
+        DataReference[] areas = new DataReference[names.length];
+        for (int i = 0; i < names.length; i++) {
+            if (names[i] == null) {
+                continue;
+            }
+            areas[i] = resolver.resolveName(names[i], origin);
+            if (areas[i] == null) {
+                return null;
+            }
+            if (DataCategory.of(areas[i]) != DataCategory.ALPHANUMERIC || areas[i].constantLength().isEmpty()
+                    || areas[i].constantLength().getAsInt() != lengths[i]) {
+                throw new IllegalArgumentException(label + " " + options[i] + " data area must be a " + lengths[i]
+                        + "-byte alphanumeric item");
+            }
+        }
+        DataReference[] fullwords = new DataReference[2];
+        String[] fullwordNames = {spec.completionStatus(), spec.timeout()};
+        String[] fullwordOptions = {"COMPSTATUS", "TIMEOUT"};
+        for (int i = 0; i < fullwordNames.length; i++) {
+            if (fullwordNames[i] == null) {
+                continue;
+            }
+            fullwords[i] = resolver.resolveName(fullwordNames[i], origin);
+            if (fullwords[i] == null) {
+                return null;
+            }
+            Usage usage = fullwords[i].item().usage() == null ? Usage.DISPLAY : fullwords[i].item().usage();
+            if ((usage != Usage.COMP && usage != Usage.COMP_5) || fullwords[i].item().length() != Integer.BYTES
+                    || !DataCategory.of(fullwords[i]).isNumeric()) {
+                throw new IllegalArgumentException(label + " " + fullwordOptions[i]
+                        + " must be a fullword binary data area");
+            }
+        }
+        return withCicsResponse(new Statement.CicsAsyncCommand(kind, spec.transactionLiteral(), areas[0],
+                spec.channelLiteral(), areas[1], areas[2], fullwords[0], areas[3], spec.timeoutLiteral(), fullwords[1],
+                spec.noSuspend(), parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+    }
+
     /** START / RETRIEVE / CANCEL の域を解決する (暫定判断 P-138)。 */
     private Statement cicsIntervalStatement(CicsBlockParser.Parsed parsed, Origin origin) {
         CicsBlockParser.IntervalSpec spec = parsed.intervalCommand();
@@ -3827,6 +3887,21 @@ public final class ProcedureBuilder {
         return object.NOT() == null && !negated ? test : new Condition.Not(test);
     }
 
+    /**
+     * 名前だけの目的語の値。{@code WHEN DFHRESP(名前)} / {@code WHEN DFHVALUE(名前)} は条件の形に読まれるが、
+     * 翻訳系が数に置き換える定数である (CRECUST の {@code WHEN DFHVALUE(NORMAL)})。
+     */
+    private Operand whenValueOf(CobolParser.IdentifierContext name, Origin origin) {
+        if (isDfhresp(name)) {
+            return dfhrespOf(name, origin);
+        }
+        if (isDfhvalue(name)) {
+            return dfhvalueOf(name, origin);
+        }
+        DataReference reference = resolver.resolve(name);
+        return reference == null ? null : new Operand.Reference(reference);
+    }
+
     /** 目的語が「NOT 名前」の形だったか。{@link #valuesOf} が立てる。 */
     private boolean negated;
 
@@ -3846,21 +3921,19 @@ public final class ProcedureBuilder {
         }
         CobolParser.IdentifierContext name = soleNameOf(object.condition());
         if (name != null) {
-            DataReference reference = resolver.resolve(name);
-            return reference == null
-                    ? null
-                    : List.of(new Expression.Value(new Operand.Reference(reference)));
+            Operand operand = whenValueOf(name, origin);
+            return operand == null ? null : List.of(new Expression.Value(operand));
         }
         // 「WHEN NOT 名前」は<b>その値と等しくない</b>ことを問う。主語が値なので、
         // 名前は条件名ではなく比べる相手である
         name = soleNameOf(object.condition(), true);
         if (name != null) {
-            DataReference reference = resolver.resolve(name);
-            if (reference == null) {
+            Operand operand = whenValueOf(name, origin);
+            if (operand == null) {
                 return null;
             }
             negated = true;
-            return List.of(new Expression.Value(new Operand.Reference(reference)));
+            return List.of(new Expression.Value(operand));
         }
         report(origin, "a WHEN object must be a value when the subject is not TRUE or FALSE");
         return null;

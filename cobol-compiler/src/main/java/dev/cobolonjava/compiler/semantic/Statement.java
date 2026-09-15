@@ -197,6 +197,28 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /**
+     * EXEC CICS RUN TRANSID / FETCH ANY / FETCH CHILD / FREE CHILD (暫定判断 P-140)。
+     *
+     * <p>{@code kind} は {@code CicsRuntimeOps.ASYNC_*} の値。channelData は RUN では入力、FETCH では受取域。
+     * TIMEOUT は、データ名なら域、定数なら literal で持ち、書かなければ域は null、literal は -1。
+     */
+    record CicsAsyncCommand(
+            int kind,
+            String transactionLiteral,
+            DataReference transactionData,
+            String channelLiteral,
+            DataReference channelData,
+            DataReference token,
+            DataReference completionStatus,
+            DataReference abendCode,
+            int timeoutLiteral,
+            DataReference timeoutArea,
+            boolean noSuspend,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     /** EXEC CICS INQUIRE / SET TERMINAL UCTRANST (暫定判断 P-130)。 */
     record CicsTerminalUctran(
             boolean set,

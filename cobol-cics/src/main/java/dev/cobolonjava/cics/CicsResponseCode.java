@@ -40,6 +40,9 @@ public final class CicsResponseCode {
     public static final int TRANSIDERR = 28;
     public static final int ENDDATA = 29;
     public static final int ENVDEFERR = 56;
+    /** 非同期 API の condition (暫定判断 P-140)。数は FETCH ANY / RUN TRANSID の頁による。 */
+    public static final int NOTFINISHED = 113;
+    public static final int DISABLED = 84;
     /** RECEIVE MAPで送られたfieldが無い。 */
     public static final int MAPFAIL = 36;
     /** ENQの資源を他のtaskが持っていて、待たない指定だった。 */
@@ -78,6 +81,8 @@ public final class CicsResponseCode {
             case "TRANSIDERR" -> TRANSIDERR;
             case "ENDDATA" -> ENDDATA;
             case "ENVDEFERR" -> ENVDEFERR;
+            case "NOTFINISHED" -> NOTFINISHED;
+            case "DISABLED" -> DISABLED;
             case "ENQBUSY" -> ENQBUSY;
             case "CONTAINERERR" -> CONTAINERERR;
             case "CHANNELERR" -> CHANNELERR;
@@ -110,6 +115,9 @@ public final class CicsResponseCode {
             case "TRANSIDERR" -> TRANSIDERR;
             case "ENDDATA" -> ENDDATA;
             case "ENVDEFERR" -> ENVDEFERR;
+            // 非同期 API が返しうる condition (暫定判断 P-140)
+            case "NOTFINISHED" -> NOTFINISHED;
+            case "DISABLED" -> DISABLED;
             case "ERROR" -> ERROR_HANDLER_KEY;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS handler condition: " + normalized);

@@ -53,9 +53,10 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
         definition.validate(input);
         CicsExecution execution = new CicsExecution(task, input.commareaLength(), environment);
         execution.limitTo(task.startedAt().plus(definition.taskTimeout()));
-        if (input.containerCount() > 0) {
-            // 起動要求はchannelの名前を運ばないので、名前の分からない現在のchannelにする
-            execution.openCurrentChannel(null, input.containers());
+        if (input.containerCount() > 0 || input.channelName().isPresent()) {
+            // 名前を運ばない起動要求 (HTTP の入口) の channel は、名前の分からない現在のchannelにする。
+            // RUN TRANSID の子は RUN の CHANNEL の名前で開く
+            execution.openCurrentChannel(input.channelName().orElse(null), input.containers());
         }
         RuntimeServices services = RuntimeServices.builder()
                 .service(CicsExecution.class, execution)
@@ -63,7 +64,8 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
         // 資源は session より先に返す。task がどう終わっても (ABEND や例外でも) 持ち越さない
         try (CobolSession session = runtime.openSession(services);
              Release ignored = () -> environment.enqueues().releaseTask(task.taskId());
-             Release files = () -> environment.files().releaseTask(task.taskId())) {
+             Release files = () -> environment.files().releaseTask(task.taskId());
+             Release children = () -> environment.async().releaseTask(task.taskId())) {
             execution.bind(new DefaultCicsGateway(task, definition, session, syncpoints));
             ProgramId program = definition.initialProgram();
             CicsPayload payload = input;

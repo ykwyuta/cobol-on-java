@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | file control (§3)、一時記憶 (§4)、一時データ (§5)、START / RETRIEVE / CANCEL (§6) を実装 |
+| 状態 | file control (§3)、一時記憶 (§4)、一時データ (§5)、START / RETRIEVE / CANCEL (§6)、非同期 API (§7) を実装 |
 | 対応要件 | FR-080, FR-101、設計 77 §4、設計 79 |
 | 検証レベル | V1。実機の CICS と突き合わせていない |
 
@@ -177,3 +177,29 @@ RESP2 は、INVREQ の 4 / 5 / 6 のほかは頁が示さないので 0 とす�
 断るもの: START の `TERMID` (端末へ出す task)、`USERID`、`SYSID`、`PROTECT` (同期点まで遅らせる)、`NOCHECK`、`CHANNEL`、
 `ATTACH`、RETRIEVE の `SET` と `WAIT`、`REQID` の無い CANCEL (POST の取消し)、CANCEL の `TRANSID` / `SYSID`。
 FROM の無い START の REQID が重なる形と、START で起きていない task の RETRIEVE は、条件が書かれていないので失敗させる。
+
+## 7. 非同期 API (RUN TRANSID / FETCH / FREE CHILD)
+
+`CicsAsyncPort`。既定の `none()` では命令は失敗する。`inMemory(registry, launcher)` は 1 つの JVM の中で子の task を
+別の thread で動かし、`launching(coordinator)` が coordinator で子を起こす。Spring Boot では `CicsTaskAutoConfiguration` が
+bean にし、利用者が `CicsEnvironment.withAsync` で region の構成へ入れる。Bank-of-Z の CRECUST が使う。
+
+| 項目 | 決めごと | 出典 |
+| --- | --- | --- |
+| RUN の channel | RUN を出した時点の container の写しを子へ渡す。子は RUN の CHANNEL の名前で現在の channel を開く | RUN TRANSID の頁 |
+| 子の token | 16 byte。中身は区別できればよく、形は実機と合わせていない | RUN TRANSID の頁 (長さ) |
+| 子の task | 端末と COMMAREA を持たず、親と同じ owner と user ID で、別の UOW として動く | — |
+| reply channel | 子が終えたときの現在の channel。FETCH で `JVREPLY` と 9 桁の名前を付けて親の channel として置き、CHANNEL の域へ返す。RUN に CHANNEL が無ければ空白 | FETCH の頁 (16 文字の名前、channel を持たなければ空白)。名前の形は推定 |
+| COMPSTATUS | NORMAL 1016、ABEND 900 (ABCODE に code)。ABEND のときの CHANNEL は空白とした。SECERROR 1214 は認可を持たないので起きない | CVDA の表、FETCH の頁 |
+| 子の ABEND 以外の失敗 | 完了の状態が文書に無いので、その子を FETCH した親を失敗させる | — |
+| FETCH の待ち | NOSUSPEND なら待たない。TIMEOUT (ミリ秒、0〜40800000) か task の期限まで待つ。両方を書く形は断る | FETCH の頁 |
+| FREE CHILD | token を無効にする。親の task の終わりには全部の子の token を返す | FREE CHILD の頁 |
+
+| 命令 | EIBFN | 返す条件 |
+| --- | --- | --- |
+| RUN TRANSID | 343E | TRANSIDERR 28/1、DISABLED 84/50 |
+| FETCH ANY | 3444 | NOTFINISHED 113/52 (NOSUSPEND)・53 (TIMEOUT)、NOTFND 13/1 (取り出していない子が無い)、INVREQ 16/52 (子が無い)・241 (TIMEOUT の値) |
+| FETCH CHILD | 3442 | NOTFINISHED 113/52・53、INVREQ 16/50 (token が正しくない、FREE 済み)・51 (取り出し済み)・241 |
+| FREE CHILD | 3446 | INVREQ 16/50 |
+
+断るもの: RUN の `USERID`、`NOSUSPEND` と `TIMEOUT` の併記、RUN の CHANNEL に無い channel の名前 (条件が無い)。

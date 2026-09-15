@@ -777,6 +777,8 @@ public final class ProgramGenerator {
                 planCicsQueueCommand(queueCommand, body);
             } else if (statement instanceof Statement.CicsIntervalCommand intervalCommand) {
                 planCicsIntervalCommand(intervalCommand, body);
+            } else if (statement instanceof Statement.CicsAsyncCommand asyncCommand) {
+                planCicsAsyncCommand(asyncCommand, body);
             } else if (statement instanceof Statement.CicsInquireAssociation association) {
                 planCicsInquireAssociation(association, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
@@ -1107,6 +1109,47 @@ public final class ProgramGenerator {
             String view = "L" + DATA_VIEW + ";";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "inquireAssociationCondition",
                     "(" + CONTEXT + view + view + view + view + view + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    private void planCicsAsyncCommand(Statement.CicsAsyncCommand statement, List<Runnable> body) {
+        boolean runCommand = statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.ASYNC_RUN;
+        Runnable transaction = planAreaBytes(statement.transactionData(), statement.origin());
+        Runnable channel = planAreaBytes(runCommand ? statement.channelData() : null, statement.origin());
+        if (transaction == null || channel == null) {
+            return;
+        }
+        // 並びは FETCH の CHANNEL、token、COMPSTATUS、ABCODE、TIMEOUT
+        List<Runnable> views = new ArrayList<>();
+        for (DataReference area : java.util.Arrays.asList(runCommand ? null : statement.channelData(), statement.token(),
+                statement.completionStatus(), statement.abendCode(), statement.timeoutArea())) {
+            Runnable planned = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                    : planWholeView(area, statement.origin());
+            if (planned == null) {
+                return;
+            }
+            views.add(planned);
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            push(statement.kind());
+            pushNullableString(statement.transactionLiteral());
+            transaction.run();
+            pushNullableString(runCommand ? statement.channelLiteral() : null);
+            channel.run();
+            views.get(0).run();
+            views.get(1).run();
+            views.get(2).run();
+            views.get(3).run();
+            push(statement.timeoutLiteral());
+            views.get(4).run();
+            run.visitInsn(statement.noSuspend() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            String view = "L" + DATA_VIEW + ";";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "asyncCommandCondition",
+                    "(" + CONTEXT + "ILjava/lang/String;[BLjava/lang/String;[B" + view + view + view + view + "I"
+                            + view + "ZZ)I", false);
             emitCicsConditionTransfer();
         });
     }

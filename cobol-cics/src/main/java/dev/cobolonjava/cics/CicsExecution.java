@@ -171,6 +171,31 @@ public final class CicsExecution {
         return Optional.of(created);
     }
 
+    private int replyChannels;
+
+    /**
+     * FETCH が親に見せる子の reply channel の名前 (暫定判断 P-140)。
+     *
+     * <p>文書は「CICS が作り、LINK level の中で重ならない」とだけ書く。形は実機と合わせていない。task の中で重ならない。
+     */
+    synchronized String nextReplyChannelName() {
+        String name;
+        do {
+            name = String.format("JVREPLY%09d", ++replyChannels);
+        } while (channels.containsKey(name));
+        return name;
+    }
+
+    /** 名前の channel を置く。同じ名前があれば失敗させる。 */
+    synchronized void putChannel(String name, Map<String, byte[]> containers) {
+        if (channels.containsKey(Objects.requireNonNull(name, "name"))) {
+            throw new CicsTaskStateException("channel " + name + " already exists");
+        }
+        Map<String, byte[]> copied = new java.util.LinkedHashMap<>();
+        containers.forEach((key, value) -> copied.put(key, value.clone()));
+        channels.put(name, copied);
+    }
+
     /** 初期programまたはXCTL先が、現在のLINK levelのprogramになる。 */
     public synchronized void startProgram(String programName) {
         currentHandleLevel().programName = Objects.requireNonNull(programName, "programName");

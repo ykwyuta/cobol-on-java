@@ -20,6 +20,12 @@ public final class CicsCvda {
     public static final int NOUCTRAN = 452;
     /** transaction ID だけを大文字にする。 */
     public static final int TRANIDONLY = 460;
+    /**
+     * FETCH CHILD / FETCH ANY の COMPSTATUS (暫定判断 P-140)。表で前後 (902 CGROUP、1017 EXPIRED、1215 NODEJSAPP) まで確かめた。
+     */
+    public static final int ABEND = 900;
+    public static final int NORMAL = 1016;
+    public static final int SECERROR = 1214;
 
     private CicsCvda() {
     }
@@ -32,6 +38,9 @@ public final class CicsCvda {
             case "UCTRAN" -> UCTRAN;
             case "NOUCTRAN" -> NOUCTRAN;
             case "TRANIDONLY" -> TRANIDONLY;
+            case "ABEND" -> ABEND;
+            case "NORMAL" -> NORMAL;
+            case "SECERROR" -> SECERROR;
             default -> throw new IllegalArgumentException("unsupported CVDA name: " + normalized);
         };
     }
