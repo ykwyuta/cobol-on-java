@@ -14,19 +14,6 @@
   <name>cobol-spring-boot-4-bms-thymeleaf</name>
   <description>Thymeleaf view, terminal JavaScript, CSS and browser endpoint for BMS screens on Spring Boot 4.x</description>
 
-  <!-- Spring Boot 4.1 の test 基盤は JUnit 6 の API を呼ぶ。親の JUnit 5.11 を、この module だけ Boot の版に揃える -->
-  <dependencyManagement>
-    <dependencies>
-      <dependency>
-        <groupId>org.junit</groupId>
-        <artifactId>junit-bom</artifactId>
-        <version>6.0.3</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-    </dependencies>
-  </dependencyManagement>
-
   <dependencies>
     <dependency>
       <groupId>dev.cobolonjava</groupId>

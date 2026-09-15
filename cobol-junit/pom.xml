@@ -12,7 +12,7 @@
 
   <artifactId>cobol-junit</artifactId>
   <name>cobol-junit</name>
-  <description>JUnit 5 から COBOL を実行し、テスト境界を差し替えるアダプタ</description>
+  <description>JUnit から COBOL を実行し、テスト境界を差し替えるアダプタ</description>
 
   <dependencies>
     <dependency>
