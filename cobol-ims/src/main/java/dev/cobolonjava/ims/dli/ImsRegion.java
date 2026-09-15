@@ -53,6 +53,7 @@ public final class ImsRegion {
     private final List<Storage> storages = new ArrayList<>();
     private final Map<Storage, DatabasePcb> databasePcbs = new IdentityHashMap<>();
     private final UndoLog undo = new UndoLog();
+    private final MessageQueue queue;
     private Consumer<Collection<HierarchicalDatabase>> committer = databases -> {
     };
     private Storage ioStorage;
@@ -85,6 +86,7 @@ public final class ImsRegion {
         if (queue != null && !ioPcb) {
             throw new IllegalArgumentException("a message queue needs an I/O PCB");
         }
+        this.queue = queue;
         this.psb = Objects.requireNonNull(psb, "psb");
         this.codePage = Objects.requireNonNull(codePage, "codePage");
         for (HierarchicalDatabase database : databases) {
@@ -250,16 +252,25 @@ public final class ImsRegion {
         return this;
     }
 
-    /** 同期点。置き場へ確定してから、データベースの変更を確定し、DB PCB の位置を捨てる (P-157、P-160)。 */
+    /**
+     * 同期点。置き場へ確定し、キューを確定し (ACK)、データベースの変更を確定して、DB PCB の位置を捨てる
+     * (P-157、P-160、P-162)。置き場の確定が失敗すればキューは確定しないので、電文は戻って再配信される。
+     */
     public void commit() {
         committer.accept(databases.values());
+        if (queue != null) {
+            queue.commit();
+        }
         undo.commit();
         databases.values().forEach(HierarchicalDatabase::clearChanges);
         databasePcbs.values().forEach(DatabasePcb::resetPosition);
     }
 
-    /** 最後の同期点までデータベースを戻し、DB PCB の位置を捨てる (P-157)。 */
+    /** 最後の同期点までデータベースとキューを戻し、DB PCB の位置を捨てる (P-157、P-162)。 */
     public void rollback() {
+        if (queue != null) {
+            queue.rollback();
+        }
         undo.rollback();
         databases.values().forEach(HierarchicalDatabase::clearChanges);
         databasePcbs.values().forEach(DatabasePcb::resetPosition);

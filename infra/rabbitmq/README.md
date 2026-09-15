@@ -36,4 +36,6 @@ mvn -pl cobol-ims-jms -am test
 - 制限: 2 CPU / 2 GiB、named volume `rabbitmq-data`
 
 ADR-0014 は「依存ライブラリとブローカの版は、実際に依存解決と起動を確認してから固定する」と決めている。
-起動と試験を通した版は、通した時点でここに書き足す。
+依存の解決は確認した (`jakarta.jms-api` 3.1.0、`rabbitmq-jms` 3.4.0、`amqp-client` 5.22.0)。
+<b>ブローカの起動と実ブローカの試験は、まだ確認していない</b> (作った環境で docker が動かなかった、暫定判断 P-162)。
+確認した時点で、image の digest と結果をここに書き足す。

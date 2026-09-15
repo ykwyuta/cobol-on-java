@@ -17,4 +17,17 @@ public interface MessageQueue {
 
     /** 応答の電文を送る。 */
     void send(OutputMessage message);
+
+    /**
+     * 同期点。ここまでに取り出した電文を確定し (ACK し)、送った応答を出す。
+     *
+     * <p>データベースの置き場を確定したあとに呼ばれる。ADR-0014 の「JDBC のコミットが成功してから ACK する」である。
+     * メモリのキューのように確定する必要が無ければ、何もしなくてよい。
+     */
+    default void commit() {
+    }
+
+    /** 最後の同期点まで戻す。取り出した電文は戻され、送っていない応答は捨てられる。 */
+    default void rollback() {
+    }
 }
