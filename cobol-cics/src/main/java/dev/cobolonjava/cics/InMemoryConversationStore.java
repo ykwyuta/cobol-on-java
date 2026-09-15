@@ -143,6 +143,27 @@ public final class InMemoryConversationStore implements ConversationStorePort {
         return result.get();
     }
 
+    @Override
+    public ConversationMutationResult discard(ConversationId id, Instant now) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(now, "now");
+        AtomicReference<ConversationMutationResult> result = new AtomicReference<>(
+                ConversationMutationResult.NOT_FOUND);
+        entries.computeIfPresent(id, (ignored, current) -> {
+            if (current.envelope.isExpiredAt(now)) {
+                result.set(ConversationMutationResult.EXPIRED);
+                return null;
+            }
+            if (current.hasActiveLeaseAt(now)) {
+                result.set(ConversationMutationResult.LEASE_MISMATCH);
+                return current;
+            }
+            result.set(ConversationMutationResult.COMPLETED);
+            return null;
+        });
+        return result.get();
+    }
+
     private ConversationMutationResult removeWithLease(
             ConversationLease lease, Instant now, ConversationMutationResult success) {
         Objects.requireNonNull(lease, "lease");

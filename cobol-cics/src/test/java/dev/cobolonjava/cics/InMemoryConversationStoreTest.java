@@ -112,6 +112,24 @@ class InMemoryConversationStoreTest {
     }
 
     @Test
+    @DisplayName("sessionが消えたときのdiscardはleaseの無い会話だけを消し、taskが動いている会話は残す")
+    void discardsOnlyUnleasedConversations() {
+        InMemoryConversationStore store = createdStore();
+        ConversationLease lease = claim(store, NOW).lease().orElseThrow();
+
+        assertEquals(ConversationMutationResult.LEASE_MISMATCH, store.discard(id(), NOW));
+        assertEquals(ConversationMutationResult.SAVED, store.save(lease, lease.envelope().next(
+                TransId.of("NXT2"), CicsPayload.empty(), NOW.plusSeconds(60),
+                new IdempotencyKey("request-0002"), Optional.empty()), NOW));
+        assertEquals(ConversationMutationResult.COMPLETED, store.discard(id(), NOW));
+        assertTrue(store.load(id(), NOW).isEmpty());
+        assertEquals(ConversationMutationResult.NOT_FOUND, store.discard(id(), NOW));
+
+        InMemoryConversationStore expired = createdStore();
+        assertEquals(ConversationMutationResult.EXPIRED, expired.discard(id(), NOW.plusSeconds(60)));
+    }
+
+    @Test
     @DisplayName("lease期限後は別taskが再claimでき古いtaskのsaveを拒否する")
     void reclaimsAfterLeaseExpiry() {
         InMemoryConversationStore store = createdStore();

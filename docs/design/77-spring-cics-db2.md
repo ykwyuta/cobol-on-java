@@ -540,7 +540,9 @@ adapter contract test に含める。
 `Db2NativeConnectionProvider` の bean で `DriverManagedStrictTaskBoundaryFactory` を構成し、同じ表を native lease の
 connection (`DriverManagedUnitOfWorks.connection`) で更新して業務の SQL と一緒に commit する。claim と冪等キーの予約は
 どちらの profile でも DataSource の別の transaction で確定するので、lease と DataSource は同じ database を指す必要がある
-(利用者が保証する)。会話の行を Spring Session の session ID と期限へ結び付けることはまだ無い。
+(利用者が保証する)。HTTP session が消えたときは `CicsBrowserSessionListener` が session の指す会話を
+`ConversationStorePort.discard` で捨てる (lease を持つ会話は残す)。Spring Session JDBC は削除・失効の event を出さないので、
+その構成では会話は自分の期限で消える。
 
 ## 5. Db2 連携
 

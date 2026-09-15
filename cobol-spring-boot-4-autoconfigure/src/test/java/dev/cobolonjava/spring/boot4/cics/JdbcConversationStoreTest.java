@@ -92,6 +92,23 @@ class JdbcConversationStoreTest {
     }
 
     @Test
+    @DisplayName("sessionが消えたときのdiscardはleaseの無い会話だけを消し、taskが動いている会話は残す")
+    void discardsOnlyUnleasedConversations() {
+        ConversationId id = initial().id();
+        store.create(initial(), NOW);
+        ConversationLease lease = store.claim(id, 0, "owner", LEASE, NOW).lease().orElseThrow();
+
+        assertEquals(ConversationMutationResult.LEASE_MISMATCH, store.discard(id, NOW));
+        assertEquals(ConversationMutationResult.RELEASED, store.release(lease, NOW));
+        assertEquals(ConversationMutationResult.COMPLETED, store.discard(id, NOW));
+        assertTrue(store.load(id, NOW).isEmpty());
+        assertEquals(ConversationMutationResult.NOT_FOUND, store.discard(id, NOW));
+
+        store.create(initial(), NOW);
+        assertEquals(ConversationMutationResult.EXPIRED, store.discard(id, NOW.plusSeconds(60)));
+    }
+
+    @Test
     @DisplayName("冪等キーは予約・記録で再送に応答を返し、違う要約はMISMATCH、記録していない予約はreleaseで外れる")
     void storesIdempotentOutcomes() {
         IdempotencyKey key = new IdempotencyKey("client-key-0001");

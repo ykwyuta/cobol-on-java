@@ -37,4 +37,11 @@ public class CicsBrowserAutoConfiguration {
         return new CicsBrowserController(coordinator, conversations, views, binder,
                 clock.getIfAvailable(Clock::systemUTC));
     }
+
+    @Bean
+    @ConditionalOnMissingBean
+    CicsBrowserSessionListener cobolCicsBrowserSessionListener(ConversationStorePort conversations,
+                                                               @Qualifier("cobolCicsClock") ObjectProvider<Clock> clock) {
+        return new CicsBrowserSessionListener(conversations, clock.getIfAvailable(Clock::systemUTC));
+    }
 }

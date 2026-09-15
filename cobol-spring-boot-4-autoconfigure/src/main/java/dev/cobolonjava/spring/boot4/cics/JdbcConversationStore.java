@@ -193,6 +193,26 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
         });
     }
 
+    @Override
+    public ConversationMutationResult discard(ConversationId id, Instant now) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(now, "now");
+        return separate.execute(status -> {
+            Optional<Row> row = row(jdbc, id);
+            if (row.isEmpty()) {
+                return ConversationMutationResult.NOT_FOUND;
+            }
+            // lease の条件を DELETE にも置き、見てから消すまでに claim した task の会話は消さない
+            int deleted = jdbc.update("DELETE FROM COBOL_CONVERSATION WHERE CONVERSATION_ID = ? AND LEASED_UNTIL <= ?",
+                    id.value(), millis(now));
+            if (deleted != 1) {
+                return ConversationMutationResult.LEASE_MISMATCH;
+            }
+            return row.orElseThrow().envelope().isExpiredAt(now)
+                    ? ConversationMutationResult.EXPIRED : ConversationMutationResult.COMPLETED;
+        });
+    }
+
     /** lease を持つ要求だけが更新できる条件。値は ID、版、owner、token、lease の期限、今、今。 */
     private static final String LEASE_CONDITION = " WHERE CONVERSATION_ID = ? AND CONVERSATION_VERSION = ?"
             + " AND OWNER_NAME = ? AND LEASE_TOKEN = ? AND LEASED_UNTIL = ? AND LEASED_UNTIL > ? AND EXPIRES_AT > ?";

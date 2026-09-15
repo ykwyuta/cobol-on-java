@@ -13,6 +13,8 @@ import dev.cobolonjava.cics.CicsTaskProgramPort;
 import dev.cobolonjava.cics.CicsTerminalScreen;
 import dev.cobolonjava.cics.CicsTransactionDefinition;
 import dev.cobolonjava.cics.CicsTransactionRegistry;
+import dev.cobolonjava.cics.ConversationId;
+import dev.cobolonjava.cics.ConversationStorePort;
 import dev.cobolonjava.cics.TaskCompletion;
 import dev.cobolonjava.cics.TransId;
 import dev.cobolonjava.cics.bms.BmsModel;
@@ -21,7 +23,10 @@ import dev.cobolonjava.cics.bms.BmsScreenComposer;
 import dev.cobolonjava.cics.bms.BmsScreenSnapshot;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.interop.ProgramId;
+import jakarta.servlet.http.HttpSessionEvent;
+import jakarta.servlet.http.HttpSessionListener;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -93,6 +98,9 @@ class CicsBrowserEndpointTest {
     @Autowired
     WebApplicationContext context;
 
+    @Autowired
+    ConversationStorePort conversations;
+
     MockMvc mvc;
 
     @BeforeEach
@@ -163,6 +171,24 @@ class CicsBrowserEndpointTest {
                         .param("aid", "ENTER").param("cursor", "337").param("bms.CUSTNO.1", "043"))
                 .andExpect(status().isConflict());
         assertThat(RUNS.get() - before).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("HTTP sessionが消えると、その会話を会話ストアから捨てる")
+    void discardsConversationWhenSessionIsDestroyed() throws Exception {
+        MvcResult started = mvc.perform(post("/cics/SCR1").with(user("alice")).with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+        MockHttpSession session = (MockHttpSession) started.getRequest().getSession();
+        ConversationId id = new ConversationId(((CicsBrowserController.BrowserConversation)
+                session.getAttribute(CicsBrowserController.CONVERSATION)).id());
+        assertThat(conversations.load(id, Instant.now())).isPresent();
+
+        // MockHttpSession の invalidate は listener を呼ばないので、container の代わりに event を渡す
+        assertThat(context.getBeansOfType(HttpSessionListener.class).values())
+                .hasAtLeastOneElementOfType(CicsBrowserSessionListener.class);
+        context.getBean(CicsBrowserSessionListener.class).sessionDestroyed(new HttpSessionEvent(session));
+
+        assertThat(conversations.load(id, Instant.now())).isEmpty();
     }
 
     private static String hidden(MvcResult result, String name) throws Exception {

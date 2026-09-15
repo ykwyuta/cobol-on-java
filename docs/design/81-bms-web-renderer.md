@@ -81,7 +81,7 @@ base の `cobol-spring-boot-4-autoconfigure` の `CicsTaskAutoConfiguration` が
 | --- | --- |
 | 認証 | Spring Security が classpath に無ければ入口を構成しない。principal が無い要求は 401 |
 | CSRF | task は POST だけで動かす。Spring Security の CSRF filter が token の無い POST を 403 にする。GET は開始の画面だけ |
-| 会話 | HTTP session に置くのは会話の ID、版、次の TRANSID だけ。COMMAREA と直前の画面は会話ストアから読む。版が合わなければ 409 で task を動かさない |
+| 会話 | HTTP session に置くのは会話の ID、版、次の TRANSID だけ。COMMAREA と直前の画面は会話ストアから読む。版が合わなければ 409 で task を動かさない。session が消えれば (logout・失効) `CicsBrowserSessionListener` が会話を捨てる (task が動いている会話は残す。P-143) |
 | 会話ストア | 既定は `InMemoryConversationStore` (1 つの JVM の中だけ)。Spring Session は HTTP session を外へ置く形で使え、会話ストアは利用者が bean で替える |
 | UOW | 既定の境界は回復可能な資源を持たない `NonRecoverableTaskBoundaryFactory`。Db2 を使う transaction は UOW を持つ境界を bean で置く |
 | 端末 | HTTP session ごとに `W` + base36 3 文字の端末名を振る。user ID は principal 名が 8 文字の CICS の形に収まるときだけ |

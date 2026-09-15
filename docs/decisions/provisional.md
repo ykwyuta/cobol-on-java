@@ -4364,13 +4364,20 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
   検索に使う版・owner・期限・lease だけを列に出し、時刻の列はミリ秒、lease の期限もミリ秒に揃える
 - 表は利用者が `JdbcConversationStore.SCHEMA` の DDL で作る。期限切れの行は `purgeExpired` を利用者が定期に呼んで消す
 - HTTP session (ブラウザの会話の参照) を複数の JVM で分け合うのは、利用者が構成する Spring Session JDBC である。
-  会話の行は Spring Session の表と結び付けず、自分の期限で消える
+  会話の行は Spring Session の表と外部キーで結び付けない (新しい session や changeSessionId で行を張り替える必要が出るため)
+- HTTP session が消えたとき (logout の invalidate、container の失効) は、ブラウザの入口の `CicsBrowserSessionListener`
+  (HttpSessionListener の bean) が session の指す会話を `ConversationStorePort.discard` で捨てる。lease を持つ会話
+  (task が動いている最中) は消さない。動いている task の commit を会話の不在で失敗させ、業務の更新まで巻き戻さないためで、
+  残った会話は自分の期限で消える。捨てるのに失敗しても session の破棄は止めない
 
 **どこがずれうるか**: 設計 77 §4.6 は会話の表を Spring Session の session ID と期限に結び付けて、logout や session の失効で
-会話も消すことを求める。ここは結び付けていないので、session が消えても会話は期限まで残る。commit の途中の失敗は
+会話も消すことを求める。container の session と、削除・失効の event を出す Spring Session (Redis 等) では listener が
+会話を捨てる。Spring Session JDBC は event を出さないので listener に届かず、session が消えても会話は期限まで残る。
+MockMvc の試験は listener を直接呼んだだけで、実 container と Spring Session で event が届くことは試験していない。commit の途中の失敗は
 UNKNOWN とし、予約を残して lease の期限まで再送を動かさない。driver-managed で commit は通ったのに lease の解放で
 失敗したときも UNKNOWN に数える (確定したかを区別しない。安全側に倒した)。Db2 実機と H2 以外の DB では試験しておらず、
 driver-managed も H2 の DriverManager の connection で試しただけで、JCC の native lease では試験していない。
 
-**解消条件**: 会話の行に Spring Session の session ID を持たせ、session の削除・失効と一緒に消す。実 Db2 で DDL と
+**解消条件**: Spring Session JDBC でも session の削除・失効と一緒に会話を消す (期限切れの session を消す job と会話の
+purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。実 Db2 で DDL と
 同時実行 (claim の競合、DuplicateKey の写像) を、SPRING_MANAGED と DB2_DRIVER_MANAGED_HOLD (JCC) の両方で試験する。
