@@ -71,6 +71,22 @@ public final class CicsRuntimeOps {
             "WRITEQ TS", "READQ TS", "DELETEQ TS", "WRITEQ TD", "READQ TD", "DELETEQ TD");
     /** 種類の番号の順の function code。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int[] QUEUE_FUNCTIONS = {0x0A02, 0x0A04, 0x0A06, 0x0802, 0x0804, 0x0806};
+    /** 間隔制御の命令の種類 (暫定判断 P-138)。生成コードが渡す。 */
+    public static final int INTERVAL_START = 0;
+    public static final int INTERVAL_RETRIEVE = 1;
+    public static final int INTERVAL_CANCEL = 2;
+    public static final java.util.List<String> INTERVAL_COMMANDS = java.util.List.of("START", "RETRIEVE", "CANCEL");
+    /** START の満了の書き方。INTERVAL は書かなければ INTERVAL(0) と同じ。 */
+    public static final int START_INTERVAL = 0;
+    public static final int START_TIME = 1;
+    public static final int START_AFTER = 2;
+    public static final int START_AT = 3;
+    /** START / RETRIEVE / CANCEL。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int START_FUNCTION = 0x1008;
+    private static final int RETRIEVE_FUNCTION = 0x100A;
+    private static final int CANCEL_FUNCTION = 0x100C;
+    /** これより前までの時刻を指す START は直ちに始まる。「Expiration times」の頁による。 */
+    private static final java.time.Duration START_PAST_WINDOW = java.time.Duration.ofHours(6);
     /** INQUIRE ASSOCIATION (SPI)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int INQUIRE_ASSOCIATION_FUNCTION = 0xC402;
     private static final java.util.regex.Pattern CONTAINER_NAME =
@@ -584,6 +600,222 @@ public final class CicsRuntimeOps {
 
     private static String transientDataName(ProgramContext context, String literal, byte[] data) {
         return (literal != null ? literal : context.codePage().decode(data)).stripTrailing();
+    }
+
+    /**
+     * START (暫定判断 P-138)。
+     *
+     * <p>名前の option は、定数ならその文字列、データ名なら域の byte 列で渡る。書かなければどちらも null。
+     * 満了は timing が決める。INTERVAL / TIME は hhmmss を、AFTER / AT は HOURS / MINUTES / SECONDS を使う。
+     *
+     * <h2>満了の時刻</h2>
+     * <p>INTERVAL と AFTER は今からの間隔である。TIME と AT は task の地方時の今日のその時刻で、hh が 23 を越えれば
+     * 翌日以降を指す。6 時間前までの時刻なら直ちに始める (「Expiration times」の頁)。それより前の時刻は、
+     * 時刻として読んで翌日のその時刻とする。頁はこの場合を明示していない。
+     */
+    public static int startCondition(ProgramContext context, String transactionLiteral, byte[] transactionData,
+            int timing, dev.cobolonjava.runtime.decimal.Decimal hhmmss, dev.cobolonjava.runtime.decimal.Decimal hours,
+            dev.cobolonjava.runtime.decimal.Decimal minutes, dev.cobolonjava.runtime.decimal.Decimal seconds,
+            DataView from, DataView lengthArea, int lengthLiteral, String requestLiteral, byte[] requestData,
+            String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
+            byte[] returnTerminalData, String queueLiteral, byte[] queueData, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        CicsTaskContext task = execution.task();
+        String transaction = intervalName(required, transactionLiteral, transactionData);
+        TransId transId;
+        try {
+            transId = TransId.of(transaction);
+        } catch (IllegalArgumentException invalid) {
+            throw new CicsTaskStateException("START TRANSID has an unsupported format: '" + transaction + "'");
+        }
+        long delay = startSeconds(timing, hhmmss, hours, minutes, seconds);
+        if (delay < 0) {
+            // INVREQ (RESP2 4 / 5 / 6): 時・分・秒の値が範囲の外
+            return containerOutcome(required, START_FUNCTION, CicsResponseCode.INVREQ, (int) -delay,
+                    suppressDefaultHandling, "START");
+        }
+        java.time.Instant now = execution.environment().clock().instant();
+        java.time.Instant expiration;
+        if (timing == START_INTERVAL || timing == START_AFTER) {
+            expiration = now.plusSeconds(delay);
+        } else {
+            java.time.ZoneId zone = task.hostZone().orElseThrow(() -> new CicsTaskStateException(
+                    "START TIME / AT requires the host time zone of the task"));
+            java.time.LocalDate today = now.atZone(zone).toLocalDate();
+            java.time.Instant target = today.atStartOfDay(zone).plusSeconds(delay).toInstant();
+            if (target.isAfter(now)) {
+                expiration = target;
+            } else if (java.time.Duration.between(target, now).compareTo(START_PAST_WINDOW) <= 0) {
+                expiration = now;
+            } else {
+                expiration = today.plusDays(1).atStartOfDay(zone).plusSeconds(delay).toInstant();
+            }
+        }
+        byte[] bytes = null;
+        if (from != null) {
+            int length = lengthArea != null ? halfword(lengthArea) : lengthLiteral >= 0 ? lengthLiteral : from.length();
+            if (length <= 0) {
+                // LENGERR: LENGTH が 0 以下。頁は RESP2 を示さない
+                return containerOutcome(required, START_FUNCTION, CicsResponseCode.LENGERR, 0,
+                        suppressDefaultHandling, "START");
+            }
+            if (length > from.length()) {
+                throw new CicsTaskStateException("START LENGTH " + length + " exceeds the FROM area of "
+                        + from.length() + " bytes");
+            }
+            bytes = from.subView(0, length).toByteArray();
+        }
+        CicsStartPort starts = execution.environment().starts();
+        boolean generated = requestLiteral == null && requestData == null;
+        String requestId = generated ? starts.newRequestId() : intervalName(required, requestLiteral, requestData);
+        if (requestId.isEmpty()) {
+            throw new CicsTaskStateException("START REQID must not be blank");
+        }
+        CicsStartData data = new CicsStartData(requestId, transId, bytes,
+                optionalName(required, returnTransactionLiteral, returnTransactionData),
+                optionalName(required, returnTerminalLiteral, returnTerminalData),
+                optionalName(required, queueLiteral, queueData), task.owner(), task.userId());
+        CicsStartPort.Result result = starts.start(expiration, data);
+        if (generated && result.response() == CicsResponseCode.NORMAL) {
+            // REQID を書かなければ、CICS が作った名前を EIBREQID に置く (START の頁)
+            execution.eib(required.codePage()).setRequestId(requestId, required.codePage());
+        }
+        return containerOutcome(required, START_FUNCTION, result.response(), result.response2(),
+                suppressDefaultHandling, "START");
+    }
+
+    /**
+     * RETRIEVE (暫定判断 P-138)。START で起きた task だけが読める。受取域の無い option は null で渡る。
+     *
+     * <p>2 度目の RETRIEVE は ENDDATA、START が書かなかった option を求めれば ENVDEFERR (FROM の無い START への INTO を含む)。
+     * ENVDEFERR ではデータを読んだことにしない。
+     */
+    public static int retrieveCondition(ProgramContext context, DataView into, DataView lengthArea,
+            DataView returnTransaction, DataView returnTerminal, DataView queue, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        CicsStartData start = execution.task().start().orElseThrow(() -> new CicsTaskStateException(
+                "RETRIEVE is supported only in a task started by START; the condition otherwise is not verified"));
+        int response = CicsResponseCode.NORMAL;
+        if (start.retrieved()) {
+            // ENDDATA: この task の START のデータはもう残っていない
+            response = CicsResponseCode.ENDDATA;
+        } else if ((into != null && start.data().isEmpty())
+                || (returnTransaction != null && start.returnTransaction().isEmpty())
+                || (returnTerminal != null && start.returnTerminal().isEmpty())
+                || (queue != null && start.queue().isEmpty())) {
+            // ENVDEFERR: START が書かなかった option を RETRIEVE が求めた
+            response = CicsResponseCode.ENVDEFERR;
+        } else {
+            start.markRetrieved();
+            if (into != null) {
+                byte[] data = start.data().orElseThrow();
+                // RETRIEVE の頁: LENGTH が 0 以下なら 0 とみなす
+                int max = Math.max(0, lengthArea != null ? halfword(lengthArea) : into.length());
+                if (max > into.length()) {
+                    throw new CicsTaskStateException("RETRIEVE LENGTH " + max + " does not fit the INTO area of "
+                            + into.length() + " bytes");
+                }
+                int moved = Math.min(data.length, max);
+                into.subView(0, moved).setBytes(java.util.Arrays.copyOf(data, moved));
+                if (lengthArea != null) {
+                    setHalfword(lengthArea, data.length);
+                }
+                if (data.length > max) {
+                    // LENGERR: データが LENGTH より長く、切り詰めた
+                    response = CicsResponseCode.LENGERR;
+                }
+            }
+            putPadded(required, returnTransaction, start.returnTransaction(), "RTRANSID");
+            putPadded(required, returnTerminal, start.returnTerminal(), "RTERMID");
+            putPadded(required, queue, start.queue(), "QUEUE");
+        }
+        return containerOutcome(required, RETRIEVE_FUNCTION, response, 0, suppressDefaultHandling, "RETRIEVE");
+    }
+
+    /** CANCEL REQID(名前) (暫定判断 P-138)。未満了の START を取り消す。 */
+    public static int cancelCondition(ProgramContext context, String requestLiteral, byte[] requestData,
+            boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsStartPort.Result result = execution(required).environment().starts()
+                .cancel(intervalName(required, requestLiteral, requestData));
+        return containerOutcome(required, CANCEL_FUNCTION, result.response(), result.response2(),
+                suppressDefaultHandling, "CANCEL");
+    }
+
+    /**
+     * START の満了までの秒。値が範囲の外なら、INVREQ の RESP2 (4 時、5 分、6 秒) を負にして返す。
+     *
+     * <p>AFTER / AT で単位を 1 つだけ書けば、その単位で上限まで数える (MINUTES 5999、SECONDS 359999)。
+     */
+    private static long startSeconds(int timing, dev.cobolonjava.runtime.decimal.Decimal hhmmss,
+            dev.cobolonjava.runtime.decimal.Decimal hours, dev.cobolonjava.runtime.decimal.Decimal minutes,
+            dev.cobolonjava.runtime.decimal.Decimal seconds) {
+        if (timing == START_INTERVAL || timing == START_TIME) {
+            long value = hhmmss == null ? 0 : startValue(hhmmss, timing == START_TIME ? "TIME" : "INTERVAL");
+            long h = value / 10_000;
+            long m = value / 100 % 100;
+            long s = value % 100;
+            return h > 99 ? -4 : m > 59 ? -5 : s > 59 ? -6 : h * 3600 + m * 60 + s;
+        }
+        if (timing != START_AFTER && timing != START_AT) {
+            throw new IllegalArgumentException("unknown START timing: " + timing);
+        }
+        int units = (hours == null ? 0 : 1) + (minutes == null ? 0 : 1) + (seconds == null ? 0 : 1);
+        if (units == 0) {
+            throw new IllegalArgumentException("START AFTER / AT requires HOURS, MINUTES or SECONDS");
+        }
+        boolean single = units == 1;
+        long h = hours == null ? 0 : startValue(hours, "HOURS");
+        long m = minutes == null ? 0 : startValue(minutes, "MINUTES");
+        long s = seconds == null ? 0 : startValue(seconds, "SECONDS");
+        if (h > 99) {
+            return -4;
+        }
+        if (m > (single ? 5_999 : 59)) {
+            return -5;
+        }
+        if (s > (single ? 359_999 : 59)) {
+            return -6;
+        }
+        return h * 3600 + m * 60 + s;
+    }
+
+    private static long startValue(dev.cobolonjava.runtime.decimal.Decimal value, String option) {
+        long parsed;
+        try {
+            parsed = value.toBigDecimal().longValueExact();
+        } catch (ArithmeticException notInteger) {
+            throw new CicsTaskStateException("START " + option + " is not an integer");
+        }
+        if (parsed < 0) {
+            throw new CicsTaskStateException("START " + option + " is negative: " + parsed);
+        }
+        return parsed;
+    }
+
+    private static String intervalName(ProgramContext context, String literal, byte[] data) {
+        return (literal != null ? literal : context.codePage().decode(data)).stripTrailing();
+    }
+
+    private static Optional<String> optionalName(ProgramContext context, String literal, byte[] data) {
+        return literal == null && data == null ? Optional.empty() : Optional.of(intervalName(context, literal, data));
+    }
+
+    /** 名前を受取域へ、空白を詰めて置く。受取域が無ければ何もしない。 */
+    private static void putPadded(ProgramContext context, DataView area, Optional<String> value, String option) {
+        if (area == null) {
+            return;
+        }
+        byte[] encoded = context.codePage().encode(value.orElseThrow());
+        if (encoded.length > area.length()) {
+            throw new CicsTaskStateException("RETRIEVE " + option + " value does not fit the receiving area");
+        }
+        byte[] padded = new byte[area.length()];
+        java.util.Arrays.fill(padded, context.codePage().space());
+        System.arraycopy(encoded, 0, padded, 0, encoded.length);
+        area.setBytes(padded);
     }
 
     /** 他の task が持つ資源を待てる長さ。task の期限が無ければ null (限りなく待つ)。 */

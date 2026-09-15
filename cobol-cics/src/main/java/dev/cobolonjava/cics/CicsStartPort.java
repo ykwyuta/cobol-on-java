@@ -1,0 +1,74 @@
+package dev.cobolonjava.cics;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+
+/**
+ * START / CANCEL の間隔制御 (暫定判断 P-138)。region の構成が持ち、満了した START の task を起こす。
+ *
+ * <p>返す RESP2 は、START / CANCEL の頁が値を示さないものは 0 とする。
+ */
+public interface CicsStartPort {
+
+    record Result(int response, int response2) {
+    }
+
+    /**
+     * START を登録する。満了すれば task を起こす。
+     *
+     * @return NORMAL、TRANSIDERR (transaction が定義されていない)、IOERR (FROM を持つ START の REQID が未満了の START と重なる)
+     */
+    Result start(Instant expiration, CicsStartData data);
+
+    /** 未満了の START を取り消す。無ければ NOTFND。 */
+    Result cancel(String requestId);
+
+    /** REQID を書かない START のために、区別できる名前を作る。 */
+    String newRequestId();
+
+    /** 間隔制御を構成していない region。START と CANCEL は推測で進まず失敗させる。 */
+    static CicsStartPort none() {
+        return new CicsStartPort() {
+            @Override
+            public Result start(Instant expiration, CicsStartData data) {
+                throw new CicsTaskStateException("START requires a configured interval control port");
+            }
+
+            @Override
+            public Result cancel(String requestId) {
+                throw new CicsTaskStateException("CANCEL requires a configured interval control port");
+            }
+
+            @Override
+            public String newRequestId() {
+                throw new CicsTaskStateException("START requires a configured interval control port");
+            }
+        };
+    }
+
+    /**
+     * 1 つの JVM の中で満了を待ち、task を起こす。
+     *
+     * @param defined  transaction が定義されているか。されていなければ TRANSIDERR
+     * @param launcher 満了した START の task を起こす。START を出した task とは別の thread で呼ぶ
+     */
+    static CicsStartPort inMemory(Clock clock, Predicate<TransId> defined, Consumer<CicsStartData> launcher) {
+        return new InMemoryCicsStarts(clock, defined, launcher);
+    }
+
+    /**
+     * coordinator で task を起こす launcher。端末と COMMAREA を持たない task になる。
+     *
+     * <p>coordinator は region の構成 (この port を含む) から作られるので、作ったあとに渡せるよう Supplier で受ける。
+     */
+    static Consumer<CicsStartData> launching(Supplier<CicsTaskCoordinator> coordinator) {
+        return data -> coordinator.get().launch(new CicsTaskRequest(data.transaction().value(), data.owner(),
+                CicsPayload.empty(), Optional.empty(), new IdempotencyKey("start-" + UUID.randomUUID()),
+                Optional.empty(), Optional.empty(), data.userId(), Optional.of(data)));
+    }
+}

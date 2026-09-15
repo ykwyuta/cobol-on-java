@@ -47,6 +47,15 @@ final class CicsBlockParser {
     private static final Pattern FILE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(READ|WRITE|REWRITE|DELETE|UNLOCK|STARTBR|READNEXT|READPREV|ENDBR|RESETBR)\\b"
                     + "(.*?)END-EXEC\\s*$");
+    /** 間隔制御の START / RETRIEVE / CANCEL。STARTBR は file control の語なので当たらない。 */
+    private static final Pattern INTERVAL_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(START|RETRIEVE|CANCEL)\\b(.*?)END-EXEC\\s*$");
+    /** 間隔制御の命令ごとに、RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
+    private static final List<Set<String>> INTERVAL_OPTIONS = List.of(
+            Set.of("TRANSID", "INTERVAL", "TIME", "AFTER", "AT", "HOURS", "MINUTES", "SECONDS", "FROM", "LENGTH",
+                    "REQID", "RTRANSID", "RTERMID", "QUEUE"),
+            Set.of("INTO", "LENGTH", "RTRANSID", "RTERMID", "QUEUE"),
+            Set.of("REQID"));
     /** 一時記憶・一時データの命令。TS / TD を省いた形は受けない。 */
     private static final Pattern QUEUE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(WRITEQ|READQ|DELETEQ)\\s+(TS|TD)\\b(.*?)END-EXEC\\s*$");
@@ -157,6 +166,10 @@ final class CicsBlockParser {
         Matcher fileCommand = FILE_BLOCK.matcher(source);
         if (fileCommand.matches()) {
             return parseFileCommand(fileCommand.group(1).toUpperCase(Locale.ROOT), fileCommand.group(2));
+        }
+        Matcher intervalCommand = INTERVAL_BLOCK.matcher(source);
+        if (intervalCommand.matches()) {
+            return parseIntervalCommand(intervalCommand.group(1).toUpperCase(Locale.ROOT), intervalCommand.group(2));
         }
         Matcher queueCommand = QUEUE_BLOCK.matcher(source);
         if (queueCommand.matches()) {
@@ -863,6 +876,166 @@ final class CicsBlockParser {
                         item[0], item[1] == null ? -1 : Integer.parseInt(item[1]), numItems, flags));
     }
 
+    /**
+     * START / RETRIEVE / CANCEL を読む (暫定判断 P-138)。
+     *
+     * <p>START の TERMID (端末へ出す task)、USERID、SYSID、PROTECT、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET と WAIT、
+     * REQID の無い CANCEL (POST の取消し) と CANCEL の TRANSID / SYSID は、端末・利用者・遠隔・同期点の設計を
+     * 持たないので名前をつけて断る。
+     */
+    private static Parsed parseIntervalCommand(String command, String source) {
+        int kind = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.indexOf(command);
+        java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
+        Matcher option = SEND_OPTION.matcher(source);
+        int position = 0;
+        while (!source.substring(position).isBlank()) {
+            option.region(position, source.length());
+            if (!option.lookingAt()) {
+                throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            }
+            String name = option.group(1).toUpperCase(Locale.ROOT);
+            if (options.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate " + command + " option: " + name);
+            }
+            options.put(name, new String[] {option.group(2), option.group(3),
+                    option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
+            position = option.end();
+        }
+        for (String name : options.keySet()) {
+            if (!INTERVAL_OPTIONS.get(kind).contains(name) && !Set.of("RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported " + command + " option: " + name);
+            }
+        }
+        String[] transaction = new String[2];
+        int timing = dev.cobolonjava.cics.CicsRuntimeOps.START_INTERVAL;
+        String hhmmss = null;
+        String hours = null;
+        String minutes = null;
+        String seconds = null;
+        String data = null;
+        String lengthName = null;
+        int lengthLiteral = -1;
+        String[] request = new String[2];
+        String[] returnTransaction = new String[2];
+        String[] returnTerminal = new String[2];
+        String[] queue = new String[2];
+        if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_START) {
+            if (!options.containsKey("TRANSID")) {
+                throw new IllegalArgumentException("START requires TRANSID");
+            }
+            transaction = quotedOrName(options.get("TRANSID"), "START TRANSID", 4);
+            long timings = java.util.stream.Stream.of("INTERVAL", "TIME", "AFTER", "AT")
+                    .filter(options::containsKey).count();
+            if (timings > 1) {
+                throw new IllegalArgumentException("START INTERVAL, TIME, AFTER and AT are mutually exclusive");
+            }
+            boolean units = options.containsKey("HOURS") || options.containsKey("MINUTES")
+                    || options.containsKey("SECONDS");
+            fileFlag(options, "AFTER", 0);
+            fileFlag(options, "AT", 0);
+            if (options.containsKey("AFTER") || options.containsKey("AT")) {
+                if (!units) {
+                    throw new IllegalArgumentException("START AFTER and AT require HOURS, MINUTES or SECONDS");
+                }
+                timing = options.containsKey("AFTER") ? dev.cobolonjava.cics.CicsRuntimeOps.START_AFTER
+                        : dev.cobolonjava.cics.CicsRuntimeOps.START_AT;
+                hours = intervalNumber(options.get("HOURS"), "START HOURS");
+                minutes = intervalNumber(options.get("MINUTES"), "START MINUTES");
+                seconds = intervalNumber(options.get("SECONDS"), "START SECONDS");
+            } else if (units) {
+                throw new IllegalArgumentException("START HOURS, MINUTES and SECONDS require AFTER or AT");
+            } else if (options.containsKey("TIME")) {
+                timing = dev.cobolonjava.cics.CicsRuntimeOps.START_TIME;
+                hhmmss = intervalNumber(options.get("TIME"), "START TIME");
+            } else {
+                hhmmss = options.containsKey("INTERVAL") ? intervalNumber(options.get("INTERVAL"), "START INTERVAL")
+                        : "0";
+            }
+            data = sendDataName(options.get("FROM"), "FROM");
+            String[] length = options.get("LENGTH");
+            if (length != null) {
+                if (data == null) {
+                    throw new IllegalArgumentException("START LENGTH requires FROM");
+                }
+                if (length[2] != null) {
+                    lengthName = length[2];
+                } else if (length[1] != null) {
+                    lengthLiteral = Integer.parseInt(length[1]);
+                } else {
+                    throw new IllegalArgumentException("START LENGTH requires an integer literal or a data name");
+                }
+            }
+            request = quotedOrName(options.get("REQID"), "START REQID", 8);
+            returnTransaction = quotedOrName(options.get("RTRANSID"), "START RTRANSID", 4);
+            returnTerminal = quotedOrName(options.get("RTERMID"), "START RTERMID", 4);
+            queue = quotedOrName(options.get("QUEUE"), "START QUEUE", 8);
+        } else if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
+            data = sendDataName(options.get("INTO"), "INTO");
+            String[] length = options.get("LENGTH");
+            if (length != null) {
+                if (data == null) {
+                    throw new IllegalArgumentException("RETRIEVE LENGTH requires INTO");
+                }
+                lengthName = sendDataName(length, "RETRIEVE LENGTH");
+            }
+            returnTransaction[1] = sendDataName(options.get("RTRANSID"), "RTRANSID");
+            returnTerminal[1] = sendDataName(options.get("RTERMID"), "RTERMID");
+            queue[1] = sendDataName(options.get("QUEUE"), "QUEUE");
+            if (data == null && returnTransaction[1] == null && returnTerminal[1] == null && queue[1] == null) {
+                throw new IllegalArgumentException("RETRIEVE requires INTO, RTRANSID, RTERMID or QUEUE");
+            }
+        } else {
+            if (!options.containsKey("REQID")) {
+                throw new IllegalArgumentException("CANCEL requires REQID; cancelling a POST is not supported");
+            }
+            request = quotedOrName(options.get("REQID"), "CANCEL REQID", 8);
+        }
+        String[] noHandle = options.get("NOHANDLE");
+        if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
+            throw new IllegalArgumentException("NOHANDLE does not take a value");
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                null, null, null, null, null, null, null, null,
+                new IntervalSpec(kind, transaction[0], transaction[1], timing, hhmmss, hours, minutes, seconds, data,
+                        lengthName, lengthLiteral, request[0], request[1], returnTransaction[0], returnTransaction[1],
+                        returnTerminal[0], returnTerminal[1], queue[0], queue[1]));
+    }
+
+    /** 引用符つきの名前かデータ名。{定数, データ名} の形で返し、書かれていなければどちらも null。 */
+    private static String[] quotedOrName(String[] value, String option, int max) {
+        if (value == null) {
+            return new String[2];
+        }
+        if (value[0] != null) {
+            if (value[0].isBlank() || value[0].length() > max) {
+                throw new IllegalArgumentException(option + " must be 1 to " + max + " characters: " + value[0]);
+            }
+            return new String[] {value[0], null};
+        }
+        if (value[2] != null) {
+            return new String[] {null, value[2]};
+        }
+        throw new IllegalArgumentException(option + " requires 'name' or a data name");
+    }
+
+    /** 整数定数かデータ名。書かれていなければ null。 */
+    private static String intervalNumber(String[] value, String option) {
+        if (value == null) {
+            return null;
+        }
+        if (value[1] == null && value[2] == null) {
+            throw new IllegalArgumentException(option + " requires an integer literal or a data name");
+        }
+        return value[1] != null ? value[1] : value[2];
+    }
+
     /** 値を持たない option の印。書かれていなければ 0。 */
     private static int fileFlag(java.util.Map<String, String[]> options, String name, int flag) {
         String[] value = options.get(name);
@@ -1402,10 +1575,27 @@ final class CicsBlockParser {
             TerminalSpec terminal,
             FileCommandSpec fileCommand,
             AssociationSpec association,
-            QueueCommandSpec queue) {
+            QueueCommandSpec queue,
+            IntervalSpec intervalCommand) {
         Parsed {
             conditions = List.copyOf(conditions);
             assignments = assignments == null ? List.of() : List.copyOf(assignments);
+        }
+
+        /** 間隔制御の命令でない形。 */
+        Parsed(Statement.CicsOperation operation, String target, String commarea, int length,
+               String response, String response2, boolean noHandle, boolean rollback, boolean cancel,
+               boolean noDump, boolean immediate, Statement.CicsConditionAction conditionAction,
+               List<ConditionSpec> conditions, Statement.CicsHandleStackAction handleStackAction,
+               Statement.CicsAbendHandlerAction abendHandlerAction, String abendHandlerTarget,
+               List<AssignSpec> assignments, String programData, TimeSpec time, DelaySpec delay,
+               SendSpec send, ReceiveSpec receive, String deedit, ContainerSpec container, EnqueueSpec enqueue,
+               TerminalSpec terminal, FileCommandSpec fileCommand, AssociationSpec association,
+               QueueCommandSpec queue) {
+            this(operation, target, commarea, length, response, response2, noHandle, rollback, cancel,
+                    noDump, immediate, conditionAction, conditions, handleStackAction, abendHandlerAction,
+                    abendHandlerTarget, assignments, programData, time, delay, send, receive, deedit,
+                    container, enqueue, terminal, fileCommand, association, queue, null);
         }
 
         /** キューの命令でない形。 */
@@ -1450,6 +1640,18 @@ final class CicsBlockParser {
     record FileCommandSpec(int kind, String fileLiteral, String fileData, String data, String length,
                            int lengthLiteral, String ridfld, String keyLength, int keyLengthLiteral,
                            String reqid, int reqidLiteral, String numrec, int flags) {
+    }
+
+    /**
+     * START / RETRIEVE / CANCEL の、データ名を解決する前の形。名前の option は定数かデータ名のどちらか。
+     * hhmmss と HOURS / MINUTES / SECONDS は整数定数かデータ名。{@code data} は FROM か INTO。
+     * RETRIEVE の受取域 (RTRANSID / RTERMID / QUEUE) は Data の側に入る。
+     */
+    record IntervalSpec(int kind, String transactionLiteral, String transactionData, int timing, String hhmmss,
+                        String hours, String minutes, String seconds, String data, String length, int lengthLiteral,
+                        String requestLiteral, String requestData, String returnTransactionLiteral,
+                        String returnTransactionData, String returnTerminalLiteral, String returnTerminalData,
+                        String queueLiteral, String queueData) {
     }
 
     /**

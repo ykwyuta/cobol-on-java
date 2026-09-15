@@ -1017,6 +1017,11 @@ public final class ProcedureBuilder {
             java.util.stream.Stream.of(association.applid(), association.userid(), association.facilityName(),
                     association.networkId(), association.facilityType()).filter(java.util.Objects::nonNull)
                     .forEach(out::add);
+        } else if (statement instanceof Statement.CicsIntervalCommand interval
+                && interval.kind() == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
+            java.util.stream.Stream.of(interval.data(), interval.lengthArea(), interval.returnTransactionData(),
+                    interval.returnTerminalData(), interval.queueData()).filter(java.util.Objects::nonNull)
+                    .forEach(out::add);
         } else if (statement instanceof Statement.CicsQueueCommand queue) {
             int kind = queue.kind();
             if (kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TS
@@ -1818,6 +1823,9 @@ public final class ProcedureBuilder {
             if (parsed.queue() != null) {
                 return cicsQueueStatement(parsed, origin);
             }
+            if (parsed.intervalCommand() != null) {
+                return cicsIntervalStatement(parsed, origin);
+            }
             if (parsed.terminal() != null) {
                 CicsBlockParser.TerminalSpec spec = parsed.terminal();
                 String command = spec.set() ? "SET TERMINAL" : "INQUIRE TERMINAL";
@@ -1962,6 +1970,84 @@ public final class ProcedureBuilder {
     }
 
     /** RESP / RESP2 があれば、command のあとで EIBRESP / EIBRESP2 を受取項目へ転記する。 */
+    /** START / RETRIEVE / CANCEL の域を解決する (暫定判断 P-138)。 */
+    private Statement cicsIntervalStatement(CicsBlockParser.Parsed parsed, Origin origin) {
+        CicsBlockParser.IntervalSpec spec = parsed.intervalCommand();
+        int kind = spec.kind();
+        String label = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.get(kind);
+        boolean retrieve = kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE;
+        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE
+        String[] names = {spec.transactionData(), spec.requestData(), spec.returnTransactionData(),
+            spec.returnTerminalData(), spec.queueData()};
+        int[] lengths = {4, 8, 4, 4, 8};
+        String[] options = {"TRANSID", "REQID", "RTRANSID", "RTERMID", "QUEUE"};
+        DataReference[] areas = new DataReference[names.length];
+        for (int i = 0; i < names.length; i++) {
+            if (names[i] == null) {
+                continue;
+            }
+            areas[i] = resolver.resolveName(names[i], origin);
+            if (areas[i] == null) {
+                return null;
+            }
+            if (DataCategory.of(areas[i]) != DataCategory.ALPHANUMERIC || areas[i].constantLength().isEmpty()
+                    || areas[i].constantLength().getAsInt() != lengths[i]) {
+                throw new IllegalArgumentException(label + " " + options[i] + " data area must be a " + lengths[i]
+                        + "-byte alphanumeric item");
+            }
+        }
+        Operand[] times = new Operand[4];
+        String[] timeValues = {spec.hhmmss(), spec.hours(), spec.minutes(), spec.seconds()};
+        String[] timeOptions = {"INTERVAL / TIME", "HOURS", "MINUTES", "SECONDS"};
+        for (int i = 0; i < timeValues.length; i++) {
+            if (timeValues[i] == null) {
+                continue;
+            }
+            if (timeValues[i].chars().allMatch(Character::isDigit)) {
+                times[i] = new Operand.Literal(new LiteralValue.Number(
+                        dev.cobolonjava.runtime.decimal.Decimal.parse(timeValues[i]), timeValues[i]));
+                continue;
+            }
+            DataReference reference = resolver.resolveName(timeValues[i], origin);
+            if (reference == null) {
+                return null;
+            }
+            if (!DataCategory.of(reference).isNumeric()) {
+                throw new IllegalArgumentException(label + " " + timeOptions[i] + " must be numeric");
+            }
+            times[i] = new Operand.Reference(reference);
+        }
+        DataReference data = null;
+        if (spec.data() != null) {
+            data = resolver.resolveName(spec.data(), origin);
+            if (data == null) {
+                return null;
+            }
+            requireRecordArea(data, label + (retrieve ? " INTO" : " FROM"));
+        }
+        DataReference length = null;
+        if (spec.length() != null) {
+            length = resolver.resolveName(spec.length(), origin);
+            if (length == null) {
+                return null;
+            }
+            Usage usage = length.item().usage() == null ? Usage.DISPLAY : length.item().usage();
+            if ((usage != Usage.COMP && usage != Usage.COMP_5) || length.item().length() != Short.BYTES
+                    || !DataCategory.of(length).isNumeric()) {
+                throw new IllegalArgumentException(label + " LENGTH must be a halfword binary data area");
+            }
+        }
+        if (data != null && spec.lengthLiteral() > data.constantLength().getAsInt()) {
+            throw new IllegalArgumentException(label + " LENGTH " + spec.lengthLiteral()
+                    + " exceeds the FROM data area of " + data.constantLength().getAsInt() + " bytes");
+        }
+        return withCicsResponse(new Statement.CicsIntervalCommand(kind, spec.transactionLiteral(), areas[0],
+                spec.timing(), times[0], times[1], times[2], times[3], data, length, spec.lengthLiteral(),
+                spec.requestLiteral(), areas[1], spec.returnTransactionLiteral(), areas[2],
+                spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4],
+                parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+    }
+
     /** 一時記憶・一時データの命令の域を解決する (暫定判断 P-137)。 */
     private Statement cicsQueueStatement(CicsBlockParser.Parsed parsed, Origin origin) {
         CicsBlockParser.QueueCommandSpec spec = parsed.queue();

@@ -4188,3 +4188,34 @@ file の状態や副索引を持たないので返さない。性能は測って
 
 **解消条件**: 実機で `QUEUE` と `QNAME` の名前の同一性、`ITEM` のあとの `NEXT`、`ITEM` / `NEXT` を省いた既定、RESP2 を採る。
 複数の JVM で分け合う実装と、回復可能なキューを UOW と合わせて設計する。
+
+## P-138 START は構成した間隔制御で端末を持たない task を起こし、RETRIEVE はそのデータを 1 度だけ読む
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsStartPort`、`InMemoryCicsStarts`、`CicsStartData`、`CicsRuntimeOps.startCondition` / `retrieveCondition` / `cancelCondition`、`CicsTaskAutoConfiguration.cobolStartPort` |
+| 関連要件 | FR-080、設計 82 §6 |
+
+**暫定の扱い**:
+
+- EIBFN は CICS TS 5.6 の表 (START X'1008'、RETRIEVE X'100A'、CANCEL X'100C')。RESP は TRANSIDERR 28 (6.x の表)、
+  ENDDATA 29 と ENVDEFERR 56 (RETRIEVE の頁)。INVREQ の RESP2 4 / 5 / 6 は START の頁による。ほかの RESP2 は 0
+- region の構成の既定では START と CANCEL を失敗させる。task を起こす先を知らないのに NORMAL を返すと、起きない task を
+  起きたことにしてしまう
+- TIME / AT は task の地方時の時刻である。6 時間前までは直ちに始め (「Expiration times」の頁)、それより前は翌日の同じ時刻とした。
+  後者は頁に書かれておらず、時刻として読んだ推定である
+- REQID を書かなければ `JV` と 36 進 6 桁の名前を作り EIBREQID に置く。JVM をまたいだ一意性は無い
+- 起こす task は端末と COMMAREA を持たず、START を出した task と同じ owner と user ID で動く
+- RETRIEVE は START で起きた task だけが使える。START が書かなかった option を求めれば ENVDEFERR とし、INTO と FROM も
+  対として扱った。START で起きていない task の RETRIEVE は失敗させる
+- FROM を持つ START の REQID が未満了の START と重なれば IOERR (START の頁)。FROM の無い形は条件が無いので失敗させる
+- EIBDS と EIBREQID を、プログラムから読める EIB の項目に足した
+- TERMID、USERID、SYSID、PROTECT、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET / WAIT、REQID の無い CANCEL は断る
+
+**どこがずれうるか**: 実機の START は REQID の名前で一時記憶にデータを置き、region を再起動しても残せる。ここは JVM が止まれば
+消える。端末へ出す START (TERMID) が無いので、疑似会話の端末に次の task を起こす資産は動かない。PROTECT が無いので、
+同期点に結び付けた START も断る。
+
+**解消条件**: 実機で過ぎた時刻の START、ENVDEFERR の対 (INTO と FROM)、生成される REQID の形を採る。TERMID を端末の
+adapter と合わせて設計する。PROTECT を task の境界の commit と合わせて入れる。

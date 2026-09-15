@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | file control (§3)、一時記憶 (§4)、一時データ (§5) を実装。間隔制御の開始は後続の節で足す |
+| 状態 | file control (§3)、一時記憶 (§4)、一時データ (§5)、START / RETRIEVE / CANCEL (§6) を実装 |
 | 対応要件 | FR-080, FR-101、設計 77 §4、設計 79 |
 | 検証レベル | V1。実機の CICS と突き合わせていない |
 
@@ -146,3 +146,34 @@ Bank-of-Z の CICS 資産 32 本は、この文書の命令をほとんど使わ
 | DELETEQ TD | 0806 | QIDERR 44 |
 
 断るもの: 区画外 (extrapartition) のキュー、`SYSID`、`NOSUSPEND` (QBUSY)、`SET`。DISABLED はキューの状態を持たないので返さない。
+
+## 6. 間隔制御の START / RETRIEVE / CANCEL
+
+`CicsStartPort`。region の構成の既定は `none()` で、START と CANCEL は失敗する。task を起こす先 (coordinator) を
+region の構成は知らないからである。`inMemory(clock, defined, launcher)` が 1 つの JVM の中で満了を待ち、
+`launching(coordinator)` が coordinator で task を起こす。Spring Boot では `CicsTaskAutoConfiguration` がこの組み合わせを
+bean にし、利用者が `CicsEnvironment.withStarts` で region の構成へ入れる。
+
+| 項目 | 決めごと | 出典 |
+| --- | --- | --- |
+| INTERVAL / AFTER | 今からの間隔。INTERVAL を書かなければ INTERVAL(0) で直ちに | START の頁、「Expiration times」 |
+| TIME / AT | task の地方時 (`hostZone`) の今日のその時刻。hh が 23 を越えれば翌日以降。地方時が無ければ失敗させる | 「Expiration times」 |
+| 過ぎた時刻 | 6 時間前までなら直ちに。それより前は翌日のその時刻とする | 前半は「Expiration times」。後半は頁が明示せず、時刻として読んだ推定 |
+| 値の範囲 | 時 0〜99、分・秒 0〜59。AFTER / AT で単位を 1 つだけ書けば MINUTES 5999、SECONDS 359999 まで。越えれば INVREQ 4 / 5 / 6 | START の頁 |
+| REQID | 書かなければ `JV` と 36 進 6 桁の名前を作り、EIBREQID に置く。形は実機と合わせていない (利用者は名前として持つだけ) | START の頁 (EIBREQID に置くこと) |
+| 起こす task | 端末と COMMAREA を持たない。START を出した task と同じ owner と user ID で、別の thread から coordinator で起こす。起こした task の失敗は記録するだけ | START の頁 (USERID を書かなければ出した task の user ID) |
+| RETRIEVE | START で起きた task だけ。1 度読めば次は ENDDATA。START が書かなかった option (FROM の無い START への INTO を含む) は ENVDEFERR で、読んだことにしない。長いデータは切り詰めて LENGERR | RETRIEVE の頁 |
+| CANCEL | 未満了の START を REQID で取り消す。無ければ NOTFND | CANCEL の頁 |
+| 回復 | 未満了の START は JVM が止まれば消える | — |
+
+| 命令 | EIBFN | 返す条件 |
+| --- | --- | --- |
+| START | 1008 | INVREQ 16/4・5・6、LENGERR 22 (LENGTH が 0 以下)、TRANSIDERR 28、IOERR 17 (FROM を持つ START の REQID が未満了の START と重なる) |
+| RETRIEVE | 100A | ENDDATA 29、ENVDEFERR 56、LENGERR 22 |
+| CANCEL | 100C | NOTFND 13 |
+
+RESP2 は、INVREQ の 4 / 5 / 6 のほかは頁が示さないので 0 とする。
+
+断るもの: START の `TERMID` (端末へ出す task)、`USERID`、`SYSID`、`PROTECT` (同期点まで遅らせる)、`NOCHECK`、`CHANNEL`、
+`ATTACH`、RETRIEVE の `SET` と `WAIT`、`REQID` の無い CANCEL (POST の取消し)、CANCEL の `TRANSID` / `SYSID`。
+FROM の無い START の REQID が重なる形と、START で起きていない task の RETRIEVE は、条件が書かれていないので失敗させる。

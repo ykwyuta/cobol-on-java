@@ -1,9 +1,11 @@
 package dev.cobolonjava.spring.boot4.cics;
 
+import dev.cobolonjava.cics.CicsStartPort;
 import dev.cobolonjava.cics.CicsTaskBoundaryFactory;
 import dev.cobolonjava.cics.CicsTaskCoordinator;
 import dev.cobolonjava.cics.CicsTaskPolicy;
 import dev.cobolonjava.cics.CicsTaskProgramPort;
+import dev.cobolonjava.cics.CicsTransactionDefinition;
 import dev.cobolonjava.cics.CicsTransactionRegistry;
 import dev.cobolonjava.cics.ConversationId;
 import dev.cobolonjava.cics.ConversationIdFactory;
@@ -12,6 +14,7 @@ import dev.cobolonjava.cics.InMemoryConversationStore;
 import dev.cobolonjava.cics.NonRecoverableTaskBoundaryFactory;
 import java.time.Clock;
 import java.time.Duration;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -57,6 +60,22 @@ public class CicsTaskAutoConfiguration {
     @ConditionalOnMissingBean(name = "cobolCicsClock")
     Clock cobolCicsClock() {
         return Clock.systemUTC();
+    }
+
+    /**
+     * START / CANCEL の間隔制御 (暫定判断 P-138)。1 つの JVM の中で満了を待ち、この coordinator で task を起こす。
+     *
+     * <p>coordinator は program の実行 (その中の region の構成) から作られるので、task を起こすときに取り出す。
+     * region の構成 ({@code CicsEnvironment.withStarts}) へ入れるのは利用者である。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    CicsStartPort cobolStartPort(CicsTransactionRegistry transactions,
+                                 ObjectProvider<CicsTaskCoordinator> coordinator, Clock cobolCicsClock) {
+        return CicsStartPort.inMemory(cobolCicsClock, transId -> {
+            CicsTransactionDefinition definition = transactions.definitions().get(transId);
+            return definition != null && definition.enabled();
+        }, CicsStartPort.launching(coordinator::getObject));
     }
 
     @Bean

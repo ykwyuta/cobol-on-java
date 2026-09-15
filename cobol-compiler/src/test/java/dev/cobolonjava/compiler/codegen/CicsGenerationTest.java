@@ -296,6 +296,63 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLがSTARTとCANCELを出し、起こされたtaskのRETRIEVEがFROMとRTRANSIDを読む")
+    void runsStartRetrieveAndCancel() throws InterruptedException {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> issuer = compile(loader, "STARTPGM", List.of(
+                "MOVE '000042' TO WS-QTIME",
+                "EXEC CICS START TRANSID('TX02') FROM(WS-GRP) REQID('REQ1') RTRANSID('TX01') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'S' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS START TRANSID('NOPE') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(TRANSIDERR) MOVE 'T' TO LK-AREA(2:1) END-IF",
+                "EXEC CICS START TRANSID('TX02') AFTER MINUTES(30) REQID('LATER') END-EXEC",
+                "EXEC CICS CANCEL REQID('LATER') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'C' TO LK-AREA(3:1) END-IF",
+                "EXEC CICS CANCEL REQID('LATER') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NOTFND) MOVE 'N' TO LK-AREA(4:1) END-IF"));
+        Supplier<CobolProgram> started = compile(loader, "RETRPGM", List.of(
+                "MOVE ZERO TO WS-QTIME",
+                "MOVE 6 TO WS-LEN",
+                "EXEC CICS RETRIEVE INTO(WS-GRP) LENGTH(WS-LEN) RTRANSID(WS-ABCODE) END-EXEC",
+                "IF WS-QTIME = 42 AND WS-ABCODE = 'TX01' MOVE 'R' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS RETRIEVE INTO(WS-GRP) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(ENDDATA) MOVE 'E' TO LK-AREA(2:1) END-IF"));
+        java.util.concurrent.BlockingQueue<dev.cobolonjava.cics.CicsStartData> launched =
+                new java.util.concurrent.LinkedBlockingQueue<>();
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withStarts(dev.cobolonjava.cics.CicsStartPort.inMemory(java.time.Clock.systemUTC(),
+                        id -> id.value().equals("TX02"), launched::add));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("STARTPGM", issuer).cobolProgram("RETRPGM", started).build();
+        CobolCicsTaskProgram programs = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment);
+
+        TaskCompletion issued = programs.execute(new CicsTransactionDefinition(TransId.of("TX01"),
+                        ProgramId.of("STARTPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (action, ignored) -> { });
+        assertEquals("STCN", CodePages.DEFAULT.decode(issued.payload().commarea()));
+
+        dev.cobolonjava.cics.CicsStartData data = launched.poll(5, java.util.concurrent.TimeUnit.SECONDS);
+        TaskCompletion retrieved = programs.execute(new CicsTransactionDefinition(TransId.of("TX02"),
+                        ProgramId.of("RETRPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                new CicsTaskContext(new CicsTaskId("task_started"), TransId.of("TX02"), "compiler-test",
+                        Instant.parse("2026-09-10T03:00:00Z")).withStart(Optional.of(data)),
+                (action, ignored) -> { });
+        assertEquals("REIT", CodePages.DEFAULT.decode(retrieved.payload().commarea()));
+
+        assertRejected("EXEC CICS START TRANSID('TX02') PROTECT END-EXEC", "unsupported START option: PROTECT");
+        assertRejected("EXEC CICS START TRANSID('TX02') TERMID('T001') END-EXEC", "unsupported START option: TERMID");
+        assertRejected("EXEC CICS START INTERVAL(0) END-EXEC", "START requires TRANSID");
+        assertRejected("EXEC CICS START TRANSID('TX02') INTERVAL(0) TIME(0) END-EXEC", "mutually exclusive");
+        assertRejected("EXEC CICS START TRANSID('TX02') HOURS(1) END-EXEC", "require AFTER or AT");
+        assertRejected("EXEC CICS CANCEL END-EXEC", "CANCEL requires REQID");
+        assertRejected("EXEC CICS RETRIEVE INTO(WS-GRP) WAIT END-EXEC", "unsupported RETRIEVE option: WAIT");
+        assertRejected("EXEC CICS RETRIEVE RTRANSID(WS-PGM) END-EXEC",
+                "RTRANSID data area must be a 4-byte alphanumeric item");
+    }
+
+    @Test
     @DisplayName("file controlの命令は定義の無いfileでFILENOTFOUNDを返し、表せないoptionと形は名前をつけて断る")
     void rejectsUnsupportedFileControlForms() {
         GeneratedLoader loader = new GeneratedLoader();

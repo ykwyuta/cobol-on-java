@@ -775,6 +775,8 @@ public final class ProgramGenerator {
                 planCicsFileCommand(fileCommand, body);
             } else if (statement instanceof Statement.CicsQueueCommand queueCommand) {
                 planCicsQueueCommand(queueCommand, body);
+            } else if (statement instanceof Statement.CicsIntervalCommand intervalCommand) {
+                planCicsIntervalCommand(intervalCommand, body);
             } else if (statement instanceof Statement.CicsInquireAssociation association) {
                 planCicsInquireAssociation(association, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
@@ -1105,6 +1107,95 @@ public final class ProgramGenerator {
             String view = "L" + DATA_VIEW + ";";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "inquireAssociationCondition",
                     "(" + CONTEXT + view + view + view + view + view + "Z)I", false);
+            emitCicsConditionTransfer();
+        });
+    }
+
+    private void planCicsIntervalCommand(Statement.CicsIntervalCommand statement, List<Runnable> body) {
+        String view = "L" + DATA_VIEW + ";";
+        String name = "Ljava/lang/String;[B";
+        int suppress = statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0;
+        if (statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_CANCEL) {
+            Runnable request = planAreaBytes(statement.requestData(), statement.origin());
+            if (request == null) {
+                return;
+            }
+            body.add(() -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                pushNullableString(statement.requestLiteral());
+                request.run();
+                run.visitInsn(suppress);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "cancelCondition",
+                        "(" + CONTEXT + name + "Z)I", false);
+                emitCicsConditionTransfer();
+            });
+            return;
+        }
+        List<Runnable> views = new ArrayList<>();
+        List<DataReference> areas = statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE
+                ? java.util.Arrays.asList(statement.data(), statement.lengthArea(), statement.returnTransactionData(),
+                        statement.returnTerminalData(), statement.queueData())
+                : java.util.Arrays.asList(statement.data(), statement.lengthArea());
+        for (DataReference area : areas) {
+            Runnable planned = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                    : planWholeView(area, statement.origin());
+            if (planned == null) {
+                return;
+            }
+            views.add(planned);
+        }
+        if (statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
+            body.add(() -> {
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                views.forEach(Runnable::run);
+                run.visitInsn(suppress);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "retrieveCondition",
+                        "(" + CONTEXT + view + view + view + view + view + "Z)I", false);
+                emitCicsConditionTransfer();
+            });
+            return;
+        }
+        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE の byte 列
+        List<Runnable> names = new ArrayList<>();
+        for (DataReference area : java.util.Arrays.asList(statement.transactionData(), statement.requestData(),
+                statement.returnTransactionData(), statement.returnTerminalData(), statement.queueData())) {
+            Runnable bytes = planAreaBytes(area, statement.origin());
+            if (bytes == null) {
+                return;
+            }
+            names.add(bytes);
+        }
+        List<Runnable> times = new ArrayList<>();
+        for (Operand operand : java.util.Arrays.asList(statement.hhmmss(), statement.hours(), statement.minutes(),
+                statement.seconds())) {
+            Runnable value = operand == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                    : planSourceDecimal(operand, statement.origin());
+            if (value == null) {
+                return;
+            }
+            times.add(value);
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            pushNullableString(statement.transactionLiteral());
+            names.get(0).run();
+            push(statement.timing());
+            times.forEach(Runnable::run);
+            views.get(0).run();
+            views.get(1).run();
+            push(statement.lengthLiteral());
+            pushNullableString(statement.requestLiteral());
+            names.get(1).run();
+            pushNullableString(statement.returnTransactionLiteral());
+            names.get(2).run();
+            pushNullableString(statement.returnTerminalLiteral());
+            names.get(3).run();
+            pushNullableString(statement.queueLiteral());
+            names.get(4).run();
+            run.visitInsn(suppress);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "startCondition",
+                    "(" + CONTEXT + name + "I" + DECIMAL + DECIMAL + DECIMAL + DECIMAL + view + view + "I"
+                            + name + name + name + name + "Z)I", false);
             emitCicsConditionTransfer();
         });
     }

@@ -37,6 +37,9 @@ public final class CicsEib {
     /** file control が指した file の名前。EIBRCODE の直後の 8 byte である。 */
     public static final int EIBDS_OFFSET = 0x23;
     public static final int EIBDS_LENGTH = 8;
+    /** START が作った REQID。EIBDS の直後の 8 byte である。 */
+    public static final int EIBREQID_OFFSET = 0x2B;
+    public static final int EIBREQID_LENGTH = 8;
     public static final int EIBRESP_OFFSET = 0x4C;
     public static final int EIBRESP_LENGTH = 4;
     public static final int EIBRESP2_OFFSET = 0x50;
@@ -87,6 +90,18 @@ public final class CicsEib {
         }
         System.arraycopy(encoded, 0, name, 0, encoded.length);
         storage.view(EIBDS_OFFSET, EIBDS_LENGTH).setBytes(name);
+    }
+
+    /** REQID を書かない START のために CICS が作った名前を EIBREQID に置く。8 文字に空白を詰める。 */
+    public void setRequestId(String requestId, CodePage codePage) {
+        byte[] name = new byte[EIBREQID_LENGTH];
+        Arrays.fill(name, codePage.space());
+        byte[] encoded = codePage.encode(Objects.requireNonNull(requestId, "requestId"));
+        if (encoded.length > EIBREQID_LENGTH) {
+            throw new IllegalArgumentException("request ID exceeds EIBREQID: " + requestId);
+        }
+        System.arraycopy(encoded, 0, name, 0, encoded.length);
+        storage.view(EIBREQID_OFFSET, EIBREQID_LENGTH).setBytes(name);
     }
 
     /** 端末入力の AID と cursor 位置を置く。 */
@@ -151,16 +166,19 @@ public final class CicsEib {
     /** EIBRCODE を binary zero にする condition と、それが起きてよい EIBFN の群 (上位 byte)。 */
     private static final java.util.Map<Integer, java.util.Set<Integer>> ZERO_RCODE_GROUPS = java.util.Map.ofEntries(
             java.util.Map.entry(CicsResponseCode.FILENOTFOUND, java.util.Set.of(0x0600)),
-            java.util.Map.entry(CicsResponseCode.NOTFND, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.NOTFND, java.util.Set.of(0x0600, 0x1000)),
+            java.util.Map.entry(CicsResponseCode.TRANSIDERR, java.util.Set.of(0x1000)),
+            java.util.Map.entry(CicsResponseCode.ENDDATA, java.util.Set.of(0x1000)),
+            java.util.Map.entry(CicsResponseCode.ENVDEFERR, java.util.Set.of(0x1000)),
             java.util.Map.entry(CicsResponseCode.DUPREC, java.util.Set.of(0x0600)),
-            java.util.Map.entry(CicsResponseCode.INVREQ, java.util.Set.of(0x0600, 0x0A00)),
+            java.util.Map.entry(CicsResponseCode.INVREQ, java.util.Set.of(0x0600, 0x0A00, 0x1000)),
             java.util.Map.entry(CicsResponseCode.QIDERR, java.util.Set.of(0x0800, 0x0A00)),
             java.util.Map.entry(CicsResponseCode.QZERO, java.util.Set.of(0x0800)),
             java.util.Map.entry(CicsResponseCode.ITEMERR, java.util.Set.of(0x0A00)),
-            java.util.Map.entry(CicsResponseCode.IOERR, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.IOERR, java.util.Set.of(0x0600, 0x1000)),
             java.util.Map.entry(CicsResponseCode.NOSPACE, java.util.Set.of(0x0600)),
             java.util.Map.entry(CicsResponseCode.ENDFILE, java.util.Set.of(0x0600)),
-            java.util.Map.entry(CicsResponseCode.LENGERR, java.util.Set.of(0x0600, 0x0800, 0x0A00, 0x3400)),
+            java.util.Map.entry(CicsResponseCode.LENGERR, java.util.Set.of(0x0600, 0x0800, 0x0A00, 0x1000, 0x3400)),
             java.util.Map.entry(CicsResponseCode.ENQBUSY, java.util.Set.of(0x1200)),
             java.util.Map.entry(CicsResponseCode.CONTAINERERR, java.util.Set.of(0x3400)),
             java.util.Map.entry(CicsResponseCode.CHANNELERR, java.util.Set.of(0x3400)));

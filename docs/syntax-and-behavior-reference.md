@@ -552,16 +552,20 @@ EXEC CICS DELETEQ TS (QUEUE(名前) | QNAME(名前)) END-EXEC
 EXEC CICS WRITEQ TD QUEUE(名前) FROM(域) [LENGTH(n | 項目)] END-EXEC
 EXEC CICS READQ TD QUEUE(名前) INTO(域) [LENGTH(S9(4) COMP項目)] END-EXEC
 EXEC CICS DELETEQ TD QUEUE(名前) END-EXEC
+EXEC CICS START TRANSID(名前) [INTERVAL(hhmmss) | TIME(hhmmss) | (AFTER | AT) [HOURS(n)] [MINUTES(n)] [SECONDS(n)]] [FROM(域) [LENGTH(n | 項目)]] [REQID(名前)] [RTRANSID(名前)] [RTERMID(名前)] [QUEUE(名前)] END-EXEC
+EXEC CICS RETRIEVE [INTO(域) [LENGTH(S9(4) COMP項目)]] [RTRANSID(X(4)項目)] [RTERMID(X(4)項目)] [QUEUE(X(8)項目)] END-EXEC
+EXEC CICS CANCEL REQID(名前) END-EXEC
 ```
 - **振る舞い**:
   - `DFHEIBLK` (EIB: `EIBTRNID`, `EIBCALEN`, `EIBFN`, `EIBRCODE`, `EIBRESP`, `EIBRESP2`) の各フィールドを CICS コマンド実行の都度更新します。
-  - `EIBTIME` / `EIBDATE` / `EIBTASKN` / `EIBTRMID` / `EIBCPOSN` / `EIBAID` は読み取り専用で参照できます。値は task 文脈に task 番号・地方時がある場合だけ設定し、出どころの無い field は binary zero のままです (暫定判断 P-113)。
+  - `EIBTIME` / `EIBDATE` / `EIBTASKN` / `EIBTRMID` / `EIBCPOSN` / `EIBAID` / `EIBDS` / `EIBREQID` は読み取り専用で参照できます。値は task 文脈に task 番号・地方時がある場合だけ設定し、出どころの無い field は binary zero のままです (暫定判断 P-113)。
   - `ASSIGN PROGRAM` は現在の LINK level で CICS が起動した program (初期 program、LINK 先、XCTL 先) の名前を返します。COBOL の `CALL` で呼んだ副 program の名前にはなりません。`ASSIGN APPLID` は region に構成した APPLID を返し、構成が無ければ実行時に失敗します (設計 79 §5)。
   - `RETURN TRANSID(...) IMMEDIATE` は、次の task を端末入力なしで始める指定を task 結果 (`CicsTaskReply.immediateNext`) に残します。次の task を起動するのは transport adapter です。
   - `BIF DEEDIT` は項目から数字以外を除き、数字を右へ詰めて左を `0` で埋めます。末尾が `-` / `CR` なら右端のゾーンを負にします (暫定判断 P-124)。
   - `ABEND ABCODE(項目)` は 4 byte の英数字項目の値を実行時に読んで ABEND コードにします。
   - file control (`READ` / `WRITE` / `REWRITE` / `DELETE` / `UNLOCK` と browse) は、region に定義した KSDS / RRDS (固定長か可変長) を、バッチと同じデータセットとして読み書きします。返す条件は公開文書に RESP2 の書かれたものだけで、書かれていない形 (鍵を変える `REWRITE`、固定長の record を違う長さで読む形など) は失敗させます。`READ UPDATE` で得た record は `REWRITE` / `DELETE` / `UNLOCK`、`SYNCPOINT`、task の終わりで返し、他の task は期限まで待ちます。file は回復不能として扱います (設計 82 §3、暫定判断 P-131、P-136)。
   - 一時記憶のキュー (`WRITEQ` / `READQ` / `DELETEQ TS`) は定義を要らず、region の中で task どうしが分け合います。`READQ TS NEXT` は直前に読まれた item の次を読み、終わりは `ITEMERR` です。一時データのキュー (`TD`) は region で定義した区画内のキューだけで、先に書いた record から取り出し、空なら `QZERO` です。どちらも回復と遠隔のキューは持ちません (設計 82 §4・§5、暫定判断 P-137)。
+  - `START` は region に構成した間隔制御 (`CicsStartPort`) が満了を待ち、端末と COMMAREA を持たない task を起こします。構成が無ければ失敗します。`TIME` / `AT` は task の地方時の時刻で、6 時間前までなら直ちに始めます。起こされた task の `RETRIEVE` は `FROM` のデータと `RTRANSID` / `RTERMID` / `QUEUE` を 1 度だけ読み、次は `ENDDATA` です。`CANCEL REQID` は未満了の `START` を取り消します。`TERMID`、`PROTECT`、`USERID` は未対応です (設計 82 §6、暫定判断 P-138)。
   - `GET` / `PUT CONTAINER` は task 内の channel に container を置き、読みます。GET でデータが受取域より長ければ入る分だけ写して `LENGERR`、container が無ければ `CONTAINERERR`、channel が無ければ `CHANNELERR` です。変換 option (`DATATYPE` 等) は未対応です (設計 79 §9、暫定判断 P-125)。
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。

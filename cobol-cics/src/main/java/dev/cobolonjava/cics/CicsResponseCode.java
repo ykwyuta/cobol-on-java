@@ -34,6 +34,12 @@ public final class CicsResponseCode {
     public static final int QZERO = 23;
     public static final int ITEMERR = 26;
     public static final int QIDERR = 44;
+    /**
+     * 間隔制御の condition (暫定判断 P-138)。TRANSIDERR は 6.x の表、ENDDATA と ENVDEFERR は RETRIEVE の頁の数による。
+     */
+    public static final int TRANSIDERR = 28;
+    public static final int ENDDATA = 29;
+    public static final int ENVDEFERR = 56;
     /** RECEIVE MAPで送られたfieldが無い。 */
     public static final int MAPFAIL = 36;
     /** ENQの資源を他のtaskが持っていて、待たない指定だった。 */
@@ -69,6 +75,9 @@ public final class CicsResponseCode {
             case "QZERO" -> QZERO;
             case "ITEMERR" -> ITEMERR;
             case "QIDERR" -> QIDERR;
+            case "TRANSIDERR" -> TRANSIDERR;
+            case "ENDDATA" -> ENDDATA;
+            case "ENVDEFERR" -> ENVDEFERR;
             case "ENQBUSY" -> ENQBUSY;
             case "CONTAINERERR" -> CONTAINERERR;
             case "CHANNELERR" -> CHANNELERR;
@@ -97,6 +106,10 @@ public final class CicsResponseCode {
             case "QZERO" -> QZERO;
             case "ITEMERR" -> ITEMERR;
             case "QIDERR" -> QIDERR;
+            // 間隔制御が返しうる condition (暫定判断 P-138)
+            case "TRANSIDERR" -> TRANSIDERR;
+            case "ENDDATA" -> ENDDATA;
+            case "ENVDEFERR" -> ENVDEFERR;
             case "ERROR" -> ERROR_HANDLER_KEY;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS handler condition: " + normalized);

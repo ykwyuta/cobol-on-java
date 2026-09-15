@@ -10,6 +10,7 @@ import java.util.Optional;
  * @param terminalInput 端末から届いたAID、cursor、変更field。直前の画面との照合はRECEIVE MAPが行う
  * @param terminalId    要求を出した端末の名前 (EIBTRMID)。adapterが利用者の端末ごとに決める
  * @param userId        要求を出した利用者のCICS user ID。adapterが認証から決める
+ * @param start         taskを起こすSTARTが渡すもの。STARTで起こすのでなければ空
  */
 public record CicsTaskRequest(
         String transactionId,
@@ -19,7 +20,8 @@ public record CicsTaskRequest(
         IdempotencyKey idempotencyKey,
         Optional<BmsTerminalInput> terminalInput,
         Optional<String> terminalId,
-        Optional<String> userId) {
+        Optional<String> userId,
+        Optional<CicsStartData> start) {
 
     public CicsTaskRequest {
         Objects.requireNonNull(transactionId, "transactionId");
@@ -30,6 +32,15 @@ public record CicsTaskRequest(
         Objects.requireNonNull(terminalInput, "terminalInput");
         Objects.requireNonNull(terminalId, "terminalId");
         Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(start, "start");
+    }
+
+    public CicsTaskRequest(String transactionId, String owner, CicsPayload payload,
+                           Optional<ConversationReference> conversation, IdempotencyKey idempotencyKey,
+                           Optional<BmsTerminalInput> terminalInput, Optional<String> terminalId,
+                           Optional<String> userId) {
+        this(transactionId, owner, payload, conversation, idempotencyKey, terminalInput, terminalId, userId,
+                Optional.empty());
     }
 
     public CicsTaskRequest(String transactionId, String owner, CicsPayload payload,

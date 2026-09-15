@@ -1525,6 +1525,11 @@ public final class DataDivisionBuilder {
                 CicsEib.EIBFN_OFFSET));
         registers.put("EIBRCODE", eibItem("EIBRCODE", "X(6)", Usage.DISPLAY,
                 CicsEib.EIBRCODE_OFFSET));
+        // file control の file 名と、START が作った REQID (暫定判断 P-136、P-138)
+        registers.put("EIBDS", eibItem("EIBDS", "X(8)", Usage.DISPLAY,
+                CicsEib.EIBDS_OFFSET));
+        registers.put("EIBREQID", eibItem("EIBREQID", "X(8)", Usage.DISPLAY,
+                CicsEib.EIBREQID_OFFSET));
         registers.put("EIBRESP", eibItem("EIBRESP", "S9(8)", Usage.COMP,
                 CicsEib.EIBRESP_OFFSET));
         registers.put("EIBRESP2", eibItem("EIBRESP2", "S9(8)", Usage.COMP,

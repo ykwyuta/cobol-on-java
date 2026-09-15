@@ -167,6 +167,36 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /**
+     * EXEC CICS START / RETRIEVE / CANCEL (暫定判断 P-138)。
+     *
+     * <p>{@code kind} と {@code timing} は {@code CicsRuntimeOps.INTERVAL_*} / {@code START_*} の値。名前の option は
+     * 定数かデータ域のどちらか。RETRIEVE では data が INTO、名前の域が受取域になる。
+     */
+    record CicsIntervalCommand(
+            int kind,
+            String transactionLiteral,
+            DataReference transactionData,
+            int timing,
+            Operand hhmmss,
+            Operand hours,
+            Operand minutes,
+            Operand seconds,
+            DataReference data,
+            DataReference lengthArea,
+            int lengthLiteral,
+            String requestLiteral,
+            DataReference requestData,
+            String returnTransactionLiteral,
+            DataReference returnTransactionData,
+            String returnTerminalLiteral,
+            DataReference returnTerminalData,
+            String queueLiteral,
+            DataReference queueData,
+            boolean suppressDefaultHandling,
+            Origin origin) implements Statement {
+    }
+
     /** EXEC CICS INQUIRE / SET TERMINAL UCTRANST (暫定判断 P-130)。 */
     record CicsTerminalUctran(
             boolean set,
