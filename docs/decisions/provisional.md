@@ -4341,7 +4341,7 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
 | 項目 | 内容 |
 | --- | --- |
 | 状態 | 未解決 (2026-09-15)。利用者が「Spring Session JDBC (STRICT)」を選んだ |
-| 場所 | `JdbcConversationStore`、`SpringStrictTaskBoundaryFactory`、`CicsStrictConversationAutoConfiguration`、`ConversationCodec`、`CicsTaskServices`、`Db2TaskRuntime.inUnitOfWork` |
+| 場所 | `JdbcConversationStore`、`StrictTaskBoundary`、`SpringStrictTaskBoundaryFactory`、`DriverManagedStrictTaskBoundaryFactory`、`CicsStrictConversationAutoConfiguration`、`ConversationCodec`、`CicsTaskServices`、`Db2TaskRuntime.withUnitOfWork`、`DriverManagedUnitOfWorks` |
 | 関連要件 | 設計 77 §4.6・§5.4 |
 
 **暫定の扱い**:
@@ -4353,6 +4353,13 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
   会話を保存できなければ業務の更新も commit しない (NOT_COMMITTED)
 - claim、release、冪等キーの予約と解放は他の要求から見える必要があるので、別の transaction (REQUIRES_NEW) で直ちに確定する
 - 会話の表と業務の SQL は同じ DataSource でなければならない。違えば起動時と task の開始時に断る
+- `cobol.db2.profile=DB2_DRIVER_MANAGED_HOLD` では、利用者の `Db2NativeConnectionProvider` の bean で
+  `DriverManagedStrictTaskBoundaryFactory` を構成する。この UOW は Spring の transaction に束ねられないので、会話の保存と
+  結果の記録は `JdbcConversationStore.writesOn` で native lease の connection に出す (`DriverManagedUnitOfWorks.connection`
+  は UOW が ACTIVE の間だけ connection を渡す)。SYNCPOINT のあとも lease は同じ 1 本である。provider の bean が無ければ
+  起動を止め、1 つの JVM の中の既定へ黙って戻さない
+- driver-managed では、lease と DataSource が同じ database かを JDBC の情報だけでは確かめきれないので、利用者が保証する。
+  違えば task の終わりに会話が見つからず NOT_COMMITTED になる (業務の更新も commit しない)
 - envelope と応答は `ConversationCodec` の byte 列で持つ。Java の直列化は読むときに任意の class を作らせうるので使わない。
   検索に使う版・owner・期限・lease だけを列に出し、時刻の列はミリ秒、lease の期限もミリ秒に揃える
 - 表は利用者が `JdbcConversationStore.SCHEMA` の DDL で作る。期限切れの行は `purgeExpired` を利用者が定期に呼んで消す
@@ -4361,7 +4368,9 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
 
 **どこがずれうるか**: 設計 77 §4.6 は会話の表を Spring Session の session ID と期限に結び付けて、logout や session の失効で
 会話も消すことを求める。ここは結び付けていないので、session が消えても会話は期限まで残る。commit の途中の失敗は
-UNKNOWN とし、予約を残して lease の期限まで再送を動かさない。Db2 実機と H2 以外の DB では試験していない。
+UNKNOWN とし、予約を残して lease の期限まで再送を動かさない。driver-managed で commit は通ったのに lease の解放で
+失敗したときも UNKNOWN に数える (確定したかを区別しない。安全側に倒した)。Db2 実機と H2 以外の DB では試験しておらず、
+driver-managed も H2 の DriverManager の connection で試しただけで、JCC の native lease では試験していない。
 
 **解消条件**: 会話の行に Spring Session の session ID を持たせ、session の削除・失効と一緒に消す。実 Db2 で DDL と
-同時実行 (claim の競合、DuplicateKey の写像) を試験する。DB2_DRIVER_MANAGED_HOLD の STRICT を native lease で入れる。
+同時実行 (claim の競合、DuplicateKey の写像) を、SPRING_MANAGED と DB2_DRIVER_MANAGED_HOLD (JCC) の両方で試験する。

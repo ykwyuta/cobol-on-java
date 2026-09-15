@@ -25,6 +25,13 @@
       <artifactId>cobol-cics</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- DB2_DRIVER_MANAGED_HOLD の STRICT を使う利用者だけが足す -->
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-db2-jdbc</artifactId>
+      <version>${project.version}</version>
+      <optional>true</optional>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-autoconfigure</artifactId>

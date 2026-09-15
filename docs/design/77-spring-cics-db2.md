@@ -536,8 +536,11 @@ adapter contract test に含める。
 
 実装 (暫定判断 P-143): `SPRING_MANAGED` の `STRICT` は `cobol.cics.conversation.consistency=strict` で構成する。
 `SpringStrictTaskBoundaryFactory` が task ごとの Db2 UOW を持ち、`JdbcConversationStore` の `COBOL_CONVERSATION` と
-`COBOL_TASK_OUTCOME` を同じ UOW で更新して commit する。会話の行を Spring Session の session ID と期限へ結び付けること、
-`DB2_DRIVER_MANAGED_HOLD` の `STRICT` はまだ無い。
+`COBOL_TASK_OUTCOME` を同じ UOW で更新して commit する。`cobol.db2.profile=DB2_DRIVER_MANAGED_HOLD` では、利用者の
+`Db2NativeConnectionProvider` の bean で `DriverManagedStrictTaskBoundaryFactory` を構成し、同じ表を native lease の
+connection (`DriverManagedUnitOfWorks.connection`) で更新して業務の SQL と一緒に commit する。claim と冪等キーの予約は
+どちらの profile でも DataSource の別の transaction で確定するので、lease と DataSource は同じ database を指す必要がある
+(利用者が保証する)。会話の行を Spring Session の session ID と期限へ結び付けることはまだ無い。
 
 ## 5. Db2 連携
 

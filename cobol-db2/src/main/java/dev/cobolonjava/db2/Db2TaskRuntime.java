@@ -2,6 +2,7 @@ package dev.cobolonjava.db2;
 
 import dev.cobolonjava.runtime.interop.CobolSession;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /** 一つの同期taskでprofile固定、遅延UOW、明示syncpoint、cleanupを強制する。 */
 public final class Db2TaskRuntime implements AutoCloseable {
@@ -90,11 +91,30 @@ public final class Db2TaskRuntime implements AutoCloseable {
      * action が失敗しても UOW は閉じない。rollback するのは呼び手である。
      */
     public void inUnitOfWork(Runnable action) {
+        Objects.requireNonNull(action, "action");
+        withUnitOfWork(unit -> action.run());
+    }
+
+    /**
+     * 現在の UOW を action に渡す。UOW が無ければ始める。
+     *
+     * <p>DB2_DRIVER_MANAGED_HOLD の UOW は Spring の transaction に束ねられないので、STRICT の会話ストアは UOW から
+     * native lease の connection を受け取って会話の表を更新する (暫定判断 P-143)。action の中で UOW を commit /
+     * rollback してはならない。したら状態の確認で断る。
+     */
+    public void withUnitOfWork(Consumer<UnitOfWork> action) {
         enter();
         Objects.requireNonNull(action, "action");
-        activeUnitOfWork();
-        action.run();
-        requireActive(current);
+        UnitOfWork unit = activeUnitOfWork();
+        try {
+            action.accept(unit);
+        } finally {
+            // 閉じた UOW を持ち続けると、task の終わりの rollback が二度目の失敗になる
+            if (unit.state() != UnitOfWorkState.ACTIVE) {
+                current = null;
+            }
+        }
+        requireActive(unit);
     }
 
     /** 正常task終了。active UOWだけをcommitしてruntimeを閉じる。 */

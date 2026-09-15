@@ -215,6 +215,27 @@ class Db2TaskRuntimeTest {
         }
     }
 
+    @Test
+    @DisplayName("withUnitOfWorkはSQLと同じUOWを渡し、actionの中でUOWを閉じれば断る")
+    void passesTheActiveUnitOfWorkToActions() {
+        FakeUnitOfWorkPort uows = new FakeUnitOfWorkPort(
+                Db2ExecutionProfile.SPRING_MANAGED, true);
+        FakeSqlExecutor sql = new FakeSqlExecutor(Db2ExecutionProfile.SPRING_MANAGED);
+
+        try (CobolSession session = session();
+             Db2TaskRuntime task = new Db2TaskRuntime(options(
+                     Db2ExecutionProfile.SPRING_MANAGED, false), uows, sql)) {
+            task.execute(simpleSelect("S1"), SqlBindings.NONE, session);
+            List<UnitOfWork> seen = new ArrayList<>();
+            task.withUnitOfWork(seen::add);
+            assertEquals(1, uows.units.size());
+            assertSame(uows.units.get(0), seen.get(0));
+
+            assertThrows(UnitOfWorkStateException.class,
+                    () -> task.withUnitOfWork(UnitOfWork::commit));
+        }
+    }
+
     private static UnitOfWorkOptions options(
             Db2ExecutionProfile profile, boolean requiresHold) {
         return new UnitOfWorkOptions(profile, Duration.ofSeconds(30), false, requiresHold);

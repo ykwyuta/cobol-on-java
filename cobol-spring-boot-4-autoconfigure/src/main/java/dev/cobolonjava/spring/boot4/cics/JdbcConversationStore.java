@@ -14,6 +14,7 @@ import dev.cobolonjava.cics.ConversationLeaseToken;
 import dev.cobolonjava.cics.ConversationMutationResult;
 import dev.cobolonjava.cics.ConversationStorePort;
 import dev.cobolonjava.cics.IdempotencyKey;
+import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -22,6 +23,7 @@ import java.util.Optional;
 import javax.sql.DataSource;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -31,9 +33,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <h2>どの操作がどの transaction で確定するか</h2>
  * <p>claim、release、冪等キーの予約と解放は、task を動かす前後に他の要求から見える必要があるので、
- * 別の transaction (REQUIRES_NEW) で直ちに確定する。create、save、complete と結果の記録は呼び手の transaction に
- * 入る。STRICT の task 境界 ({@link SpringStrictTaskBoundaryFactory}) は、これらを業務の Db2 の UOW の中で呼び、
- * 業務の更新と一緒に commit する。
+ * 別の transaction (REQUIRES_NEW) で直ちに確定する。create、save、complete と結果の記録 ({@link TaskWrites}) は
+ * 呼び手の transaction に入る。SPRING_MANAGED の task 境界 ({@link SpringStrictTaskBoundaryFactory}) は {@link #writes()}
+ * を Spring の transaction の中で、DB2_DRIVER_MANAGED_HOLD の境界 ({@link DriverManagedStrictTaskBoundaryFactory}) は
+ * {@link #writesOn(Connection)} を native lease の connection で呼び、業務の更新と一緒に commit する。
  *
  * <p>表は {@link #SCHEMA} の DDL で作る。自動構成は表を作らない。envelope と応答は {@link ConversationCodec} の
  * byte 列で持ち、検索に使う版・owner・期限・lease だけを列に出す。時刻の列はミリ秒である。
@@ -43,20 +46,54 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
     /** 表を作る DDL の classpath resource。H2 と Db2 で通る型だけを使う。 */
     public static final String SCHEMA = "dev/cobolonjava/spring/boot4/cics/cobol-conversation-schema.sql";
 
+    /** task の UOW の中で行う更新。commit / rollback は呼び手の UOW が決める。 */
+    public interface TaskWrites {
+
+        ConversationMutationResult create(ConversationEnvelope initial, Instant now);
+
+        ConversationMutationResult save(ConversationLease lease, ConversationEnvelope next, Instant now);
+
+        ConversationMutationResult complete(ConversationLease lease, Instant now);
+
+        void record(String owner, IdempotencyKey key, CicsTaskReply reply, Instant retainUntil, Instant now);
+    }
+
     private final DataSource dataSource;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate separate;
+    private final Writes spring;
 
     public JdbcConversationStore(DataSource dataSource, PlatformTransactionManager transactionManager) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.jdbc = new JdbcTemplate(dataSource);
         this.separate = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
         separate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.spring = new Writes(jdbc);
     }
 
     /** 表を置いた DataSource。STRICT の境界が業務の SQL と同じ DataSource かを確かめる。 */
     public DataSource dataSource() {
         return dataSource;
+    }
+
+    /** DataSource の上の更新。Spring の transaction が進行中なら、その connection に入る。 */
+    public TaskWrites writes() {
+        return spring;
+    }
+
+    /**
+     * 渡された connection の上の更新。connection は閉じず、autoCommit も commit も触らない。
+     *
+     * <p>connection は {@link #dataSource()} と同じ database を指していなければならない。claim と予約は DataSource の
+     * 別の transaction で確定するので、別の database なら会話が見つからず断られる。同じ database かは JDBC の情報だけでは
+     * 確かめきれないので、構成する利用者が保証する。
+     */
+    public TaskWrites writesOn(Connection connection) {
+        JdbcTemplate template = new JdbcTemplate(
+                new SingleConnectionDataSource(Objects.requireNonNull(connection, "connection"), true));
+        // 重複キーの写像を DataSource の側と揃え、task ごとに database の metadata を引かない
+        template.setExceptionTranslator(jdbc.getExceptionTranslator());
+        return new Writes(template);
     }
 
     // ---- 会話 ----
@@ -66,29 +103,13 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
 
     @Override
     public ConversationMutationResult create(ConversationEnvelope initial, Instant now) {
-        Objects.requireNonNull(initial, "initial");
-        Objects.requireNonNull(now, "now");
-        if (initial.version() != 0) {
-            throw new IllegalArgumentException("an initial conversation must have version zero");
-        }
-        if (initial.isExpiredAt(now)) {
-            throw new IllegalArgumentException("an initial conversation must expire in the future");
-        }
-        try {
-            jdbc.update("INSERT INTO COBOL_CONVERSATION (CONVERSATION_ID, CONVERSATION_VERSION, OWNER_NAME, EXPIRES_AT,"
-                            + " LEASE_TOKEN, LEASED_UNTIL, ENVELOPE) VALUES (?, ?, ?, ?, NULL, 0, ?)",
-                    initial.id().value(), initial.version(), initial.owner(), millis(initial.expiresAt()),
-                    ConversationCodec.encodeEnvelope(initial));
-            return ConversationMutationResult.CREATED;
-        } catch (DuplicateKeyException exists) {
-            return ConversationMutationResult.ALREADY_EXISTS;
-        }
+        return spring.create(initial, now);
     }
 
     @Override
     public Optional<ConversationEnvelope> load(ConversationId id, Instant now) {
         Objects.requireNonNull(now, "now");
-        return row(id).map(Row::envelope).filter(envelope -> !envelope.isExpiredAt(now));
+        return row(jdbc, id).map(Row::envelope).filter(envelope -> !envelope.isExpiredAt(now));
     }
 
     @Override
@@ -120,7 +141,7 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
                 return claimRejection(id, expectedVersion, claimedOwner, now)
                         .orElse(ConversationClaimResult.rejected(ConversationClaimStatus.ALREADY_LEASED));
             }
-            return ConversationClaimResult.claimed(new ConversationLease(row(id).orElseThrow().envelope(), token,
+            return ConversationClaimResult.claimed(new ConversationLease(row(jdbc, id).orElseThrow().envelope(), token,
                     leasedUntil));
         });
     }
@@ -128,7 +149,7 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
     /** claim できない理由。claim できるなら空。 */
     private Optional<ConversationClaimResult> claimRejection(ConversationId id, long expectedVersion, String owner,
                                                              Instant now) {
-        Optional<Row> row = row(id);
+        Optional<Row> row = row(jdbc, id);
         if (row.isEmpty()) {
             return Optional.of(ConversationClaimResult.rejected(ConversationClaimStatus.NOT_FOUND));
         }
@@ -151,26 +172,12 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
 
     @Override
     public ConversationMutationResult save(ConversationLease lease, ConversationEnvelope next, Instant now) {
-        Objects.requireNonNull(lease, "lease");
-        Objects.requireNonNull(next, "next");
-        Objects.requireNonNull(now, "now");
-        validateSuccessor(lease.envelope(), next, now);
-        int updated = jdbc.update("UPDATE COBOL_CONVERSATION SET CONVERSATION_VERSION = ?, EXPIRES_AT = ?,"
-                        + " LEASE_TOKEN = NULL, LEASED_UNTIL = 0, ENVELOPE = ?" + LEASE_CONDITION,
-                next.version(), millis(next.expiresAt()), ConversationCodec.encodeEnvelope(next),
-                lease.envelope().id().value(), lease.envelope().version(), lease.envelope().owner(),
-                lease.token().value(), millis(lease.leasedUntil()), millis(now), millis(now));
-        return updated == 1 ? ConversationMutationResult.SAVED : mismatch(lease, now);
+        return spring.save(lease, next, now);
     }
 
     @Override
     public ConversationMutationResult complete(ConversationLease lease, Instant now) {
-        Objects.requireNonNull(lease, "lease");
-        Objects.requireNonNull(now, "now");
-        int deleted = jdbc.update("DELETE FROM COBOL_CONVERSATION" + LEASE_CONDITION,
-                lease.envelope().id().value(), lease.envelope().version(), lease.envelope().owner(),
-                lease.token().value(), millis(lease.leasedUntil()), millis(now), millis(now));
-        return deleted == 1 ? ConversationMutationResult.COMPLETED : mismatch(lease, now);
+        return spring.complete(lease, now);
     }
 
     @Override
@@ -182,7 +189,7 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
                             + LEASE_CONDITION,
                     lease.envelope().id().value(), lease.envelope().version(), lease.envelope().owner(),
                     lease.token().value(), millis(lease.leasedUntil()), millis(now), millis(now));
-            return updated == 1 ? ConversationMutationResult.RELEASED : mismatch(lease, now);
+            return updated == 1 ? ConversationMutationResult.RELEASED : mismatch(jdbc, lease, now);
         });
     }
 
@@ -190,8 +197,8 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
     private static final String LEASE_CONDITION = " WHERE CONVERSATION_ID = ? AND CONVERSATION_VERSION = ?"
             + " AND OWNER_NAME = ? AND LEASE_TOKEN = ? AND LEASED_UNTIL = ? AND LEASED_UNTIL > ? AND EXPIRES_AT > ?";
 
-    private ConversationMutationResult mismatch(ConversationLease lease, Instant now) {
-        Optional<Row> row = row(lease.envelope().id());
+    private static ConversationMutationResult mismatch(JdbcTemplate template, ConversationLease lease, Instant now) {
+        Optional<Row> row = row(template, lease.envelope().id());
         if (row.isEmpty()) {
             return ConversationMutationResult.NOT_FOUND;
         }
@@ -199,8 +206,8 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
                 ? ConversationMutationResult.EXPIRED : ConversationMutationResult.LEASE_MISMATCH;
     }
 
-    private Optional<Row> row(ConversationId id) {
-        List<Row> rows = jdbc.query("SELECT ENVELOPE, LEASE_TOKEN, LEASED_UNTIL FROM COBOL_CONVERSATION"
+    private static Optional<Row> row(JdbcTemplate template, ConversationId id) {
+        List<Row> rows = template.query("SELECT ENVELOPE, LEASE_TOKEN, LEASED_UNTIL FROM COBOL_CONVERSATION"
                         + " WHERE CONVERSATION_ID = ?",
                 (result, index) -> new Row(ConversationCodec.decodeEnvelope(result.getBytes(1)), result.getString(2),
                         result.getLong(3)),
@@ -217,6 +224,72 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
         }
         if (next.isExpiredAt(now)) {
             throw new IllegalArgumentException("successor must expire in the future");
+        }
+    }
+
+    /** 1 つの JdbcTemplate の上の task の更新。 */
+    private static final class Writes implements TaskWrites {
+
+        private final JdbcTemplate template;
+
+        private Writes(JdbcTemplate template) {
+            this.template = template;
+        }
+
+        @Override
+        public ConversationMutationResult create(ConversationEnvelope initial, Instant now) {
+            Objects.requireNonNull(initial, "initial");
+            Objects.requireNonNull(now, "now");
+            if (initial.version() != 0) {
+                throw new IllegalArgumentException("an initial conversation must have version zero");
+            }
+            if (initial.isExpiredAt(now)) {
+                throw new IllegalArgumentException("an initial conversation must expire in the future");
+            }
+            try {
+                template.update("INSERT INTO COBOL_CONVERSATION (CONVERSATION_ID, CONVERSATION_VERSION, OWNER_NAME,"
+                                + " EXPIRES_AT, LEASE_TOKEN, LEASED_UNTIL, ENVELOPE) VALUES (?, ?, ?, ?, NULL, 0, ?)",
+                        initial.id().value(), initial.version(), initial.owner(), millis(initial.expiresAt()),
+                        ConversationCodec.encodeEnvelope(initial));
+                return ConversationMutationResult.CREATED;
+            } catch (DuplicateKeyException exists) {
+                return ConversationMutationResult.ALREADY_EXISTS;
+            }
+        }
+
+        @Override
+        public ConversationMutationResult save(ConversationLease lease, ConversationEnvelope next, Instant now) {
+            Objects.requireNonNull(lease, "lease");
+            Objects.requireNonNull(next, "next");
+            Objects.requireNonNull(now, "now");
+            validateSuccessor(lease.envelope(), next, now);
+            int updated = template.update("UPDATE COBOL_CONVERSATION SET CONVERSATION_VERSION = ?, EXPIRES_AT = ?,"
+                            + " LEASE_TOKEN = NULL, LEASED_UNTIL = 0, ENVELOPE = ?" + LEASE_CONDITION,
+                    next.version(), millis(next.expiresAt()), ConversationCodec.encodeEnvelope(next),
+                    lease.envelope().id().value(), lease.envelope().version(), lease.envelope().owner(),
+                    lease.token().value(), millis(lease.leasedUntil()), millis(now), millis(now));
+            return updated == 1 ? ConversationMutationResult.SAVED : mismatch(template, lease, now);
+        }
+
+        @Override
+        public ConversationMutationResult complete(ConversationLease lease, Instant now) {
+            Objects.requireNonNull(lease, "lease");
+            Objects.requireNonNull(now, "now");
+            int deleted = template.update("DELETE FROM COBOL_CONVERSATION" + LEASE_CONDITION,
+                    lease.envelope().id().value(), lease.envelope().version(), lease.envelope().owner(),
+                    lease.token().value(), millis(lease.leasedUntil()), millis(now), millis(now));
+            return deleted == 1 ? ConversationMutationResult.COMPLETED : mismatch(template, lease, now);
+        }
+
+        @Override
+        public void record(String owner, IdempotencyKey key, CicsTaskReply reply, Instant retainUntil, Instant now) {
+            int updated = template.update("UPDATE COBOL_TASK_OUTCOME SET REPLY = ?, RETAIN_UNTIL = ?"
+                            + " WHERE OWNER_NAME = ? AND IDEMPOTENCY_KEY = ? AND REPLY IS NULL",
+                    ConversationCodec.encodeReply(reply), millis(retainUntil), owner, key.value());
+            if (updated != 1) {
+                throw new CicsTaskCommitException("idempotency key is not reserved: " + key.value(),
+                        CommitFailureState.NOT_COMMITTED, null);
+            }
         }
     }
 
@@ -261,13 +334,7 @@ public final class JdbcConversationStore implements ConversationStorePort, CicsO
 
     @Override
     public void record(String owner, IdempotencyKey key, CicsTaskReply reply, Instant retainUntil, Instant now) {
-        int updated = jdbc.update("UPDATE COBOL_TASK_OUTCOME SET REPLY = ?, RETAIN_UNTIL = ?"
-                        + " WHERE OWNER_NAME = ? AND IDEMPOTENCY_KEY = ? AND REPLY IS NULL",
-                ConversationCodec.encodeReply(reply), millis(retainUntil), owner, key.value());
-        if (updated != 1) {
-            throw new CicsTaskCommitException("idempotency key is not reserved: " + key.value(),
-                    CommitFailureState.NOT_COMMITTED, null);
-        }
+        spring.record(owner, key, reply, retainUntil, now);
     }
 
     @Override
