@@ -237,9 +237,10 @@ public final class ProcedureBuilder {
         List<DataItem> parameters = new ArrayList<>();
         for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             builder.declareSqlInDataDivision(unit);
+            builder.checkProgramId(unit);
             if (unit.procedureDivision() != null) {
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
-                if (unit.procedureDivision().procedureParameter().isEmpty()) {
+                if (implicitUsing(unit.procedureDivision())) {
                     // CICS translator は USING を書かない program に USING DFHEIBLK DFHCOMMAREA を補う。
                     // EIB は暗黙項目なので、引数になるのは DFHCOMMAREA だけである (暫定判断 P-122)
                     builder.layout.findAll("DFHCOMMAREA").stream()
@@ -266,7 +267,7 @@ public final class ProcedureBuilder {
      */
     private List<DataItem> parametersOf(CobolParser.ProcedureDivisionContext context) {
         List<DataItem> parameters = new ArrayList<>();
-        for (CobolParser.ProcedureParameterContext parameter : context.procedureParameter()) {
+        for (CobolParser.ProcedureParameterContext parameter : usingOf(context)) {
             if (parameter.VALUE() != null) {
                 report(ReferenceResolver.originOf(parameter),
                         "BY VALUE is not supported yet");
@@ -291,6 +292,70 @@ public final class ProcedureBuilder {
             parameters.add(item);
         }
         return parameters;
+    }
+
+    /**
+     * IMS が呼ぶ入口。手続き部の先頭に書いた {@code ENTRY '名前' USING ...} である。
+     *
+     * <p>IMS の COBOL プログラムは {@code PROCEDURE DIVISION.} に USING を書かず、先頭の
+     * {@code ENTRY 'DLITCBL' USING} で PCB を受け取る。生成クラスは入口を 1 つしか持たないので、
+     * 先頭の ENTRY の USING をプログラムの引数とする (暫定判断 P-152)。
+     *
+     * @return 見出しに USING が無く、手続き部の最初の文が ENTRY なら、その文。ほかは {@code null}
+     */
+    static CobolParser.EntryStatementContext programEntryOf(
+            CobolParser.ProcedureDivisionContext division) {
+        if (division == null || !division.procedureParameter().isEmpty()) {
+            return null;
+        }
+        List<CobolParser.SentenceContext> sentences = division.procedureBody().sentence();
+        return sentences.isEmpty() ? null : sentences.get(0).statement(0).entryStatement();
+    }
+
+    /** 引数を並べた USING。手続き部の見出しか、先頭の ENTRY のどちらかにある。 */
+    private static List<CobolParser.ProcedureParameterContext> usingOf(
+            CobolParser.ProcedureDivisionContext division) {
+        CobolParser.EntryStatementContext entry = programEntryOf(division);
+        return entry == null ? division.procedureParameter() : entry.procedureParameter();
+    }
+
+    /**
+     * {@code PROGRAM-ID. 名前} のあとの終止符が欠けていれば告げる。
+     *
+     * <p>規格は終止符を求めるが、Enterprise COBOL は補って翻訳を続ける (Bank-of-Z の IBLOGIN1 が
+     * 欠いたままホストで翻訳されている)。意味は変わらないので止めない。
+     */
+    private void checkProgramId(CobolParser.ProgramUnitContext unit) {
+        CobolParser.ProgramIdParagraphContext id = unit.identificationDivision().programIdParagraph();
+        if (id.PERIOD().size() < 2) {
+            warn(ReferenceResolver.originOf(id),
+                    "a period is required after the PROGRAM-ID paragraph; one was assumed");
+        }
+    }
+
+    /** USING をどこにも書いていない。CICS translator が DFHCOMMAREA を補う形である。 */
+    public static boolean implicitUsing(CobolParser.ProcedureDivisionContext division) {
+        return division != null && usingOf(division).isEmpty();
+    }
+
+    /**
+     * {@code ENTRY}。IMS が呼ぶ入口だけを受け、流れの中で達しても何もしない。
+     *
+     * <p>副入口 (手続き部の途中の ENTRY、見出しに USING を書いたプログラムの ENTRY) は、
+     * 入口を 1 つしか持たない生成クラスでは表せないので断る。
+     */
+    private Statement entryOf(CobolParser.EntryStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        ParserRuleContext parent = context.getParent();
+        while (parent != null && !(parent instanceof CobolParser.ProcedureDivisionContext)) {
+            parent = parent.getParent();
+        }
+        if (programEntryOf((CobolParser.ProcedureDivisionContext) parent) != context) {
+            report(origin, "ENTRY is supported only as the first statement of a procedure division"
+                    + " without USING (the entry IMS calls); alternate entry points are not supported yet");
+            return null;
+        }
+        return new Statement.Continue(origin);
     }
 
     /**
@@ -1501,6 +1566,9 @@ public final class ProcedureBuilder {
                     "the communication module is not supported: "
                     + context.communicationStatement().getStart().getText());
             return null;
+        }
+        if (context.entryStatement() != null) {
+            return entryOf(context.entryStatement());
         }
         if (context.initializeStatement() != null) {
             return initializeOf(context.initializeStatement());

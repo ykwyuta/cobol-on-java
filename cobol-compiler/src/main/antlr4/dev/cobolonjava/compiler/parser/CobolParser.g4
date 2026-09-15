@@ -86,6 +86,12 @@ parser grammar CobolParser;
                 || type == LINKAGE || type == REPORT || type == COMMUNICATION)
                 && _input.LA(2) == SECTION;
     }
+
+    /** いまの位置が {@code ENTRY '名前'} か。{@code ENTRY} は予約語にしていないので綴りで見る。 */
+    private boolean entryAhead() {
+        return _input.LA(1) == IDENTIFIER && _input.LA(2) == LITERAL
+                && "ENTRY".equalsIgnoreCase(_input.LT(1).getText());
+    }
 }
 
 tokens {
@@ -197,8 +203,10 @@ identificationDivision
     : (IDENTIFICATION | ID) DIVISION PERIOD programIdParagraph
     ;
 
+// 名前のあとの終止符が欠けていても、Enterprise COBOL は補って翻訳を続ける
+// (Bank-of-Z の IMS の IBLOGIN1 がそう書いている)。欠けたことは意味解析で告げる
 programIdParagraph
-    : PROGRAM_ID PERIOD programName (IS? programAttribute PROGRAM?)? PERIOD
+    : PROGRAM_ID PERIOD programName (IS? programAttribute PROGRAM?)? PERIOD?
     ;
 
 programAttribute
@@ -867,6 +875,15 @@ statement
     | generateStatement
     | terminateStatement
     | communicationStatement
+    | entryStatement
+    ;
+
+// ENTRY は COBOL-85 の予約語ではない。CCVS85 を崩さないよう予約語にせず、
+// 「ENTRY という語のすぐあとに文字定数」という並びで見分ける。利用者語の直後に
+// 文字定数が来る文はほかに無いので、これで取り違えない。
+// 受けるのは IMS が呼ぶ入口 (手続き部の先頭) だけで、ほかの位置は意味解析で断る
+entryStatement
+    : {entryAhead()}? IDENTIFIER LITERAL (USING procedureParameter+)?
     ;
 
 // 通信の文は支えていない (制約 C-5)。文ごと受け取って意味解析で断る。

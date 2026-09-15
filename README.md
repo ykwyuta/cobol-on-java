@@ -216,11 +216,15 @@ TD の区画外のキューは順編成のデータセットに置き、回復�
 START の `CHANNEL` / `ATTACH` / `NOCHECK` / `SYSID`、REQID の無い `CANCEL`、TS / TD の `SYSID` / `NOSUSPEND` も暫定の仕様で変換する (P-149)。
 `SET ptr TO ADDRESS OF` と `SET ADDRESS OF` は、POINTER に実行単位の中で振った番号を置いて扱う (P-150)。
 その上に、file control / TS / TD / RETRIEVE の `SET` を置き場の番地として入れた (P-151)。
+IMS は、同じ Bank-of-Z の IMS の COBOL 11 本を `verify corpus <cobol> -I <copy>` で流して測っている。
+<b>翻訳が通るのは 10 本</b>である (測り始めは 0 本)。手続き部の先頭の `ENTRY "DLITCBL" USING` をプログラムの引数とし (P-152)、
+`PROGRAM-ID` の終止符の欠落と、演算子に空白を置かない `<=1` を受ける。残る IBTRAN は OO COBOL の `REPOSITORY` と JNI で止まる。
+DL/I の呼び出し (`CALL 'CBLTDLI'`) を動かす実行時はまだ無い (設計 78)。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
 バイト列</b>を出すことも見る。要件 13 章が P1 の受け入れ基準に置いている形である。
-テスト 2267 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
+テスト 2301 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
 `cobol-db2-jdbc` の 2 件はスキップされる。
 うち 6 件はコーパスを取ってきていなければスキップされる。
 Hercules 上での実行と突き合わせる**検証レベル V2** の検査は、期待値を採れない環境では流れない。

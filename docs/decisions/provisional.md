@@ -4384,6 +4384,32 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-152 手続き部の先頭の ENTRY の USING をプログラムの引数とし、ほかの ENTRY は断る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。Bank-of-Z の IMS の COBOL 11 本を測り、9 本が `ENTRY "DLITCBL"` で止まっていた |
+| 場所 | `CobolParser.g4` の `entryStatement` / `entryAhead`、`ProcedureBuilder.programEntryOf` / `usingOf` / `implicitUsing` / `entryOf` / `checkProgramId`、`Tokenizer.equalSignSplit` |
+| 関連要件 | FR-027、FR-164、設計 78 |
+
+**暫定の扱い**:
+
+- IMS の COBOL プログラムは `PROCEDURE DIVISION.` に USING を書かず、先頭で `ENTRY 'DLITCBL' USING IOPCB, DBPCB...` と書いて
+  PCB を受け取る。見出しに USING が無く、手続き部の最初の文が ENTRY なら、その USING をプログラムの引数とする。生成クラスは
+  入口を 1 つしか持たないので、入口の名前 (`DLITCBL` 等) は見ない
+- 流れが先頭の ENTRY に達しても何もしない (`CONTINUE` と同じ)
+- それ以外の ENTRY (段落の中、2 つ目、見出しに USING を書いたプログラム) は副入口であり、翻訳で断る
+- ENTRY は COBOL-85 の予約語ではないので予約語にしない。「`ENTRY` という語のすぐあとに文字定数」の並びだけを ENTRY 文と読む。
+  CCVS85 の受理数 (444 / 458) は変わらない
+- `PROGRAM-ID. 名前` のあとの終止符が欠けた形 (IBLOGIN1) は、警告して補う
+- 空白を置かずに `<` / `>` / `<=` / `>=` と接した語を分ける (LOADHIST の `IF INPUT-RECORDS <=1`)。以前は `=` だけを分け、
+  `<=1` を 1 語として級名と読んで止まっていた。自分の字句の規則が狭かった例である (覚え書き 3)
+
+**どこがずれうるか**: 実機の ENTRY は副入口を作り、呼ばれた入口によって USING の結び方が変わる。主入口 (PROGRAM-ID の名前) で
+呼んだときに連絡節が結ばれない、という違いはここでは再現しない。終止符の欠落を実機がどの重さで告げるかは確かめていない。
+
+**解消条件**: 副入口を使う資産が見つかれば、生成クラスに入口を複数持たせる設計を検討する。
+
 ## P-151 file control / TS / TD / RETRIEVE の SET は、命令ごとに作る置き場の番地を POINTER に置く
 
 | 項目 | 内容 |

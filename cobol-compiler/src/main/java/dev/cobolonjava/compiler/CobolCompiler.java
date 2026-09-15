@@ -442,8 +442,7 @@ public final class CobolCompiler {
                 globalDeclarativesOf(programNameOf(program), procedure));
 
         ProgramSignature signature = programSignature(programNameOf(program), procedure,
-                program.procedureDivision() != null
-                        && program.procedureDivision().procedureParameter().isEmpty());
+                ProcedureBuilder.implicitUsing(program.procedureDivision()));
         ProcedureManifest manifest = procedureManifest(programNameOf(program), procedure);
         ProgramGenerator.Result generated = ProgramGenerator.generate(
                 programNameOf(program), fileName, procedure, image, data.layout(),
