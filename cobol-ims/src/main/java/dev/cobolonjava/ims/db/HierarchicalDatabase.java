@@ -103,15 +103,7 @@ public final class HierarchicalDatabase {
      * @return 入れたセグメント。重ならないキーが重なれば {@code null}
      */
     public Segment insert(Segment parent, SegmentDefinition type, byte[] data) {
-        if ((parent == null) != type.root()) {
-            throw new IllegalArgumentException("segment " + type.name() + " requires "
-                    + (type.root() ? "no parent" : "a parent of type " + type.parent()));
-        }
-        if (parent != null && !parent.definition().name().equals(type.parent())) {
-            throw new IllegalArgumentException("the parent of " + type.name() + " is " + type.parent()
-                    + ", not " + parent.definition().name());
-        }
-        List<Segment> twins = parent == null ? roots : parent.mutableChildren(type.name());
+        List<Segment> twins = twinsFor(parent, type);
         FieldDefinition sequence = type.sequenceField();
         int index;
         if (sequence == null) {
@@ -129,6 +121,40 @@ public final class HierarchicalDatabase {
         Segment segment = new Segment(type, parent, data);
         twins.add(index, segment);
         return segment;
+    }
+
+    /**
+     * 保存した並びのまま、兄弟の末尾に置く。
+     *
+     * <p>挿入規則を当て直すと、FIRST の兄弟の並びが保存したときと逆になる。規則は使わず、
+     * キーの順が崩れていないことだけを確かめる。崩れていれば保存したものが壊れている。
+     *
+     * @throws IllegalStateException キーの順が崩れているか、重ならないキーが重なっているとき
+     */
+    public Segment restore(Segment parent, SegmentDefinition type, byte[] data) {
+        List<Segment> twins = twinsFor(parent, type);
+        FieldDefinition sequence = type.sequenceField();
+        if (sequence != null && !twins.isEmpty()) {
+            int comparison = Arrays.compareUnsigned(twins.get(twins.size() - 1).key(), keyOf(type, data));
+            if (comparison > 0 || (comparison == 0 && sequence.unique())) {
+                throw new IllegalStateException("segment " + type.name() + " is out of key sequence");
+            }
+        }
+        Segment segment = new Segment(type, parent, data);
+        twins.add(segment);
+        return segment;
+    }
+
+    private List<Segment> twinsFor(Segment parent, SegmentDefinition type) {
+        if ((parent == null) != type.root()) {
+            throw new IllegalArgumentException("segment " + type.name() + " requires "
+                    + (type.root() ? "no parent" : "a parent of type " + type.parent()));
+        }
+        if (parent != null && !parent.definition().name().equals(type.parent())) {
+            throw new IllegalArgumentException("the parent of " + type.name() + " is " + type.parent()
+                    + ", not " + parent.definition().name());
+        }
+        return parent == null ? roots : parent.mutableChildren(type.name());
     }
 
     /** 値を置き換える。順序フィールドを変えないことは呼ぶ側が確かめる。 */

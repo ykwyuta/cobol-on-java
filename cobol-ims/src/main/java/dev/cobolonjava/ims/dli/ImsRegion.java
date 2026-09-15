@@ -41,6 +41,8 @@ public final class ImsRegion {
     static final int RESERVE = 1024;
     /** 代替 PCB のマスクの長さ (宛先 8、予約 2、状態 2)。 */
     private static final int TERMINAL_MASK = 12;
+    /** I/O PCB のマスクの長さ。端末名、状態、日時、入力の順序番号、MOD 名、利用者の欄を収める。 */
+    private static final int IO_MASK = 64;
 
     private final ProgramSpecification psb;
     private final CodePage codePage;
@@ -52,12 +54,24 @@ public final class ImsRegion {
      * @throws IllegalArgumentException PSB が渡されていない DBD を名指すか、DBD と食い違うとき
      */
     public ImsRegion(ProgramSpecification psb, Collection<HierarchicalDatabase> databases, CodePage codePage) {
+        this(psb, databases, codePage, false);
+    }
+
+    /**
+     * @param ioPcb 先頭に I/O PCB を置くか。オンラインと BMP では常に、バッチでは PSB が {@code CMPAT=YES} のとき置く
+     * @throws IllegalArgumentException PSB が渡されていない DBD を名指すか、DBD と食い違うとき
+     */
+    public ImsRegion(ProgramSpecification psb, Collection<HierarchicalDatabase> databases, CodePage codePage,
+                     boolean ioPcb) {
         this.psb = Objects.requireNonNull(psb, "psb");
         this.codePage = Objects.requireNonNull(codePage, "codePage");
         for (HierarchicalDatabase database : databases) {
             if (this.databases.putIfAbsent(database.definition().name(), database) != null) {
                 throw new IllegalArgumentException("DBD " + database.definition().name() + " is given twice");
             }
+        }
+        if (ioPcb) {
+            storages.add(Storage.allocate(IO_MASK + RESERVE));
         }
         for (PcbDefinition pcb : psb.pcbs()) {
             if (pcb instanceof PcbDefinition.Database definition) {

@@ -9,6 +9,7 @@ import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.DataSetCatalog;
 import dev.cobolonjava.runtime.file.RecordFormat;
+import dev.cobolonjava.job.utility.SystemPrograms;
 import dev.cobolonjava.job.utility.Utilities;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
@@ -281,6 +282,10 @@ public final class JobRunner {
         try {
             // ユーティリティは翻訳された資産ではない。名前で先に引き当てる (要件 FR-137)
             CobolProgram utility = Utilities.find(step.program());
+            if (utility == null) {
+                // 別のモジュールが差し込んだシステムのプログラム (IMS の DFSRRC00 等)
+                utility = SystemPrograms.find(step.program(), loader);
+            }
             if (utility != null) {
                 utility.runFresh(context, arguments(step));
             } else {

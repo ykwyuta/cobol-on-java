@@ -9,7 +9,7 @@
 | 基準環境 | Java 21, Spring Boot 4.1.x, PostgreSQL / IBM Db2 |
 | 改訂 | 2026-09-13。[批判的レビュー](../reviews/2026-09-13-ims-research-critical-review.md) の全 34 指摘を反映 |
 | 測定 | 2026-09-15。Bank-of-Z の IMS の COBOL 11 本のうち翻訳が通るのは 10 本 (IBTRAN は `REPOSITORY` / JNI)。入口は P-152。DBD 9 本・PSB 8 本はすべて読める (`verify ims-gen`、P-153) |
-| 実装 | 2026-09-16。第 1 増分の DBD / PSB の読み取りと、第 2 増分の SSA・PCB の状態・メモリの上の DL/I (`ImsRegion`) を置いた。`DFSRRC00`、`CHKP`、I/O PCB は未実装。振る舞いの暫定判断は P-154 |
+| 実装 | 2026-09-16。第 1 増分の DBD / PSB の読み取りと `DFSRRC00` (DLI / DBB)、第 2 増分の SSA・PCB の状態・メモリの上の DL/I (`ImsRegion`) を置いた。Bank-of-Z の読み込み 5 本が JCL で流れる。`CHKP`、I/O PCB、BMP / MPP は未実装。暫定判断は P-154、P-155 |
 
 ---
 
@@ -314,7 +314,8 @@ IMS バッチ / BMP は移行の需要が最も高い形態だが、当初の設
 //SYSPRINT DD SYSOUT=*
 ```
 
-- `DFSRRC00` を `cobol-job` のユーティリティレジストリへ登録する。
+- `DFSRRC00` を `cobol-job` のユーティリティレジストリへ登録する。**実装では** `cobol-runtime` の `SystemProgramProvider` を
+  `ServiceLoader` で引く口にし、`cobol-ims` が差し込む。`cobol-job` と `cobol-ims` がどちらも `cobol-runtime` にだけ依存したままになる (P-155)。
 - `PARM` を解析する（`DLI` = バッチ、`BMP` = バッチメッセージ処理、`ULU` = ユーティリティ）。
 - PSB をロードし、PCB リストを構築して `PROCEDURE DIVISION USING` へバインドする。
 - `//IMS` DD から DBD / PSB を読む。`//DFSVSAMP` は受理して無視する（RDB バックエンドではバッファプール指定に意味が無い）。

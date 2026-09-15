@@ -4384,6 +4384,38 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-155 DFSRRC00 はバッチ (DLI / DBB) だけを受け、PSB と DBD の原文を //IMS から読み、正常終了したときだけデータベースを書く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-16)。Bank-of-Z の読み込み 5 本 (LOADCUST / LOADACCT / LOADCUSA / LOADHIST / LOADTSTA) を JCL で流し、全段 RC=0、セグメント数が入力の件数と一致した |
+| 場所 | `cobol-runtime` / `SystemProgramProvider`、`cobol-job` / `SystemPrograms`・`JobRunner.runStep`、`cobol-ims` / `Dfsrrc00`・`RegionParameters`・`DatabaseFile`・`ImsSystemPrograms`・`HierarchicalDatabase.restore` |
+| 関連要件 | FR-164、設計 78 §7.1、P-153、P-154 |
+
+**暫定の扱い**:
+
+- ジョブ実行は、ユーティリティの次に `ServiceLoader` で `SystemProgramProvider` を引き、`cobol-ims` が `DFSRRC00` を差し込む。
+  `cobol-job` も `cobol-ims` も `cobol-runtime` にだけ依存したままにするためである (設計 78 §2.2 と `cobol-job` の決めごと)
+- PARM は `領域の種類,プログラム,PSB` の 3 つだけを読む。`DLI` と `DBB` を受け、`BMP` / `MSG` / `IFP` / `JBP` / `JMP` は
+  IMS TM が無いので断る。`ULU` 等のユーティリティも断る。PSB を省けばプログラムと同じ名前。4 つ目より後ろは読まない
+- `//IMS` の区分データセットに **PSB と DBD の原文**を置く (実機は生成した PSB / DBD / ACB を置く)。PSB が名指す DBD は
+  同じライブラリから読む。連結した DD はまだ読まない。メンバは固定長なら 1 レコード 1 行、そうでなければ改行で切る
+- データベースは DBD の `DATASET DD1=` の DD (無ければ DBD 名の DD) に置く。割り当てていなければ始めずに止める
+  (実機の動的割り当て DFSMDA は持たない)。形は `DatabaseFile` の独自の形 (長さ・段・セグメント名・値を階層の順に並べる) で、
+  IMS の HD の物理形式ではない。空か無いデータセットは空のデータベースである
+- **プログラムが正常に戻ったときだけ書き戻す**。異常終了なら書かない。実機のログを取らない DLI バッチは異常終了しても
+  書いた分が残り、バッチバックアウトで戻す。ここでは戻す手順が無いので、書かないほうを選んだ
+- USING には PSB の PCB を並びの順に渡し、`CMPAT=YES` の PSB だけ先頭に I/O PCB を置く (Bank-of-Z の IBLOAD は
+  CMPAT を書かず、LOADCUST も I/O PCB を受け取らない)
+- DFSRRC00 の失敗 (PARM、ライブラリ、DD、原文の誤り) は `ImsBatchException` で止める。実機の異常終了コードは突き合わせて
+  いないので名乗らない
+
+**どこがずれうるか**: 異常終了したバッチのあとのデータベースの中身は実機と違う (実機は途中まで書かれている)。`SYSPRINT` の
+DFS の覚え書き、DBRC、ログ、チェックポイントからの再開は無い。複数の段が同じデータベースを同時に使う排他は無い。
+
+**解消条件**: RDB の置き場 (ADR-0013) を入れたら、UOW と書き戻しをそちらに移す。CHKP / XRST とバッチバックアウトの設計
+(P-110) で、異常終了のあとの扱いを決め直す。BMP は IMS TM (設計 78 §4) を入れてから受ける。
+
 ## P-154 DL/I の DB 呼び出しの位置・状態コード・PCB マスクは公開仕様の説明から起こし、実機と突き合わせていない
 
 | 項目 | 内容 |
