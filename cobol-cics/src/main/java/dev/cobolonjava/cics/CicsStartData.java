@@ -24,7 +24,8 @@ public final class CicsStartData {
     private final String owner;
     private final Optional<String> userId;
     private final Optional<String> terminalId;
-    private final List<CicsStartData> following;
+    /** RETRIEVE WAIT が受け取った START を足すので、task の中だけで伸びる。 */
+    private final java.util.concurrent.CopyOnWriteArrayList<CicsStartData> following;
     private boolean retrieved;
 
     /**
@@ -75,7 +76,8 @@ public final class CicsStartData {
                 throw new IllegalArgumentException("START TERMID must be 1 to 4 characters: " + value);
             }
         });
-        this.following = List.copyOf(Objects.requireNonNull(following, "following"));
+        this.following = new java.util.concurrent.CopyOnWriteArrayList<>(
+                Objects.requireNonNull(following, "following"));
     }
 
     /**
@@ -84,13 +86,23 @@ public final class CicsStartData {
      * @throws IllegalArgumentException 端末か TRANSID が違う START が混じっている
      */
     public CicsStartData withFollowing(List<CicsStartData> later) {
+        requireSameTarget(later);
+        return new CicsStartData(requestId, transaction, data, returnTransaction, returnTerminal, queue, owner,
+                userId, terminalId, later);
+    }
+
+    /** RETRIEVE WAIT が受け取った、あとに満了した START を後ろに足す。 */
+    void append(List<CicsStartData> later) {
+        requireSameTarget(later);
+        following.addAll(later);
+    }
+
+    private void requireSameTarget(List<CicsStartData> later) {
         for (CicsStartData start : later) {
             if (!start.transaction.equals(transaction) || !start.terminalId.equals(terminalId)) {
                 throw new IllegalArgumentException("following START must have the same TRANSID and TERMID");
             }
         }
-        return new CicsStartData(requestId, transaction, data, returnTransaction, returnTerminal, queue, owner,
-                userId, terminalId, later);
     }
 
     public String requestId() {
@@ -133,7 +145,7 @@ public final class CicsStartData {
 
     /** task を起こした START のあとに満了した、同じ端末と TRANSID の START。 */
     public List<CicsStartData> following() {
-        return following;
+        return List.copyOf(following);
     }
 
     /** RETRIEVE が読む順。task を起こした START、続いて {@link #following()}。 */

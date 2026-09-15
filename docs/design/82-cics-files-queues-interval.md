@@ -181,7 +181,8 @@ START の `TERMID` (端末へ出す task) は設計 83 §5 で入れた。端末
 1 つの JVM の中の `inMemory` は断る。
 
 断るもの: START の `USERID`、`SYSID`、`NOCHECK`、`CHANNEL`、
-`ATTACH`、RETRIEVE の `SET` と `WAIT`、`REQID` の無い CANCEL (POST の取消し)、CANCEL の `TRANSID` / `SYSID`。
+`ATTACH`、RETRIEVE の `SET`、`REQID` の無い CANCEL (POST の取消し)、CANCEL の `TRANSID` / `SYSID`。RETRIEVE の `WAIT` は
+設計 83 §5 で入れた (端末へ出す START の task だけ)。
 FROM の無い START の REQID が重なる形と、START で起きていない task の RETRIEVE は、条件が書かれていないので失敗させる。
 
 ## 7. 非同期 API (RUN TRANSID / FETCH / FREE CHILD)

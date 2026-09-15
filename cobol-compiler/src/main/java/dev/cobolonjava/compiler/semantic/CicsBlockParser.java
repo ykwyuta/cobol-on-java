@@ -57,7 +57,7 @@ final class CicsBlockParser {
     private static final List<Set<String>> INTERVAL_OPTIONS = List.of(
             Set.of("TRANSID", "INTERVAL", "TIME", "AFTER", "AT", "HOURS", "MINUTES", "SECONDS", "FROM", "LENGTH",
                     "REQID", "RTRANSID", "RTERMID", "QUEUE", "PROTECT", "TERMID"),
-            Set.of("INTO", "LENGTH", "RTRANSID", "RTERMID", "QUEUE"),
+            Set.of("INTO", "LENGTH", "RTRANSID", "RTERMID", "QUEUE", "WAIT"),
             Set.of("REQID"));
     /** 一時記憶・一時データの命令。TS / TD を省いた形は受けない。 */
     private static final Pattern QUEUE_BLOCK = Pattern.compile(
@@ -886,9 +886,9 @@ final class CicsBlockParser {
     /**
      * START / RETRIEVE / CANCEL を読む (暫定判断 P-138)。
      *
-     * <p>START の TERMID は端末へ出す task として受ける (設計 83 §5)。USERID、SYSID、NOCHECK、CHANNEL、ATTACH、
-     * RETRIEVE の SET と WAIT、REQID の無い CANCEL (POST の取消し) と CANCEL の TRANSID / SYSID は、利用者・遠隔・
-     * 同期点の設計を持たないので名前をつけて断る。
+     * <p>START の TERMID は端末へ出す task として、RETRIEVE の WAIT はその task が次の START を待つ形として受ける
+     * (設計 83 §5)。USERID、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET、REQID の無い CANCEL (POST の取消し) と
+     * CANCEL の TRANSID / SYSID は、利用者・遠隔・同期点の設計を持たないので名前をつけて断る。
      */
     private static Parsed parseIntervalCommand(String command, String source) {
         int kind = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.indexOf(command);
@@ -928,6 +928,7 @@ final class CicsBlockParser {
         String[] queue = new String[2];
         String[] terminal = new String[2];
         boolean protect = false;
+        boolean wait = false;
         if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_START) {
             protect = fileFlag(options, "PROTECT", 1) != 0;
             if (!options.containsKey("TRANSID")) {
@@ -981,6 +982,7 @@ final class CicsBlockParser {
             queue = quotedOrName(options.get("QUEUE"), "START QUEUE", 8);
             terminal = quotedOrName(options.get("TERMID"), "START TERMID", 4);
         } else if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
+            wait = fileFlag(options, "WAIT", 1) != 0;
             data = sendDataName(options.get("INTO"), "INTO");
             String[] length = options.get("LENGTH");
             if (length != null) {
@@ -1016,7 +1018,8 @@ final class CicsBlockParser {
                 null, null, null, null, null, null, null, null,
                 new IntervalSpec(kind, transaction[0], transaction[1], timing, hhmmss, hours, minutes, seconds, data,
                         lengthName, lengthLiteral, request[0], request[1], returnTransaction[0], returnTransaction[1],
-                        returnTerminal[0], returnTerminal[1], queue[0], queue[1], terminal[0], terminal[1], protect));
+                        returnTerminal[0], returnTerminal[1], queue[0], queue[1], terminal[0], terminal[1], protect,
+                        wait));
     }
 
     /**
@@ -1772,7 +1775,7 @@ final class CicsBlockParser {
                         String requestLiteral, String requestData, String returnTransactionLiteral,
                         String returnTransactionData, String returnTerminalLiteral, String returnTerminalData,
                         String queueLiteral, String queueData, String terminalLiteral, String terminalData,
-                        boolean protect) {
+                        boolean protect, boolean waitForData) {
     }
 
     /**

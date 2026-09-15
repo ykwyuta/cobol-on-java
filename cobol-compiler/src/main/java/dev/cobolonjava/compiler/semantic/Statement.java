@@ -196,6 +196,7 @@ public sealed interface Statement {
             String terminalLiteral,
             DataReference terminalData,
             boolean protect,
+            boolean waitForData,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {
     }

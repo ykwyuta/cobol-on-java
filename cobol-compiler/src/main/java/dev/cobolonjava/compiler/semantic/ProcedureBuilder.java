@@ -2105,7 +2105,7 @@ public final class ProcedureBuilder {
                 spec.timing(), times[0], times[1], times[2], times[3], data, length, spec.lengthLiteral(),
                 spec.requestLiteral(), areas[1], spec.returnTransactionLiteral(), areas[2],
                 spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4], spec.terminalLiteral(),
-                areas[5], spec.protect(),
+                areas[5], spec.protect(), spec.waitForData(),
                 parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
     }
 

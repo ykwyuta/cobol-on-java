@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID)、増分 4 (TD の ATI の FILE)、増分 5 (ATI の TERMINAL と固定の端末名)、増分 6 (画面の配信) を実装 |
+| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID)、増分 4 (TD の ATI の FILE)、増分 5 (ATI の TERMINAL と固定の端末名)、増分 6 (画面の配信)、増分 7 (RETRIEVE WAIT) を実装。§10 の増分はすべて入れた |
 | 対応要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 | 検証レベル | V0。実機の CICS と突き合わせていない |
 | 暫定判断 | P-144 |
@@ -112,6 +112,12 @@ JSON API の入口は端末名を持たない (設計 77 §4.4)。端末へ出�
 - task の画面はまだ端末に置かない (§7 の増分で置く)。それまで、端末へ出す task の画面はブラウザに届かない
 - `PROTECT` の START を task の UOW の中で INSERT する形は入れていない。STRICT の境界が START の置き場を知る必要があり、
   別の増分に残す。PROTECT の START は同期点の commit のあとに登録する
+
+実装 (増分 7): `RETRIEVE WAIT` は、満了したデータを読み尽くしていれば `CicsStartPort.retrieveMore` で同じ端末と TRANSID の
+満了した START を 200 ミリ秒ごとに探し、見つかれば task の START の後ろに足して読む。task の期限を越えれば失敗させる
+(実機はこの場合を書かない。region の停止の間の RETRIEVE WAIT は AICB で abend する、とだけ書く)。`JdbcCicsStarts` は
+この task が lease した端末の行を取り出すので、dispatcher と取り合わない。端末の無い START の task は 1 つの START の
+データしか持たないので、WAIT を推測で待たせず断る。1 つの JVM の中の START の port は端末を知らないので断る。
 
 `RETRIEVE WAIT` は端末へ出す task で意味を持つ (同じ端末と TRANSID の次の START を待つ)。待ちの上限は task の期限とし、
 この設計の最後の増分で入れる (§10)。

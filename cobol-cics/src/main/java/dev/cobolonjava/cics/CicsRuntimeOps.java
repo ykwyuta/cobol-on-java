@@ -767,13 +767,32 @@ public final class CicsRuntimeOps {
      */
     public static int retrieveCondition(ProgramContext context, DataView into, DataView lengthArea,
             DataView returnTransaction, DataView returnTerminal, DataView queue, boolean suppressDefaultHandling) {
+        return retrieveCondition(context, into, lengthArea, returnTransaction, returnTerminal, queue, false,
+                suppressDefaultHandling);
+    }
+
+    /**
+     * WAIT を書ける RETRIEVE (設計 83 §5)。
+     *
+     * <p>WAIT は、満了したデータを読み尽くしていれば、同じ端末と TRANSID の次の START が満了するまで task の期限まで待つ
+     * (RETRIEVE の頁)。端末の無い START の task は 1 つの START のデータしか持たず、待っても届くデータが無いので断る。
+     */
+    public static int retrieveCondition(ProgramContext context, DataView into, DataView lengthArea,
+            DataView returnTransaction, DataView returnTerminal, DataView queue, boolean wait,
+            boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
         CicsStartData started = execution.task().start().orElseThrow(() -> new CicsTaskStateException(
                 "RETRIEVE is supported only in a task started by START; the condition otherwise is not verified"));
         // 端末へ出す task は、同じ端末と TRANSID の満了した START を満了の順に読む (RETRIEVE の頁)
         CicsStartData start = started.sequence().stream().filter(item -> !item.retrieved()).findFirst()
-                .orElse(started);
+                .orElse(null);
+        if (start == null && wait) {
+            start = awaitStart(execution, started);
+        }
+        if (start == null) {
+            start = started;
+        }
         int response = CicsResponseCode.NORMAL;
         if (start.retrieved()) {
             // ENDDATA: この task の START のデータはもう残っていない
@@ -809,6 +828,39 @@ public final class CicsRuntimeOps {
             putPadded(required, queue, start.queue(), "QUEUE");
         }
         return containerOutcome(required, RETRIEVE_FUNCTION, response, 0, suppressDefaultHandling, "RETRIEVE");
+    }
+
+    /** RETRIEVE WAIT が次の START を探す間隔。 */
+    private static final long RETRIEVE_WAIT_POLL_MILLIS = 200;
+
+    /** 次に満了した START を START の port から受け取るまで、task の期限まで待つ。 */
+    private static CicsStartData awaitStart(CicsExecution execution, CicsStartData started) {
+        if (started.terminalId().isEmpty()) {
+            throw new CicsTaskStateException("RETRIEVE WAIT is supported only in a task started by START TERMID;"
+                    + " a task started without a terminal has no later START to wait for");
+        }
+        java.time.Duration maxWait = execution.deadline()
+                .map(deadline -> java.time.Duration.between(execution.environment().clock().instant(), deadline))
+                .orElse(null);
+        long deadline = maxWait == null ? Long.MAX_VALUE : System.nanoTime() + Math.max(0, maxWait.toNanos());
+        while (true) {
+            java.util.List<CicsStartData> later = execution.environment().starts().retrieveMore(started);
+            if (!later.isEmpty()) {
+                started.append(later);
+                return later.get(0);
+            }
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                throw new CicsTaskStateException("RETRIEVE WAIT exceeded the task deadline");
+            }
+            try {
+                Thread.sleep(Math.max(1, Math.min(RETRIEVE_WAIT_POLL_MILLIS,
+                        java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remaining))));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new CicsTaskStateException("RETRIEVE WAIT was interrupted");
+            }
+        }
     }
 
     /** CANCEL REQID(名前) (暫定判断 P-138)。未満了の START を取り消す。 */

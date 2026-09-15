@@ -189,6 +189,59 @@ class CicsStartTest {
     }
 
     @Test
+    @DisplayName("RETRIEVE WAITは読み尽くしていればportから次に満了したSTARTを受けて読み、端末の無いSTARTのtaskでは断る")
+    void retrieveWaitReceivesLaterStarts() {
+        CicsStartData first = new CicsStartData("W1", TransId.of("TX02"), CP.encode("one"), Optional.empty(),
+                Optional.empty(), Optional.empty(), "start-test", Optional.empty(), Optional.of("W001"));
+        CicsStartData later = new CicsStartData("W2", TransId.of("TX02"), CP.encode("two"), Optional.empty(),
+                Optional.empty(), Optional.empty(), "start-test", Optional.empty(), Optional.of("W001"));
+        java.util.concurrent.atomic.AtomicInteger asked = new java.util.concurrent.atomic.AtomicInteger();
+        CicsStartPort waiting = new CicsStartPort() {
+            @Override
+            public Result start(Instant expiration, CicsStartData data) {
+                return new Result(CicsResponseCode.NORMAL, 0);
+            }
+
+            @Override
+            public Result cancel(String requestId) {
+                return new Result(CicsResponseCode.NOTFND, 0);
+            }
+
+            @Override
+            public String newRequestId() {
+                return "GEN00001";
+            }
+
+            @Override
+            public List<CicsStartData> retrieveMore(CicsStartData started) {
+                // 3 度目に探したときに次の START が満了している
+                return asked.incrementAndGet() < 3 ? List.of() : List.of(later);
+            }
+        };
+        ProgramContext context = context(new CicsTaskContext(new CicsTaskId("task_wait"), TransId.of("TX02"),
+                "start-test", NOON).withStart(Optional.of(first)), CicsEnvironment.unconfigured().withStarts(waiting));
+        DataView into = text("...");
+        CicsRuntimeOps.retrieveCondition(context, into, null, null, null, null, true, true);
+        assertEquals("one", CP.decode(into.toByteArray()));
+        assertEquals(0, asked.get());
+        CicsRuntimeOps.retrieveCondition(context, into, null, null, null, null, true, true);
+        assertEquals(CicsResponseCode.NORMAL, resp());
+        assertEquals("two", CP.decode(into.toByteArray()));
+        assertEquals(3, asked.get());
+        // WAIT が無ければ読み尽くしで ENDDATA
+        CicsRuntimeOps.retrieveCondition(context, into, null, null, null, null, false, true);
+        assertEquals(CicsResponseCode.ENDDATA, resp());
+
+        CicsStartData detached = new CicsStartData("D1", TransId.of("TX02"), CP.encode("one"), Optional.empty(),
+                Optional.empty(), Optional.empty(), "start-test", Optional.empty());
+        ProgramContext plain = context(new CicsTaskContext(new CicsTaskId("task_plain_wait"), TransId.of("TX02"),
+                "start-test", NOON).withStart(Optional.of(detached)), CicsEnvironment.unconfigured().withStarts(waiting));
+        CicsRuntimeOps.retrieveCondition(plain, into, null, null, null, null, true, true);
+        assertThrows(CicsTaskStateException.class,
+                () -> CicsRuntimeOps.retrieveCondition(plain, into, null, null, null, null, true, true));
+    }
+
+    @Test
     @DisplayName("未満了のSTARTはCANCELで取り消し、2度目はNOTFND。定義の無いTRANSIDはTRANSIDERR、範囲外の時刻はINVREQ 4/5/6")
     void cancelsAndValidatesStarts() {
         List<CicsStartData> launched = new ArrayList<>();

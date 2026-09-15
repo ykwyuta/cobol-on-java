@@ -417,6 +417,57 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLのRETRIEVE WAITは、端末へ出すSTARTでまとめた次のデータを読み、読み尽くしたらportに次を求める")
+    void retrieveWaitReadsLaterStarts() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> started = compile(loader, "WAITPGM", List.of(
+                "MOVE ZERO TO WS-QTIME",
+                "EXEC CICS RETRIEVE INTO(WS-GRP) WAIT RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) AND WS-QTIME = 42 MOVE 'W' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS RETRIEVE INTO(WS-GRP) WAIT RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) AND WS-QTIME = 43 MOVE 'X' TO LK-AREA(2:1) END-IF"));
+        dev.cobolonjava.cics.CicsStartData first = new dev.cobolonjava.cics.CicsStartData("W1", TransId.of("TX02"),
+                CodePages.DEFAULT.encode("000042"), Optional.empty(), Optional.empty(), Optional.empty(),
+                "compiler-test", Optional.empty(), Optional.of("W001"));
+        dev.cobolonjava.cics.CicsStartData later = new dev.cobolonjava.cics.CicsStartData("W2", TransId.of("TX02"),
+                CodePages.DEFAULT.encode("000043"), Optional.empty(), Optional.empty(), Optional.empty(),
+                "compiler-test", Optional.empty(), Optional.of("W001"));
+        dev.cobolonjava.cics.CicsStartPort port = new dev.cobolonjava.cics.CicsStartPort() {
+            @Override
+            public Result start(Instant expiration, dev.cobolonjava.cics.CicsStartData data) {
+                return new Result(dev.cobolonjava.cics.CicsResponseCode.NORMAL, 0);
+            }
+
+            @Override
+            public Result cancel(String requestId) {
+                return new Result(dev.cobolonjava.cics.CicsResponseCode.NOTFND, 0);
+            }
+
+            @Override
+            public String newRequestId() {
+                return "GEN00001";
+            }
+
+            @Override
+            public List<dev.cobolonjava.cics.CicsStartData> retrieveMore(dev.cobolonjava.cics.CicsStartData task) {
+                return List.of(later);
+            }
+        };
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("WAITPGM", started).build();
+
+        TaskCompletion completion = new CobolCicsTaskProgram(CobolRuntime.builder(catalog).classLoader(loader).build(),
+                2, dev.cobolonjava.cics.CicsEnvironment.unconfigured().withStarts(port))
+                .execute(new CicsTransactionDefinition(TransId.of("TX02"), ProgramId.of("WAITPGM"),
+                                Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        new CicsTaskContext(new CicsTaskId("task_wait"), TransId.of("TX02"), "compiler-test",
+                                Instant.parse("2026-09-10T03:00:00Z")).withStart(Optional.of(first)),
+                        (action, ignored) -> { });
+
+        assertEquals("WXIT", CodePages.DEFAULT.decode(completion.payload().commarea()));
+    }
+
+    @Test
     @DisplayName("生成COBOLがSTARTとCANCELを出し、起こされたtaskのRETRIEVEがFROMとRTRANSIDを読む")
     void runsStartRetrieveAndCancel() throws InterruptedException {
         GeneratedLoader loader = new GeneratedLoader();
@@ -470,7 +521,8 @@ class CicsGenerationTest {
         assertRejected("EXEC CICS START TRANSID('TX02') INTERVAL(0) TIME(0) END-EXEC", "mutually exclusive");
         assertRejected("EXEC CICS START TRANSID('TX02') HOURS(1) END-EXEC", "require AFTER or AT");
         assertRejected("EXEC CICS CANCEL END-EXEC", "CANCEL requires REQID");
-        assertRejected("EXEC CICS RETRIEVE INTO(WS-GRP) WAIT END-EXEC", "unsupported RETRIEVE option: WAIT");
+        assertRejected("EXEC CICS RETRIEVE SET(WS-GRP) END-EXEC", "unsupported RETRIEVE option: SET");
+        assertRejected("EXEC CICS RETRIEVE INTO(WS-GRP) WAIT('X') END-EXEC", "WAIT");
         assertRejected("EXEC CICS RETRIEVE RTRANSID(WS-PGM) END-EXEC",
                 "RTRANSID data area must be a 4-byte alphanumeric item");
     }

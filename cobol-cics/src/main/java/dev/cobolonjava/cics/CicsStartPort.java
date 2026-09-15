@@ -38,6 +38,14 @@ public interface CicsStartPort {
     /** 未満了の START を取り消す。無ければ NOTFND。 */
     Result cancel(String requestId);
 
+    /**
+     * RETRIEVE WAIT (設計 83 §5)。{@code started} の task が起きたあとに満了した、同じ端末と TRANSID の START を取り出す。
+     * 無ければ空。既定は端末を知らないので断る。
+     */
+    default java.util.List<CicsStartData> retrieveMore(CicsStartData started) {
+        throw new CicsTaskStateException("RETRIEVE WAIT requires a start port that knows the terminals");
+    }
+
     /** REQID を書かない START のために、区別できる名前を作る。 */
     String newRequestId();
 

@@ -241,6 +241,21 @@ class JdbcCicsStartsTest {
     }
 
     @Test
+    @DisplayName("RETRIEVE WAITは同じ端末とTRANSIDの満了したSTARTだけを取り出し、未満了と別のTRANSIDは残す")
+    void retrievesLaterStartsForWaitingTasks() {
+        String alice = terminals.register("alice", NOW.plusSeconds(3600), NOW);
+        CicsStartData started = toTerminal("W0", "TX01", alice, "alice", null);
+        first.start(NOW.plusSeconds(1), toTerminal("W1", "TX01", alice, "alice", new byte[] {1}));
+        first.start(NOW.plusSeconds(60), toTerminal("W2", "TX01", alice, "alice", null));
+        first.start(NOW.plusSeconds(1), toTerminal("W3", "TX02", alice, "alice", null));
+        time.set(NOW.plusSeconds(5));
+
+        assertEquals(List.of("W1"), second.retrieveMore(started).stream().map(CicsStartData::requestId).toList());
+        assertTrue(first.retrieveMore(started).isEmpty());
+        assertEquals(2, pending());
+    }
+
+    @Test
     @DisplayName("満了したときに端末が無いか別の利用者に振り直されていれば、TERMIDのSTARTは起こさずに捨てる")
     void discardsStartsForMissingTerminals() {
         String alice = terminals.register("alice", NOW.plusSeconds(3600), NOW);

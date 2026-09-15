@@ -172,6 +172,26 @@ public final class JdbcCicsStarts implements CicsStartPort, SmartLifecycle {
         return deleted != null && deleted == 1 ? NORMAL : new Result(CicsResponseCode.NOTFND, 0);
     }
 
+    /**
+     * 待っている task の端末と TRANSID の、満了した START を取り出す。この task が端末を lease しているので、dispatcher は
+     * これらの行を起こさない。取り出した行は消し、owner の違う行 (端末の名前が振り直された) は捨てる。
+     */
+    @Override
+    public List<CicsStartData> retrieveMore(CicsStartData started) {
+        String terminal = started.terminalId().orElseThrow(() -> new CicsTaskStateException(
+                "RETRIEVE WAIT requires a task started by START TERMID"));
+        List<Due> due = jdbc.query("SELECT " + COLUMNS + " FROM COBOL_START WHERE TERMINAL_ID = ? AND TRANSID = ?"
+                        + " AND EXPIRES_AT <= ? ORDER BY EXPIRES_AT, REQUEST_ID",
+                (row, index) -> due(row), terminal, started.transaction().value(), clock.instant().toEpochMilli());
+        List<CicsStartData> claimed = new ArrayList<>();
+        for (Due start : due) {
+            if (claim(start) && start.data().owner().equals(started.owner())) {
+                claimed.add(start.data());
+            }
+        }
+        return claimed;
+    }
+
     @Override
     public String newRequestId() {
         String digits = Long.toString(ThreadLocalRandom.current().nextLong(REQUEST_ID_LIMIT), 36)
