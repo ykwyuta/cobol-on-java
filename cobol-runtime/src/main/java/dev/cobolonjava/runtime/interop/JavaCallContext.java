@@ -27,6 +27,11 @@ public final class JavaCallContext {
         return context.codePage();
     }
 
+    /** 実行単位の時計。地方時はこの時計の時間帯である。 */
+    public java.time.Clock clock() {
+        return context.clock();
+    }
+
     public int returnCode() {
         return context.returnCode();
     }

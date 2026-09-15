@@ -570,6 +570,11 @@ EXEC CICS CANCEL REQID(名前) END-EXEC
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。
 
+#### Language Environment の callable service
+
+- `COPY CEEIGZCT` は feedback code の 88 レベル `CEE000` だけを定義します。ほかの記号名は未対応です。
+- `CALL "CEEDAYS"` は YYYY / MM / DD と区切りの絵で日付を Lilian の日にし、`CALL "CEELOCT"` は地方時の Lilian の日、秒、Gregorian の文字列を返します。実行時に `LanguageEnvironmentServices.register` で登録します。長さの札が域を越える VSTRING や、確かめていない絵は失敗させます (暫定判断 P-139)。
+
 #### `USAGE POINTER` と `LENGTH OF`
 
 - `USAGE POINTER` は 4 byte の項目で、`SET 項目 TO NULL` と `SET 項目 TO 別のPOINTER` だけを扱います。`ADDRESS OF` と POINTER の MOVE は未対応です。

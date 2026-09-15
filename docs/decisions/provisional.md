@@ -4219,3 +4219,32 @@ file の状態や副索引を持たないので返さない。性能は測って
 
 **解消条件**: 実機で過ぎた時刻の START、ENVDEFERR の対 (INTO と FROM)、生成される REQID の形を採る。TERMID を端末の
 adapter と合わせて設計する。PROTECT を task の境界の commit と合わせて入れる。
+
+## P-139 CEEIGZCT は CEE000 だけを定義し、CEEDAYS / CEELOCT は確かめた絵と feedback code だけを扱う
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `LanguageEnvironmentCopyBookResolver`、`LanguageEnvironmentServices`、`JavaCallContext.clock` |
+| 関連要件 | FR-080 (Bank-of-Z の CRECUST) |
+
+**暫定の扱い**:
+
+- `CEEIGZCT` は condition token の先頭 8 byte への 88 レベル `CEE000 VALUE X'0000000000000000'` だけを置く。成功の token が
+  binary zero であることは公開文書にあるが、ほかの記号名 (CEE2EB 等) の Case-Sev-Ctl の byte が z/OS で何になるかを
+  確かめていない。ほかの記号名を書いた資産は名前が無いとして翻訳が止まる。IBM の原文は参照しない
+- 失敗の token は Severity と Msg-No (CEEDAYS / CEELOCT の頁の値)、Case-Sev-Ctl 1 (IBM COBOL for Linux の文書「常に 1」)、
+  Facility-ID `CEE`、I-S-Info 0 を置く。Case-Sev-Ctl は z/OS と突き合わせていない
+- CEEDAYS は Lilian の日 (1582 年 10 月 15 日が 1) を返す。絵は YYYY、MM、DD と英字でない区切りだけを受ける。数字でない欄は
+  CEE2EO (2520)、月は CEE2EL (2517)、日は CEE2EC (2508)、1582 年 10 月 15 日より前は CEE2EH (2513)、入力が絵より短ければ
+  CEE2EB (2507)。失敗なら Lilian を 0 にする (頁)
+- 入力が絵より長い形、区切りの文字が違う形、ほかの絵、OMITTED は失敗させる。VSTRING の長さが渡された域を越える形も
+  失敗させる。LE がその先の記憶域を読むかを確かめていないからである
+- CEELOCT は実行単位の時計 (`ProgramContext.clock`) の時間帯の地方時で、Lilian の日、1582 年 10 月 14 日 00:00:00 からの秒
+  (COMP-2)、YYYYMMDDHHMISS999 を返す
+- `LanguageEnvironmentServices.register` で program catalog に登録する。verify の写し句の連なりの最後に `CEEIGZCT` を足した
+
+**どこがずれうるか**: CRECUST は長さの札に 10 を置いた 8 文字の絵と日付を CEEDAYS に渡している。ここでは翻訳は通るが、
+実行すると VSTRING の長さが域を越えるとして止まる。BNK1TFN / BNK1CCS の長すぎる LENGTH と同じ扱いである。
+
+**解消条件**: 実機で z/OS の Case-Sev-Ctl の値、VSTRING の長さが域を越えたときの CEEDAYS、区切りの扱いを採る。
