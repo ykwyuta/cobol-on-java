@@ -1,6 +1,13 @@
 package dev.cobolonjava.cics;
 
+import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_CONSISTENT;
+import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_DEBKEY;
+import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_DEBREC;
 import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_DELETE;
+import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_MASSINSERT;
+import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_NOSUSPEND;
+import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_RBA;
+import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_XRBA;
 import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_ENDBR;
 import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_GENERIC;
 import static dev.cobolonjava.cics.CicsRuntimeOps.FILE_GTEQ;
@@ -334,6 +341,176 @@ class CicsFileControlTest {
         }
         assertEquals(List.of(1, 3), numbers);
         assertEquals(CicsResponseCode.ENDFILE, resp());
+    }
+
+    /** TOKEN と SYSID を渡す形で命令を流し、EIBRESP を返す。 */
+    private int runWith(ProgramContext context, int kind, DataView data, DataView ridfld, DataView token,
+                        String sysid, int flags) {
+        CicsRuntimeOps.fileCommandCondition(context, kind, "CUSTFILE", null, data, null, -1, ridfld, null, -1,
+                null, -1, null, token, sysid, null, flags, true);
+        return resp();
+    }
+
+    private static int intOf(DataView view) {
+        return ByteBuffer.wrap(view.toByteArray()).getInt();
+    }
+
+    @Test
+    @DisplayName("ESDSは終わりに足してRBAを返し、RBAとXRBAで読み、browseし、DELETEはINVREQ 21、長さを変えるREWRITEはILLOGIC 110")
+    void entrySequencedFileByRba() {
+        CicsFilePort files = CicsFilePort.dataSets(List.of(
+                CicsFileDefinition.entrySequenced("CUSTFILE", directory.resolve("cust.esds"), 8, true, CP)));
+        ProgramContext context = context(files);
+        DataView rba = fullword(-1);
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_WRITE, text("first"), rba, null, null,
+                FILE_RBA | FILE_MASSINSERT));
+        assertEquals(0, intOf(rba));
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_WRITE, text("second!!"), rba, null, null, FILE_RBA));
+        assertEquals(5, intOf(rba));
+        DataView xrba = Storage.copyOf(new byte[8]).whole();
+        runWith(context, FILE_WRITE, text("3rd"), xrba, null, null, FILE_XRBA);
+        assertEquals(13L, ByteBuffer.wrap(xrba.toByteArray()).getLong());
+
+        DataView into = text("........");
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_READ, into, fullword(5), null, null, FILE_RBA));
+        assertEquals("second!!", CP.decode(into.toByteArray()));
+        assertEquals(CicsResponseCode.NOTFND, runWith(context, FILE_READ, into, fullword(6), null, null, FILE_RBA));
+
+        DataView cursor = fullword(1);
+        runWith(context, FILE_STARTBR, null, cursor, null, null, FILE_RBA | FILE_GTEQ);
+        List<Integer> seen = new java.util.ArrayList<>();
+        while (runWith(context, FILE_READNEXT, text("........"), cursor, null, null, FILE_RBA)
+                == CicsResponseCode.NORMAL) {
+            seen.add(intOf(cursor));
+        }
+        assertEquals(List.of(5, 13), seen);
+
+        assertEquals(CicsResponseCode.INVREQ, runWith(context, FILE_DELETE, null, fullword(0), null, null, FILE_RBA));
+        assertEquals(21, resp2());
+
+        runWith(context, FILE_READ, into, fullword(0), null, null, FILE_RBA | FILE_UPDATE);
+        assertEquals(CicsResponseCode.ILLOGIC, runWith(context, FILE_REWRITE, text("longer"), null, null, null, 0));
+        assertEquals(110, resp2());
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_REWRITE, text("FIRST"), null, null, null, 0));
+        runWith(context, FILE_READ, into, fullword(0), null, null, FILE_RBA);
+        assertEquals("FIRST", CP.decode(into.subView(0, 5).toByteArray()));
+
+        // ESDS に RBA を書かない形は、文書に条件が無いので失敗させる
+        assertThrows(CicsTaskStateException.class,
+                () -> runWith(context, FILE_READ, into, text("K001"), null, null, 0));
+    }
+
+    @Test
+    @DisplayName("TOKENで同じfileの複数のrecordを持ち、合わないTOKENはINVREQ 47。KSDSのRBAは鍵の順に長さを足す")
+    void tokensHoldSeveralRecords() {
+        ProgramContext context = context(keyed());
+        write(context, "K001aaaaaa");
+        write(context, "K002bbbbbb");
+        DataView into = text("          ");
+        DataView first = fullword(0);
+        DataView second = fullword(0);
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_READ, into, text("K001"), first, null, FILE_UPDATE));
+        assertEquals(CicsResponseCode.NORMAL,
+                runWith(context, FILE_READ, into, text("K002"), second, null, FILE_UPDATE));
+        assertEquals(CicsResponseCode.INVREQ, runWith(context, FILE_REWRITE, text("K001AAAAAA"), null,
+                fullword(intOf(second) + 100), null, 0));
+        assertEquals(47, resp2());
+        assertEquals(CicsResponseCode.NORMAL,
+                runWith(context, FILE_REWRITE, text("K001AAAAAA"), null, first, null, 0));
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_UNLOCK, null, null, second, null, 0));
+        assertEquals(CicsResponseCode.INVREQ, runWith(context, FILE_UNLOCK, null, null, second, null, 0));
+        assertEquals(47, resp2());
+
+        // browse の UPDATE は読んだ record を token で持ち、DELETE がその token で消す
+        DataView cursor = text("K001");
+        runWith(context, FILE_STARTBR, null, cursor, null, null, 0);
+        DataView browsed = fullword(0);
+        assertEquals(CicsResponseCode.NORMAL,
+                runWith(context, FILE_READNEXT, into, cursor, browsed, null, FILE_UPDATE));
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_DELETE, null, null, browsed, null, 0));
+        runWith(context, FILE_ENDBR, null, null, null, null, 0);
+
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_READ, into, fullword(0), null, null, FILE_RBA));
+        assertEquals("K002bbbbbb", CP.decode(into.toByteArray()));
+    }
+
+    @Test
+    @DisplayName("NOSUSPENDは他のtaskが持つrecordを待たずRECORDBUSY 107、CONSISTENTの読みは期限まで待つ")
+    void noSuspendAndConsistentReads() {
+        CicsFilePort files = keyed();
+        ProgramContext owner = context(files, "task_owner");
+        write(owner, "K001aaaaaa");
+        write(owner, "K002bbbbbb");
+        DataView into = text("          ");
+        run(owner, FILE_READ, into, null, text("K001"), -1, -1, null, FILE_UPDATE);
+
+        ProgramContext other = context(files, "task_other");
+        execution.limitTo(Instant.now().plusMillis(200));
+        assertEquals(CicsResponseCode.RECORDBUSY,
+                runWith(other, FILE_READ, into, text("K001"), null, null, FILE_UPDATE | FILE_NOSUSPEND));
+        assertEquals(107, resp2());
+        assertEquals(CicsResponseCode.RECORDBUSY,
+                runWith(other, FILE_READ, into, text("K001"), null, null, FILE_CONSISTENT | FILE_NOSUSPEND));
+        assertThrows(CicsTaskStateException.class,
+                () -> runWith(other, FILE_READ, into, text("K001"), null, null, FILE_CONSISTENT));
+        assertEquals(CicsResponseCode.NORMAL, runWith(other, FILE_READ, into, text("K001"), null, null, 0));
+
+        // 総称の DELETE は持たれていない record だけを消し、NUMREC に消した数を返す
+        DataView numrec = halfword(0);
+        CicsRuntimeOps.fileCommandCondition(other, FILE_DELETE, "CUSTFILE", null, null, null, -1, text("K00 "), null,
+                3, null, -1, numrec, null, null, null, FILE_GENERIC | FILE_NOSUSPEND, true);
+        assertEquals(CicsResponseCode.RECORDBUSY, resp());
+        assertEquals(1, halfwordOf(numrec));
+    }
+
+    @Test
+    @DisplayName("BDAMは相対block番号をRRDSの番号に写し、DEBRECは0だけ、DEBKEYは鍵が合うときだけ読む。DELETEはINVREQ 27")
+    void bdamBlocks() {
+        CicsFilePort files = CicsFilePort.dataSets(List.of(CicsFileDefinition.directAccess("CUSTFILE",
+                directory.resolve("cust.bdam"), 0, 4, 10, false, CP)));
+        ProgramContext context = context(files);
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_WRITE, text("K007record"), fullword(0), null,
+                null, 0));
+        assertEquals(CicsResponseCode.INVREQ, runWith(context, FILE_WRITE, text("K008record"), fullword(1), null,
+                null, FILE_MASSINSERT));
+        assertEquals(38, resp2());
+
+        DataView into = text("          ");
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_READ, into, fullword(0), null, null, 0));
+        assertEquals("K007record", CP.decode(into.toByteArray()));
+        DataView debrec = Storage.copyOf(ByteBuffer.allocate(8).putInt(0).putInt(1).array()).whole();
+        assertEquals(CicsResponseCode.NOTFND, runWith(context, FILE_READ, into, debrec, null, null, FILE_DEBREC));
+        debrec.setBytes(new byte[8]);
+        assertEquals(CicsResponseCode.NORMAL, runWith(context, FILE_READ, into, debrec, null, null, FILE_DEBREC));
+
+        byte[] key = ByteBuffer.allocate(8).putInt(0).put(CP.encode("K007")).array();
+        assertEquals(CicsResponseCode.NORMAL,
+                runWith(context, FILE_READ, into, Storage.copyOf(key).whole(), null, null, FILE_DEBKEY));
+        key[7] = CP.encode("9")[0];
+        assertEquals(CicsResponseCode.NOTFND,
+                runWith(context, FILE_READ, into, Storage.copyOf(key).whole(), null, null, FILE_DEBKEY));
+
+        assertEquals(CicsResponseCode.INVREQ, runWith(context, FILE_DELETE, null, fullword(0), null, null, 0));
+        assertEquals(27, resp2());
+    }
+
+    @Test
+    @DisplayName("構成した自regionのSYSIDは書かないのと同じに処理し、ほかのSYSIDはSYSIDERR 130")
+    void sysidOfThisRegion() {
+        CicsFilePort files = keyed();
+        execution = null;
+        ProgramContext context = ProgramContext.standard().withCodePage(CP).withServices(RuntimeServices.builder()
+                .service(CicsExecution.class, execution = new CicsExecution(new CicsTaskContext(
+                        new CicsTaskId("task_sysid"), TransId.of("TX01"), "file-test", Instant.EPOCH), 0,
+                        CicsEnvironment.unconfigured().withFiles(files).withLocalSystems(java.util.Set.of("HOME"))))
+                .build());
+        DataView into = text("          ");
+        assertEquals(CicsResponseCode.NOTFND, runWith(context, FILE_READ, into, text("K001"), null, "HOME", 0));
+        assertEquals(CicsResponseCode.SYSIDERR, runWith(context, FILE_READ, into, text("K001"), null, "AWAY", 0));
+        assertEquals(130, resp2());
+        CicsRuntimeOps.fileCommandCondition(context, FILE_UNLOCK, "CUSTFILE", null, null, null, -1, null, null, -1,
+                null, -1, null, null, null, CP.encode("AWAY"), 0, true);
+        assertEquals(CicsResponseCode.SYSIDERR, resp());
     }
 
     @Test

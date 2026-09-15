@@ -72,16 +72,21 @@ final class CicsBlockParser {
             Set.of("QUEUE"));
     /** file control の命令ごとに、FILE / RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> FILE_OPTIONS = List.of(
-            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "RRN", "UPDATE", "UNCOMMITTED"),
-            Set.of("FROM", "RIDFLD", "LENGTH", "KEYLENGTH", "RRN"),
-            Set.of("FROM", "LENGTH"),
-            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "NUMREC", "RRN"),
-            Set.of(),
-            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN"),
-            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN"),
-            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN"),
-            Set.of("REQID"),
-            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN"));
+            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "RRN", "UPDATE", "UNCOMMITTED",
+                    "RBA", "XRBA", "TOKEN", "NOSUSPEND", "CONSISTENT", "REPEATABLE", "DEBKEY", "DEBREC", "SYSID"),
+            Set.of("FROM", "RIDFLD", "LENGTH", "KEYLENGTH", "RRN", "RBA", "XRBA", "MASSINSERT", "NOSUSPEND", "SYSID"),
+            Set.of("FROM", "LENGTH", "TOKEN", "NOSUSPEND", "SYSID"),
+            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "NUMREC", "RRN", "RBA", "XRBA", "TOKEN", "NOSUSPEND", "SYSID"),
+            Set.of("TOKEN", "SYSID"),
+            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN", "RBA", "XRBA", "DEBKEY",
+                    "DEBREC", "SYSID"),
+            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN", "RBA", "XRBA", "UPDATE", "TOKEN",
+                    "NOSUSPEND", "DEBKEY", "DEBREC", "SYSID"),
+            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN", "RBA", "XRBA", "UPDATE", "TOKEN",
+                    "NOSUSPEND", "DEBKEY", "DEBREC", "SYSID"),
+            Set.of("REQID", "SYSID"),
+            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN", "RBA", "XRBA", "DEBKEY",
+                    "DEBREC", "SYSID"));
     private static final Pattern RECEIVE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+RECEIVE\\b(.*?)END-EXEC\\s*$");
     private static final Pattern DELAY_BLOCK = Pattern.compile(
@@ -662,11 +667,10 @@ final class CicsBlockParser {
     }
 
     /**
-     * file control の命令を読む (暫定判断 P-131、P-136)。
+     * file control の命令を読む (暫定判断 P-131、P-136、P-147)。
      *
-     * <p>SET (CICS が持つ域への pointer)、SYSID、RBA / XRBA、TOKEN、NOSUSPEND、CONSISTENT / REPEATABLE (RLS)、
-     * DEBKEY / DEBREC (BDAM)、MASSINSERT、browse の UPDATE は、表す file や記憶域の設計を持たないので
-     * 名前をつけて断る。
+     * <p>SYSID、RBA / XRBA、TOKEN、NOSUSPEND、CONSISTENT / REPEATABLE、DEBKEY / DEBREC、MASSINSERT、browse の UPDATE は
+     * 設計 85 §4〜§5 の暫定の仕様で変換する。SET (CICS が持つ域への pointer) は ADDRESS OF を入れるまで断る。
      */
     private static Parsed parseFileCommand(String verb, String source) {
         int kind = dev.cobolonjava.cics.CicsRuntimeOps.FILE_COMMANDS.indexOf(verb);
@@ -721,7 +725,16 @@ final class CicsBlockParser {
                 | fileFlag(options, "GTEQ", dev.cobolonjava.cics.CicsRuntimeOps.FILE_GTEQ)
                 | fileFlag(options, "EQUAL", dev.cobolonjava.cics.CicsRuntimeOps.FILE_EQUAL)
                 | fileFlag(options, "RRN", dev.cobolonjava.cics.CicsRuntimeOps.FILE_RRN)
-                | fileFlag(options, "UPDATE", dev.cobolonjava.cics.CicsRuntimeOps.FILE_UPDATE);
+                | fileFlag(options, "UPDATE", dev.cobolonjava.cics.CicsRuntimeOps.FILE_UPDATE)
+                | fileFlag(options, "RBA", dev.cobolonjava.cics.CicsRuntimeOps.FILE_RBA)
+                | fileFlag(options, "XRBA", dev.cobolonjava.cics.CicsRuntimeOps.FILE_XRBA)
+                | fileFlag(options, "NOSUSPEND", dev.cobolonjava.cics.CicsRuntimeOps.FILE_NOSUSPEND)
+                // REPEATABLE は UOW の終わりまで共有 lock を持つ振る舞いを持たず、CONSISTENT と同じにする (設計 85 §5.3)
+                | fileFlag(options, "CONSISTENT", dev.cobolonjava.cics.CicsRuntimeOps.FILE_CONSISTENT)
+                | fileFlag(options, "REPEATABLE", dev.cobolonjava.cics.CicsRuntimeOps.FILE_CONSISTENT)
+                | fileFlag(options, "MASSINSERT", dev.cobolonjava.cics.CicsRuntimeOps.FILE_MASSINSERT)
+                | fileFlag(options, "DEBKEY", dev.cobolonjava.cics.CicsRuntimeOps.FILE_DEBKEY)
+                | fileFlag(options, "DEBREC", dev.cobolonjava.cics.CicsRuntimeOps.FILE_DEBREC);
         // UNCOMMITTED は RLS でない file の既定であり、何も変えない
         fileFlag(options, "UNCOMMITTED", 0);
         if (options.containsKey("GTEQ") && options.containsKey("EQUAL")) {
@@ -730,11 +743,52 @@ final class CicsBlockParser {
         if (options.containsKey("UPDATE") && options.containsKey("UNCOMMITTED")) {
             throw new IllegalArgumentException(label + " UPDATE and UNCOMMITTED are mutually exclusive");
         }
+        List<String> integrity = java.util.stream.Stream.of("UPDATE", "TOKEN", "UNCOMMITTED", "CONSISTENT",
+                "REPEATABLE").filter(options::containsKey).toList();
+        if (kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READ && integrity.size() > 1
+                && !integrity.equals(List.of("UPDATE", "TOKEN"))) {
+            throw new IllegalArgumentException(label + " " + String.join(" and ", integrity)
+                    + " are mutually exclusive");
+        }
         if (options.containsKey("GENERIC") && !options.containsKey("KEYLENGTH")) {
             throw new IllegalArgumentException(label + " GENERIC requires KEYLENGTH");
         }
-        if (options.containsKey("RRN") && (options.containsKey("GENERIC") || options.containsKey("KEYLENGTH"))) {
-            throw new IllegalArgumentException(label + " RRN does not take GENERIC or KEYLENGTH");
+        List<String> identifiers = java.util.stream.Stream.of("RRN", "RBA", "XRBA", "DEBKEY", "DEBREC")
+                .filter(options::containsKey).toList();
+        if (identifiers.size() > 1) {
+            throw new IllegalArgumentException(label + " " + String.join(" and ", identifiers)
+                    + " are mutually exclusive");
+        }
+        if (!identifiers.isEmpty() && (options.containsKey("GENERIC") || options.containsKey("KEYLENGTH"))) {
+            throw new IllegalArgumentException(label + " " + identifiers.get(0) + " does not take GENERIC or KEYLENGTH");
+        }
+        String token = sendDataName(options.get("TOKEN"), "TOKEN");
+        boolean browseRead = kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READNEXT
+                || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READPREV;
+        if (token != null && kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READ) {
+            // READ の TOKEN は UPDATE を含む (READ の頁)
+            flags |= dev.cobolonjava.cics.CicsRuntimeOps.FILE_UPDATE;
+        }
+        if (browseRead && options.containsKey("UPDATE") != (token != null)) {
+            throw new IllegalArgumentException(label + " UPDATE and TOKEN must be specified together");
+        }
+        if (token != null && kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_DELETE && ridfld != null) {
+            throw new IllegalArgumentException(label + " TOKEN applies only without RIDFLD");
+        }
+        String[] sysid = options.get("SYSID");
+        String sysidLiteral = null;
+        String sysidData = null;
+        if (sysid != null) {
+            if (sysid[0] != null) {
+                sysidLiteral = sysid[0].stripTrailing();
+                if (!sysidLiteral.matches("[A-Z@#$][A-Z0-9@#$]{0,3}")) {
+                    throw new IllegalArgumentException(label + " SYSID must be 1 to 4 characters: " + sysid[0]);
+                }
+            } else if (sysid[2] != null) {
+                sysidData = sysid[2];
+            } else {
+                throw new IllegalArgumentException(label + " SYSID requires SYSID('name') or SYSID(data-name)");
+            }
         }
         if (kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_DELETE && ridfld == null
                 && (options.containsKey("KEYLENGTH") || options.containsKey("GENERIC")
@@ -771,7 +825,8 @@ final class CicsBlockParser {
                 null, null, null, null, null,
                 new FileCommandSpec(kind, fileLiteral, file[2], data, lengthName, lengthLiteral, ridfld,
                         keyLength[0], keyLength[1] == null ? -1 : Integer.parseInt(keyLength[1]),
-                        reqid[0], reqid[1] == null ? -1 : Integer.parseInt(reqid[1]), numrec, flags),
+                        reqid[0], reqid[1] == null ? -1 : Integer.parseInt(reqid[1]), numrec, token, sysidLiteral,
+                        sysidData, flags),
                 null);
     }
 
@@ -1759,7 +1814,8 @@ final class CicsBlockParser {
      */
     record FileCommandSpec(int kind, String fileLiteral, String fileData, String data, String length,
                            int lengthLiteral, String ridfld, String keyLength, int keyLengthLiteral,
-                           String reqid, int reqidLiteral, String numrec, int flags) {
+                           String reqid, int reqidLiteral, String numrec, String token, String sysidLiteral,
+                           String sysidData, int flags) {
     }
 
     /**

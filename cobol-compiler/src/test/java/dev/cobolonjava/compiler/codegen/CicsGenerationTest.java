@@ -203,8 +203,8 @@ class CicsGenerationTest {
                 "IF WS-RESP = DFHRESP(FILENOTFOUND) MOVE 'F' TO LK-AREA(1:1) END-IF"));
 
         assertEquals("FNIT", CodePages.DEFAULT.decode(execute(loader, "WRFILE", program).payload().commarea()));
-        assertRejected("EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) MASSINSERT END-EXEC",
-                "unsupported WRITE FILE option: MASSINSERT");
+        assertRejected("EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) SET(WS-FLEN) END-EXEC",
+                "unsupported WRITE FILE option: SET");
         assertRejected("EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) LENGTH(7) END-EXEC",
                 "WRITE FILE LENGTH 7 exceeds the FROM data area of 6 bytes");
         assertRejected("EXEC CICS WRITE OPERATOR TEXT(WS-DATE) END-EXEC",
@@ -251,6 +251,60 @@ class CicsGenerationTest {
                         task(), (action, ignored) -> { });
 
         assertEquals("ABCD", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("生成COBOLがESDSへMASSINSERTで書いてRBAを受け、TOKENで更新し、自regionのSYSIDは通り、ほかはSYSIDERR")
+    void runsProvisionalFileControlOptions(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "ESDSPGM", List.of(
+                "MOVE '000042' TO WS-QTIME",
+                "EXEC CICS WRITE FILE('LOGFILE') FROM(WS-GRP) RIDFLD(WS-FLEN) RBA MASSINSERT END-EXEC",
+                "MOVE '000077' TO WS-QTIME",
+                "EXEC CICS WRITE FILE('LOGFILE') FROM(WS-GRP) RIDFLD(WS-FLEN) RBA SYSID('HOME') END-EXEC",
+                "EXEC CICS UNLOCK FILE('LOGFILE') END-EXEC",
+                "IF WS-FLEN = 6 MOVE 'A' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS READ FILE('LOGFILE') INTO(WS-GRP) RIDFLD(WS-FLEN) RBA TOKEN(WS-COMPST)"
+                        + " NOSUSPEND END-EXEC",
+                "MOVE '000099' TO WS-QTIME",
+                "EXEC CICS REWRITE FILE('LOGFILE') FROM(WS-GRP) TOKEN(WS-COMPST) END-EXEC",
+                "MOVE ZERO TO WS-FLEN",
+                "EXEC CICS READ FILE('LOGFILE') INTO(WS-GRP) RIDFLD(WS-FLEN) RBA CONSISTENT END-EXEC",
+                "IF WS-QTIME = 42 MOVE 'B' TO LK-AREA(2:1) END-IF",
+                "MOVE 6 TO WS-FLEN",
+                "EXEC CICS READ FILE('LOGFILE') INTO(WS-GRP) RIDFLD(WS-FLEN) RBA END-EXEC",
+                "IF WS-QTIME = 99 MOVE 'C' TO LK-AREA(3:1) END-IF",
+                "MOVE 'AWAY' TO WS-ABCODE",
+                "EXEC CICS READ FILE('LOGFILE') INTO(WS-GRP) RIDFLD(WS-FLEN) RBA SYSID(WS-ABCODE)"
+                        + " RESP(WS-RESP) RESP2(WS-RESP2) END-EXEC",
+                "IF WS-RESP = DFHRESP(SYSIDERR) AND WS-RESP2 = 130 MOVE 'D' TO LK-AREA(4:1) END-IF"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("ESDSPGM", program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("ESDSPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withLocalSystems(java.util.Set.of("HOME"))
+                .withFiles(dev.cobolonjava.cics.CicsFilePort.dataSets(List.of(
+                        dev.cobolonjava.cics.CicsFileDefinition.entrySequenced(
+                                "LOGFILE", directory.resolve("log.esds"), 6, false, CodePages.DEFAULT))));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("ABCD", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-FLEN) RBA RRN END-EXEC",
+                "RRN and RBA are mutually exclusive");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) XRBA END-EXEC",
+                "XRBA requires a 8-byte RIDFLD");
+        assertRejected("EXEC CICS READNEXT FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) UPDATE END-EXEC",
+                "UPDATE and TOKEN must be specified together");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) TOKEN(WS-LEN) END-EXEC",
+                "TOKEN must be a fullword data area");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) UPDATE CONSISTENT END-EXEC",
+                "UPDATE and CONSISTENT are mutually exclusive");
+        assertRejected("EXEC CICS UNLOCK FILE('F') SYSID('TOOLONG') END-EXEC",
+                "SYSID must be 1 to 4 characters");
     }
 
     @Test
@@ -628,8 +682,8 @@ class CicsGenerationTest {
         assertEquals("FSDT", CodePages.DEFAULT.decode(execute(loader, "NOFILE", program).payload().commarea()));
         assertRejected("EXEC CICS READ FILE('F') SET(WS-PGM) RIDFLD(WS-ABCODE) END-EXEC",
                 "unsupported READ FILE option: SET");
-        assertRejected("EXEC CICS READNEXT FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) UPDATE END-EXEC",
-                "unsupported READNEXT FILE option: UPDATE");
+        assertRejected("EXEC CICS DELETE FILE('F') RIDFLD(WS-ABCODE) TOKEN(WS-FLEN) END-EXEC",
+                "TOKEN applies only without RIDFLD");
         assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) GTEQ EQUAL END-EXEC",
                 "GTEQ and EQUAL are mutually exclusive");
         assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) GENERIC END-EXEC",

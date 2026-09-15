@@ -50,6 +50,20 @@ public final class CicsRuntimeOps {
     public static final int FILE_EQUAL = 4;
     public static final int FILE_RRN = 8;
     public static final int FILE_UPDATE = 16;
+    /** RIDFLD は 4 byte の RBA (設計 85 §5.1)。 */
+    public static final int FILE_RBA = 32;
+    /** RIDFLD は 8 byte の RBA。 */
+    public static final int FILE_XRBA = 64;
+    /** 他の task が持つ record を待たない (設計 85 §4.2)。 */
+    public static final int FILE_NOSUSPEND = 128;
+    /** CONSISTENT / REPEATABLE (設計 85 §5.3)。 */
+    public static final int FILE_CONSISTENT = 256;
+    /** MASSINSERT。普通の WRITE と同じに書く。 */
+    public static final int FILE_MASSINSERT = 512;
+    /** BDAM の DEBKEY (設計 85 §5.4)。 */
+    public static final int FILE_DEBKEY = 1024;
+    /** BDAM の DEBREC。 */
+    public static final int FILE_DEBREC = 2048;
     /** 種類の番号の順の命令名。 */
     public static final java.util.List<String> FILE_COMMANDS = java.util.List.of(
             "READ", "WRITE", "REWRITE", "DELETE", "UNLOCK", "STARTBR", "READNEXT", "READPREV", "ENDBR", "RESETBR");
@@ -367,6 +381,22 @@ public final class CicsRuntimeOps {
             DataView data, DataView lengthArea, int lengthLiteral, DataView ridfld, DataView keyLengthArea,
             int keyLengthLiteral, DataView reqidArea, int reqidLiteral, DataView numrec, int flags,
             boolean suppressDefaultHandling) {
+        return fileCommandCondition(context, kind, fileLiteral, fileData, data, lengthArea, lengthLiteral, ridfld,
+                keyLengthArea, keyLengthLiteral, reqidArea, reqidLiteral, numrec, null, null, null, flags,
+                suppressDefaultHandling);
+    }
+
+    /**
+     * file control の命令に、TOKEN と SYSID を足した形 (暫定判断 P-147)。
+     *
+     * <p>TOKEN の域は fullword。READ / READNEXT / READPREV の UPDATE では token を置き、REWRITE / DELETE / UNLOCK では
+     * 置かれた token を読む。SYSID は定数か 4 byte のデータ域で渡り、region の構成で自 region とした名前なら
+     * 書かなかったのと同じに処理し、ほかは SYSIDERR (RESP2 130) にする (設計 85 §4.1)。
+     */
+    public static int fileCommandCondition(ProgramContext context, int kind, String fileLiteral, byte[] fileData,
+            DataView data, DataView lengthArea, int lengthLiteral, DataView ridfld, DataView keyLengthArea,
+            int keyLengthLiteral, DataView reqidArea, int reqidLiteral, DataView numrec, DataView tokenArea,
+            String sysidLiteral, byte[] sysidData, int flags, boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         String command = FILE_COMMANDS.get(kind);
         String file = (fileLiteral != null ? fileLiteral : required.codePage().decode(fileData)).stripTrailing();
@@ -380,10 +410,24 @@ public final class CicsRuntimeOps {
         boolean generic = (flags & FILE_GENERIC) != 0;
         boolean gteq = (flags & FILE_GTEQ) != 0;
         boolean equal = (flags & FILE_EQUAL) != 0;
-        boolean rrn = (flags & FILE_RRN) != 0;
         boolean update = (flags & FILE_UPDATE) != 0;
+        CicsFilePort.Addressing addressing = (flags & FILE_RRN) != 0 ? CicsFilePort.Addressing.RRN
+                : (flags & FILE_RBA) != 0 ? CicsFilePort.Addressing.RBA
+                : (flags & FILE_XRBA) != 0 ? CicsFilePort.Addressing.XRBA
+                : (flags & FILE_DEBKEY) != 0 ? CicsFilePort.Addressing.DEBKEY
+                : (flags & FILE_DEBREC) != 0 ? CicsFilePort.Addressing.DEBREC
+                : CicsFilePort.Addressing.KEY;
+        boolean noSuspend = (flags & FILE_NOSUSPEND) != 0;
+        CicsFilePort.Access access = new CicsFilePort.Access(noSuspend, (flags & FILE_CONSISTENT) != 0,
+                update && tokenArea != null);
+        int token = tokenArea != null && !update ? fileToken(tokenArea, label) : CicsFilePort.ABSENT;
+        String sysid = sysidLiteral != null ? sysidLiteral
+                : sysidData != null ? required.codePage().decode(sysidData).stripTrailing() : null;
         CicsFilePort.Result result;
-        switch (kind) {
+        if (sysid != null && !execution.environment().localSystem(sysid)) {
+            // SYSIDERR (RESP2 130): SYSID が自 region でも定義した遠隔の system でもない
+            result = new CicsFilePort.Result(CicsResponseCode.SYSIDERR, 130);
+        } else switch (kind) {
             case FILE_READ, FILE_READNEXT, FILE_READPREV -> {
                 int max = lengthArea != null ? halfword(lengthArea) : data.length();
                 if (max < 0 || max > data.length()) {
@@ -392,11 +436,16 @@ public final class CicsRuntimeOps {
                 }
                 byte[] id = ridfld.toByteArray();
                 CicsFilePort.Found found = switch (kind) {
-                    case FILE_READ -> files.read(task, file, id, rrn, keyLength, generic, gteq, update,
+                    case FILE_READ -> files.read(task, file, id, addressing, keyLength, generic, gteq, update,
+                            access, maxWait(execution));
+                    case FILE_READNEXT -> files.readNext(task, file, reqid, id, addressing, keyLength, update,
+                            access, maxWait(execution));
+                    default -> files.readPrevious(task, file, reqid, id, addressing, keyLength, update, access,
                             maxWait(execution));
-                    case FILE_READNEXT -> files.readNext(task, file, reqid, id, rrn, keyLength);
-                    default -> files.readPrevious(task, file, reqid, id, rrn, keyLength);
                 };
+                if (found.response() == CicsResponseCode.NORMAL && update && tokenArea != null) {
+                    setFileToken(tokenArea, found.token(), label);
+                }
                 result = new CicsFilePort.Result(found.response(), found.response2());
                 if (found.response() == CicsResponseCode.NORMAL) {
                     byte[] record = found.data();
@@ -435,10 +484,10 @@ public final class CicsRuntimeOps {
                 }
                 byte[] record = data.subView(0, length).toByteArray();
                 if (kind == FILE_REWRITE) {
-                    result = files.rewrite(task, file, record);
+                    result = files.rewrite(task, file, record, token);
                 } else {
                     byte[] id = ridfld.toByteArray();
-                    if (!rrn) {
+                    if (addressing == CicsFilePort.Addressing.KEY) {
                         int effective = keyLength == CicsFilePort.ABSENT
                                 ? files.keyLengthOf(file).orElse(id.length) : keyLength;
                         if (effective < 0 || effective > id.length) {
@@ -446,28 +495,51 @@ public final class CicsRuntimeOps {
                         }
                         id = java.util.Arrays.copyOf(id, effective);
                     }
-                    result = files.write(task, file, id, rrn, record);
+                    CicsFilePort.Found written = files.write(task, file, id, addressing, record,
+                            (flags & FILE_MASSINSERT) != 0);
+                    result = new CicsFilePort.Result(written.response(), written.response2());
+                    if (written.response() == CicsResponseCode.NORMAL
+                            && (addressing == CicsFilePort.Addressing.RBA
+                            || addressing == CicsFilePort.Addressing.XRBA)) {
+                        // ESDS の WRITE は、書いた record の RBA を RIDFLD へ返す
+                        ridfld.subView(0, written.id().length).setBytes(written.id());
+                    }
                 }
             }
             case FILE_DELETE -> {
                 CicsFilePort.Deleted deleted = files.delete(task, file, ridfld == null ? null : ridfld.toByteArray(),
-                        rrn, keyLength, generic, maxWait(execution));
+                        addressing, keyLength, generic, token, noSuspend, maxWait(execution));
                 result = new CicsFilePort.Result(deleted.response(), deleted.response2());
-                if (deleted.response() == CicsResponseCode.NORMAL && numrec != null) {
+                if ((deleted.response() == CicsResponseCode.NORMAL || deleted.response() == CicsResponseCode.RECORDBUSY)
+                        && numrec != null) {
                     setHalfword(numrec, deleted.count());
                 }
             }
-            case FILE_UNLOCK -> result = files.unlock(task, file);
-            case FILE_STARTBR -> result = files.startBrowse(task, file, reqid, ridfld.toByteArray(), rrn, keyLength,
-                    generic, equal);
-            case FILE_RESETBR -> result = files.resetBrowse(task, file, reqid, ridfld.toByteArray(), rrn, keyLength,
-                    generic, equal);
+            case FILE_UNLOCK -> result = files.unlock(task, file, token);
+            case FILE_STARTBR -> result = files.startBrowse(task, file, reqid, ridfld.toByteArray(), addressing,
+                    keyLength, generic, equal);
+            case FILE_RESETBR -> result = files.resetBrowse(task, file, reqid, ridfld.toByteArray(), addressing,
+                    keyLength, generic, equal);
             case FILE_ENDBR -> result = files.endBrowse(task, file, reqid);
             default -> throw new IllegalArgumentException("unknown file control command: " + kind);
         }
         execution.eib(required.codePage()).setDataset(file, required.codePage());
         return containerOutcome(required, FILE_FUNCTIONS[kind], result.response(), result.response2(),
                 suppressDefaultHandling, command + " FILE");
+    }
+
+    private static int fileToken(DataView area, String label) {
+        if (area.length() != Integer.BYTES) {
+            throw new CicsTaskStateException(label + " TOKEN must be a fullword data area");
+        }
+        return java.nio.ByteBuffer.wrap(area.toByteArray()).getInt();
+    }
+
+    private static void setFileToken(DataView area, int token, String label) {
+        if (area.length() != Integer.BYTES) {
+            throw new CicsTaskStateException(label + " TOKEN must be a fullword data area");
+        }
+        area.setBytes(java.nio.ByteBuffer.allocate(Integer.BYTES).putInt(token).array());
     }
 
     /**

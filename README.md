@@ -26,6 +26,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: BMS 画面の Web 描画 (Thymeleaf adapter) と renderer spike](docs/design/81-bms-web-renderer.md)
 - [設計: 端末へ出す START (TERMID) と一時データの trigger level による ATI](docs/design/83-cics-terminal-start-ati.md)
 - [設計: デモ環境の簡易認証 (principal と CICS の user ID、transaction と START USERID の権限)](docs/design/84-cics-demo-security.md)
+- [設計: 断っていた CICS / Db2 の形の暫定仮仕様 (file control の残り、SYSID、NOSUSPEND、TD、START)](docs/design/85-cics-provisional-specs.md)
 - [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
 - [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
@@ -209,11 +210,13 @@ XFRFUN の `INCLUDE SQLDA` は、公開文書の欄の説明から作った暫�
 浮動小数点項目は `+ - *` の `COMPUTE`、転記、比較を扱う (P-127)。BNK1TFN は 28 byte の域に `LENGTH(29)`、
 BNK1CCS は 5 byte の域に `LENGTH(248)` を書いている。はみ出す byte の中身はホストの記憶域の並びで決まるので、
 暫定の仕様として項目の番地から LENGTH の byte を渡し、記憶域の端を越える分は binary zero を詰める (P-146)。
+file control の ESDS (RBA / XRBA)、`TOKEN`、`NOSUSPEND`、`CONSISTENT` / `REPEATABLE`、`MASSINSERT`、BDAM (RRDS に写す)、
+構成した自 region の `SYSID` も、設計 85 の暫定の仕様で変換する (P-147。RBA の数は実機と一致しない)。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
 バイト列</b>を出すことも見る。要件 13 章が P1 の受け入れ基準に置いている形である。
-テスト 2061 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
+テスト 2257 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
 `cobol-db2-jdbc` の 2 件はスキップされる。
 うち 6 件はコーパスを取ってきていなければスキップされる。
 Hercules 上での実行と突き合わせる**検証レベル V2** の検査は、期待値を採れない環境では流れない。

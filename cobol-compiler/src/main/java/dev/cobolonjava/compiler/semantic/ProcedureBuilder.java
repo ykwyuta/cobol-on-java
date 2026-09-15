@@ -2196,16 +2196,42 @@ public final class ProcedureBuilder {
             if (ridfld == null) {
                 return null;
             }
-            if (rrn) {
-                Usage usage = ridfld.item().usage() == null ? Usage.DISPLAY : ridfld.item().usage();
-                boolean binary = (usage == Usage.COMP || usage == Usage.COMP_5) && DataCategory.of(ridfld).isNumeric();
-                if (ridfld.constantLength().isEmpty() || ridfld.constantLength().getAsInt() != Integer.BYTES
-                        || !(binary || DataCategory.of(ridfld).isAlphanumericLike()
-                        || DataCategory.of(ridfld) == DataCategory.GROUP)) {
-                    throw new IllegalArgumentException(label + " RRN requires a 4-byte RIDFLD");
+            boolean rba = (spec.flags() & dev.cobolonjava.cics.CicsRuntimeOps.FILE_RBA) != 0;
+            boolean xrba = (spec.flags() & dev.cobolonjava.cics.CicsRuntimeOps.FILE_XRBA) != 0;
+            boolean block = (spec.flags() & (dev.cobolonjava.cics.CicsRuntimeOps.FILE_DEBKEY
+                    | dev.cobolonjava.cics.CicsRuntimeOps.FILE_DEBREC)) != 0;
+            if (rrn || rba || xrba) {
+                int width = xrba ? Long.BYTES : Integer.BYTES;
+                if (!binaryOrBytes(ridfld, width)) {
+                    throw new IllegalArgumentException(label + " " + (rrn ? "RRN" : rba ? "RBA" : "XRBA")
+                            + " requires a " + width + "-byte RIDFLD");
                 }
             } else {
                 requireRecordArea(ridfld, label + " RIDFLD");
+                if (block && ridfld.constantLength().getAsInt() < Integer.BYTES) {
+                    throw new IllegalArgumentException(label + " DEBKEY and DEBREC require a RIDFLD of at least 4 bytes");
+                }
+            }
+        }
+        DataReference token = null;
+        if (spec.token() != null) {
+            token = resolver.resolveName(spec.token(), origin);
+            if (token == null) {
+                return null;
+            }
+            if (!binaryOrBytes(token, Integer.BYTES)) {
+                throw new IllegalArgumentException(label + " TOKEN must be a fullword data area");
+            }
+        }
+        DataReference sysidData = null;
+        if (spec.sysidData() != null) {
+            sysidData = resolver.resolveName(spec.sysidData(), origin);
+            if (sysidData == null) {
+                return null;
+            }
+            if (DataCategory.of(sysidData) != DataCategory.ALPHANUMERIC
+                    || sysidData.constantLength().isEmpty() || sysidData.constantLength().getAsInt() != 4) {
+                throw new IllegalArgumentException(label + " SYSID data area must be a 4-byte alphanumeric item");
             }
         }
         DataReference[] numbers = new DataReference[4];
@@ -2235,8 +2261,17 @@ public final class ProcedureBuilder {
         }
         return withCicsResponse(new Statement.CicsFileCommand(kind, spec.fileLiteral(), fileData, data,
                 numbers[0], spec.lengthLiteral(), ridfld, numbers[1], spec.keyLengthLiteral(), numbers[2],
-                spec.reqidLiteral(), numbers[3], spec.flags(), parsed.response() != null || parsed.noHandle(), origin),
+                spec.reqidLiteral(), numbers[3], token, spec.sysidLiteral(), sysidData, spec.flags(),
+                parsed.response() != null || parsed.noHandle(), origin),
                 parsed, origin);
+    }
+
+    /** 2 進の整数か、文字・集団の域で、長さが width byte のもの (RRN、RBA、TOKEN など)。 */
+    private static boolean binaryOrBytes(DataReference area, int width) {
+        Usage usage = area.item().usage() == null ? Usage.DISPLAY : area.item().usage();
+        boolean binary = (usage == Usage.COMP || usage == Usage.COMP_5) && DataCategory.of(area).isNumeric();
+        return area.constantLength().isPresent() && area.constantLength().getAsInt() == width
+                && (binary || DataCategory.of(area).isAlphanumericLike() || DataCategory.of(area) == DataCategory.GROUP);
     }
 
     private static void requireRecordArea(DataReference area, String option) {

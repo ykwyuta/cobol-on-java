@@ -140,6 +140,9 @@ public sealed interface Statement {
             DataReference reqidArea,
             int reqidLiteral,
             DataReference numrec,
+            DataReference tokenArea,
+            String sysidLiteral,
+            DataReference sysidData,
             int flags,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {

@@ -4384,6 +4384,39 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-147 file control の ESDS、RBA / XRBA、TOKEN、NOSUSPEND、CONSISTENT / REPEATABLE、MASSINSERT、BDAM、SYSID を暫定の仕様で変換する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が「暫定仮仕様を定義し、断らずに変換する」ことを求め、SYSID は「構成した名前だけ自 region」、BDAM は「RRDS に写す」と答えた |
+| 場所 | 設計 85 §4・§5。`CicsFileControl`、`CicsFilePort.Addressing` / `Access`、`CicsFileDefinition.Organization.ESDS` / `BDAM`、`CicsEnvironment.localSystems`、`CicsRuntimeOps.fileCommandCondition`、`CicsBlockParser.parseFileCommand` |
+| 関連要件 | 設計 82 §3、P-131、P-136 |
+
+**暫定の扱い**:
+
+- ESDS は順編成のデータセットに到着順に置き、RBA は前にある record の長さの和とする。WRITE は終わりに足して RIDFLD に
+  RBA (4 byte) / XRBA (8 byte) を返す。KSDS / RRDS の RBA は鍵・番号の順に同じ数え方をする
+- 公開文書で値を確かめた条件: TOKEN が合わない REWRITE / DELETE / UNLOCK は INVREQ 47、ESDS の DELETE は INVREQ 21、BDAM の
+  DELETE は INVREQ 27、BDAM の可変長の record の長さを変える REWRITE は INVREQ 46、BDAM への MASSINSERT は INVREQ 38、
+  NOSUSPEND で持たれた record は RECORDBUSY 107、自 region でも遠隔でもない SYSID は SYSIDERR 130
+- ESDS の record の長さを変える REWRITE は文書に条件が無いので、他の区分に入らない VSAM の誤りとして ILLOGIC 110 にした
+- TOKEN を使う task は同じ file の複数の record を持てる。READNEXT / READPREV の UPDATE は TOKEN と一緒に書かせる
+- NOSUSPEND / CONSISTENT / REPEATABLE は、文書では RLS の file に限る (ほかは INVREQ 55 / 52 / 53) が、RLS の区別を持たず
+  どの file でも受ける。REPEATABLE は CONSISTENT と同じにする。総称の DELETE の NOSUSPEND は持たれていない record だけを消す
+- MASSINSERT は普通の WRITE と同じに直ちに書き、鍵の昇順は確かめない
+- BDAM は RIDFLD の先頭 4 byte を 0 起点の相対 block 番号とし、相対レコード番号 = block 番号 + 1 の RRDS に置く。1 block = 1 record。
+  DEBREC は相対 record 番号 0 だけ、DEBKEY は定義の鍵と一致する record だけを読む
+- SYSID は `CicsEnvironment.withLocalSystems` に書いた名前だけを自 region として処理する。遠隔の region は持たない
+- SET は ADDRESS OF を入れるまで断る (設計 85 §9)
+
+**どこがずれうるか**: 実機の RBA は CI / CA の制御情報を含むので、RBA の数そのものは実機と一致しない (RBA を自分で計算する資産は
+ずれる)。RLS でない file に NOSUSPEND を書いた資産は、実機では INVREQ 55 になるが、ここでは動く。REPEATABLE の共有 lock、
+MASSINSERT の昇順の検査、BDAM の複数 record の block、遠隔の SYSID への function ship は持たない。ESDS の長さを変える REWRITE の
+条件は推定である。
+
+**解消条件**: 実機で ESDS の RBA の値、長さを変える REWRITE の条件、RLS でない file の NOSUSPEND を採る。RLS の file を定義で
+区別する形を決め、区別したら文書どおり INVREQ 52 / 53 / 55 を返す。遠隔の region を持つときに SYSID の function ship を設計する。
+
 ## P-146 COMMAREA の項目より長い LENGTH と INCLUDE SQLDA を、暫定の仕様で断らずに変換する
 
 | 項目 | 内容 |

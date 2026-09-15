@@ -1292,10 +1292,14 @@ public final class ProgramGenerator {
         if (file == null) {
             return;
         }
-        // 並びは data、LENGTH、RIDFLD、KEYLENGTH、REQID、NUMREC
+        Runnable sysid = planAreaBytes(statement.sysidData(), statement.origin());
+        if (sysid == null) {
+            return;
+        }
+        // 並びは data、LENGTH、RIDFLD、KEYLENGTH、REQID、NUMREC、TOKEN
         List<Runnable> views = new ArrayList<>();
         for (DataReference area : java.util.Arrays.asList(statement.data(), statement.lengthArea(), statement.ridfld(),
-                statement.keyLengthArea(), statement.reqidArea(), statement.numrec())) {
+                statement.keyLengthArea(), statement.reqidArea(), statement.numrec(), statement.tokenArea())) {
             Runnable view = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
                     : planWholeView(area, statement.origin());
             if (view == null) {
@@ -1317,12 +1321,15 @@ public final class ProgramGenerator {
             views.get(4).run();
             push(statement.reqidLiteral());
             views.get(5).run();
+            views.get(6).run();
+            pushNullableString(statement.sysidLiteral());
+            sysid.run();
             push(statement.flags());
             run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             String view = "L" + DATA_VIEW + ";";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "fileCommandCondition",
                     "(" + CONTEXT + "ILjava/lang/String;[B" + view + view + "I" + view + view + "I" + view + "I"
-                            + view + "IZ)I", false);
+                            + view + view + "Ljava/lang/String;[BIZ)I", false);
             emitCicsConditionTransfer();
         });
     }
