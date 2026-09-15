@@ -40,13 +40,24 @@ class JdbcTerminalRegistryTest {
     private JdbcTerminalRegistry first;
     private JdbcTerminalRegistry second;
 
+    private TestDatabase database;
+
+    /** 試験する database。既定は H2。実 Db2 の試験はここを替える。 */
+    TestDatabase openDatabase() {
+        return TestDatabase.h2("terminal");
+    }
+
     @BeforeEach
     void setUp() {
-        DataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:terminal-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1");
-        new ResourceDatabasePopulator(new ClassPathResource(JdbcConversationStore.SCHEMA)).execute(dataSource);
+        database = openDatabase();
+        DataSource dataSource = database.dataSource();
         first = new JdbcTerminalRegistry(dataSource, new JdbcTransactionManager(dataSource));
         second = new JdbcTerminalRegistry(dataSource, new JdbcTransactionManager(dataSource));
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void closeDatabase() {
+        database.close();
     }
 
     @Test

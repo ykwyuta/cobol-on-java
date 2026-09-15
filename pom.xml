@@ -41,6 +41,8 @@
     <asm.version>9.7.1</asm.version>
     <spring-boot.version>4.1.1</spring-boot.version>
     <db2-jcc.version>12.1.4.0</db2-jcc.version>
+    <!-- ブラウザの試験 (BROWSER_IT) だけが使う。ブラウザは導入済みの Edge / Chrome を channel で使い、取得しない -->
+    <playwright.version>1.59.0</playwright.version>
   </properties>
 
   <dependencyManagement>

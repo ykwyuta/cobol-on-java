@@ -69,8 +69,8 @@ class DriverManagedStrictTaskBoundaryTest {
         private final DriverManagerDb2NativeConnectionProvider delegate;
         private int acquired;
 
-        private CountingProvider(String url) {
-            this.delegate = new DriverManagerDb2NativeConnectionProvider(url, new Properties());
+        private CountingProvider(String url, Properties credentials) {
+            this.delegate = new DriverManagerDb2NativeConnectionProvider(url, credentials);
         }
 
         @Override
@@ -80,15 +80,26 @@ class DriverManagedStrictTaskBoundaryTest {
         }
     }
 
+    private TestDatabase database;
+
+    /** 試験する database。既定は H2。実 Db2 の試験はここを替える (native lease は JCC の DriverManager の connection)。 */
+    TestDatabase openDatabase() {
+        return TestDatabase.h2("native-strict");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void closeDatabase() {
+        database.close();
+    }
+
     @BeforeEach
     void setUp() {
-        String url = "jdbc:h2:mem:native-strict-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1";
-        DataSource dataSource = new DriverManagerDataSource(url);
-        new ResourceDatabasePopulator(new ClassPathResource(JdbcConversationStore.SCHEMA)).execute(dataSource);
+        database = openDatabase();
+        DataSource dataSource = database.dataSource();
         jdbc = new JdbcTemplate(dataSource);
         jdbc.execute("CREATE TABLE ACCOUNT (ID INT NOT NULL PRIMARY KEY)");
         store = new JdbcConversationStore(dataSource, new JdbcTransactionManager(dataSource));
-        connections = new CountingProvider(url);
+        connections = new CountingProvider(database.url(), database.credentials());
         factory = new DriverManagedStrictTaskBoundaryFactory(connections, store);
     }
 

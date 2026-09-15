@@ -43,7 +43,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import org.springframework.beans.factory.DisposableBean;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -71,7 +71,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * 古い版の画面からの送信は task を動かさず、現在の画面を返す (3270 では書き換わった画面への入力は成り立たない)。
  */
 @Controller
-public class CicsBrowserController implements DisposableBean {
+public class CicsBrowserController implements SmartLifecycle {
 
     static final String TERMINAL = "dev.cobolonjava.cics.browser.terminal";
     /** 画面の form が運ぶ冪等キーと会話の参照 (暫定判断 P-142)。 */
@@ -97,6 +97,9 @@ public class CicsBrowserController implements DisposableBean {
     private final Duration terminalLease;
     private final CicsBrowserTerminalNames names;
     private ScheduledExecutorService events;
+    /** 開いている SSE。application の停止で閉じないと、web server の graceful shutdown が接続の期限まで待つ。 */
+    private final java.util.Set<SseEmitter> openEvents = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private volatile boolean running;
 
     /** 固定の端末名を別の利用者が使っている。 */
     static final class TerminalInUseException extends RuntimeException {
@@ -300,6 +303,12 @@ public class CicsBrowserController implements DisposableBean {
         if (announced(emitter, terminalId, owner, version)) {
             return ResponseEntity.ok(emitter);
         }
+        if (!running) {
+            // 停止の途中。接続を持たずに閉じ、EventSource は起動し直した server へつなぎ直す
+            emitter.complete();
+            return ResponseEntity.ok(emitter);
+        }
+        openEvents.add(emitter);
         AtomicReference<ScheduledFuture<?>> polling = new AtomicReference<>();
         polling.set(scheduler().scheduleWithFixedDelay(() -> {
             try {
@@ -312,6 +321,7 @@ public class CicsBrowserController implements DisposableBean {
             }
         }, EVENT_POLL.toMillis(), EVENT_POLL.toMillis(), TimeUnit.MILLISECONDS));
         Runnable stop = () -> {
+            openEvents.remove(emitter);
             ScheduledFuture<?> future = polling.get();
             if (future != null) {
                 future.cancel(false);
@@ -357,10 +367,32 @@ public class CicsBrowserController implements DisposableBean {
     }
 
     @Override
-    public synchronized void destroy() {
-        if (events != null) {
-            events.shutdownNow();
+    public void start() {
+        running = true;
+    }
+
+    /**
+     * 開いている SSE をすべて閉じる。SmartLifecycle の既定の phase は web server の graceful shutdown より先に止まるので、
+     * graceful shutdown が SSE の接続の期限 ({@link #EVENT_TIMEOUT}) まで待たずに済む。
+     */
+    @Override
+    public void stop() {
+        running = false;
+        for (SseEmitter emitter : java.util.List.copyOf(openEvents)) {
+            emitter.complete();
         }
+        openEvents.clear();
+        synchronized (this) {
+            if (events != null) {
+                events.shutdownNow();
+                events = null;
+            }
+        }
+    }
+
+    @Override
+    public boolean isRunning() {
+        return running;
     }
 
     private Optional<Terminal> sessionTerminal(HttpServletRequest request, String owner) {

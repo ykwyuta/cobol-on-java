@@ -81,11 +81,22 @@ class JdbcCicsTransientDataTest {
     private JdbcCicsTransientData first;
     private JdbcCicsTransientData second;
 
+    private TestDatabase database;
+
+    /** 試験する database。既定は H2。実 Db2 の試験はここを替える。 */
+    TestDatabase openDatabase() {
+        return TestDatabase.h2("td");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void closeDatabase() {
+        database.close();
+    }
+
     @BeforeEach
     void setUp() {
-        dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:td-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000");
-        new ResourceDatabasePopulator(new ClassPathResource(JdbcConversationStore.SCHEMA)).execute(dataSource);
+        database = openDatabase();
+        dataSource = database.dataSource();
         first = new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource), QUEUES);
         second = new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource), QUEUES);
     }

@@ -196,7 +196,11 @@ JSON API の入口は端末名を持たない (設計 77 §4.4)。端末へ出�
 - 版を送らない送信 (開始の画面、古い形の画面) は版を比べない
 - 会話の途中でない端末の現在の画面が map なら、送信の先の TRANSID を持たない (task は RETURN TRANSID を出していない)。
   form の action は空になり、利用者は transaction を開始し直す
-- ブラウザの画面を実際の EventSource で切り替えることは、MockMvc で SSE の応答を読んだだけで、ブラウザでは試験していない
+- 実際のブラウザでの切り替えは `CicsBrowserSseBrowserTest` (Playwright、導入済みの Edge、`BROWSER_IT_ENABLED=true`) で
+  確かめた。端末へ出す task の画面は利用者の操作なしに読み直され、自分の送信の応答では読み直さない
+- ブラウザ試験で、開いている SSE が web server の graceful shutdown を接続の期限まで止めることが分かった。controller を
+  `SmartLifecycle` にし、graceful shutdown より先に開いている SSE を閉じる
+- 表と dispatcher は、H2 の試験を Docker Compose の Db2 でも流して通した (docs/report/20260915-db2-strict-stores-and-browser-sse.md)
 
 ## 8. 複数の JVM
 

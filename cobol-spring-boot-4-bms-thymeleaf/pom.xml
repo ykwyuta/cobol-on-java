@@ -69,5 +69,12 @@
       <artifactId>spring-security-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- 実際のブラウザで SSE と画面の読み直しを確かめる (BROWSER_IT_ENABLED=true のときだけ動く) -->
+    <dependency>
+      <groupId>com.microsoft.playwright</groupId>
+      <artifactId>playwright</artifactId>
+      <version>${playwright.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

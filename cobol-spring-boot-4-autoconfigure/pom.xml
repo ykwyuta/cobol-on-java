@@ -59,6 +59,13 @@
       <artifactId>spring-boot-starter-jdbc</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- STRICT の置き場を実 Db2 で流す試験 (DB2_IT_ENABLED=true のときだけ動く) -->
+    <dependency>
+      <groupId>com.ibm.db2</groupId>
+      <artifactId>jcc</artifactId>
+      <version>${db2-jcc.version}</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>

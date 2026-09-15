@@ -23,6 +23,14 @@ $env:DB2_PASSWORD = "<infra/db2/.envと同じ値>"
 mvn -pl cobol-db2-jdbc -am test
 ```
 
+STRICT の会話ストア、端末の登録、START / TD の置き場、SPRING_MANAGED / DB2_DRIVER_MANAGED_HOLD の task 境界
+(暫定判断 P-143・P-144) を、H2 と同じ試験のまま実Db2で流すには次を使う。試験ごとに使い捨ての schema
+(`CJT` で始まる名前) に DDL を流し、終われば表と schema を消す。
+
+```powershell
+mvn -pl cobol-spring-boot-4-autoconfigure -am test "-Dtest=Db2StrictStoresIntegrationTest*" "-Dsurefire.failIfNoSpecifiedTests=false"
+```
+
 `DB2_IT_ENABLED`が未設定の場合、この実Db2試験だけをskipする。IBM JCCはテストscopeであり、
 実行時のdriver版は親POMの`db2-jcc.version`で固定する。資格情報を含む`.env`はGit管理外である。
 

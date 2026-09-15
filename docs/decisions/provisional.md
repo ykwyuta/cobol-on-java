@@ -4376,12 +4376,13 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
 会話を捨てる。Spring Session JDBC は event を出さないので listener に届かず、session が消えても会話は期限まで残る。
 MockMvc の試験は listener を直接呼んだだけで、実 container と Spring Session で event が届くことは試験していない。commit の途中の失敗は
 UNKNOWN とし、予約を残して lease の期限まで再送を動かさない。driver-managed で commit は通ったのに lease の解放で
-失敗したときも UNKNOWN に数える (確定したかを区別しない。安全側に倒した)。Db2 実機と H2 以外の DB では試験しておらず、
-driver-managed も H2 の DriverManager の connection で試しただけで、JCC の native lease では試験していない。
+失敗したときも UNKNOWN に数える (確定したかを区別しない。安全側に倒した)。H2 の試験と同じ試験を Docker Compose の Db2 Community
+12.1.5.0 と JCC 12.1.4.0 で流して通した (SPRING_MANAGED と DB2_DRIVER_MANAGED_HOLD の native lease の両方、
+docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、lock timeout / deadlock の分類は試験していない。
 
 **解消条件**: Spring Session JDBC でも session の削除・失効と一緒に会話を消す (期限切れの session を消す job と会話の
-purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。実 Db2 で DDL と
-同時実行 (claim の競合、DuplicateKey の写像) を、SPRING_MANAGED と DB2_DRIVER_MANAGED_HOLD (JCC) の両方で試験する。
+purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
+DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
 ## P-144 端末へ出す START と TD の ATI は、会話の途中の端末を待ち、同じ owner の端末だけに出し、JDBC の表で複数 JVM に置く
 

@@ -40,13 +40,52 @@ class JdbcConversationStoreTest {
     private static final String FINGERPRINT = "a".repeat(64);
 
     private JdbcConversationStore store;
+    private TestDatabase database;
+
+    /** 試験する database。既定は H2。実 Db2 の試験はここを替える。 */
+    TestDatabase openDatabase() {
+        return TestDatabase.h2("store");
+    }
 
     @BeforeEach
     void setUp() {
-        DataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:store-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1");
-        new ResourceDatabasePopulator(new ClassPathResource(JdbcConversationStore.SCHEMA)).execute(dataSource);
+        database = openDatabase();
+        DataSource dataSource = database.dataSource();
         store = new JdbcConversationStore(dataSource, new JdbcTransactionManager(dataSource));
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void closeDatabase() {
+        database.close();
+    }
+
+    @Test
+    @DisplayName("同じ版の会話を別々のconnectionから同時にclaimしても1件だけが取れる")
+    void claimsConversationOnceUnderConcurrency() throws Exception {
+        store.create(initial(), NOW);
+        int contenders = 8;
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(contenders);
+        try {
+            java.util.List<java.util.concurrent.Future<ConversationClaimStatus>> results = new java.util.ArrayList<>();
+            for (int i = 0; i < contenders; i++) {
+                results.add(executor.submit(() -> {
+                    go.await();
+                    return store.claim(initial().id(), 0, "owner", LEASE, NOW).status();
+                }));
+            }
+            go.countDown();
+            int claimed = 0;
+            for (java.util.concurrent.Future<ConversationClaimStatus> result : results) {
+                ConversationClaimStatus status = result.get();
+                claimed += status == ConversationClaimStatus.CLAIMED ? 1 : 0;
+                assertTrue(status == ConversationClaimStatus.CLAIMED || status == ConversationClaimStatus.ALREADY_LEASED,
+                        status.name());
+            }
+            assertEquals(1, claimed);
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     private static ConversationEnvelope initial() {

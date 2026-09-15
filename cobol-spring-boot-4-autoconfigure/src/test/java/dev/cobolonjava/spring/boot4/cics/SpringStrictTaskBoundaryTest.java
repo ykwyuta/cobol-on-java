@@ -60,11 +60,22 @@ class SpringStrictTaskBoundaryTest {
     private JdbcConversationStore store;
     private SpringStrictTaskBoundaryFactory factory;
 
+    private TestDatabase database;
+
+    /** 試験する database。既定は H2。実 Db2 の試験はここを替える。 */
+    TestDatabase openDatabase() {
+        return TestDatabase.h2("strict");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void closeDatabase() {
+        database.close();
+    }
+
     @BeforeEach
     void setUp() {
-        DataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:strict-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1");
-        new ResourceDatabasePopulator(new ClassPathResource(JdbcConversationStore.SCHEMA)).execute(dataSource);
+        database = openDatabase();
+        DataSource dataSource = database.dataSource();
         jdbc = new JdbcTemplate(dataSource);
         jdbc.execute("CREATE TABLE ACCOUNT (ID INT NOT NULL PRIMARY KEY)");
         transactionManager = new JdbcTransactionManager(dataSource);

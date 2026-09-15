@@ -78,11 +78,22 @@ class JdbcCicsStartsTest {
         }
     };
 
+    private TestDatabase database;
+
+    /** 試験する database。既定は H2。実 Db2 の試験はここを替える。 */
+    TestDatabase openDatabase() {
+        return TestDatabase.h2("start");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void closeDatabase() {
+        database.close();
+    }
+
     @BeforeEach
     void setUp() {
-        DataSource dataSource = new DriverManagerDataSource(
-                "jdbc:h2:mem:start-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000");
-        new ResourceDatabasePopulator(new ClassPathResource(JdbcConversationStore.SCHEMA)).execute(dataSource);
+        database = openDatabase();
+        DataSource dataSource = database.dataSource();
         jdbc = new JdbcTemplate(dataSource);
         terminals = new JdbcTerminalRegistry(dataSource, new JdbcTransactionManager(dataSource));
         first = starts(dataSource);
