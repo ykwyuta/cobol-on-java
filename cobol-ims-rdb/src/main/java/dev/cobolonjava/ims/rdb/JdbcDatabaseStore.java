@@ -4,6 +4,7 @@ import dev.cobolonjava.ims.db.HierarchicalDatabase;
 import dev.cobolonjava.ims.db.Segment;
 import dev.cobolonjava.ims.dbd.DatabaseDefinition;
 import dev.cobolonjava.ims.dbd.SegmentDefinition;
+import dev.cobolonjava.ims.store.CheckpointStore;
 import dev.cobolonjava.ims.store.DatabaseConflictException;
 import dev.cobolonjava.ims.store.DatabaseStore;
 import dev.cobolonjava.ims.store.DatabaseStoreException;
@@ -20,6 +21,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -51,7 +53,7 @@ import java.util.Objects;
  * <p>開くときはデータベース全体をメモリに読む。GH で押さえる形 (ADR-0015 の読みの排他)、競合したときの自動の
  * 再試行 (P-107)、根ごとの遅延読み込みは無い。読み直しは同期点ごとに排他の表を DBD ごとに全件読む。
  */
-public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox {
+public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, CheckpointStore {
 
     private static final int LL = 2;
     private static final int MAX_LEVELS = 15;
@@ -62,6 +64,8 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox {
     private final Map<String, Map<ByteBuffer, Long>> versions = new HashMap<>();
     /** 次の確定で処理済みとして書く電文の ID (P-163)。 */
     private final List<String> inbox = new ArrayList<>();
+    /** 次の確定で書く検査点 (P-164)。同じ ID を 2 度書けば、あとのものが残る。 */
+    private final Map<String, PendingCheckpoint> pendingCheckpoints = new LinkedHashMap<>();
 
     public JdbcDatabaseStore(Connection connection) {
         this.connection = Objects.requireNonNull(connection, "connection");
@@ -80,6 +84,10 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox {
 
     /** 変わった根 1 つ。押さえる順に並べる。 */
     private record Pending(HierarchicalDatabase database, byte[] key) {
+    }
+
+    /** 次の確定で書く検査点 1 つ。 */
+    private record PendingCheckpoint(String psb, String checkpointId, List<byte[]> areas) {
     }
 
     @Override
@@ -117,10 +125,13 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox {
             write(pending);
             // 処理済みの電文を、業務の更新と同じトランザクションで書く (ADR-0014 の決定 2)
             writeInbox();
+            // 記号 CHKP が退避した域も同じトランザクションで書く (P-164)
+            writeCheckpoints();
             connection.commit();
         } catch (SQLException e) {
             rollbackQuietly();
             inbox.clear();
+            pendingCheckpoints.clear();
             if (e.getSQLState() != null && e.getSQLState().startsWith("23")) {
                 throw new DatabaseConflictException("another region created the same root or processed the same"
                         + " message at the same time: " + e.getMessage());
@@ -129,6 +140,7 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox {
         } catch (RuntimeException e) {
             rollbackQuietly();
             inbox.clear();
+            pendingCheckpoints.clear();
             throw e;
         }
         for (Map.Entry<Pending, Long> root : written.entrySet()) {
@@ -141,6 +153,77 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox {
     @Override
     public MessageInbox inbox() {
         return this;
+    }
+
+    @Override
+    public CheckpointStore checkpoints() {
+        return this;
+    }
+
+    @Override
+    public void record(String psb, String checkpointId, List<byte[]> areas) {
+        List<byte[]> copy = new ArrayList<>();
+        // 呼ぶ側の域はこのあとも書き換わる。確定まで持つので写しを取る
+        areas.forEach(area -> copy.add(area.clone()));
+        pendingCheckpoints.put(psb + "/" + checkpointId, new PendingCheckpoint(psb, checkpointId, copy));
+    }
+
+    @Override
+    public List<byte[]> load(String psb, String checkpointId) {
+        PendingCheckpoint pending = pendingCheckpoints.get(psb + "/" + checkpointId);
+        if (pending != null) {
+            return pending.areas();
+        }
+        List<byte[]> areas = new ArrayList<>();
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT AREA_LEN, AREA_DATA FROM IMS_CHECKPOINT WHERE PSB_NAME = ? AND CHKP_ID = ?"
+                        + " ORDER BY AREA_SEQ")) {
+            select.setString(1, psb);
+            select.setString(2, checkpointId);
+            try (ResultSet result = select.executeQuery()) {
+                while (result.next()) {
+                    byte[] data = result.getBytes(2);
+                    if (data.length != result.getInt(1)) {
+                        throw new DatabaseStoreException("checkpoint " + checkpointId + " of PSB " + psb
+                                + " has an area whose AREA_LEN is wrong");
+                    }
+                    areas.add(data);
+                }
+            }
+        } catch (SQLException e) {
+            rollbackQuietly();
+            throw new DatabaseStoreException("cannot read checkpoint " + checkpointId + " of PSB " + psb, e);
+        }
+        return areas.isEmpty() ? null : areas;
+    }
+
+    /** 同じ ID の検査点を置き換える。前の検査点の域の数が多くても残らないよう、先に消す。 */
+    private void writeCheckpoints() throws SQLException {
+        if (pendingCheckpoints.isEmpty()) {
+            return;
+        }
+        try (PreparedStatement delete = connection.prepareStatement(
+                "DELETE FROM IMS_CHECKPOINT WHERE PSB_NAME = ? AND CHKP_ID = ?");
+             PreparedStatement insert = connection.prepareStatement(
+                     "INSERT INTO IMS_CHECKPOINT (PSB_NAME, CHKP_ID, AREA_SEQ, AREA_LEN, AREA_DATA)"
+                             + " VALUES (?, ?, ?, ?, ?)")) {
+            for (PendingCheckpoint checkpoint : pendingCheckpoints.values()) {
+                delete.setString(1, checkpoint.psb());
+                delete.setString(2, checkpoint.checkpointId());
+                delete.executeUpdate();
+                List<byte[]> areas = checkpoint.areas();
+                for (int i = 0; i < areas.size(); i++) {
+                    insert.setString(1, checkpoint.psb());
+                    insert.setString(2, checkpoint.checkpointId());
+                    insert.setShort(3, (short) i);
+                    insert.setInt(4, areas.get(i).length);
+                    insert.setBytes(5, areas.get(i));
+                    insert.addBatch();
+                }
+            }
+            insert.executeBatch();
+        }
+        pendingCheckpoints.clear();
     }
 
     @Override

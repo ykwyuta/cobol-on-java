@@ -3,6 +3,7 @@ package dev.cobolonjava.ims.batch;
 import static dev.cobolonjava.ims.gen.Cards.card;
 import static dev.cobolonjava.ims.gen.Cards.deck;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -68,12 +69,17 @@ class DatabaseFileTest {
     }
 
     @Test
-    @DisplayName("PARM は領域の種類、プログラム、PSB を読み、PSB を省けばプログラムの名前にする。電文を読む領域は断る")
+    @DisplayName("PARM は領域の種類、プログラム、PSB、CKPTID= を読み、PSB を省けばプログラムの名前にする。電文を読む領域は断る")
     void regionParameters() {
         RegionParameters full = RegionParameters.of(EBCDIC, parm("DLI,LOADCUST,IBLOAD,,,,"));
-        assertEquals(new RegionParameters("DLI", "LOADCUST", "IBLOAD"), full);
+        assertEquals(new RegionParameters("DLI", "LOADCUST", "IBLOAD", null), full);
         assertEquals("REPORT", RegionParameters.of(EBCDIC, parm("DBB,REPORT")).psb());
         assertTrue(RegionParameters.of(EBCDIC, parm("BMP,REPORT,REPORT,,")).ioPcb());
+
+        // 再始動する検査点 (P-164)。書かなければ通常の開始である
+        assertNull(full.restartId());
+        assertEquals("CHKP0003",
+                RegionParameters.of(EBCDIC, parm("DLI,LOADCUST,IBLOAD,,,,,CKPTID=CHKP0003")).restartId());
 
         ImsBatchException online = assertThrows(ImsBatchException.class,
                 () -> RegionParameters.of(EBCDIC, parm("MSG,IBACSUM,IBACSUM")));

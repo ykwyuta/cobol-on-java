@@ -1,5 +1,6 @@
 package dev.cobolonjava.ims.dli;
 
+import dev.cobolonjava.ims.store.CheckpointStore;
 import dev.cobolonjava.ims.store.MessageInbox;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -35,11 +36,16 @@ final class IoPcb {
     static final int MODULE = 24;
     static final int USER = 32;
     static final int GROUP = 40;
+    /** 検査点 ID の長さ。 */
+    private static final int CHECKPOINT_ID = 8;
 
     /** まだ持たない電文の呼び出し。知らない機能コード (AD) と分けて、止めて知らせる。 */
     private static final Set<String> NOT_YET = Set.of(
             "CHNG", "ROLL", "ROLS", "SETS", "SETU", "INQY", "LOG", "CMD", "GCMD", "AUTH",
-            "XRST", "INIT", "ICAL", "APSB", "DPSB");
+            "INIT", "ICAL", "APSB", "DPSB");
+
+    /** 記号 CHKP が退避できる域の数 (公開仕様の上限)。 */
+    private static final int MAX_AREAS = 7;
 
     /** 領域の同期点。データベースの確定と巻き戻しは領域が受け持つ。 */
     interface SyncPoint {
@@ -61,6 +67,12 @@ final class IoPcb {
     private int sequence;
     /** 処理済みを覚える口 (P-163)。無ければ冪等化しない。 */
     private MessageInbox inbox;
+    /** 記号 CHKP の置き場 (P-164)。無ければ記号 CHKP と XRST を断る。 */
+    private CheckpointStore checkpoints;
+    /** この領域の PSB の名前。検査点はこの名前で分ける。 */
+    private String psb = "";
+    /** 領域の {@code CKPTID=} (PARM)。XRST の作業域が空白のときに使う。 */
+    private String restartId;
     /** この同期点までに処理した電文の ID。確定のときに書く。 */
     private final List<String> processed = new ArrayList<>();
 
@@ -83,11 +95,7 @@ final class IoPcb {
             throw new DliCallException("DL/I function " + function
                     + " on the I/O PCB is not supported yet (design 78 section 4)");
         }
-        if (function.equals("CHKP") && !rest.isEmpty()) {
-            throw new DliCallException("the symbolic CHKP (saving areas for XRST) is not supported"
-                    + " (provisional P-110)");
-        }
-        if (!rest.isEmpty()) {
+        if (!rest.isEmpty() && !function.equals("CHKP") && !function.equals("XRST")) {
             throw new DliCallException("a MOD name or SSA on an I/O PCB call is not supported yet: " + function);
         }
         String status = switch (function) {
@@ -95,7 +103,9 @@ final class IoPcb {
             case "GN" -> getNext(required(io, function));
             case "ISRT" -> insert(required(io, function));
             case "PURG" -> purge(io);
-            case "CHKP", "SYNC" -> checkpoint(function);
+            case "CHKP" -> checkpoint("CHKP", io, rest);
+            case "SYNC" -> checkpoint("SYNC", null, List.of());
+            case "XRST" -> restart(required(io, "XRST"), rest);
             case "ROLB" -> backout(io);
             default -> StatusCode.AD;
         };
@@ -116,6 +126,12 @@ final class IoPcb {
         inbox = value;
     }
 
+    void checkpoints(CheckpointStore store, String psbName, String restart) {
+        checkpoints = store;
+        psb = psbName;
+        restartId = restart;
+    }
+
     /**
      * 同期点の直前。この同期点までに処理した電文を、業務の更新と同じトランザクションで書く口へ渡す (P-163)。
      */
@@ -132,17 +148,112 @@ final class IoPcb {
     }
 
     /**
-     * 基本形の CHKP と SYNC。データベースを確定し、位置を捨てる (P-157)。
+     * CHKP と SYNC。データベースを確定し、位置を捨てる (P-157)。長さと域の対を書いた記号 CHKP は、
+     * その域を検査点として置き場へ残す (P-164)。
      *
      * <p>メッセージを処理する領域の CHKP は次の電文を取り出す働きも持つが、それはまだ持たないので止める。
      */
-    private String checkpoint(String function) {
+    private String checkpoint(String function, DataView io, List<DataView> areas) {
         if (queue != null) {
             throw new DliCallException(function + " in a message processing region is not supported yet;"
                     + " the GU on the I/O PCB is the sync point there");
         }
+        if (!areas.isEmpty()) {
+            if (checkpoints == null) {
+                throw new DliCallException("the symbolic CHKP needs a store that can keep checkpoints;"
+                        + " the data set store needs DD IMSCKPT");
+            }
+            if (areas.size() % 2 != 0 || areas.size() / 2 > MAX_AREAS) {
+                throw new DliCallException("the symbolic CHKP takes up to " + MAX_AREAS
+                        + " pairs of a length and an area, but " + areas.size() + " parameters follow the id");
+            }
+            List<byte[]> saved = new ArrayList<>();
+            for (int i = 0; i < areas.size(); i += 2) {
+                saved.add(area(areas.get(i), areas.get(i + 1), "CHKP"));
+            }
+            checkpoints.record(psb, checkpointId(io), saved);
+        }
         syncPoint.commit();
         return StatusCode.OK;
+    }
+
+    /**
+     * XRST。作業域に検査点 ID があればそれ、空白なら領域の {@code CKPTID=} で再始動する。どちらも無ければ
+     * 通常の開始であり、域はそのままにして作業域を空白で返す (P-164)。
+     *
+     * <p>再始動では、記号 CHKP が退避した域をそのまま書き戻し、長さの欄にも書いた長さを返す。実機と同じく
+     * GSAM 以外のデータセットの位置は戻さない。読み直す位置は、資産が退避した値で決める。
+     */
+    private String restart(DataView io, List<DataView> areas) {
+        if (io.length() < CHECKPOINT_ID) {
+            throw new DliCallException("XRST requires a work area of at least " + CHECKPOINT_ID + " bytes");
+        }
+        String requested = codePage.decode(io.subView(0, CHECKPOINT_ID).toByteArray()).strip();
+        String id = requested.isEmpty() ? restartId : requested;
+        if (id == null || id.isBlank()) {
+            io.subView(0, CHECKPOINT_ID).setBytes(codePage.encode(" ".repeat(CHECKPOINT_ID)));
+            return StatusCode.OK;
+        }
+        if (checkpoints == null) {
+            throw new DliCallException("XRST from checkpoint " + id
+                    + " needs a store that can keep checkpoints; the data set store needs DD IMSCKPT");
+        }
+        List<byte[]> saved = checkpoints.load(psb, id);
+        if (saved == null) {
+            throw new DliCallException("checkpoint " + id + " of PSB " + psb + " is not in the store");
+        }
+        if (areas.size() % 2 != 0 || areas.size() / 2 != saved.size()) {
+            throw new DliCallException("XRST was given " + (areas.size() / 2) + " areas, but checkpoint " + id
+                    + " saved " + saved.size());
+        }
+        for (int i = 0; i < saved.size(); i++) {
+            DataView length = areas.get(2 * i);
+            DataView area = areas.get(2 * i + 1);
+            byte[] value = saved.get(i);
+            if (length.length() < 4 || area.length() < value.length) {
+                throw new DliCallException("the area " + (i + 1) + " of XRST is shorter than the "
+                        + value.length + " bytes saved in checkpoint " + id);
+            }
+            area.subView(0, value.length).setBytes(value);
+            integer(length, value.length);
+        }
+        io.subView(0, CHECKPOINT_ID).setBytes(codePage.encode(pad(id)));
+        return StatusCode.OK;
+    }
+
+    /** 検査点 ID。書かれていなければ空白 8 文字である。 */
+    private String checkpointId(DataView io) {
+        if (io == null || io.length() < CHECKPOINT_ID) {
+            throw new DliCallException("the symbolic CHKP requires an 8 byte checkpoint id");
+        }
+        return codePage.decode(io.subView(0, CHECKPOINT_ID).toByteArray()).strip();
+    }
+
+    /** 長さの欄と域の対から、退避する値を取る。 */
+    private static byte[] area(DataView length, DataView area, String function) {
+        if (length.length() < 4) {
+            throw new DliCallException("the length of an area of " + function + " is a 4 byte binary field");
+        }
+        byte[] bytes = length.subView(0, 4).toByteArray();
+        int value = ((bytes[0] & 0xFF) << 24) | ((bytes[1] & 0xFF) << 16) | ((bytes[2] & 0xFF) << 8)
+                | (bytes[3] & 0xFF);
+        if (value <= 0 || value > area.length()) {
+            throw new DliCallException("the length " + value + " of an area of " + function
+                    + " is outside the area (" + area.length() + " bytes)");
+        }
+        return area.subView(0, value).toByteArray();
+    }
+
+    private static String pad(String id) {
+        return id.length() >= CHECKPOINT_ID ? id.substring(0, CHECKPOINT_ID)
+                : id + " ".repeat(CHECKPOINT_ID - id.length());
+    }
+
+    private static void integer(DataView view, int value) {
+        view.set(0, (byte) (value >>> 24));
+        view.set(1, (byte) (value >>> 16));
+        view.set(2, (byte) (value >>> 8));
+        view.set(3, (byte) value);
     }
 
     /**

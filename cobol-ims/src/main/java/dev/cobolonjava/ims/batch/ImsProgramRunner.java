@@ -62,6 +62,15 @@ public final class ImsProgramRunner {
      */
     public static int run(ProgramContext context, ClassLoader loader, String program, String psbName,
                           MessageQueue queue, boolean ioPcb) {
+        return run(context, loader, program, psbName, queue, ioPcb, null);
+    }
+
+    /**
+     * @param restartId 再始動する検査点 ({@code CKPTID=}、P-164)。通常の開始なら {@code null}
+     * @return プログラムの復帰コード
+     */
+    public static int run(ProgramContext context, ClassLoader loader, String program, String psbName,
+                          MessageQueue queue, boolean ioPcb, String restartId) {
         CodePage codePage = context.codePage();
         if (!context.catalog().isAssigned(LIBRARY) || !Files.isDirectory(context.catalog().resolve(LIBRARY))) {
             throw new ImsBatchException("DD IMS must name the library that holds the PSB and DBD sources");
@@ -87,7 +96,8 @@ public final class ImsProgramRunner {
                 region = new ImsRegion(psb, databases.values(), codePage,
                         ioPcb || queue != null || psb.compatibility(), queue, context.clock())
                         .onCommit(store::commit)
-                        .withInbox(store.inbox());
+                        .withInbox(store.inbox())
+                        .withCheckpoints(store.checkpoints(), restartId);
             } catch (IllegalArgumentException e) {
                 throw new ImsBatchException(e.getMessage(), e);
             }

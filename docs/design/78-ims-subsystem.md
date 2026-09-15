@@ -9,7 +9,7 @@
 | 基準環境 | Java 21, Spring Boot 4.1.x, PostgreSQL / IBM Db2 |
 | 改訂 | 2026-09-13。[批判的レビュー](../reviews/2026-09-13-ims-research-critical-review.md) の全 34 指摘を反映 |
 | 測定 | 2026-09-15。Bank-of-Z の IMS の COBOL 11 本のうち翻訳が通るのは 10 本 (IBTRAN は `REPOSITORY` / JNI)。入口は P-152。DBD 9 本・PSB 8 本はすべて読める (`verify ims-gen`、P-153) |
-| 実装 | 2026-09-16。第 1 増分の DBD / PSB の読み取りと `DFSRRC00` (DLI / DBB)、第 2 増分の SSA・PCB の状態・メモリの上の DL/I (`ImsRegion`) を置いた。Bank-of-Z の読み込み 5 本が JCL で流れる。第 4 増分の一部として I/O PCB (GU / GN / ISRT / PURG) と中立の `MessageQueue` を置き、オンライン 5 本が電文に応答する。同期点 (I/O PCB への GU、基本 CHKP、SYNC、ROLB と異常終了の巻き戻し、§3.5 の位置破棄) を入れた (P-157)。`DFSRRC00` の BMP (電文を読まない形) を受けた (P-158)。§3.4 のコマンドコードのうち C / D / F / L / N / P / Q / - を入れた (U / V は P-100 のまま断る、P-159)。第 3 増分の置き場を中立の口 `DatabaseStore` の裏に置き、`cobol-ims-rdb` が §3.2 の表 (主キーに `ROOT_SEQ` を足した) へ同期点ごとに確定する (H2 / PostgreSQL、P-160)。第 4 増分の JMS のキュー (`cobol-ims-jms`、ADR-0014) を置き、RabbitMQ を `infra/rabbitmq` の compose に足した (実ブローカでの確認は未了、P-162)。§4.4 の inbox による冪等化を入れ、処理済みの電文を業務の更新と同じトランザクションで覚えて再配信を捨てる (P-163)。§5 のルートアンカーロックは同期点の確定で `(DBD_NAME, ROOT_KEY_RAW)` 昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (GH の時点の排他と自動の再試行は未実装、P-161)。JMS、SPA、記号 CHKP / XRST、電文を読む BMP は未実装。暫定判断は P-154〜P-158 |
+| 実装 | 2026-09-16。第 1 増分の DBD / PSB の読み取りと `DFSRRC00` (DLI / DBB)、第 2 増分の SSA・PCB の状態・メモリの上の DL/I (`ImsRegion`) を置いた。Bank-of-Z の読み込み 5 本が JCL で流れる。第 4 増分の一部として I/O PCB (GU / GN / ISRT / PURG) と中立の `MessageQueue` を置き、オンライン 5 本が電文に応答する。同期点 (I/O PCB への GU、基本 CHKP、SYNC、ROLB と異常終了の巻き戻し、§3.5 の位置破棄) を入れた (P-157)。`DFSRRC00` の BMP (電文を読まない形) を受けた (P-158)。§3.4 のコマンドコードのうち C / D / F / L / N / P / Q / - を入れた (U / V は P-100 のまま断る、P-159)。第 3 増分の置き場を中立の口 `DatabaseStore` の裏に置き、`cobol-ims-rdb` が §3.2 の表 (主キーに `ROOT_SEQ` を足した) へ同期点ごとに確定する (H2 / PostgreSQL、P-160)。第 4 増分の JMS のキュー (`cobol-ims-jms`、ADR-0014) を置き、RabbitMQ を `infra/rabbitmq` の compose に足して、実ブローカ (4.1.8) で起動と電文の試験を確認した (P-162)。§4.4 の inbox による冪等化を入れ、処理済みの電文を業務の更新と同じトランザクションで覚えて再配信を捨てる (P-163)。§5 のルートアンカーロックは同期点の確定で `(DBD_NAME, ROOT_KEY_RAW)` 昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (GH の時点の排他と自動の再試行は未実装、P-161)。記号 CHKP と XRST を入れ、退避した域を業務の更新と同じ確定で置き場に残す (P-164)。SPA、電文を読む BMP、GSAM は未実装。暫定判断は P-154〜P-164 |
 
 ---
 
@@ -54,9 +54,9 @@ IBM メインフレーム（z/OS）上で稼働する IMS 資産を、COBOL ソ�
 | **HDAM / PHDAM のルート順序** | **再現しない。**無限定 `GN` の順序が実機と異なることを診断 | ランダマイザを再現できない ([P-102](../decisions/provisional.md)) |
 | **二次索引 (`PROCSEQ=`)** | **L0。**`PROCSEQ=` を持つ PCB を受け付けない | 単一順序モデルの前提を壊す ([P-103](../decisions/provisional.md)) |
 | **論理関係 (`LCHILD` / 連結セグメント)** | **L0** | 木でなく網になり `HIERARCHY_PATH` で表現できない |
-| **GSAM** | **L0** | `CHKP` / `XRST` と併せて別途設計 ([P-110](../decisions/provisional.md)) |
+| **GSAM** | **L0** | 記号 `CHKP` / `XRST` は入れたが、GSAM のデータセットの位置づけ直しは持たない ([P-110](../decisions/provisional.md)、[P-164](../decisions/provisional.md)) |
 | **Fast Path (DEDB / MSDB)** | **L0** | `FLD` コール等、別の API 群 |
-| **symbolic `CHKP` の領域退避 / `XRST`** | **L0** | ([P-110](../decisions/provisional.md)) |
+| **symbolic `CHKP` の領域退避 / `XRST`** | **実装済** | 退避した域を業務の更新と同じ確定で置き場に残し、`XRST` が作業域か `CKPTID=` の検査点から書き戻す ([P-164](../decisions/provisional.md)) |
 | 会話型トランザクション (SPA) | 契約に含める（第 4.3 節） | 当初の設計から欠落していた |
 
 ---
@@ -188,7 +188,7 @@ CREATE TABLE IMS_ROOT_INDEX (
 
 **`CHKP` はコミットだけではない。データベースの位置を破棄する。**`GN` ループの途中で `CHKP` を打つバッチは、`CHKP` の後に `GU` で位置を取り直さなければならない。位置破棄を再現しないと、`CHKP` を挟んだ `GN` ループは実機と違う結果を返す（実機では止まるはずのループが動き続ける、逆もある）。
 
-`checkpoint()` は「コミット + 全 DB PCB の位置破棄」として実装し、**位置破棄が観測できるテストを第 1 増分の受け入れ条件に入れる**。symbolic `CHKP` の領域退避と `XRST` は L0 とする ([P-110](../decisions/provisional.md))。
+`checkpoint()` は「コミット + 全 DB PCB の位置破棄」として実装し、**位置破棄が観測できるテストを第 1 増分の受け入れ条件に入れる**。symbolic `CHKP` の領域退避と `XRST` は、退避した域を**業務の更新と同じ確定**で置き場に残す形で入れた ([P-164](../decisions/provisional.md))。確定が失敗すれば検査点も残らないので、再始動した域とデータベースの状態が揃う。GSAM のデータセットの位置づけ直しは L0 のままである ([P-110](../decisions/provisional.md))。
 
 ### 3.6 可変長セグメント
 

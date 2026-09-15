@@ -13,7 +13,7 @@ import java.util.Locale;
  * @param program    動かすプログラム
  * @param psb        PSB の名前。省けばプログラムと同じ名前
  */
-record RegionParameters(String regionType, String program, String psb) {
+record RegionParameters(String regionType, String program, String psb, String restartId) {
 
     /** BMP は PSB の CMPAT によらず I/O PCB を先頭に置く。 */
     boolean ioPcb() {
@@ -52,6 +52,24 @@ record RegionParameters(String regionType, String program, String psb) {
             throw new ImsBatchException("the PARM of DFSRRC00 requires a program name");
         }
         String psb = fields.length > 2 ? fields[2].strip().toUpperCase(Locale.ROOT) : "";
-        return new RegionParameters(regionType, program, psb.isEmpty() ? program : psb);
+        return new RegionParameters(regionType, program, psb.isEmpty() ? program : psb, restartId(fields));
+    }
+
+    /**
+     * 再始動する検査点 ({@code CKPTID=}、P-164)。
+     *
+     * <p>実機は PARM の決まった位置に書くが、位置を突き合わせていないので、どの欄に書かれていても読む。
+     *
+     * @return 書かれていなければ {@code null}
+     */
+    private static String restartId(String[] fields) {
+        for (String field : fields) {
+            String text = field.strip();
+            if (text.toUpperCase(Locale.ROOT).startsWith("CKPTID=")) {
+                String id = text.substring("CKPTID=".length()).strip().toUpperCase(Locale.ROOT);
+                return id.isEmpty() ? null : id;
+            }
+        }
+        return null;
     }
 }

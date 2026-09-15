@@ -63,6 +63,16 @@ final class ImsSchema {
                     + "MESSAGE_ID VARCHAR(255) NOT NULL, "
                     + "RECORDED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL, "
                     + "CONSTRAINT PK_IMS_MESSAGE_INBOX PRIMARY KEY (MESSAGE_ID))");
+            // 記号 CHKP が退避した域 (P-164)。業務の更新と同じ確定で書くので、再始動した域と
+            // データベースの状態が揃う。域は最大 7 つで、AREA_SEQ は CHKP に書いた順である
+            statement.execute("CREATE TABLE IF NOT EXISTS IMS_CHECKPOINT ("
+                    + "PSB_NAME VARCHAR(8) NOT NULL, "
+                    + "CHKP_ID VARCHAR(8) NOT NULL, "
+                    + "AREA_SEQ SMALLINT NOT NULL, "
+                    + "AREA_LEN INTEGER NOT NULL, "
+                    + "AREA_DATA " + data + " NOT NULL, "
+                    + "RECORDED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                    + "CONSTRAINT PK_IMS_CHECKPOINT PRIMARY KEY (PSB_NAME, CHKP_ID, AREA_SEQ))");
             statement.execute("CREATE TABLE IF NOT EXISTS IMS_ROOT_LOCK ("
                     + "DBD_NAME VARCHAR(8) NOT NULL, "
                     + "ROOT_KEY_RAW " + key + " NOT NULL, "

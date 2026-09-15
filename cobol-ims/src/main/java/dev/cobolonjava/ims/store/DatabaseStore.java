@@ -30,6 +30,15 @@ public interface DatabaseStore extends AutoCloseable {
         return null;
     }
 
+    /**
+     * 記号 CHKP が退避した域の置き場 (P-164)。{@link #commit} と同じ確定で書く置き場だけが持つ。
+     *
+     * @return 持たなければ {@code null} (記号 CHKP は断る)
+     */
+    default CheckpointStore checkpoints() {
+        return null;
+    }
+
     @Override
     void close();
 }

@@ -9,6 +9,7 @@ import dev.cobolonjava.ims.dbd.SegmentDefinition;
 import dev.cobolonjava.ims.psb.PcbDefinition;
 import dev.cobolonjava.ims.psb.ProgramSpecification;
 import dev.cobolonjava.ims.psb.SensitiveSegment;
+import dev.cobolonjava.ims.store.CheckpointStore;
 import dev.cobolonjava.ims.store.MessageInbox;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.interop.ProgramCatalog;
@@ -261,6 +262,19 @@ public final class ImsRegion {
     public ImsRegion withInbox(MessageInbox inbox) {
         if (ioPcb != null) {
             ioPcb.inbox(inbox);
+        }
+        return this;
+    }
+
+    /**
+     * 記号 CHKP の置き場と、再始動する検査点 ID を置く (P-164)。
+     *
+     * @param checkpoints 置き場が持たなければ {@code null} (記号 CHKP と XRST を断る)
+     * @param restartId   領域の {@code CKPTID=}。通常の開始なら {@code null}
+     */
+    public ImsRegion withCheckpoints(CheckpointStore checkpoints, String restartId) {
+        if (ioPcb != null) {
+            ioPcb.checkpoints(checkpoints, psb.name(), restartId);
         }
         return this;
     }

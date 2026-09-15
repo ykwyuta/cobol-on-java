@@ -33,6 +33,6 @@ public final class Dfsrrc00 implements CobolProgram {
     public void run(Storage storage, ProgramContext context, DataView[] arguments) {
         RegionParameters parameters = RegionParameters.of(context.codePage(), arguments);
         context.setReturnCode(ImsProgramRunner.run(context, loader, parameters.program(), parameters.psb(), null,
-                parameters.ioPcb()));
+                parameters.ioPcb(), parameters.restartId()));
     }
 }
