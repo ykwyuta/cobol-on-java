@@ -4384,6 +4384,37 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-156 I/O PCB は GU / GN / ISRT / PURG だけを持ち、応答は次の GU か正常終了で送り、異常終了なら捨てる
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-16)。Bank-of-Z のオンライン 5 本 (IBLOGIN1 / IBGCUDAT / IBSCUDAT / IBACSUM / IBLOGOUT) に電文を流し、すべて復帰コード 0 で、資産の意図どおりの応答を返した |
+| 場所 | `cobol-ims` / `IoPcb`、`MessageQueue`、`InMemoryMessageQueue`、`InputMessage`、`OutputMessage`、`ImsRegion`、`ImsProgramRunner`、`cobol-verify` / `ImsMessageRunner` (`verify ims-mpp`) |
+| 関連要件 | FR-164、設計 78 §4、P-099、P-104、P-105 |
+
+**暫定の扱い**:
+
+- 電文のキューは中立の口 `MessageQueue` (取り出す、応答を送る) だけを持つ。実装は 1 つの JVM の中の `InMemoryMessageQueue` だけで、
+  JMS (ADR-0014)、待ち合わせ、取引コードでの振り分け、UOW との原子性 (P-104) はまだ無い
+- **GU** は前の電文の応答を送り出してから次の電文を取り出し、1 つ目のセグメントに LL / ZZ (ZZ は 0) を付けて渡す。
+  キューが空なら **QC**。**GN** は同じ電文の次のセグメント、尽きれば **QD**。**ISRT** は I/O 域の LL の長さを応答に積む。
+  **PURG** は応答の電文を区切り、I/O 域があればそれを次の電文の 1 つ目にする
+- 応答の宛先は入力の電文を送ってきた論理端末。応答の ZZ は外して持つ
+- プログラムが正常に戻れば積んだ応答を送り、異常終了なら捨てる。取り出した入力の電文はキューに戻さない
+- I/O PCB のマスク: 論理端末名 (8)、予約 (2)、状態 (2)、日付 (パック `0CYYDDDF`、C は 20xx が 1)、時刻 (パック `HHMMSSt` と符号 F)、
+  入力の順序番号 (4 byte、領域の中で 1 から)、MOD 名・利用者 ID・グループ名は空白。Bank-of-Z が書くマスクの並びと合う
+- CHNG / CHKP / SYNC / ROLB / INQY 等、MOD 名や SSA を付けた I/O PCB の呼び出し、会話型の SPA、代替 PCB への呼び出しは
+  `DliCallException` で止める。入力の電文が無いときの ISRT / PURG も止める (実機の状態コードを確かめていない)
+- データベースは領域の中でメモリに持ち、プログラムが正常に戻ったときに書き戻す (P-155 と同じ)。電文ごとの同期点は無い
+- `verify ims-mpp` は測定の道具である。置き場のデータセットを名前の最後の修飾子の DD に割り当て、`LTERM|本文` の電文を流す
+
+**どこがずれうるか**: 実機は GU ごとに同期点を取り、電文ごとにデータベースの更新と応答を確定する。ここでは途中で異常終了すると、
+それまでに処理した電文の更新も応答もすべて失われる。Bank-of-Z は `CF` も「電文がある」と見ているが、ここでは返さない。
+日付・時刻の形と順序番号の数え方は実機と突き合わせていない。
+
+**解消条件**: JMS のキュー (ADR-0014) と UOW を入れるとき、GU ごとの同期点と、異常終了した電文の扱いを決め直す。
+実機の採取があれば、I/O PCB のマスクの初期値と日付・時刻を突き合わせる。
+
 ## P-155 DFSRRC00 はバッチ (DLI / DBB) だけを受け、PSB と DBD の原文を //IMS から読み、正常終了したときだけデータベースを書く
 
 | 項目 | 内容 |

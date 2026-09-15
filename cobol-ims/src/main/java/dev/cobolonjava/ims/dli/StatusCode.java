@@ -33,6 +33,10 @@ public final class StatusCode {
     public static final String AJ = "AJ";
     /** SSA のフィールド名が DBD に無い。 */
     public static final String AK = "AK";
+    /** I/O PCB への GU で、メッセージキューが空。 */
+    public static final String QC = "QC";
+    /** I/O PCB への GN で、電文の次のセグメントが無い。 */
+    public static final String QD = "QD";
     /** 読み込み (PROCOPT=L) で、同じキーのセグメントがすでにある。 */
     public static final String LB = "LB";
     /** 読み込みで、根のキーの順が崩れている。 */

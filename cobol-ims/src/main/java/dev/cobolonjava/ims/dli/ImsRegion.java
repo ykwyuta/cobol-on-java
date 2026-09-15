@@ -14,6 +14,7 @@ import dev.cobolonjava.runtime.interop.ProgramParameter;
 import dev.cobolonjava.runtime.interop.ProgramSignature;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.IdentityHashMap;
@@ -49,6 +50,8 @@ public final class ImsRegion {
     private final Map<String, HierarchicalDatabase> databases = new LinkedHashMap<>();
     private final List<Storage> storages = new ArrayList<>();
     private final Map<Storage, DatabasePcb> databasePcbs = new IdentityHashMap<>();
+    private Storage ioStorage;
+    private IoPcb ioPcb;
 
     /**
      * @throws IllegalArgumentException PSB が渡されていない DBD を名指すか、DBD と食い違うとき
@@ -63,6 +66,20 @@ public final class ImsRegion {
      */
     public ImsRegion(ProgramSpecification psb, Collection<HierarchicalDatabase> databases, CodePage codePage,
                      boolean ioPcb) {
+        this(psb, databases, codePage, ioPcb, null, Clock.systemDefaultZone());
+    }
+
+    /**
+     * 電文を処理する領域 (MPP)。I/O PCB への GU / GN / ISRT / PURG が {@code queue} へ行く (P-156)。
+     *
+     * @param queue 電文のキュー。バッチなら {@code null}
+     * @param clock I/O PCB の日付と時刻の出どころ
+     */
+    public ImsRegion(ProgramSpecification psb, Collection<HierarchicalDatabase> databases, CodePage codePage,
+                     boolean ioPcb, MessageQueue queue, Clock clock) {
+        if (queue != null && !ioPcb) {
+            throw new IllegalArgumentException("a message queue needs an I/O PCB");
+        }
         this.psb = Objects.requireNonNull(psb, "psb");
         this.codePage = Objects.requireNonNull(codePage, "codePage");
         for (HierarchicalDatabase database : databases) {
@@ -71,7 +88,9 @@ public final class ImsRegion {
             }
         }
         if (ioPcb) {
-            storages.add(Storage.allocate(IO_MASK + RESERVE));
+            ioStorage = Storage.allocate(IO_MASK + RESERVE);
+            storages.add(ioStorage);
+            this.ioPcb = new IoPcb(ioStorage, queue, codePage, Objects.requireNonNull(clock, "clock"));
         }
         for (PcbDefinition pcb : psb.pcbs()) {
             if (pcb instanceof PcbDefinition.Database definition) {
@@ -170,6 +189,11 @@ public final class ImsRegion {
         }
         String function = codePage.decode(functionView.subView(0, 4).toByteArray()).stripTrailing();
         DataView pcbView = arguments.get(index + 1);
+        if (ioPcb != null && pcbView.offset() == 0 && pcbView.storage() == ioStorage) {
+            ioPcb.call(function, arguments.size() > index + 2 ? arguments.get(index + 2) : null,
+                    arguments.size() > index + 3 ? arguments.subList(index + 3, arguments.size()) : List.of());
+            return;
+        }
         DatabasePcb pcb = pcbView.offset() == 0 ? databasePcbs.get(pcbView.storage()) : null;
         if (pcb == null) {
             boolean terminal = pcbView.offset() == 0
@@ -182,6 +206,15 @@ public final class ImsRegion {
         List<DataView> ssas = arguments.size() > index + 3
                 ? arguments.subList(index + 3, arguments.size()) : List.of();
         pcb.call(function, io, ssas);
+    }
+
+    /**
+     * プログラムが戻ったあとに呼ぶ。正常に戻ったなら I/O PCB に積んだ応答を送り、異常終了なら捨てる (P-156)。
+     */
+    public void finish(boolean normal) {
+        if (ioPcb != null) {
+            ioPcb.finish(normal);
+        }
     }
 
     /** 同じデータベースを見る PCB の位置を先に動かしてから消す。 */

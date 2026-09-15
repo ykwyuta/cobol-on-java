@@ -53,6 +53,7 @@ public final class Main {
             System.err.println("       verify ccvs85-run <newcob.val> [-x x-cards] [-o out]");
             System.err.println("       verify corpus     <directory> [-I copybooks]... [-o out]");
             System.err.println("       verify ims-gen    <directory> [-o out]");
+            System.err.println("       verify ims-mpp    <base> -d classes -p program -s psb -m messages [-o out]");
             System.exit(2);
             return;
         }
@@ -62,6 +63,8 @@ public final class Main {
             case "ccvs85-run" -> ccvs85Run(Path.of(args[1]), option(args, "-x"));
             case "corpus" -> corpus(Path.of(args[1]), options(args, "-I"));
             case "ims-gen" -> imsGeneration(Path.of(args[1]));
+            case "ims-mpp" -> dev.cobolonjava.verify.ims.ImsMessageRunner.run(Path.of(args[1]),
+                    option(args, "-d"), word(args, "-p"), word(args, "-s"), option(args, "-m"));
             default -> null;
         };
         if (text == null) {
@@ -183,6 +186,18 @@ public final class Main {
                 .map(resolver -> resolver.resolve(textName, libraryName))
                 .flatMap(Optional::stream)
                 .findFirst();
+    }
+
+    /** 語の指定を読む。書かれていなければ止める。 */
+    private static String word(String[] args, String name) {
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals(name)) {
+                return args[i + 1];
+            }
+        }
+        System.err.println(name + " is required");
+        System.exit(2);
+        return null;
     }
 
     /** 同じ指定を何度でも読む。 */
