@@ -3796,8 +3796,8 @@ COMMAREA も入口では断らない。渡された範囲を越えて読めば�
 INQACC は POINTER を `PIC X(8)` と `PIC 9(8) BINARY` (4 byte) の両方で REDEFINES しており、
 どちらを前提にしたかは決まらない。NULL との比較、`ADDRESS OF`、`LENGTH OF` の添字つき・修飾名は未対応。
 
-**解消条件**: 番地を扱う連絡節の設計 (P-122) と合わせて `ADDRESS OF` を入れる。LP の既定を資産の
-コンパイル option から決める。
+**解消条件**: 番地を扱う連絡節の設計 (P-122) と合わせて `ADDRESS OF` を入れる (P-150 で `ADDRESS OF` と
+`SET ADDRESS OF` を入れた)。LP の既定を資産のコンパイル option から決める。
 
 ## P-124 BIF DEEDIT は公開仕様の記述どおりに数字を詰め、ABCODE のデータ名は 4 byte に限る
 
@@ -4383,6 +4383,32 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 **解消条件**: Spring Session JDBC でも session の削除・失効と一緒に会話を消す (期限切れの session を消す job と会話の
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
+
+## P-150 POINTER には実行単位の中で振った番号を置き、SET ADDRESS OF は連絡節の 01 をその記憶域に結ぶ
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が file control などの SET のために「ADDRESS OF まで入れる」と答えた (P-122、P-123 を広げる) |
+| 場所 | 設計 85 §6。`AddressSpace`、`Ops.linkageSlots` / `setAddressOf` / `addressed` / `addressView`、`ProcedureBuilder.addressSetOf`、`ProgramGenerator.planSetAddress` / `planSetPointer` / `parameterIndexOf` |
+| 関連要件 | FR-027、P-122、P-123 |
+
+**暫定の扱い**:
+
+- `SET ptr TO ADDRESS OF 項目` は、項目の記憶域と位置に実行単位の中で振った 4 byte の番号を POINTER に置く。同じ位置には同じ
+  番号を返すので、POINTER どうしの比較は位置の比較になる。0 は NULL
+- `SET ADDRESS OF 連絡節の 01 TO (POINTER | ADDRESS OF 項目 | NULL)` は、その 01 を番号が指す記憶域に結ぶ。番号でない値は S0C4
+- 構文解析は `ADDRESS OF X` を修飾名として読むので、`LENGTH OF` と同じく `ADDRESS` という名前の項目が無いときだけ受ける
+- USING に並ばない連絡節の 01 は翻訳で断らず、番地の枠を持たせる。番地を置かずに参照すれば実行時に S0C4 で止まる
+  (以前は翻訳時に「USING に並んでいない」と断っていた)
+- 番地を変えられるのは連絡節の 01 / 77 だけで、作業場所の項目への SET ADDRESS OF と、POINTER でない受取側への
+  ADDRESS OF は翻訳で断る
+
+**どこがずれうるか**: 番号はホストの番地ではない。POINTER を数として扱う資産 (REDEFINES した `PIC 9(8) BINARY` で足し引きする、
+番地を出力する、別の実行単位へ渡す) は意味のある値にならない。番地の算術 (`SET ptr UP BY`)、`ADDRESS OF` の条件式での比較、
+番地を置いていない連絡節の `ADDRESS OF` (ホストでは NULL になりうる) は扱っていない。LP(64) の 8 byte の POINTER は持たない。
+
+**解消条件**: POINTER を数として使う資産が見つかれば、記憶域を 1 つの番地空間に並べる設計を検討する。file control / TS / TD /
+RETRIEVE の SET をこの番号で入れる (設計 85 §5.5)。
 
 ## P-149 START の CHANNEL / ATTACH / NOCHECK / SYSID、REQID の無い CANCEL、TS / TD の SYSID と NOSUSPEND を暫定の仕様で変換する
 

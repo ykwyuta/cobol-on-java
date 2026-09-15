@@ -32,6 +32,20 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
+    /**
+     * {@code SET ADDRESS OF 連絡節の 01 TO 番地} (設計 85 §6、暫定判断 P-150)。
+     *
+     * @param pointer   番地を持つ POINTER 項目。ADDRESS OF と NULL のときは null
+     * @param addressOf ADDRESS OF の項目。POINTER と NULL のときは null
+     */
+    record SetAddress(List<DataItem> records, DataReference pointer, DataReference addressOf, Origin origin)
+            implements Statement {
+    }
+
+    /** {@code SET POINTER 項目 TO ADDRESS OF 項目} (設計 85 §6、暫定判断 P-150)。 */
+    record SetPointer(List<DataReference> pointers, DataReference addressOf, Origin origin) implements Statement {
+    }
+
     /** EXEC CICS ASSIGNの1つのoption。受取域へ置く値の種類と長さ。 */
     record CicsAssign(CicsAssignOption option, DataReference target, Origin origin)
             implements Statement {

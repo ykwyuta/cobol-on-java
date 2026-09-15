@@ -3424,6 +3424,10 @@ public final class ProcedureBuilder {
      * 表の中の位置そのものだからである。
      */
     private Statement indexSetOf(CobolParser.SetStatementContext context, Origin origin) {
+        if (context.TO() != null && (context.identifier().stream().anyMatch(this::isAddressOf)
+                || isAddressOf(context.arithmeticOperand().identifier()))) {
+            return addressSetOf(context, origin);
+        }
         Operand value = operandOf(context.arithmeticOperand(), origin);
         if (value == null) {
             return null;
@@ -5106,6 +5110,97 @@ public final class ProcedureBuilder {
                 && context.qualifiedDataName().dataName().size() >= 2
                 && context.qualifiedDataName().dataName(0).getText().equalsIgnoreCase("LENGTH")
                 && layout.findAll("LENGTH").isEmpty();
+    }
+
+    /**
+     * {@code ADDRESS OF 項目} (設計 85 §6、暫定判断 P-150)。
+     *
+     * <p>構文解析は {@code ADDRESS OF X} を修飾名として読む。{@code LENGTH OF} と同じく、{@code ADDRESS} という名前の
+     * 項目が無いときだけ特殊レジスタとして扱う。
+     */
+    private boolean isAddressOf(CobolParser.IdentifierContext context) {
+        return context != null
+                && context.subscripts() == null
+                && context.referenceModifier() == null
+                && context.qualifiedDataName().dataName().size() == 2
+                && context.qualifiedDataName().dataName(0).getText().equalsIgnoreCase("ADDRESS")
+                && layout.findAll("ADDRESS").isEmpty();
+    }
+
+    /**
+     * {@code SET ADDRESS OF 連絡節 TO (POINTER | ADDRESS OF 項目 | NULL)} と {@code SET POINTER TO ADDRESS OF 項目}
+     * (設計 85 §6、暫定判断 P-150)。
+     *
+     * <p>POINTER には記憶域の位置に振った番号を置き、SET ADDRESS OF は連絡節の 01 をその位置の記憶域に結ぶ。
+     * 番地を持つのは連絡節の 01 / 77 だけであり、作業場所の項目の番地は変えられない (規格の形)。
+     */
+    private Statement addressSetOf(CobolParser.SetStatementContext context, Origin origin) {
+        CobolParser.IdentifierContext source = context.arithmeticOperand().identifier();
+        DataReference addressOf = null;
+        DataReference pointer = null;
+        if (isAddressOf(source)) {
+            addressOf = addressTarget(source, origin);
+            if (addressOf == null) {
+                return null;
+            }
+        } else if (source != null) {
+            pointer = resolver.resolve(source);
+            if (pointer == null) {
+                return null;
+            }
+            if (!pointer.item().isPointer()) {
+                report(origin, "SET ADDRESS OF requires a POINTER, ADDRESS OF, or NULL: " + describe(pointer));
+                return null;
+            }
+        } else {
+            Operand literal = operandOf(context.arithmeticOperand(), origin);
+            boolean isNull = literal instanceof Operand.Literal value
+                    && value.value() instanceof LiteralValue.Figure figure
+                    && figure.constant() == LiteralValue.FigurativeConstant.NULL;
+            if (!isNull) {
+                report(origin, "SET ADDRESS OF requires a POINTER, ADDRESS OF, or NULL");
+                return null;
+            }
+        }
+        List<DataItem> records = new ArrayList<>();
+        List<DataReference> pointers = new ArrayList<>();
+        for (CobolParser.IdentifierContext identifier : context.identifier()) {
+            if (isAddressOf(identifier)) {
+                DataReference target = addressTarget(identifier, origin);
+                if (target == null) {
+                    return null;
+                }
+                DataItem item = target.item();
+                if (item.record() != item || item.section() != DataSection.LINKAGE) {
+                    report(origin, "SET ADDRESS OF requires a level 01 or 77 LINKAGE SECTION item: "
+                            + describe(target));
+                    return null;
+                }
+                records.add(item);
+            } else {
+                DataReference target = resolver.resolve(identifier);
+                if (target == null) {
+                    return null;
+                }
+                if (!target.item().isPointer() || addressOf == null) {
+                    report(origin, "SET TO ADDRESS OF requires a POINTER receiver: " + describe(target));
+                    return null;
+                }
+                pointers.add(target);
+            }
+        }
+        if (!records.isEmpty() && !pointers.isEmpty()) {
+            report(origin, "SET cannot mix ADDRESS OF receivers and POINTER receivers");
+            return null;
+        }
+        return records.isEmpty()
+                ? new Statement.SetPointer(List.copyOf(pointers), addressOf, origin)
+                : new Statement.SetAddress(List.copyOf(records), pointer, addressOf, origin);
+    }
+
+    private DataReference addressTarget(CobolParser.IdentifierContext context, Origin origin) {
+        String name = context.qualifiedDataName().dataName(1).getText().toUpperCase(Locale.ROOT);
+        return resolver.resolveName(name, origin);
     }
 
     private Operand lengthOfOperand(CobolParser.IdentifierContext context, Origin origin) {

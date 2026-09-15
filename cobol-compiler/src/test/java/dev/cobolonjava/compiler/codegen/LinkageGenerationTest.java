@@ -2,6 +2,7 @@ package dev.cobolonjava.compiler.codegen;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.cobolonjava.compiler.CobolCompiler;
@@ -242,9 +243,9 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("USING に並べていない連絡節を使ったら誤りとして報告する (FR-027)")
-    void anUnboundLinkageItemIsReported() {
-        CobolCompiler.Result result = compile(List.of(
+    @DisplayName("USING に並べず番地も置いていない連絡節を使えば、翻訳は通り実行時に S0C4 で止まる (FR-027、設計 85 §6)")
+    void anUnboundLinkageItemAbendsAtRunTime() {
+        CobolProgram program = load(compile(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. SUB.",
                 "DATA DIVISION.",
@@ -253,12 +254,74 @@ class LinkageGenerationTest {
                 "01 LK-B PIC X(3).",
                 "PROCEDURE DIVISION USING LK-A.",
                 "MAIN-START.",
-                "    MOVE 'xyz' TO LK-B."));
+                "    MOVE 'xyz' TO LK-B.")));
+        Storage caller = callerStorage("abc");
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message()
-                        .contains("not listed in PROCEDURE DIVISION USING"),
-                result.diagnostics().toString());
+        RuntimeException abend = assertThrows(RuntimeException.class,
+                () -> program.runFresh(ProgramContext.standard(), caller.view(0, 3)));
+        assertTrue(abend.getMessage().contains("LK-B"), abend.getMessage());
+        assertEquals("abc", CodePages.DEFAULT.decode(caller.array()));
+    }
+
+    @Test
+    @DisplayName("SET ADDRESS OF は連絡節の 01 を POINTER と ADDRESS OF の記憶域に結び、同じ位置の ADDRESS OF は同じ値になる (設計 85 §6)")
+    void setAddressOfBindsLinkageRecords() {
+        CobolProgram program = load(compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SUB.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-BUF PIC X(6) VALUE 'ABCDEF'.",
+                "01 WS-PTR POINTER.",
+                "01 WS-PTR2 POINTER.",
+                "LINKAGE SECTION.",
+                "01 LK-OUT PIC X(12).",
+                "01 LK-VIEW PIC X(6).",
+                "01 LK-SECOND PIC X(6).",
+                "PROCEDURE DIVISION USING LK-OUT.",
+                "MAIN-START.",
+                "    SET WS-PTR TO ADDRESS OF WS-BUF",
+                "    SET ADDRESS OF LK-VIEW TO WS-PTR",
+                "    MOVE 'XY' TO LK-VIEW(1:2)",
+                "    SET ADDRESS OF LK-SECOND TO ADDRESS OF WS-BUF",
+                "    SET WS-PTR2 TO ADDRESS OF LK-SECOND",
+                "    MOVE LK-SECOND TO LK-OUT(1:6)",
+                "    IF WS-PTR = WS-PTR2 MOVE 'SAME' TO LK-OUT(7:4) END-IF",
+                "    SET ADDRESS OF LK-VIEW TO NULL.")));
+        Storage caller = callerStorage("------------");
+
+        assertEquals("XYCDEFSAME--", call(program, caller, caller.view(0, 12)));
+    }
+
+    @Test
+    @DisplayName("ADDRESS OF を置けるのは POINTER、番地を変えられるのは連絡節の 01 だけで、ほかは翻訳時に断る (設計 85 §6)")
+    void rejectsAddressOfOutsidePointersAndLinkageRecords() {
+        CobolCompiler.Result intoText = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SUB.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-BUF PIC X(6).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    SET WS-BUF TO ADDRESS OF WS-BUF."));
+        assertFalse(intoText.succeeded());
+        assertTrue(intoText.diagnostics().toString().contains("requires a POINTER receiver"),
+                intoText.diagnostics().toString());
+
+        CobolCompiler.Result workingStorage = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SUB.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-BUF PIC X(6).",
+                "01 WS-PTR POINTER.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    SET ADDRESS OF WS-BUF TO WS-PTR."));
+        assertFalse(workingStorage.succeeded());
+        assertTrue(workingStorage.diagnostics().toString().contains("LINKAGE SECTION item"),
+                workingStorage.diagnostics().toString());
     }
 
     @Test

@@ -749,6 +749,10 @@ public final class ProgramGenerator {
             } else if (statement instanceof Statement.Continue) {
                 // 何もしない文である
                 continue;
+            } else if (statement instanceof Statement.SetAddress setAddress) {
+                planSetAddress(setAddress, body);
+            } else if (statement instanceof Statement.SetPointer setPointer) {
+                planSetPointer(setPointer, body);
             } else if (statement instanceof Statement.Cics cics) {
                 planCics(cics, body);
             } else if (statement instanceof Statement.CicsCondition condition) {
@@ -5166,6 +5170,15 @@ public final class ProgramGenerator {
     private void emitRun(int from, int paragraphCount) {
         run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", RUN_DESCRIPTOR, null, null);
         run.visitCode();
+        List<DataItem> unlisted = unlistedLinkageRecords();
+        if (!unlisted.isEmpty() || !parameters.isEmpty()) {
+            // SET ADDRESS OF が枠を書き換えるので、呼ぶ側の配列を写してから持ち回る (設計 85 §6、暫定判断 P-150)
+            run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+            push(parameters.size() + unlisted.size());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "linkageSlots",
+                    "([L" + DATA_VIEW + ";I)[L" + DATA_VIEW + ";", false);
+            run.visitVarInsn(Opcodes.ASTORE, ARGUMENTS_LOCAL);
+        }
         if (paragraphCount > from) {
             // いちばん最初に入る手続きの DEBUG-CONTENTS である (要件 FR-193)
             emitDebugReason("START PROGRAM");
@@ -6422,13 +6435,102 @@ public final class ProgramGenerator {
      * @return 見つからなければ {@code -1}
      */
     private int parameterIndexOf(DataItem record) {
+        DataItem base = record;
         for (DataItem current = record; current != null; current = redefined(current)) {
             int index = parameters.indexOf(current);
             if (index >= 0) {
                 return index;
             }
+            base = current;
         }
-        return -1;
+        // USING に並ばない連絡節の 01 は、SET ADDRESS OF で番地を置く枠を使う (設計 85 §6、暫定判断 P-150)。
+        // 番地を置かずに参照すれば枠が空なので、実行時に S0C4 で止まる
+        int unlisted = unlistedLinkageRecords().indexOf(base);
+        return unlisted < 0 ? -1 : parameters.size() + unlisted;
+    }
+
+    /** USING に並ばない連絡節の 01。REDEFINES は重ねる先の枠を使うので数えない。 */
+    private List<DataItem> unlistedLinkageRecords() {
+        if (layout == null) {
+            return List.of();
+        }
+        List<DataItem> unlisted = new ArrayList<>();
+        for (DataItem record : layout.records()) {
+            if (record.section() == DataSection.LINKAGE && !parameters.contains(record)
+                    && record.redefinesName() == null) {
+                unlisted.add(record);
+            }
+        }
+        return unlisted;
+    }
+
+    /** SET ADDRESS OF (設計 85 §6、暫定判断 P-150)。連絡節の 01 の枠を、番地が指す記憶域の view に替える。 */
+    private void planSetAddress(Statement.SetAddress statement, List<Runnable> body) {
+        for (DataItem record : statement.records()) {
+            int index = parameterIndexOf(record);
+            if (index < 0) {
+                report(statement.origin(), "SET ADDRESS OF requires a LINKAGE SECTION record: " + describe(record));
+                return;
+            }
+            String item = describe(record);
+            int length = record.length();
+            Runnable value;
+            if (statement.pointer() != null) {
+                Runnable pointer = planAddress(statement.pointer(), statement.origin());
+                if (pointer == null) {
+                    return;
+                }
+                value = () -> {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    pointer.run();
+                    push(length);
+                    run.visitLdcInsn(item);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "addressed",
+                            "(" + CONTEXT + "L" + STORAGE + ";IILjava/lang/String;)L" + DATA_VIEW + ";", false);
+                };
+            } else if (statement.addressOf() != null) {
+                Runnable target = planAddress(statement.addressOf(), statement.origin());
+                if (target == null) {
+                    return;
+                }
+                value = () -> {
+                    target.run();
+                    push(length);
+                    run.visitLdcInsn(item);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "addressView",
+                            "(L" + STORAGE + ";IILjava/lang/String;)L" + DATA_VIEW + ";", false);
+                };
+            } else {
+                value = () -> run.visitInsn(Opcodes.ACONST_NULL);
+            }
+            body.add(() -> {
+                run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+                push(index);
+                value.run();
+                run.visitInsn(Opcodes.AASTORE);
+            });
+        }
+    }
+
+    /** SET POINTER TO ADDRESS OF (設計 85 §6、暫定判断 P-150)。項目の位置に振った番号を POINTER に置く。 */
+    private void planSetPointer(Statement.SetPointer statement, List<Runnable> body) {
+        Runnable source = planAddress(statement.addressOf(), statement.origin());
+        if (source == null) {
+            return;
+        }
+        for (DataReference pointer : statement.pointers()) {
+            Runnable target = planAddress(pointer, statement.origin());
+            if (target == null) {
+                return;
+            }
+            body.add(() -> {
+                target.run();
+                run.visitVarInsn(Opcodes.ALOAD, 2);
+                source.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "setAddressOf",
+                        "(L" + STORAGE + ";I" + CONTEXT + "L" + STORAGE + ";I)V", false);
+            });
+        }
     }
 
     private DataItem redefined(DataItem item) {

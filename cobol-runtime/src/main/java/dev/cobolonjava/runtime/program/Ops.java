@@ -1606,9 +1606,60 @@ public final class Ops {
     public static DataView linkage(DataView[] arguments, int index, String item) {
         if (arguments == null || index >= arguments.length || arguments[index] == null) {
             throw new Abend(AbendCode.S0C4,
-                    "the caller did not pass an argument for " + item);
+                    "the caller did not pass an argument, and no address was set, for " + item);
         }
         return arguments[index];
+    }
+
+    /**
+     * 連絡節の番地を置く枠 (設計 85 §6、暫定判断 P-150)。
+     *
+     * <p>USING に並べた引数を写し、USING に並ばない連絡節の 01 のために空の枠を足す。{@code SET ADDRESS OF} は
+     * 枠を書き換えるので、呼ぶ側の配列を変えないよう写す。枠に入る view は呼ぶ側と同じなので、書き込みは届く。
+     */
+    public static DataView[] linkageSlots(DataView[] arguments, int size) {
+        int passed = arguments == null ? 0 : arguments.length;
+        DataView[] slots = new DataView[Math.max(size, passed)];
+        if (passed > 0) {
+            System.arraycopy(arguments, 0, slots, 0, passed);
+        }
+        return slots;
+    }
+
+    /** {@code SET ptr TO ADDRESS OF 項目}。項目の記憶域と位置に振った番号を POINTER の 4 byte に置く。 */
+    public static void setAddressOf(Storage target, int targetOffset, ProgramContext context, Storage storage,
+                                    int offset) {
+        int address = AddressSpace.of(context).addressOf(storage, offset);
+        target.view(targetOffset, 4).setBytes(new byte[] {
+            (byte) (address >>> 24), (byte) (address >>> 16), (byte) (address >>> 8), (byte) address});
+    }
+
+    /**
+     * {@code SET ADDRESS OF 連絡節 TO ptr}。POINTER が NULL なら null (番地を外す) を返す。
+     * この実行単位で振った番号でなければ、ホストで壊れた番地を使うのと同じに S0C4 で止める。
+     */
+    public static DataView addressed(ProgramContext context, Storage pointer, int pointerOffset, int length,
+                                     String item) {
+        byte[] value = pointer.view(pointerOffset, 4).toByteArray();
+        int address = ((value[0] & 0xFF) << 24) | ((value[1] & 0xFF) << 16) | ((value[2] & 0xFF) << 8)
+                | (value[3] & 0xFF);
+        if (address == 0) {
+            return null;
+        }
+        AddressSpace.Location location = AddressSpace.of(context).locate(address);
+        if (location == null) {
+            throw new Abend(AbendCode.S0C4, "POINTER value X'" + String.format("%08X", address)
+                    + "' does not address storage of this run unit for " + item);
+        }
+        return addressView(location.storage(), location.offset(), length, item);
+    }
+
+    /** {@code SET ADDRESS OF 連絡節 TO ADDRESS OF 項目}。記憶域の端を越える長さなら S0C4。 */
+    public static DataView addressView(Storage storage, int offset, int length, String item) {
+        if (offset < 0 || length < 0 || (long) offset + length > storage.size()) {
+            throw new Abend(AbendCode.S0C4, "the address set for " + item + " does not cover " + length + " bytes");
+        }
+        return storage.view(offset, length);
     }
 
     // ---- SSRANGE の検査 ----

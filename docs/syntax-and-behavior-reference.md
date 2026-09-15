@@ -584,7 +584,8 @@ EXEC CICS FREE CHILD(X(16)項目) END-EXEC
 
 #### `USAGE POINTER` と `LENGTH OF`
 
-- `USAGE POINTER` は 4 byte の項目で、`SET 項目 TO NULL` と `SET 項目 TO 別のPOINTER` だけを扱います。`ADDRESS OF` と POINTER の MOVE は未対応です。
+- `USAGE POINTER` は 4 byte の項目で、`SET 項目 TO NULL`、`SET 項目 TO 別のPOINTER`、`SET 項目 TO ADDRESS OF 項目` を扱います。POINTER には実行単位の中で記憶域の位置に振った番号が入り、同じ位置には同じ値が入ります (ホストの番地ではありません)。POINTER の MOVE と番地の算術は未対応です。
+- `SET ADDRESS OF 連絡節の01 TO (POINTER | ADDRESS OF 項目 | NULL)` は、その 01 を指す記憶域に結びます。USING に並ばない連絡節の 01 も翻訳でき、番地を置かずに参照すれば実行時に S0C4 で止まります。`ADDRESS OF` は `ADDRESS` という名前の項目が無いときに受けます (設計 85 §6、暫定判断 P-150)。
 - `LENGTH OF 項目` は、長さが翻訳時に決まる項目の長さの整数定数になります (暫定判断 P-123)。
 
 #### `EXEC SQL` (Db2 連携)
