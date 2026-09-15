@@ -1,0 +1,33 @@
+name: cobol-on-java-rabbitmq
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    hostname: rabbitmq
+    restart: unless-stopped
+    ports:
+      # AMQP (JMS クライアントの接続先) と、キューを見る管理 UI
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cobol}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in infra/rabbitmq/.env}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+volumes:
+  rabbitmq-data:
