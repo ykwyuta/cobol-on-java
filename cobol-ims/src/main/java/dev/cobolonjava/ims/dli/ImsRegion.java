@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * 1 本のプログラムを動かす IMS の領域。PSB と、それが名指すデータベースを束ねる (設計 78 §2)。
@@ -52,6 +53,8 @@ public final class ImsRegion {
     private final List<Storage> storages = new ArrayList<>();
     private final Map<Storage, DatabasePcb> databasePcbs = new IdentityHashMap<>();
     private final UndoLog undo = new UndoLog();
+    private Consumer<Collection<HierarchicalDatabase>> committer = databases -> {
+    };
     private Storage ioStorage;
     private IoPcb ioPcb;
 
@@ -238,15 +241,27 @@ public final class ImsRegion {
         }
     }
 
-    /** 同期点。データベースの変更を確定し、DB PCB の位置を捨てる (P-157)。 */
+    /**
+     * 同期点で呼ぶ置き場への確定 (P-160)。既定は何もしない (メモリの上だけ)。確定が例外を投げれば、
+     * メモリの変更は取り消しの記録に残ったままなので、呼ぶ側が最後の同期点まで戻せる。
+     */
+    public ImsRegion onCommit(Consumer<Collection<HierarchicalDatabase>> value) {
+        committer = Objects.requireNonNull(value, "value");
+        return this;
+    }
+
+    /** 同期点。置き場へ確定してから、データベースの変更を確定し、DB PCB の位置を捨てる (P-157、P-160)。 */
     public void commit() {
+        committer.accept(databases.values());
         undo.commit();
+        databases.values().forEach(HierarchicalDatabase::clearChanges);
         databasePcbs.values().forEach(DatabasePcb::resetPosition);
     }
 
     /** 最後の同期点までデータベースを戻し、DB PCB の位置を捨てる (P-157)。 */
     public void rollback() {
         undo.rollback();
+        databases.values().forEach(HierarchicalDatabase::clearChanges);
         databasePcbs.values().forEach(DatabasePcb::resetPosition);
     }
 

@@ -9,6 +9,8 @@ import dev.cobolonjava.ims.gen.ImsGenerationException;
 import dev.cobolonjava.ims.psb.PcbDefinition;
 import dev.cobolonjava.ims.psb.ProgramSpecification;
 import dev.cobolonjava.ims.psb.PsbParser;
+import dev.cobolonjava.ims.store.DatabaseStore;
+import dev.cobolonjava.ims.store.DatabaseStores;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.PartitionedDataSet;
@@ -29,9 +31,9 @@ import java.util.function.Supplier;
 /**
  * IMS の領域を組み立て、1 本のプログラムを動かす (設計 78 §4・§7.1、暫定判断 P-155、P-156)。
  *
- * <p>{@code //IMS} のライブラリから PSB と、PSB が名指す DBD の原文を読み、データベースを DBD の
- * {@code DATASET DD1=} の DD (無ければ DBD 名の DD) から読む。プログラムが正常に戻ったときだけ、I/O PCB に
- * 積んだ応答を送り、データベースを書き戻す。異常終了なら応答もデータベースも捨てる。
+ * <p>{@code //IMS} のライブラリから PSB と、PSB が名指す DBD の原文を読み、データベースを置き場から読む。
+ * 置き場は RDB が構成されていればそちら、無ければ DBD の {@code DATASET DD1=} の DD のデータセットである (P-160)。
+ * 同期点ごとに置き場へ確定し、異常終了なら最後の同期点まで戻す (P-157)。
  *
  * <p>バッチ ({@code DFSRRC00} の DLI) はキューを持たず、PSB が {@code CMPAT=YES} のときだけ I/O PCB を置く。
  * 電文の処理 (MPP) はキューを持ち、I/O PCB を常に先頭に置く。
@@ -67,54 +69,44 @@ public final class ImsProgramRunner {
         Path library = context.catalog().resolve(LIBRARY);
         ProgramSpecification psb = generated(psbName, () -> PsbParser.parse(member(library, psbName, codePage)));
 
-        Map<String, DatabaseFile> files = new LinkedHashMap<>();
-        Map<String, HierarchicalDatabase> databases = new LinkedHashMap<>();
-        for (PcbDefinition pcb : psb.pcbs()) {
-            if (!(pcb instanceof PcbDefinition.Database database) || databases.containsKey(database.dbdName())) {
-                continue;
+        // RDB の置き場が構成されていればそちら、無ければデータセットの置き場 (P-160)
+        DatabaseStore configured = DatabaseStores.open(context);
+        try (DatabaseStore store = configured != null ? configured : new DataSetDatabaseStore(context)) {
+            Map<String, HierarchicalDatabase> databases = new LinkedHashMap<>();
+            for (PcbDefinition pcb : psb.pcbs()) {
+                if (!(pcb instanceof PcbDefinition.Database database) || databases.containsKey(database.dbdName())) {
+                    continue;
+                }
+                DatabaseDefinition dbd = generated(database.dbdName(),
+                        () -> DbdParser.parse(member(library, database.dbdName(), codePage)));
+                databases.put(dbd.name(), store.open(dbd));
             }
-            DatabaseDefinition dbd = generated(database.dbdName(),
-                    () -> DbdParser.parse(member(library, database.dbdName(), codePage)));
-            String ddName = dbd.dataSetName() != null ? dbd.dataSetName() : dbd.name();
-            if (!context.catalog().isAssigned(ddName)) {
-                throw new ImsBatchException("DD " + ddName + " for database " + dbd.name() + " is not allocated");
+
+            ImsRegion region;
+            try {
+                region = new ImsRegion(psb, databases.values(), codePage,
+                        ioPcb || queue != null || psb.compatibility(), queue, context.clock())
+                        .onCommit(store::commit);
+            } catch (IllegalArgumentException e) {
+                throw new ImsBatchException(e.getMessage(), e);
             }
-            DatabaseFile file = new DatabaseFile(context.catalog().resolve(ddName), ddName, codePage);
-            files.put(dbd.name(), file);
-            databases.put(dbd.name(), file.read(dbd));
-        }
-
-        ImsRegion region;
-        try {
-            region = new ImsRegion(psb, databases.values(), codePage, ioPcb || queue != null || psb.compatibility(),
-                    queue,
-                    context.clock());
-        } catch (IllegalArgumentException e) {
-            throw new ImsBatchException(e.getMessage(), e);
-        }
-        ProgramContext ims = context.withProgramResolver(
-                region.register(ProgramCatalog.builder()).legacyClassNameFallback().build());
-        try {
-            ProgramContext.Loaded loaded = ims.resolve(program, loader);
-            ProgramSignature signature = loaded.signature() != null
-                    ? loaded.signature() : loaded.program().programSignature();
-            DataView[] pcbs = region.programArguments(signature);
-            loaded.validateArguments(pcbs);
-            loaded.program().runFresh(ims, pcbs);
-        } catch (RuntimeException | Error e) {
-            // 最後の同期点まで戻してから書く。確定した電文や CHKP までの更新は残る (P-157)
-            region.finish(false);
-            write(files, databases);
-            throw e;
-        }
-        region.finish(true);
-        write(files, databases);
-        return ims.returnCode();
-    }
-
-    private static void write(Map<String, DatabaseFile> files, Map<String, HierarchicalDatabase> databases) {
-        for (Map.Entry<String, HierarchicalDatabase> database : databases.entrySet()) {
-            files.get(database.getKey()).write(database.getValue());
+            ProgramContext ims = context.withProgramResolver(
+                    region.register(ProgramCatalog.builder()).legacyClassNameFallback().build());
+            try {
+                ProgramContext.Loaded loaded = ims.resolve(program, loader);
+                ProgramSignature signature = loaded.signature() != null
+                        ? loaded.signature() : loaded.program().programSignature();
+                DataView[] pcbs = region.programArguments(signature);
+                loaded.validateArguments(pcbs);
+                loaded.program().runFresh(ims, pcbs);
+            } catch (RuntimeException | Error e) {
+                // 最後の同期点まで戻す。置き場には同期点で確定した分だけが残る (P-157、P-160)
+                region.finish(false);
+                throw e;
+            }
+            // 正常終了も同期点であり、ここで置き場へ確定する
+            region.finish(true);
+            return ims.returnCode();
         }
     }
 

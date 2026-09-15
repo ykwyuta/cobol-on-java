@@ -4,7 +4,10 @@ import dev.cobolonjava.ims.dbd.DatabaseDefinition;
 import dev.cobolonjava.ims.dbd.FieldDefinition;
 import dev.cobolonjava.ims.dbd.InsertRule;
 import dev.cobolonjava.ims.dbd.SegmentDefinition;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -25,6 +28,8 @@ public final class HierarchicalDatabase {
     private final DatabaseDefinition definition;
     private final List<Segment> roots = new ArrayList<>();
     private UndoLog undoLog;
+    /** 前の同期点から変わった根のキー。置き場はこの根だけを書き直す (P-160)。 */
+    private final Set<ByteBuffer> changedRootKeys = new HashSet<>();
 
     public HierarchicalDatabase(DatabaseDefinition definition) {
         this.definition = Objects.requireNonNull(definition, "definition");
@@ -35,6 +40,31 @@ public final class HierarchicalDatabase {
      */
     public void attach(UndoLog log) {
         this.undoLog = log;
+    }
+
+    /**
+     * 前の同期点 ({@link #clearChanges}) から ISRT / REPL / DLET で変わった根のキー。
+     * キーを持たない根は空のキーであり、そのデータベースのキーの無い根すべてを指す。
+     */
+    public Set<ByteBuffer> changedRootKeys() {
+        return Set.copyOf(changedRootKeys);
+    }
+
+    public boolean changed() {
+        return !changedRootKeys.isEmpty();
+    }
+
+    /** 同期点で確定したか、戻したあと。 */
+    public void clearChanges() {
+        changedRootKeys.clear();
+    }
+
+    private void changed(Segment segment) {
+        Segment root = segment;
+        while (root.parent() != null) {
+            root = root.parent();
+        }
+        changedRootKeys.add(ByteBuffer.wrap(root.key()));
     }
 
     public DatabaseDefinition definition() {
@@ -139,6 +169,7 @@ public final class HierarchicalDatabase {
         }
         Segment segment = new Segment(type, parent, data);
         twins.add(index, segment);
+        changed(segment);
         if (undoLog != null) {
             undoLog.record(() -> {
                 twins.remove(indexOf(twins, segment));
@@ -186,6 +217,7 @@ public final class HierarchicalDatabase {
     public void replace(Segment segment, byte[] data) {
         byte[] previous = segment.data();
         segment.replace(data);
+        changed(segment);
         if (undoLog != null) {
             undoLog.record(() -> segment.replace(previous));
         }
@@ -198,6 +230,7 @@ public final class HierarchicalDatabase {
         if (index < 0) {
             throw new IllegalStateException("segment " + segment.definition().name() + " is not in the database");
         }
+        changed(segment);
         twins.remove(index);
         segment.markDeleted();
         if (undoLog != null) {
