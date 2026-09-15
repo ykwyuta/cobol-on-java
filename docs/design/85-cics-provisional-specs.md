@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 仕様を定義 (2026-09-15)。§3 (P-146)、§4 の file control と §5 (P-147、SET を除く) を実装、残りは §9 の順に実装する |
+| 状態 | 仕様を定義 (2026-09-15)。§3 (P-146)、§4 の file control と §5 (P-147、SET を除く)、§7 (P-148) を実装、残りは §9 の順に実装する |
 | 対応要件 | 設計 79、設計 82、設計 83、設計 84 |
 | 検証レベル | V0〜V1。実機の CICS と突き合わせていない |
 | 暫定判断 | P-146〜P-150 (§5 は P-147) |
@@ -131,9 +131,11 @@ TS / TD / RETRIEVE の SET も同じ置き場の規則にする。
 | WRITEQ (OUTPUT) | 終わりに足す。固定長で長さが違えば LENGERR | WRITEQ TD の頁 |
 | WRITEQ (INPUT のキュー) | INVREQ | WRITEQ TD の頁 |
 | READQ (INPUT) | 先頭から順に読み、終わりで QZERO。読んだ位置は region の中で 1 つ | READQ TD の頁 (推定を含む) |
-| READQ (OUTPUT のキュー) | INVREQ | 推定 |
+| READQ (OUTPUT のキュー) | INVREQ | READQ TD の頁 |
+| 開けないデータセット | NOTOPEN (19) | WRITEQ TD / READQ TD の頁 (区画外のキューだけの条件) |
 | DELETEQ | INVREQ | 推定 |
 | 回復、ATI | 持たない | TDQUEUE の定義 |
+| 構成 | 区画内の port に `withExtrapartition` で足す。区画外の名前が区画内の同じ名前より先に引かれる | — |
 
 ### 7.2 回復可能な区画内キュー (RECOVSTATUS=LOGICAL)
 
@@ -142,6 +144,11 @@ TS / TD / RETRIEVE の SET も同じ置き場の規則にする。
 - 1 つの JVM の中のキューは、task の中に変更を貯め、同期点の commit で反映し、ROLLBACK と ABEND で捨てる
 - ATI は、commit のあとに trigger level を見る (TDQUEUE の定義: 論理回復のキューは commit まで attach しない)
 - task の UOW の外 (STRICT の境界を持たない task) では、回復不能と同じに直ちに確定する (実機との差)
+- STRICT の境界は task の services に `CicsTaskConnection` を置く。SPRING_MANAGED は Spring の transaction に束ねられた
+  connection、DB2_DRIVER_MANAGED_HOLD は native lease の connection を渡す
+- JDBC のキューの行の lock は task の commit まで残る。実機の QBUSY (25) は返さず、他の task は待つ (実機との差)
+- 1 つの JVM の中のキューの task の暗黙の同期点は、coordinator が task を commit したあと (PROTECT の START と同じ所) で確定する。
+  正常に返らなかった task は、資源を返すときに取り消す
 
 ## 8. START の CHANNEL / ATTACH、POST の CANCEL (P-150)
 

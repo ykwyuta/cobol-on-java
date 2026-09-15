@@ -186,6 +186,46 @@ class JdbcCicsTransientDataTest {
     }
 
     @Test
+    @DisplayName("回復可能なキューはtaskのconnectionのtransactionに入り、rollbackで消え、commitのあとにだけ別のJVMから読める")
+    void recoverableQueueJoinsTaskTransaction() throws Exception {
+        List<CicsTransientDataQueueDefinition> queues = List.of(new CicsTransientDataQueueDefinition("RECQ", 8)
+                .withRecovery(CicsTransientDataQueueDefinition.Recovery.LOGICAL));
+        JdbcCicsTransientData store = new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource),
+                queues);
+        JdbcCicsTransientData other = new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource),
+                queues);
+        JdbcTemplate observer = new JdbcTemplate(dataSource);
+        dev.cobolonjava.cics.CicsTaskId task = new dev.cobolonjava.cics.CicsTaskId("task_recover");
+        try (java.sql.Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            dev.cobolonjava.cics.CicsTaskConnection unit = new dev.cobolonjava.cics.CicsTaskConnection() {
+                @Override
+                public <R, T> T withResource(Class<R> type, java.util.function.Function<R, T> action) {
+                    return action.apply(type.cast(connection));
+                }
+            };
+            assertEquals(CicsResponseCode.NORMAL, store.write(task, Optional.of(unit), "RECQ",
+                    "undone".getBytes(StandardCharsets.US_ASCII)).response());
+            assertEquals(0, observer.queryForObject(
+                    "SELECT COUNT(*) FROM COBOL_TD_RECORD WHERE QUEUE_NAME = 'RECQ'", Integer.class));
+            connection.rollback();
+            assertEquals(CicsResponseCode.QZERO, other.read("RECQ").response());
+
+            assertEquals(CicsResponseCode.NORMAL, store.write(task, Optional.of(unit), "RECQ",
+                    "kept".getBytes(StandardCharsets.US_ASCII)).response());
+            connection.commit();
+        }
+        CicsTransientDataPort.Read read = other.read("RECQ");
+        assertEquals("kept", new String(read.data(), StandardCharsets.US_ASCII));
+        assertEquals(CicsResponseCode.QZERO, other.read("RECQ").response());
+
+        // task の UOW を持たない task は、回復不能のキューと同じに直ちに確定する
+        assertEquals(CicsResponseCode.NORMAL, store.write(task, Optional.empty(), "RECQ",
+                "direct".getBytes(StandardCharsets.US_ASCII)).response());
+        assertEquals(CicsResponseCode.NORMAL, other.read("RECQ").response());
+    }
+
+    @Test
     @DisplayName("2つのJVMが書いたrecordを先に書いた順に取り出し、空はQZERO、定義の無いキューはQIDERR、長すぎればLENGERR")
     void sharesQueueAcrossJvmsInWriteOrder() {
         assertEquals(CicsResponseCode.NORMAL, first.write("CSMT", text("one")).response());

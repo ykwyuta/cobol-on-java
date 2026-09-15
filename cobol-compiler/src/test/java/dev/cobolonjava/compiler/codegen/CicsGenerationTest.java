@@ -419,7 +419,8 @@ class CicsGenerationTest {
 
         assertEquals("CNIT", CodePages.DEFAULT.decode(completion.payload().commarea()));
         assertEquals(null, launched.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS));
-        assertEquals(1, completion.afterCommit().size());
+        // 回復可能な一時データのキューの確定 (設計 85 §7.2) と PROT1 の START の登録
+        assertEquals(2, completion.afterCommit().size());
         // coordinator が暗黙の同期点を commit したあとに行う
         completion.afterCommit().forEach(Runnable::run);
         assertEquals("PROT1", launched.poll(5, java.util.concurrent.TimeUnit.SECONDS).requestId());
@@ -1793,9 +1794,9 @@ class CicsGenerationTest {
     @Test
     @DisplayName("未分類のDFHRESP condition名を推測せず翻訳時に拒否する")
     void rejectsUnsupportedDfhrespCondition() {
-        // NOTFND は公開の表で数を確かめたので受ける。表から読めなかった NOTOPEN は断る
-        assertRejected("IF EIBRESP = DFHRESP(NOTOPEN) CONTINUE",
-                "unsupported CICS condition name: NOTOPEN");
+        // NOTFND や NOTOPEN は公開の頁で数を確かめたので受ける。返す命令を持たない INVMPSZ は断る
+        assertRejected("IF EIBRESP = DFHRESP(INVMPSZ) CONTINUE",
+                "unsupported CICS condition name: INVMPSZ");
     }
 
     @Test

@@ -57,6 +57,10 @@ public final class SpringStrictTaskBoundaryFactory implements CicsTaskBoundaryFa
         }
         Db2TaskRuntime runtime = new Db2TaskRuntime(new UnitOfWorkOptions(Db2ExecutionProfile.SPRING_MANAGED,
                 definition.taskTimeout(), false, false), port, sqlExecutor);
-        return new StrictTaskBoundary(runtime, unit -> store.writes(), store);
+        // Spring の transaction に束ねられた connection。返すのは束ねの参照だけで、connection は transaction が閉じる
+        return new StrictTaskBoundary(runtime, unit -> store.writes(), store,
+                unit -> org.springframework.jdbc.datasource.DataSourceUtils.getConnection(store.dataSource()),
+                connection -> org.springframework.jdbc.datasource.DataSourceUtils.releaseConnection(connection,
+                        store.dataSource()));
     }
 }

@@ -1,6 +1,8 @@
 package dev.cobolonjava.spring.boot4.cics;
 
 import dev.cobolonjava.cics.CicsResponseCode;
+import dev.cobolonjava.cics.CicsTaskConnection;
+import dev.cobolonjava.cics.CicsTaskId;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort.Terminal;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalConversation;
@@ -11,6 +13,7 @@ import dev.cobolonjava.cics.CicsTransientDataQueueDefinition;
 import dev.cobolonjava.cics.CicsTransientDataQueueDefinition.Facility;
 import dev.cobolonjava.cics.CicsTransientDataTrigger;
 import dev.cobolonjava.cics.ConversationEnvelope;
+import java.sql.Connection;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -32,6 +35,7 @@ import javax.sql.DataSource;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -40,7 +44,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 区画内の一時データのキューを {@code COBOL_TD_QUEUE} / {@code COBOL_TD_RECORD} の表に置き、複数の JVM で分け合う
  * (設計 83 §6・§8、暫定判断 P-137・P-144)。
  *
- * <p>TD は回復不能なので、WRITEQ / READQ / DELETEQ TD は task の UOW に入れず、別の transaction で直ちに確定する。
+ * <p>回復不能のキューへの WRITEQ / READQ / DELETEQ TD は task の UOW に入れず、別の transaction で直ちに確定する。
+ * 回復可能なキューは task の業務の UOW に入る (設計 85 §7.2、P-148)。
  * 操作の初めにキューの行を UPDATE して lock するので、同じキューの書き込みと読み出しはどの JVM から来ても直列になり、
  * 1 つの record を 2 つの task が読むことは無い。キューの定義は全部の JVM で同じものを渡す。
  *
@@ -172,19 +177,7 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
         }
         ensureQueue(queue);
         byte[] copy = data.clone();
-        separate.executeWithoutResult(status -> {
-            lock(queue, "NEXT_SEQUENCE = NEXT_SEQUENCE + 1, RECORD_COUNT = RECORD_COUNT + 1");
-            Long sequence = jdbc.queryForObject("SELECT NEXT_SEQUENCE FROM COBOL_TD_QUEUE WHERE QUEUE_NAME = ?",
-                    Long.class, queue);
-            jdbc.update("INSERT INTO COBOL_TD_RECORD (QUEUE_NAME, SEQUENCE_NO, RECORD_DATA) VALUES (?, ?, ?)",
-                    queue, sequence, copy);
-            if (definition.triggers()) {
-                // 「達する」は WRITEQ のあとの数が trigger level 以上と読む (推定。P-144)
-                jdbc.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = 'PENDING'"
-                        + " WHERE QUEUE_NAME = ? AND TRIGGER_STATE = 'ARMED' AND RECORD_COUNT >= ?",
-                        queue, definition.triggerLevel());
-            }
-        });
+        separate.executeWithoutResult(status -> append(jdbc, definition, copy));
         return NORMAL;
     }
 
@@ -198,25 +191,7 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
             return new Read(NO_QUEUE.response(), NO_QUEUE.response2(), null);
         }
         ensureQueue(queue);
-        return separate.execute(status -> {
-            lock(queue, "RECORD_COUNT = RECORD_COUNT");
-            List<Record> first = jdbc.query("SELECT SEQUENCE_NO, RECORD_DATA FROM COBOL_TD_RECORD WHERE QUEUE_NAME = ?"
-                            + " ORDER BY SEQUENCE_NO FETCH FIRST 1 ROWS ONLY",
-                    (row, index) -> new Record(row.getLong(1), row.getBytes(2)), queue);
-            if (first.isEmpty()) {
-                if (definition.triggers()) {
-                    // 回復不能のキューは QZERO まで読んだときに次の ATI の周期が始まる (ATI の頁)
-                    jdbc.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = 'ARMED'"
-                            + " WHERE QUEUE_NAME = ? AND TRIGGER_STATE <> 'ARMED'", queue);
-                }
-                // QZERO: キューが空
-                return new Read(CicsResponseCode.QZERO, 0, null);
-            }
-            Record record = first.get(0);
-            jdbc.update("DELETE FROM COBOL_TD_RECORD WHERE QUEUE_NAME = ? AND SEQUENCE_NO = ?", queue, record.sequence());
-            jdbc.update("UPDATE COBOL_TD_QUEUE SET RECORD_COUNT = RECORD_COUNT - 1 WHERE QUEUE_NAME = ?", queue);
-            return new Read(CicsResponseCode.NORMAL, 0, record.data());
-        });
+        return separate.execute(status -> take(jdbc, definition));
     }
 
     @Override
@@ -225,11 +200,110 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
             return NO_QUEUE;
         }
         ensureQueue(queue);
-        separate.executeWithoutResult(status -> {
-            lock(queue, "RECORD_COUNT = 0");
-            jdbc.update("DELETE FROM COBOL_TD_RECORD WHERE QUEUE_NAME = ?", queue);
+        separate.executeWithoutResult(status -> clear(jdbc, queue));
+        return NORMAL;
+    }
+
+    /**
+     * 回復可能なキューへの task の WRITEQ TD は、task の業務の UOW の connection で更新する (設計 85 §7.2、P-148)。
+     * 同期点の commit で確定し、ROLLBACK と ABEND で取り消す。trigger の状態も同じ transaction で変わるので、
+     * dispatcher が PENDING を見るのは commit のあとである。task の UOW を持たない task (STRICT でない境界) では、
+     * 回復不能のキューと同じに直ちに確定する (実機との差)。
+     *
+     * <p>キューの行の lock は task の commit まで残るので、同じキューへの他の task の命令はそれまで待つ。
+     */
+    @Override
+    public Result write(CicsTaskId task, Optional<CicsTaskConnection> connection, String queue, byte[] data) {
+        CicsTransientDataQueueDefinition definition = definitions.get(Objects.requireNonNull(queue, "queue"));
+        if (definition == null || !recoverable(definition) || connection.isEmpty()) {
+            return write(queue, data);
+        }
+        if (data.length < 1 || data.length > definition.maxRecordLength()) {
+            return new Result(CicsResponseCode.LENGERR, 0);
+        }
+        ensureQueue(queue);
+        byte[] copy = data.clone();
+        connection.get().withResource(Connection.class, target -> {
+            append(on(target), definition, copy);
+            return null;
         });
         return NORMAL;
+    }
+
+    @Override
+    public Read read(CicsTaskId task, Optional<CicsTaskConnection> connection, String queue) {
+        CicsTransientDataQueueDefinition definition = definitions.get(Objects.requireNonNull(queue, "queue"));
+        if (definition == null || !recoverable(definition) || connection.isEmpty()) {
+            return read(queue);
+        }
+        ensureQueue(queue);
+        return connection.get().withResource(Connection.class, target -> take(on(target), definition));
+    }
+
+    @Override
+    public Result delete(CicsTaskId task, Optional<CicsTaskConnection> connection, String queue) {
+        CicsTransientDataQueueDefinition definition = definitions.get(Objects.requireNonNull(queue, "queue"));
+        if (definition == null || !recoverable(definition) || connection.isEmpty()) {
+            return delete(queue);
+        }
+        ensureQueue(queue);
+        connection.get().withResource(Connection.class, target -> {
+            clear(on(target), queue);
+            return null;
+        });
+        return NORMAL;
+    }
+
+    private static boolean recoverable(CicsTransientDataQueueDefinition definition) {
+        return definition.recovery() == CicsTransientDataQueueDefinition.Recovery.LOGICAL;
+    }
+
+    /** task の connection の上の更新。connection は閉じず、autoCommit も commit も触らない。 */
+    private JdbcTemplate on(Connection connection) {
+        JdbcTemplate template = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+        template.setExceptionTranslator(jdbc.getExceptionTranslator());
+        return template;
+    }
+
+    private void append(JdbcTemplate target, CicsTransientDataQueueDefinition definition, byte[] data) {
+        String queue = definition.name();
+        lock(target, queue, "NEXT_SEQUENCE = NEXT_SEQUENCE + 1, RECORD_COUNT = RECORD_COUNT + 1");
+        Long sequence = target.queryForObject("SELECT NEXT_SEQUENCE FROM COBOL_TD_QUEUE WHERE QUEUE_NAME = ?",
+                Long.class, queue);
+        target.update("INSERT INTO COBOL_TD_RECORD (QUEUE_NAME, SEQUENCE_NO, RECORD_DATA) VALUES (?, ?, ?)",
+                queue, sequence, data);
+        if (definition.triggers()) {
+            // 「達する」は WRITEQ のあとの数が trigger level 以上と読む (推定。P-144)
+            target.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = 'PENDING'"
+                    + " WHERE QUEUE_NAME = ? AND TRIGGER_STATE = 'ARMED' AND RECORD_COUNT >= ?",
+                    queue, definition.triggerLevel());
+        }
+    }
+
+    private Read take(JdbcTemplate target, CicsTransientDataQueueDefinition definition) {
+        String queue = definition.name();
+        lock(target, queue, "RECORD_COUNT = RECORD_COUNT");
+        List<Record> first = target.query("SELECT SEQUENCE_NO, RECORD_DATA FROM COBOL_TD_RECORD WHERE QUEUE_NAME = ?"
+                        + " ORDER BY SEQUENCE_NO FETCH FIRST 1 ROWS ONLY",
+                (row, index) -> new Record(row.getLong(1), row.getBytes(2)), queue);
+        if (first.isEmpty()) {
+            if (definition.triggers()) {
+                // QZERO まで読んだときに次の ATI の周期が始まる (ATI の頁)。回復可能なキューでは commit のとき
+                target.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = 'ARMED'"
+                        + " WHERE QUEUE_NAME = ? AND TRIGGER_STATE <> 'ARMED'", queue);
+            }
+            // QZERO: キューが空
+            return new Read(CicsResponseCode.QZERO, 0, null);
+        }
+        Record record = first.get(0);
+        target.update("DELETE FROM COBOL_TD_RECORD WHERE QUEUE_NAME = ? AND SEQUENCE_NO = ?", queue, record.sequence());
+        target.update("UPDATE COBOL_TD_QUEUE SET RECORD_COUNT = RECORD_COUNT - 1 WHERE QUEUE_NAME = ?", queue);
+        return new Read(CicsResponseCode.NORMAL, 0, record.data());
+    }
+
+    private void clear(JdbcTemplate target, String queue) {
+        lock(target, queue, "RECORD_COUNT = 0");
+        target.update("DELETE FROM COBOL_TD_RECORD WHERE QUEUE_NAME = ?", queue);
     }
 
     /**
@@ -349,7 +423,11 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
 
     /** キューの行を更新して、この transaction の終わりまで同じキューの他の操作を待たせる。 */
     private void lock(String queue, String assignment) {
-        int locked = jdbc.update("UPDATE COBOL_TD_QUEUE SET " + assignment + " WHERE QUEUE_NAME = ?", queue);
+        lock(jdbc, queue, assignment);
+    }
+
+    private static void lock(JdbcTemplate target, String queue, String assignment) {
+        int locked = target.update("UPDATE COBOL_TD_QUEUE SET " + assignment + " WHERE QUEUE_NAME = ?", queue);
         if (locked != 1) {
             throw new IllegalStateException("transient data queue row is missing: " + queue);
         }

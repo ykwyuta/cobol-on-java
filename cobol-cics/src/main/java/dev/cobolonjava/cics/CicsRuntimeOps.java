@@ -301,6 +301,12 @@ public final class CicsRuntimeOps {
         } else {
             execution.takeProtectedStarts().forEach(Runnable::run);
         }
+        // 回復可能な一時データのキューの変更は、同期点で確定するか取り消す (設計 85 §7.2)
+        if (rollback) {
+            execution.environment().transientData().rollbackUnitOfWork(execution.task().taskId());
+        } else {
+            execution.environment().transientData().commitUnitOfWork(execution.task().taskId());
+        }
         return NO_CONDITION_TRANSFER;
     }
 
@@ -569,7 +575,8 @@ public final class CicsRuntimeOps {
             byte[] bytes = length < 1 || length > data.length() ? new byte[0] : data.subView(0, length).toByteArray();
             if (kind == QUEUE_WRITEQ_TD) {
                 CicsTransientDataPort.Result result = environment.transientData()
-                        .write(transientDataName(required, nameLiteral, nameData), bytes);
+                        .write(execution.task().taskId(), execution.taskConnection(),
+                                transientDataName(required, nameLiteral, nameData), bytes);
                 response = result.response();
                 response2 = result.response2();
             } else {
@@ -603,7 +610,8 @@ public final class CicsRuntimeOps {
             int items = -1;
             if (kind == QUEUE_READQ_TD) {
                 CicsTransientDataPort.Read read = environment.transientData()
-                        .read(transientDataName(required, nameLiteral, nameData));
+                        .read(execution.task().taskId(), execution.taskConnection(),
+                                transientDataName(required, nameLiteral, nameData));
                 response = read.response();
                 response2 = read.response2();
                 record = read.data();
@@ -646,7 +654,8 @@ public final class CicsRuntimeOps {
             }
         } else if (kind == QUEUE_DELETEQ_TD) {
             CicsTransientDataPort.Result result = environment.transientData()
-                    .delete(transientDataName(required, nameLiteral, nameData));
+                    .delete(execution.task().taskId(), execution.taskConnection(),
+                            transientDataName(required, nameLiteral, nameData));
             response = result.response();
             response2 = result.response2();
         } else {

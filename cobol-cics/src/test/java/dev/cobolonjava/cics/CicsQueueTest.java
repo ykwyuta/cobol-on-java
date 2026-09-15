@@ -43,6 +43,105 @@ class CicsQueueTest {
                 RuntimeServices.builder().service(CicsExecution.class, execution).build());
     }
 
+    private ProgramContext context(String taskId, CicsTransientDataPort port) {
+        execution = new CicsExecution(new CicsTaskContext(new CicsTaskId(taskId), TransId.of("TX01"),
+                "queue-test", Instant.EPOCH), 0, CicsEnvironment.unconfigured().withTransientData(port));
+        return ProgramContext.standard().withCodePage(CP).withServices(
+                RuntimeServices.builder().service(CicsExecution.class, execution).build());
+    }
+
+    @org.junit.jupiter.api.io.TempDir
+    java.nio.file.Path directory;
+
+    @Test
+    @DisplayName("区画外のOUTPUTのキューはデータセットへ足し、INPUTのキューは順に読んで終わりはQZERO。向きの違う命令とDELETEQはINVREQ、開けなければNOTOPEN")
+    void extrapartitionQueuesUseSequentialDataSets() {
+        java.nio.file.Path input = directory.resolve("input.seq");
+        java.nio.file.Path output = directory.resolve("output.seq");
+        CicsTransientDataPort port = transientData.withExtrapartition(List.of(
+                new CicsExtrapartitionQueueDefinition("LOGA", output,
+                        CicsExtrapartitionQueueDefinition.Direction.OUTPUT, 6, false, CP),
+                new CicsExtrapartitionQueueDefinition("INPA", input,
+                        CicsExtrapartitionQueueDefinition.Direction.INPUT, 8, true, CP)));
+        ProgramContext context = context("task_extra", port);
+
+        assertEquals(CicsResponseCode.NORMAL, td(context, QUEUE_WRITEQ_TD, "LOGA", text("first "), null));
+        assertEquals(CicsResponseCode.NORMAL, td(context, QUEUE_WRITEQ_TD, "LOGA", text("second"), null));
+        assertEquals(CicsResponseCode.LENGERR, td(context, QUEUE_WRITEQ_TD, "LOGA", text("short"), null));
+        assertEquals(CicsResponseCode.INVREQ, td(context, QUEUE_READQ_TD, "LOGA", text("......"), null));
+        assertEquals(CicsResponseCode.INVREQ, td(context, QUEUE_DELETEQ_TD, "LOGA", null, null));
+        dev.cobolonjava.runtime.file.SequentialDataSet written = dev.cobolonjava.runtime.file.SequentialDataSet.at(
+                output, new dev.cobolonjava.runtime.file.DataSetAttributes(
+                        dev.cobolonjava.runtime.file.RecordFormat.FIXED, 6, CP));
+        written.open(dev.cobolonjava.runtime.file.OpenMode.INPUT);
+        byte[] buffer = new byte[6];
+        written.read(buffer);
+        assertEquals("first ", CP.decode(buffer));
+        written.read(buffer);
+        assertEquals("second", CP.decode(buffer));
+        written.close();
+
+        // 無いデータセットは閉じたキューと同じ NOTOPEN
+        assertEquals(CicsResponseCode.NOTOPEN, td(context, QUEUE_READQ_TD, "INPA", text("........"), null));
+        dev.cobolonjava.runtime.file.SequentialDataSet job = dev.cobolonjava.runtime.file.SequentialDataSet.at(
+                input, new dev.cobolonjava.runtime.file.DataSetAttributes(
+                        dev.cobolonjava.runtime.file.RecordFormat.VARIABLE, 8, CP));
+        job.open(dev.cobolonjava.runtime.file.OpenMode.OUTPUT);
+        job.write(CP.encode("abc"));
+        job.write(CP.encode("defghijk"));
+        job.close();
+        assertEquals(CicsResponseCode.INVREQ, td(context, QUEUE_WRITEQ_TD, "INPA", text("x"), null));
+        DataView into = text("........");
+        DataView length = halfword(8);
+        assertEquals(CicsResponseCode.NORMAL, td(context, QUEUE_READQ_TD, "INPA", into, length));
+        assertEquals(3, halfwordOf(length));
+        assertEquals("abc.....", CP.decode(into.toByteArray()));
+        assertEquals(CicsResponseCode.NORMAL, td(context, QUEUE_READQ_TD, "INPA", into, null));
+        assertEquals("defghijk", CP.decode(into.toByteArray()));
+        assertEquals(CicsResponseCode.QZERO, td(context, QUEUE_READQ_TD, "INPA", into, null));
+
+        // 区画内のキューは今までどおり
+        assertEquals(CicsResponseCode.NORMAL, td(context, QUEUE_WRITEQ_TD, "CSMT", text("intra "), null));
+        assertEquals(CicsResponseCode.NORMAL, td(context, QUEUE_READQ_TD, "CSMT", text("......"), null));
+    }
+
+    @Test
+    @DisplayName("回復可能なキューはtaskの変更をcommitまで見せず、ROLLBACKで読んだrecordを先頭へ戻し、DELETEQはcommitで消す")
+    void recoverableQueueBuffersTaskChanges() {
+        CicsTransientDataPort port = CicsTransientDataPort.inMemory(List.of(
+                new CicsTransientDataQueueDefinition("RECQ", 6)
+                        .withRecovery(CicsTransientDataQueueDefinition.Recovery.LOGICAL)));
+        ProgramContext writer = context("task_writer", port);
+        CicsTaskId writerId = execution.task().taskId();
+        assertEquals(CicsResponseCode.NORMAL, td(writer, QUEUE_WRITEQ_TD, "RECQ", text("first "), null));
+        assertEquals(CicsResponseCode.NORMAL, td(writer, QUEUE_WRITEQ_TD, "RECQ", text("second"), null));
+        assertEquals(CicsResponseCode.QZERO, td(writer, QUEUE_READQ_TD, "RECQ", text("......"), null));
+
+        ProgramContext reader = context("task_reader", port);
+        CicsTaskId readerId = execution.task().taskId();
+        assertEquals(CicsResponseCode.QZERO, td(reader, QUEUE_READQ_TD, "RECQ", text("......"), null));
+        port.commitUnitOfWork(writerId);
+
+        DataView into = text("......");
+        assertEquals(CicsResponseCode.NORMAL, td(reader, QUEUE_READQ_TD, "RECQ", into, null));
+        assertEquals("first ", CP.decode(into.toByteArray()));
+        port.rollbackUnitOfWork(readerId);
+        assertEquals(CicsResponseCode.NORMAL, td(reader, QUEUE_READQ_TD, "RECQ", into, null));
+        assertEquals("first ", CP.decode(into.toByteArray()));
+        port.commitUnitOfWork(readerId);
+
+        ProgramContext deleter = context("task_deleter", port);
+        CicsTaskId deleterId = execution.task().taskId();
+        assertEquals(CicsResponseCode.NORMAL, td(deleter, QUEUE_DELETEQ_TD, "RECQ", null, null));
+        // EIB は task ごとなので、同じ task の context を作り直して読み手の EIB を見る
+        reader = context("task_reader", port);
+        assertEquals(CicsResponseCode.NORMAL, td(reader, QUEUE_READQ_TD, "RECQ", into, null));
+        assertEquals("second", CP.decode(into.toByteArray()));
+        port.rollbackUnitOfWork(readerId);
+        port.commitUnitOfWork(deleterId);
+        assertEquals(CicsResponseCode.QZERO, td(reader, QUEUE_READQ_TD, "RECQ", into, null));
+    }
+
     private int eib(int offset) {
         return ByteBuffer.wrap(execution.eib(CP).storage().array(), offset, 4).getInt();
     }

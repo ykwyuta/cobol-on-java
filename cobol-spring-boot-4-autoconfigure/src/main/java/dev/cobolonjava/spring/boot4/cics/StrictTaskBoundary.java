@@ -2,6 +2,7 @@ package dev.cobolonjava.spring.boot4.cics;
 
 import dev.cobolonjava.cics.CicsTaskBoundary;
 import dev.cobolonjava.cics.CicsTaskCommitException;
+import dev.cobolonjava.cics.CicsTaskConnection;
 import dev.cobolonjava.cics.CicsTaskContext;
 import dev.cobolonjava.cics.CicsTaskServices;
 import dev.cobolonjava.cics.CommitFailureState;
@@ -16,9 +17,12 @@ import dev.cobolonjava.db2.RollbackReason;
 import dev.cobolonjava.db2.UnitOfWork;
 import dev.cobolonjava.runtime.interop.CobolSession;
 import dev.cobolonjava.runtime.interop.RuntimeServices;
+import java.sql.Connection;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import org.springframework.transaction.UnexpectedRollbackException;
 
@@ -36,19 +40,55 @@ final class StrictTaskBoundary implements CicsTaskBoundary, CicsTaskServices {
     private final Db2Execution execution;
     private final Function<UnitOfWork, JdbcConversationStore.TaskWrites> writes;
     private final JdbcConversationStore store;
+    private final Function<UnitOfWork, Connection> connections;
+    private final Consumer<Connection> release;
     private boolean finished;
 
     StrictTaskBoundary(Db2TaskRuntime runtime, Function<UnitOfWork, JdbcConversationStore.TaskWrites> writes,
                        JdbcConversationStore store) {
+        this(runtime, writes, store, null, connection -> { });
+    }
+
+    /**
+     * @param connections task の UOW の connection。null なら回復可能な一時データのキューに connection を見せない
+     * @param release     connections で得た connection を返す (UOW の connection は閉じない)
+     */
+    StrictTaskBoundary(Db2TaskRuntime runtime, Function<UnitOfWork, JdbcConversationStore.TaskWrites> writes,
+                       JdbcConversationStore store, Function<UnitOfWork, Connection> connections,
+                       Consumer<Connection> release) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.execution = new Db2Execution(runtime);
         this.writes = Objects.requireNonNull(writes, "writes");
         this.store = Objects.requireNonNull(store, "store");
+        this.connections = connections;
+        this.release = Objects.requireNonNull(release, "release");
     }
 
     @Override
     public void contribute(RuntimeServices.Builder services) {
         services.service(Db2Execution.class, execution);
+        if (connections != null) {
+            // 回復可能な一時データのキューは、業務の SQL と同じ UOW で更新する (設計 85 §7.2、P-148)
+            services.service(CicsTaskConnection.class, new CicsTaskConnection() {
+                @Override
+                public <R, T> T withResource(Class<R> type, Function<R, T> action) {
+                    if (type != Connection.class) {
+                        throw new IllegalArgumentException("the STRICT task boundary offers only java.sql.Connection: "
+                                + type.getName());
+                    }
+                    AtomicReference<T> result = new AtomicReference<>();
+                    runtime.withUnitOfWork(unit -> {
+                        Connection connection = connections.apply(unit);
+                        try {
+                            result.set(action.apply(type.cast(connection)));
+                        } finally {
+                            release.accept(connection);
+                        }
+                    });
+                    return result.get();
+                }
+            });
+        }
     }
 
     @Override

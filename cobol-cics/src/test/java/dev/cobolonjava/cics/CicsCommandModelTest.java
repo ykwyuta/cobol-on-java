@@ -63,9 +63,11 @@ class CicsCommandModelTest {
                 CicsResponseCode.handlerKey("error"));
         assertThrows(IllegalArgumentException.class,
                 () -> CicsResponseCode.forCondition("ERROR"));
-        // NOTFND は公開の表で数 (13) を確かめた。表から読めなかった NOTOPEN は解決しない
+        // NOTFND は公開の表で数 (13) を、NOTOPEN は WRITEQ TD / READQ TD の頁で数 (19) を確かめた。
+        // 返す命令を持たない INVMPSZ は解決しない
         assertEquals(13, CicsResponseCode.forCondition("NOTFND"));
+        assertEquals(19, CicsResponseCode.forCondition("NOTOPEN"));
         assertThrows(IllegalArgumentException.class,
-                () -> CicsResponseCode.forCondition("NOTOPEN"));
+                () -> CicsResponseCode.forCondition("INVMPSZ"));
     }
 }

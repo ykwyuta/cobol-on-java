@@ -43,6 +43,7 @@ public final class DriverManagedStrictTaskBoundaryFactory implements CicsTaskBou
                 definition.taskTimeout(), false, true), new DriverManagedUnitOfWorkPort(connections),
                 new DriverManagedSqlExecutor());
         return new StrictTaskBoundary(runtime,
-                unit -> store.writesOn(DriverManagedUnitOfWorks.connection(unit)), store);
+                unit -> store.writesOn(DriverManagedUnitOfWorks.connection(unit)), store,
+                DriverManagedUnitOfWorks::connection, connection -> { });
     }
 }

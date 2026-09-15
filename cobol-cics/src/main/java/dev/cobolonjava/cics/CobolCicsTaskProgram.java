@@ -66,8 +66,18 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
             boundaryServices.contribute(builder);
         }
         RuntimeServices services = builder.build();
+        if (services.contains(CicsTaskConnection.class)) {
+            execution.useTaskConnection(services.require(CicsTaskConnection.class));
+        }
+        boolean[] completedNormally = {false};
         // 資源は session より先に返す。task がどう終わっても (ABEND や例外でも) 持ち越さない
         try (CobolSession session = runtime.openSession(services);
+             // 正常に返らなかった task の回復可能な一時データの変更は取り消す (設計 85 §7.2)
+             Release queues = () -> {
+                 if (!completedNormally[0]) {
+                     environment.transientData().rollbackUnitOfWork(task.taskId());
+                 }
+             };
              Release ignored = () -> environment.enqueues().releaseTask(task.taskId());
              Release files = () -> environment.files().releaseTask(task.taskId());
              Release children = () -> environment.async().releaseTask(task.taskId())) {
@@ -94,13 +104,15 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                             execution.currentChannelContainers().orElse(payload.containers()));
                     // PUT CONTAINERで増えた分も、入力と同じ上限で断る
                     definition.validate(returned);
+                    completedNormally[0] = true;
                     return new TaskCompletion(Optional.empty(), returned)
                             .withScreen(execution.terminalScreen())
-                            .withAfterCommit(execution.takeProtectedStarts());
+                            .withAfterCommit(afterCommit(execution, task));
                 } catch (CicsProgramTransfer transfer) {
                     if (transfer.control() instanceof TaskCompletion completion) {
+                        completedNormally[0] = true;
                         return completion.withScreen(execution.terminalScreen())
-                                .withAfterCommit(execution.takeProtectedStarts());
+                                .withAfterCommit(afterCommit(execution, task));
                     }
                     TransferControl control = (TransferControl) transfer.control();
                     if (++transfers > maxTransfers) {
@@ -112,5 +124,16 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                 }
             }
         }
+    }
+
+    /**
+     * 暗黙の同期点の commit のあとに行うこと。回復可能な一時データのキューの変更を確定し、PROTECT の START を登録する
+     * (設計 85 §7.2、暫定判断 P-141)。commit に失敗して行われなければ、一時データの変更は確定しない。
+     */
+    private java.util.List<Runnable> afterCommit(CicsExecution execution, CicsTaskContext task) {
+        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+        actions.add(() -> environment.transientData().commitUnitOfWork(task.taskId()));
+        actions.addAll(execution.takeProtectedStarts());
+        return actions;
     }
 }

@@ -18,15 +18,23 @@ import java.util.regex.Pattern;
  * @param facility        ATIFACILITY。{@code FILE} は端末と結び付かない。{@code TERMINAL} は端末が空くまで起こさない
  * @param facilityId      FACILITYID。TERMINAL の端末の名前で、書かなければキューの名前。FILE では書けない
  * @param userId          USERID。FILE の task の user ID。FILE のときだけ書ける
+ * @param recovery        RECOVSTATUS。LOGICAL のキューは task の UOW に入る (設計 85 §7.2)
  */
 public record CicsTransientDataQueueDefinition(String name, int maxRecordLength, int triggerLevel,
                                                Optional<TransId> transaction, Facility facility,
-                                               Optional<String> facilityId, Optional<String> userId) {
+                                               Optional<String> facilityId, Optional<String> userId,
+                                               Recovery recovery) {
 
     /** ATIFACILITY。SYSTEM (DTP の session) は持たない。 */
     public enum Facility {
         FILE,
         TERMINAL
+    }
+
+    /** RECOVSTATUS。PHYSICAL (region の再始動をまたぐ回復) は持たない。 */
+    public enum Recovery {
+        NONE,
+        LOGICAL
     }
 
     private static final Pattern NAME = Pattern.compile("[A-Z0-9@#$]{1,4}");
@@ -38,6 +46,7 @@ public record CicsTransientDataQueueDefinition(String name, int maxRecordLength,
         Objects.requireNonNull(facility, "facility");
         Objects.requireNonNull(facilityId, "facilityId");
         Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(recovery, "recovery");
         if (!NAME.matcher(name).matches()) {
             throw new IllegalArgumentException("transient data queue name must be 1 to 4 characters: " + name);
         }
@@ -66,6 +75,19 @@ public record CicsTransientDataQueueDefinition(String name, int maxRecordLength,
                 throw new IllegalArgumentException("USERID must be 1 to 8 characters: " + value);
             }
         });
+    }
+
+    /** 回復不能のキュー。 */
+    public CicsTransientDataQueueDefinition(String name, int maxRecordLength, int triggerLevel,
+                                            Optional<TransId> transaction, Facility facility,
+                                            Optional<String> facilityId, Optional<String> userId) {
+        this(name, maxRecordLength, triggerLevel, transaction, facility, facilityId, userId, Recovery.NONE);
+    }
+
+    /** RECOVSTATUS を替えた定義。 */
+    public CicsTransientDataQueueDefinition withRecovery(Recovery value) {
+        return new CicsTransientDataQueueDefinition(name, maxRecordLength, triggerLevel, transaction, facility,
+                facilityId, userId, value);
     }
 
     /** trigger level を持たないキュー。 */

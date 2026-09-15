@@ -4384,6 +4384,34 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-148 区画外の TD のキューは順編成のデータセットに置き、回復可能なキューは task の業務の UOW に入れる
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が「暫定仮仕様を定義し、断らずに変換する」ことを求め、回復可能な TD は「STRICT の UOW に参加」と答えた |
+| 場所 | 設計 85 §7。`CicsExtrapartitionQueueDefinition`、`CicsExtrapartitionQueues`、`CicsTransientDataQueueDefinition.Recovery`、`CicsTransientDataPort` の task の命令と `commitUnitOfWork` / `rollbackUnitOfWork`、`InMemoryCicsTransientData`、`JdbcCicsTransientData`、`CicsTaskConnection`、`StrictTaskBoundary` |
+| 関連要件 | P-137、P-143、P-144 |
+
+**暫定の扱い**:
+
+- 区画外のキューはバッチの順編成のデータセットに置く。OUTPUT のキューへの WRITEQ は終わりに足し、INPUT のキューの READQ は
+  region の中で 1 つの位置から順に読み、終わりは QZERO。INPUT への WRITEQ と OUTPUT からの READQ は INVREQ、開けない
+  データセットは NOTOPEN (19)、RECORDSIZE と合わない長さは LENGERR (WRITEQ TD / READQ TD の頁)。DELETEQ TD は INVREQ (推定)
+- 回復可能なキュー (RECOVSTATUS=LOGICAL) の task の命令は、STRICT の task 境界が置く task の業務の UOW の connection で
+  `COBOL_TD_QUEUE` / `COBOL_TD_RECORD` を更新する。業務の SQL と一緒に commit / rollback され、trigger の状態も同じ
+  transaction で変わるので ATI は commit のあとになる
+- 1 つの JVM の中のキューは、task の変更を貯め、SYNCPOINT と task の暗黙の同期点の commit のあとに反映し、ROLLBACK と
+  正常に返らなかった task では捨てる。読んだ record は取り消しで先頭へ元の順に戻す
+- task の UOW を持たない task (STRICT でない境界) の回復可能なキューは、回復不能と同じに直ちに確定する
+
+**どこがずれうるか**: 実機の論理回復のキューは、他の task が書き込み中なら QBUSY (25)、indoubt の UOW があれば LOCKED (100) を
+返すが、ここでは JDBC のキューの行の lock が task の commit まで残り、他の task は QBUSY を返さずに待つ。1 つの JVM の中の
+キューは、書いた task 自身にも commit まで record を見せない。task の commit のあとで一時データの確定だけが失敗すると、業務の
+更新だけが確定する (1 つの JVM の中のキュー)。区画外のキューの OPEN / CLOSE (SET TDQUEUE)、DISP、RDBACK、ATI は持たない。
+
+**解消条件**: 実機で、論理回復のキューへ別の task が書いている間の READQ TD (QBUSY の出方) と、書いた task 自身の READQ を採る。
+区画外の DELETEQ TD の条件を公開文書で確かめる。1 つの JVM の中のキューを本番で使うなら、業務の UOW と一緒に確定する形を決め直す。
+
 ## P-147 file control の ESDS、RBA / XRBA、TOKEN、NOSUSPEND、CONSISTENT / REPEATABLE、MASSINSERT、BDAM、SYSID を暫定の仕様で変換する
 
 | 項目 | 内容 |

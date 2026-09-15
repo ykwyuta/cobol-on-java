@@ -171,6 +171,17 @@ public final class CicsExecution {
         return Optional.of(created);
     }
 
+    /** task の業務の UOW の上の connection (STRICT の task 境界が置く。設計 85 §7.2)。 */
+    private volatile java.util.Optional<CicsTaskConnection> taskConnection = java.util.Optional.empty();
+
+    void useTaskConnection(CicsTaskConnection value) {
+        taskConnection = java.util.Optional.of(Objects.requireNonNull(value, "value"));
+    }
+
+    java.util.Optional<CicsTaskConnection> taskConnection() {
+        return taskConnection;
+    }
+
     /** 同期点を待つ PROTECT の START (暫定判断 P-141)。REQID ごとに満了の時刻と渡すもの。 */
     private final Map<String, Map.Entry<java.time.Instant, CicsStartData>> protectedStarts =
             new java.util.LinkedHashMap<>();

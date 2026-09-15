@@ -59,6 +59,8 @@ public final class CicsResponseCode {
     public static final int SYSIDERR = 53;
     /** NOSUSPEND で、record が他の task に持たれている。数は READ / DELETE の頁による (設計 85 §4.2)。 */
     public static final int RECORDBUSY = 101;
+    /** 区画外の一時データのキューが閉じている。数は WRITEQ TD / READQ TD の頁による (設計 85 §7.1)。 */
+    public static final int NOTOPEN = 19;
     /** generalized ERROR handlerをcondition tableで識別する内部key。EIBRESP値ではない。 */
     static final int ERROR_HANDLER_KEY = Integer.MIN_VALUE;
 
@@ -97,6 +99,7 @@ public final class CicsResponseCode {
             case "CHANNELERR" -> CHANNELERR;
             case "SYSIDERR" -> SYSIDERR;
             case "RECORDBUSY" -> RECORDBUSY;
+            case "NOTOPEN" -> NOTOPEN;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS condition name: " + normalized);
         };
@@ -122,6 +125,8 @@ public final class CicsResponseCode {
             case "ILLOGIC" -> ILLOGIC;
             case "SYSIDERR" -> SYSIDERR;
             case "RECORDBUSY" -> RECORDBUSY;
+            // 区画外の一時データのキュー (暫定判断 P-148)
+            case "NOTOPEN" -> NOTOPEN;
             // 一時記憶・一時データが返しうる condition (暫定判断 P-137)
             case "QZERO" -> QZERO;
             case "ITEMERR" -> ITEMERR;
