@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) を実装 |
+| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher) を実装 |
 | 対応要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 | 検証レベル | V0。実機の CICS と突き合わせていない |
 | 暫定判断 | P-144 |
@@ -154,6 +154,20 @@ JSON API の入口は端末名を持たない (設計 77 §4.4)。端末へ出�
 | `COBOL_TD_RECORD` | `QUEUE_NAME`、`SEQUENCE` (主キー)、`DATA` |
 
 TS のキューと非同期 API の子は、この設計の範囲に入れず 1 つの JVM の中のままとする (§9)。
+
+実装 (増分 2): `JdbcCicsStarts` (STRICT の構成で `CicsStartPort` の bean になる) と `JdbcCicsTransientData` (キューの定義を
+持つ利用者が作る)。表の DDL は `JdbcConversationStore.SCHEMA` に足した。
+
+- `COBOL_START` は端末の無い START だけを置く。`START_TOKEN` は行ごとの乱数で、dispatcher が見てから消すまでに同じ REQID で
+  登録し直された行を消さないために使う。端末を待つ START の claim の列は増分 3 で足す
+- REQID を書かない START の名前は `JV` と 36 進 6 桁の**乱数**にした。JVM ごとの通し番号では JVM をまたいで重なるためである。
+  乱数でも未満了の START と重なりうるが、そのとき FROM を持つ START は IOERR になる (推定の範囲を越えない失敗)
+- 満了したが dispatcher がまだ起こしていない START は CANCEL で取り消せない (NOTFND)。1 つの JVM の中の実装で満了と同時に
+  起こすのと同じに見せる
+- TD の操作はキューの行を UPDATE して lock してから行う。H2 で 2 つの置き場の 4 つの task が同時に読んでも、どの record も
+  1 度だけ取り出した
+- `PROTECT` の START はこの増分でも task の同期点の commit のあとに登録する (設計 82 §6)。task の UOW の中で INSERT する形
+  (§5) は START TERMID の増分で合わせる
 
 ### 8.2 dispatcher
 

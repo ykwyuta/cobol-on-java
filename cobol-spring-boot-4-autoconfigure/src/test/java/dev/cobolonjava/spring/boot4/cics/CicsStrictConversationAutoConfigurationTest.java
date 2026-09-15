@@ -49,6 +49,7 @@ class CicsStrictConversationAutoConfigurationTest {
             assertInstanceOf(SpringStrictTaskBoundaryFactory.class, context.getBean(CicsTaskBoundaryFactory.class));
             assertInstanceOf(JdbcTerminalRegistry.class,
                     context.getBean(dev.cobolonjava.cics.CicsTerminalRegistryPort.class));
+            assertInstanceOf(JdbcCicsStarts.class, context.getBean(dev.cobolonjava.cics.CicsStartPort.class));
         });
     }
 

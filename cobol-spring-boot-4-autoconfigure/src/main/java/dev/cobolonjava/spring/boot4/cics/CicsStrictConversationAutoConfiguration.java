@@ -8,6 +8,8 @@ import dev.cobolonjava.spring.boot4.autoconfigure.CobolDb2SpringAutoConfiguratio
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -47,6 +49,26 @@ public class CicsStrictConversationAutoConfiguration {
     JdbcConversationStore cobolJdbcConversationStore(DataSource dataSource,
                                                      PlatformTransactionManager transactionManager) {
         return new JdbcConversationStore(dataSource, transactionManager);
+    }
+
+    /**
+     * START も同じ DataSource の表に置き、各 JVM の dispatcher が満了したものを 1 度だけ起こす (設計 83 §8)。
+     * region の構成 ({@code CicsEnvironment.withStarts}) へ入れるのは利用者である。TD のキューは定義を利用者が持つので、
+     * {@link JdbcCicsTransientData} を利用者が作る。
+     */
+    @Bean
+    @ConditionalOnMissingBean(dev.cobolonjava.cics.CicsStartPort.class)
+    @ConditionalOnBean(dev.cobolonjava.cics.CicsTransactionRegistry.class)
+    JdbcCicsStarts cobolJdbcStartPort(DataSource dataSource, PlatformTransactionManager transactionManager,
+                                      dev.cobolonjava.cics.CicsTransactionRegistry transactions,
+                                      ObjectProvider<dev.cobolonjava.cics.CicsTaskCoordinator> coordinator,
+                                      @Qualifier("cobolCicsClock") ObjectProvider<java.time.Clock> clock) {
+        return new JdbcCicsStarts(dataSource, transactionManager, clock.getIfAvailable(java.time.Clock::systemUTC),
+                transId -> {
+                    dev.cobolonjava.cics.CicsTransactionDefinition definition = transactions.definitions().get(transId);
+                    return definition != null && definition.enabled();
+                },
+                dev.cobolonjava.cics.CicsStartPort.launching(coordinator::getObject), java.time.Duration.ofSeconds(1));
     }
 
     /** 端末の登録も同じ DataSource の表に置き、複数の JVM から端末の lease と会話の参照を見る (設計 83 §4)。 */

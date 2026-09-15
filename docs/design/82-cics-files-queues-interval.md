@@ -137,7 +137,8 @@ Bank-of-Z の CICS 資産 32 本は、この文書の命令をほとんど使わ
 | 定義 | `CicsTransientDataQueueDefinition` (1〜4 文字の名前、record の最大の長さ)。定義の無い名前は QIDERR |
 | 読み | 先に書いた record から取り出し、読んだ record は消える。切り詰めても record は消え、LENGTH の域には本来の長さを置く |
 | `DELETEQ TD` | キューの record をすべて消す。定義は残る |
-| 回復、ATI | 持たない。trigger level による task の開始は無い |
+| 回復、ATI | 持たない。trigger level による task の開始は無い (設計 83 §6 で入れる) |
+| 置き場 | `inMemory` は 1 つの JVM の中。`JdbcCicsTransientData` (autoconfigure) は表に置いて複数の JVM で分け合う (設計 83 §8) |
 
 | 命令 | EIBFN | 返す条件 (RESP2 はすべて 0) |
 | --- | --- | --- |
@@ -152,7 +153,8 @@ Bank-of-Z の CICS 資産 32 本は、この文書の命令をほとんど使わ
 `CicsStartPort`。region の構成の既定は `none()` で、START と CANCEL は失敗する。task を起こす先 (coordinator) を
 region の構成は知らないからである。`inMemory(clock, defined, launcher)` が 1 つの JVM の中で満了を待ち、
 `launching(coordinator)` が coordinator で task を起こす。Spring Boot では `CicsTaskAutoConfiguration` がこの組み合わせを
-bean にし、利用者が `CicsEnvironment.withStarts` で region の構成へ入れる。
+bean にし、利用者が `CicsEnvironment.withStarts` で region の構成へ入れる。STRICT の構成では `JdbcCicsStarts` が表に置き、
+各 JVM の dispatcher が満了した START を 1 度だけ起こす (設計 83 §8)。
 
 | 項目 | 決めごと | 出典 |
 | --- | --- | --- |
@@ -165,7 +167,7 @@ bean にし、利用者が `CicsEnvironment.withStarts` で region の構成へ�
 | RETRIEVE | START で起きた task だけ。1 度読めば次は ENDDATA。START が書かなかった option (FROM の無い START への INTO を含む) は ENVDEFERR で、読んだことにしない。長いデータは切り詰めて LENGERR | RETRIEVE の頁 |
 | CANCEL | 未満了の START を REQID で取り消す。無ければ NOTFND | CANCEL の頁 |
 | PROTECT | 命令の時点で TRANSIDERR / IOERR を確かめて task に預け、同期点で登録する。SYNCPOINT なら直ちに、task の終わりなら coordinator が暗黙の同期点を commit したあと。ROLLBACK、ABEND、commit の失敗では取り消す。同期点の前なら CANCEL で取り消せる | START の頁 (同期点まで始まらず、その前の ABEND で取り消される)。ROLLBACK での取り消しは推定 |
-| 回復 | 未満了の START は JVM が止まれば消える | — |
+| 回復 | `inMemory` の未満了の START は JVM が止まれば消える。`JdbcCicsStarts` の未満了の START は表に残り、別の JVM が起こす。起こす直前に行を消すので、その間に JVM が止まれば失われる | — |
 
 | 命令 | EIBFN | 返す条件 |
 | --- | --- | --- |
