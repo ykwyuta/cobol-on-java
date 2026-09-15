@@ -83,6 +83,20 @@ public final class Db2TaskRuntime implements AutoCloseable {
         current = null;
     }
 
+    /**
+     * 現在の UOW の中で action を行う。UOW が無ければ始める。
+     *
+     * <p>STRICT の会話ストアが、業務の SQL と同じ UOW で会話の表を更新するために使う (設計 77 §4.6、暫定判断 P-143)。
+     * action が失敗しても UOW は閉じない。rollback するのは呼び手である。
+     */
+    public void inUnitOfWork(Runnable action) {
+        enter();
+        Objects.requireNonNull(action, "action");
+        activeUnitOfWork();
+        action.run();
+        requireActive(current);
+    }
+
     /** 正常task終了。active UOWだけをcommitしてruntimeを閉じる。 */
     public void complete() {
         enter();

@@ -4334,3 +4334,33 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
 
 **解消条件**: STRICT の JDBC の会話ストアで予約と結果を業務の transaction と合わせて確定する。ブラウザの画面に
 冪等キーと会話の版を載せ、二重送信も覚えた結果を返すようにする。
+
+## P-143 STRICT の会話ストアは業務の Db2 と同じ DataSource の表に置き、task の Db2 の UOW で一緒に確定する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が「Spring Session JDBC (STRICT)」を選んだ |
+| 場所 | `JdbcConversationStore`、`SpringStrictTaskBoundaryFactory`、`CicsStrictConversationAutoConfiguration`、`ConversationCodec`、`CicsTaskServices`、`Db2TaskRuntime.inUnitOfWork` |
+| 関連要件 | 設計 77 §4.6・§5.4 |
+
+**暫定の扱い**:
+
+- `cobol.cics.conversation.consistency=strict` で、会話ストアと冪等キーの結果の置き場を `COBOL_CONVERSATION` /
+  `COBOL_TASK_OUTCOME` の表 (`JdbcConversationStore`) に、task 境界を `SpringStrictTaskBoundaryFactory` に替える
+- 境界は task ごとに SPRING_MANAGED の Db2 の UOW を持ち、`Db2Execution` を COBOL の session に見せる
+  (`CicsTaskServices`)。EXEC SQL、SYNCPOINT、task の終わりの会話の保存と結果の記録が同じ UOW に入り、一緒に commit する。
+  会話を保存できなければ業務の更新も commit しない (NOT_COMMITTED)
+- claim、release、冪等キーの予約と解放は他の要求から見える必要があるので、別の transaction (REQUIRES_NEW) で直ちに確定する
+- 会話の表と業務の SQL は同じ DataSource でなければならない。違えば起動時と task の開始時に断る
+- envelope と応答は `ConversationCodec` の byte 列で持つ。Java の直列化は読むときに任意の class を作らせうるので使わない。
+  検索に使う版・owner・期限・lease だけを列に出し、時刻の列はミリ秒、lease の期限もミリ秒に揃える
+- 表は利用者が `JdbcConversationStore.SCHEMA` の DDL で作る。期限切れの行は `purgeExpired` を利用者が定期に呼んで消す
+- HTTP session (ブラウザの会話の参照) を複数の JVM で分け合うのは、利用者が構成する Spring Session JDBC である。
+  会話の行は Spring Session の表と結び付けず、自分の期限で消える
+
+**どこがずれうるか**: 設計 77 §4.6 は会話の表を Spring Session の session ID と期限に結び付けて、logout や session の失効で
+会話も消すことを求める。ここは結び付けていないので、session が消えても会話は期限まで残る。commit の途中の失敗は
+UNKNOWN とし、予約を残して lease の期限まで再送を動かさない。Db2 実機と H2 以外の DB では試験していない。
+
+**解消条件**: 会話の行に Spring Session の session ID を持たせ、session の削除・失効と一緒に消す。実 Db2 で DDL と
+同時実行 (claim の競合、DuplicateKey の写像) を試験する。DB2_DRIVER_MANAGED_HOLD の STRICT を native lease で入れる。

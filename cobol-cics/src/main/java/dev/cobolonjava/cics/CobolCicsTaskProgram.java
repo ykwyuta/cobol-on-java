@@ -58,15 +58,23 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
             // RUN TRANSID の子は RUN の CHANNEL の名前で開く
             execution.openCurrentChannel(input.channelName().orElse(null), input.containers());
         }
-        RuntimeServices services = RuntimeServices.builder()
-                .service(CicsExecution.class, execution)
-                .build();
+        RuntimeServices.Builder builder = RuntimeServices.builder()
+                .service(CicsExecution.class, execution);
+        // Db2 の UOW を持つ境界は、EXEC SQL が同じ UOW へ届く service を足す (暫定判断 P-143)
+        CicsTaskServices boundaryServices = syncpoints instanceof CicsTaskServices provided ? provided : null;
+        if (boundaryServices != null) {
+            boundaryServices.contribute(builder);
+        }
+        RuntimeServices services = builder.build();
         // 資源は session より先に返す。task がどう終わっても (ABEND や例外でも) 持ち越さない
         try (CobolSession session = runtime.openSession(services);
              Release ignored = () -> environment.enqueues().releaseTask(task.taskId());
              Release files = () -> environment.files().releaseTask(task.taskId());
              Release children = () -> environment.async().releaseTask(task.taskId())) {
             execution.bind(new DefaultCicsGateway(task, definition, session, syncpoints));
+            if (boundaryServices != null) {
+                boundaryServices.bind(session);
+            }
             ProgramId program = definition.initialProgram();
             CicsPayload payload = input;
             int transfers = 0;

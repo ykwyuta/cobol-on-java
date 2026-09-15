@@ -534,6 +534,11 @@ adapter contract test に含める。
 `DB2_DRIVER_MANAGED_HOLD` の `STRICT` は同じ native lease から会話表を更新し、Spring Session には
 会話 payload / version を保存しない。Spring Session は HTTP session ID、期限、logout の管理だけを担う。
 
+実装 (暫定判断 P-143): `SPRING_MANAGED` の `STRICT` は `cobol.cics.conversation.consistency=strict` で構成する。
+`SpringStrictTaskBoundaryFactory` が task ごとの Db2 UOW を持ち、`JdbcConversationStore` の `COBOL_CONVERSATION` と
+`COBOL_TASK_OUTCOME` を同じ UOW で更新して commit する。会話の行を Spring Session の session ID と期限へ結び付けること、
+`DB2_DRIVER_MANAGED_HOLD` の `STRICT` はまだ無い。
+
 ## 5. Db2 連携
 
 ### 5.1 翻訳と実行計画
