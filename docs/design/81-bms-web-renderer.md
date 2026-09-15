@@ -81,10 +81,10 @@ base の `cobol-spring-boot-4-autoconfigure` の `CicsTaskAutoConfiguration` が
 | --- | --- |
 | 認証 | Spring Security が classpath に無ければ入口を構成しない。principal が無い要求は 401 |
 | CSRF | task は POST だけで動かす。Spring Security の CSRF filter が token の無い POST を 403 にする。GET は開始の画面だけ |
-| 会話 | HTTP session に置くのは会話の ID、版、次の TRANSID だけ。COMMAREA と直前の画面は会話ストアから読む。版が合わなければ 409 で task を動かさない。session が消えれば (logout・失効) `CicsBrowserSessionListener` が会話を捨てる (task が動いている会話は残す。P-143) |
+| 会話 | HTTP session に置くのは端末の名前だけ。会話の ID、版、次の TRANSID は端末の登録 (`CicsTerminalRegistryPort`、設計 83 §4) に置き、task の前に端末を lease する。同じ端末で task が動いている間の送信は 409。COMMAREA と直前の画面は会話ストアから読む。版が合わなければ 409 で task を動かさない。session が消えれば (logout・失効) `CicsBrowserSessionListener` が会話を捨てる (task が動いている会話は残す。P-143) |
 | 会話ストア | 既定は `InMemoryConversationStore` (1 つの JVM の中だけ)。Spring Session は HTTP session を外へ置く形で使え、会話ストアは利用者が bean で替える |
 | UOW | 既定の境界は回復可能な資源を持たない `NonRecoverableTaskBoundaryFactory`。Db2 を使う transaction は UOW を持つ境界を bean で置く |
-| 端末 | HTTP session ごとに `W` + base36 3 文字の端末名を振る。user ID は principal 名が 8 文字の CICS の形に収まるときだけ |
+| 端末 | HTTP session ごとに `W` + base36 3 文字の端末名を乱数で選んで登録し、重なれば選び直す。期限は HTTP session の失効の時間。user ID は principal 名が 8 文字の CICS の形に収まるときだけ |
 | IMMEDIATE | 端末入力なしで次の task を続け、8 回を越えれば失敗させる |
 | 二重送信 | 画面ごとに冪等キーと会話の ID・版を hidden で載せる。同じ画面の再送は task を動かさず覚えた結果を返し、同じキーで違う値は 409 (P-142) |
 | 失敗 | 応答へ入力の内容や例外の文面を出さない。ABEND だけは code を示す |

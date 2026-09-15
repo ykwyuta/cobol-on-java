@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 設計を決めた (2026-09-15)。未実装 |
+| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) を実装 |
 | 対応要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 | 検証レベル | V0。実機の CICS と突き合わせていない |
 | 暫定判断 | P-144 |
@@ -63,6 +63,9 @@
 | `CONVERSATION_ID` / `CONVERSATION_VERSION` | 端末の疑似会話。ある間、端末へ出す task を起こさない (§3) |
 | `SCREEN_VERSION` / `SCREEN` | 端末の現在の画面と版。ブラウザが持つ版と比べる (§7) |
 
+- 実装 (増分 1): `CicsTerminalRegistryPort` (既定は 1 つの JVM の中) と `JdbcTerminalRegistry` (STRICT の構成)。表は
+  `JdbcConversationStore.SCHEMA` の DDL に足した。`SCREEN_VERSION` / `SCREEN` の列は画面の byte 列の形を決める §7 の増分で足す。
+  端末の lease の長さは会話の lease (`CicsTaskPolicy.leaseDuration`) と同じにした
 - 端末の名前の割り当て: 既定は `W` と 36 進 3 桁を乱数で選んで INSERT し、重なれば選び直す。同時に持てる端末は
   46656 までである。足りなければ接頭の文字を構成で増やす。利用者ごとに固定の端末名を構成で与えることもでき、
   `ATIFACILITY(TERMINAL)` の `FACILITYID` のように名前を決め打ちする資産はこれを使う

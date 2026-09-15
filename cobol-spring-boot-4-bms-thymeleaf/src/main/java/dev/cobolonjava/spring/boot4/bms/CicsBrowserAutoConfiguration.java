@@ -1,6 +1,8 @@
 package dev.cobolonjava.spring.boot4.bms;
 
 import dev.cobolonjava.cics.CicsTaskCoordinator;
+import dev.cobolonjava.cics.CicsTaskPolicy;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort;
 import dev.cobolonjava.cics.ConversationStorePort;
 import java.time.Clock;
 import org.springframework.beans.factory.ObjectProvider;
@@ -25,23 +27,26 @@ import org.springframework.context.annotation.Bean;
         "org.springframework.security.web.SecurityFilterChain",
         "org.springframework.web.servlet.DispatcherServlet",
         "org.thymeleaf.TemplateEngine"})
-@ConditionalOnBean({CicsTaskCoordinator.class, ConversationStorePort.class})
+@ConditionalOnBean({CicsTaskCoordinator.class, ConversationStorePort.class, CicsTerminalRegistryPort.class,
+        CicsTaskPolicy.class})
 public class CicsBrowserAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
     CicsBrowserController cobolCicsBrowserController(CicsTaskCoordinator coordinator,
                                                      ConversationStorePort conversations,
+                                                     CicsTerminalRegistryPort terminals, CicsTaskPolicy policy,
                                                      BmsScreenViewFactory views, BmsTerminalInputBinder binder,
                                                      @Qualifier("cobolCicsClock") ObjectProvider<Clock> clock) {
-        return new CicsBrowserController(coordinator, conversations, views, binder,
-                clock.getIfAvailable(Clock::systemUTC));
+        return new CicsBrowserController(coordinator, conversations, terminals, views, binder,
+                clock.getIfAvailable(Clock::systemUTC), policy);
     }
 
     @Bean
     @ConditionalOnMissingBean
     CicsBrowserSessionListener cobolCicsBrowserSessionListener(ConversationStorePort conversations,
+                                                               CicsTerminalRegistryPort terminals,
                                                                @Qualifier("cobolCicsClock") ObjectProvider<Clock> clock) {
-        return new CicsBrowserSessionListener(conversations, clock.getIfAvailable(Clock::systemUTC));
+        return new CicsBrowserSessionListener(conversations, terminals, clock.getIfAvailable(Clock::systemUTC));
     }
 }

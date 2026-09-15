@@ -49,6 +49,14 @@ public class CicsStrictConversationAutoConfiguration {
         return new JdbcConversationStore(dataSource, transactionManager);
     }
 
+    /** 端末の登録も同じ DataSource の表に置き、複数の JVM から端末の lease と会話の参照を見る (設計 83 §4)。 */
+    @Bean
+    @ConditionalOnMissingBean(dev.cobolonjava.cics.CicsTerminalRegistryPort.class)
+    JdbcTerminalRegistry cobolJdbcTerminalRegistry(DataSource dataSource,
+                                                   PlatformTransactionManager transactionManager) {
+        return new JdbcTerminalRegistry(dataSource, transactionManager);
+    }
+
     @ConditionalOnProperty(prefix = "cobol.db2", name = "profile", havingValue = "SPRING_MANAGED",
             matchIfMissing = true)
     static class SpringManagedStrict {

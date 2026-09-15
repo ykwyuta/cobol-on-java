@@ -7,6 +7,7 @@ import dev.cobolonjava.cics.CicsTaskBoundaryFactory;
 import dev.cobolonjava.cics.CicsTaskCoordinator;
 import dev.cobolonjava.cics.CicsTaskPolicy;
 import dev.cobolonjava.cics.CicsTaskProgramPort;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort;
 import dev.cobolonjava.cics.CicsTransactionDefinition;
 import dev.cobolonjava.cics.CicsTransactionRegistry;
 import dev.cobolonjava.cics.ConversationId;
@@ -37,6 +38,13 @@ public class CicsTaskAutoConfiguration {
     @ConditionalOnMissingBean
     ConversationStorePort cobolConversationStore() {
         return new InMemoryConversationStore();
+    }
+
+    /** 端末の登録 (設計 83 §4)。既定は 1 つの JVM の中。STRICT の構成は表に置く登録へ替える。 */
+    @Bean
+    @ConditionalOnMissingBean
+    CicsTerminalRegistryPort cobolTerminalRegistry() {
+        return CicsTerminalRegistryPort.inMemory();
     }
 
     @Bean

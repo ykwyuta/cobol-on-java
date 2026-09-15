@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import dev.cobolonjava.cics.CicsPayload;
 import dev.cobolonjava.cics.CicsTaskProgramPort;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort;
 import dev.cobolonjava.cics.CicsTerminalScreen;
 import dev.cobolonjava.cics.CicsTransactionDefinition;
 import dev.cobolonjava.cics.CicsTransactionRegistry;
@@ -101,6 +102,9 @@ class CicsBrowserEndpointTest {
     @Autowired
     ConversationStorePort conversations;
 
+    @Autowired
+    CicsTerminalRegistryPort terminals;
+
     MockMvc mvc;
 
     @BeforeEach
@@ -123,15 +127,47 @@ class CicsBrowserEndpointTest {
         String html = started.getResponse().getContentAsString();
         assertThat(html).contains("name=\"bms.CUSTNO.1\"", "action=\"/cics/SCR1\"");
         MockHttpSession session = (MockHttpSession) started.getRequest().getSession();
-        assertThat(session.getAttribute(CicsBrowserController.CONVERSATION)).isNotNull();
+        // session に置くのは端末の名前だけで、会話の参照は端末の登録にある
+        assertThat(conversationOf(session)).isPresent();
+        assertThat(terminals.find(terminalOf(session), Instant.now()).orElseThrow().leased()).isFalse();
 
         MvcResult entered = mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
                         .param("aid", "ENTER").param("cursor", "337").param("bms.CUSTNO.1", "042"))
                 .andExpect(status().isOk()).andReturn();
 
         assertThat(entered.getResponse().getContentAsString())
-                .contains("RECEIVED CUSTNO=042 COMMAREA 7", "TERMINAL W", "USER ALICE");
-        assertThat(session.getAttribute(CicsBrowserController.CONVERSATION)).isNull();
+                .contains("RECEIVED CUSTNO=042 COMMAREA 7", "TERMINAL " + terminalOf(session), "USER ALICE");
+        assertThat(conversationOf(session)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("同じ端末でtaskが動いている間の送信は409で、taskを動かさず会話も残す")
+    void rejectsRequestsWhileTerminalIsBusy() throws Exception {
+        MvcResult started = mvc.perform(post("/cics/SCR1").with(user("alice")).with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+        MockHttpSession session = (MockHttpSession) started.getRequest().getSession();
+        int before = RUNS.get();
+        CicsTerminalRegistryPort.TerminalLease running = terminals.lease(terminalOf(session), "alice",
+                Duration.ofSeconds(30), Instant.now()).orElseThrow();
+        try {
+            MvcResult busy = mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
+                            .param("aid", "ENTER").param("bms.CUSTNO.1", "042"))
+                    .andExpect(status().isConflict()).andReturn();
+            assertThat(busy.getResponse().getContentAsString()).contains("busy");
+        } finally {
+            terminals.release(running, Instant.now());
+        }
+        assertThat(RUNS.get()).isEqualTo(before);
+        assertThat(conversationOf(session)).isPresent();
+    }
+
+    private static String terminalOf(MockHttpSession session) {
+        return (String) session.getAttribute(CicsBrowserController.TERMINAL);
+    }
+
+    private Optional<CicsTerminalRegistryPort.TerminalConversation> conversationOf(MockHttpSession session) {
+        return terminals.find(terminalOf(session), Instant.now())
+                .flatMap(CicsTerminalRegistryPort.Terminal::conversation);
     }
 
     @Test
@@ -179,8 +215,7 @@ class CicsBrowserEndpointTest {
         MvcResult started = mvc.perform(post("/cics/SCR1").with(user("alice")).with(csrf()))
                 .andExpect(status().isOk()).andReturn();
         MockHttpSession session = (MockHttpSession) started.getRequest().getSession();
-        ConversationId id = new ConversationId(((CicsBrowserController.BrowserConversation)
-                session.getAttribute(CicsBrowserController.CONVERSATION)).id());
+        ConversationId id = conversationOf(session).orElseThrow().id();
         assertThat(conversations.load(id, Instant.now())).isPresent();
 
         // MockHttpSession の invalidate は listener を呼ばないので、container の代わりに event を渡す
@@ -189,6 +224,7 @@ class CicsBrowserEndpointTest {
         context.getBean(CicsBrowserSessionListener.class).sessionDestroyed(new HttpSessionEvent(session));
 
         assertThat(conversations.load(id, Instant.now())).isEmpty();
+        assertThat(terminals.find(terminalOf(session), Instant.now())).isEmpty();
     }
 
     private static String hidden(MvcResult result, String name) throws Exception {
@@ -204,16 +240,18 @@ class CicsBrowserEndpointTest {
         MvcResult started = mvc.perform(post("/cics/SCR1").with(user("alice")).with(csrf()))
                 .andExpect(status().isOk()).andReturn();
         MockHttpSession session = (MockHttpSession) started.getRequest().getSession();
-        CicsBrowserController.BrowserConversation current =
-                (CicsBrowserController.BrowserConversation) session.getAttribute(CicsBrowserController.CONVERSATION);
-        session.setAttribute(CicsBrowserController.CONVERSATION,
-                new CicsBrowserController.BrowserConversation(current.id(), current.version() + 5, "SCR1"));
+        CicsTerminalRegistryPort.TerminalConversation current = conversationOf(session).orElseThrow();
+        CicsTerminalRegistryPort.TerminalLease lease = terminals.lease(terminalOf(session), "alice",
+                Duration.ofSeconds(30), Instant.now()).orElseThrow();
+        terminals.setConversation(lease, Optional.of(new CicsTerminalRegistryPort.TerminalConversation(
+                current.id(), current.version() + 5, current.nextTransaction())), Instant.now());
+        terminals.release(lease, Instant.now());
 
         MvcResult stale = mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
                         .param("aid", "ENTER").param("bms.CUSTNO.1", "042"))
                 .andExpect(status().isConflict()).andReturn();
 
         assertThat(stale.getResponse().getContentAsString()).contains("out of date").doesNotContain("RECEIVED");
-        assertThat(session.getAttribute(CicsBrowserController.CONVERSATION)).isNull();
+        assertThat(conversationOf(session)).isEmpty();
     }
 }

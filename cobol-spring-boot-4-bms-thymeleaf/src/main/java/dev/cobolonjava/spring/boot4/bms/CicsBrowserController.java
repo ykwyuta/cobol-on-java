@@ -4,10 +4,13 @@ import dev.cobolonjava.cics.CicsAbend;
 import dev.cobolonjava.cics.CicsInputLimitException;
 import dev.cobolonjava.cics.CicsPayload;
 import dev.cobolonjava.cics.CicsTaskCoordinator;
+import dev.cobolonjava.cics.CicsTaskPolicy;
 import dev.cobolonjava.cics.CicsTaskReply;
 import dev.cobolonjava.cics.CicsTaskRequest;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalConversation;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalLease;
 import dev.cobolonjava.cics.CicsTerminalScreen;
-import dev.cobolonjava.cics.ConversationConflictException;
 import dev.cobolonjava.cics.ConversationEnvelope;
 import dev.cobolonjava.cics.ConversationId;
 import dev.cobolonjava.cics.ConversationReference;
@@ -21,9 +24,10 @@ import dev.cobolonjava.cics.bms.BmsTerminalInput;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
-import java.io.Serializable;
 import java.security.Principal;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -31,7 +35,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.util.MultiValueMap;
@@ -42,20 +45,16 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
 /**
- * ブラウザから CICS の疑似会話を動かす入口 (設計 77 §4.2、設計 81 §5、暫定判断 P-134)。
+ * ブラウザから CICS の疑似会話を動かす入口 (設計 77 §4.2、設計 81 §5、設計 83 §4、暫定判断 P-134・P-144)。
  *
  * <p>GET は開始の画面を返すだけで task を動かさない。task は CSRF で守った POST で動かす。
  * 会話の COMMAREA と直前の画面は server の会話ストアから読み、client から受け取らない。
- * client の session に置くのは会話の ID と版だけである。
+ * HTTP session に置くのは端末の名前だけで、端末の疑似会話の参照は端末の登録 ({@link CicsTerminalRegistryPort}) に置く。
+ * task の前に端末を lease するので、1 つの端末で task は同時に 1 つになる。
  */
 @Controller
 public class CicsBrowserController {
 
-    /** HTTP session に置く会話の参照。Spring Session で外へ保存できるよう直列化できる形にする。 */
-    public record BrowserConversation(String id, long version, String nextTransaction) implements Serializable {
-    }
-
-    static final String CONVERSATION = "dev.cobolonjava.cics.browser.conversation";
     static final String TERMINAL = "dev.cobolonjava.cics.browser.terminal";
     /** 画面の form が運ぶ冪等キーと会話の参照 (暫定判断 P-142)。 */
     static final String KEY_PARAMETER = "idempotencyKey";
@@ -63,22 +62,31 @@ public class CicsBrowserController {
     static final String CONVERSATION_VERSION_PARAMETER = "conversationVersion";
     /** IMMEDIATE で続ける task の上限。業務の無限の連鎖で要求を返さなくなるのを防ぐ。 */
     static final int MAX_IMMEDIATE = 8;
-    private static final String BASE36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    /** HTTP session が失効の時間を持たないときの端末の期限。 */
+    static final Duration DEFAULT_TERMINAL_LIFETIME = Duration.ofMinutes(30);
 
     private final CicsTaskCoordinator coordinator;
     private final ConversationStorePort conversations;
+    private final CicsTerminalRegistryPort terminals;
     private final BmsScreenViewFactory views;
     private final BmsTerminalInputBinder binder;
     private final Clock clock;
-    private final AtomicInteger terminals = new AtomicInteger();
+    private final Duration terminalLease;
 
+    /**
+     * @param policy 端末の lease の長さは会話の lease ({@link CicsTaskPolicy#leaseDuration}) と同じにする。
+     *               会話の lease は task の期限と IMMEDIATE の連鎖より長いことを利用者が保証する
+     */
     public CicsBrowserController(CicsTaskCoordinator coordinator, ConversationStorePort conversations,
-                                 BmsScreenViewFactory views, BmsTerminalInputBinder binder, Clock clock) {
+                                 CicsTerminalRegistryPort terminals, BmsScreenViewFactory views,
+                                 BmsTerminalInputBinder binder, Clock clock, CicsTaskPolicy policy) {
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         this.conversations = Objects.requireNonNull(conversations, "conversations");
+        this.terminals = Objects.requireNonNull(terminals, "terminals");
         this.views = Objects.requireNonNull(views, "views");
         this.binder = Objects.requireNonNull(binder, "binder");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.terminalLease = Objects.requireNonNull(policy, "policy").leaseDuration();
     }
 
     @GetMapping("/cics/{transid}")
@@ -106,13 +114,49 @@ public class CicsBrowserController {
         Optional<BmsTerminalInput> input = form.containsKey("aid")
                 ? Optional.of(binder.bind(form.getFirst("aid"), form.getFirst("cursor"), singleValues(form)))
                 : Optional.empty();
-
-        Optional<ConversationReference> reference = Optional.empty();
-        CicsPayload payload = CicsPayload.empty();
         String sentKeyValue = form.getFirst(KEY_PARAMETER);
         Optional<IdempotencyKey> sentKey = sentKeyValue == null || sentKeyValue.isBlank()
                 ? Optional.empty() : Optional.of(new IdempotencyKey(sentKeyValue));
-        BrowserConversation current = (BrowserConversation) session.getAttribute(CONVERSATION);
+
+        Instant now = clock.instant();
+        String terminalId = terminalOf(session, owner, now);
+        TerminalLease lease = terminals.lease(terminalId, owner, terminalLease, now).orElse(null);
+        if (lease == null) {
+            // 同じ端末で task が動いている。3270 の入力禁止と同じく、この送信は動かさない
+            return error(response, model, HttpServletResponse.SC_CONFLICT,
+                    "The terminal is busy. Wait for the reply.");
+        }
+        try {
+            return run(transaction, owner, input, sentKey, form, terminalId, lease, request, response, model);
+        } catch (RuntimeException failure) {
+            // task を動かす前に断ったもの (冪等キーの衝突、未定義・無効の transaction、入力の形) は端末の会話を残す。
+            // 会話の衝突、ABEND、確定の失敗は端末の会話を外し、次は開始からにする
+            boolean keepsConversation = failure instanceof IdempotencyConflictException
+                    || failure instanceof UnknownTransactionException
+                    || failure instanceof DisabledTransactionException
+                    || failure instanceof CicsInputLimitException
+                    || failure instanceof IllegalArgumentException;
+            if (!keepsConversation) {
+                try {
+                    terminals.setConversation(lease, Optional.empty(), clock.instant());
+                } catch (RuntimeException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+            }
+            throw failure;
+        } finally {
+            terminals.release(lease, clock.instant());
+        }
+    }
+
+    private String run(TransId transaction, String owner, Optional<BmsTerminalInput> input,
+                       Optional<IdempotencyKey> sentKey, MultiValueMap<String, String> form, String terminalId,
+                       TerminalLease lease, HttpServletRequest request, HttpServletResponse response, Model model) {
+        Instant now = clock.instant();
+        Optional<ConversationReference> reference = Optional.empty();
+        CicsPayload payload = CicsPayload.empty();
+        Optional<TerminalConversation> current = terminals.find(terminalId, now)
+                .flatMap(CicsTerminalRegistryPort.Terminal::conversation);
         if (sentKey.isPresent()) {
             // 画面が運ぶ冪等キーと会話の参照で動かす。同じ画面の再送は、会話がもう進んでいても coordinator が
             // 覚えた結果を返す。会話の owner は coordinator が照合する (暫定判断 P-142)
@@ -125,34 +169,31 @@ public class CicsBrowserController {
                 ConversationId id = new ConversationId(sentId);
                 long version = Long.parseLong(sentVersion);
                 reference = Optional.of(new ConversationReference(id, version));
-                payload = conversations.load(id, clock.instant())
+                payload = conversations.load(id, now)
                         .filter(loaded -> loaded.version() == version)
                         .map(ConversationEnvelope::payload)
                         .orElse(CicsPayload.empty());
             }
-        } else if (current != null) {
-            if (!current.nextTransaction().equals(transaction.value())) {
-                // 端末が待っている TRANSID と違う。古い tab からの送信とみなして動かさない
-                session.removeAttribute(CONVERSATION);
-                return error(response, model, HttpServletResponse.SC_CONFLICT,
-                        "The screen is out of date. Start the transaction again.");
-            }
-            ConversationId id = new ConversationId(current.id());
-            ConversationEnvelope envelope = conversations.load(id, clock.instant())
-                    .filter(loaded -> loaded.version() == current.version())
-                    .orElse(null);
+        } else if (current.isPresent()) {
+            TerminalConversation conversation = current.orElseThrow();
+            ConversationEnvelope envelope = conversation.nextTransaction().equals(transaction)
+                    ? conversations.load(conversation.id(), now)
+                            .filter(loaded -> loaded.version() == conversation.version())
+                            .orElse(null)
+                    : null;
             if (envelope == null) {
-                session.removeAttribute(CONVERSATION);
+                // 端末が待っている TRANSID と違うか、会話がもう無い。古い tab からの送信とみなして動かさない
+                requireConversationChanged(lease, Optional.empty());
                 return error(response, model, HttpServletResponse.SC_CONFLICT,
                         "The screen is out of date. Start the transaction again.");
             }
-            reference = Optional.of(new ConversationReference(id, current.version()));
+            reference = Optional.of(new ConversationReference(conversation.id(), conversation.version()));
             payload = envelope.payload();
         }
 
         CicsTaskReply reply = coordinator.launch(new CicsTaskRequest(transaction.value(), owner, payload,
                 reference, sentKey.orElseGet(CicsBrowserController::idempotencyKey), input,
-                Optional.of(terminalOf(session)), userIdOf(owner)));
+                Optional.of(terminalId), userIdOf(owner)));
         for (int step = 0; reply.immediateNext(); step++) {
             if (step >= MAX_IMMEDIATE) {
                 throw new IllegalStateException("RETURN IMMEDIATE chain exceeded " + MAX_IMMEDIATE + " tasks");
@@ -164,15 +205,13 @@ public class CicsBrowserController {
                     .orElseGet(CicsBrowserController::idempotencyKey);
             reply = coordinator.launch(new CicsTaskRequest(next.nextTransaction().value(), owner, next.payload(),
                     Optional.of(new ConversationReference(next.id(), next.version())), stepKey,
-                    Optional.empty(), Optional.of(terminalOf(session)), userIdOf(owner)));
+                    Optional.empty(), Optional.of(terminalId), userIdOf(owner)));
         }
 
         String nextTransaction = reply.nextConversation().map(next -> next.nextTransaction().value())
                 .orElse(transaction.value());
-        reply.nextConversation().ifPresentOrElse(
-                next -> session.setAttribute(CONVERSATION,
-                        new BrowserConversation(next.id().value(), next.version(), next.nextTransaction().value())),
-                () -> session.removeAttribute(CONVERSATION));
+        requireConversationChanged(lease, reply.nextConversation()
+                .map(next -> new TerminalConversation(next.id(), next.version(), next.nextTransaction())));
 
         String action = request.getContextPath() + "/cics/" + nextTransaction;
         model.addAttribute("action", action);
@@ -193,11 +232,14 @@ public class CicsBrowserController {
         return "cobol/bms/text";
     }
 
-    @ExceptionHandler(ConversationConflictException.class)
-    public String conflict(HttpServletRequest request, HttpServletResponse response, Model model) {
-        clearConversation(request);
-        return error(response, model, HttpServletResponse.SC_CONFLICT,
-                "The screen is out of date. Start the transaction again.");
+    /**
+     * 端末の会話を書き換える。lease が task の間に切れていれば書き換えられず、端末は古い会話を指したままになるので、
+     * 成功した応答を返さずに失敗させる (次の要求は古い版として 409 になる)。
+     */
+    private void requireConversationChanged(TerminalLease lease, Optional<TerminalConversation> conversation) {
+        if (!terminals.setConversation(lease, conversation, clock.instant())) {
+            throw new IllegalStateException("the terminal lease expired while the task was running");
+        }
     }
 
     @ExceptionHandler(IdempotencyConflictException.class)
@@ -205,6 +247,12 @@ public class CicsBrowserController {
         // 同じ画面の送信がまだ動いているか、同じキーで違う内容が送られた。会話はそのまま残す
         return error(response, model, HttpServletResponse.SC_CONFLICT,
                 "This screen was already sent. Wait for the reply or start the transaction again.");
+    }
+
+    @ExceptionHandler(dev.cobolonjava.cics.ConversationConflictException.class)
+    public String conflict(HttpServletResponse response, Model model) {
+        return error(response, model, HttpServletResponse.SC_CONFLICT,
+                "The screen is out of date. Start the transaction again.");
     }
 
     @ExceptionHandler(UnknownTransactionException.class)
@@ -224,15 +272,13 @@ public class CicsBrowserController {
     }
 
     @ExceptionHandler(CicsAbend.class)
-    public String abend(CicsAbend abend, HttpServletRequest request, HttpServletResponse response, Model model) {
-        clearConversation(request);
+    public String abend(CicsAbend abend, HttpServletResponse response, Model model) {
         return error(response, model, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
                 "The transaction ended abnormally with abend code " + abend.code().value() + ".");
     }
 
     @ExceptionHandler(RuntimeException.class)
-    public String failure(HttpServletRequest request, HttpServletResponse response, Model model) {
-        clearConversation(request);
+    public String failure(HttpServletResponse response, Model model) {
         return error(response, model, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
                 "The transaction could not be completed.");
     }
@@ -242,13 +288,6 @@ public class CicsBrowserController {
         model.addAttribute("status", status);
         model.addAttribute("message", message);
         return "cobol/bms/error";
-    }
-
-    private static void clearConversation(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        if (session != null) {
-            session.removeAttribute(CONVERSATION);
-        }
     }
 
     /** {@code bms.} の field は 1 つの値だけを受ける。同じ名前を重ねた送信は形が壊れている。 */
@@ -265,17 +304,19 @@ public class CicsBrowserController {
         return out;
     }
 
-    /** 端末の名前は HTTP session ごとに振る。W と base36 の 3 文字で、同じ JVM の中で重ならない範囲に限る。 */
-    private String terminalOf(HttpSession session) {
+    /**
+     * HTTP session の端末。登録が残っていて owner が同じなら期限を延ばし、無ければ (初回、期限切れ、別の JVM の
+     * 1 つの JVM の登録、利用者が替わった) 新しく登録する。端末の期限は HTTP session の失効の時間に合わせる。
+     */
+    private String terminalOf(HttpSession session, String owner, Instant now) {
+        int seconds = session.getMaxInactiveInterval();
+        Instant expiresAt = now.plus(seconds > 0 ? Duration.ofSeconds(seconds) : DEFAULT_TERMINAL_LIFETIME);
         String terminal = (String) session.getAttribute(TERMINAL);
-        if (terminal == null) {
-            int number = terminals.getAndIncrement();
-            if (number >= 36 * 36 * 36) {
-                throw new IllegalStateException("browser terminal IDs are exhausted in this JVM");
-            }
-            terminal = "W" + BASE36.charAt(number / 1296) + BASE36.charAt(number / 36 % 36) + BASE36.charAt(number % 36);
-            session.setAttribute(TERMINAL, terminal);
+        if (terminal != null && terminals.touch(terminal, owner, expiresAt, now)) {
+            return terminal;
         }
+        terminal = terminals.register(owner, expiresAt, now);
+        session.setAttribute(TERMINAL, terminal);
         return terminal;
     }
 
