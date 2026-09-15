@@ -22,6 +22,13 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <!-- 翻訳した COBOL から CALL 'CBLTDLI' を呼ぶ試験だけが使う -->
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-compiler</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
