@@ -64,6 +64,10 @@ public final class CicsRuntimeOps {
     public static final int FILE_DEBKEY = 1024;
     /** BDAM の DEBREC。 */
     public static final int FILE_DEBREC = 2048;
+    /** READ / READNEXT / READPREV の SET。INTO の代わりに置き場の番地を POINTER に受ける (設計 85 §5.5)。 */
+    public static final int FILE_SET = 4096;
+    /** READQ TS / READQ TD の SET。 */
+    public static final int QUEUE_SET = 1 << 20;
     /** START ATTACH (設計 85 §8)。 */
     public static final int START_ATTACH = 1;
     /** START NOCHECK。自 region では何も変えない。 */
@@ -439,8 +443,10 @@ public final class CicsRuntimeOps {
             result = new CicsFilePort.Result(CicsResponseCode.SYSIDERR, 130);
         } else switch (kind) {
             case FILE_READ, FILE_READNEXT, FILE_READPREV -> {
-                int max = lengthArea != null ? halfword(lengthArea) : data.length();
-                if (max < 0 || max > data.length()) {
+                // SET は CICS が持つ置き場の番地を POINTER に置く (設計 85 §5.5)。INTO の域は無い
+                boolean set = (flags & FILE_SET) != 0;
+                int max = set ? Integer.MAX_VALUE : lengthArea != null ? halfword(lengthArea) : data.length();
+                if (!set && (max < 0 || max > data.length())) {
                     throw new CicsTaskStateException(label + " LENGTH " + max + " does not fit the INTO area of "
                             + data.length() + " bytes");
                 }
@@ -459,6 +465,10 @@ public final class CicsRuntimeOps {
                 result = new CicsFilePort.Result(found.response(), found.response2());
                 if (found.response() == CicsResponseCode.NORMAL) {
                     byte[] record = found.data();
+                    if (set) {
+                        setPointer(required, data, record, label);
+                        max = record.length;
+                    }
                     if (!files.variableLength(file) && record.length != max) {
                         throw new CicsTaskStateException(label + " reads a fixed-length record of " + record.length
                                 + " bytes with LENGTH " + max + "; what LENGERR moves is not verified");
@@ -467,8 +477,10 @@ public final class CicsRuntimeOps {
                         throw new CicsTaskStateException(label + " UPDATE truncated the record;"
                                 + " whether the record stays held is not verified");
                     }
-                    int moved = Math.min(record.length, max);
-                    data.subView(0, moved).setBytes(java.util.Arrays.copyOf(record, moved));
+                    if (!set) {
+                        int moved = Math.min(record.length, max);
+                        data.subView(0, moved).setBytes(java.util.Arrays.copyOf(record, moved));
+                    }
                     if (lengthArea != null) {
                         setHalfword(lengthArea, record.length);
                     }
@@ -536,6 +548,22 @@ public final class CicsRuntimeOps {
         execution.eib(required.codePage()).setDataset(file, required.codePage());
         return containerOutcome(required, FILE_FUNCTIONS[kind], result.response(), result.response2(),
                 suppressDefaultHandling, command + " FILE");
+    }
+
+    /**
+     * CICS が持つ置き場にデータを写し、その番地 (P-150 の番号) を POINTER に置く (設計 85 §5.5、暫定判断 P-151)。
+     *
+     * <p>置き場は命令ごとに新しく作り、実行単位が終わるまで残す。文書は置き場が次の READ / REWRITE / DELETE / UNLOCK /
+     * SYNCPOINT (TS / TD / RETRIEVE では次の同じ命令や task の終わり) まで有効と書くが、それより後に使っても失敗させない。
+     * 置き場に書いた値は record やキューに戻らない。
+     */
+    private static void setPointer(ProgramContext context, DataView pointer, byte[] data, String label) {
+        if (pointer.length() != 4) {
+            throw new CicsTaskStateException(label + " SET must be a POINTER data area");
+        }
+        dev.cobolonjava.runtime.storage.Storage buffer =
+                dev.cobolonjava.runtime.storage.Storage.copyOf(data.length == 0 ? new byte[1] : data);
+        dev.cobolonjava.runtime.program.Ops.setAddressOf(pointer.storage(), pointer.offset(), context, buffer, 0);
     }
 
     private static int fileToken(DataView area, String label) {
@@ -617,8 +645,9 @@ public final class CicsRuntimeOps {
             }
         } else if (kind == QUEUE_READQ_TS || kind == QUEUE_READQ_TD) {
             // READQ の頁: LENGTH が負なら 0 とみなす
-            int max = Math.max(0, lengthArea != null ? halfword(lengthArea) : data.length());
-            if (max > data.length()) {
+            boolean set = (flags & QUEUE_SET) != 0;
+            int max = set ? Integer.MAX_VALUE : Math.max(0, lengthArea != null ? halfword(lengthArea) : data.length());
+            if (!set && max > data.length()) {
                 throw new CicsTaskStateException(command + " LENGTH " + max + " does not fit the INTO area of "
                         + data.length() + " bytes");
             }
@@ -647,8 +676,13 @@ public final class CicsRuntimeOps {
                 }
             }
             if (response == CicsResponseCode.NORMAL) {
-                int moved = Math.min(record.length, max);
-                data.subView(0, moved).setBytes(java.util.Arrays.copyOf(record, moved));
+                if (set) {
+                    // SET は CICS が持つ置き場の番地を POINTER に置く (設計 85 §5.5)
+                    setPointer(required, data, record, command);
+                } else {
+                    int moved = Math.min(record.length, max);
+                    data.subView(0, moved).setBytes(java.util.Arrays.copyOf(record, moved));
+                }
                 if (lengthArea != null) {
                     setHalfword(lengthArea, record.length);
                 }
@@ -965,6 +999,14 @@ public final class CicsRuntimeOps {
     public static int retrieveCondition(ProgramContext context, DataView into, DataView lengthArea,
             DataView returnTransaction, DataView returnTerminal, DataView queue, boolean wait,
             boolean suppressDefaultHandling) {
+        return retrieveCondition(context, into, lengthArea, returnTransaction, returnTerminal, queue, wait, false,
+                suppressDefaultHandling);
+    }
+
+    /** SET を書ける RETRIEVE (設計 85 §5.5、暫定判断 P-151)。set なら into は POINTER の域である。 */
+    public static int retrieveCondition(ProgramContext context, DataView into, DataView lengthArea,
+            DataView returnTransaction, DataView returnTerminal, DataView queue, boolean wait, boolean set,
+            boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
         CicsStartData started = execution.task().start().orElseThrow(() -> new CicsTaskStateException(
@@ -990,7 +1032,13 @@ public final class CicsRuntimeOps {
             response = CicsResponseCode.ENVDEFERR;
         } else {
             start.markRetrieved();
-            if (into != null) {
+            if (into != null && set) {
+                byte[] data = start.data().orElseThrow();
+                setPointer(required, into, data, "RETRIEVE");
+                if (lengthArea != null) {
+                    setHalfword(lengthArea, data.length);
+                }
+            } else if (into != null) {
                 byte[] data = start.data().orElseThrow();
                 // RETRIEVE の頁: LENGTH が 0 以下なら 0 とみなす
                 int max = Math.max(0, lengthArea != null ? halfword(lengthArea) : into.length());

@@ -224,6 +224,7 @@ public sealed interface Statement {
             DataReference sysidData,
             boolean attach,
             boolean noCheck,
+            boolean setPointer,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {
     }

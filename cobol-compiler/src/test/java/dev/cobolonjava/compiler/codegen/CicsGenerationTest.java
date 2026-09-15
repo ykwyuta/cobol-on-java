@@ -308,6 +308,46 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLがREAD / READQ TS / READQ TDのSETでCICSの置き場の番地を受け、SET ADDRESS OFで読む")
+    void readsThroughSetPointers(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "SETPGM", List.of(
+                "MOVE '000042' TO WS-QTIME",
+                "EXEC CICS WRITEQ TS QUEUE('SETQ') FROM(WS-GRP) END-EXEC",
+                "EXEC CICS READQ TS QUEUE('SETQ') SET(WS-PTR) LENGTH(WS-LEN) NEXT END-EXEC",
+                "SET ADDRESS OF LK-REC TO WS-PTR",
+                "IF LK-REC = '000042' MOVE 'Q' TO LK-AREA(1:1) END-IF",
+                "MOVE '0000' TO WS-ABCODE",
+                "MOVE '000077' TO WS-QTIME",
+                "EXEC CICS WRITE FILE('CUSTFILE') FROM(WS-GRP) RIDFLD(WS-ABCODE) END-EXEC",
+                "EXEC CICS READ FILE('CUSTFILE') SET(WS-PTR) RIDFLD(WS-ABCODE) LENGTH(WS-LEN) END-EXEC",
+                "SET ADDRESS OF LK-REC TO WS-PTR",
+                "IF LK-REC = '000077' MOVE 'F' TO LK-AREA(2:1) END-IF",
+                "MOVE '000099' TO WS-QTIME",
+                "EXEC CICS WRITEQ TD QUEUE('CSMT') FROM(WS-GRP) END-EXEC",
+                "MOVE ZERO TO WS-LEN",
+                "EXEC CICS READQ TD QUEUE('CSMT') SET(WS-PTR) LENGTH(WS-LEN) END-EXEC",
+                "SET ADDRESS OF LK-REC TO WS-PTR",
+                "IF LK-REC = '000099' MOVE 'T' TO LK-AREA(3:1) END-IF",
+                "IF WS-LEN = 6 MOVE 'L' TO LK-AREA(4:1) END-IF"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("SETPGM", program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("SETPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withFiles(dev.cobolonjava.cics.CicsFilePort.dataSets(List.of(new dev.cobolonjava.cics.CicsFileDefinition(
+                        "CUSTFILE", directory.resolve("cust.ksds"), 0, 4, 6, CodePages.DEFAULT))))
+                .withTransientData(dev.cobolonjava.cics.CicsTransientDataPort.inMemory(List.of(
+                        new dev.cobolonjava.cics.CicsTransientDataQueueDefinition("CSMT", 6))));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("QFTL", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
     @DisplayName("生成COBOLが一時記憶と一時データのキューへ書いて読み、ITEMERRとQZEROを受け取る")
     void runsTemporaryStorageAndTransientDataQueues() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -672,7 +712,7 @@ class CicsGenerationTest {
         assertRejected("EXEC CICS START TRANSID('TX02') INTERVAL(0) TIME(0) END-EXEC", "mutually exclusive");
         assertRejected("EXEC CICS START TRANSID('TX02') HOURS(1) END-EXEC", "require AFTER or AT");
         assertRejected("EXEC CICS CANCEL SYSID('TOOLONG') END-EXEC", "SYSID must be 1 to 4 characters");
-        assertRejected("EXEC CICS RETRIEVE SET(WS-GRP) END-EXEC", "unsupported RETRIEVE option: SET");
+        assertRejected("EXEC CICS RETRIEVE SET(WS-GRP) END-EXEC", "RETRIEVE SET must be a POINTER data area");
         assertRejected("EXEC CICS RETRIEVE INTO(WS-GRP) WAIT('X') END-EXEC", "WAIT");
         assertRejected("EXEC CICS RETRIEVE RTRANSID(WS-PGM) END-EXEC",
                 "RTRANSID data area must be a 4-byte alphanumeric item");
@@ -694,7 +734,9 @@ class CicsGenerationTest {
 
         assertEquals("FSDT", CodePages.DEFAULT.decode(execute(loader, "NOFILE", program).payload().commarea()));
         assertRejected("EXEC CICS READ FILE('F') SET(WS-PGM) RIDFLD(WS-ABCODE) END-EXEC",
-                "unsupported READ FILE option: SET");
+                "READ FILE SET must be a POINTER data area");
+        assertRejected("EXEC CICS READ FILE('F') SET(WS-PTR) INTO(WS-GRP) RIDFLD(WS-ABCODE) END-EXEC",
+                "INTO and SET are mutually exclusive");
         assertRejected("EXEC CICS DELETE FILE('F') RIDFLD(WS-ABCODE) TOKEN(WS-FLEN) END-EXEC",
                 "TOKEN applies only without RIDFLD");
         assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) GTEQ EQUAL END-EXEC",
@@ -1909,10 +1951,12 @@ class CicsGenerationTest {
                 "01 WS-CHILD PIC X(16).",
                 "01 WS-FETCHCH PIC X(16).",
                 "01 WS-COMPST PIC S9(8) COMP.",
+                "01 WS-PTR POINTER.",
                 "01 WS-GRP.",
                 "   03 WS-QTIME PIC 9(6).",
                 "LINKAGE SECTION.",
                 "01 LK-AREA PIC X(4).",
+                "01 LK-REC PIC X(6).",
                 "PROCEDURE DIVISION USING LK-AREA.",
                 "MAIN-START."));
         procedure.forEach(line -> addWrapped(source, line + "."));

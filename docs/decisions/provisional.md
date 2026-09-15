@@ -4384,6 +4384,30 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-151 file control / TS / TD / RETRIEVE の SET は、命令ごとに作る置き場の番地を POINTER に置く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が「ADDRESS OF まで入れる」と答え、その上に SET を入れた |
+| 場所 | 設計 85 §5.5。`CicsRuntimeOps.setPointer`、`FILE_SET` / `QUEUE_SET`、`retrieveCondition` の set、`CicsBlockParser` の SET、`ProcedureBuilder.requirePointer` |
+| 関連要件 | P-136、P-137、P-138、P-150 |
+
+**暫定の扱い**:
+
+- READ / READNEXT / READPREV / READQ TS / READQ TD / RETRIEVE の `SET(POINTER 項目)` は、読んだ record やデータを命令ごとに新しく
+  作った置き場に写し、その位置に振った番号 (P-150) を POINTER に置く。LENGTH の域にはデータの長さを置く
+- INTO と SET の併記、POINTER でない SET の受取域は翻訳で断る
+- 置き場は実行単位が終わるまで残る。文書は file control の置き場を「次の READ / REWRITE / DELETE / UNLOCK / SYNCPOINT まで」、
+  TS / TD / RETRIEVE の置き場を「次の同じ命令か task の終わりまで」有効と書くが、その後に使っても失敗させない
+- 置き場に書いた値は record やキューに戻らない (文書どおり、REWRITE / WRITEQ で書き戻す)
+
+**どこがずれうるか**: 有効な期間を過ぎた置き場を使う資産は、実機では壊れた値を読むか S0C4 になりうるが、ここでは古い値を読める。
+task の中で SET を繰り返すと、置き場は実行単位が終わるまで積もる (大きな browse では記憶域を使う)。READ UPDATE の SET で
+置き場を書き換えてから REWRITE しない形の振る舞いは確かめていない。
+
+**解消条件**: 有効な期間を過ぎた置き場を使う資産が見つかれば、期間の終わりで番号を無効にして S0C4 にする。置き場の再利用は、
+長い browse で記憶域が問題になったときに入れる。
+
 ## P-150 POINTER には実行単位の中で振った番号を置き、SET ADDRESS OF は連絡節の 01 をその記憶域に結ぶ
 
 | 項目 | 内容 |

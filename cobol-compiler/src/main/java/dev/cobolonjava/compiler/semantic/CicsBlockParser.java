@@ -58,7 +58,7 @@ final class CicsBlockParser {
             Set.of("TRANSID", "INTERVAL", "TIME", "AFTER", "AT", "HOURS", "MINUTES", "SECONDS", "FROM", "LENGTH",
                     "REQID", "RTRANSID", "RTERMID", "QUEUE", "PROTECT", "TERMID", "USERID", "CHANNEL", "ATTACH",
                     "NOCHECK", "SYSID"),
-            Set.of("INTO", "LENGTH", "RTRANSID", "RTERMID", "QUEUE", "WAIT"),
+            Set.of("INTO", "SET", "LENGTH", "RTRANSID", "RTERMID", "QUEUE", "WAIT"),
             Set.of("REQID", "TRANSID", "SYSID"));
     /** 一時記憶・一時データの命令。TS / TD を省いた形は受けない。 */
     private static final Pattern QUEUE_BLOCK = Pattern.compile(
@@ -66,14 +66,14 @@ final class CicsBlockParser {
     /** キューの命令ごとに、RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> QUEUE_OPTIONS = List.of(
             Set.of("QUEUE", "QNAME", "FROM", "LENGTH", "ITEM", "REWRITE", "MAIN", "AUXILIARY", "NOSUSPEND", "SYSID"),
-            Set.of("QUEUE", "QNAME", "INTO", "LENGTH", "ITEM", "NEXT", "NUMITEMS", "SYSID"),
+            Set.of("QUEUE", "QNAME", "INTO", "SET", "LENGTH", "ITEM", "NEXT", "NUMITEMS", "SYSID"),
             Set.of("QUEUE", "QNAME", "SYSID"),
             Set.of("QUEUE", "FROM", "LENGTH", "SYSID"),
-            Set.of("QUEUE", "INTO", "LENGTH", "NOSUSPEND", "SYSID"),
+            Set.of("QUEUE", "INTO", "SET", "LENGTH", "NOSUSPEND", "SYSID"),
             Set.of("QUEUE", "SYSID"));
     /** file control の命令ごとに、FILE / RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> FILE_OPTIONS = List.of(
-            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "RRN", "UPDATE", "UNCOMMITTED",
+            Set.of("INTO", "SET", "RIDFLD", "LENGTH", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "RRN", "UPDATE", "UNCOMMITTED",
                     "RBA", "XRBA", "TOKEN", "NOSUSPEND", "CONSISTENT", "REPEATABLE", "DEBKEY", "DEBREC", "SYSID"),
             Set.of("FROM", "RIDFLD", "LENGTH", "KEYLENGTH", "RRN", "RBA", "XRBA", "MASSINSERT", "NOSUSPEND", "SYSID"),
             Set.of("FROM", "LENGTH", "TOKEN", "NOSUSPEND", "SYSID"),
@@ -81,9 +81,9 @@ final class CicsBlockParser {
             Set.of("TOKEN", "SYSID"),
             Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN", "RBA", "XRBA", "DEBKEY",
                     "DEBREC", "SYSID"),
-            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN", "RBA", "XRBA", "UPDATE", "TOKEN",
+            Set.of("INTO", "SET", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN", "RBA", "XRBA", "UPDATE", "TOKEN",
                     "NOSUSPEND", "DEBKEY", "DEBREC", "SYSID"),
-            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN", "RBA", "XRBA", "UPDATE", "TOKEN",
+            Set.of("INTO", "SET", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN", "RBA", "XRBA", "UPDATE", "TOKEN",
                     "NOSUSPEND", "DEBKEY", "DEBREC", "SYSID"),
             Set.of("REQID", "SYSID"),
             Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN", "RBA", "XRBA", "DEBKEY",
@@ -671,7 +671,7 @@ final class CicsBlockParser {
      * file control の命令を読む (暫定判断 P-131、P-136、P-147)。
      *
      * <p>SYSID、RBA / XRBA、TOKEN、NOSUSPEND、CONSISTENT / REPEATABLE、DEBKEY / DEBREC、MASSINSERT、browse の UPDATE は
-     * 設計 85 §4〜§5 の暫定の仕様で変換する。SET (CICS が持つ域への pointer) は ADDRESS OF を入れるまで断る。
+     * 設計 85 §4〜§5 の暫定の仕様で変換する。SET は CICS が持つ置き場の番地を POINTER に受ける (設計 85 §5.5)。
      */
     private static Parsed parseFileCommand(String verb, String source) {
         int kind = dev.cobolonjava.cics.CicsRuntimeOps.FILE_COMMANDS.indexOf(verb);
@@ -712,11 +712,18 @@ final class CicsBlockParser {
                 || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READNEXT
                 || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READPREV;
         String dataOption = reads ? "INTO" : "FROM";
+        if (reads && options.containsKey("SET")) {
+            if (options.containsKey("INTO")) {
+                throw new IllegalArgumentException(label + " INTO and SET are mutually exclusive");
+            }
+            // SET は CICS が持つ置き場の番地を POINTER に受ける (設計 85 §5.5)
+            dataOption = "SET";
+        }
         String data = sendDataName(options.get(dataOption), dataOption);
         String ridfld = sendDataName(options.get("RIDFLD"), "RIDFLD");
         String numrec = sendDataName(options.get("NUMREC"), "NUMREC");
-        if (data == null && FILE_OPTIONS.get(kind).contains(dataOption)) {
-            throw new IllegalArgumentException(label + " requires " + dataOption);
+        if (data == null && FILE_OPTIONS.get(kind).contains(reads ? "INTO" : "FROM")) {
+            throw new IllegalArgumentException(label + " requires " + (reads ? "INTO or SET" : "FROM"));
         }
         if (ridfld == null && FILE_OPTIONS.get(kind).contains("RIDFLD")
                 && kind != dev.cobolonjava.cics.CicsRuntimeOps.FILE_DELETE) {
@@ -738,6 +745,9 @@ final class CicsBlockParser {
                 | fileFlag(options, "DEBREC", dev.cobolonjava.cics.CicsRuntimeOps.FILE_DEBREC);
         // UNCOMMITTED は RLS でない file の既定であり、何も変えない
         fileFlag(options, "UNCOMMITTED", 0);
+        if (dataOption.equals("SET")) {
+            flags |= dev.cobolonjava.cics.CicsRuntimeOps.FILE_SET;
+        }
         if (options.containsKey("GTEQ") && options.containsKey("EQUAL")) {
             throw new IllegalArgumentException(label + " GTEQ and EQUAL are mutually exclusive");
         }
@@ -883,9 +893,16 @@ final class CicsBlockParser {
         boolean reads = kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TS
                 || kind == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_READQ_TD;
         String dataOption = reads ? "INTO" : "FROM";
+        if (reads && options.containsKey("SET")) {
+            if (options.containsKey("INTO")) {
+                throw new IllegalArgumentException(command + " INTO and SET are mutually exclusive");
+            }
+            // SET は CICS が持つ置き場の番地を POINTER に受ける (設計 85 §5.5)
+            dataOption = "SET";
+        }
         String data = sendDataName(options.get(dataOption), dataOption);
-        if (data == null && QUEUE_OPTIONS.get(kind).contains(dataOption)) {
-            throw new IllegalArgumentException(command + " requires " + dataOption);
+        if (data == null && QUEUE_OPTIONS.get(kind).contains(reads ? "INTO" : "FROM")) {
+            throw new IllegalArgumentException(command + " requires " + (reads ? "INTO or SET" : "FROM"));
         }
         String[] length = options.get("LENGTH");
         String lengthName = null;
@@ -902,7 +919,8 @@ final class CicsBlockParser {
         }
         String[] item = fileNumber(options.get("ITEM"), command + " ITEM");
         int flags = fileFlag(options, "REWRITE", dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_REWRITE)
-                | fileFlag(options, "NEXT", dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_NEXT);
+                | fileFlag(options, "NEXT", dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_NEXT)
+                | (dataOption.equals("SET") ? dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_SET : 0);
         // NOSUSPEND は置き場が満ちるのを待たない指定であり、待つ場面が無いので何も変えない (設計 85 §4.2)
         fileFlag(options, "NOSUSPEND", 0);
         String[] sysid = sysidOption(options, command);
@@ -949,7 +967,7 @@ final class CicsBlockParser {
      * <p>START の TERMID は端末へ出す task として、RETRIEVE の WAIT はその task が次の START を待つ形として受ける
      * (設計 83 §5)。START の USERID は代理の権限を確かめて受ける (設計 84)。START の CHANNEL / ATTACH / NOCHECK / SYSID と、
      * REQID の無い CANCEL、CANCEL の TRANSID / SYSID は設計 85 §8 の暫定の仕様で受ける (暫定判断 P-149)。
-     * USERID と TERMID の併記と RETRIEVE の SET は断る。
+     * RETRIEVE の SET は CICS が持つ置き場の番地を POINTER に受ける (設計 85 §5.5)。USERID と TERMID の併記は断る。
      */
     private static Parsed parseIntervalCommand(String command, String source) {
         int kind = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.indexOf(command);
@@ -995,6 +1013,7 @@ final class CicsBlockParser {
         String[] sysid = new String[2];
         boolean attach = false;
         boolean noCheck = false;
+        boolean setPointer = false;
         if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_START) {
             protect = fileFlag(options, "PROTECT", 1) != 0;
             attach = fileFlag(options, "ATTACH", 1) != 0;
@@ -1073,7 +1092,12 @@ final class CicsBlockParser {
             }
         } else if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
             wait = fileFlag(options, "WAIT", 1) != 0;
-            data = sendDataName(options.get("INTO"), "INTO");
+            if (options.containsKey("INTO") && options.containsKey("SET")) {
+                throw new IllegalArgumentException("RETRIEVE INTO and SET are mutually exclusive");
+            }
+            // SET は CICS が持つ置き場の番地を POINTER に受ける (設計 85 §5.5)
+            setPointer = options.containsKey("SET");
+            data = sendDataName(options.get(setPointer ? "SET" : "INTO"), setPointer ? "SET" : "INTO");
             String[] length = options.get("LENGTH");
             if (length != null) {
                 if (data == null) {
@@ -1111,7 +1135,8 @@ final class CicsBlockParser {
                 new IntervalSpec(kind, transaction[0], transaction[1], timing, hhmmss, hours, minutes, seconds, data,
                         lengthName, lengthLiteral, request[0], request[1], returnTransaction[0], returnTransaction[1],
                         returnTerminal[0], returnTerminal[1], queue[0], queue[1], terminal[0], terminal[1], user[0],
-                        user[1], protect, wait, channel[0], channel[1], sysid[0], sysid[1], attach, noCheck));
+                        user[1], protect, wait, channel[0], channel[1], sysid[0], sysid[1], attach, noCheck,
+                        setPointer));
     }
 
     /**
@@ -1889,7 +1914,7 @@ final class CicsBlockParser {
                         String queueLiteral, String queueData, String terminalLiteral, String terminalData,
                         String userLiteral, String userData, boolean protect, boolean waitForData,
                         String channelLiteral, String channelData, String sysidLiteral, String sysidData,
-                        boolean attach, boolean noCheck) {
+                        boolean attach, boolean noCheck, boolean setPointer) {
     }
 
     /**

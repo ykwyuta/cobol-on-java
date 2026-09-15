@@ -2084,7 +2084,11 @@ public final class ProcedureBuilder {
             if (data == null) {
                 return null;
             }
-            requireRecordArea(data, label + (retrieve ? " INTO" : " FROM"));
+            if (spec.setPointer()) {
+                requirePointer(data, label + " SET");
+            } else {
+                requireRecordArea(data, label + (retrieve ? " INTO" : " FROM"));
+            }
         }
         DataReference length = null;
         if (spec.length() != null) {
@@ -2107,7 +2111,7 @@ public final class ProcedureBuilder {
                 spec.requestLiteral(), areas[1], spec.returnTransactionLiteral(), areas[2],
                 spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4], spec.terminalLiteral(),
                 areas[5], spec.userLiteral(), areas[6], spec.protect(), spec.waitForData(), spec.channelLiteral(),
-                areas[7], spec.sysidLiteral(), areas[8], spec.attach(), spec.noCheck(),
+                areas[7], spec.sysidLiteral(), areas[8], spec.attach(), spec.noCheck(), spec.setPointer(),
                 parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
     }
 
@@ -2147,7 +2151,11 @@ public final class ProcedureBuilder {
             if (data == null) {
                 return null;
             }
-            requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+            if ((spec.flags() & dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_SET) != 0) {
+                requirePointer(data, label + " SET");
+            } else {
+                requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+            }
         }
         DataReference[] numbers = new DataReference[3];
         String[] names = {spec.length(), spec.item(), spec.numItems()};
@@ -2201,7 +2209,11 @@ public final class ProcedureBuilder {
             if (data == null) {
                 return null;
             }
-            requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+            if ((spec.flags() & dev.cobolonjava.cics.CicsRuntimeOps.FILE_SET) != 0) {
+                requirePointer(data, label + " SET");
+            } else {
+                requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+            }
         }
         DataReference ridfld = null;
         if (spec.ridfld() != null) {
@@ -2285,6 +2297,13 @@ public final class ProcedureBuilder {
         boolean binary = (usage == Usage.COMP || usage == Usage.COMP_5) && DataCategory.of(area).isNumeric();
         return area.constantLength().isPresent() && area.constantLength().getAsInt() == width
                 && (binary || DataCategory.of(area).isAlphanumericLike() || DataCategory.of(area) == DataCategory.GROUP);
+    }
+
+    /** SET の受取域。CICS が持つ置き場の番地を受ける POINTER の項目 (設計 85 §5.5)。 */
+    private static void requirePointer(DataReference area, String option) {
+        if (!area.item().isPointer()) {
+            throw new IllegalArgumentException(option + " must be a POINTER data area");
+        }
     }
 
     private static void requireRecordArea(DataReference area, String option) {

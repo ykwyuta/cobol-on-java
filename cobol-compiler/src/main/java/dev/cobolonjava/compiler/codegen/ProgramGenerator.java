@@ -1202,9 +1202,10 @@ public final class ProgramGenerator {
                 run.visitVarInsn(Opcodes.ALOAD, 2);
                 views.forEach(Runnable::run);
                 run.visitInsn(statement.waitForData() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                run.visitInsn(statement.setPointer() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                 run.visitInsn(suppress);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "retrieveCondition",
-                        "(" + CONTEXT + view + view + view + view + view + "ZZ)I", false);
+                        "(" + CONTEXT + view + view + view + view + view + "ZZZ)I", false);
                 emitCicsConditionTransfer();
             });
             return;

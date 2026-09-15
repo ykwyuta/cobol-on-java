@@ -555,7 +555,7 @@ EXEC CICS DELETEQ TD QUEUE(名前) END-EXEC
 EXEC CICS START TRANSID(名前) [INTERVAL(hhmmss) | TIME(hhmmss) | (AFTER | AT) [HOURS(n)] [MINUTES(n)] [SECONDS(n)]] [FROM(域) [LENGTH(n | 項目)]] [REQID(名前)] [RTRANSID(名前)] [RTERMID(名前)] [QUEUE(名前)] [TERMID(名前) | USERID(名前)] [SYSID(名前)] [NOCHECK] [PROTECT] END-EXEC
 EXEC CICS START TRANSID(名前) CHANNEL(名前) [TERMID(名前) | USERID(名前)] [SYSID(名前)] [NOCHECK] [PROTECT] END-EXEC
 EXEC CICS START ATTACH TRANSID(名前) [FROM(域) [LENGTH(n | 項目)]] END-EXEC
-EXEC CICS RETRIEVE [INTO(域) [LENGTH(S9(4) COMP項目)]] [RTRANSID(X(4)項目)] [RTERMID(X(4)項目)] [QUEUE(X(8)項目)] [WAIT] END-EXEC
+EXEC CICS RETRIEVE [(INTO(域) | SET(POINTER項目)) [LENGTH(S9(4) COMP項目)]] [RTRANSID(X(4)項目)] [RTERMID(X(4)項目)] [QUEUE(X(8)項目)] [WAIT] END-EXEC
 EXEC CICS CANCEL [REQID(名前)] [TRANSID(名前)] [SYSID(名前)] END-EXEC
 EXEC CICS RUN TRANSID(名前) [CHANNEL(名前)] CHILD(X(16)項目) END-EXEC
 EXEC CICS FETCH (ANY(X(16)項目) | CHILD(X(16)項目)) [CHANNEL(X(16)項目)] [COMPSTATUS(S9(8) COMP項目)] [ABCODE(X(4)項目)] [NOSUSPEND | TIMEOUT(n | 項目)] END-EXEC
@@ -586,6 +586,7 @@ EXEC CICS FREE CHILD(X(16)項目) END-EXEC
 
 - `USAGE POINTER` は 4 byte の項目で、`SET 項目 TO NULL`、`SET 項目 TO 別のPOINTER`、`SET 項目 TO ADDRESS OF 項目` を扱います。POINTER には実行単位の中で記憶域の位置に振った番号が入り、同じ位置には同じ値が入ります (ホストの番地ではありません)。POINTER の MOVE と番地の算術は未対応です。
 - `SET ADDRESS OF 連絡節の01 TO (POINTER | ADDRESS OF 項目 | NULL)` は、その 01 を指す記憶域に結びます。USING に並ばない連絡節の 01 も翻訳でき、番地を置かずに参照すれば実行時に S0C4 で止まります。`ADDRESS OF` は `ADDRESS` という名前の項目が無いときに受けます (設計 85 §6、暫定判断 P-150)。
+- CICS の `READ` / `READNEXT` / `READPREV` / `READQ TS` / `READQ TD` / `RETRIEVE` の `SET(POINTER項目)` は、読んだデータを命令ごとに作る置き場に写し、その番地を POINTER に置きます。`SET ADDRESS OF 連絡節 TO POINTER` で読みます。置き場は実行単位が終わるまで残り、文書の有効な期間を過ぎて使っても失敗させません (設計 85 §5.5、暫定判断 P-151)。
 - `LENGTH OF 項目` は、長さが翻訳時に決まる項目の長さの整数定数になります (暫定判断 P-123)。
 
 #### `EXEC SQL` (Db2 連携)

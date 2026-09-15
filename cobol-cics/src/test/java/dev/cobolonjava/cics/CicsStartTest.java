@@ -358,6 +358,30 @@ class CicsStartTest {
                 null, null, null, null, -1, "R8", null));
     }
 
+    @Test
+    @DisplayName("RETRIEVE SETはSTARTのデータをCICSの置き場に写してPOINTERに番地を置き、LENGTHに長さを返す")
+    void retrievesThroughSetPointer() {
+        CicsStartData data = new CicsStartData("REQ3", TransId.of("TX02"), CP.encode("pointed"), Optional.empty(),
+                Optional.empty(), Optional.empty(), "start-test", Optional.empty());
+        ProgramContext started = context(new CicsTaskContext(new CicsTaskId("task_set"), TransId.of("TX02"),
+                "start-test", NOON).withStart(Optional.of(data)), CicsEnvironment.unconfigured());
+        DataView pointer = Storage.copyOf(new byte[4]).whole();
+        DataView length = halfword(0);
+
+        CicsRuntimeOps.retrieveCondition(started, pointer, length, null, null, null, false, true, true);
+        assertEquals(CicsResponseCode.NORMAL, resp());
+        assertEquals(7, ByteBuffer.wrap(length.toByteArray()).getShort());
+        DataView addressed = dev.cobolonjava.runtime.program.Ops.addressed(started, pointer.storage(),
+                pointer.offset(), 7, "LK-REC");
+        assertEquals("pointed", CP.decode(addressed.toByteArray()));
+
+        // 2 度目は ENDDATA で、POINTER は変えない
+        byte[] before = pointer.toByteArray();
+        CicsRuntimeOps.retrieveCondition(started, pointer, length, null, null, null, false, true, true);
+        assertEquals(CicsResponseCode.ENDDATA, resp());
+        assertTrue(java.util.Arrays.equals(before, pointer.toByteArray()));
+    }
+
     /** CHANNEL / SYSID / ATTACH を書ける START。 */
     private int startWith(ProgramContext context, DataView from, String channel, String sysid, int flags) {
         CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null, from, null,
