@@ -19,6 +19,10 @@ final class InMemoryCicsTransientData implements CicsTransientDataPort {
 
     InMemoryCicsTransientData(List<CicsTransientDataQueueDefinition> queues) {
         for (CicsTransientDataQueueDefinition queue : queues) {
+            if (queue.triggers()) {
+                // 1 つの JVM の中のキューは task を起こす先を持たない。trigger level を黙って無視しない
+                throw new IllegalArgumentException("trigger level (ATI) requires JdbcCicsTransientData: " + queue.name());
+            }
             if (definitions.put(queue.name(), queue) != null) {
                 throw new IllegalArgumentException("duplicate transient data queue: " + queue.name());
             }

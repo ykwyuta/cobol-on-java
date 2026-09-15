@@ -4388,7 +4388,7 @@ purge を合わせる等)。実 container と Spring Session Redis で listener 
 | 項目 | 内容 |
 | --- | --- |
 | 状態 | 未解決 (2026-09-15)。設計を決めた段階で未実装。利用者が 4 つの問いに答えた |
-| 場所 | 設計 83。実装は `CicsTerminalRegistryPort`、`JdbcTerminalRegistry`、`CicsBrowserController` (増分 1)、`JdbcCicsStarts`、`JdbcCicsTransientData` (増分 2)、`CicsStartPort.conversing`、`CicsStartData.withFollowing` (増分 3) |
+| 場所 | 設計 83。実装は `CicsTerminalRegistryPort`、`JdbcTerminalRegistry`、`CicsBrowserController` (増分 1)、`JdbcCicsStarts`、`JdbcCicsTransientData` (増分 2)、`CicsStartPort.conversing`、`CicsStartData.withFollowing` (増分 3)、`CicsTransientDataTrigger`、`JdbcCicsTransientData` の trigger (増分 4) |
 | 関連要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 
 **暫定の扱い**:

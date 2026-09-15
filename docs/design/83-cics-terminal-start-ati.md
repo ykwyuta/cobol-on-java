@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID) を実装 |
+| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID)、増分 4 (TD の ATI の FILE) を実装 |
 | 対応要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 | 検証レベル | V0。実機の CICS と突き合わせていない |
 | 暫定判断 | P-144 |
@@ -145,6 +145,20 @@ JSON API の入口は端末名を持たない (設計 77 §4.4)。端末へ出�
 - `ATTACHED` の間に QZERO まで読んで `ARMED` になったあとの WRITEQ は、文書の「逐次にしか動かない」に従い、
   task が終わるまで新しい task を attach しない。終わった時点で数が trigger level 以上なら `PENDING` にする
 - FILE の task の owner は region の構成の owner 名 (例 `cics-region`)、TERMINAL の task の owner は端末の owner
+
+実装 (増分 4): `CicsTransientDataQueueDefinition` に trigger level、TRANSID、ATIFACILITY、FACILITYID、USERID を足し、
+`JdbcCicsTransientData` が trigger の状態を持つ。
+
+- 「QZERO まで読んだ」は READQ TD が QZERO を返したときと読んだ。最後の record を読んだだけでは戻さない (推定)
+- `ATTACHED` の間の QZERO で `ARMED` に戻っても、task の token がある間は次の task を起こさない (逐次)。token は
+  `ATTACHED` / `ARMED` / `PENDING` とは別の列に持ち、task の終わりか期限で外す
+- task の終わりの状態の変え方は token が合うときだけにした。期限で片付けたあとに古い task が終わっても状態を変えない
+- FILE の task の正常な終わりで trigger を戻したとき、数が trigger level 以上なら直ちに `PENDING` にする (推定)
+- trigger の task の例外はすべて ABEND と同じに扱う (`BLOCKED`)
+- 1 つの JVM の中の `inMemory` のキューと、launcher を渡さない `JdbcCicsTransientData` は、trigger level を書いた定義を断る。
+  USERID も region の既定の user ID も無い trigger の定義は、推測で空の user ID の task を起こさず構成の時点で断る
+- `ATIFACILITY(TERMINAL)` は増分 5 まで構成の時点で断る
+- `DELETEQ TD` は trigger の状態を変えない (文書が書かない)
 
 ## 7. ブラウザへの配信
 

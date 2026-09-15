@@ -137,7 +137,7 @@ Bank-of-Z の CICS 資産 32 本は、この文書の命令をほとんど使わ
 | 定義 | `CicsTransientDataQueueDefinition` (1〜4 文字の名前、record の最大の長さ)。定義の無い名前は QIDERR |
 | 読み | 先に書いた record から取り出し、読んだ record は消える。切り詰めても record は消え、LENGTH の域には本来の長さを置く |
 | `DELETEQ TD` | キューの record をすべて消す。定義は残る |
-| 回復、ATI | 持たない。trigger level による task の開始は無い (設計 83 §6 で入れる) |
+| 回復、ATI | 回復は持たない。trigger level による task の開始 (ATIFACILITY(FILE)) は `JdbcCicsTransientData` だけが持つ (設計 83 §6) |
 | 置き場 | `inMemory` は 1 つの JVM の中。`JdbcCicsTransientData` (autoconfigure) は表に置いて複数の JVM で分け合う (設計 83 §8) |
 
 | 命令 | EIBFN | 返す条件 (RESP2 はすべて 0) |
