@@ -8,7 +8,7 @@
 | 検証レベル | **V1 / V0**。DL/I の oracle は存在しない ([P-099](../decisions/provisional.md)) |
 | 基準環境 | Java 21, Spring Boot 4.1.x, PostgreSQL / IBM Db2 |
 | 改訂 | 2026-09-13。[批判的レビュー](../reviews/2026-09-13-ims-research-critical-review.md) の全 34 指摘を反映 |
-| 測定 | 2026-09-15。Bank-of-Z の IMS の COBOL 11 本のうち翻訳が通るのは 10 本 (IBTRAN は `REPOSITORY` / JNI)。入口は P-152 |
+| 測定 | 2026-09-15。Bank-of-Z の IMS の COBOL 11 本のうち翻訳が通るのは 10 本 (IBTRAN は `REPOSITORY` / JNI)。入口は P-152。DBD 9 本・PSB 8 本はすべて読める (`verify ims-gen`、P-153) |
 
 ---
 

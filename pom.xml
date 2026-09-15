@@ -22,6 +22,7 @@
   <modules>
     <module>cobol-runtime</module>
     <module>cobol-cics</module>
+    <module>cobol-ims</module>
     <module>cobol-db2</module>
     <module>cobol-db2-jdbc</module>
     <module>cobol-spring-boot-4-autoconfigure</module>

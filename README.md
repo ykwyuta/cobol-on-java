@@ -70,6 +70,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
+| `cobol-ims` | IMS の DBD / PSB と DL/I 呼び出しの中立モデル (設計 78) | DBDGEN / PSBGEN の原文を読む。Bank-of-Z の DBD 9 本・PSB 8 本がすべて読める (P-153)。DL/I の呼び出しは未実装 |
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS task の coordinator の自動構成と、JSON の入口 `POST /api/cics/{transid}` (Spring Security があるときだけ、P-135) を実装。同じ冪等キーの再送には task を動かさず commit した結果を返す (P-142)。`cobol.cics.conversation.consistency=strict` で、会話と冪等キーの結果を業務の Db2 と同じ UOW で表に確定する (P-143)。driver管理 `WITH HOLD` は未実装 |
@@ -219,12 +220,13 @@ START の `CHANNEL` / `ATTACH` / `NOCHECK` / `SYSID`、REQID の無い `CANCEL`�
 IMS は、同じ Bank-of-Z の IMS の COBOL 11 本を `verify corpus <cobol> -I <copy>` で流して測っている。
 <b>翻訳が通るのは 10 本</b>である (測り始めは 0 本)。手続き部の先頭の `ENTRY "DLITCBL" USING` をプログラムの引数とし (P-152)、
 `PROGRAM-ID` の終止符の欠落と、演算子に空白を置かない `<=1` を受ける。残る IBTRAN は OO COBOL の `REPOSITORY` と JNI で止まる。
+DBDGEN / PSBGEN の原文は `verify ims-gen <置き場>` で測り、<b>DBD 9 本・PSB 8 本がすべて読める</b> (P-153)。
 DL/I の呼び出し (`CALL 'CBLTDLI'`) を動かす実行時はまだ無い (設計 78)。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
 バイト列</b>を出すことも見る。要件 13 章が P1 の受け入れ基準に置いている形である。
-テスト 2301 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
+テスト 2318 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
 `cobol-db2-jdbc` の 2 件はスキップされる。
 うち 6 件はコーパスを取ってきていなければスキップされる。
 Hercules 上での実行と突き合わせる**検証レベル V2** の検査は、期待値を採れない環境では流れない。

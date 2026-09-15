@@ -52,6 +52,7 @@ public final class Main {
             System.err.println("usage: verify ccvs85     <newcob.val> [-x x-cards] [-o out]");
             System.err.println("       verify ccvs85-run <newcob.val> [-x x-cards] [-o out]");
             System.err.println("       verify corpus     <directory> [-I copybooks]... [-o out]");
+            System.err.println("       verify ims-gen    <directory> [-o out]");
             System.exit(2);
             return;
         }
@@ -60,6 +61,7 @@ public final class Main {
             case "ccvs85" -> ccvs85(Path.of(args[1]), option(args, "-x"));
             case "ccvs85-run" -> ccvs85Run(Path.of(args[1]), option(args, "-x"));
             case "corpus" -> corpus(Path.of(args[1]), options(args, "-I"));
+            case "ims-gen" -> imsGeneration(Path.of(args[1]));
             default -> null;
         };
         if (text == null) {
@@ -149,6 +151,16 @@ public final class Main {
                 : CorpusRunner.with(resolverOf(includes));
         CorpusReport report = runner.run(sources);
         return report.text("OSS コーパス (要件 NFR-042)") + '\n' + report.csv();
+    }
+
+    /** IMS の DBDGEN / PSBGEN の原文を読めるか数える (設計 78)。 */
+    private static String imsGeneration(Path root) {
+        if (!Files.isDirectory(root)) {
+            System.err.println("置き場が無い: " + root);
+            System.exit(1);
+        }
+        return dev.cobolonjava.verify.ims.ImsGenerationRunner.text(
+                dev.cobolonjava.verify.ims.ImsGenerationRunner.run(root));
     }
 
     /**

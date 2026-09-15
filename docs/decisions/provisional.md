@@ -4384,6 +4384,35 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-153 DBDGEN / PSBGEN は DL/I の結果に効く指定だけを読み、物理的な置き方は読み飛ばす
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。Bank-of-Z の DBD 9 本と PSB 8 本を `verify ims-gen` で測り、すべて読めた |
+| 場所 | `cobol-ims` / `MacroReader`、`DbdParser`、`PsbParser`、`AccessMethod`、`InsertRule`、`cobol-verify` / `ImsGenerationRunner` |
+| 関連要件 | FR-164、設計 78 §1.1・§2.1、P-102、P-103 |
+
+**暫定の扱い**:
+
+- 原文は High Level Assembler の固定形式で読む。72 桁が空白でなければ続き、続きの行は 16 桁から、演算項欄がコンマで
+  終わった行だけが演算項を続ける。IBM のマクロの原文は参照せず、公開文書の DBDGEN / PSBGEN の文の形だけを根拠にする
+- `SEGM` / `FIELD` / `PCB` / `SENSEG` / `PSBGEN` は知らないキーワードを断る。結果に効くからである
+- `DBD` の `RMNAME=` / `PASSWD=` / `ENCODING=`、`DATASET` の `DEVICE=` / `SIZE=` 等、`SEGM` の `POINTER=` / `FREQ=` /
+  `COMPRTN=`、`FIELD` の `EXTERNALNAME=` / `DATATYPE=`、`DFSMARSH` は読み飛ばす。置き方か Java への変換の指定であり、
+  DL/I の呼び出しの結果に効かない
+- HIDAM / PHIDAM の根に付く主索引の `LCHILD ... POINTER=INDX` だけを受ける。根をキーの順に持つので、索引の DBD は読まない
+- L0 (設計 78 §1.1) は断る: `ACCESS=INDEX / LOGICAL / GSAM / DEDB / MSDB / HSAM`、主索引以外の `LCHILD`、`XDFLD`、
+  論理親、`SOURCE=`、`/CK` `/SX` のフィールド、`PCB TYPE=GSAM`、`PROCSEQ=`、`POS=M`、`SENFLD`、`INDICES=`
+- `RULES=` の挿入位置は FIRST / LAST / HERE を読む。**HERE は LAST と同じに置く**。HERE は「現在位置の前」だが、ISRT の
+  直後の位置で続けて ISRT したときの並びを実機と突き合わせていない。Bank-of-Z は 9 本すべて `RULES=(LLL,HERE)` で、
+  CUSTACCS はキーが重なる。LAST なら読み込んだ順に並ぶ
+- HDAM / PHDAM の根はキーの順に置く。実機はランダマイザの順であり、無限定の GN の根の順は違いうる (P-102)
+
+**どこがずれうるか**: 読み飛ばした指定で結果が変わる資産 (圧縮の出口が値を変える等) は、ここでは同じに動かない。HERE を
+LAST と同じにしたので、同じキーの兄弟を 1 件ずつ入れて GN で読む資産は並びが逆になりうる。
+
+**解消条件**: 実機で RULES=HERE の ISRT を続けたときの並びを採る。読み飛ばした指定で結果の変わる資産が見つかれば、断る側へ移す。
+
 ## P-152 手続き部の先頭の ENTRY の USING をプログラムの引数とし、ほかの ENTRY は断る
 
 | 項目 | 内容 |
