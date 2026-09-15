@@ -201,6 +201,31 @@ public final class HierarchicalDatabase {
         return segment;
     }
 
+    /**
+     * 置き場の同期点で、ほかの領域が確定した根を読み直すために、そのキーの根を部分木ごと外す (P-161)。
+     * 取り消しの記録も変更の記録も残さない。同期点で位置を捨てたあとにだけ使う。
+     *
+     * @return 外した位置。そのキーの根が無ければ、キーの順で入る位置
+     */
+    public int detachRoots(byte[] key) {
+        int lower = bound(roots, key, false);
+        int upper = bound(roots, key, true);
+        List<Segment> detached = roots.subList(lower, upper);
+        detached.forEach(Segment::markDeleted);
+        detached.clear();
+        return lower;
+    }
+
+    /** {@link #detachRoots} で外した位置へ、読み直した根を置く。子は {@link #restore} で続ける。 */
+    public Segment attachRoot(int index, SegmentDefinition type, byte[] data) {
+        if (!type.root()) {
+            throw new IllegalArgumentException("segment " + type.name() + " is not the root");
+        }
+        Segment segment = new Segment(type, null, data);
+        roots.add(index, segment);
+        return segment;
+    }
+
     private List<Segment> twinsFor(Segment parent, SegmentDefinition type) {
         if ((parent == null) != type.root()) {
             throw new IllegalArgumentException("segment " + type.name() + " requires "

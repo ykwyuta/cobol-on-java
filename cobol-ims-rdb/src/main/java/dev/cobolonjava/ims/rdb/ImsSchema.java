@@ -56,6 +56,13 @@ final class ImsSchema {
                     + "ROOT_KEY_RAW " + key + " NOT NULL, "
                     + "ROOT_SEQ INTEGER NOT NULL, "
                     + "CONSTRAINT PK_IMS_ROOT PRIMARY KEY (DBD_NAME, ROOT_KEY_RAW, ROOT_SEQ))");
+            // ルートアンカーロックの行 (ADR-0015、P-161)。キーの根が重なっても 1 行で、確定のたびに版を上げる。
+            // 根の行が消えても残すので、消したことも版で分かる
+            statement.execute("CREATE TABLE IF NOT EXISTS IMS_ROOT_LOCK ("
+                    + "DBD_NAME VARCHAR(8) NOT NULL, "
+                    + "ROOT_KEY_RAW " + key + " NOT NULL, "
+                    + "VERSION BIGINT NOT NULL, "
+                    + "CONSTRAINT PK_IMS_ROOT_LOCK PRIMARY KEY (DBD_NAME, ROOT_KEY_RAW))");
         }
     }
 }

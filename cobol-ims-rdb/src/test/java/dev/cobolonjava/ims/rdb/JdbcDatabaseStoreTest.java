@@ -131,22 +131,21 @@ class JdbcDatabaseStoreTest {
         HierarchicalDatabase database = new HierarchicalDatabase(DBD);
         Segment first = database.insert(null, DBD.root(), text("0001"));
         database.insert(null, DBD.root(), text("0002"));
-        try (JdbcDatabaseStore store = store()) {
-            store.commit(List.of(database));
-        }
-        database.clearChanges();
-        // 0002 の行を置き場の上で書き換えておく。書き直されれば元に戻ってしまう
-        try (Connection connection = DriverManager.getConnection(url, "sa", "");
-             PreparedStatement update = connection.prepareStatement(
-                     "UPDATE IMS_SEGMENT_STORE SET SEG_DATA = ? WHERE SEG_NAME = 'CUST' AND ROOT_KEY_RAW = ?")) {
-            update.setBytes(1, text("0009"));
-            update.setBytes(2, text("0002"));
-            assertEquals(1, update.executeUpdate());
-        }
+        // 同じ置き場で続けて確定する。別の置き場から読まずに書けば、版が食い違って競合になる (P-161)
+        try (JdbcDatabaseStore writer = store()) {
+            writer.commit(List.of(database));
+            database.clearChanges();
+            // 0002 の行を置き場の上で書き換えておく。書き直されれば元に戻ってしまう
+            try (Connection connection = DriverManager.getConnection(url, "sa", "");
+                 PreparedStatement update = connection.prepareStatement(
+                         "UPDATE IMS_SEGMENT_STORE SET SEG_DATA = ? WHERE SEG_NAME = 'CUST' AND ROOT_KEY_RAW = ?")) {
+                update.setBytes(1, text("0009"));
+                update.setBytes(2, text("0002"));
+                assertEquals(1, update.executeUpdate());
+            }
 
-        database.insert(first, DBD.segment("ACCT"), text("A0011"));
-        try (JdbcDatabaseStore store = store()) {
-            store.commit(List.of(database));
+            database.insert(first, DBD.segment("ACCT"), text("A0011"));
+            writer.commit(List.of(database));
         }
 
         try (JdbcDatabaseStore store = store()) {

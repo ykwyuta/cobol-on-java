@@ -4,6 +4,7 @@ import dev.cobolonjava.ims.db.HierarchicalDatabase;
 import dev.cobolonjava.ims.db.Segment;
 import dev.cobolonjava.ims.dbd.DatabaseDefinition;
 import dev.cobolonjava.ims.dbd.SegmentDefinition;
+import dev.cobolonjava.ims.store.DatabaseConflictException;
 import dev.cobolonjava.ims.store.DatabaseStore;
 import dev.cobolonjava.ims.store.DatabaseStoreException;
 import java.nio.ByteBuffer;
@@ -16,11 +17,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
- * IMS のデータベースを RDB の表に生バイトで置く (設計 78 §3.2、ADR-0013、暫定判断 P-160)。
+ * IMS のデータベースを RDB の表に生バイトで置く (設計 78 §3.2、ADR-0013、ADR-0015、暫定判断 P-160、P-161)。
  *
  * <h2>行の形</h2>
  * <p>セグメント 1 つが 1 行である。値はセグメントの生バイト (可変長なら LL を外した本体で、長さは {@code SEG_LEN})。
@@ -28,14 +32,23 @@ import java.util.Objects;
  * (DBD に書いた順、1 から)、{@code NNNNNN} は兄弟の並び (0 から) である。固定幅で数字と {@code -} だけなので、
  * バイト値の順が階層の順になる。
  *
- * <h2>確定</h2>
- * <p>同期点では、前の同期点から変わった根のキーについて、そのキーの根の行をすべて消し、いまの木を振り直して書く。
- * 振り直すので、中間挿入で番号の隙間が尽きることはない (P-101)。書き直すのは変わった根だけで、ほかの根の行には
- * 触らない。すべて 1 つの JDBC のトランザクションで確定する。
+ * <h2>確定とルートアンカーロック</h2>
+ * <p>同期点では、前の同期点から変わった根のキーを {@code (DBD 名, キー)} の昇順に並べ、根ごとの排他の行
+ * {@code IMS_ROOT_LOCK} を {@code SELECT ... FOR UPDATE} で押さえる。昇順に押さえるのは、ルート間・DBD 間の
+ * 獲得順序を揃えて循環待ちを起こさないためである (ADR-0015 の決定 1)。押さえた行の版が、この置き場が読んだときの
+ * 版と違えば、ほかの領域が先に確定している。上書きせずに {@link DatabaseConflictException} で止める。
+ * 新しい根で排他の行がまだ無ければ作る。同時に作られて一意制約に当たったときも競合である (ファントム)。
+ *
+ * <p>版を上げてから、そのキーの根の行をすべて消し、いまの木を振り直して書く。振り直すので、中間挿入で番号の隙間が
+ * 尽きることはない (P-101)。すべて 1 つの JDBC のトランザクションで確定する。
+ *
+ * <h2>読み直し</h2>
+ * <p>確定のあと、ほかの領域が版を上げた根を読み直してメモリの木を差し替える。同期点では位置を捨てているので、
+ * セグメントを差し替えても位置は壊れない。長く動く領域 (MPP) も、他の領域の更新を同期点ごとに見る。
  *
  * <h2>まだ持たないもの</h2>
- * <p>開くときはデータベース全体をメモリに読む。根ごとの遅延読み込み、ルートアンカーロック (ADR-0015)、
- * 他の領域との同時更新は無い。
+ * <p>開くときはデータベース全体をメモリに読む。GH で押さえる形 (ADR-0015 の読みの排他)、競合したときの自動の
+ * 再試行 (P-107)、根ごとの遅延読み込みは無い。読み直しは同期点ごとに排他の表を DBD ごとに全件読む。
  */
 public final class JdbcDatabaseStore implements DatabaseStore {
 
@@ -44,6 +57,8 @@ public final class JdbcDatabaseStore implements DatabaseStore {
     private static final int MAX_TWINS = 999_999;
 
     private final Connection connection;
+    /** DBD ごとに、この置き場が読んだか書いた根の版。排他の行が無い根は載せない (版 0 とみなす)。 */
+    private final Map<String, Map<ByteBuffer, Long>> versions = new HashMap<>();
 
     public JdbcDatabaseStore(Connection connection) {
         this.connection = Objects.requireNonNull(connection, "connection");
@@ -60,55 +75,109 @@ public final class JdbcDatabaseStore implements DatabaseStore {
     private record Row(byte[] rootKey, int rootSeq, String path, String segment, int level, byte[] data) {
     }
 
+    /** 変わった根 1 つ。押さえる順に並べる。 */
+    private record Pending(HierarchicalDatabase database, byte[] key) {
+    }
+
     @Override
     public HierarchicalDatabase open(DatabaseDefinition dbd) {
-        List<Row> rows = new ArrayList<>();
-        try (PreparedStatement select = connection.prepareStatement(
-                "SELECT ROOT_KEY_RAW, ROOT_SEQ, HIERARCHY_PATH, SEG_NAME, SEG_LEVEL, SEG_LEN, SEG_DATA"
-                        + " FROM IMS_SEGMENT_STORE WHERE DBD_NAME = ?")) {
-            select.setString(1, dbd.name());
-            try (ResultSet result = select.executeQuery()) {
-                while (result.next()) {
-                    String name = result.getString(4);
-                    SegmentDefinition type = dbd.segment(name);
-                    byte[] body = result.getBytes(7);
-                    int length = result.getInt(6);
-                    if (type == null || body.length != length) {
-                        throw inconsistent(dbd, "segment " + name + " is not in the DBD or its SEG_LEN is wrong");
-                    }
-                    rows.add(new Row(result.getBytes(1), result.getInt(2), result.getString(3), name,
-                            result.getInt(5), type.variableLength() ? withLength(body) : body));
-                }
-            }
+        HierarchicalDatabase database = new HierarchicalDatabase(dbd);
+        try {
+            // 版を先に読む。行を読んでいる間に確定されても、古い版と比べて競合として気づける
+            versions.put(dbd.name(), readVersions(dbd.name()));
+            build(database, readRows(dbd, null), -1);
             connection.commit();
         } catch (SQLException e) {
             rollbackQuietly();
             throw new DatabaseStoreException("cannot read DBD " + dbd.name() + " from the IMS tables", e);
-        }
-        // 置き場の照合順序に頼らず、根のキー (符号なし)、同じキーの根の並び、道の順に並べる
-        rows.sort(Comparator.comparing(Row::rootKey, Arrays::compareUnsigned)
-                .thenComparingInt(Row::rootSeq)
-                .thenComparing(Row::path));
-        HierarchicalDatabase database = new HierarchicalDatabase(dbd);
-        Segment[] open = new Segment[MAX_LEVELS + 1];
-        for (Row row : rows) {
-            SegmentDefinition type = dbd.segment(row.segment());
-            if (type.level() != row.level() || row.level() > MAX_LEVELS) {
-                throw inconsistent(dbd, "segment " + row.segment() + " is stored at level " + row.level());
-            }
-            Segment parent = row.level() == 1 ? null : open[row.level() - 1];
-            try {
-                open[row.level()] = database.restore(parent, type, row.data());
-            } catch (IllegalArgumentException | IllegalStateException e) {
-                throw inconsistent(dbd, e.getMessage());
-            }
-            Arrays.fill(open, row.level() + 1, open.length, null);
         }
         return database;
     }
 
     @Override
     public void commit(Collection<HierarchicalDatabase> databases) {
+        List<Pending> pending = new ArrayList<>();
+        for (HierarchicalDatabase database : databases) {
+            for (ByteBuffer changed : database.changedRootKeys()) {
+                byte[] key = new byte[changed.remaining()];
+                changed.duplicate().get(key);
+                pending.add(new Pending(database, key));
+            }
+        }
+        pending.sort(Comparator.comparing((Pending p) -> p.database().definition().name())
+                .thenComparing(Pending::key, Arrays::compareUnsigned));
+        Map<Pending, Long> written = new HashMap<>();
+        try {
+            for (Pending root : pending) {
+                written.put(root, lock(root));
+            }
+            write(pending);
+            connection.commit();
+        } catch (SQLException e) {
+            rollbackQuietly();
+            if (e.getSQLState() != null && e.getSQLState().startsWith("23")) {
+                throw new DatabaseConflictException("another region created the same root at the same time: "
+                        + e.getMessage());
+            }
+            throw new DatabaseStoreException("cannot commit to the IMS tables", e);
+        } catch (RuntimeException e) {
+            rollbackQuietly();
+            throw e;
+        }
+        for (Map.Entry<Pending, Long> root : written.entrySet()) {
+            versions.get(root.getKey().database().definition().name())
+                    .put(ByteBuffer.wrap(root.getKey().key()), root.getValue());
+        }
+        refresh(databases);
+    }
+
+    /**
+     * 根の排他の行を押さえ、読んだときの版と比べて版を上げる。
+     *
+     * @return 上げたあとの版
+     */
+    private long lock(Pending root) throws SQLException {
+        String dbd = root.database().definition().name();
+        long expected = versions.computeIfAbsent(dbd, ignored -> new HashMap<>())
+                .getOrDefault(ByteBuffer.wrap(root.key()), 0L);
+        Long current = null;
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT VERSION FROM IMS_ROOT_LOCK WHERE DBD_NAME = ? AND ROOT_KEY_RAW = ? FOR UPDATE")) {
+            select.setString(1, dbd);
+            select.setBytes(2, root.key());
+            try (ResultSet result = select.executeQuery()) {
+                if (result.next()) {
+                    current = result.getLong(1);
+                }
+            }
+        }
+        long found = current == null ? 0L : current;
+        if (found != expected) {
+            throw new DatabaseConflictException("another region committed root "
+                    + HexFormat.of().formatHex(root.key()) + " of DBD " + dbd + " after this region read it"
+                    + " (version " + expected + ", now " + found + ")");
+        }
+        if (current == null) {
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO IMS_ROOT_LOCK (DBD_NAME, ROOT_KEY_RAW, VERSION) VALUES (?, ?, 1)")) {
+                insert.setString(1, dbd);
+                insert.setBytes(2, root.key());
+                insert.executeUpdate();
+            }
+            return 1L;
+        }
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE IMS_ROOT_LOCK SET VERSION = ? WHERE DBD_NAME = ? AND ROOT_KEY_RAW = ?")) {
+            update.setLong(1, found + 1);
+            update.setString(2, dbd);
+            update.setBytes(3, root.key());
+            update.executeUpdate();
+        }
+        return found + 1;
+    }
+
+    /** 押さえた根の行を消し、いまの木を書く。 */
+    private void write(List<Pending> pending) throws SQLException {
         try (PreparedStatement deleteSegments = connection.prepareStatement(
                 "DELETE FROM IMS_SEGMENT_STORE WHERE DBD_NAME = ? AND ROOT_KEY_RAW = ?");
              PreparedStatement deleteRoots = connection.prepareStatement(
@@ -119,42 +188,135 @@ public final class JdbcDatabaseStore implements DatabaseStore {
                      "INSERT INTO IMS_SEGMENT_STORE (DBD_NAME, ROOT_KEY_RAW, ROOT_SEQ, HIERARCHY_PATH, SEG_NAME,"
                              + " SEG_LEVEL, PARENT_PATH, SEQ_KEY_RAW, SEG_LEN, SEG_DATA)"
                              + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-            for (HierarchicalDatabase database : databases) {
-                DatabaseDefinition dbd = database.definition();
-                for (ByteBuffer changed : database.changedRootKeys()) {
-                    byte[] key = new byte[changed.remaining()];
-                    changed.duplicate().get(key);
-                    for (PreparedStatement delete : List.of(deleteSegments, deleteRoots)) {
-                        delete.setString(1, dbd.name());
-                        delete.setBytes(2, key);
-                        delete.executeUpdate();
+            for (Pending root : pending) {
+                DatabaseDefinition dbd = root.database().definition();
+                byte[] key = root.key();
+                for (PreparedStatement delete : List.of(deleteSegments, deleteRoots)) {
+                    delete.setString(1, dbd.name());
+                    delete.setBytes(2, key);
+                    delete.executeUpdate();
+                }
+                int sequence = 0;
+                for (Segment segment : root.database().roots()) {
+                    if (!Arrays.equals(segment.key(), key)) {
+                        continue;
                     }
-                    int sequence = 0;
-                    for (Segment root : database.roots()) {
-                        if (!Arrays.equals(root.key(), key)) {
-                            continue;
-                        }
-                        insertRoot.setString(1, dbd.name());
-                        insertRoot.setBytes(2, key);
-                        insertRoot.setInt(3, sequence);
-                        insertRoot.addBatch();
-                        write(insertSegment, dbd, key, sequence, root, "/", "");
-                        sequence++;
-                    }
+                    insertRoot.setString(1, dbd.name());
+                    insertRoot.setBytes(2, key);
+                    insertRoot.setInt(3, sequence);
+                    insertRoot.addBatch();
+                    writeSubtree(insertSegment, dbd, key, sequence, segment, "/", "");
+                    sequence++;
                 }
             }
             insertRoot.executeBatch();
             insertSegment.executeBatch();
+        }
+    }
+
+    /** ほかの領域が版を上げた根を読み直し、メモリの木を差し替える。 */
+    private void refresh(Collection<HierarchicalDatabase> databases) {
+        try {
+            for (HierarchicalDatabase database : databases) {
+                DatabaseDefinition dbd = database.definition();
+                Map<ByteBuffer, Long> known = versions.computeIfAbsent(dbd.name(), ignored -> new HashMap<>());
+                for (Map.Entry<ByteBuffer, Long> latest : readVersions(dbd.name()).entrySet()) {
+                    if (latest.getValue().equals(known.get(latest.getKey()))) {
+                        continue;
+                    }
+                    byte[] key = new byte[latest.getKey().remaining()];
+                    latest.getKey().duplicate().get(key);
+                    int index = database.detachRoots(key);
+                    build(database, readRows(dbd, key), index);
+                    known.put(latest.getKey(), latest.getValue());
+                }
+            }
             connection.commit();
         } catch (SQLException e) {
             rollbackQuietly();
-            throw new DatabaseStoreException("cannot commit to the IMS tables", e);
+            throw new DatabaseStoreException("cannot refresh the IMS tables after a sync point", e);
+        }
+    }
+
+    private Map<ByteBuffer, Long> readVersions(String dbd) throws SQLException {
+        Map<ByteBuffer, Long> out = new HashMap<>();
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT ROOT_KEY_RAW, VERSION FROM IMS_ROOT_LOCK WHERE DBD_NAME = ?")) {
+            select.setString(1, dbd);
+            try (ResultSet result = select.executeQuery()) {
+                while (result.next()) {
+                    out.put(ByteBuffer.wrap(result.getBytes(1)), result.getLong(2));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * セグメントの行を読み、根のキー (符号なし)、同じキーの根の並び、道の順に並べる。置き場の照合順序には頼らない。
+     *
+     * @param key 読む根のキー。{@code null} なら DBD のすべて
+     */
+    private List<Row> readRows(DatabaseDefinition dbd, byte[] key) throws SQLException {
+        List<Row> rows = new ArrayList<>();
+        String sql = "SELECT ROOT_KEY_RAW, ROOT_SEQ, HIERARCHY_PATH, SEG_NAME, SEG_LEVEL, SEG_LEN, SEG_DATA"
+                + " FROM IMS_SEGMENT_STORE WHERE DBD_NAME = ?" + (key == null ? "" : " AND ROOT_KEY_RAW = ?");
+        try (PreparedStatement select = connection.prepareStatement(sql)) {
+            select.setString(1, dbd.name());
+            if (key != null) {
+                select.setBytes(2, key);
+            }
+            try (ResultSet result = select.executeQuery()) {
+                while (result.next()) {
+                    String name = result.getString(4);
+                    SegmentDefinition type = dbd.segment(name);
+                    byte[] body = result.getBytes(7);
+                    if (type == null || body.length != result.getInt(6)) {
+                        throw inconsistent(dbd, "segment " + name + " is not in the DBD or its SEG_LEN is wrong");
+                    }
+                    rows.add(new Row(result.getBytes(1), result.getInt(2), result.getString(3), name,
+                            result.getInt(5), type.variableLength() ? withLength(body) : body));
+                }
+            }
+        }
+        rows.sort(Comparator.comparing(Row::rootKey, Arrays::compareUnsigned)
+                .thenComparingInt(Row::rootSeq)
+                .thenComparing(Row::path));
+        return rows;
+    }
+
+    /**
+     * 並べた行から木を組む。
+     *
+     * @param rootIndex 根を置く位置。負なら根もキーの順を確かめながら末尾に置く (開くとき)
+     */
+    private static void build(HierarchicalDatabase database, List<Row> rows, int rootIndex) {
+        DatabaseDefinition dbd = database.definition();
+        Segment[] open = new Segment[MAX_LEVELS + 1];
+        int index = rootIndex;
+        for (Row row : rows) {
+            SegmentDefinition type = dbd.segment(row.segment());
+            if (type.level() != row.level() || row.level() > MAX_LEVELS) {
+                throw inconsistent(dbd, "segment " + row.segment() + " is stored at level " + row.level());
+            }
+            try {
+                if (row.level() == 1 && index >= 0) {
+                    open[1] = database.attachRoot(index++, type, row.data());
+                } else {
+                    open[row.level()] = database.restore(row.level() == 1 ? null : open[row.level() - 1], type,
+                            row.data());
+                }
+            } catch (IllegalArgumentException | IllegalStateException e) {
+                throw inconsistent(dbd, e.getMessage());
+            }
+            Arrays.fill(open, row.level() + 1, open.length, null);
         }
     }
 
     /** セグメントと、その子孫を先行順に積む。 */
-    private static void write(PreparedStatement insert, DatabaseDefinition dbd, byte[] rootKey, int rootSequence,
-                              Segment node, String path, String parentPath) throws SQLException {
+    private static void writeSubtree(PreparedStatement insert, DatabaseDefinition dbd, byte[] rootKey,
+                                     int rootSequence, Segment node, String path, String parentPath)
+            throws SQLException {
         SegmentDefinition type = node.definition();
         byte[] data = node.data();
         byte[] body = type.variableLength() ? Arrays.copyOfRange(data, LL, data.length) : data;
@@ -182,7 +344,7 @@ public final class JdbcDatabaseStore implements DatabaseStore {
             }
             for (int i = 0; i < twins.size(); i++) {
                 String childPath = (path.equals("/") ? "" : path) + String.format("/%02d-%06d", t + 1, i);
-                write(insert, dbd, rootKey, rootSequence, twins.get(i), childPath, path);
+                writeSubtree(insert, dbd, rootKey, rootSequence, twins.get(i), childPath, path);
             }
         }
     }
