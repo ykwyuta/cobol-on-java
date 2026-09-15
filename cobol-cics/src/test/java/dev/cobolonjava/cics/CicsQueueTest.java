@@ -142,6 +142,24 @@ class CicsQueueTest {
         assertEquals(CicsResponseCode.QZERO, td(reader, QUEUE_READQ_TD, "RECQ", into, null));
     }
 
+    @Test
+    @DisplayName("TSとTDのSYSIDは構成した自regionの名前なら書かないのと同じに処理し、ほかはSYSIDERR")
+    void queueSysidOfThisRegion() {
+        execution = new CicsExecution(new CicsTaskContext(new CicsTaskId("task_sysid"), TransId.of("TX01"),
+                "queue-test", Instant.EPOCH), 0, CicsEnvironment.unconfigured().withTemporaryStorage(storage)
+                .withTransientData(transientData).withLocalSystems(java.util.Set.of("HOME")));
+        ProgramContext context = ProgramContext.standard().withCodePage(CP).withServices(
+                RuntimeServices.builder().service(CicsExecution.class, execution).build());
+        CicsRuntimeOps.queueCommandCondition(context, QUEUE_WRITEQ_TS, "SCRATCH", null, 8, text("home  "), null, -1,
+                null, -1, null, "HOME", null, 0, true);
+        assertEquals(CicsResponseCode.NORMAL, eib(CicsEib.EIBRESP_OFFSET));
+        CicsRuntimeOps.queueCommandCondition(context, QUEUE_WRITEQ_TD, "CSMT", null, 4, text("away  "), null, -1,
+                null, -1, null, null, CP.encode("AWAY"), 0, true);
+        assertEquals(CicsResponseCode.SYSIDERR, eib(CicsEib.EIBRESP_OFFSET));
+        // 遠隔へは書いていない
+        assertEquals(CicsResponseCode.QZERO, td(context, QUEUE_READQ_TD, "CSMT", text("......"), null));
+    }
+
     private int eib(int offset) {
         return ByteBuffer.wrap(execution.eib(CP).storage().array(), offset, 4).getInt();
     }

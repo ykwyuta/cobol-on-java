@@ -64,6 +64,10 @@ public final class CicsRuntimeOps {
     public static final int FILE_DEBKEY = 1024;
     /** BDAM の DEBREC。 */
     public static final int FILE_DEBREC = 2048;
+    /** START ATTACH (設計 85 §8)。 */
+    public static final int START_ATTACH = 1;
+    /** START NOCHECK。自 region では何も変えない。 */
+    public static final int START_NOCHECK = 2;
     /** 種類の番号の順の命令名。 */
     public static final java.util.List<String> FILE_COMMANDS = java.util.List.of(
             "READ", "WRITE", "REWRITE", "DELETE", "UNLOCK", "STARTBR", "READNEXT", "READPREV", "ENDBR", "RESETBR");
@@ -560,13 +564,25 @@ public final class CicsRuntimeOps {
     public static int queueCommandCondition(ProgramContext context, int kind, String nameLiteral, byte[] nameData,
             int nameLength, DataView data, DataView lengthArea, int lengthLiteral, DataView itemArea, int itemLiteral,
             DataView numItems, int flags, boolean suppressDefaultHandling) {
+        return queueCommandCondition(context, kind, nameLiteral, nameData, nameLength, data, lengthArea, lengthLiteral,
+                itemArea, itemLiteral, numItems, null, null, flags, suppressDefaultHandling);
+    }
+
+    /** SYSID を書ける一時記憶・一時データの命令 (設計 85 §4.1、暫定判断 P-149)。 */
+    public static int queueCommandCondition(ProgramContext context, int kind, String nameLiteral, byte[] nameData,
+            int nameLength, DataView data, DataView lengthArea, int lengthLiteral, DataView itemArea, int itemLiteral,
+            DataView numItems, String sysidLiteral, byte[] sysidData, int flags, boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         String command = QUEUE_COMMANDS.get(kind);
         CicsExecution execution = execution(required);
         CicsEnvironment environment = execution.environment();
         int response;
         int response2 = 0;
-        if (kind == QUEUE_WRITEQ_TS || kind == QUEUE_WRITEQ_TD) {
+        Optional<String> sysid = optionalName(required, sysidLiteral, sysidData);
+        if (sysid.isPresent() && !environment.localSystem(sysid.orElseThrow())) {
+            // SYSIDERR: SYSID が自 region でも定義した遠隔の system でもない (設計 85 §4.1)
+            response = CicsResponseCode.SYSIDERR;
+        } else if (kind == QUEUE_WRITEQ_TS || kind == QUEUE_WRITEQ_TD) {
             int length = lengthArea != null ? halfword(lengthArea) : lengthLiteral >= 0 ? lengthLiteral : data.length();
             if (length > data.length() && length <= CicsTemporaryStoragePort.MAX_ITEM_LENGTH) {
                 throw new CicsTaskStateException(command + " LENGTH " + length + " exceeds the FROM area of "
@@ -775,9 +791,40 @@ public final class CicsRuntimeOps {
             byte[] returnTerminalData, String queueLiteral, byte[] queueData, String terminalLiteral,
             byte[] terminalData, String userLiteral, byte[] userData, boolean protect,
             boolean suppressDefaultHandling) {
+        return startCondition(context, transactionLiteral, transactionData, timing, hhmmss, hours, minutes, seconds,
+                from, lengthArea, lengthLiteral, requestLiteral, requestData, returnTransactionLiteral,
+                returnTransactionData, returnTerminalLiteral, returnTerminalData, queueLiteral, queueData,
+                terminalLiteral, terminalData, userLiteral, userData, null, null, null, null, 0, protect,
+                suppressDefaultHandling);
+    }
+
+    /**
+     * CHANNEL / ATTACH / NOCHECK / SYSID を書ける START (設計 85 §8、暫定判断 P-149)。
+     *
+     * <p>CHANNEL は、出した時点の channel の container の写しを START に持たせ、起こした task の現在の channel にする。
+     * 名前の channel が無ければ CHANNELERR (RESP2 1)。ATTACH は直ちに端末の無い task を起こし、CICS が作った REQID を
+     * EIBREQID に置かない (取り消せない)。NOCHECK は自 region では条件を返すので何も変えない。SYSID は構成した自 region の
+     * 名前なら書かないのと同じで、ほかは SYSIDERR (RESP2 0)。
+     */
+    public static int startCondition(ProgramContext context, String transactionLiteral, byte[] transactionData,
+            int timing, dev.cobolonjava.runtime.decimal.Decimal hhmmss, dev.cobolonjava.runtime.decimal.Decimal hours,
+            dev.cobolonjava.runtime.decimal.Decimal minutes, dev.cobolonjava.runtime.decimal.Decimal seconds,
+            DataView from, DataView lengthArea, int lengthLiteral, String requestLiteral, byte[] requestData,
+            String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
+            byte[] returnTerminalData, String queueLiteral, byte[] queueData, String terminalLiteral,
+            byte[] terminalData, String userLiteral, byte[] userData, String channelLiteral, byte[] channelData,
+            String sysidLiteral, byte[] sysidData, int startFlags, boolean protect,
+            boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
         CicsTaskContext task = execution.task();
+        Optional<String> sysid = optionalName(required, sysidLiteral, sysidData);
+        if (sysid.isPresent() && !execution.environment().localSystem(sysid.orElseThrow())) {
+            // SYSIDERR: SYSID が自 region でも定義した遠隔の system でもない (設計 85 §4.1)
+            return containerOutcome(required, START_FUNCTION, CicsResponseCode.SYSIDERR, 0,
+                    suppressDefaultHandling, "START");
+        }
+        boolean attach = (startFlags & START_ATTACH) != 0;
         String transaction = intervalName(required, transactionLiteral, transactionData);
         TransId transId;
         try {
@@ -822,6 +869,17 @@ public final class CicsRuntimeOps {
             }
             bytes = from.subView(0, length).toByteArray();
         }
+        Optional<String> channelName = optionalName(required, channelLiteral, channelData);
+        Map<String, byte[]> containers = null;
+        if (channelName.isPresent()) {
+            Optional<Map<String, byte[]>> found = execution.channel(channelName.orElseThrow(), false);
+            if (found.isEmpty()) {
+                // CHANNELERR (RESP2 1): 名前の channel が無い (START CHANNEL の頁)
+                return containerOutcome(required, START_FUNCTION, CicsResponseCode.CHANNELERR, 1,
+                        suppressDefaultHandling, "START");
+            }
+            containers = found.orElseThrow();
+        }
         CicsStartPort starts = execution.environment().starts();
         boolean generated = requestLiteral == null && requestData == null;
         String requestId = generated ? starts.newRequestId() : intervalName(required, requestLiteral, requestData);
@@ -857,6 +915,9 @@ public final class CicsRuntimeOps {
                 optionalName(required, returnTransactionLiteral, returnTransactionData),
                 optionalName(required, returnTerminalLiteral, returnTerminalData),
                 optionalName(required, queueLiteral, queueData), task.owner(), startedUser, terminal);
+        if (containers != null) {
+            data = data.withChannel(channelName.orElseThrow(), containers);
+        }
         CicsStartPort.Result result;
         if (protect) {
             if (execution.hasProtectedStart(requestId)) {
@@ -875,8 +936,8 @@ public final class CicsRuntimeOps {
         } else {
             result = starts.start(expiration, data);
         }
-        if (generated && result.response() == CicsResponseCode.NORMAL) {
-            // REQID を書かなければ、CICS が作った名前を EIBREQID に置く (START の頁)
+        if (generated && !attach && result.response() == CicsResponseCode.NORMAL) {
+            // REQID を書かなければ、CICS が作った名前を EIBREQID に置く (START の頁)。ATTACH は null のまま
             execution.eib(required.codePage()).setRequestId(requestId, required.codePage());
         }
         return containerOutcome(required, START_FUNCTION, result.response(), result.response2(),
@@ -1011,13 +1072,35 @@ public final class CicsRuntimeOps {
     /** CANCEL REQID(名前) (暫定判断 P-138)。未満了の START を取り消す。 */
     public static int cancelCondition(ProgramContext context, String requestLiteral, byte[] requestData,
             boolean suppressDefaultHandling) {
+        return cancelCondition(context, requestLiteral, requestData, null, null, null, null, suppressDefaultHandling);
+    }
+
+    /**
+     * REQID を書かない形と TRANSID / SYSID を書ける CANCEL (設計 85 §8、暫定判断 P-149)。
+     *
+     * <p>REQID の無い CANCEL は task 自身の POST を取り消すが、POST を持たないので NOTFND。TRANSID は遠隔の region で
+     * START を探す手がかりであり、自 region では何も変えない。SYSID は構成した自 region の名前でなければ SYSIDERR。
+     */
+    public static int cancelCondition(ProgramContext context, String requestLiteral, byte[] requestData,
+            String transactionLiteral, byte[] transactionData, String sysidLiteral, byte[] sysidData,
+            boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
-        String requestId = intervalName(required, requestLiteral, requestData);
         CicsExecution execution = execution(required);
-        // 同期点を待つ PROTECT の START は、まだ始まっていないので取り消せる
-        CicsStartPort.Result result = execution.cancelProtectedStart(requestId)
-                ? new CicsStartPort.Result(CicsResponseCode.NORMAL, 0)
-                : execution.environment().starts().cancel(requestId);
+        Optional<String> sysid = optionalName(required, sysidLiteral, sysidData);
+        CicsStartPort.Result result;
+        if (sysid.isPresent() && !execution.environment().localSystem(sysid.orElseThrow())) {
+            // SYSIDERR: SYSID が自 region でも定義した遠隔の system でもない (設計 85 §4.1)
+            result = new CicsStartPort.Result(CicsResponseCode.SYSIDERR, 0);
+        } else if (requestLiteral == null && requestData == null) {
+            // NOTFND: 取り消す POST が無い (CANCEL の頁)
+            result = new CicsStartPort.Result(CicsResponseCode.NOTFND, 0);
+        } else {
+            String requestId = intervalName(required, requestLiteral, requestData);
+            // 同期点を待つ PROTECT の START は、まだ始まっていないので取り消せる
+            result = execution.cancelProtectedStart(requestId)
+                    ? new CicsStartPort.Result(CicsResponseCode.NORMAL, 0)
+                    : execution.environment().starts().cancel(requestId);
+        }
         return containerOutcome(required, CANCEL_FUNCTION, result.response(), result.response2(),
                 suppressDefaultHandling, "CANCEL");
     }

@@ -1160,16 +1160,22 @@ public final class ProgramGenerator {
         int suppress = statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0;
         if (statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_CANCEL) {
             Runnable request = planAreaBytes(statement.requestData(), statement.origin());
-            if (request == null) {
+            Runnable cancelled = planAreaBytes(statement.transactionData(), statement.origin());
+            Runnable system = planAreaBytes(statement.sysidData(), statement.origin());
+            if (request == null || cancelled == null || system == null) {
                 return;
             }
             body.add(() -> {
                 run.visitVarInsn(Opcodes.ALOAD, 2);
                 pushNullableString(statement.requestLiteral());
                 request.run();
+                pushNullableString(statement.transactionLiteral());
+                cancelled.run();
+                pushNullableString(statement.sysidLiteral());
+                system.run();
                 run.visitInsn(suppress);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "cancelCondition",
-                        "(" + CONTEXT + name + "Z)I", false);
+                        "(" + CONTEXT + name + name + name + "Z)I", false);
                 emitCicsConditionTransfer();
             });
             return;
@@ -1199,11 +1205,11 @@ public final class ProgramGenerator {
             });
             return;
         }
-        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE、TERMID、USERID の byte 列
+        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE、TERMID、USERID、CHANNEL、SYSID の byte 列
         List<Runnable> names = new ArrayList<>();
         for (DataReference area : java.util.Arrays.asList(statement.transactionData(), statement.requestData(),
                 statement.returnTransactionData(), statement.returnTerminalData(), statement.queueData(),
-                statement.terminalData(), statement.userData())) {
+                statement.terminalData(), statement.userData(), statement.channelData(), statement.sysidData())) {
             Runnable bytes = planAreaBytes(area, statement.origin());
             if (bytes == null) {
                 return;
@@ -1241,18 +1247,25 @@ public final class ProgramGenerator {
             names.get(5).run();
             pushNullableString(statement.userLiteral());
             names.get(6).run();
+            pushNullableString(statement.channelLiteral());
+            names.get(7).run();
+            pushNullableString(statement.sysidLiteral());
+            names.get(8).run();
+            push((statement.attach() ? dev.cobolonjava.cics.CicsRuntimeOps.START_ATTACH : 0)
+                    | (statement.noCheck() ? dev.cobolonjava.cics.CicsRuntimeOps.START_NOCHECK : 0));
             run.visitInsn(statement.protect() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             run.visitInsn(suppress);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "startCondition",
                     "(" + CONTEXT + name + "I" + DECIMAL + DECIMAL + DECIMAL + DECIMAL + view + view + "I"
-                            + name + name + name + name + name + name + "ZZ)I", false);
+                            + name + name + name + name + name + name + name + name + "IZZ)I", false);
             emitCicsConditionTransfer();
         });
     }
 
     private void planCicsQueueCommand(Statement.CicsQueueCommand statement, List<Runnable> body) {
         Runnable name = planAreaBytes(statement.nameData(), statement.origin());
-        if (name == null) {
+        Runnable sysid = planAreaBytes(statement.sysidData(), statement.origin());
+        if (name == null || sysid == null) {
             return;
         }
         // 並びは data、LENGTH、ITEM、NUMITEMS
@@ -1278,11 +1291,14 @@ public final class ProgramGenerator {
             views.get(2).run();
             push(statement.itemLiteral());
             views.get(3).run();
+            pushNullableString(statement.sysidLiteral());
+            sysid.run();
             push(statement.flags());
             run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             String view = "L" + DATA_VIEW + ";";
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "queueCommandCondition",
-                    "(" + CONTEXT + "ILjava/lang/String;[BI" + view + view + "I" + view + "I" + view + "IZ)I", false);
+                    "(" + CONTEXT + "ILjava/lang/String;[BI" + view + view + "I" + view + "I" + view
+                            + "Ljava/lang/String;[BIZ)I", false);
             emitCicsConditionTransfer();
         });
     }

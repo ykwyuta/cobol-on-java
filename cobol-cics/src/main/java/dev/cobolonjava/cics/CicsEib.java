@@ -185,11 +185,11 @@ public final class CicsEib {
             java.util.Map.entry(CicsResponseCode.ENDFILE, java.util.Set.of(0x0600)),
             java.util.Map.entry(CicsResponseCode.ILLOGIC, java.util.Set.of(0x0600)),
             java.util.Map.entry(CicsResponseCode.RECORDBUSY, java.util.Set.of(0x0600)),
-            java.util.Map.entry(CicsResponseCode.SYSIDERR, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.SYSIDERR, java.util.Set.of(0x0600, 0x0800, 0x0A00, 0x1000)),
             java.util.Map.entry(CicsResponseCode.LENGERR, java.util.Set.of(0x0600, 0x0800, 0x0A00, 0x1000, 0x3400)),
             java.util.Map.entry(CicsResponseCode.ENQBUSY, java.util.Set.of(0x1200)),
             java.util.Map.entry(CicsResponseCode.CONTAINERERR, java.util.Set.of(0x3400)),
-            java.util.Map.entry(CicsResponseCode.CHANNELERR, java.util.Set.of(0x3400)));
+            java.util.Map.entry(CicsResponseCode.CHANNELERR, java.util.Set.of(0x1000, 0x3400)));
 
     /** 完了したcommandのfunction codeと、現在分類できる応答表現を一括反映する。 */
     public void completeCommand(int functionCode, int responseCode, int responseCode2) {

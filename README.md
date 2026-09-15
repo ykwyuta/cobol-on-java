@@ -213,11 +213,12 @@ BNK1CCS は 5 byte の域に `LENGTH(248)` を書いている。はみ出す byt
 file control の ESDS (RBA / XRBA)、`TOKEN`、`NOSUSPEND`、`CONSISTENT` / `REPEATABLE`、`MASSINSERT`、BDAM (RRDS に写す)、
 構成した自 region の `SYSID` も、設計 85 の暫定の仕様で変換する (P-147。RBA の数は実機と一致しない)。
 TD の区画外のキューは順編成のデータセットに置き、回復可能なキューは STRICT の task の業務の UOW に入れる (P-148)。
+START の `CHANNEL` / `ATTACH` / `NOCHECK` / `SYSID`、REQID の無い `CANCEL`、TS / TD の `SYSID` / `NOSUSPEND` も暫定の仕様で変換する (P-149)。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
 バイト列</b>を出すことも見る。要件 13 章が P1 の受け入れ基準に置いている形である。
-テスト 2260 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
+テスト 2263 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
 `cobol-db2-jdbc` の 2 件はスキップされる。
 うち 6 件はコーパスを取ってきていなければスキップされる。
 Hercules 上での実行と突き合わせる**検証レベル V2** の検査は、期待値を採れない環境では流れない。

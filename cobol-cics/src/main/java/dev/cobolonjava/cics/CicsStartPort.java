@@ -107,7 +107,7 @@ public interface CicsStartPort {
                 return CicsTerminalTasks.run(coordinator.get(), data.transaction(), data.owner(), data.userId(),
                         data.terminalId().orElseThrow(), Optional.of(data), "start");
             }
-            coordinator.get().launch(new CicsTaskRequest(data.transaction().value(), data.owner(), CicsPayload.empty(),
+            coordinator.get().launch(new CicsTaskRequest(data.transaction().value(), data.owner(), data.payload(),
                     Optional.empty(), new IdempotencyKey("start-" + UUID.randomUUID()), Optional.empty(),
                     Optional.empty(), data.userId(), Optional.of(data)));
             return CicsTerminalTasks.Outcome.none();

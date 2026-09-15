@@ -165,6 +165,8 @@ public sealed interface Statement {
             DataReference itemArea,
             int itemLiteral,
             DataReference numItems,
+            String sysidLiteral,
+            DataReference sysidData,
             int flags,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {
@@ -202,6 +204,12 @@ public sealed interface Statement {
             DataReference userData,
             boolean protect,
             boolean waitForData,
+            String channelLiteral,
+            DataReference channelData,
+            String sysidLiteral,
+            DataReference sysidData,
+            boolean attach,
+            boolean noCheck,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {
     }

@@ -56,20 +56,21 @@ final class CicsBlockParser {
     /** 間隔制御の命令ごとに、RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> INTERVAL_OPTIONS = List.of(
             Set.of("TRANSID", "INTERVAL", "TIME", "AFTER", "AT", "HOURS", "MINUTES", "SECONDS", "FROM", "LENGTH",
-                    "REQID", "RTRANSID", "RTERMID", "QUEUE", "PROTECT", "TERMID", "USERID"),
+                    "REQID", "RTRANSID", "RTERMID", "QUEUE", "PROTECT", "TERMID", "USERID", "CHANNEL", "ATTACH",
+                    "NOCHECK", "SYSID"),
             Set.of("INTO", "LENGTH", "RTRANSID", "RTERMID", "QUEUE", "WAIT"),
-            Set.of("REQID"));
+            Set.of("REQID", "TRANSID", "SYSID"));
     /** 一時記憶・一時データの命令。TS / TD を省いた形は受けない。 */
     private static final Pattern QUEUE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(WRITEQ|READQ|DELETEQ)\\s+(TS|TD)\\b(.*?)END-EXEC\\s*$");
     /** キューの命令ごとに、RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> QUEUE_OPTIONS = List.of(
-            Set.of("QUEUE", "QNAME", "FROM", "LENGTH", "ITEM", "REWRITE", "MAIN", "AUXILIARY"),
-            Set.of("QUEUE", "QNAME", "INTO", "LENGTH", "ITEM", "NEXT", "NUMITEMS"),
-            Set.of("QUEUE", "QNAME"),
-            Set.of("QUEUE", "FROM", "LENGTH"),
-            Set.of("QUEUE", "INTO", "LENGTH"),
-            Set.of("QUEUE"));
+            Set.of("QUEUE", "QNAME", "FROM", "LENGTH", "ITEM", "REWRITE", "MAIN", "AUXILIARY", "NOSUSPEND", "SYSID"),
+            Set.of("QUEUE", "QNAME", "INTO", "LENGTH", "ITEM", "NEXT", "NUMITEMS", "SYSID"),
+            Set.of("QUEUE", "QNAME", "SYSID"),
+            Set.of("QUEUE", "FROM", "LENGTH", "SYSID"),
+            Set.of("QUEUE", "INTO", "LENGTH", "NOSUSPEND", "SYSID"),
+            Set.of("QUEUE", "SYSID"));
     /** file control の命令ごとに、FILE / RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> FILE_OPTIONS = List.of(
             Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "RRN", "UPDATE", "UNCOMMITTED",
@@ -833,8 +834,9 @@ final class CicsBlockParser {
     /**
      * 一時記憶・一時データの命令を読む (暫定判断 P-137)。
      *
-     * <p>SYSID (遠隔・共有のキュー)、NOSUSPEND、SET、WRITEQ TS の NUMITEMS は断る。READQ TS は ITEM か NEXT の
-     * どちらかを求める。どちらも書かない形の既定を頁が示さないからである。
+     * <p>SYSID は構成した自 region の名前なら自 region で処理し、ほかは SYSIDERR にする。NOSUSPEND は置き場が満ちるのを
+     * 待つ場面が無いので何も変えない (設計 85 §4、暫定判断 P-149)。SET、WRITEQ TS の NUMITEMS は断る。READQ TS は ITEM か
+     * NEXT のどちらかを求める。どちらも書かない形の既定を頁が示さないからである。
      */
     private static Parsed parseQueueCommand(String command, String source) {
         int kind = dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_COMMANDS.indexOf(command);
@@ -901,6 +903,9 @@ final class CicsBlockParser {
         String[] item = fileNumber(options.get("ITEM"), command + " ITEM");
         int flags = fileFlag(options, "REWRITE", dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_REWRITE)
                 | fileFlag(options, "NEXT", dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_NEXT);
+        // NOSUSPEND は置き場が満ちるのを待たない指定であり、待つ場面が無いので何も変えない (設計 85 §4.2)
+        fileFlag(options, "NOSUSPEND", 0);
+        String[] sysid = sysidOption(options, command);
         // MAIN / AUXILIARY は置き場の指定であり、1 つの JVM の中のキューでは違いが無い
         fileFlag(options, "MAIN", 0);
         fileFlag(options, "AUXILIARY", 0);
@@ -935,16 +940,16 @@ final class CicsBlockParser {
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
                 null, null, null, null, null, null, null,
                 new QueueCommandSpec(kind, nameLiteral, name[2], nameLength, data, lengthName, lengthLiteral,
-                        item[0], item[1] == null ? -1 : Integer.parseInt(item[1]), numItems, flags));
+                        item[0], item[1] == null ? -1 : Integer.parseInt(item[1]), numItems, sysid[0], sysid[1], flags));
     }
 
     /**
      * START / RETRIEVE / CANCEL を読む (暫定判断 P-138)。
      *
      * <p>START の TERMID は端末へ出す task として、RETRIEVE の WAIT はその task が次の START を待つ形として受ける
-     * (設計 83 §5)。START の USERID は代理の権限を確かめて受ける (設計 84)。USERID と TERMID の併記、SYSID、NOCHECK、
-     * CHANNEL、ATTACH、RETRIEVE の SET、REQID の無い CANCEL (POST の取消し) と CANCEL の TRANSID / SYSID は、
-     * 遠隔・同期点の設計を持たないか振る舞いを確かめていないので名前をつけて断る。
+     * (設計 83 §5)。START の USERID は代理の権限を確かめて受ける (設計 84)。START の CHANNEL / ATTACH / NOCHECK / SYSID と、
+     * REQID の無い CANCEL、CANCEL の TRANSID / SYSID は設計 85 §8 の暫定の仕様で受ける (暫定判断 P-149)。
+     * USERID と TERMID の併記と RETRIEVE の SET は断る。
      */
     private static Parsed parseIntervalCommand(String command, String source) {
         int kind = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.indexOf(command);
@@ -986,8 +991,32 @@ final class CicsBlockParser {
         String[] user = new String[2];
         boolean protect = false;
         boolean wait = false;
+        String[] channel = new String[2];
+        String[] sysid = new String[2];
+        boolean attach = false;
+        boolean noCheck = false;
         if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_START) {
             protect = fileFlag(options, "PROTECT", 1) != 0;
+            attach = fileFlag(options, "ATTACH", 1) != 0;
+            noCheck = fileFlag(options, "NOCHECK", 1) != 0;
+            if (attach) {
+                // START ATTACH の頁の option は TRANSID、FROM、LENGTH だけである
+                for (String name : options.keySet()) {
+                    if (!Set.of("ATTACH", "TRANSID", "FROM", "LENGTH", "RESP", "RESP2", "NOHANDLE").contains(name)) {
+                        throw new IllegalArgumentException("START ATTACH takes only TRANSID, FROM and LENGTH: " + name);
+                    }
+                }
+            }
+            if (options.containsKey("CHANNEL")) {
+                // START CHANNEL の頁の option。間隔、REQID、FROM、RTRANSID / RTERMID / QUEUE は書けない
+                for (String name : options.keySet()) {
+                    if (!Set.of("CHANNEL", "TRANSID", "TERMID", "USERID", "SYSID", "NOCHECK", "PROTECT", "RESP",
+                            "RESP2", "NOHANDLE").contains(name)) {
+                        throw new IllegalArgumentException("START CHANNEL does not take " + name);
+                    }
+                }
+                channel = quotedOrName(options.get("CHANNEL"), "START CHANNEL", 16);
+            }
             if (!options.containsKey("TRANSID")) {
                 throw new IllegalArgumentException("START requires TRANSID");
             }
@@ -1059,10 +1088,12 @@ final class CicsBlockParser {
                 throw new IllegalArgumentException("RETRIEVE requires INTO, RTRANSID, RTERMID or QUEUE");
             }
         } else {
-            if (!options.containsKey("REQID")) {
-                throw new IllegalArgumentException("CANCEL requires REQID; cancelling a POST is not supported");
-            }
+            // REQID の無い CANCEL は task 自身の POST を取り消す。POST を持たないので実行時に NOTFND になる
             request = quotedOrName(options.get("REQID"), "CANCEL REQID", 8);
+            transaction = quotedOrName(options.get("TRANSID"), "CANCEL TRANSID", 4);
+        }
+        if (kind != dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
+            sysid = sysidOption(options, command);
         }
         String[] noHandle = options.get("NOHANDLE");
         if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
@@ -1080,7 +1111,7 @@ final class CicsBlockParser {
                 new IntervalSpec(kind, transaction[0], transaction[1], timing, hhmmss, hours, minutes, seconds, data,
                         lengthName, lengthLiteral, request[0], request[1], returnTransaction[0], returnTransaction[1],
                         returnTerminal[0], returnTerminal[1], queue[0], queue[1], terminal[0], terminal[1], user[0],
-                        user[1], protect, wait));
+                        user[1], protect, wait, channel[0], channel[1], sysid[0], sysid[1], attach, noCheck));
     }
 
     /**
@@ -1204,6 +1235,25 @@ final class CicsBlockParser {
             throw new IllegalArgumentException(name + " does not take a value");
         }
         return flag;
+    }
+
+    /** SYSID('名前') か SYSID(データ名)。{定数, データ名} の形で返し、書かれていなければどちらも null。 */
+    private static String[] sysidOption(java.util.Map<String, String[]> options, String label) {
+        String[] value = options.get("SYSID");
+        if (value == null) {
+            return new String[2];
+        }
+        if (value[0] != null) {
+            String literal = value[0].stripTrailing();
+            if (!literal.matches("[A-Z@#$][A-Z0-9@#$]{0,3}")) {
+                throw new IllegalArgumentException(label + " SYSID must be 1 to 4 characters: " + value[0]);
+            }
+            return new String[] {literal, null};
+        }
+        if (value[2] == null) {
+            throw new IllegalArgumentException(label + " SYSID requires SYSID('name') or SYSID(data-name)");
+        }
+        return new String[] {null, value[2]};
     }
 
     /** データ名か整数定数の option。{データ名, 定数} の形で返し、書かれていなければどちらも null。 */
@@ -1837,7 +1887,9 @@ final class CicsBlockParser {
                         String requestLiteral, String requestData, String returnTransactionLiteral,
                         String returnTransactionData, String returnTerminalLiteral, String returnTerminalData,
                         String queueLiteral, String queueData, String terminalLiteral, String terminalData,
-                        String userLiteral, String userData, boolean protect, boolean waitForData) {
+                        String userLiteral, String userData, boolean protect, boolean waitForData,
+                        String channelLiteral, String channelData, String sysidLiteral, String sysidData,
+                        boolean attach, boolean noCheck) {
     }
 
     /**
@@ -1846,7 +1898,7 @@ final class CicsBlockParser {
      */
     record QueueCommandSpec(int kind, String nameLiteral, String nameData, int nameLength, String data,
                             String length, int lengthLiteral, String item, int itemLiteral, String numItems,
-                            int flags) {
+                            String sysidLiteral, String sysidData, int flags) {
     }
 
     /** INQUIRE / SET TERMINAL の、データ名を解決する前の形。端末は定数かデータ名のどちらか。 */

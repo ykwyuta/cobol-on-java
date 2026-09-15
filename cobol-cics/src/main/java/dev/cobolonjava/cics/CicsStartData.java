@@ -2,6 +2,7 @@ package dev.cobolonjava.cics;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -26,6 +27,10 @@ public final class CicsStartData {
     private final Optional<String> terminalId;
     /** RETRIEVE WAIT が受け取った START を足すので、task の中だけで伸びる。 */
     private final java.util.concurrent.CopyOnWriteArrayList<CicsStartData> following;
+    /** START CHANNEL の channel の名前。CHANNEL を書かない START なら null。 */
+    private final String channelName;
+    /** START を出した時点の channel の container の写し (設計 85 §8)。 */
+    private final Map<String, byte[]> containers;
     private boolean retrieved;
 
     /**
@@ -53,12 +58,20 @@ public final class CicsStartData {
                          Optional<String> returnTerminal, Optional<String> queue, String owner,
                          Optional<String> userId, Optional<String> terminalId) {
         this(requestId, transaction, data, returnTransaction, returnTerminal, queue, owner, userId, terminalId,
-                List.of());
+                List.of(), null, Map.of());
     }
 
     private CicsStartData(String requestId, TransId transaction, byte[] data, Optional<String> returnTransaction,
                           Optional<String> returnTerminal, Optional<String> queue, String owner,
-                          Optional<String> userId, Optional<String> terminalId, List<CicsStartData> following) {
+                          Optional<String> userId, Optional<String> terminalId, List<CicsStartData> following,
+                          String channelName, Map<String, byte[]> containers) {
+        if (channelName != null && (channelName.isEmpty() || channelName.length() > 16)) {
+            throw new IllegalArgumentException("START CHANNEL must be 1 to 16 characters: " + channelName);
+        }
+        this.channelName = channelName;
+        Map<String, byte[]> copied = new java.util.LinkedHashMap<>();
+        Objects.requireNonNull(containers, "containers").forEach((key, value) -> copied.put(key, value.clone()));
+        this.containers = copied;
         this.requestId = Objects.requireNonNull(requestId, "requestId");
         if (requestId.isEmpty() || requestId.length() > 8 || requestId.chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("START REQID must be 1 to 8 characters: " + requestId);
@@ -88,7 +101,64 @@ public final class CicsStartData {
     public CicsStartData withFollowing(List<CicsStartData> later) {
         requireSameTarget(later);
         return new CicsStartData(requestId, transaction, data, returnTransaction, returnTerminal, queue, owner,
-                userId, terminalId, later);
+                userId, terminalId, later, channelName, containers);
+    }
+
+    /** START CHANNEL。channel の container の写しを持たせる (設計 85 §8、暫定判断 P-149)。 */
+    public CicsStartData withChannel(String name, Map<String, byte[]> channel) {
+        return new CicsStartData(requestId, transaction, data, returnTransaction, returnTerminal, queue, owner,
+                userId, terminalId, List.copyOf(following), Objects.requireNonNull(name, "name"), channel);
+    }
+
+    /** START CHANNEL の channel の名前。CHANNEL を書かない START なら空。 */
+    public Optional<String> channelName() {
+        return Optional.ofNullable(channelName);
+    }
+
+    /** START CHANNEL の container の写し。 */
+    public Map<String, byte[]> containers() {
+        Map<String, byte[]> copy = new java.util.LinkedHashMap<>();
+        containers.forEach((key, value) -> copy.put(key, value.clone()));
+        return copy;
+    }
+
+    /** 起こす task の入力。START CHANNEL なら channel を現在の channel にし、ほかは空 (COMMAREA も channel も無い)。 */
+    public CicsPayload payload() {
+        return channelName == null ? CicsPayload.empty() : new CicsPayload(new byte[0], containers, channelName);
+    }
+
+    /** container を置き場の列に置く byte 列にする。数、名前 (UTF-8)、長さ、中身の順。 */
+    public byte[] encodedContainers() {
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (java.io.DataOutputStream out = new java.io.DataOutputStream(bytes)) {
+            out.writeInt(containers.size());
+            for (Map.Entry<String, byte[]> entry : containers.entrySet()) {
+                out.writeUTF(entry.getKey());
+                out.writeInt(entry.getValue().length);
+                out.write(entry.getValue());
+            }
+        } catch (java.io.IOException impossible) {
+            throw new java.io.UncheckedIOException(impossible);
+        }
+        return bytes.toByteArray();
+    }
+
+    /** {@link #encodedContainers()} の逆。 */
+    public static Map<String, byte[]> decodeContainers(byte[] encoded) {
+        Map<String, byte[]> decoded = new java.util.LinkedHashMap<>();
+        try (java.io.DataInputStream in = new java.io.DataInputStream(
+                new java.io.ByteArrayInputStream(Objects.requireNonNull(encoded, "encoded")))) {
+            int count = in.readInt();
+            for (int i = 0; i < count; i++) {
+                String name = in.readUTF();
+                byte[] value = new byte[in.readInt()];
+                in.readFully(value);
+                decoded.put(name, value);
+            }
+        } catch (java.io.IOException broken) {
+            throw new IllegalArgumentException("START channel data is broken", broken);
+        }
+        return decoded;
     }
 
     /** RETRIEVE WAIT が受け取った、あとに満了した START を後ろに足す。 */

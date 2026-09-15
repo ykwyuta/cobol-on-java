@@ -4384,6 +4384,36 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-149 START の CHANNEL / ATTACH / NOCHECK / SYSID、REQID の無い CANCEL、TS / TD の SYSID と NOSUSPEND を暫定の仕様で変換する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が「暫定仮仕様を定義し、断らずに変換する」ことを求め、SYSID は「構成した名前だけ自 region」と答えた |
+| 場所 | 設計 85 §4・§8。`CicsBlockParser.parseIntervalCommand` / `parseQueueCommand`、`CicsRuntimeOps.startCondition` / `cancelCondition` / `queueCommandCondition`、`CicsStartData.withChannel` / `payload`、`JdbcCicsStarts` の `CHANNEL_NAME` / `CHANNEL_DATA` 列 |
+| 関連要件 | P-138、P-141、P-144、P-147 |
+
+**暫定の扱い**:
+
+- START CHANNEL は、命令の時点の channel の container の写しを START に持たせ、起こした task の現在の channel (名前つき) にする。
+  名前の channel が無ければ CHANNELERR (RESP2 1)。間隔・REQID・FROM・RTRANSID / RTERMID / QUEUE との併記は翻訳で断る
+  (START CHANNEL の頁の option の一覧による)。JDBC の置き場は写しを `COBOL_START` の列に持つ
+- START ATTACH は直ちに端末の無い task を起こし、CICS が作った REQID を EIBREQID に置かない。取り消す手段は無い。
+  FROM は番地ではなく写しで渡す。option は TRANSID / FROM / LENGTH だけを受ける
+- START NOCHECK は自 region では条件を返すので何も変えない
+- REQID の無い CANCEL は task 自身の POST を取り消す形だが、POST を持たないので NOTFND。CANCEL の TRANSID は自 region では
+  何も変えない
+- START / CANCEL / WRITEQ・READQ・DELETEQ TS・TD の SYSID は、`CicsEnvironment.withLocalSystems` の名前なら書かないのと同じに
+  処理し、ほかは SYSIDERR (RESP2 0)。TS / TD の NOSUSPEND は置き場が満ちるのを待つ場面が無いので何も変えない
+
+**どこがずれうるか**: 実機の START ATTACH は FROM のデータを番地で渡すので、起こした task が変えれば出した task から見える。
+ここは写しなので見えない。ATTACH の task が RETRIEVE で FROM を読めるかは確かめていない (START と同じに読める)。
+START CHANNEL の起こした task の channel の名前、RETRIEVE の条件 (ENVDEFERR にした) は推定である。SYSIDERR の RESP2 は
+遠隔の region を持たないので 0 にした。`COBOL_START` に列を足したので、既に表を作った database は列を足す必要がある。
+TERMID を書いた START CHANNEL は、端末の task の入力の channel になるが、生成 COBOL の実行では試験していない。
+
+**解消条件**: 実機で START ATTACH の FROM の渡し方と RETRIEVE、START CHANNEL の task の ASSIGN CHANNEL を採る。POST を実装するときに
+REQID の無い CANCEL を POST の取消しにする。遠隔の region を持つときに SYSID の function ship を設計する。
+
 ## P-148 区画外の TD のキューは順編成のデータセットに置き、回復可能なキューは task の業務の UOW に入れる
 
 | 項目 | 内容 |

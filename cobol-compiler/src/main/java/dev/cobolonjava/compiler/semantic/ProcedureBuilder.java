@@ -2036,11 +2036,12 @@ public final class ProcedureBuilder {
         int kind = spec.kind();
         String label = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.get(kind);
         boolean retrieve = kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE;
-        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE、TERMID、USERID
+        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE、TERMID、USERID、CHANNEL、SYSID
         String[] names = {spec.transactionData(), spec.requestData(), spec.returnTransactionData(),
-            spec.returnTerminalData(), spec.queueData(), spec.terminalData(), spec.userData()};
-        int[] lengths = {4, 8, 4, 4, 8, 4, 8};
-        String[] options = {"TRANSID", "REQID", "RTRANSID", "RTERMID", "QUEUE", "TERMID", "USERID"};
+            spec.returnTerminalData(), spec.queueData(), spec.terminalData(), spec.userData(), spec.channelData(),
+            spec.sysidData()};
+        int[] lengths = {4, 8, 4, 4, 8, 4, 8, 16, 4};
+        String[] options = {"TRANSID", "REQID", "RTRANSID", "RTERMID", "QUEUE", "TERMID", "USERID", "CHANNEL", "SYSID"};
         DataReference[] areas = new DataReference[names.length];
         for (int i = 0; i < names.length; i++) {
             if (names[i] == null) {
@@ -2105,7 +2106,8 @@ public final class ProcedureBuilder {
                 spec.timing(), times[0], times[1], times[2], times[3], data, length, spec.lengthLiteral(),
                 spec.requestLiteral(), areas[1], spec.returnTransactionLiteral(), areas[2],
                 spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4], spec.terminalLiteral(),
-                areas[5], spec.userLiteral(), areas[6], spec.protect(), spec.waitForData(),
+                areas[5], spec.userLiteral(), areas[6], spec.protect(), spec.waitForData(), spec.channelLiteral(),
+                areas[7], spec.sysidLiteral(), areas[8], spec.attach(), spec.noCheck(),
                 parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
     }
 
@@ -2126,6 +2128,17 @@ public final class ProcedureBuilder {
                     || nameData.constantLength().getAsInt() != spec.nameLength()) {
                 throw new IllegalArgumentException(label + " queue name data area must be a " + spec.nameLength()
                         + "-byte alphanumeric item");
+            }
+        }
+        DataReference sysidData = null;
+        if (spec.sysidData() != null) {
+            sysidData = resolver.resolveName(spec.sysidData(), origin);
+            if (sysidData == null) {
+                return null;
+            }
+            if (DataCategory.of(sysidData) != DataCategory.ALPHANUMERIC || sysidData.constantLength().isEmpty()
+                    || sysidData.constantLength().getAsInt() != 4) {
+                throw new IllegalArgumentException(label + " SYSID data area must be a 4-byte alphanumeric item");
             }
         }
         DataReference data = null;
@@ -2158,8 +2171,8 @@ public final class ProcedureBuilder {
                     + " exceeds the FROM data area of " + data.constantLength().getAsInt() + " bytes");
         }
         return withCicsResponse(new Statement.CicsQueueCommand(kind, spec.nameLiteral(), nameData, spec.nameLength(),
-                data, numbers[0], spec.lengthLiteral(), numbers[1], spec.itemLiteral(), numbers[2], spec.flags(),
-                parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+                data, numbers[0], spec.lengthLiteral(), numbers[1], spec.itemLiteral(), numbers[2], spec.sysidLiteral(),
+                sysidData, spec.flags(), parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
     }
 
     /** file control の域を解決する (暫定判断 P-131、P-136)。 */

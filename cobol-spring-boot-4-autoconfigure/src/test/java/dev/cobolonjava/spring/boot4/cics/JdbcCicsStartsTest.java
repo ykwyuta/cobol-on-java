@@ -120,6 +120,19 @@ class JdbcCicsStartsTest {
                 Optional.empty(), owner, Optional.empty(), Optional.of(terminal));
     }
 
+    @Test
+    @DisplayName("START CHANNELのchannelの写しは行に置き、別のJVMが起こすtaskの入力のchannelになる")
+    void keepsChannelCopyAcrossJvms() {
+        CicsStartData channel = start("REQ00031", null)
+                .withChannel("ORDERS", java.util.Map.of("ITEM", new byte[] {7, 8}));
+        assertEquals(CicsResponseCode.NORMAL, first.start(NOW, channel).response());
+        assertEquals(1, second.dispatchDue());
+        CicsStartData data = launched.peek();
+        assertEquals(Optional.of("ORDERS"), data.channelName());
+        assertEquals(Optional.of("ORDERS"), data.payload().channelName());
+        assertArrayEquals(new byte[] {7, 8}, data.payload().containers().get("ITEM"));
+    }
+
     private int pending() {
         return jdbc.queryForObject("SELECT COUNT(*) FROM COBOL_START", Integer.class);
     }

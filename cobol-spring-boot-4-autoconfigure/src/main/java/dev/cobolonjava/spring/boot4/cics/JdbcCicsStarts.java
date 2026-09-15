@@ -63,7 +63,7 @@ public final class JdbcCicsStarts implements CicsStartPort, SmartLifecycle {
     static final int BATCH = 64;
     private static final long REQUEST_ID_LIMIT = 2_176_782_336L;
     private static final String COLUMNS = "REQUEST_ID, START_TOKEN, TRANSID, START_DATA, RTRANSID, RTERMID,"
-            + " QUEUE_NAME, OWNER_NAME, USER_ID, TERMINAL_ID";
+            + " QUEUE_NAME, OWNER_NAME, USER_ID, TERMINAL_ID, CHANNEL_NAME, CHANNEL_DATA";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate separate;
@@ -140,12 +140,13 @@ public final class JdbcCicsStarts implements CicsStartPort, SmartLifecycle {
         }
         try {
             separate.executeWithoutResult(status -> jdbc.update("INSERT INTO COBOL_START (REQUEST_ID, START_TOKEN, TRANSID,"
-                            + " TERMINAL_ID, EXPIRES_AT, START_DATA, RTRANSID, RTERMID, QUEUE_NAME, OWNER_NAME, USER_ID)"
-                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            + " TERMINAL_ID, EXPIRES_AT, START_DATA, RTRANSID, RTERMID, QUEUE_NAME, OWNER_NAME, USER_ID,"
+                            + " CHANNEL_NAME, CHANNEL_DATA) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     data.requestId(), UUID.randomUUID().toString(), data.transaction().value(),
                     data.terminalId().orElse(null), expiration.toEpochMilli(), data.data().orElse(null),
                     data.returnTransaction().orElse(null), data.returnTerminal().orElse(null),
-                    data.queue().orElse(null), data.owner(), data.userId().orElse(null)));
+                    data.queue().orElse(null), data.owner(), data.userId().orElse(null),
+                    data.channelName().orElse(null), data.channelName().isPresent() ? data.encodedContainers() : null));
             return NORMAL;
         } catch (DuplicateKeyException raced) {
             // 確かめてから登録するまでに、別の JVM が同じ REQID を登録した
@@ -204,10 +205,14 @@ public final class JdbcCicsStarts implements CicsStartPort, SmartLifecycle {
 
     private static Due due(java.sql.ResultSet row) throws java.sql.SQLException {
         String terminal = row.getString(10);
-        return new Due(row.getString(2), new CicsStartData(row.getString(1), TransId.of(row.getString(3).strip()),
+        CicsStartData data = new CicsStartData(row.getString(1), TransId.of(row.getString(3).strip()),
                 row.getBytes(4), Optional.ofNullable(row.getString(5)), Optional.ofNullable(row.getString(6)),
                 Optional.ofNullable(row.getString(7)), row.getString(8), Optional.ofNullable(row.getString(9)),
-                Optional.ofNullable(terminal).map(String::strip)));
+                Optional.ofNullable(terminal).map(String::strip));
+        // START CHANNEL は channel の写しを行に持つ (設計 85 §8、P-149)
+        String channel = row.getString(11);
+        return new Due(row.getString(2), channel == null ? data
+                : data.withChannel(channel.strip(), CicsStartData.decodeContainers(row.getBytes(12))));
     }
 
     /** 行を消せた JVM だけが起こす。START_TOKEN で、見てから消すまでに同じ REQID で登録し直された行を消さない。 */

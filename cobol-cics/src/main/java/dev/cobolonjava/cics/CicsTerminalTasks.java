@@ -57,7 +57,8 @@ public final class CicsTerminalTasks {
                               String keyPrefix) {
         Objects.requireNonNull(coordinator, "coordinator");
         Objects.requireNonNull(terminalId, "terminalId");
-        CicsTaskReply reply = coordinator.launch(new CicsTaskRequest(transaction.value(), owner, CicsPayload.empty(),
+        CicsTaskReply reply = coordinator.launch(new CicsTaskRequest(transaction.value(), owner,
+                start.map(CicsStartData::payload).orElse(CicsPayload.empty()),
                 Optional.empty(), key(keyPrefix), Optional.empty(), Optional.of(terminalId), userId, start));
         Optional<CicsTerminalScreen> screen = reply.screen();
         for (int step = 0; reply.immediateNext(); step++) {

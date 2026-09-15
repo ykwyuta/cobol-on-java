@@ -342,8 +342,10 @@ class CicsGenerationTest {
         assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') FROM(WS-GRP) REWRITE END-EXEC", "REWRITE requires ITEM");
         assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') QNAME('Q') FROM(WS-GRP) END-EXEC",
                 "QUEUE and QNAME are mutually exclusive");
-        assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') FROM(WS-GRP) SYSID('S1') END-EXEC",
-                "unsupported WRITEQ TS option: SYSID");
+        assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') FROM(WS-GRP) SYSID('TOOLONG') END-EXEC",
+                "SYSID must be 1 to 4 characters");
+        assertRejected("EXEC CICS DELETEQ TD QUEUE('Q') NOSUSPEND END-EXEC",
+                "unsupported DELETEQ TD option: NOSUSPEND");
         assertRejected("EXEC CICS READQ TD QUEUE('TOOLONG') INTO(WS-GRP) END-EXEC", "name must be 1 to 4");
         assertRejected("EXEC CICS WRITEQ TS QUEUE(WS-ABCODE) FROM(WS-GRP) END-EXEC",
                 "queue name data area must be a 8-byte alphanumeric item");
@@ -383,7 +385,12 @@ class CicsGenerationTest {
                 CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
                 .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("ASYNCPGM"),
                                 Duration.ofSeconds(5), 16, 0, 0, 0, true),
-                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (action, ignored) -> { });
+                        // FETCH は task の期限まで子を待つ。task() の開始時刻は固定の過去なので期限が既に過ぎ、
+                        // 子が先に終わったときだけ通っていた。今から始まる task で待たせる
+                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        new dev.cobolonjava.cics.CicsTaskContext(new dev.cobolonjava.cics.CicsTaskId("task_000000000004"),
+                                TransId.of("TX01"), "compiler-test", Instant.now()),
+                        (action, ignored) -> { });
 
         assertEquals("RFGN", CodePages.DEFAULT.decode(result.payload().commarea()));
         assertRejected("EXEC CICS RUN TRANSID('TX03') CHILD(WS-CHILD) USERID('U1') END-EXEC",
@@ -651,7 +658,12 @@ class CicsGenerationTest {
                 (action, ignored) -> { });
         assertEquals("REIT", CodePages.DEFAULT.decode(retrieved.payload().commarea()));
 
-        assertRejected("EXEC CICS START TRANSID('TX02') NOCHECK END-EXEC", "unsupported START option: NOCHECK");
+        assertRejected("EXEC CICS START TRANSID('TX02') CHANNEL('CH1') FROM(WS-GRP) END-EXEC",
+                "START CHANNEL does not take FROM");
+        assertRejected("EXEC CICS START ATTACH TRANSID('TX02') REQID('R1') END-EXEC",
+                "START ATTACH takes only TRANSID, FROM and LENGTH: REQID");
+        assertRejected("EXEC CICS START TRANSID('TX02') CHANNEL(WS-PGM) END-EXEC",
+                "CHANNEL data area must be a 16-byte alphanumeric item");
         assertRejected("EXEC CICS START TRANSID('TX02') USERID('U1') TERMID('T001') END-EXEC",
                 "START USERID with TERMID is not supported");
         assertRejected("EXEC CICS START TRANSID('TX02') TERMID(WS-PGM) END-EXEC",
@@ -659,7 +671,7 @@ class CicsGenerationTest {
         assertRejected("EXEC CICS START INTERVAL(0) END-EXEC", "START requires TRANSID");
         assertRejected("EXEC CICS START TRANSID('TX02') INTERVAL(0) TIME(0) END-EXEC", "mutually exclusive");
         assertRejected("EXEC CICS START TRANSID('TX02') HOURS(1) END-EXEC", "require AFTER or AT");
-        assertRejected("EXEC CICS CANCEL END-EXEC", "CANCEL requires REQID");
+        assertRejected("EXEC CICS CANCEL SYSID('TOOLONG') END-EXEC", "SYSID must be 1 to 4 characters");
         assertRejected("EXEC CICS RETRIEVE SET(WS-GRP) END-EXEC", "unsupported RETRIEVE option: SET");
         assertRejected("EXEC CICS RETRIEVE INTO(WS-GRP) WAIT('X') END-EXEC", "WAIT");
         assertRejected("EXEC CICS RETRIEVE RTRANSID(WS-PGM) END-EXEC",

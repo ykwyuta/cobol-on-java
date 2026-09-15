@@ -358,6 +358,53 @@ class CicsStartTest {
                 null, null, null, null, -1, "R8", null));
     }
 
+    /** CHANNEL / SYSID / ATTACH を書ける START。 */
+    private int startWith(ProgramContext context, DataView from, String channel, String sysid, int flags) {
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null, from, null,
+                -1, null, null, null, null, null, null, null, null, null, null, null, null, channel, null, sysid, null,
+                flags, false, true);
+        return resp();
+    }
+
+    @Test
+    @DisplayName("ATTACHはEIBREQIDを置かず直ちに起こし、CHANNELはchannelの写しを起こすtaskの入力にし、無いchannelはCHANNELERR 1、自regionでないSYSIDはSYSIDERR、REQIDの無いCANCELはNOTFND")
+    void startsWithChannelAttachAndSysid() throws InterruptedException {
+        BlockingQueue<CicsStartData> launched = new LinkedBlockingQueue<>();
+        CicsStartPort port = CicsStartPort.inMemory(Clock.systemUTC(), id -> id.value().equals("TX02"), launched::add);
+        CicsEnvironment environment = CicsEnvironment.unconfigured().withStarts(port)
+                .withLocalSystems(java.util.Set.of("HOME"));
+
+        ProgramContext attacher = context(task("task_attach"), environment);
+        assertEquals(CicsResponseCode.NORMAL, startWith(attacher, text("attached"), null, null,
+                CicsRuntimeOps.START_ATTACH));
+        CicsStartData attached = launched.poll(5, TimeUnit.SECONDS);
+        assertNotNull(attached);
+        assertEquals("attached", CP.decode(attached.data().orElseThrow()));
+        byte[] eib = execution.eib(CP).storage().array();
+        assertTrue(java.util.Arrays.equals(new byte[CicsEib.EIBREQID_LENGTH], java.util.Arrays.copyOfRange(eib,
+                CicsEib.EIBREQID_OFFSET, CicsEib.EIBREQID_OFFSET + CicsEib.EIBREQID_LENGTH)));
+
+        ProgramContext issuer = context(task("task_channel"), environment);
+        execution.putChannel("ORDERS", java.util.Map.of("ITEM", CP.encode("apple")));
+        assertEquals(CicsResponseCode.NORMAL, startWith(issuer, null, "ORDERS", "HOME", 0));
+        CicsStartData started = launched.poll(5, TimeUnit.SECONDS);
+        assertNotNull(started);
+        assertTrue(started.data().isEmpty());
+        CicsPayload payload = started.payload();
+        assertEquals(Optional.of("ORDERS"), payload.channelName());
+        assertEquals("apple", CP.decode(payload.containers().get("ITEM")));
+
+        assertEquals(CicsResponseCode.CHANNELERR, startWith(issuer, null, "NOCHAN", null, 0));
+        assertEquals(1, resp2());
+        assertEquals(CicsResponseCode.SYSIDERR, startWith(issuer, text("remote"), null, "AWAY", 0));
+        assertEquals(null, launched.poll(200, TimeUnit.MILLISECONDS));
+
+        CicsRuntimeOps.cancelCondition(issuer, null, null, null, null, null, null, true);
+        assertEquals(CicsResponseCode.NOTFND, resp());
+        CicsRuntimeOps.cancelCondition(issuer, "REQ9", null, "TX02", null, "AWAY", null, true);
+        assertEquals(CicsResponseCode.SYSIDERR, resp());
+    }
+
     @Test
     @DisplayName("PROTECTのSTARTは命令の時点で条件を返し、同期点で登録し、ROLLBACKで取り消す")
     void protectedStartsWaitForSyncpoint() throws InterruptedException {
