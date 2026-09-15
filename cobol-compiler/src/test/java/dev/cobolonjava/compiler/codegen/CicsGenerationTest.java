@@ -417,6 +417,33 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("COMMAREAの項目より長いLENGTHは項目の番地からLENGTHのbyteを渡し、項目の値を先頭に置く")
+    void passesCommareaLongerThanTheItem() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "LONGPGM", List.of(
+                "MOVE 'ABCD' TO WS-ABCODE",
+                "EXEC CICS RETURN TRANSID('TX01') COMMAREA(WS-ABCODE) LENGTH(12) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("LONGPGM", program).build();
+
+        TaskCompletion completion = new CobolCicsTaskProgram(CobolRuntime.builder(catalog).classLoader(loader).build(),
+                2, dev.cobolonjava.cics.CicsEnvironment.unconfigured())
+                .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("LONGPGM"),
+                                Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (action, ignored) -> { });
+
+        byte[] commarea = completion.payload().commarea();
+        assertEquals(12, commarea.length);
+        assertEquals("ABCD", CodePages.DEFAULT.decode(java.util.Arrays.copyOf(commarea, 4)));
+
+        // 記憶域の端を越える分は binary zero を詰める
+        dev.cobolonjava.runtime.storage.Storage storage = dev.cobolonjava.runtime.storage.Storage.copyOf(
+                CodePages.DEFAULT.encode("WXYZ"));
+        byte[] padded = dev.cobolonjava.cics.CicsRuntimeOps.longCommarea(storage, 2, 2, 5).toByteArray();
+        assertEquals("YZ", CodePages.DEFAULT.decode(java.util.Arrays.copyOf(padded, 2)));
+        assertEquals(0, padded[2] | padded[3] | padded[4]);
+    }
+
+    @Test
     @DisplayName("生成COBOLのSTART USERIDは代理の権限を確かめてそのuser IDで起こし、権限が無ければDFHRESP(NOTAUTH)")
     void startsTasksWithUserIds() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -821,15 +848,14 @@ class CicsGenerationTest {
     }
 
     @Test
-    @DisplayName("COMMAREAのLENGTHがデータ項目を越える場合は翻訳を拒否する")
-    void rejectsCommareaLengthBeyondDataItem() {
-        CobolCompiler.Result result = compileResult("BADLEN", List.of(
+    @DisplayName("COMMAREAのLENGTHがデータ項目を越えても、暫定の仕様で翻訳する (暫定判断 P-146)")
+    void translatesCommareaLengthBeyondDataItem() {
+        CobolCompiler.Result result = compileResult("LONGLEN", List.of(
                 "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) LENGTH(5) END-EXEC"));
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
-                        diagnostic.message().contains("LENGTH exceeds COMMAREA")),
-                result.diagnostics().toString());
+        assertTrue(result.succeeded(), result.diagnostics().toString());
+        assertFalse(result.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("LENGTH exceeds COMMAREA")));
     }
 
     @Test

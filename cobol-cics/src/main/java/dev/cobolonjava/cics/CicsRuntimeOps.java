@@ -873,6 +873,27 @@ public final class CicsRuntimeOps {
         return containerOutcome(required, RETRIEVE_FUNCTION, response, 0, suppressDefaultHandling, "RETRIEVE");
     }
 
+    /**
+     * COMMAREA の項目より長い LENGTH (暫定判断 P-146)。
+     *
+     * <p>ホストの LINK / XCTL / RETURN は項目の番地から LENGTH の byte を渡す。項目の記憶域に続きの byte があれば、
+     * その記憶域の上の view を返す (続く項目の値も渡り、LINK で呼ばれた program が書けば続く項目も変わる。ホストと同じ)。
+     * 記憶域の端を越えるなら、残りを binary zero で詰めた写しを返す。写しに LINK が書き戻した値は元の項目に戻らない。
+     *
+     * @param itemLength COMMAREA に書いた項目の長さ
+     * @param length     LENGTH の値
+     */
+    public static DataView longCommarea(dev.cobolonjava.runtime.storage.Storage storage, int offset, int itemLength,
+                                        int length) {
+        Objects.requireNonNull(storage, "storage");
+        if (length <= itemLength || offset + length <= storage.size()) {
+            return storage.view(offset, length);
+        }
+        dev.cobolonjava.runtime.storage.Storage padded = dev.cobolonjava.runtime.storage.Storage.allocate(length);
+        System.arraycopy(storage.array(), offset, padded.array(), 0, storage.size() - offset);
+        return padded.whole();
+    }
+
     /** RETRIEVE WAIT が次の START を探す間隔。 */
     private static final long RETRIEVE_WAIT_POLL_MILLIS = 200;
 

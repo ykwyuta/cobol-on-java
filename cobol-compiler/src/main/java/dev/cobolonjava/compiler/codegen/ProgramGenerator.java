@@ -1565,16 +1565,23 @@ public final class ProgramGenerator {
             report(statement.origin(), "EXEC CICS COMMAREA must have a compile-time length");
             return null;
         }
-        if (statement.length() > available.getAsInt()) {
-            report(statement.origin(), "EXEC CICS LENGTH exceeds COMMAREA: length="
-                    + statement.length() + ", available=" + available.getAsInt());
-            return null;
-        }
         // LENGTHを省いたときはtranslatorと同じくデータ項目の長さを使う
         int length = statement.length() < 0 ? available.getAsInt() : statement.length();
         Runnable address = planAddress(statement.commarea(), statement.origin());
         if (address == null) {
             return null;
+        }
+        if (length > available.getAsInt()) {
+            // LENGTH が項目より長い (暫定判断 P-146)。ホストは項目の番地から LENGTH の byte を渡すので、
+            // 同じ記憶域に続く byte を含めて渡し、記憶域の端を越える分は binary zero を詰める
+            int itemLength = available.getAsInt();
+            return () -> {
+                address.run();
+                push(itemLength);
+                push(length);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "longCommarea",
+                        "(L" + STORAGE + ";III)L" + DATA_VIEW + ";", false);
+            };
         }
         return () -> {
             address.run();

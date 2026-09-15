@@ -42,6 +42,29 @@ public final class Db2SystemCopyBookResolver implements CopyBookResolver {
             "               10  SQLWARNA PIC X.",
             "               10  SQLSTATE PIC X(5).") + "\n";
 
+    /**
+     * SQLDA (暫定判断 P-146)。
+     *
+     * <p>欄の名前と型は Db2 の公開文書にある SQLDA の説明 (SQLDAID 8 byte、SQLDABC 4 byte、SQLN / SQLD 2 byte、SQLVAR の
+     * SQLTYPE / SQLLEN 2 byte、SQLDATA / SQLIND の番地、SQLNAME の長さと 30 文字) による。番地は P-123 の 4 byte の POINTER。
+     * {@code OCCURS DEPENDING ON} をまだ持たないので、SQLVAR は Db2 for z/OS の上限の 750 個を固定で置く。
+     * 動的 SQL (PREPARE / DESCRIBE / USING DESCRIPTOR) はまだ無いので、置いた記述子を SQL が読み書きすることは無い。
+     */
+    private static final String SQLDA = String.join("\n",
+            "       01  SQLDA.",
+            "           05  SQLDAID     PIC X(8).",
+            "           05  SQLDABC     PIC S9(9) COMP-5.",
+            "           05  SQLN        PIC S9(4) COMP-5.",
+            "           05  SQLD        PIC S9(4) COMP-5.",
+            "           05  SQLVAR      OCCURS 750 TIMES.",
+            "               10  SQLTYPE PIC S9(4) COMP-5.",
+            "               10  SQLLEN  PIC S9(4) COMP-5.",
+            "               10  SQLDATA POINTER.",
+            "               10  SQLIND  POINTER.",
+            "               10  SQLNAME.",
+            "                   49  SQLNAMEL PIC S9(4) COMP-5.",
+            "                   49  SQLNAMEC PIC X(30).") + "\n";
+
     @Override
     public Optional<CopyBook> resolve(String textName, String libraryName) {
         if (libraryName != null) {
@@ -49,10 +72,7 @@ public final class Db2SystemCopyBookResolver implements CopyBookResolver {
         }
         return switch (textName.toUpperCase(Locale.ROOT)) {
             case "SQLCA" -> Optional.of(new CopyBook("SQLCA (Db2 system include)", SQLCA));
-            // SQLDA は動的 SQL の記述子であり POINTER 項目を持つ。POINTER も動的 SQL もまだ無いので
-            // 形だけ置くと、使える記述子があるように見える
-            case "SQLDA" -> throw new SourceFormatException(
-                    "INCLUDE SQLDA is not supported yet: SQLDA holds POINTER items for dynamic SQL");
+            case "SQLDA" -> Optional.of(new CopyBook("SQLDA (Db2 system include)", SQLDA));
             default -> Optional.empty();
         };
     }

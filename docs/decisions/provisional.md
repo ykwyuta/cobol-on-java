@@ -4384,6 +4384,31 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-146 COMMAREA の項目より長い LENGTH と INCLUDE SQLDA を、暫定の仕様で断らずに変換する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が「暫定仮仕様を定義し、断らずに変換する」ことを求めた (P-120、P-123 の断りを狭める) |
+| 場所 | `ProgramGenerator.planCicsCommarea`、`CicsRuntimeOps.longCommarea`、`Db2SystemCopyBookResolver` |
+| 関連要件 | FR-101、FR-151、Bank-of-Z の BNK1TFN / BNK1CCS / XFRFUN |
+
+**暫定の扱い**:
+
+- LINK / XCTL / RETURN の `COMMAREA(項目) LENGTH(n)` で n が項目より長ければ、項目の番地から n byte を渡す。
+  項目の記憶域に続きの byte があればその上の view を渡し (続く項目の値も渡る。LINK で呼ばれた program が書けば続く項目も
+  変わる)、記憶域の端を越える分は binary zero を詰めた写しを渡す。写しに書き戻された値は元の項目に戻らない
+- `EXEC SQL INCLUDE SQLDA` は、Db2 の公開文書にある欄 (SQLDAID、SQLDABC、SQLN、SQLD、SQLVAR の SQLTYPE / SQLLEN /
+  SQLDATA / SQLIND / SQLNAME) を置く。番地は P-123 の 4 byte の POINTER、SQLVAR は OCCURS DEPENDING ON がまだ無いので
+  750 個を固定で置く
+
+**どこがずれうるか**: ホストで項目より長い LENGTH が渡す byte は、翻訳系が並べた記憶域の配置で決まる。この処理系の記憶域の
+並びがホストと違えば、続く byte の値は違う。記憶域の端を越える場合、ホストは隣の記憶域の byte を渡す (あるいは保護例外になる)
+が、ここは binary zero である。SQLDA の SQLVAR の数 (SQLN の最大) と、64 bit の番地を持つ形は確かめていない。動的 SQL
+(PREPARE / DESCRIBE / EXECUTE USING DESCRIPTOR) は無いので、SQLDA は宣言として置くだけである。
+
+**解消条件**: 実機で、項目より長い LENGTH の COMMAREA が次の task へ渡す byte を採る。動的 SQL を入れるときに SQLDA を
+OCCURS DEPENDING ON と番地の実体に合わせる。
+
 ## P-145 デモ環境の簡易認証は、設定の利用者の一覧で principal を CICS の user ID にし、attach と START USERID の代理だけを確かめる
 
 | 項目 | 内容 |

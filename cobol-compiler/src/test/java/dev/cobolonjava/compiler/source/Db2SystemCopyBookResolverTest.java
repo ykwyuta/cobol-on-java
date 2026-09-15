@@ -45,14 +45,18 @@ class Db2SystemCopyBookResolverTest {
     }
 
     @Test
-    @DisplayName("INCLUDE SQLDA は POINTER を持つ記述子なので、名前をつけて断る")
-    void rejectsSqlda() {
+    @DisplayName("INCLUDE SQLDA は暫定の形 (SQLVAR 750 個、番地は 4 byte の POINTER) で置き、欄を参照できる")
+    void includesSqlda() {
         CobolCompiler.Result result = CobolCompiler.with(new Db2SystemCopyBookResolver())
-                .compile("SQLCAPGM.cbl", program("EXEC SQL INCLUDE SQLDA END-EXEC.", "GOBACK."));
+                .compile("SQLCAPGM.cbl", program("EXEC SQL INCLUDE SQLDA END-EXEC.",
+                        "MOVE 'SQLDA' TO SQLDAID",
+                        "MOVE 750 TO SQLN",
+                        "MOVE SQLTYPE(1) TO WS-CODE",
+                        "MOVE SQLNAMEC(750) TO SQLDAID",
+                        "SET SQLDATA(1) TO NULL",
+                        "GOBACK."));
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().stream().anyMatch(d -> d.message().contains("INCLUDE SQLDA")
-                        && d.toString().contains("SQLCAPGM.cbl:5")),
-                result.diagnostics().toString());
+        assertTrue(result.succeeded(), result.diagnostics().toString());
+        assertFalse(result.diagnostics().stream().anyMatch(d -> d.message().contains("INCLUDE SQLDA")));
     }
 }
