@@ -4,6 +4,7 @@ import dev.cobolonjava.cics.CicsResponseCode;
 import dev.cobolonjava.cics.CicsStartData;
 import dev.cobolonjava.cics.CicsStartPort;
 import dev.cobolonjava.cics.CicsTaskStateException;
+import dev.cobolonjava.cics.CicsTerminalTasks;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort.Terminal;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalConversation;
@@ -70,7 +71,7 @@ public final class JdbcCicsStarts implements CicsStartPort, SmartLifecycle {
     private final Predicate<TransId> defined;
     private final CicsTerminalRegistryPort terminals;
     private final Duration terminalLease;
-    private final Function<CicsStartData, Optional<ConversationEnvelope>> launcher;
+    private final Function<CicsStartData, CicsTerminalTasks.Outcome> launcher;
     private final Duration pollInterval;
     private final Executor tasks;
     private final ExecutorService ownedTasks;
@@ -86,14 +87,14 @@ public final class JdbcCicsStarts implements CicsStartPort, SmartLifecycle {
      */
     public JdbcCicsStarts(DataSource dataSource, PlatformTransactionManager transactionManager, Clock clock,
                           Predicate<TransId> defined, CicsTerminalRegistryPort terminals, Duration terminalLease,
-                          Function<CicsStartData, Optional<ConversationEnvelope>> launcher, Duration pollInterval) {
+                          Function<CicsStartData, CicsTerminalTasks.Outcome> launcher, Duration pollInterval) {
         this(dataSource, transactionManager, clock, defined, terminals, terminalLease, launcher, pollInterval, null);
     }
 
     /** 試験は task を起こす executor を替え、起こした順を決める。 */
     JdbcCicsStarts(DataSource dataSource, PlatformTransactionManager transactionManager, Clock clock,
                    Predicate<TransId> defined, CicsTerminalRegistryPort terminals, Duration terminalLease,
-                   Function<CicsStartData, Optional<ConversationEnvelope>> launcher, Duration pollInterval,
+                   Function<CicsStartData, CicsTerminalTasks.Outcome> launcher, Duration pollInterval,
                    Executor tasks) {
         this.jdbc = new JdbcTemplate(Objects.requireNonNull(dataSource, "dataSource"));
         this.separate = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
@@ -289,7 +290,10 @@ public final class JdbcCicsStarts implements CicsStartPort, SmartLifecycle {
 
     private void runOnTerminal(CicsStartData start, TerminalLease lease) {
         try {
-            Optional<TerminalConversation> next = launcher.apply(start)
+            CicsTerminalTasks.Outcome outcome = launcher.apply(start);
+            // task が送った画面を端末の現在の画面にして版を進める。ブラウザはこの版の変化で書き換わった画面を知る
+            outcome.screen().ifPresent(screen -> terminals.setScreen(lease, screen, clock.instant()));
+            Optional<TerminalConversation> next = outcome.next()
                     .map(envelope -> new TerminalConversation(envelope.id(), envelope.version(),
                             envelope.nextTransaction()));
             if (!terminals.setConversation(lease, next, clock.instant())) {

@@ -87,6 +87,7 @@ base の `cobol-spring-boot-4-autoconfigure` の `CicsTaskAutoConfiguration` が
 | 端末 | HTTP session ごとに `W` + base36 3 文字の端末名を乱数で選んで登録し、重なれば選び直す。期限は HTTP session の失効の時間。`CicsBrowserTerminalNames` で利用者に固定の端末名を与えられ、別の利用者が使っている間は 409 (設計 83 §4.1)。user ID は principal 名が 8 文字の CICS の形に収まるときだけ |
 | IMMEDIATE | 端末入力なしで次の task を続け、8 回を越えれば失敗させる |
 | 二重送信 | 画面ごとに冪等キーと会話の ID・版を hidden で載せる。同じ画面の再送は task を動かさず覚えた結果を返し、同じキーで違う値は 409 (P-142) |
+| 端末へ出す task の画面 | START TERMID / ATI の task の画面は端末の現在の画面になり版が進む。画面は版を持ち、SSE (`/cics/terminal/events`) で進んだことを受けて `/cics/terminal` を読み直す。SSE が無ければ古い版の送信は task を動かさず現在の画面を返す (設計 83 §7) |
 | 失敗 | 応答へ入力の内容や例外の文面を出さない。ABEND だけは code を示す |
 
 設計 77 §3.1 は MVC の入口を `cobol-spring-boot-4-autoconfigure` に置く。ブラウザの入口は画面の描画と切り離せず、

@@ -4,14 +4,19 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * ブラウザ等の端末の登録 (設計 83 §4、暫定判断 P-144)。
+ * ブラウザ等の端末の登録 (設計 83 §4・§7、暫定判断 P-144)。
  *
  * <p>端末が「定義されているか」「task が動いているか」「疑似会話の途中か」を、HTTP session を持つ JVM の外からも
  * 見られるようにする。端末で task を動かす要求は、先に端末を {@link #lease} し、終わったら {@link #release} する。
  * そのため 1 つの端末で task は同時に 1 つになる。疑似会話の参照は lease を持つ要求だけが {@link #setConversation} で書き換える。
+ *
+ * <p>端末へ出す task (START TERMID、ATI) が送った画面は、端末の現在の画面として {@link #setScreen} で置き、画面の版を進める。
+ * ブラウザの要求で動いた task の画面はその要求の応答で届くので、版を進めない。ブラウザは版の変化で、利用者の操作なしに
+ * 書き換わった画面を知る。
  *
  * <p>端末の名前は {@code W} と 36 進 3 桁 (4 文字、EIBTRMID の長さ) で、乱数で選んで重なれば選び直す。
  * 同時に持てる端末は 46656 までである。
@@ -36,16 +41,25 @@ public interface CicsTerminalRegistryPort {
     /**
      * 登録された端末。
      *
-     * @param leased task が動いている (lease の期限が過ぎていない)
+     * @param leased        task が動いている (lease の期限が過ぎていない)
+     * @param screenVersion 端末へ出す task が画面を置いた回数。置いていなければ 0
      */
     record Terminal(String id, String owner, Instant expiresAt, Optional<TerminalConversation> conversation,
-                    boolean leased) {
+                    boolean leased, long screenVersion) {
 
         public Terminal {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(owner, "owner");
             Objects.requireNonNull(expiresAt, "expiresAt");
             Objects.requireNonNull(conversation, "conversation");
+        }
+    }
+
+    /** 端末へ出す task が置いた、端末の現在の画面と版。 */
+    record TerminalScreen(long version, CicsTerminalScreen screen) {
+
+        public TerminalScreen {
+            Objects.requireNonNull(screen, "screen");
         }
     }
 
@@ -75,15 +89,6 @@ public interface CicsTerminalRegistryPort {
      */
     boolean registerNamed(String terminalId, String owner, Instant expiresAt, Instant now);
 
-    /** 端末の名前の形 (1〜4 文字)。 */
-    static String requireTerminalId(String terminalId) {
-        Objects.requireNonNull(terminalId, "terminalId");
-        if (!terminalId.matches("[A-Z0-9@#$]{1,4}")) {
-            throw new IllegalArgumentException("terminal ID must be 1 to 4 characters: " + terminalId);
-        }
-        return terminalId;
-    }
-
     /** 登録されていて期限の過ぎていない端末。 */
     Optional<Terminal> find(String terminalId, Instant now);
 
@@ -95,6 +100,16 @@ public interface CicsTerminalRegistryPort {
 
     /** lease を持つ要求が端末の疑似会話を書き換える。lease が合わないか期限切れなら false で、何も変えない。 */
     boolean setConversation(TerminalLease lease, Optional<TerminalConversation> conversation, Instant now);
+
+    /**
+     * lease を持つ端末へ出す task が、端末の現在の画面を置き、画面の版を 1 つ進める。
+     *
+     * @return 進めたあとの版。lease が合わないか期限切れなら空で、何も変えない
+     */
+    OptionalLong setScreen(TerminalLease lease, CicsTerminalScreen screen, Instant now);
+
+    /** 端末の現在の画面。端末が無いか、端末へ出す task が画面を置いていなければ空。 */
+    Optional<TerminalScreen> screen(String terminalId, Instant now);
 
     /** lease を返す。合わなければ false。 */
     boolean release(TerminalLease lease, Instant now);
@@ -117,6 +132,15 @@ public interface CicsTerminalRegistryPort {
         String digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         int number = ThreadLocalRandom.current().nextInt(36 * 36 * 36);
         return "W" + digits.charAt(number / 1296) + digits.charAt(number / 36 % 36) + digits.charAt(number % 36);
+    }
+
+    /** 端末の名前の形 (1〜4 文字)。 */
+    static String requireTerminalId(String terminalId) {
+        Objects.requireNonNull(terminalId, "terminalId");
+        if (!terminalId.matches("[A-Z0-9@#$]{1,4}")) {
+            throw new IllegalArgumentException("terminal ID must be 1 to 4 characters: " + terminalId);
+        }
+        return terminalId;
     }
 
     /** lease の期限。ミリ秒に揃える。 */

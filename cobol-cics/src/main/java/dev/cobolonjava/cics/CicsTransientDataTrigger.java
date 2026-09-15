@@ -33,7 +33,7 @@ public record CicsTransientDataTrigger(String queue, TransId transaction, String
      * RETURN IMMEDIATE を続ける ({@link CicsTerminalTasks#run})。task が ABEND すれば例外が返り、trigger は次の QZERO まで
      * 次の task を起こさない。
      */
-    public static Function<CicsTransientDataTrigger, Optional<ConversationEnvelope>> launching(
+    public static Function<CicsTransientDataTrigger, CicsTerminalTasks.Outcome> launching(
             Supplier<CicsTaskCoordinator> coordinator) {
         return trigger -> {
             if (trigger.terminalId().isPresent()) {
@@ -43,7 +43,7 @@ public record CicsTransientDataTrigger(String queue, TransId transaction, String
             coordinator.get().launch(new CicsTaskRequest(trigger.transaction().value(), trigger.owner(),
                     CicsPayload.empty(), Optional.empty(), new IdempotencyKey("ati-" + UUID.randomUUID()),
                     Optional.empty(), Optional.empty(), trigger.userId()));
-            return Optional.empty();
+            return CicsTerminalTasks.Outcome.none();
         };
     }
 }

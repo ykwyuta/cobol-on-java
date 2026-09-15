@@ -11,6 +11,8 @@ import dev.cobolonjava.cics.CicsResponseCode;
 import dev.cobolonjava.cics.CicsStartData;
 import dev.cobolonjava.cics.CicsTaskStateException;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort;
+import dev.cobolonjava.cics.CicsTerminalScreen;
+import dev.cobolonjava.cics.CicsTerminalTasks;
 import dev.cobolonjava.cics.ConversationEnvelope;
 import dev.cobolonjava.cics.ConversationId;
 import dev.cobolonjava.cics.IdempotencyKey;
@@ -52,7 +54,7 @@ class JdbcCicsStartsTest {
     private final AtomicReference<Instant> time = new AtomicReference<>(NOW);
     private final ConcurrentLinkedQueue<CicsStartData> launched = new ConcurrentLinkedQueue<>();
     /** 起きた task が返す端末の次の疑似会話。 */
-    private Function<CicsStartData, Optional<ConversationEnvelope>> replies = data -> Optional.empty();
+    private Function<CicsStartData, CicsTerminalTasks.Outcome> replies = data -> CicsTerminalTasks.Outcome.none();
     private JdbcTemplate jdbc;
     private JdbcTerminalRegistry terminals;
     /** 同じ DataSource に向けた 2 つの START の置き場。2 つの JVM に見立てる。 */
@@ -216,10 +218,11 @@ class JdbcCicsStartsTest {
 
         // TX02 の task は RETURN TRANSID で端末を疑似会話に入れる
         replies = data -> data.transaction().value().equals("TX02")
-                ? Optional.of(new ConversationEnvelope(new ConversationId("conversation_start02"), 0, "alice",
-                        TransId.of("TX03"), CicsPayload.empty(), NOW.plusSeconds(600),
-                        new IdempotencyKey("start-conversation-1"), Optional.empty()))
-                : Optional.empty();
+                ? new CicsTerminalTasks.Outcome(Optional.of(new ConversationEnvelope(
+                        new ConversationId("conversation_start02"), 0, "alice", TransId.of("TX03"), CicsPayload.empty(),
+                        NOW.plusSeconds(600), new IdempotencyKey("start-conversation-1"), Optional.empty())),
+                        Optional.of(new CicsTerminalScreen.TextScreen("STARTED", true, false)))
+                : CicsTerminalTasks.Outcome.none();
         assertEquals(2, first.dispatchDue());
         assertEquals(0, pending());
 
@@ -231,6 +234,10 @@ class JdbcCicsStartsTest {
         CicsTerminalRegistryPort.Terminal after = terminals.find(alice, time.get()).orElseThrow();
         assertFalse(after.leased());
         assertEquals("TX03", after.conversation().orElseThrow().nextTransaction().value());
+        // 端末へ出す task の画面は端末の現在の画面になり、版が進む。画面を送らなかった TX01 は版を進めない
+        assertEquals(1, after.screenVersion());
+        assertEquals("STARTED", ((CicsTerminalScreen.TextScreen) terminals.screen(alice, time.get()).orElseThrow()
+                .screen()).text());
     }
 
     @Test

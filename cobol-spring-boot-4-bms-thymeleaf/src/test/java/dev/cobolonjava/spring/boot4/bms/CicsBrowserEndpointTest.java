@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -185,6 +186,41 @@ class CicsBrowserEndpointTest {
                 .andExpect(status().isConflict()).andReturn();
         assertThat(other.getResponse().getContentAsString()).contains("in use");
         assertThat(RUNS.get()).isEqualTo(before);
+    }
+
+    @Test
+    @DisplayName("端末へ出すtaskが画面を書き換えると、古い版の画面からの送信はtaskを動かさず現在の画面を返し、SSEは新しい版を知らせる")
+    void deliversScreensOfTerminalTasks() throws Exception {
+        MvcResult started = mvc.perform(post("/cics/SCR1").with(user("alice")).with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+        MockHttpSession session = (MockHttpSession) started.getRequest().getSession();
+        String version = hidden(started, "screenVersion");
+        assertThat(version).isEqualTo("0");
+
+        // START TERMID や ATI の task が端末へ画面を送った状況を作る
+        CicsTerminalRegistryPort.TerminalLease lease = terminals.lease(terminalOf(session), "alice",
+                Duration.ofSeconds(30), Instant.now()).orElseThrow();
+        terminals.setScreen(lease, new CicsTerminalScreen.TextScreen("URGENT MESSAGE", true, false), Instant.now());
+        terminals.setConversation(lease, Optional.empty(), Instant.now());
+        terminals.release(lease, Instant.now());
+
+        int before = RUNS.get();
+        MvcResult stale = mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
+                        .param("screenVersion", version).param("aid", "ENTER").param("bms.CUSTNO.1", "042"))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(stale.getResponse().getContentAsString()).contains("URGENT MESSAGE").doesNotContain("RECEIVED");
+        assertThat(RUNS.get()).isEqualTo(before);
+
+        MvcResult events = mvc.perform(get("/cics/terminal/events").param("version", version).session(session)
+                .with(user("alice"))).andReturn();
+        if (events.getRequest().isAsyncStarted()) {
+            mvc.perform(asyncDispatch(events));
+        }
+        assertThat(events.getResponse().getContentAsString()).contains("event:screen", "data:1");
+
+        MvcResult current = mvc.perform(get("/cics/terminal").session(session).with(user("alice")))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(current.getResponse().getContentAsString()).contains("URGENT MESSAGE");
     }
 
     private static String terminalOf(MockHttpSession session) {

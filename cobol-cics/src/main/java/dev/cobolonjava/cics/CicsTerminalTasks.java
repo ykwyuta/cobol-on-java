@@ -21,6 +21,25 @@ public final class CicsTerminalTasks {
     private CicsTerminalTasks() {
     }
 
+    /**
+     * 端末で起こした task の結果。
+     *
+     * @param next   IMMEDIATE の連鎖を終えたあとの端末の次の疑似会話
+     * @param screen 連鎖の中で最後に端末へ送った画面
+     */
+    public record Outcome(Optional<ConversationEnvelope> next, Optional<CicsTerminalScreen> screen) {
+
+        public Outcome {
+            Objects.requireNonNull(next, "next");
+            Objects.requireNonNull(screen, "screen");
+        }
+
+        /** 端末を持たない task の結果。 */
+        public static Outcome none() {
+            return new Outcome(Optional.empty(), Optional.empty());
+        }
+    }
+
     /** CICS の user ID の形 (8 文字まで) に収まる principal 名だけを user ID にする。推測で切り詰めない。 */
     public static Optional<String> userIdOf(String principal) {
         String upper = Objects.requireNonNull(principal, "principal").toUpperCase(Locale.ROOT);
@@ -28,18 +47,19 @@ public final class CicsTerminalTasks {
     }
 
     /**
-     * 端末で task を起こし、IMMEDIATE の連鎖を終えたあとの端末の次の疑似会話を返す。
+     * 端末で task を起こし、IMMEDIATE の連鎖を終えたあとの端末の次の疑似会話と、最後に送った画面を返す。
      *
      * @param start     START で起こす task なら RETRIEVE が読むデータ
      * @param keyPrefix 冪等キーの接頭。task ごとに新しいキーを作る
      */
-    public static Optional<ConversationEnvelope> run(CicsTaskCoordinator coordinator, TransId transaction,
-                                                     String owner, Optional<String> userId, String terminalId,
-                                                     Optional<CicsStartData> start, String keyPrefix) {
+    public static Outcome run(CicsTaskCoordinator coordinator, TransId transaction, String owner,
+                              Optional<String> userId, String terminalId, Optional<CicsStartData> start,
+                              String keyPrefix) {
         Objects.requireNonNull(coordinator, "coordinator");
         Objects.requireNonNull(terminalId, "terminalId");
         CicsTaskReply reply = coordinator.launch(new CicsTaskRequest(transaction.value(), owner, CicsPayload.empty(),
                 Optional.empty(), key(keyPrefix), Optional.empty(), Optional.of(terminalId), userId, start));
+        Optional<CicsTerminalScreen> screen = reply.screen();
         for (int step = 0; reply.immediateNext(); step++) {
             if (step >= MAX_IMMEDIATE) {
                 throw new IllegalStateException("RETURN IMMEDIATE chain exceeded " + MAX_IMMEDIATE + " tasks");
@@ -48,8 +68,11 @@ public final class CicsTerminalTasks {
             reply = coordinator.launch(new CicsTaskRequest(next.nextTransaction().value(), owner, next.payload(),
                     Optional.of(new ConversationReference(next.id(), next.version())), key(keyPrefix),
                     Optional.empty(), Optional.of(terminalId), userId));
+            if (reply.screen().isPresent()) {
+                screen = reply.screen();
+            }
         }
-        return reply.nextConversation();
+        return new Outcome(reply.nextConversation(), screen);
     }
 
     private static IdempotencyKey key(String prefix) {

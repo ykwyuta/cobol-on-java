@@ -80,6 +80,23 @@ class InMemoryCicsTerminalRegistryTest {
     }
 
     @Test
+    @DisplayName("端末へ出すtaskはleaseを持つときだけ画面を置いて版を進め、現在の画面を読める")
+    void storesTerminalScreens() {
+        String id = registry.register("alice", NOW.plusSeconds(600), NOW);
+        assertEquals(0, registry.find(id, NOW).orElseThrow().screenVersion());
+        assertTrue(registry.screen(id, NOW).isEmpty());
+        CicsTerminalRegistryPort.TerminalLease lease = registry.lease(id, "alice", LEASE, NOW).orElseThrow();
+        assertEquals(java.util.OptionalLong.of(1),
+                registry.setScreen(lease, new CicsTerminalScreen.TextScreen("HELLO", true, false), NOW));
+        registry.release(lease, NOW);
+        assertTrue(registry.setScreen(lease, new CicsTerminalScreen.TextScreen("STALE", true, false), NOW).isEmpty());
+        CicsTerminalRegistryPort.TerminalScreen current = registry.screen(id, NOW).orElseThrow();
+        assertEquals(1, current.version());
+        assertEquals("HELLO", ((CicsTerminalScreen.TextScreen) current.screen()).text());
+        assertEquals(1, registry.find(id, NOW).orElseThrow().screenVersion());
+    }
+
+    @Test
     @DisplayName("task が動いている端末は消さず、期限の過ぎた端末の名前は登録し直せる")
     void removesOnlyIdleTerminals() {
         String id = registry.register("alice", NOW.plusSeconds(60), NOW);

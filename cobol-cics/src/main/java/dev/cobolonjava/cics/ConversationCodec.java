@@ -73,6 +73,15 @@ public final class ConversationCodec {
         });
     }
 
+    /** 端末の現在の画面 (設計 83 §7)。 */
+    public static byte[] encodeScreen(CicsTerminalScreen screen) {
+        return write(out -> terminalScreen(out, screen));
+    }
+
+    public static CicsTerminalScreen decodeScreen(byte[] bytes) {
+        return read(bytes, ConversationCodec::terminalScreen);
+    }
+
     // ---- 部分 ----
 
     private static void envelope(DataOutputStream out, ConversationEnvelope envelope) throws IOException {

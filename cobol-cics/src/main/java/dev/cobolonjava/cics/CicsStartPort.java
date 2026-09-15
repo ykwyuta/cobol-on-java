@@ -82,7 +82,7 @@ public interface CicsStartPort {
      * <p>coordinator は region の構成 (この port を含む) から作られるので、作ったあとに渡せるよう Supplier で受ける。
      */
     static Consumer<CicsStartData> launching(Supplier<CicsTaskCoordinator> coordinator) {
-        Function<CicsStartData, Optional<ConversationEnvelope>> conversing = conversing(coordinator);
+        Function<CicsStartData, CicsTerminalTasks.Outcome> conversing = conversing(coordinator);
         return conversing::apply;
     }
 
@@ -92,7 +92,7 @@ public interface CicsStartPort {
      * <p>TERMID の START は端末を principal facility にして起こし、RETURN IMMEDIATE なら端末の入力なしで次の task を
      * 続ける (ブラウザの入口と同じく 8 回まで)。端末の無い START は task を 1 つ起こすだけで、会話は返さない。
      */
-    static Function<CicsStartData, Optional<ConversationEnvelope>> conversing(
+    static Function<CicsStartData, CicsTerminalTasks.Outcome> conversing(
             Supplier<CicsTaskCoordinator> coordinator) {
         return data -> {
             if (data.terminalId().isPresent()) {
@@ -102,7 +102,7 @@ public interface CicsStartPort {
             coordinator.get().launch(new CicsTaskRequest(data.transaction().value(), data.owner(), CicsPayload.empty(),
                     Optional.empty(), new IdempotencyKey("start-" + UUID.randomUUID()), Optional.empty(),
                     Optional.empty(), data.userId(), Optional.of(data)));
-            return Optional.empty();
+            return CicsTerminalTasks.Outcome.none();
         };
     }
 }

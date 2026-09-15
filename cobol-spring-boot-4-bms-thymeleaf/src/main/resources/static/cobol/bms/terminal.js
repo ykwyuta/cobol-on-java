@@ -93,3 +93,20 @@ if (form) {
     form.dataset.locked = 'true';
   }
 }
+
+// 端末へ出す task (START TERMID、ATI) が画面を書き換えたら、server が SSE で版を知らせる (設計 83 §7)。
+// 受けたら現在の画面を読み直す。EventSource が使えないか切れたままでも、次の送信で server が古い版の入力を動かさず
+// 現在の画面を返すので、画面と入力は食い違わない。
+const events = document.body.dataset.terminalEvents;
+const current = document.body.dataset.terminalScreen;
+const version = document.body.dataset.screenVersion;
+if (events && current && version !== undefined && typeof EventSource === 'function') {
+  const source = new EventSource(`${events}?version=${encodeURIComponent(version)}`);
+  source.addEventListener('screen', () => {
+    source.close();
+    // 送信の途中なら、その応答が現在の画面を返す
+    if (!form || form.dataset.locked !== 'true') {
+      window.location.assign(current);
+    }
+  });
+}

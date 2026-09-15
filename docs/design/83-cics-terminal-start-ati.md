@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID)、増分 4 (TD の ATI の FILE)、増分 5 (ATI の TERMINAL と固定の端末名) を実装 |
+| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID)、増分 4 (TD の ATI の FILE)、増分 5 (ATI の TERMINAL と固定の端末名)、増分 6 (画面の配信) を実装 |
 | 対応要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 | 検証レベル | V0。実機の CICS と突き合わせていない |
 | 暫定判断 | P-144 |
@@ -176,6 +176,21 @@ JSON API の入口は端末名を持たない (設計 77 §4.4)。端末へ出�
 - SSE を開けない、切れた、JavaScript が無い場合: 次の要求で、送られた版が端末の版より古ければ **入力を動かさず**現在の画面を返す。
   3270 では画面が書き換わった時点で古い画面への入力は成り立たないためである。冪等キーは記録しない (task を動かしていない)
 - SSE の要求も認証と端末の owner を確かめる。event に画面の中身を載せない (版だけ)。中身は通常の要求で CSRF と一緒に読む
+
+実装 (増分 6):
+
+- 端末の表に `SCREEN_VERSION` と `SCREEN` (`ConversationCodec.encodeScreen` の byte 列) を足した。画面の版を進めるのは
+  端末を lease した端末へ出す task (`JdbcCicsStarts`、`JdbcCicsTransientData`) だけで、ブラウザの要求で動いた task の画面は
+  その応答で届くので版を進めない。そうしないと、自分の送信の応答でも SSE が「書き換わった」と知らせ、二重送信の
+  再送が古い版として扱われる
+- `CicsTerminalTasks.run` は IMMEDIATE の連鎖の中で最後に端末へ送った画面を返す
+- ブラウザの画面は版を hidden (`screenVersion`) と body の data 属性で持つ。`/cics/terminal/events?version=n` の SSE は
+  1 秒ごとに端末の版を読み、進んでいれば `screen` event (data は版) を 1 度送って閉じる。接続は 5 分で閉じ、EventSource が
+  つなぎ直す。ブラウザは event を受けて `/cics/terminal` を読み直す
+- 版を送らない送信 (開始の画面、古い形の画面) は版を比べない
+- 会話の途中でない端末の現在の画面が map なら、送信の先の TRANSID を持たない (task は RETURN TRANSID を出していない)。
+  form の action は空になり、利用者は transaction を開始し直す
+- ブラウザの画面を実際の EventSource で切り替えることは、MockMvc で SSE の応答を読んだだけで、ブラウザでは試験していない
 
 ## 8. 複数の JVM
 

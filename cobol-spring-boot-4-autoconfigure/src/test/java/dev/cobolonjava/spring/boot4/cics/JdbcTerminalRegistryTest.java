@@ -117,6 +117,25 @@ class JdbcTerminalRegistryTest {
     }
 
     @Test
+    @DisplayName("端末へ出すtaskはleaseを持つときだけ画面を置いて版を進め、別のJVMから現在の画面を読める")
+    void storesTerminalScreensAcrossJvms() {
+        String id = first.register("alice", NOW.plusSeconds(600), NOW);
+        assertEquals(0, second.find(id, NOW).orElseThrow().screenVersion());
+        assertTrue(second.screen(id, NOW).isEmpty());
+        CicsTerminalRegistryPort.TerminalLease lease = first.lease(id, "alice", LEASE, NOW).orElseThrow();
+        assertEquals(java.util.OptionalLong.of(1),
+                second.setScreen(lease, new dev.cobolonjava.cics.CicsTerminalScreen.TextScreen("HELLO", true, false),
+                        NOW));
+        first.release(lease, NOW);
+        assertTrue(first.setScreen(lease, new dev.cobolonjava.cics.CicsTerminalScreen.TextScreen("STALE", true, false),
+                NOW).isEmpty());
+        CicsTerminalRegistryPort.TerminalScreen current = second.screen(id, NOW).orElseThrow();
+        assertEquals(1, current.version());
+        assertEquals("HELLO", ((dev.cobolonjava.cics.CicsTerminalScreen.TextScreen) current.screen()).text());
+        assertEquals(1, first.find(id, NOW).orElseThrow().screenVersion());
+    }
+
+    @Test
     @DisplayName("期限の過ぎた端末は見えず、purgeで消える")
     void purgesExpiredTerminals() {
         String id = first.register("alice", NOW.plusSeconds(60), NOW);

@@ -76,7 +76,7 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
     private final Optional<String> defaultUserId;
     private final CicsTerminalRegistryPort terminals;
     private final Duration terminalLease;
-    private final Function<CicsTransientDataTrigger, Optional<ConversationEnvelope>> launcher;
+    private final Function<CicsTransientDataTrigger, CicsTerminalTasks.Outcome> launcher;
     private final Duration taskLease;
     private final Duration pollInterval;
     private final Executor tasks;
@@ -106,7 +106,7 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
                                  List<CicsTransientDataQueueDefinition> queues, Clock clock, String regionOwner,
                                  Optional<String> defaultUserId, CicsTerminalRegistryPort terminals,
                                  Duration terminalLease,
-                                 Function<CicsTransientDataTrigger, Optional<ConversationEnvelope>> launcher,
+                                 Function<CicsTransientDataTrigger, CicsTerminalTasks.Outcome> launcher,
                                  Duration taskLease, Duration pollInterval) {
         this(dataSource, transactionManager, queues, clock, regionOwner, defaultUserId, terminals, terminalLease,
                 launcher, taskLease, pollInterval, null);
@@ -116,7 +116,7 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
     JdbcCicsTransientData(DataSource dataSource, PlatformTransactionManager transactionManager,
                           List<CicsTransientDataQueueDefinition> queues, Clock clock, String regionOwner,
                           Optional<String> defaultUserId, CicsTerminalRegistryPort terminals, Duration terminalLease,
-                          Function<CicsTransientDataTrigger, Optional<ConversationEnvelope>> launcher,
+                          Function<CicsTransientDataTrigger, CicsTerminalTasks.Outcome> launcher,
                           Duration taskLease, Duration pollInterval, Executor tasks) {
         this.jdbc = new JdbcTemplate(Objects.requireNonNull(dataSource, "dataSource"));
         this.separate = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
@@ -297,10 +297,15 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
                             String token, TerminalLease lease) {
         boolean normal = false;
         try {
-            Optional<ConversationEnvelope> next = launcher.apply(trigger);
+            CicsTerminalTasks.Outcome outcome = launcher.apply(trigger);
             normal = true;
-            if (lease != null && !terminals.setConversation(lease, next.map(envelope -> new TerminalConversation(
-                    envelope.id(), envelope.version(), envelope.nextTransaction())), clock.instant())) {
+            if (lease != null) {
+                // task が送った画面を端末の現在の画面にして版を進める
+                outcome.screen().ifPresent(screen -> terminals.setScreen(lease, screen, clock.instant()));
+            }
+            if (lease != null && !terminals.setConversation(lease, outcome.next().map(envelope ->
+                    new TerminalConversation(envelope.id(), envelope.version(), envelope.nextTransaction())),
+                    clock.instant())) {
                 LOG.log(System.Logger.Level.WARNING, "terminal lease expired while the trigger-level task for queue "
                         + trigger.queue() + " was running; the terminal keeps its previous conversation");
             }

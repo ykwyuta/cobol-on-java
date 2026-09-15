@@ -8,9 +8,12 @@ import dev.cobolonjava.cics.CicsTaskPolicy;
 import dev.cobolonjava.cics.CicsTaskReply;
 import dev.cobolonjava.cics.CicsTaskRequest;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort.Terminal;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalConversation;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalLease;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalScreen;
 import dev.cobolonjava.cics.CicsTerminalScreen;
+import dev.cobolonjava.cics.CicsTerminalTasks;
 import dev.cobolonjava.cics.ConversationEnvelope;
 import dev.cobolonjava.cics.ConversationId;
 import dev.cobolonjava.cics.ConversationReference;
@@ -24,17 +27,26 @@ import dev.cobolonjava.cics.bms.BmsTerminalInput;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
+import java.io.IOException;
 import java.security.Principal;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.util.MultiValueMap;
@@ -43,27 +55,38 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
- * ブラウザから CICS の疑似会話を動かす入口 (設計 77 §4.2、設計 81 §5、設計 83 §4、暫定判断 P-134・P-144)。
+ * ブラウザから CICS の疑似会話を動かす入口 (設計 77 §4.2、設計 81 §5、設計 83 §4・§7、暫定判断 P-134・P-144)。
  *
  * <p>GET は開始の画面を返すだけで task を動かさない。task は CSRF で守った POST で動かす。
  * 会話の COMMAREA と直前の画面は server の会話ストアから読み、client から受け取らない。
  * HTTP session に置くのは端末の名前だけで、端末の疑似会話の参照は端末の登録 ({@link CicsTerminalRegistryPort}) に置く。
  * task の前に端末を lease するので、1 つの端末で task は同時に 1 つになる。
+ *
+ * <h2>端末へ出す task の画面</h2>
+ * <p>START TERMID や ATI の task が送った画面は端末の現在の画面になり、画面の版が進む。画面は版を hidden で持ち、
+ * {@code /cics/terminal/events} の SSE で版が進んだことを受けて {@code /cics/terminal} を読み直す。SSE が無ければ、
+ * 古い版の画面からの送信は task を動かさず、現在の画面を返す (3270 では書き換わった画面への入力は成り立たない)。
  */
 @Controller
-public class CicsBrowserController {
+public class CicsBrowserController implements DisposableBean {
 
     static final String TERMINAL = "dev.cobolonjava.cics.browser.terminal";
     /** 画面の form が運ぶ冪等キーと会話の参照 (暫定判断 P-142)。 */
     static final String KEY_PARAMETER = "idempotencyKey";
     static final String CONVERSATION_ID_PARAMETER = "conversationId";
     static final String CONVERSATION_VERSION_PARAMETER = "conversationVersion";
+    /** 画面が運ぶ端末の画面の版 (設計 83 §7)。 */
+    static final String SCREEN_VERSION_PARAMETER = "screenVersion";
     /** IMMEDIATE で続ける task の上限。業務の無限の連鎖で要求を返さなくなるのを防ぐ。 */
-    static final int MAX_IMMEDIATE = 8;
+    static final int MAX_IMMEDIATE = CicsTerminalTasks.MAX_IMMEDIATE;
     /** HTTP session が失効の時間を持たないときの端末の期限。 */
     static final Duration DEFAULT_TERMINAL_LIFETIME = Duration.ofMinutes(30);
+    /** SSE で端末の画面の版を見る間隔と、1 つの接続を保つ長さ。切れれば EventSource がつなぎ直す。 */
+    static final Duration EVENT_POLL = Duration.ofSeconds(1);
+    static final Duration EVENT_TIMEOUT = Duration.ofMinutes(5);
 
     private final CicsTaskCoordinator coordinator;
     private final ConversationStorePort conversations;
@@ -73,6 +96,7 @@ public class CicsBrowserController {
     private final Clock clock;
     private final Duration terminalLease;
     private final CicsBrowserTerminalNames names;
+    private ScheduledExecutorService events;
 
     /** 固定の端末名を別の利用者が使っている。 */
     static final class TerminalInUseException extends RuntimeException {
@@ -129,6 +153,8 @@ public class CicsBrowserController {
         String sentKeyValue = form.getFirst(KEY_PARAMETER);
         Optional<IdempotencyKey> sentKey = sentKeyValue == null || sentKeyValue.isBlank()
                 ? Optional.empty() : Optional.of(new IdempotencyKey(sentKeyValue));
+        String sentScreen = form.getFirst(SCREEN_VERSION_PARAMETER);
+        long screenVersion = sentScreen == null ? -1 : Long.parseLong(sentScreen);
 
         Instant now = clock.instant();
         String terminalId = terminalOf(session, owner, now);
@@ -139,7 +165,8 @@ public class CicsBrowserController {
                     "The terminal is busy. Wait for the reply.");
         }
         try {
-            return run(transaction, owner, input, sentKey, form, terminalId, lease, request, response, model);
+            return run(transaction, owner, input, sentKey, screenVersion, form, terminalId, lease, request, response,
+                    model);
         } catch (RuntimeException failure) {
             // task を動かす前に断ったもの (冪等キーの衝突、未定義・無効の transaction、入力の形) は端末の会話を残す。
             // 会話の衝突、ABEND、確定の失敗は端末の会話を外し、次は開始からにする
@@ -162,13 +189,19 @@ public class CicsBrowserController {
     }
 
     private String run(TransId transaction, String owner, Optional<BmsTerminalInput> input,
-                       Optional<IdempotencyKey> sentKey, MultiValueMap<String, String> form, String terminalId,
-                       TerminalLease lease, HttpServletRequest request, HttpServletResponse response, Model model) {
+                       Optional<IdempotencyKey> sentKey, long screenVersion, MultiValueMap<String, String> form,
+                       String terminalId, TerminalLease lease, HttpServletRequest request,
+                       HttpServletResponse response, Model model) {
         Instant now = clock.instant();
+        Terminal terminal = terminals.find(terminalId, now)
+                .orElseThrow(() -> new IllegalStateException("the leased terminal is no longer registered"));
+        if (screenVersion >= 0 && screenVersion < terminal.screenVersion()) {
+            // 端末へ出す task が画面を書き換えた。古い画面への入力は動かさず、現在の画面を返す (設計 83 §7)
+            return renderCurrent(terminal, Optional.of(transaction), request, model);
+        }
         Optional<ConversationReference> reference = Optional.empty();
         CicsPayload payload = CicsPayload.empty();
-        Optional<TerminalConversation> current = terminals.find(terminalId, now)
-                .flatMap(CicsTerminalRegistryPort.Terminal::conversation);
+        Optional<TerminalConversation> current = terminal.conversation();
         if (sentKey.isPresent()) {
             // 画面が運ぶ冪等キーと会話の参照で動かす。同じ画面の再送は、会話がもう進んでいても coordinator が
             // 覚えた結果を返す。会話の owner は coordinator が照合する (暫定判断 P-142)
@@ -225,17 +258,147 @@ public class CicsBrowserController {
         requireConversationChanged(lease, reply.nextConversation()
                 .map(next -> new TerminalConversation(next.id(), next.version(), next.nextTransaction())));
 
-        String action = request.getContextPath() + "/cics/" + nextTransaction;
-        model.addAttribute("action", action);
+        long version = terminals.find(terminalId, clock.instant()).map(Terminal::screenVersion)
+                .orElse(terminal.screenVersion());
+        attributes(request, model, Optional.of(nextTransaction), reply.nextConversation().isPresent(),
+                reply.nextConversation().map(next -> new TerminalConversation(next.id(), next.version(),
+                        next.nextTransaction())), version);
+        return view(reply.screen().orElse(null), model);
+    }
+
+    /** 端末の現在の画面を読み直す。SSE で版が進んだことを受けたブラウザが開く。 */
+    @GetMapping("/cics/terminal")
+    public String currentScreen(Principal principal, HttpServletRequest request, HttpServletResponse response,
+                                Model model) {
+        if (principal == null) {
+            return error(response, model, HttpServletResponse.SC_UNAUTHORIZED, "Authentication is required.");
+        }
+        Optional<Terminal> terminal = sessionTerminal(request, principal.getName());
+        if (terminal.isEmpty()) {
+            return error(response, model, HttpServletResponse.SC_NOT_FOUND, "The terminal is not registered.");
+        }
+        return renderCurrent(terminal.orElseThrow(), Optional.empty(), request, model);
+    }
+
+    /**
+     * 端末の画面の版が {@code version} より進んだら {@code screen} event を 1 度送って閉じる。
+     * 画面の中身は送らない (読み直しは通常の要求で認証と一緒に行う)。
+     */
+    @GetMapping(path = "/cics/terminal/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public ResponseEntity<SseEmitter> screenEvents(@RequestParam("version") long version, Principal principal,
+                                                   HttpServletRequest request) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        HttpSession session = request.getSession(false);
+        String terminalId = session == null ? null : (String) session.getAttribute(TERMINAL);
+        if (terminalId == null) {
+            return ResponseEntity.notFound().build();
+        }
+        String owner = principal.getName();
+        SseEmitter emitter = new SseEmitter(EVENT_TIMEOUT.toMillis());
+        if (announced(emitter, terminalId, owner, version)) {
+            return ResponseEntity.ok(emitter);
+        }
+        AtomicReference<ScheduledFuture<?>> polling = new AtomicReference<>();
+        polling.set(scheduler().scheduleWithFixedDelay(() -> {
+            try {
+                if (announced(emitter, terminalId, owner, version)) {
+                    polling.get().cancel(false);
+                }
+            } catch (RuntimeException failure) {
+                emitter.completeWithError(failure);
+                polling.get().cancel(false);
+            }
+        }, EVENT_POLL.toMillis(), EVENT_POLL.toMillis(), TimeUnit.MILLISECONDS));
+        Runnable stop = () -> {
+            ScheduledFuture<?> future = polling.get();
+            if (future != null) {
+                future.cancel(false);
+            }
+        };
+        emitter.onCompletion(stop);
+        emitter.onTimeout(stop);
+        emitter.onError(ignored -> stop.run());
+        return ResponseEntity.ok(emitter);
+    }
+
+    /** 版が進んでいれば event を送って閉じ、true。端末が無くなっていれば閉じて true。 */
+    private boolean announced(SseEmitter emitter, String terminalId, String owner, long version) {
+        Optional<Terminal> terminal = terminals.find(terminalId, clock.instant())
+                .filter(found -> found.owner().equals(owner));
+        if (terminal.isEmpty()) {
+            emitter.complete();
+            return true;
+        }
+        long current = terminal.orElseThrow().screenVersion();
+        if (current <= version) {
+            return false;
+        }
+        try {
+            emitter.send(SseEmitter.event().name("screen").data(Long.toString(current)));
+            emitter.complete();
+        } catch (IOException | IllegalStateException gone) {
+            // 接続はもう閉じている
+            emitter.completeWithError(gone);
+        }
+        return true;
+    }
+
+    private synchronized ScheduledExecutorService scheduler() {
+        if (events == null) {
+            events = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "cics-terminal-events");
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+        return events;
+    }
+
+    @Override
+    public synchronized void destroy() {
+        if (events != null) {
+            events.shutdownNow();
+        }
+    }
+
+    private Optional<Terminal> sessionTerminal(HttpServletRequest request, String owner) {
+        HttpSession session = request.getSession(false);
+        String terminalId = session == null ? null : (String) session.getAttribute(TERMINAL);
+        return terminalId == null ? Optional.empty()
+                : terminals.find(terminalId, clock.instant()).filter(found -> found.owner().equals(owner));
+    }
+
+    /** 端末へ出す task が置いた現在の画面を描く。会話の途中ならその会話を続ける form にする。 */
+    private String renderCurrent(Terminal terminal, Optional<TransId> fallback, HttpServletRequest request,
+                                 Model model) {
+        Optional<TerminalScreen> current = terminals.screen(terminal.id(), clock.instant());
+        Optional<String> next = terminal.conversation().map(conversation -> conversation.nextTransaction().value())
+                .or(() -> fallback.map(TransId::value));
+        attributes(request, model, next, terminal.conversation().isPresent(), terminal.conversation(),
+                current.map(TerminalScreen::version).orElse(terminal.screenVersion()));
+        return view(current.map(TerminalScreen::screen).orElse(null), model);
+    }
+
+    private void attributes(HttpServletRequest request, Model model, Optional<String> nextTransaction,
+                            boolean conversation, Optional<TerminalConversation> reference, long screenVersion) {
+        model.addAttribute("action", nextTransaction.map(value -> request.getContextPath() + "/cics/" + value)
+                .orElse(""));
         model.addAttribute("bmsAssets", request.getContextPath() + "/cobol/bms");
-        model.addAttribute("conversation", reply.nextConversation().isPresent());
+        model.addAttribute("conversation", conversation);
         // 次の画面の送信に使う冪等キーと会話の参照。同じ画面を二度送っても同じキーになる
         model.addAttribute("idempotencyKey", idempotencyKey().value());
-        reply.nextConversation().ifPresent(next -> {
+        reference.ifPresent(next -> {
             model.addAttribute("conversationId", next.id().value());
             model.addAttribute("conversationVersion", next.version());
         });
-        CicsTerminalScreen screen = reply.screen().orElse(null);
+        model.addAttribute("screenVersion", screenVersion);
+        model.addAttribute("terminalEvents", request.getContextPath() + "/cics/terminal/events");
+        model.addAttribute("terminalScreen", request.getContextPath() + "/cics/terminal");
+    }
+
+    private String view(CicsTerminalScreen screen, Model model) {
         if (screen instanceof CicsTerminalScreen.MapScreen map) {
             model.addAttribute("screen", views.create(map.snapshot()));
             return "cobol/bms/screen";
@@ -322,8 +485,9 @@ public class CicsBrowserController {
     }
 
     /**
-     * HTTP session の端末。登録が残っていて owner が同じなら期限を延ばし、無ければ (初回、期限切れ、別の JVM の
-     * 1 つの JVM の登録、利用者が替わった) 新しく登録する。端末の期限は HTTP session の失効の時間に合わせる。
+     * HTTP session の端末。固定の端末名があればそれを登録し、無ければ、登録が残っていて owner が同じなら期限を延ばし、
+     * 無ければ (初回、期限切れ、別の JVM の 1 つの JVM の登録、利用者が替わった) 新しく登録する。端末の期限は HTTP session の
+     * 失効の時間に合わせる。
      */
     private String terminalOf(HttpSession session, String owner, Instant now) {
         int seconds = session.getMaxInactiveInterval();
@@ -348,7 +512,7 @@ public class CicsBrowserController {
 
     /** CICS の user ID の形 (8 文字まで) に収まる principal 名だけを user ID にする。推測で切り詰めない。 */
     private static Optional<String> userIdOf(String principal) {
-        return dev.cobolonjava.cics.CicsTerminalTasks.userIdOf(principal);
+        return CicsTerminalTasks.userIdOf(principal);
     }
 
     private static IdempotencyKey idempotencyKey() {

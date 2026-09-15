@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.cobolonjava.cics.CicsPayload;
 import dev.cobolonjava.cics.CicsResponseCode;
 import dev.cobolonjava.cics.CicsTerminalRegistryPort;
+import dev.cobolonjava.cics.CicsTerminalScreen;
+import dev.cobolonjava.cics.CicsTerminalTasks;
 import dev.cobolonjava.cics.ConversationEnvelope;
 import dev.cobolonjava.cics.ConversationId;
 import dev.cobolonjava.cics.IdempotencyKey;
@@ -97,7 +99,7 @@ class JdbcCicsTransientDataTest {
                     if (abend.get()) {
                         throw new IllegalStateException("trigger task abended");
                     }
-                    return Optional.empty();
+                    return CicsTerminalTasks.Outcome.none();
                 }, Duration.ofMinutes(5), Duration.ofSeconds(1), held::add);
     }
 
@@ -135,7 +137,8 @@ class JdbcCicsTransientDataTest {
                         Facility.TERMINAL, Optional.of("PRT1"), Optional.empty())),
                 clock, null, Optional.empty(), terminals, Duration.ofSeconds(30), trigger -> {
                     triggered.add(trigger);
-                    return reply.get();
+                    return new CicsTerminalTasks.Outcome(reply.get(),
+                            Optional.of(new CicsTerminalScreen.TextScreen("PRINTED", true, false)));
                 }, Duration.ofMinutes(5), Duration.ofSeconds(1), held::add);
 
         queue.write("PRTQ", text("LINE1"));
@@ -163,6 +166,9 @@ class JdbcCicsTransientDataTest {
         CicsTerminalRegistryPort.Terminal after = terminals.find("PRT1", NOW).orElseThrow();
         assertFalse(after.leased());
         assertEquals("PRT2", after.conversation().orElseThrow().nextTransaction().value());
+        assertEquals(1, after.screenVersion());
+        assertEquals("PRINTED", ((CicsTerminalScreen.TextScreen) terminals.screen("PRT1", NOW).orElseThrow().screen())
+                .text());
         // 端末が疑似会話の途中なので、会話が終わるまで起こさない
         assertEquals(0, queue.dispatchDue());
     }
@@ -306,16 +312,16 @@ class JdbcCicsTransientDataTest {
         // TERMINAL は端末の登録が要る
         assertThrows(IllegalArgumentException.class, () -> new JdbcCicsTransientData(dataSource,
                 new JdbcTransactionManager(dataSource), List.of(terminal), clock, "cics-region", Optional.empty(),
-                null, Duration.ofSeconds(30), trigger -> Optional.empty(), Duration.ofMinutes(5),
+                null, Duration.ofSeconds(30), trigger -> CicsTerminalTasks.Outcome.none(), Duration.ofMinutes(5),
                 Duration.ofSeconds(1)));
         CicsTransientDataQueueDefinition noUser = new CicsTransientDataQueueDefinition("ATIQ", 8, 1,
                 Optional.of(TransId.of("TRG1")), Facility.FILE, Optional.empty(), Optional.empty());
         assertThrows(IllegalArgumentException.class, () -> new JdbcCicsTransientData(dataSource,
                 new JdbcTransactionManager(dataSource), List.of(noUser), clock, "cics-region", Optional.empty(),
-                null, Duration.ofSeconds(30), trigger -> Optional.empty(), Duration.ofMinutes(5),
+                null, Duration.ofSeconds(30), trigger -> CicsTerminalTasks.Outcome.none(), Duration.ofMinutes(5),
                 Duration.ofSeconds(1)));
         new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource), List.of(noUser), clock,
-                "cics-region", Optional.of("DEFAULT"), null, Duration.ofSeconds(30), trigger -> Optional.empty(),
+                "cics-region", Optional.of("DEFAULT"), null, Duration.ofSeconds(30), trigger -> CicsTerminalTasks.Outcome.none(),
                 Duration.ofMinutes(5), Duration.ofSeconds(1));
         assertThrows(IllegalArgumentException.class, () -> new JdbcCicsTransientData(dataSource,
                 new JdbcTransactionManager(dataSource), List.of(noUser)));
