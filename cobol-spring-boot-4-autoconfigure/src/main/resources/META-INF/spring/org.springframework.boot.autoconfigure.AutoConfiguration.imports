@@ -2,3 +2,4 @@ dev.cobolonjava.spring.boot4.autoconfigure.CobolDb2SpringAutoConfiguration
 dev.cobolonjava.spring.boot4.cics.CicsTaskAutoConfiguration
 dev.cobolonjava.spring.boot4.cics.CicsJsonApiAutoConfiguration
 dev.cobolonjava.spring.boot4.cics.CicsStrictConversationAutoConfiguration
+dev.cobolonjava.spring.boot4.cics.CicsDemoSecurityAutoConfiguration

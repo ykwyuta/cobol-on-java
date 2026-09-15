@@ -4211,8 +4211,8 @@ file の状態や副索引を持たないので返さない。性能は測って
   対として扱った。START で起きていない task の RETRIEVE は失敗させる
 - FROM を持つ START の REQID が未満了の START と重なれば IOERR (START の頁)。FROM の無い形は条件が無いので失敗させる
 - EIBDS と EIBREQID を、プログラムから読める EIB の項目に足した
-- USERID、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET、REQID の無い CANCEL は断る (PROTECT は P-141、
-  TERMID と RETRIEVE WAIT は P-144 / 設計 83 §5 で入れた)
+- USERID と TERMID の併記、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET、REQID の無い CANCEL は断る (PROTECT は P-141、
+  TERMID と RETRIEVE WAIT は P-144 / 設計 83 §5、USERID は P-145 / 設計 84 で入れた)
 
 **どこがずれうるか**: 実機の START は REQID の名前で一時記憶にデータを置き、region を再起動しても残せる。ここは JVM が止まれば
 消える (表に置く `JdbcCicsStarts` は残す)。端末へ出す START (TERMID) は `JdbcCicsStarts` だけが受け、task の画面は
@@ -4383,6 +4383,31 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 **解消条件**: Spring Session JDBC でも session の削除・失効と一緒に会話を消す (期限切れの session を消す job と会話の
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
+
+## P-145 デモ環境の簡易認証は、設定の利用者の一覧で principal を CICS の user ID にし、attach と START USERID の代理だけを確かめる
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者がデモ環境の仕様としての簡易認証を求めた |
+| 場所 | 設計 84。`CicsSecurityPort`、`CicsTaskCoordinator`、`CicsRuntimeOps.startCondition`、`DemoCicsSecurity`、`CicsDemoSecurityAutoConfiguration` |
+| 関連要件 | 設計 77 §4.2、設計 82 §6、設計 83 |
+
+**暫定の扱い**:
+
+- 権限は transaction の attach、START の TRANSID (NOTAUTH 70 / 7)、START の USERID の代理 (NOTAUTH 70 / 9) だけを確かめる。
+  file・一時記憶・program などの資源ごとの権限は持たない
+- attach は coordinator がどの入口の task にも確かめ、断れば task を起こさず 403 (`TransactionNotAuthorizedException`)
+- 構成しなければ、これまでと同じく principal 名を user ID にしてどの transaction も許す。代理は同じ user ID だけ
+- `cobol.cics.security.mode=demo` は、設定の利用者の一覧 (ログイン名、encoder の接頭つきのパスワード、user ID、
+  transaction、代理できる user ID) で決め、Spring Security の利用者と form login も作る。構成の誤りは起動で断る
+- START の USERID と TERMID の併記は翻訳で断る
+
+**どこがずれうるか**: RACF の TCICSTRN / SURROGAT の判定 (UACC、グループ、警告 mode) を持たず、一覧に書いたかだけで決める。
+端末から起こせない transaction を入れたときの実機の振る舞い (メッセージ、ABEND) を再現せず 403 にする。NOTAUTH の EIBRCODE の
+byte は binary zero とした。
+
+**解消条件**: 本番の利用者管理と合わせるときに、RACF 相当の判定を持つ `CicsSecurityPort` を利用者が置く形を決める。
+実機で、端末から権限の無い transaction を入れたときと START USERID の NOTAUTH の EIBRCODE を採る。
 
 ## P-144 端末へ出す START と TD の ATI は、会話の途中の端末を待ち、同じ owner の端末だけに出し、JDBC の表で複数 JVM に置く
 

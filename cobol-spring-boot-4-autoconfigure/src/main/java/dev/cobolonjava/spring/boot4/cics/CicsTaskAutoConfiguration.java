@@ -116,8 +116,20 @@ public class CicsTaskAutoConfiguration {
                                              ConversationStorePort conversations,
                                              CicsTaskBoundaryFactory boundaries, CicsTaskProgramPort programs,
                                              CicsTaskPolicy policy, ConversationIdFactory conversationIds,
-                                             Clock cobolCicsClock, CicsOutcomeStorePort outcomes) {
+                                             Clock cobolCicsClock, CicsOutcomeStorePort outcomes,
+                                             dev.cobolonjava.cics.CicsSecurityPort security) {
         return new CicsTaskCoordinator(transactions, conversations, boundaries, programs, policy,
-                conversationIds, cobolCicsClock, outcomes);
+                conversationIds, cobolCicsClock, outcomes, security);
+    }
+
+    /**
+     * principal と CICS の user ID の対応と transaction の権限 (設計 84)。既定は principal 名を user ID にし、どの transaction も
+     * 許す。{@code cobol.cics.security.mode=demo} は利用者の一覧から決める。START の USERID / TRANSID の権限にも使うので、
+     * region の構成 ({@code CicsEnvironment.withSecurity}) にも同じ bean を入れる。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    dev.cobolonjava.cics.CicsSecurityPort cobolCicsSecurity() {
+        return dev.cobolonjava.cics.CicsSecurityPort.derived();
     }
 }

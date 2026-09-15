@@ -25,6 +25,17 @@
       <artifactId>cobol-cics</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- デモ環境の簡易認証 (cobol.cics.security.mode=demo) を使う利用者だけが足す -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-config</artifactId>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-web</artifactId>
+      <optional>true</optional>
+    </dependency>
     <!-- DB2_DRIVER_MANAGED_HOLD の STRICT を使う利用者だけが足す -->
     <dependency>
       <groupId>dev.cobolonjava</groupId>

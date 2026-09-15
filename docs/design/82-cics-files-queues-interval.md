@@ -180,7 +180,9 @@ RESP2 は、INVREQ の 4 / 5 / 6 のほかは頁が示さないので 0 とす�
 START の `TERMID` (端末へ出す task) は設計 83 §5 で入れた。端末の登録を持つ `JdbcCicsStarts` だけが受け、
 1 つの JVM の中の `inMemory` は断る。
 
-断るもの: START の `USERID`、`SYSID`、`NOCHECK`、`CHANNEL`、
+START の `USERID` は設計 84 で入れた (代理の権限 NOTAUTH 70 / 9、TRANSID の権限 NOTAUTH 70 / 7)。
+
+断るもの: START の `USERID` と `TERMID` の併記、`SYSID`、`NOCHECK`、`CHANNEL`、
 `ATTACH`、RETRIEVE の `SET`、`REQID` の無い CANCEL (POST の取消し)、CANCEL の `TRANSID` / `SYSID`。RETRIEVE の `WAIT` は
 設計 83 §5 で入れた (端末へ出す START の task だけ)。
 FROM の無い START の REQID が重なる形と、START で起きていない task の RETRIEVE は、条件が書かれていないので失敗させる。

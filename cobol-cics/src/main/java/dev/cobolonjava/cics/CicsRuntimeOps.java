@@ -672,6 +672,28 @@ public final class CicsRuntimeOps {
             String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
             byte[] returnTerminalData, String queueLiteral, byte[] queueData, String terminalLiteral,
             byte[] terminalData, boolean protect, boolean suppressDefaultHandling) {
+        return startCondition(context, transactionLiteral, transactionData, timing, hhmmss, hours, minutes, seconds,
+                from, lengthArea, lengthLiteral, requestLiteral, requestData, returnTransactionLiteral,
+                returnTransactionData, returnTerminalLiteral, returnTerminalData, queueLiteral, queueData,
+                terminalLiteral, terminalData, null, null, protect, suppressDefaultHandling);
+    }
+
+    /**
+     * USERID を書ける START (設計 84、暫定判断 P-145)。
+     *
+     * <p>USERID は、START を出した task の user ID が代理してよい user ID でなければ NOTAUTH (RESP2 9)。端末の無い START は、
+     * 起こす task の user ID (USERID か、書かなければ START を出した task の user ID) が TRANSID を起こせなければ
+     * NOTAUTH (RESP2 7)。TERMID の START の user ID は端末の利用者なので、coordinator が task を起こすときに確かめる。
+     * USERID と TERMID を両方書いた形は、どちらの user ID で動くかを確かめていないので断る。
+     */
+    public static int startCondition(ProgramContext context, String transactionLiteral, byte[] transactionData,
+            int timing, dev.cobolonjava.runtime.decimal.Decimal hhmmss, dev.cobolonjava.runtime.decimal.Decimal hours,
+            dev.cobolonjava.runtime.decimal.Decimal minutes, dev.cobolonjava.runtime.decimal.Decimal seconds,
+            DataView from, DataView lengthArea, int lengthLiteral, String requestLiteral, byte[] requestData,
+            String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
+            byte[] returnTerminalData, String queueLiteral, byte[] queueData, String terminalLiteral,
+            byte[] terminalData, String userLiteral, byte[] userData, boolean protect,
+            boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
         CicsTaskContext task = execution.task();
@@ -729,10 +751,31 @@ public final class CicsRuntimeOps {
         if (terminal.isPresent() && terminal.orElseThrow().isEmpty()) {
             throw new CicsTaskStateException("START TERMID must not be blank");
         }
+        Optional<String> user = optionalName(required, userLiteral, userData);
+        if (user.isPresent()) {
+            if (terminal.isPresent()) {
+                throw new CicsTaskStateException("START USERID with TERMID is not supported;"
+                        + " which user ID the terminal task runs under is not verified");
+            }
+            if (!user.orElseThrow().matches("[A-Z0-9@#$]{1,8}")) {
+                throw new CicsTaskStateException("START USERID has an unsupported format: '" + user.orElseThrow() + "'");
+            }
+            if (!execution.environment().security().maySurrogate(task.userId(), user.orElseThrow())) {
+                // NOTAUTH (RESP2 9): USERID の代理の権限が無い
+                return containerOutcome(required, START_FUNCTION, CicsResponseCode.NOTAUTH, 9,
+                        suppressDefaultHandling, "START");
+            }
+        }
+        Optional<String> startedUser = user.isPresent() ? user : task.userId();
+        if (terminal.isEmpty() && !execution.environment().security().mayAttach(startedUser, transId)) {
+            // NOTAUTH (RESP2 7): 起こす task の user ID で TRANSID の資源の権限を確かめられなかった
+            return containerOutcome(required, START_FUNCTION, CicsResponseCode.NOTAUTH, 7,
+                    suppressDefaultHandling, "START");
+        }
         CicsStartData data = new CicsStartData(requestId, transId, bytes,
                 optionalName(required, returnTransactionLiteral, returnTransactionData),
                 optionalName(required, returnTerminalLiteral, returnTerminalData),
-                optionalName(required, queueLiteral, queueData), task.owner(), task.userId(), terminal);
+                optionalName(required, queueLiteral, queueData), task.owner(), startedUser, terminal);
         CicsStartPort.Result result;
         if (protect) {
             if (execution.hasProtectedStart(requestId)) {

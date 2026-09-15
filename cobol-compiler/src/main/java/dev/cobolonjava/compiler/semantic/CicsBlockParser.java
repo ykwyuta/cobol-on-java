@@ -56,7 +56,7 @@ final class CicsBlockParser {
     /** 間隔制御の命令ごとに、RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> INTERVAL_OPTIONS = List.of(
             Set.of("TRANSID", "INTERVAL", "TIME", "AFTER", "AT", "HOURS", "MINUTES", "SECONDS", "FROM", "LENGTH",
-                    "REQID", "RTRANSID", "RTERMID", "QUEUE", "PROTECT", "TERMID"),
+                    "REQID", "RTRANSID", "RTERMID", "QUEUE", "PROTECT", "TERMID", "USERID"),
             Set.of("INTO", "LENGTH", "RTRANSID", "RTERMID", "QUEUE", "WAIT"),
             Set.of("REQID"));
     /** 一時記憶・一時データの命令。TS / TD を省いた形は受けない。 */
@@ -887,8 +887,9 @@ final class CicsBlockParser {
      * START / RETRIEVE / CANCEL を読む (暫定判断 P-138)。
      *
      * <p>START の TERMID は端末へ出す task として、RETRIEVE の WAIT はその task が次の START を待つ形として受ける
-     * (設計 83 §5)。USERID、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET、REQID の無い CANCEL (POST の取消し) と
-     * CANCEL の TRANSID / SYSID は、利用者・遠隔・同期点の設計を持たないので名前をつけて断る。
+     * (設計 83 §5)。START の USERID は代理の権限を確かめて受ける (設計 84)。USERID と TERMID の併記、SYSID、NOCHECK、
+     * CHANNEL、ATTACH、RETRIEVE の SET、REQID の無い CANCEL (POST の取消し) と CANCEL の TRANSID / SYSID は、
+     * 遠隔・同期点の設計を持たないか振る舞いを確かめていないので名前をつけて断る。
      */
     private static Parsed parseIntervalCommand(String command, String source) {
         int kind = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.indexOf(command);
@@ -927,6 +928,7 @@ final class CicsBlockParser {
         String[] returnTerminal = new String[2];
         String[] queue = new String[2];
         String[] terminal = new String[2];
+        String[] user = new String[2];
         boolean protect = false;
         boolean wait = false;
         if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_START) {
@@ -981,6 +983,10 @@ final class CicsBlockParser {
             returnTerminal = quotedOrName(options.get("RTERMID"), "START RTERMID", 4);
             queue = quotedOrName(options.get("QUEUE"), "START QUEUE", 8);
             terminal = quotedOrName(options.get("TERMID"), "START TERMID", 4);
+            user = quotedOrName(options.get("USERID"), "START USERID", 8);
+            if (options.containsKey("USERID") && options.containsKey("TERMID")) {
+                throw new IllegalArgumentException("START USERID with TERMID is not supported");
+            }
         } else if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE) {
             wait = fileFlag(options, "WAIT", 1) != 0;
             data = sendDataName(options.get("INTO"), "INTO");
@@ -1018,8 +1024,8 @@ final class CicsBlockParser {
                 null, null, null, null, null, null, null, null,
                 new IntervalSpec(kind, transaction[0], transaction[1], timing, hhmmss, hours, minutes, seconds, data,
                         lengthName, lengthLiteral, request[0], request[1], returnTransaction[0], returnTransaction[1],
-                        returnTerminal[0], returnTerminal[1], queue[0], queue[1], terminal[0], terminal[1], protect,
-                        wait));
+                        returnTerminal[0], returnTerminal[1], queue[0], queue[1], terminal[0], terminal[1], user[0],
+                        user[1], protect, wait));
     }
 
     /**
@@ -1775,7 +1781,7 @@ final class CicsBlockParser {
                         String requestLiteral, String requestData, String returnTransactionLiteral,
                         String returnTransactionData, String returnTerminalLiteral, String returnTerminalData,
                         String queueLiteral, String queueData, String terminalLiteral, String terminalData,
-                        boolean protect, boolean waitForData) {
+                        String userLiteral, String userData, boolean protect, boolean waitForData) {
     }
 
     /**

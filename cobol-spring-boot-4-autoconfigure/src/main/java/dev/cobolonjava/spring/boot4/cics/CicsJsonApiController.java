@@ -114,7 +114,8 @@ public class CicsJsonApiController {
         IdempotencyKey key = new IdempotencyKey(body.idempotencyKey() != null
                 ? body.idempotencyKey() : "api-" + UUID.randomUUID().toString().replace("-", ""));
         CicsTaskReply reply = coordinator.launch(new CicsTaskRequest(transaction.value(), owner, payload,
-                reference, key, terminalOf(body.terminal()), Optional.empty(), userIdOf(owner)));
+                // user ID は coordinator が principal から決める (設計 84)
+                reference, key, terminalOf(body.terminal()), Optional.empty(), Optional.empty()));
         for (int step = 0; reply.immediateNext(); step++) {
             if (step >= MAX_IMMEDIATE) {
                 throw new IllegalStateException("RETURN IMMEDIATE chain exceeded " + MAX_IMMEDIATE + " tasks");
@@ -126,7 +127,7 @@ public class CicsJsonApiController {
                     : new IdempotencyKey("api-" + UUID.randomUUID().toString().replace("-", ""));
             reply = coordinator.launch(new CicsTaskRequest(next.nextTransaction().value(), owner, next.payload(),
                     Optional.of(new ConversationReference(next.id(), next.version())), stepKey,
-                    Optional.empty(), Optional.empty(), userIdOf(owner)));
+                    Optional.empty(), Optional.empty(), Optional.empty()));
         }
         return ResponseEntity.ok(replyOf(reply));
     }
@@ -149,6 +150,12 @@ public class CicsJsonApiController {
     @ExceptionHandler(DisabledTransactionException.class)
     public ResponseEntity<ProblemDetail> disabled() {
         return problem(HttpStatus.FORBIDDEN, "The transaction is disabled.");
+    }
+
+    @ExceptionHandler(dev.cobolonjava.cics.TransactionNotAuthorizedException.class)
+    public ResponseEntity<ProblemDetail> notAuthorized() {
+        // user ID や権限の構成は応答に出さない
+        return problem(HttpStatus.FORBIDDEN, "The user is not authorized to run the transaction.");
     }
 
     @ExceptionHandler({CicsInputLimitException.class, IllegalArgumentException.class,
@@ -241,11 +248,6 @@ public class CicsJsonApiController {
         throw new IllegalArgumentException("unsupported AID");
     }
 
-    /** CICS の user ID の形 (8 文字まで) に収まる principal 名だけを user ID にする。推測で切り詰めない。 */
-    private static Optional<String> userIdOf(String principal) {
-        String upper = principal.toUpperCase(Locale.ROOT);
-        return upper.matches("[A-Z0-9@#$]{1,8}") ? Optional.of(upper) : Optional.empty();
-    }
 
     private static CicsApiReply replyOf(CicsTaskReply reply) {
         Base64.Encoder encoder = Base64.getEncoder();

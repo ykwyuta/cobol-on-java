@@ -417,6 +417,62 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLのSTART USERIDは代理の権限を確かめてそのuser IDで起こし、権限が無ければDFHRESP(NOTAUTH)")
+    void startsTasksWithUserIds() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> issuer = compile(loader, "USERPGM", List.of(
+                "EXEC CICS START TRANSID('TX02') USERID('BATCH01') REQID('USER1') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'S' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS START TRANSID('TX02') USERID('INTRUDER') REQID('USER2') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NOTAUTH) MOVE 'N' TO LK-AREA(2:1) END-IF"));
+        List<dev.cobolonjava.cics.CicsStartData> captured = new java.util.ArrayList<>();
+        dev.cobolonjava.cics.CicsStartPort port = new dev.cobolonjava.cics.CicsStartPort() {
+            @Override
+            public Result start(Instant expiration, dev.cobolonjava.cics.CicsStartData data) {
+                captured.add(data);
+                return new Result(dev.cobolonjava.cics.CicsResponseCode.NORMAL, 0);
+            }
+
+            @Override
+            public Result cancel(String requestId) {
+                return new Result(dev.cobolonjava.cics.CicsResponseCode.NOTFND, 0);
+            }
+
+            @Override
+            public String newRequestId() {
+                return "GEN00001";
+            }
+        };
+        dev.cobolonjava.cics.CicsSecurityPort security = new dev.cobolonjava.cics.CicsSecurityPort() {
+            @Override
+            public Optional<String> userIdOf(String principal) {
+                return Optional.empty();
+            }
+
+            @Override
+            public boolean mayAttach(Optional<String> userId, TransId transaction) {
+                return true;
+            }
+
+            @Override
+            public boolean maySurrogate(Optional<String> userId, String surrogateUserId) {
+                return surrogateUserId.equals("BATCH01");
+            }
+        };
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("USERPGM", issuer).build();
+
+        TaskCompletion completion = new CobolCicsTaskProgram(CobolRuntime.builder(catalog).classLoader(loader).build(),
+                2, dev.cobolonjava.cics.CicsEnvironment.unconfigured().withStarts(port).withSecurity(security))
+                .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("USERPGM"),
+                                Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (action, ignored) -> { });
+
+        assertEquals("SNIT", CodePages.DEFAULT.decode(completion.payload().commarea()));
+        assertEquals(1, captured.size());
+        assertEquals(Optional.of("BATCH01"), captured.get(0).userId());
+    }
+
+    @Test
     @DisplayName("生成COBOLのRETRIEVE WAITは、端末へ出すSTARTでまとめた次のデータを読み、読み尽くしたらportに次を求める")
     void retrieveWaitReadsLaterStarts() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -514,7 +570,8 @@ class CicsGenerationTest {
         assertEquals("REIT", CodePages.DEFAULT.decode(retrieved.payload().commarea()));
 
         assertRejected("EXEC CICS START TRANSID('TX02') NOCHECK END-EXEC", "unsupported START option: NOCHECK");
-        assertRejected("EXEC CICS START TRANSID('TX02') USERID('U1') END-EXEC", "unsupported START option: USERID");
+        assertRejected("EXEC CICS START TRANSID('TX02') USERID('U1') TERMID('T001') END-EXEC",
+                "START USERID with TERMID is not supported");
         assertRejected("EXEC CICS START TRANSID('TX02') TERMID(WS-PGM) END-EXEC",
                 "TERMID data area must be a 4-byte alphanumeric item");
         assertRejected("EXEC CICS START INTERVAL(0) END-EXEC", "START requires TRANSID");

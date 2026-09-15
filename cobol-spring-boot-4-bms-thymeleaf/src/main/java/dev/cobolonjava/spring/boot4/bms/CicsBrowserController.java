@@ -174,6 +174,7 @@ public class CicsBrowserController implements SmartLifecycle {
             // task を動かす前に断ったもの (冪等キーの衝突、未定義・無効の transaction、入力の形) は端末の会話を残す。
             // 会話の衝突、ABEND、確定の失敗は端末の会話を外し、次は開始からにする
             boolean keepsConversation = failure instanceof IdempotencyConflictException
+                    || failure instanceof dev.cobolonjava.cics.TransactionNotAuthorizedException
                     || failure instanceof UnknownTransactionException
                     || failure instanceof DisabledTransactionException
                     || failure instanceof CicsInputLimitException
@@ -241,7 +242,7 @@ public class CicsBrowserController implements SmartLifecycle {
 
         CicsTaskReply reply = coordinator.launch(new CicsTaskRequest(transaction.value(), owner, payload,
                 reference, sentKey.orElseGet(CicsBrowserController::idempotencyKey), input,
-                Optional.of(terminalId), userIdOf(owner)));
+                Optional.of(terminalId), Optional.empty()));
         for (int step = 0; reply.immediateNext(); step++) {
             if (step >= MAX_IMMEDIATE) {
                 throw new IllegalStateException("RETURN IMMEDIATE chain exceeded " + MAX_IMMEDIATE + " tasks");
@@ -253,7 +254,7 @@ public class CicsBrowserController implements SmartLifecycle {
                     .orElseGet(CicsBrowserController::idempotencyKey);
             reply = coordinator.launch(new CicsTaskRequest(next.nextTransaction().value(), owner, next.payload(),
                     Optional.of(new ConversationReference(next.id(), next.version())), stepKey,
-                    Optional.empty(), Optional.of(terminalId), userIdOf(owner)));
+                    Optional.empty(), Optional.of(terminalId), Optional.empty()));
         }
 
         String nextTransaction = reply.nextConversation().map(next -> next.nextTransaction().value())
@@ -462,6 +463,13 @@ public class CicsBrowserController implements SmartLifecycle {
                 "The screen is out of date. Start the transaction again.");
     }
 
+    @ExceptionHandler(dev.cobolonjava.cics.TransactionNotAuthorizedException.class)
+    public String notAuthorized(HttpServletResponse response, Model model) {
+        // user ID や権限の構成は応答に出さない
+        return error(response, model, HttpServletResponse.SC_FORBIDDEN,
+                "You are not authorized to run the transaction.");
+    }
+
     @ExceptionHandler(TerminalInUseException.class)
     public String terminalInUse(HttpServletResponse response, Model model) {
         return error(response, model, HttpServletResponse.SC_CONFLICT, "The terminal is in use by another user.");
@@ -542,10 +550,6 @@ public class CicsBrowserController implements SmartLifecycle {
         return terminal;
     }
 
-    /** CICS の user ID の形 (8 文字まで) に収まる principal 名だけを user ID にする。推測で切り詰めない。 */
-    private static Optional<String> userIdOf(String principal) {
-        return CicsTerminalTasks.userIdOf(principal);
-    }
 
     private static IdempotencyKey idempotencyKey() {
         return new IdempotencyKey("web-" + UUID.randomUUID().toString().replace("-", ""));

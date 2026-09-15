@@ -119,6 +119,8 @@ public final class CicsResponseCode {
             case "ENDDATA" -> ENDDATA;
             case "ENVDEFERR" -> ENVDEFERR;
             case "TERMIDERR" -> TERMIDERR;
+            // START の TRANSID と USERID の権限 (設計 84、暫定判断 P-145)
+            case "NOTAUTH" -> NOTAUTH;
             // 非同期 API が返しうる condition (暫定判断 P-140)
             case "NOTFINISHED" -> NOTFINISHED;
             case "DISABLED" -> DISABLED;

@@ -270,7 +270,8 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
                 }
                 lease = acquired.orElseThrow();
                 owner = terminal.owner();
-                userId = CicsTerminalTasks.userIdOf(terminal.owner());
+                // 端末の利用者の user ID は、coordinator が端末の owner (principal) から決める (設計 84)
+                userId = Optional.empty();
                 terminalId = Optional.of(terminal.id());
             }
             String token = UUID.randomUUID().toString();

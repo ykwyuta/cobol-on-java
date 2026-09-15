@@ -17,6 +17,7 @@ public final class CicsTaskCoordinator {
     private final ConversationIdFactory conversationIds;
     private final Clock clock;
     private final Optional<CicsOutcomeStorePort> outcomes;
+    private final CicsSecurityPort security;
 
     public CicsTaskCoordinator(
             CicsTransactionRegistry transactions,
@@ -26,7 +27,8 @@ public final class CicsTaskCoordinator {
             CicsTaskPolicy policy,
             ConversationIdFactory conversationIds,
             Clock clock) {
-        this(transactions, conversations, boundaries, programs, policy, conversationIds, clock, Optional.empty());
+        this(transactions, conversations, boundaries, programs, policy, conversationIds, clock, Optional.empty(),
+                CicsSecurityPort.derived());
     }
 
     /**
@@ -44,7 +46,27 @@ public final class CicsTaskCoordinator {
             Clock clock,
             CicsOutcomeStorePort outcomes) {
         this(transactions, conversations, boundaries, programs, policy, conversationIds, clock,
-                Optional.of(outcomes));
+                Optional.of(outcomes), CicsSecurityPort.derived());
+    }
+
+    /**
+     * 利用者の user ID と transaction の attach の権限を確かめる coordinator (設計 84、暫定判断 P-145)。
+     *
+     * <p>要求が user ID を持たなければ owner (principal) から {@link CicsSecurityPort#userIdOf} で決め、どの入口の task も
+     * 起こす前に {@link CicsSecurityPort#mayAttach} を確かめる。
+     */
+    public CicsTaskCoordinator(
+            CicsTransactionRegistry transactions,
+            ConversationStorePort conversations,
+            CicsTaskBoundaryFactory boundaries,
+            CicsTaskProgramPort programs,
+            CicsTaskPolicy policy,
+            ConversationIdFactory conversationIds,
+            Clock clock,
+            CicsOutcomeStorePort outcomes,
+            CicsSecurityPort security) {
+        this(transactions, conversations, boundaries, programs, policy, conversationIds, clock,
+                Optional.of(outcomes), security);
     }
 
     private CicsTaskCoordinator(
@@ -55,7 +77,9 @@ public final class CicsTaskCoordinator {
             CicsTaskPolicy policy,
             ConversationIdFactory conversationIds,
             Clock clock,
-            Optional<CicsOutcomeStorePort> outcomes) {
+            Optional<CicsOutcomeStorePort> outcomes,
+            CicsSecurityPort security) {
+        this.security = Objects.requireNonNull(security, "security");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.conversations = Objects.requireNonNull(conversations, "conversations");
         this.boundaries = Objects.requireNonNull(boundaries, "boundaries");
@@ -78,6 +102,8 @@ public final class CicsTaskCoordinator {
         Instant startedAt = clock.instant();
         CicsTransactionDefinition definition = transactions.resolve(request.transactionId());
         definition.validate(request.payload());
+        // 冪等キーを予約する前に確かめる。権限の無い要求は結果を覚えず、task も起こさない
+        request = authorize(request, definition);
         if (outcomes.isEmpty()) {
             return run(request, definition, startedAt, false);
         }
@@ -106,6 +132,22 @@ public final class CicsTaskCoordinator {
             }
             throw failure;
         }
+    }
+
+    /**
+     * 要求の user ID を決めて attach の権限を確かめる。user ID を持つ要求 (START の USERID、ATI の USERID) はそれを使い、
+     * 持たなければ owner (principal) から決める。
+     */
+    private CicsTaskRequest authorize(CicsTaskRequest request, CicsTransactionDefinition definition) {
+        Optional<String> userId = request.userId().isPresent()
+                ? request.userId() : security.userIdOf(request.owner());
+        if (!security.mayAttach(userId, definition.transId())) {
+            throw new TransactionNotAuthorizedException(definition.transId());
+        }
+        return userId.equals(request.userId()) ? request
+                : new CicsTaskRequest(request.transactionId(), request.owner(), request.payload(),
+                        request.conversation(), request.idempotencyKey(), request.terminalInput(),
+                        request.terminalId(), userId, request.start());
     }
 
     private CicsTaskReply run(CicsTaskRequest request, CicsTransactionDefinition definition, Instant startedAt,

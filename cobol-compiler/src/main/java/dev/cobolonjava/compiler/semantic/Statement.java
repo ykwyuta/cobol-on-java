@@ -195,6 +195,8 @@ public sealed interface Statement {
             DataReference queueData,
             String terminalLiteral,
             DataReference terminalData,
+            String userLiteral,
+            DataReference userData,
             boolean protect,
             boolean waitForData,
             boolean suppressDefaultHandling,

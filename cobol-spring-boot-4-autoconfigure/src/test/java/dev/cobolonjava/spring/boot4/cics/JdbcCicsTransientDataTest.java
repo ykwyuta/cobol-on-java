@@ -171,7 +171,8 @@ class JdbcCicsTransientDataTest {
         CicsTransientDataTrigger trigger = triggered.poll();
         assertEquals(Optional.of("PRT1"), trigger.terminalId());
         assertEquals("alice", trigger.owner());
-        assertEquals(Optional.of("ALICE"), trigger.userId());
+        // user ID は coordinator が端末の owner から決める
+        assertEquals(Optional.empty(), trigger.userId());
         // 空にせず正常に終わったので、同じ task をまた起こす
         assertEquals("PENDING", state("PRTQ"));
         CicsTerminalRegistryPort.Terminal after = terminals.find("PRT1", NOW).orElseThrow();

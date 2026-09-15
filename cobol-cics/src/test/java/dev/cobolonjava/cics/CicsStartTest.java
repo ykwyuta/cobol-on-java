@@ -189,6 +189,73 @@ class CicsStartTest {
     }
 
     @Test
+    @DisplayName("START USERIDは代理の権限が無ければNOTAUTH 9、起こすtaskのuser IDがTRANSIDを起こせなければNOTAUTH 7、通ればそのuser IDで起こす")
+    void checksSurrogateAndTransactionSecurity() {
+        List<CicsStartData> captured = new ArrayList<>();
+        CicsStartPort port = new CicsStartPort() {
+            @Override
+            public Result start(Instant expiration, CicsStartData data) {
+                captured.add(data);
+                return new Result(CicsResponseCode.NORMAL, 0);
+            }
+
+            @Override
+            public Result cancel(String requestId) {
+                return new Result(CicsResponseCode.NOTFND, 0);
+            }
+
+            @Override
+            public String newRequestId() {
+                return "GEN00001";
+            }
+        };
+        // CICSUSER は BATCH01 を代理でき、BATCH01 は TX02 だけを起こせる
+        CicsSecurityPort security = new CicsSecurityPort() {
+            @Override
+            public Optional<String> userIdOf(String principal) {
+                return Optional.empty();
+            }
+
+            @Override
+            public boolean mayAttach(Optional<String> userId, TransId transaction) {
+                return !userId.equals(Optional.of("BATCH01")) || transaction.value().equals("TX02");
+            }
+
+            @Override
+            public boolean maySurrogate(Optional<String> userId, String surrogateUserId) {
+                return userId.equals(Optional.of("CICSUSER")) && surrogateUserId.equals("BATCH01");
+            }
+        };
+        ProgramContext context = context(task("task_userid"),
+                CicsEnvironment.unconfigured().withStarts(port).withSecurity(security));
+
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null, null, null,
+                -1, "U1", null, null, null, null, null, null, null, null, null, "BATCH01", null, false, true);
+        assertEquals(CicsResponseCode.NORMAL, resp());
+        assertEquals(Optional.of("BATCH01"), captured.get(0).userId());
+
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null, null, null,
+                -1, "U2", null, null, null, null, null, null, null, null, null, "OTHER1", null, false, true);
+        assertEquals(CicsResponseCode.NOTAUTH, resp());
+        assertEquals(9, resp2());
+
+        CicsRuntimeOps.startCondition(context, "TX03", null, START_INTERVAL, number(0), null, null, null, null, null,
+                -1, "U3", null, null, null, null, null, null, null, null, null, "BATCH01", null, false, true);
+        assertEquals(CicsResponseCode.NOTAUTH, resp());
+        assertEquals(7, resp2());
+        assertEquals(1, captured.size());
+
+        // USERID を書かなければ START を出した task の user ID で起こす
+        start(context, "TX03", START_INTERVAL, number(0), null, null, null, null, -1, "U4", null);
+        assertEquals(CicsResponseCode.NORMAL, resp());
+        assertEquals(Optional.of("CICSUSER"), captured.get(1).userId());
+
+        assertThrows(CicsTaskStateException.class, () -> CicsRuntimeOps.startCondition(context, "TX02", null,
+                START_INTERVAL, number(0), null, null, null, null, null, -1, "U5", null, null, null, null, null, null,
+                null, "W001", null, "BATCH01", null, false, true));
+    }
+
+    @Test
     @DisplayName("RETRIEVE WAITは読み尽くしていればportから次に満了したSTARTを受けて読み、端末の無いSTARTのtaskでは断る")
     void retrieveWaitReceivesLaterStarts() {
         CicsStartData first = new CicsStartData("W1", TransId.of("TX02"), CP.encode("one"), Optional.empty(),
