@@ -64,6 +64,7 @@ public final class CicsTaskCoordinator {
             CompletionPlan plan = planCompletion(request, taskId, lease, completion, clock.instant());
             commitStarted = true;
             boundary.commit(plan.mutation, clock.instant());
+            runAfterCommit(completion);
             return new CicsTaskReply(taskId, definition.transId(), completion.payload(), plan.next,
                     completion.immediate(), completion.screen());
         } catch (RuntimeException failure) {
@@ -87,6 +88,23 @@ public final class CicsTaskCoordinator {
                         throw closeFailure;
                     }
                 }
+            }
+        }
+    }
+
+    private static final System.Logger LOG = System.getLogger(CicsTaskCoordinator.class.getName());
+
+    /**
+     * 暗黙の同期点のあとに行うこと (PROTECT の START、暫定判断 P-141)。
+     *
+     * <p>task はもう commit したので、ここでの失敗は task の結果を変えず記録だけする。
+     */
+    private static void runAfterCommit(TaskCompletion completion) {
+        for (Runnable action : completion.afterCommit()) {
+            try {
+                action.run();
+            } catch (RuntimeException failure) {
+                LOG.log(System.Logger.Level.WARNING, "an action after the task commit failed", failure);
             }
         }
     }

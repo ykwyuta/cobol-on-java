@@ -25,6 +25,14 @@ public interface CicsStartPort {
      */
     Result start(Instant expiration, CicsStartData data);
 
+    /**
+     * START を登録できるかだけを確かめる。PROTECT の START は命令の時点で条件を返し、同期点で {@link #start} する。
+     * 既定は NORMAL。
+     */
+    default Result check(CicsStartData data) {
+        return new Result(CicsResponseCode.NORMAL, 0);
+    }
+
     /** 未満了の START を取り消す。無ければ NOTFND。 */
     Result cancel(String requestId);
 
@@ -36,6 +44,11 @@ public interface CicsStartPort {
         return new CicsStartPort() {
             @Override
             public Result start(Instant expiration, CicsStartData data) {
+                throw new CicsTaskStateException("START requires a configured interval control port");
+            }
+
+            @Override
+            public Result check(CicsStartData data) {
                 throw new CicsTaskStateException("START requires a configured interval control port");
             }
 

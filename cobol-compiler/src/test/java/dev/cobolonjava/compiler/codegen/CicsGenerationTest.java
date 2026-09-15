@@ -342,6 +342,36 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("PROTECTのSTARTはtaskの終わりのcommitまで登録せず、commitのあとに始まる")
+    void protectedStartWaitsForTaskCommit() throws InterruptedException {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> issuer = compile(loader, "PROTPGM", List.of(
+                "EXEC CICS START TRANSID('TX02') PROTECT REQID('PROT1') END-EXEC",
+                "EXEC CICS START TRANSID('TX02') PROTECT REQID('PROT2') END-EXEC",
+                "EXEC CICS CANCEL REQID('PROT2') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'C' TO LK-AREA(1:1) END-IF"));
+        java.util.concurrent.BlockingQueue<dev.cobolonjava.cics.CicsStartData> launched =
+                new java.util.concurrent.LinkedBlockingQueue<>();
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withStarts(dev.cobolonjava.cics.CicsStartPort.inMemory(java.time.Clock.systemUTC(),
+                        id -> id.value().equals("TX02"), launched::add));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("PROTPGM", issuer).build();
+
+        TaskCompletion completion = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("PROTPGM"),
+                                Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (action, ignored) -> { });
+
+        assertEquals("CNIT", CodePages.DEFAULT.decode(completion.payload().commarea()));
+        assertEquals(null, launched.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS));
+        assertEquals(1, completion.afterCommit().size());
+        // coordinator が暗黙の同期点を commit したあとに行う
+        completion.afterCommit().forEach(Runnable::run);
+        assertEquals("PROT1", launched.poll(5, java.util.concurrent.TimeUnit.SECONDS).requestId());
+    }
+
+    @Test
     @DisplayName("生成COBOLがSTARTとCANCELを出し、起こされたtaskのRETRIEVEがFROMとRTRANSIDを読む")
     void runsStartRetrieveAndCancel() throws InterruptedException {
         GeneratedLoader loader = new GeneratedLoader();
@@ -387,7 +417,7 @@ class CicsGenerationTest {
                 (action, ignored) -> { });
         assertEquals("REIT", CodePages.DEFAULT.decode(retrieved.payload().commarea()));
 
-        assertRejected("EXEC CICS START TRANSID('TX02') PROTECT END-EXEC", "unsupported START option: PROTECT");
+        assertRejected("EXEC CICS START TRANSID('TX02') NOCHECK END-EXEC", "unsupported START option: NOCHECK");
         assertRejected("EXEC CICS START TRANSID('TX02') TERMID('T001') END-EXEC", "unsupported START option: TERMID");
         assertRejected("EXEC CICS START INTERVAL(0) END-EXEC", "START requires TRANSID");
         assertRejected("EXEC CICS START TRANSID('TX02') INTERVAL(0) TIME(0) END-EXEC", "mutually exclusive");

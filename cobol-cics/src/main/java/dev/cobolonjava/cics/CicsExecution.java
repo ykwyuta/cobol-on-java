@@ -171,6 +171,47 @@ public final class CicsExecution {
         return Optional.of(created);
     }
 
+    /** 同期点を待つ PROTECT の START (暫定判断 P-141)。REQID ごとに満了の時刻と渡すもの。 */
+    private final Map<String, Map.Entry<java.time.Instant, CicsStartData>> protectedStarts =
+            new java.util.LinkedHashMap<>();
+
+    synchronized boolean hasProtectedStart(String requestId) {
+        return protectedStarts.containsKey(requestId);
+    }
+
+    synchronized void addProtectedStart(java.time.Instant expiration, CicsStartData data) {
+        protectedStarts.put(data.requestId(), Map.entry(expiration, data));
+    }
+
+    /** 同期点を待つ START を取り消す。あれば true。 */
+    synchronized boolean cancelProtectedStart(String requestId) {
+        return protectedStarts.remove(requestId) != null;
+    }
+
+    /** ROLLBACK で、同期点を待つ START をすべて取り消す。 */
+    synchronized void discardProtectedStarts() {
+        protectedStarts.clear();
+    }
+
+    /**
+     * 同期点で始める START を取り出す。取り出したものは待ちから外れる。
+     *
+     * <p>命令の時点で登録できることは確かめてある。同期点までに状況が変わって登録できなければ失敗させる。
+     */
+    synchronized java.util.List<Runnable> takeProtectedStarts() {
+        CicsStartPort port = environment.starts();
+        java.util.List<Runnable> actions = new java.util.ArrayList<>();
+        protectedStarts.values().forEach(entry -> actions.add(() -> {
+            CicsStartPort.Result result = port.start(entry.getKey(), entry.getValue());
+            if (result.response() != CicsResponseCode.NORMAL) {
+                throw new CicsTaskStateException("protected START REQID(" + entry.getValue().requestId()
+                        + ") could not be registered at the syncpoint: RESP=" + result.response());
+            }
+        }));
+        protectedStarts.clear();
+        return actions;
+    }
+
     private int replyChannels;
 
     /**

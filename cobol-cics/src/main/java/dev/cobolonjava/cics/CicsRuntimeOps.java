@@ -281,6 +281,12 @@ public final class CicsRuntimeOps {
         CicsExecution execution = execution(context);
         execution.environment().enqueues().releaseUnitOfWork(execution.task().taskId());
         execution.environment().files().releaseUnitOfWork(execution.task().taskId());
+        // PROTECT の START は同期点で登録し、ROLLBACK なら取り消す (暫定判断 P-141)
+        if (rollback) {
+            execution.discardProtectedStarts();
+        } else {
+            execution.takeProtectedStarts().forEach(Runnable::run);
+        }
         return NO_CONDITION_TRANSFER;
     }
 
@@ -628,6 +634,26 @@ public final class CicsRuntimeOps {
             DataView from, DataView lengthArea, int lengthLiteral, String requestLiteral, byte[] requestData,
             String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
             byte[] returnTerminalData, String queueLiteral, byte[] queueData, boolean suppressDefaultHandling) {
+        return startCondition(context, transactionLiteral, transactionData, timing, hhmmss, hours, minutes, seconds,
+                from, lengthArea, lengthLiteral, requestLiteral, requestData, returnTransactionLiteral,
+                returnTransactionData, returnTerminalLiteral, returnTerminalData, queueLiteral, queueData, false,
+                suppressDefaultHandling);
+    }
+
+    /**
+     * PROTECT を書けるSTART。
+     *
+     * <p>PROTECT の START は、命令の時点で登録できるか (TRANSIDERR、IOERR) だけを確かめて task に預け、同期点で登録する。
+     * SYNCPOINT なら直ちに、task の終わりなら暗黙の同期点が commit したあとに登録する。ROLLBACK、ABEND、commit の失敗では
+     * 取り消す (START の頁: 出した task が同期点を取るまで始まらず、それより前に ABEND すれば取り消される)。
+     */
+    public static int startCondition(ProgramContext context, String transactionLiteral, byte[] transactionData,
+            int timing, dev.cobolonjava.runtime.decimal.Decimal hhmmss, dev.cobolonjava.runtime.decimal.Decimal hours,
+            dev.cobolonjava.runtime.decimal.Decimal minutes, dev.cobolonjava.runtime.decimal.Decimal seconds,
+            DataView from, DataView lengthArea, int lengthLiteral, String requestLiteral, byte[] requestData,
+            String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
+            byte[] returnTerminalData, String queueLiteral, byte[] queueData, boolean protect,
+            boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
         CicsTaskContext task = execution.task();
@@ -685,7 +711,24 @@ public final class CicsRuntimeOps {
                 optionalName(required, returnTransactionLiteral, returnTransactionData),
                 optionalName(required, returnTerminalLiteral, returnTerminalData),
                 optionalName(required, queueLiteral, queueData), task.owner(), task.userId());
-        CicsStartPort.Result result = starts.start(expiration, data);
+        CicsStartPort.Result result;
+        if (protect) {
+            if (execution.hasProtectedStart(requestId)) {
+                if (data.data().isEmpty()) {
+                    throw new CicsTaskStateException("START REQID(" + requestId + ") is already pending;"
+                            + " the condition for a START without FROM is not documented");
+                }
+                // IOERR: FROM を持つ START の REQID が既にある
+                result = new CicsStartPort.Result(CicsResponseCode.IOERR, 0);
+            } else {
+                result = starts.check(data);
+            }
+            if (result.response() == CicsResponseCode.NORMAL) {
+                execution.addProtectedStart(expiration, data);
+            }
+        } else {
+            result = starts.start(expiration, data);
+        }
         if (generated && result.response() == CicsResponseCode.NORMAL) {
             // REQID を書かなければ、CICS が作った名前を EIBREQID に置く (START の頁)
             execution.eib(required.codePage()).setRequestId(requestId, required.codePage());
@@ -747,8 +790,12 @@ public final class CicsRuntimeOps {
     public static int cancelCondition(ProgramContext context, String requestLiteral, byte[] requestData,
             boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
-        CicsStartPort.Result result = execution(required).environment().starts()
-                .cancel(intervalName(required, requestLiteral, requestData));
+        String requestId = intervalName(required, requestLiteral, requestData);
+        CicsExecution execution = execution(required);
+        // 同期点を待つ PROTECT の START は、まだ始まっていないので取り消せる
+        CicsStartPort.Result result = execution.cancelProtectedStart(requestId)
+                ? new CicsStartPort.Result(CicsResponseCode.NORMAL, 0)
+                : execution.environment().starts().cancel(requestId);
         return containerOutcome(required, CANCEL_FUNCTION, result.response(), result.response2(),
                 suppressDefaultHandling, "CANCEL");
     }

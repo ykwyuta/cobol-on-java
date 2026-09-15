@@ -2104,7 +2104,7 @@ public final class ProcedureBuilder {
         return withCicsResponse(new Statement.CicsIntervalCommand(kind, spec.transactionLiteral(), areas[0],
                 spec.timing(), times[0], times[1], times[2], times[3], data, length, spec.lengthLiteral(),
                 spec.requestLiteral(), areas[1], spec.returnTransactionLiteral(), areas[2],
-                spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4],
+                spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4], spec.protect(),
                 parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
     }
 

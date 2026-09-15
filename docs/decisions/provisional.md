@@ -4211,7 +4211,7 @@ file の状態や副索引を持たないので返さない。性能は測って
   対として扱った。START で起きていない task の RETRIEVE は失敗させる
 - FROM を持つ START の REQID が未満了の START と重なれば IOERR (START の頁)。FROM の無い形は条件が無いので失敗させる
 - EIBDS と EIBREQID を、プログラムから読める EIB の項目に足した
-- TERMID、USERID、SYSID、PROTECT、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET / WAIT、REQID の無い CANCEL は断る
+- TERMID、USERID、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET / WAIT、REQID の無い CANCEL は断る (PROTECT は P-141 で入れた)
 
 **どこがずれうるか**: 実機の START は REQID の名前で一時記憶にデータを置き、region を再起動しても残せる。ここは JVM が止まれば
 消える。端末へ出す START (TERMID) が無いので、疑似会話の端末に次の task を起こす資産は動かない。PROTECT が無いので、
@@ -4279,3 +4279,28 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
 
 **解消条件**: 実機で reply channel の名前と ABEND のときの CHANNEL、子が失敗したときの COMPSTATUS を採る。
 複数の JVM で子を動かす設計を会話ストアの外部化と合わせて入れる。
+
+## P-141 PROTECT の START は task に預け、同期点の commit のあとに登録する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsExecution.addProtectedStart` / `takeProtectedStarts`、`TaskCompletion.afterCommit`、`CicsTaskCoordinator.runAfterCommit`、`CicsStartPort.check` |
+| 関連要件 | FR-080、設計 82 §6 |
+
+**暫定の扱い**:
+
+- START の頁は「出した task が同期点を取るまで始まらず、それより前に ABEND すれば取り消される」と書く。命令の時点では
+  登録できるか (TRANSIDERR、FROM を持つ REQID の重なりの IOERR) だけを確かめて条件を返し、task の execution に預ける
+- `SYNCPOINT` なら直ちに登録し、`SYNCPOINT ROLLBACK` なら取り消す。ROLLBACK での取り消しは頁に明示が無く、UOW を戻す以上
+  START も戻すと読んだ推定である
+- task の終わりの暗黙の同期点は coordinator の task 境界の commit である。task program は預かった START を
+  `TaskCompletion.afterCommit` に載せ、coordinator が commit に成功したあとに登録する。commit の前に失敗すれば登録しない
+- commit のあとの登録で失敗しても、task はもう commit したので結果は変えず記録だけする
+- 同期点の前の PROTECT の START は、まだ始まっていないので `CANCEL REQID` で取り消せる
+- coordinator を通さず task program を直接動かす呼び手は、`afterCommit` を自分で行わなければ START は始まらない
+
+**どこがずれうるか**: 実機の PROTECT の START は回復可能な一時記憶として UOW に参加し、commit と原子的である。ここは commit の
+あとに別に登録するので、その間に JVM が止まれば START は消える。
+
+**解消条件**: 実機で ROLLBACK のときの PROTECT の START を採る。START の登録を task 境界の UOW に参加させる設計を入れる。

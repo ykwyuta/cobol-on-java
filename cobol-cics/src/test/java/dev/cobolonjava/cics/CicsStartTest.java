@@ -179,6 +179,36 @@ class CicsStartTest {
     }
 
     @Test
+    @DisplayName("PROTECTのSTARTは命令の時点で条件を返し、同期点で登録し、ROLLBACKで取り消す")
+    void protectedStartsWaitForSyncpoint() throws InterruptedException {
+        BlockingQueue<CicsStartData> launched = new LinkedBlockingQueue<>();
+        CicsStartPort port = CicsStartPort.inMemory(Clock.systemUTC(), id -> id.value().equals("TX02"), launched::add);
+        ProgramContext context = context(task("task_protect"), CicsEnvironment.unconfigured().withStarts(port));
+
+        CicsRuntimeOps.startCondition(context, "NOPE", null, START_INTERVAL, number(0), null, null, null, null, null,
+                -1, "P0", null, null, null, null, null, null, null, true, true);
+        assertEquals(CicsResponseCode.TRANSIDERR, resp());
+
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null,
+                text("one"), null, -1, "P1", null, null, null, null, null, null, null, true, true);
+        assertEquals(CicsResponseCode.NORMAL, resp());
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null,
+                text("dup"), null, -1, "P1", null, null, null, null, null, null, null, true, true);
+        assertEquals(CicsResponseCode.IOERR, resp());
+        assertEquals(null, launched.poll(200, TimeUnit.MILLISECONDS));
+
+        execution.takeProtectedStarts().forEach(Runnable::run);
+        assertEquals("P1", launched.poll(5, TimeUnit.SECONDS).requestId());
+
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null, null, null,
+                -1, "P2", null, null, null, null, null, null, null, true, true);
+        execution.discardProtectedStarts();
+        assertTrue(execution.takeProtectedStarts().isEmpty());
+        CicsRuntimeOps.cancelCondition(context, "P2", null, true);
+        assertEquals(CicsResponseCode.NOTFND, resp());
+    }
+
+    @Test
     @DisplayName("TIMEとATはtaskの地方時の時刻で、6時間前までは直ちに、それより前は翌日、時が23を越えれば翌日以降")
     void computesExpirationFromHostTime() {
         List<Instant> expirations = new ArrayList<>();

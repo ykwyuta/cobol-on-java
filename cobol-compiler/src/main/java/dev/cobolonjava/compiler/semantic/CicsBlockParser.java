@@ -56,7 +56,7 @@ final class CicsBlockParser {
     /** 間隔制御の命令ごとに、RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
     private static final List<Set<String>> INTERVAL_OPTIONS = List.of(
             Set.of("TRANSID", "INTERVAL", "TIME", "AFTER", "AT", "HOURS", "MINUTES", "SECONDS", "FROM", "LENGTH",
-                    "REQID", "RTRANSID", "RTERMID", "QUEUE"),
+                    "REQID", "RTRANSID", "RTERMID", "QUEUE", "PROTECT"),
             Set.of("INTO", "LENGTH", "RTRANSID", "RTERMID", "QUEUE"),
             Set.of("REQID"));
     /** 一時記憶・一時データの命令。TS / TD を省いた形は受けない。 */
@@ -886,7 +886,7 @@ final class CicsBlockParser {
     /**
      * START / RETRIEVE / CANCEL を読む (暫定判断 P-138)。
      *
-     * <p>START の TERMID (端末へ出す task)、USERID、SYSID、PROTECT、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET と WAIT、
+     * <p>START の TERMID (端末へ出す task)、USERID、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET と WAIT、
      * REQID の無い CANCEL (POST の取消し) と CANCEL の TRANSID / SYSID は、端末・利用者・遠隔・同期点の設計を
      * 持たないので名前をつけて断る。
      */
@@ -926,7 +926,9 @@ final class CicsBlockParser {
         String[] returnTransaction = new String[2];
         String[] returnTerminal = new String[2];
         String[] queue = new String[2];
+        boolean protect = false;
         if (kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_START) {
+            protect = fileFlag(options, "PROTECT", 1) != 0;
             if (!options.containsKey("TRANSID")) {
                 throw new IllegalArgumentException("START requires TRANSID");
             }
@@ -1012,7 +1014,7 @@ final class CicsBlockParser {
                 null, null, null, null, null, null, null, null,
                 new IntervalSpec(kind, transaction[0], transaction[1], timing, hhmmss, hours, minutes, seconds, data,
                         lengthName, lengthLiteral, request[0], request[1], returnTransaction[0], returnTransaction[1],
-                        returnTerminal[0], returnTerminal[1], queue[0], queue[1]));
+                        returnTerminal[0], returnTerminal[1], queue[0], queue[1], protect));
     }
 
     /**
@@ -1767,7 +1769,7 @@ final class CicsBlockParser {
                         String hours, String minutes, String seconds, String data, String length, int lengthLiteral,
                         String requestLiteral, String requestData, String returnTransactionLiteral,
                         String returnTransactionData, String returnTerminalLiteral, String returnTerminalData,
-                        String queueLiteral, String queueData) {
+                        String queueLiteral, String queueData, boolean protect) {
     }
 
     /**

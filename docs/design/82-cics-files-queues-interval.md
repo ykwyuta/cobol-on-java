@@ -164,6 +164,7 @@ bean にし、利用者が `CicsEnvironment.withStarts` で region の構成へ�
 | 起こす task | 端末と COMMAREA を持たない。START を出した task と同じ owner と user ID で、別の thread から coordinator で起こす。起こした task の失敗は記録するだけ | START の頁 (USERID を書かなければ出した task の user ID) |
 | RETRIEVE | START で起きた task だけ。1 度読めば次は ENDDATA。START が書かなかった option (FROM の無い START への INTO を含む) は ENVDEFERR で、読んだことにしない。長いデータは切り詰めて LENGERR | RETRIEVE の頁 |
 | CANCEL | 未満了の START を REQID で取り消す。無ければ NOTFND | CANCEL の頁 |
+| PROTECT | 命令の時点で TRANSIDERR / IOERR を確かめて task に預け、同期点で登録する。SYNCPOINT なら直ちに、task の終わりなら coordinator が暗黙の同期点を commit したあと。ROLLBACK、ABEND、commit の失敗では取り消す。同期点の前なら CANCEL で取り消せる | START の頁 (同期点まで始まらず、その前の ABEND で取り消される)。ROLLBACK での取り消しは推定 |
 | 回復 | 未満了の START は JVM が止まれば消える | — |
 
 | 命令 | EIBFN | 返す条件 |
@@ -174,7 +175,7 @@ bean にし、利用者が `CicsEnvironment.withStarts` で region の構成へ�
 
 RESP2 は、INVREQ の 4 / 5 / 6 のほかは頁が示さないので 0 とする。
 
-断るもの: START の `TERMID` (端末へ出す task)、`USERID`、`SYSID`、`PROTECT` (同期点まで遅らせる)、`NOCHECK`、`CHANNEL`、
+断るもの: START の `TERMID` (端末へ出す task)、`USERID`、`SYSID`、`NOCHECK`、`CHANNEL`、
 `ATTACH`、RETRIEVE の `SET` と `WAIT`、`REQID` の無い CANCEL (POST の取消し)、CANCEL の `TRANSID` / `SYSID`。
 FROM の無い START の REQID が重なる形と、START で起きていない task の RETRIEVE は、条件が書かれていないので失敗させる。
 

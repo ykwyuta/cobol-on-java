@@ -1235,10 +1235,11 @@ public final class ProgramGenerator {
             names.get(3).run();
             pushNullableString(statement.queueLiteral());
             names.get(4).run();
+            run.visitInsn(statement.protect() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             run.visitInsn(suppress);
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "startCondition",
                     "(" + CONTEXT + name + "I" + DECIMAL + DECIMAL + DECIMAL + DECIMAL + view + view + "I"
-                            + name + name + name + name + "Z)I", false);
+                            + name + name + name + name + "ZZ)I", false);
             emitCicsConditionTransfer();
         });
     }

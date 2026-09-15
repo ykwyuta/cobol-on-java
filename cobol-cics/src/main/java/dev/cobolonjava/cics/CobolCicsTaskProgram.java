@@ -87,10 +87,12 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                     // PUT CONTAINERで増えた分も、入力と同じ上限で断る
                     definition.validate(returned);
                     return new TaskCompletion(Optional.empty(), returned)
-                            .withScreen(execution.terminalScreen());
+                            .withScreen(execution.terminalScreen())
+                            .withAfterCommit(execution.takeProtectedStarts());
                 } catch (CicsProgramTransfer transfer) {
                     if (transfer.control() instanceof TaskCompletion completion) {
-                        return completion.withScreen(execution.terminalScreen());
+                        return completion.withScreen(execution.terminalScreen())
+                                .withAfterCommit(execution.takeProtectedStarts());
                     }
                     TransferControl control = (TransferControl) transfer.control();
                     if (++transfers > maxTransfers) {

@@ -46,7 +46,7 @@ final class InMemoryCicsStarts implements CicsStartPort, AutoCloseable {
     }
 
     @Override
-    public synchronized Result start(Instant expiration, CicsStartData data) {
+    public synchronized Result check(CicsStartData data) {
         if (!defined.test(data.transaction())) {
             // TRANSIDERR: 起こす transaction が定義されていない
             return new Result(CicsResponseCode.TRANSIDERR, 0);
@@ -60,6 +60,16 @@ final class InMemoryCicsStarts implements CicsStartPort, AutoCloseable {
             throw new CicsTaskStateException("START REQID(" + id + ") is already pending;"
                     + " the condition for a START without FROM is not documented");
         }
+        return NORMAL;
+    }
+
+    @Override
+    public synchronized Result start(Instant expiration, CicsStartData data) {
+        Result checked = check(data);
+        if (checked.response() != CicsResponseCode.NORMAL) {
+            return checked;
+        }
+        String id = data.requestId();
         long delay = Math.max(0, Duration.between(clock.instant(), expiration).toMillis());
         // 満了の処理はこの監視を取ってから pending を見るので、登録より先に起きることは無い
         pending.put(id, scheduler.schedule(() -> expire(id, data), delay, TimeUnit.MILLISECONDS));
