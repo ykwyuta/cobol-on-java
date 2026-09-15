@@ -47,6 +47,11 @@ final class InMemoryCicsStarts implements CicsStartPort, AutoCloseable {
 
     @Override
     public synchronized Result check(CicsStartData data) {
+        if (data.terminalId().isPresent()) {
+            // 端末の登録を持たないので、端末があるか (TERMIDERR) を推測で答えない
+            throw new CicsTaskStateException("START TERMID requires a start port that knows the terminals"
+                    + " (JdbcCicsStarts); this in-memory port does not");
+        }
         if (!defined.test(data.transaction())) {
             // TRANSIDERR: 起こす transaction が定義されていない
             return new Result(CicsResponseCode.TRANSIDERR, 0);

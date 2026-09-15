@@ -372,6 +372,51 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLのSTART TERMIDは定数とデータ名の端末をportへ渡し、DFHRESP(TERMIDERR)で判定できる")
+    void startsTasksOnTerminals() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> issuer = compile(loader, "TERMPGM", List.of(
+                "MOVE 'W001' TO WS-ABCODE",
+                "EXEC CICS START TRANSID('TX02') TERMID(WS-ABCODE) REQID('TERM1') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) MOVE 'S' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS START TRANSID('TX02') TERMID('ZZZZ') RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(TERMIDERR) MOVE 'T' TO LK-AREA(2:1) END-IF"));
+        List<dev.cobolonjava.cics.CicsStartData> captured = new java.util.ArrayList<>();
+        dev.cobolonjava.cics.CicsStartPort port = new dev.cobolonjava.cics.CicsStartPort() {
+            @Override
+            public Result start(Instant expiration, dev.cobolonjava.cics.CicsStartData data) {
+                if (data.terminalId().equals(Optional.of("ZZZZ"))) {
+                    return new Result(dev.cobolonjava.cics.CicsResponseCode.TERMIDERR, 0);
+                }
+                captured.add(data);
+                return new Result(dev.cobolonjava.cics.CicsResponseCode.NORMAL, 0);
+            }
+
+            @Override
+            public Result cancel(String requestId) {
+                return new Result(dev.cobolonjava.cics.CicsResponseCode.NOTFND, 0);
+            }
+
+            @Override
+            public String newRequestId() {
+                return "GEN00001";
+            }
+        };
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("TERMPGM", issuer).build();
+
+        TaskCompletion completion = new CobolCicsTaskProgram(CobolRuntime.builder(catalog).classLoader(loader).build(),
+                2, dev.cobolonjava.cics.CicsEnvironment.unconfigured().withStarts(port))
+                .execute(new CicsTransactionDefinition(TransId.of("TX01"), ProgramId.of("TERMPGM"),
+                                Duration.ofSeconds(5), 16, 0, 0, 0, true),
+                        CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")), task(), (action, ignored) -> { });
+
+        assertEquals("STIT", CodePages.DEFAULT.decode(completion.payload().commarea()));
+        assertEquals(1, captured.size());
+        assertEquals(Optional.of("W001"), captured.get(0).terminalId());
+        assertEquals("TERM1", captured.get(0).requestId());
+    }
+
+    @Test
     @DisplayName("生成COBOLがSTARTとCANCELを出し、起こされたtaskのRETRIEVEがFROMとRTRANSIDを読む")
     void runsStartRetrieveAndCancel() throws InterruptedException {
         GeneratedLoader loader = new GeneratedLoader();
@@ -418,7 +463,9 @@ class CicsGenerationTest {
         assertEquals("REIT", CodePages.DEFAULT.decode(retrieved.payload().commarea()));
 
         assertRejected("EXEC CICS START TRANSID('TX02') NOCHECK END-EXEC", "unsupported START option: NOCHECK");
-        assertRejected("EXEC CICS START TRANSID('TX02') TERMID('T001') END-EXEC", "unsupported START option: TERMID");
+        assertRejected("EXEC CICS START TRANSID('TX02') USERID('U1') END-EXEC", "unsupported START option: USERID");
+        assertRejected("EXEC CICS START TRANSID('TX02') TERMID(WS-PGM) END-EXEC",
+                "TERMID data area must be a 4-byte alphanumeric item");
         assertRejected("EXEC CICS START INTERVAL(0) END-EXEC", "START requires TRANSID");
         assertRejected("EXEC CICS START TRANSID('TX02') INTERVAL(0) TIME(0) END-EXEC", "mutually exclusive");
         assertRejected("EXEC CICS START TRANSID('TX02') HOURS(1) END-EXEC", "require AFTER or AT");

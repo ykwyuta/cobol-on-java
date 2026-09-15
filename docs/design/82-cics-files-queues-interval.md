@@ -171,13 +171,16 @@ bean にし、利用者が `CicsEnvironment.withStarts` で region の構成へ�
 
 | 命令 | EIBFN | 返す条件 |
 | --- | --- | --- |
-| START | 1008 | INVREQ 16/4・5・6、LENGERR 22 (LENGTH が 0 以下)、TRANSIDERR 28、IOERR 17 (FROM を持つ START の REQID が未満了の START と重なる) |
+| START | 1008 | INVREQ 16/4・5・6、LENGERR 22 (LENGTH が 0 以下)、TRANSIDERR 28、IOERR 17 (FROM を持つ START の REQID が未満了の START と重なる)、TERMIDERR 11 (TERMID の端末が無い。設計 83 §5) |
 | RETRIEVE | 100A | ENDDATA 29、ENVDEFERR 56、LENGERR 22 |
 | CANCEL | 100C | NOTFND 13 |
 
 RESP2 は、INVREQ の 4 / 5 / 6 のほかは頁が示さないので 0 とする。
 
-断るもの: START の `TERMID` (端末へ出す task)、`USERID`、`SYSID`、`NOCHECK`、`CHANNEL`、
+START の `TERMID` (端末へ出す task) は設計 83 §5 で入れた。端末の登録を持つ `JdbcCicsStarts` だけが受け、
+1 つの JVM の中の `inMemory` は断る。
+
+断るもの: START の `USERID`、`SYSID`、`NOCHECK`、`CHANNEL`、
 `ATTACH`、RETRIEVE の `SET` と `WAIT`、`REQID` の無い CANCEL (POST の取消し)、CANCEL の `TRANSID` / `SYSID`。
 FROM の無い START の REQID が重なる形と、START で起きていない task の RETRIEVE は、条件が書かれていないので失敗させる。
 

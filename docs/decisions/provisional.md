@@ -4211,11 +4211,12 @@ file の状態や副索引を持たないので返さない。性能は測って
   対として扱った。START で起きていない task の RETRIEVE は失敗させる
 - FROM を持つ START の REQID が未満了の START と重なれば IOERR (START の頁)。FROM の無い形は条件が無いので失敗させる
 - EIBDS と EIBREQID を、プログラムから読める EIB の項目に足した
-- TERMID、USERID、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET / WAIT、REQID の無い CANCEL は断る (PROTECT は P-141 で入れた)
+- USERID、SYSID、NOCHECK、CHANNEL、ATTACH、RETRIEVE の SET / WAIT、REQID の無い CANCEL は断る (PROTECT は P-141、
+  TERMID は P-144 / 設計 83 §5 で入れた)
 
 **どこがずれうるか**: 実機の START は REQID の名前で一時記憶にデータを置き、region を再起動しても残せる。ここは JVM が止まれば
-消える。端末へ出す START (TERMID) が無いので、疑似会話の端末に次の task を起こす資産は動かない。PROTECT が無いので、
-同期点に結び付けた START も断る。
+消える (表に置く `JdbcCicsStarts` は残す)。端末へ出す START (TERMID) は `JdbcCicsStarts` だけが受け、task の画面は
+まだブラウザに届かない (設計 83 §7 の増分)。
 
 **解消条件**: 実機で過ぎた時刻の START、ENVDEFERR の対 (INTO と FROM)、生成される REQID の形を採る。TERMID を端末の
 adapter と合わせて設計する。PROTECT を task の境界の commit と合わせて入れる。
@@ -4387,7 +4388,7 @@ purge を合わせる等)。実 container と Spring Session Redis で listener 
 | 項目 | 内容 |
 | --- | --- |
 | 状態 | 未解決 (2026-09-15)。設計を決めた段階で未実装。利用者が 4 つの問いに答えた |
-| 場所 | 設計 83。実装は `CicsTerminalRegistryPort`、`JdbcTerminalRegistry`、`CicsBrowserController` (増分 1)、`JdbcCicsStarts`、`JdbcCicsTransientData` (増分 2) |
+| 場所 | 設計 83。実装は `CicsTerminalRegistryPort`、`JdbcTerminalRegistry`、`CicsBrowserController` (増分 1)、`JdbcCicsStarts`、`JdbcCicsTransientData` (増分 2)、`CicsStartPort.conversing`、`CicsStartData.withFollowing` (増分 3) |
 | 関連要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 
 **暫定の扱い**:

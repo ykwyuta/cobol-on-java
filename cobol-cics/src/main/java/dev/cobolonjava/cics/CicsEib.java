@@ -172,6 +172,7 @@ public final class CicsEib {
             java.util.Map.entry(CicsResponseCode.DISABLED, java.util.Set.of(0x3400)),
             java.util.Map.entry(CicsResponseCode.ENDDATA, java.util.Set.of(0x1000)),
             java.util.Map.entry(CicsResponseCode.ENVDEFERR, java.util.Set.of(0x1000)),
+            java.util.Map.entry(CicsResponseCode.TERMIDERR, java.util.Set.of(0x1000)),
             java.util.Map.entry(CicsResponseCode.DUPREC, java.util.Set.of(0x0600)),
             java.util.Map.entry(CicsResponseCode.INVREQ, java.util.Set.of(0x0600, 0x0A00, 0x1000, 0x3400)),
             java.util.Map.entry(CicsResponseCode.QIDERR, java.util.Set.of(0x0800, 0x0A00)),

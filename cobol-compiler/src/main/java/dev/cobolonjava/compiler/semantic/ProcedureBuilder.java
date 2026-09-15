@@ -2036,11 +2036,11 @@ public final class ProcedureBuilder {
         int kind = spec.kind();
         String label = dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_COMMANDS.get(kind);
         boolean retrieve = kind == dev.cobolonjava.cics.CicsRuntimeOps.INTERVAL_RETRIEVE;
-        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE
+        // 並びは TRANSID、REQID、RTRANSID、RTERMID、QUEUE、TERMID
         String[] names = {spec.transactionData(), spec.requestData(), spec.returnTransactionData(),
-            spec.returnTerminalData(), spec.queueData()};
-        int[] lengths = {4, 8, 4, 4, 8};
-        String[] options = {"TRANSID", "REQID", "RTRANSID", "RTERMID", "QUEUE"};
+            spec.returnTerminalData(), spec.queueData(), spec.terminalData()};
+        int[] lengths = {4, 8, 4, 4, 8, 4};
+        String[] options = {"TRANSID", "REQID", "RTRANSID", "RTERMID", "QUEUE", "TERMID"};
         DataReference[] areas = new DataReference[names.length];
         for (int i = 0; i < names.length; i++) {
             if (names[i] == null) {
@@ -2104,7 +2104,8 @@ public final class ProcedureBuilder {
         return withCicsResponse(new Statement.CicsIntervalCommand(kind, spec.transactionLiteral(), areas[0],
                 spec.timing(), times[0], times[1], times[2], times[3], data, length, spec.lengthLiteral(),
                 spec.requestLiteral(), areas[1], spec.returnTransactionLiteral(), areas[2],
-                spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4], spec.protect(),
+                spec.returnTerminalLiteral(), areas[3], spec.queueLiteral(), areas[4], spec.terminalLiteral(),
+                areas[5], spec.protect(),
                 parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
     }
 

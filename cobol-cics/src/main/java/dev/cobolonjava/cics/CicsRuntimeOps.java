@@ -654,6 +654,24 @@ public final class CicsRuntimeOps {
             String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
             byte[] returnTerminalData, String queueLiteral, byte[] queueData, boolean protect,
             boolean suppressDefaultHandling) {
+        return startCondition(context, transactionLiteral, transactionData, timing, hhmmss, hours, minutes, seconds,
+                from, lengthArea, lengthLiteral, requestLiteral, requestData, returnTransactionLiteral,
+                returnTransactionData, returnTerminalLiteral, returnTerminalData, queueLiteral, queueData, null, null,
+                protect, suppressDefaultHandling);
+    }
+
+    /**
+     * TERMID を書ける START (設計 83 §5)。
+     *
+     * <p>端末があるか (TERMIDERR) は START の port が確かめる。端末の登録を持たない port は TERMID を断る。
+     */
+    public static int startCondition(ProgramContext context, String transactionLiteral, byte[] transactionData,
+            int timing, dev.cobolonjava.runtime.decimal.Decimal hhmmss, dev.cobolonjava.runtime.decimal.Decimal hours,
+            dev.cobolonjava.runtime.decimal.Decimal minutes, dev.cobolonjava.runtime.decimal.Decimal seconds,
+            DataView from, DataView lengthArea, int lengthLiteral, String requestLiteral, byte[] requestData,
+            String returnTransactionLiteral, byte[] returnTransactionData, String returnTerminalLiteral,
+            byte[] returnTerminalData, String queueLiteral, byte[] queueData, String terminalLiteral,
+            byte[] terminalData, boolean protect, boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
         CicsTaskContext task = execution.task();
@@ -707,10 +725,14 @@ public final class CicsRuntimeOps {
         if (requestId.isEmpty()) {
             throw new CicsTaskStateException("START REQID must not be blank");
         }
+        Optional<String> terminal = optionalName(required, terminalLiteral, terminalData);
+        if (terminal.isPresent() && terminal.orElseThrow().isEmpty()) {
+            throw new CicsTaskStateException("START TERMID must not be blank");
+        }
         CicsStartData data = new CicsStartData(requestId, transId, bytes,
                 optionalName(required, returnTransactionLiteral, returnTransactionData),
                 optionalName(required, returnTerminalLiteral, returnTerminalData),
-                optionalName(required, queueLiteral, queueData), task.owner(), task.userId());
+                optionalName(required, queueLiteral, queueData), task.owner(), task.userId(), terminal);
         CicsStartPort.Result result;
         if (protect) {
             if (execution.hasProtectedStart(requestId)) {
@@ -747,8 +769,11 @@ public final class CicsRuntimeOps {
             DataView returnTransaction, DataView returnTerminal, DataView queue, boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
-        CicsStartData start = execution.task().start().orElseThrow(() -> new CicsTaskStateException(
+        CicsStartData started = execution.task().start().orElseThrow(() -> new CicsTaskStateException(
                 "RETRIEVE is supported only in a task started by START; the condition otherwise is not verified"));
+        // 端末へ出す task は、同じ端末と TRANSID の満了した START を満了の順に読む (RETRIEVE の頁)
+        CicsStartData start = started.sequence().stream().filter(item -> !item.retrieved()).findFirst()
+                .orElse(started);
         int response = CicsResponseCode.NORMAL;
         if (start.retrieved()) {
             // ENDDATA: この task の START のデータはもう残っていない

@@ -40,6 +40,8 @@ public final class CicsResponseCode {
     public static final int TRANSIDERR = 28;
     public static final int ENDDATA = 29;
     public static final int ENVDEFERR = 56;
+    /** START の TERMID の端末が定義されていない。数は START の頁による (設計 83 §5)。 */
+    public static final int TERMIDERR = 11;
     /** 非同期 API の condition (暫定判断 P-140)。数は FETCH ANY / RUN TRANSID の頁による。 */
     public static final int NOTFINISHED = 113;
     public static final int DISABLED = 84;
@@ -81,6 +83,7 @@ public final class CicsResponseCode {
             case "TRANSIDERR" -> TRANSIDERR;
             case "ENDDATA" -> ENDDATA;
             case "ENVDEFERR" -> ENVDEFERR;
+            case "TERMIDERR" -> TERMIDERR;
             case "NOTFINISHED" -> NOTFINISHED;
             case "DISABLED" -> DISABLED;
             case "ENQBUSY" -> ENQBUSY;
@@ -115,6 +118,7 @@ public final class CicsResponseCode {
             case "TRANSIDERR" -> TRANSIDERR;
             case "ENDDATA" -> ENDDATA;
             case "ENVDEFERR" -> ENVDEFERR;
+            case "TERMIDERR" -> TERMIDERR;
             // 非同期 API が返しうる condition (暫定判断 P-140)
             case "NOTFINISHED" -> NOTFINISHED;
             case "DISABLED" -> DISABLED;

@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher) を実装 |
+| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID) を実装 |
 | 対応要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 | 検証レベル | V0。実機の CICS と突き合わせていない |
 | 暫定判断 | P-144 |
@@ -94,6 +94,21 @@ JSON API の入口は端末名を持たない (設計 77 §4.4)。端末へ出�
 | 端末の無い START | 設計 82 §6 のまま。1 つの START が 1 つの task になり、RETRIEVE はそのデータだけを読む |
 | CANCEL | 未満了の行を REQID で消す。端末を待っている満了済みの START は消せない (推定。§9) |
 
+実装 (増分 3):
+
+- 翻訳は `TERMID` を定数か 4 byte の英数字項目で受ける。`TERMIDERR` (11) は `DFHRESP` と `HANDLE CONDITION` で使え、
+  EIBRCODE は間隔制御の群 (X'10') の binary zero とした
+- TERMIDERR を返すのは START の port である。端末の登録を持つ `JdbcCicsStarts` が命令の時点で端末と owner を確かめる。
+  1 つの JVM の中の `CicsStartPort.inMemory` は端末を知らないので、TERMID の START を推測で通さず失敗させる
+- 端末へ出す task は `CicsStartPort.conversing` が coordinator で起こす。端末を principal facility (EIBTRMID) にし、
+  RETURN IMMEDIATE は端末の入力なしで 8 回まで続け、最後の task の次の疑似会話を端末に置く
+- 同じ端末と TRANSID の START は、dispatcher が端末を lease した時点で満了していたものをまとめる。task の間に満了した
+  START は次の task になる (§9 の推定)
+- 満了時に端末の owner が START の owner と違えば (端末の名前が振り直された)、その START を捨てる
+- task の画面はまだ端末に置かない (§7 の増分で置く)。それまで、端末へ出す task の画面はブラウザに届かない
+- `PROTECT` の START を task の UOW の中で INSERT する形は入れていない。STRICT の境界が START の置き場を知る必要があり、
+  別の増分に残す。PROTECT の START は同期点の commit のあとに登録する
+
 `RETRIEVE WAIT` は端末へ出す task で意味を持つ (同じ端末と TRANSID の次の START を待つ)。待ちの上限は task の期限とし、
 この設計の最後の増分で入れる (§10)。
 
@@ -167,7 +182,7 @@ TS のキューと非同期 API の子は、この設計の範囲に入れず 1 
 - TD の操作はキューの行を UPDATE して lock してから行う。H2 で 2 つの置き場の 4 つの task が同時に読んでも、どの record も
   1 度だけ取り出した
 - `PROTECT` の START はこの増分でも task の同期点の commit のあとに登録する (設計 82 §6)。task の UOW の中で INSERT する形
-  (§5) は START TERMID の増分で合わせる
+  (§5) は増分 3 でも入れていない (§5 の実装の注)
 
 ### 8.2 dispatcher
 

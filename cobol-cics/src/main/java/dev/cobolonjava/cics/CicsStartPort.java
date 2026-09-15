@@ -5,11 +5,12 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
- * START / CANCEL の間隔制御 (暫定判断 P-138)。region の構成が持ち、満了した START の task を起こす。
+ * START / CANCEL の間隔制御 (暫定判断 P-138、設計 83 §5)。region の構成が持ち、満了した START の task を起こす。
  *
  * <p>返す RESP2 は、START / CANCEL の頁が値を示さないものは 0 とする。
  */
@@ -21,7 +22,8 @@ public interface CicsStartPort {
     /**
      * START を登録する。満了すれば task を起こす。
      *
-     * @return NORMAL、TRANSIDERR (transaction が定義されていない)、IOERR (FROM を持つ START の REQID が未満了の START と重なる)
+     * @return NORMAL、TRANSIDERR (transaction が定義されていない)、IOERR (FROM を持つ START の REQID が未満了の START と重なる)、
+     *         TERMIDERR (TERMID の端末が無いか、START を出した task と owner が違う)
      */
     Result start(Instant expiration, CicsStartData data);
 
@@ -65,7 +67,7 @@ public interface CicsStartPort {
     }
 
     /**
-     * 1 つの JVM の中で満了を待ち、task を起こす。
+     * 1 つの JVM の中で満了を待ち、task を起こす。端末の登録を持たないので TERMID の START は断る。
      *
      * @param defined  transaction が定義されているか。されていなければ TRANSIDERR
      * @param launcher 満了した START の task を起こす。START を出した task とは別の thread で呼ぶ
@@ -80,8 +82,36 @@ public interface CicsStartPort {
      * <p>coordinator は region の構成 (この port を含む) から作られるので、作ったあとに渡せるよう Supplier で受ける。
      */
     static Consumer<CicsStartData> launching(Supplier<CicsTaskCoordinator> coordinator) {
-        return data -> coordinator.get().launch(new CicsTaskRequest(data.transaction().value(), data.owner(),
-                CicsPayload.empty(), Optional.empty(), new IdempotencyKey("start-" + UUID.randomUUID()),
-                Optional.empty(), Optional.empty(), data.userId(), Optional.of(data)));
+        Function<CicsStartData, Optional<ConversationEnvelope>> conversing = conversing(coordinator);
+        return conversing::apply;
+    }
+
+    /**
+     * coordinator で task を起こし、端末の次の疑似会話を返す launcher (設計 83 §5)。
+     *
+     * <p>TERMID の START は端末を principal facility にして起こし、RETURN IMMEDIATE なら端末の入力なしで次の task を
+     * 続ける (ブラウザの入口と同じく 8 回まで)。端末の無い START は task を 1 つ起こすだけで、会話は返さない。
+     */
+    static Function<CicsStartData, Optional<ConversationEnvelope>> conversing(
+            Supplier<CicsTaskCoordinator> coordinator) {
+        return data -> {
+            CicsTaskReply reply = coordinator.get().launch(new CicsTaskRequest(data.transaction().value(),
+                    data.owner(), CicsPayload.empty(), Optional.empty(), new IdempotencyKey("start-" + UUID.randomUUID()),
+                    Optional.empty(), data.terminalId(), data.userId(), Optional.of(data)));
+            if (data.terminalId().isEmpty()) {
+                return Optional.empty();
+            }
+            for (int step = 0; reply.immediateNext(); step++) {
+                if (step >= 8) {
+                    throw new IllegalStateException("RETURN IMMEDIATE chain exceeded 8 tasks");
+                }
+                ConversationEnvelope next = reply.nextConversation().orElseThrow();
+                reply = coordinator.get().launch(new CicsTaskRequest(next.nextTransaction().value(), data.owner(),
+                        next.payload(), Optional.of(new ConversationReference(next.id(), next.version())),
+                        new IdempotencyKey("start-" + UUID.randomUUID()), Optional.empty(), data.terminalId(),
+                        data.userId()));
+            }
+            return reply.nextConversation();
+        };
     }
 }

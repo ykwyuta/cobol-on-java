@@ -61,14 +61,20 @@ public class CicsStrictConversationAutoConfiguration {
     @ConditionalOnBean(dev.cobolonjava.cics.CicsTransactionRegistry.class)
     JdbcCicsStarts cobolJdbcStartPort(DataSource dataSource, PlatformTransactionManager transactionManager,
                                       dev.cobolonjava.cics.CicsTransactionRegistry transactions,
+                                      dev.cobolonjava.cics.CicsTerminalRegistryPort terminals,
+                                      ObjectProvider<dev.cobolonjava.cics.CicsTaskPolicy> policy,
                                       ObjectProvider<dev.cobolonjava.cics.CicsTaskCoordinator> coordinator,
                                       @Qualifier("cobolCicsClock") ObjectProvider<java.time.Clock> clock) {
+        // 端末へ出す task の端末の lease は、ブラウザの入口と同じく会話の lease の長さにする
+        java.time.Duration terminalLease = policy.getIfAvailable(() -> new dev.cobolonjava.cics.CicsTaskPolicy(
+                java.time.Duration.ofMinutes(30), java.time.Duration.ofMinutes(5))).leaseDuration();
         return new JdbcCicsStarts(dataSource, transactionManager, clock.getIfAvailable(java.time.Clock::systemUTC),
                 transId -> {
                     dev.cobolonjava.cics.CicsTransactionDefinition definition = transactions.definitions().get(transId);
                     return definition != null && definition.enabled();
                 },
-                dev.cobolonjava.cics.CicsStartPort.launching(coordinator::getObject), java.time.Duration.ofSeconds(1));
+                terminals, terminalLease, dev.cobolonjava.cics.CicsStartPort.conversing(coordinator::getObject),
+                java.time.Duration.ofSeconds(1));
     }
 
     /** 端末の登録も同じ DataSource の表に置き、複数の JVM から端末の lease と会話の参照を見る (設計 83 §4)。 */

@@ -193,6 +193,8 @@ public sealed interface Statement {
             DataReference returnTerminalData,
             String queueLiteral,
             DataReference queueData,
+            String terminalLiteral,
+            DataReference terminalData,
             boolean protect,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {

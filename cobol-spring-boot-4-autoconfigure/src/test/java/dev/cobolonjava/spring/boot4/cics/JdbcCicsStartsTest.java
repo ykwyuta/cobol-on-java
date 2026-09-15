@@ -2,12 +2,18 @@ package dev.cobolonjava.spring.boot4.cics;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.cobolonjava.cics.CicsPayload;
 import dev.cobolonjava.cics.CicsResponseCode;
 import dev.cobolonjava.cics.CicsStartData;
 import dev.cobolonjava.cics.CicsTaskStateException;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort;
+import dev.cobolonjava.cics.ConversationEnvelope;
+import dev.cobolonjava.cics.ConversationId;
+import dev.cobolonjava.cics.IdempotencyKey;
 import dev.cobolonjava.cics.TransId;
 import java.time.Clock;
 import java.time.Duration;
@@ -15,6 +21,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -24,17 +31,19 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 
-/** START の JDBC の置き場と dispatcher (設計 83 §8、暫定判断 P-144)。 */
+/** START の JDBC の置き場と dispatcher (設計 83 §5・§8、暫定判断 P-144)。 */
 @Tag("V1")
 class JdbcCicsStartsTest {
 
@@ -42,6 +51,10 @@ class JdbcCicsStartsTest {
 
     private final AtomicReference<Instant> time = new AtomicReference<>(NOW);
     private final ConcurrentLinkedQueue<CicsStartData> launched = new ConcurrentLinkedQueue<>();
+    /** 起きた task が返す端末の次の疑似会話。 */
+    private Function<CicsStartData, Optional<ConversationEnvelope>> replies = data -> Optional.empty();
+    private JdbcTemplate jdbc;
+    private JdbcTerminalRegistry terminals;
     /** 同じ DataSource に向けた 2 つの START の置き場。2 つの JVM に見立てる。 */
     private JdbcCicsStarts first;
     private JdbcCicsStarts second;
@@ -68,18 +81,34 @@ class JdbcCicsStartsTest {
         DataSource dataSource = new DriverManagerDataSource(
                 "jdbc:h2:mem:start-" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000");
         new ResourceDatabasePopulator(new ClassPathResource(JdbcConversationStore.SCHEMA)).execute(dataSource);
+        jdbc = new JdbcTemplate(dataSource);
+        terminals = new JdbcTerminalRegistry(dataSource, new JdbcTransactionManager(dataSource));
         first = starts(dataSource);
         second = starts(dataSource);
     }
 
     private JdbcCicsStarts starts(DataSource dataSource) {
         return new JdbcCicsStarts(dataSource, new JdbcTransactionManager(dataSource), clock,
-                transId -> !transId.value().equals("NONE"), launched::add, Duration.ofSeconds(1), Runnable::run);
+                transId -> !transId.value().equals("NONE"), terminals, Duration.ofSeconds(30),
+                data -> {
+                    launched.add(data);
+                    return replies.apply(data);
+                }, Duration.ofSeconds(1), Runnable::run);
     }
 
     private static CicsStartData start(String requestId, byte[] data) {
         return new CicsStartData(requestId, TransId.of("TX01"), data, Optional.of("TX02"), Optional.of("T001"),
                 Optional.of("QUEUE001"), "alice", Optional.of("ALICE"));
+    }
+
+    private static CicsStartData toTerminal(String requestId, String transaction, String terminal, String owner,
+                                            byte[] data) {
+        return new CicsStartData(requestId, TransId.of(transaction), data, Optional.empty(), Optional.empty(),
+                Optional.empty(), owner, Optional.empty(), Optional.of(terminal));
+    }
+
+    private int pending() {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM COBOL_START", Integer.class);
     }
 
     @Test
@@ -117,6 +146,7 @@ class JdbcCicsStartsTest {
         assertEquals(Optional.of("QUEUE001"), data.queue());
         assertEquals("alice", data.owner());
         assertEquals(Optional.of("ALICE"), data.userId());
+        assertEquals(Optional.empty(), data.terminalId());
         assertEquals(0, first.dispatchDue() + second.dispatchDue());
     }
 
@@ -147,5 +177,72 @@ class JdbcCicsStartsTest {
         }
         assertEquals(100, ids.size());
         assertTrue(ids.stream().allMatch(id -> id.matches("JV[0-9A-Z]{6}")));
+    }
+
+    @Test
+    @DisplayName("TERMIDは無い端末と他の利用者の端末をTERMIDERRにし、task中と疑似会話の途中は待ち、同じ端末とTRANSIDの満了したSTARTを1つのtaskにまとめる")
+    void startsTasksOnTerminals() {
+        String alice = terminals.register("alice", NOW.plusSeconds(3600), NOW);
+        String bob = terminals.register("bob", NOW.plusSeconds(3600), NOW);
+
+        assertEquals(CicsResponseCode.TERMIDERR, first.start(NOW, toTerminal("T0", "TX01", "ZZZZ", "alice", null))
+                .response());
+        assertEquals(CicsResponseCode.TERMIDERR, first.start(NOW, toTerminal("T0", "TX01", bob, "alice", null))
+                .response());
+        assertEquals(CicsResponseCode.NORMAL, first.start(NOW.plusSeconds(2),
+                toTerminal("TB", "TX01", alice, "alice", new byte[] {2})).response());
+        assertEquals(CicsResponseCode.NORMAL, second.start(NOW.plusSeconds(1),
+                toTerminal("TA", "TX01", alice, "alice", new byte[] {1})).response());
+        assertEquals(CicsResponseCode.NORMAL, second.start(NOW.plusSeconds(3),
+                toTerminal("TC", "TX02", alice, "alice", null)).response());
+        time.set(NOW.plusSeconds(5));
+
+        // 端末で task が動いている間は待つ
+        CicsTerminalRegistryPort.TerminalLease busy = terminals.lease(alice, "alice", Duration.ofSeconds(30),
+                time.get()).orElseThrow();
+        assertEquals(0, first.dispatchDue());
+        // 疑似会話の途中も待つ
+        CicsTerminalRegistryPort.TerminalConversation conversation = new CicsTerminalRegistryPort.TerminalConversation(
+                new ConversationId("conversation_start01"), 0, TransId.of("TX09"));
+        terminals.setConversation(busy, Optional.of(conversation), time.get());
+        terminals.release(busy, time.get());
+        assertEquals(0, second.dispatchDue());
+        CicsTerminalRegistryPort.TerminalLease clear = terminals.lease(alice, "alice", Duration.ofSeconds(30),
+                time.get()).orElseThrow();
+        terminals.setConversation(clear, Optional.empty(), time.get());
+        terminals.release(clear, time.get());
+        assertTrue(launched.isEmpty());
+        assertEquals(3, pending());
+
+        // TX02 の task は RETURN TRANSID で端末を疑似会話に入れる
+        replies = data -> data.transaction().value().equals("TX02")
+                ? Optional.of(new ConversationEnvelope(new ConversationId("conversation_start02"), 0, "alice",
+                        TransId.of("TX03"), CicsPayload.empty(), NOW.plusSeconds(600),
+                        new IdempotencyKey("start-conversation-1"), Optional.empty()))
+                : Optional.empty();
+        assertEquals(2, first.dispatchDue());
+        assertEquals(0, pending());
+
+        CicsStartData batched = launched.poll();
+        assertEquals("TA", batched.requestId());
+        assertEquals(Optional.of(alice), batched.terminalId());
+        assertEquals(List.of("TB"), batched.following().stream().map(CicsStartData::requestId).toList());
+        assertEquals("TC", launched.poll().requestId());
+        CicsTerminalRegistryPort.Terminal after = terminals.find(alice, time.get()).orElseThrow();
+        assertFalse(after.leased());
+        assertEquals("TX03", after.conversation().orElseThrow().nextTransaction().value());
+    }
+
+    @Test
+    @DisplayName("満了したときに端末が無いか別の利用者に振り直されていれば、TERMIDのSTARTは起こさずに捨てる")
+    void discardsStartsForMissingTerminals() {
+        String alice = terminals.register("alice", NOW.plusSeconds(3600), NOW);
+        first.start(NOW.plusSeconds(1), toTerminal("GONE", "TX01", alice, "alice", null));
+        assertTrue(terminals.remove(alice, NOW));
+        time.set(NOW.plusSeconds(5));
+
+        assertEquals(0, second.dispatchDue());
+        assertEquals(0, pending());
+        assertTrue(launched.isEmpty());
     }
 }

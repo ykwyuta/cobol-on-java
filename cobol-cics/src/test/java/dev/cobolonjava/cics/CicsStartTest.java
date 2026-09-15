@@ -129,6 +129,66 @@ class CicsStartTest {
     }
 
     @Test
+    @DisplayName("TERMIDはSTARTのデータに端末を置き、portのTERMIDERRを返す。端末を知らないportは断り、RETRIEVEはまとめたSTARTを満了の順に読む")
+    void startsTasksOnTerminalsAndRetrievesBatches() {
+        List<CicsStartData> captured = new ArrayList<>();
+        CicsStartPort terminalAware = new CicsStartPort() {
+            @Override
+            public Result start(Instant expiration, CicsStartData data) {
+                if (data.terminalId().orElseThrow().equals("NOPE")) {
+                    return new Result(CicsResponseCode.TERMIDERR, 0);
+                }
+                captured.add(data);
+                return new Result(CicsResponseCode.NORMAL, 0);
+            }
+
+            @Override
+            public Result cancel(String requestId) {
+                return new Result(CicsResponseCode.NOTFND, 0);
+            }
+
+            @Override
+            public String newRequestId() {
+                return "GEN00001";
+            }
+        };
+        ProgramContext context = context(task("task_termid"), CicsEnvironment.unconfigured().withStarts(terminalAware));
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null, null, null,
+                -1, "R1", null, null, null, null, null, null, null, "W001", null, false, true);
+        assertEquals(CicsResponseCode.NORMAL, resp());
+        assertEquals(Optional.of("W001"), captured.get(0).terminalId());
+        CicsRuntimeOps.startCondition(context, "TX02", null, START_INTERVAL, number(0), null, null, null, null, null,
+                -1, "R2", null, null, null, null, null, null, null, "NOPE", null, false, true);
+        assertEquals(CicsResponseCode.TERMIDERR, resp());
+        assertEquals(0x1008, ByteBuffer.wrap(execution.eib(CP).storage().array(), CicsEib.EIBFN_OFFSET, 2).getShort());
+
+        CicsStartPort inMemory = CicsStartPort.inMemory(Clock.systemUTC(), id -> true, data -> { });
+        ProgramContext unaware = context(task("task_unaware"), CicsEnvironment.unconfigured().withStarts(inMemory));
+        assertThrows(CicsTaskStateException.class, () -> CicsRuntimeOps.startCondition(unaware, "TX02", null,
+                START_INTERVAL, number(0), null, null, null, null, null, -1, "R3", null, null, null, null, null, null,
+                null, "W001", null, false, true));
+
+        CicsStartData one = new CicsStartData("B1", TransId.of("TX02"), CP.encode("one"), Optional.empty(),
+                Optional.empty(), Optional.empty(), "start-test", Optional.empty(), Optional.of("W001"));
+        CicsStartData two = new CicsStartData("B2", TransId.of("TX02"), CP.encode("two"), Optional.empty(),
+                Optional.empty(), Optional.empty(), "start-test", Optional.empty(), Optional.of("W001"));
+        ProgramContext started = context(new CicsTaskContext(new CicsTaskId("task_batch"), TransId.of("TX02"),
+                "start-test", NOON).withStart(Optional.of(one.withFollowing(List.of(two)))),
+                CicsEnvironment.unconfigured());
+        DataView into = text("...");
+        CicsRuntimeOps.retrieveCondition(started, into, null, null, null, null, true);
+        assertEquals("one", CP.decode(into.toByteArray()));
+        CicsRuntimeOps.retrieveCondition(started, into, null, null, null, null, true);
+        assertEquals(CicsResponseCode.NORMAL, resp());
+        assertEquals("two", CP.decode(into.toByteArray()));
+        CicsRuntimeOps.retrieveCondition(started, into, null, null, null, null, true);
+        assertEquals(CicsResponseCode.ENDDATA, resp());
+        assertThrows(IllegalArgumentException.class, () -> one.withFollowing(List.of(new CicsStartData("B3",
+                TransId.of("TX03"), null, Optional.empty(), Optional.empty(), Optional.empty(), "start-test",
+                Optional.empty(), Optional.of("W001")))));
+    }
+
+    @Test
     @DisplayName("未満了のSTARTはCANCELで取り消し、2度目はNOTFND。定義の無いTRANSIDはTRANSIDERR、範囲外の時刻はINVREQ 4/5/6")
     void cancelsAndValidatesStarts() {
         List<CicsStartData> launched = new ArrayList<>();
