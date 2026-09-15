@@ -30,6 +30,11 @@
     </div>
   </div>
   <input type="hidden" name="cursor" value="-1">
+  <input th:if="${idempotencyKey != null}" type="hidden" name="idempotencyKey" th:value="${idempotencyKey}">
+  <th:block th:if="${conversationId != null}">
+    <input type="hidden" name="conversationId" th:value="${conversationId}">
+    <input type="hidden" name="conversationVersion" th:value="${conversationVersion}">
+  </th:block>
   <input th:if="${_csrf != null}" type="hidden" th:name="${_csrf.parameterName}" th:value="${_csrf.token}">
   <div class="bms-keys" role="toolbar" aria-label="Terminal keys">
     <button type="submit" name="aid" value="ENTER">Enter</button>

@@ -13,6 +13,7 @@ import dev.cobolonjava.cics.ConversationId;
 import dev.cobolonjava.cics.ConversationReference;
 import dev.cobolonjava.cics.ConversationStorePort;
 import dev.cobolonjava.cics.DisabledTransactionException;
+import dev.cobolonjava.cics.IdempotencyConflictException;
 import dev.cobolonjava.cics.IdempotencyKey;
 import dev.cobolonjava.cics.TransId;
 import dev.cobolonjava.cics.UnknownTransactionException;
@@ -56,6 +57,10 @@ public class CicsBrowserController {
 
     static final String CONVERSATION = "dev.cobolonjava.cics.browser.conversation";
     static final String TERMINAL = "dev.cobolonjava.cics.browser.terminal";
+    /** 画面の form が運ぶ冪等キーと会話の参照 (暫定判断 P-142)。 */
+    static final String KEY_PARAMETER = "idempotencyKey";
+    static final String CONVERSATION_ID_PARAMETER = "conversationId";
+    static final String CONVERSATION_VERSION_PARAMETER = "conversationVersion";
     /** IMMEDIATE で続ける task の上限。業務の無限の連鎖で要求を返さなくなるのを防ぐ。 */
     static final int MAX_IMMEDIATE = 8;
     private static final String BASE36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -85,6 +90,7 @@ public class CicsBrowserController {
         TransId transaction = TransId.of(transid);
         model.addAttribute("transaction", transaction.value());
         model.addAttribute("action", request.getContextPath() + "/cics/" + transaction.value());
+        model.addAttribute("idempotencyKey", idempotencyKey().value());
         return "cobol/bms/start";
     }
 
@@ -103,8 +109,28 @@ public class CicsBrowserController {
 
         Optional<ConversationReference> reference = Optional.empty();
         CicsPayload payload = CicsPayload.empty();
+        String sentKeyValue = form.getFirst(KEY_PARAMETER);
+        Optional<IdempotencyKey> sentKey = sentKeyValue == null || sentKeyValue.isBlank()
+                ? Optional.empty() : Optional.of(new IdempotencyKey(sentKeyValue));
         BrowserConversation current = (BrowserConversation) session.getAttribute(CONVERSATION);
-        if (current != null) {
+        if (sentKey.isPresent()) {
+            // 画面が運ぶ冪等キーと会話の参照で動かす。同じ画面の再送は、会話がもう進んでいても coordinator が
+            // 覚えた結果を返す。会話の owner は coordinator が照合する (暫定判断 P-142)
+            String sentId = form.getFirst(CONVERSATION_ID_PARAMETER);
+            if (sentId != null) {
+                String sentVersion = form.getFirst(CONVERSATION_VERSION_PARAMETER);
+                if (sentVersion == null) {
+                    throw new IllegalArgumentException("conversation version is required");
+                }
+                ConversationId id = new ConversationId(sentId);
+                long version = Long.parseLong(sentVersion);
+                reference = Optional.of(new ConversationReference(id, version));
+                payload = conversations.load(id, clock.instant())
+                        .filter(loaded -> loaded.version() == version)
+                        .map(ConversationEnvelope::payload)
+                        .orElse(CicsPayload.empty());
+            }
+        } else if (current != null) {
             if (!current.nextTransaction().equals(transaction.value())) {
                 // 端末が待っている TRANSID と違う。古い tab からの送信とみなして動かさない
                 session.removeAttribute(CONVERSATION);
@@ -125,14 +151,19 @@ public class CicsBrowserController {
         }
 
         CicsTaskReply reply = coordinator.launch(new CicsTaskRequest(transaction.value(), owner, payload,
-                reference, idempotencyKey(), input, Optional.of(terminalOf(session)), userIdOf(owner)));
+                reference, sentKey.orElseGet(CicsBrowserController::idempotencyKey), input,
+                Optional.of(terminalOf(session)), userIdOf(owner)));
         for (int step = 0; reply.immediateNext(); step++) {
             if (step >= MAX_IMMEDIATE) {
                 throw new IllegalStateException("RETURN IMMEDIATE chain exceeded " + MAX_IMMEDIATE + " tasks");
             }
             ConversationEnvelope next = reply.nextConversation().orElseThrow();
+            // 画面のキーから段ごとのキーを作る。再送でも同じキーになり、各段の覚えた結果が返る
+            int number = step + 1;
+            IdempotencyKey stepKey = sentKey.map(key -> new IdempotencyKey(key.value() + "." + number))
+                    .orElseGet(CicsBrowserController::idempotencyKey);
             reply = coordinator.launch(new CicsTaskRequest(next.nextTransaction().value(), owner, next.payload(),
-                    Optional.of(new ConversationReference(next.id(), next.version())), idempotencyKey(),
+                    Optional.of(new ConversationReference(next.id(), next.version())), stepKey,
                     Optional.empty(), Optional.of(terminalOf(session)), userIdOf(owner)));
         }
 
@@ -147,6 +178,12 @@ public class CicsBrowserController {
         model.addAttribute("action", action);
         model.addAttribute("bmsAssets", request.getContextPath() + "/cobol/bms");
         model.addAttribute("conversation", reply.nextConversation().isPresent());
+        // 次の画面の送信に使う冪等キーと会話の参照。同じ画面を二度送っても同じキーになる
+        model.addAttribute("idempotencyKey", idempotencyKey().value());
+        reply.nextConversation().ifPresent(next -> {
+            model.addAttribute("conversationId", next.id().value());
+            model.addAttribute("conversationVersion", next.version());
+        });
         CicsTerminalScreen screen = reply.screen().orElse(null);
         if (screen instanceof CicsTerminalScreen.MapScreen map) {
             model.addAttribute("screen", views.create(map.snapshot()));
@@ -161,6 +198,13 @@ public class CicsBrowserController {
         clearConversation(request);
         return error(response, model, HttpServletResponse.SC_CONFLICT,
                 "The screen is out of date. Start the transaction again.");
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public String idempotencyConflict(HttpServletResponse response, Model model) {
+        // 同じ画面の送信がまだ動いているか、同じキーで違う内容が送られた。会話はそのまま残す
+        return error(response, model, HttpServletResponse.SC_CONFLICT,
+                "This screen was already sent. Wait for the reply or start the transaction again.");
     }
 
     @ExceptionHandler(UnknownTransactionException.class)

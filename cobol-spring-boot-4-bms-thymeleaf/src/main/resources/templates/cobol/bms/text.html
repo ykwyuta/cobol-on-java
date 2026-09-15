@@ -8,6 +8,11 @@
 <pre class="bms-text" th:text="${text}"></pre>
 <form th:if="${conversation}" method="post" th:action="${action}">
   <input th:if="${_csrf != null}" type="hidden" th:name="${_csrf.parameterName}" th:value="${_csrf.token}">
+  <input th:if="${idempotencyKey != null}" type="hidden" name="idempotencyKey" th:value="${idempotencyKey}">
+  <th:block th:if="${conversationId != null}">
+    <input type="hidden" name="conversationId" th:value="${conversationId}">
+    <input type="hidden" name="conversationVersion" th:value="${conversationVersion}">
+  </th:block>
   <button type="submit" name="aid" value="ENTER">Enter</button>
   <button type="submit" name="aid" value="CLEAR">Clear</button>
 </form>

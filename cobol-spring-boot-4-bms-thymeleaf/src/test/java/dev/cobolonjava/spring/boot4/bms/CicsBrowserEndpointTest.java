@@ -54,6 +54,9 @@ class CicsBrowserEndpointTest {
             card("         DFHMSD TYPE=FINAL", false),
             card("         END", false)) + "\n";
 
+    /** program が動いた回数。二重送信で task が動かないことを見る。 */
+    static final java.util.concurrent.atomic.AtomicInteger RUNS = new java.util.concurrent.atomic.AtomicInteger();
+
     @SpringBootApplication
     static class TestApplication {
 
@@ -72,6 +75,7 @@ class CicsBrowserEndpointTest {
                     new BmsScreenComposer.SendOptions(true, true, false, true, false, false, OptionalInt.empty(), false),
                     CodePages.DEFAULT);
             return (definition, input, task, syncpoints) -> {
+                RUNS.incrementAndGet();
                 if (task.terminalInput().isEmpty()) {
                     return new TaskCompletion(Optional.of(TransId.of("SCR1")), CicsPayload.ofCommarea(new byte[] {7}))
                             .withScreen(Optional.of(new CicsTerminalScreen.MapScreen(snapshot)));
@@ -120,6 +124,52 @@ class CicsBrowserEndpointTest {
         assertThat(entered.getResponse().getContentAsString())
                 .contains("RECEIVED CUSTNO=042 COMMAREA 7", "TERMINAL W", "USER ALICE");
         assertThat(session.getAttribute(CicsBrowserController.CONVERSATION)).isNull();
+    }
+
+    @Test
+    @DisplayName("画面の冪等キーで同じ送信を二度しても、taskは一度だけ動いて同じ画面を返し、同じキーで違う値は409")
+    void replaysDoubleSubmittedScreens() throws Exception {
+        int before = RUNS.get();
+        MockHttpSession session = new MockHttpSession();
+        MvcResult shell = mvc.perform(get("/cics/SCR1").session(session).with(user("alice")))
+                .andExpect(status().isOk()).andReturn();
+        String startKey = hidden(shell, "idempotencyKey");
+
+        MvcResult started = mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
+                        .param("idempotencyKey", startKey))
+                .andExpect(status().isOk()).andReturn();
+        MvcResult startedAgain = mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
+                        .param("idempotencyKey", startKey))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(startedAgain.getResponse().getContentAsString()).contains("name=\"bms.CUSTNO.1\"");
+        assertThat(RUNS.get() - before).isEqualTo(1);
+
+        String key = hidden(started, "idempotencyKey");
+        String id = hidden(started, "conversationId");
+        String version = hidden(started, "conversationVersion");
+        for (int attempt = 0; attempt < 2; attempt++) {
+            MvcResult entered = mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
+                            .param("idempotencyKey", key).param("conversationId", id)
+                            .param("conversationVersion", version)
+                            .param("aid", "ENTER").param("cursor", "337").param("bms.CUSTNO.1", "042"))
+                    .andExpect(status().isOk()).andReturn();
+            assertThat(entered.getResponse().getContentAsString()).contains("RECEIVED CUSTNO=042 COMMAREA 7");
+        }
+        assertThat(RUNS.get() - before).isEqualTo(2);
+
+        mvc.perform(post("/cics/SCR1").session(session).with(user("alice")).with(csrf())
+                        .param("idempotencyKey", key).param("conversationId", id)
+                        .param("conversationVersion", version)
+                        .param("aid", "ENTER").param("cursor", "337").param("bms.CUSTNO.1", "043"))
+                .andExpect(status().isConflict());
+        assertThat(RUNS.get() - before).isEqualTo(2);
+    }
+
+    private static String hidden(MvcResult result, String name) throws Exception {
+        java.util.regex.Matcher value = java.util.regex.Pattern.compile("name=\"" + name + "\" value=\"([^\"]*)\"")
+                .matcher(result.getResponse().getContentAsString());
+        assertThat(value.find()).isTrue();
+        return value.group(1);
     }
 
     @Test

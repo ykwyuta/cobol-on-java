@@ -86,6 +86,7 @@ base の `cobol-spring-boot-4-autoconfigure` の `CicsTaskAutoConfiguration` が
 | UOW | 既定の境界は回復可能な資源を持たない `NonRecoverableTaskBoundaryFactory`。Db2 を使う transaction は UOW を持つ境界を bean で置く |
 | 端末 | HTTP session ごとに `W` + base36 3 文字の端末名を振る。user ID は principal 名が 8 文字の CICS の形に収まるときだけ |
 | IMMEDIATE | 端末入力なしで次の task を続け、8 回を越えれば失敗させる |
+| 二重送信 | 画面ごとに冪等キーと会話の ID・版を hidden で載せる。同じ画面の再送は task を動かさず覚えた結果を返し、同じキーで違う値は 409 (P-142) |
 | 失敗 | 応答へ入力の内容や例外の文面を出さない。ABEND だけは code を示す |
 
 設計 77 §3.1 は MVC の入口を `cobol-spring-boot-4-autoconfigure` に置く。ブラウザの入口は画面の描画と切り離せず、

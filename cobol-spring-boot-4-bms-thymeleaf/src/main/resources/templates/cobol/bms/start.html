@@ -7,6 +7,7 @@
 <body>
 <form method="post" th:action="${action}">
   <input th:if="${_csrf != null}" type="hidden" th:name="${_csrf.parameterName}" th:value="${_csrf.token}">
+  <input th:if="${idempotencyKey != null}" type="hidden" name="idempotencyKey" th:value="${idempotencyKey}">
   <button type="submit" th:text="${'Start ' + transaction}">Start</button>
 </form>
 </body>
