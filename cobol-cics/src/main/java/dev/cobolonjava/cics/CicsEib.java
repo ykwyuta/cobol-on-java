@@ -148,6 +148,20 @@ public final class CicsEib {
         putFullword(EIBRESP2_OFFSET, responseCode2);
     }
 
+    /** EIBRCODE を binary zero にする condition と、それが起きてよい EIBFN の群 (上位 byte)。 */
+    private static final java.util.Map<Integer, java.util.Set<Integer>> ZERO_RCODE_GROUPS = java.util.Map.ofEntries(
+            java.util.Map.entry(CicsResponseCode.FILENOTFOUND, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.NOTFND, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.DUPREC, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.INVREQ, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.IOERR, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.NOSPACE, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.ENDFILE, java.util.Set.of(0x0600)),
+            java.util.Map.entry(CicsResponseCode.LENGERR, java.util.Set.of(0x0600, 0x3400)),
+            java.util.Map.entry(CicsResponseCode.ENQBUSY, java.util.Set.of(0x1200)),
+            java.util.Map.entry(CicsResponseCode.CONTAINERERR, java.util.Set.of(0x3400)),
+            java.util.Map.entry(CicsResponseCode.CHANNELERR, java.util.Set.of(0x3400)));
+
     /** 完了したcommandのfunction codeと、現在分類できる応答表現を一括反映する。 */
     public void completeCommand(int functionCode, int responseCode, int responseCode2) {
         if (functionCode < 0 || functionCode > 0xFFFF) {
@@ -167,27 +181,13 @@ public final class CicsEib {
             if ((functionCode & 0xFF00) != 0x1800) {
                 throw new IllegalArgumentException("MAPFAIL is only classified for BMS commands");
             }
-        } else if (responseCode == CicsResponseCode.FILENOTFOUND
-                || responseCode == CicsResponseCode.DUPREC
-                || responseCode == CicsResponseCode.NOSPACE) {
-            // file control の群の EIBRCODE の byte は確かめていないので binary zero を置く (暫定判断 P-131)
-            if ((functionCode & 0xFF00) != 0x0600) {
-                throw new IllegalArgumentException(
-                        "RESP=" + responseCode + " EIBRCODE is only classified for file control commands");
-            }
-        } else if (responseCode == CicsResponseCode.ENQBUSY) {
-            // task 制御の群の EIBRCODE も公開情報から確定できないので binary zero を置く (暫定判断 P-128)
-            if ((functionCode & 0xFF00) != 0x1200) {
-                throw new IllegalArgumentException("ENQBUSY is only classified for task control commands");
-            }
-        } else if (responseCode == CicsResponseCode.LENGERR
-                || responseCode == CicsResponseCode.CONTAINERERR
-                || responseCode == CicsResponseCode.CHANNELERR) {
-            // channel 命令の EIBRCODE も公開情報から確定できないので、MAPFAIL と同じく binary zero を置く
-            // (暫定判断 P-125)。LENGERR は他の群でも起きるが、分類したのは channel 命令だけである
-            if ((functionCode & 0xFF00) != 0x3400) {
-                throw new IllegalArgumentException(
-                        "RESP=" + responseCode + " EIBRCODE is only classified for channel commands");
+        } else if (ZERO_RCODE_GROUPS.containsKey(responseCode)) {
+            // 群ごとの EIBRCODE の byte は公開情報から確定できないので、MAPFAIL と同じく binary zero を置く
+            // (file control P-131 / P-136、task 制御 P-128、channel P-125)。資産は RESP で判定している。
+            // 分類した群の外で起きたなら、どこかで条件を取り違えている
+            if (!ZERO_RCODE_GROUPS.get(responseCode).contains(functionCode & 0xFF00)) {
+                throw new IllegalArgumentException("RESP=" + responseCode
+                        + " EIBRCODE is not classified for EIBFN " + Integer.toHexString(functionCode));
             }
         } else if (responseCode != CicsResponseCode.NORMAL) {
             throw new IllegalArgumentException(

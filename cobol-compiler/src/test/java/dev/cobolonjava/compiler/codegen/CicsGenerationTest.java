@@ -212,6 +212,82 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("生成COBOLがKSDSへ書き、browseし、READ UPDATEとREWRITEで書き換える")
+    void runsFileControlAgainstDataSet(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "FILEPGM", List.of(
+                "MOVE '000042' TO WS-QTIME",
+                "MOVE '0000' TO WS-ABCODE",
+                "EXEC CICS WRITE FILE('CUSTFILE') FROM(WS-GRP) RIDFLD(WS-ABCODE) END-EXEC",
+                "MOVE '000177' TO WS-QTIME",
+                "MOVE '0001' TO WS-ABCODE",
+                "EXEC CICS WRITE FILE('CUSTFILE') FROM(WS-GRP) RIDFLD(WS-ABCODE) END-EXEC",
+                "MOVE LOW-VALUES TO WS-ABCODE",
+                "EXEC CICS STARTBR FILE('CUSTFILE') RIDFLD(WS-ABCODE) GTEQ END-EXEC",
+                "EXEC CICS READNEXT FILE('CUSTFILE') INTO(WS-GRP) RIDFLD(WS-ABCODE) END-EXEC",
+                "IF WS-ABCODE = '0000' MOVE 'A' TO LK-AREA(1:1) END-IF",
+                "MOVE 6 TO WS-LEN",
+                "EXEC CICS READNEXT FILE('CUSTFILE') INTO(WS-GRP) LENGTH(WS-LEN) RIDFLD(WS-ABCODE) END-EXEC",
+                "IF WS-QTIME = 177 AND WS-LEN = 6 MOVE 'B' TO LK-AREA(2:1) END-IF",
+                "EXEC CICS READNEXT FILE('CUSTFILE') INTO(WS-GRP) RIDFLD(WS-ABCODE) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(ENDFILE) MOVE 'C' TO LK-AREA(3:1) END-IF",
+                "EXEC CICS ENDBR FILE('CUSTFILE') END-EXEC",
+                "EXEC CICS READ FILE('CUSTFILE') INTO(WS-GRP) RIDFLD(WS-ABCODE) UPDATE END-EXEC",
+                "MOVE '000199' TO WS-QTIME",
+                "EXEC CICS REWRITE FILE('CUSTFILE') FROM(WS-GRP) END-EXEC",
+                "MOVE ZERO TO WS-QTIME",
+                "EXEC CICS READ FILE('CUSTFILE') INTO(WS-GRP) RIDFLD(WS-ABCODE) END-EXEC",
+                "IF WS-QTIME = 199 MOVE 'D' TO LK-AREA(4:1) END-IF"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("FILEPGM", program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("FILEPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withFiles(dev.cobolonjava.cics.CicsFilePort.dataSets(List.of(new dev.cobolonjava.cics.CicsFileDefinition(
+                        "CUSTFILE", directory.resolve("cust.ksds"), 0, 4, 6, CodePages.DEFAULT))));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("ABCD", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("file controlの命令は定義の無いfileでFILENOTFOUNDを返し、表せないoptionと形は名前をつけて断る")
+    void rejectsUnsupportedFileControlForms() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "NOFILE", List.of(
+                "EXEC CICS READ FILE('CUSTFILE') INTO(WS-GRP) RIDFLD(WS-ABCODE) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(FILENOTFOUND) MOVE 'F' TO LK-AREA(1:1) END-IF",
+                "EXEC CICS STARTBR FILE('CUSTFILE') RIDFLD(WS-ABCODE) REQID(WS-LEN) RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(FILENOTFOUND) MOVE 'S' TO LK-AREA(2:1) END-IF",
+                "EXEC CICS DELETE FILE('CUSTFILE') RIDFLD(WS-ABCODE) KEYLENGTH(3) GENERIC NUMREC(WS-LEN)"
+                        + " RESP(WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(FILENOTFOUND) MOVE 'D' TO LK-AREA(3:1) END-IF",
+                "EXEC CICS UNLOCK FILE('CUSTFILE') NOHANDLE END-EXEC"));
+
+        assertEquals("FSDT", CodePages.DEFAULT.decode(execute(loader, "NOFILE", program).payload().commarea()));
+        assertRejected("EXEC CICS READ FILE('F') SET(WS-PGM) RIDFLD(WS-ABCODE) END-EXEC",
+                "unsupported READ FILE option: SET");
+        assertRejected("EXEC CICS READNEXT FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) UPDATE END-EXEC",
+                "unsupported READNEXT FILE option: UPDATE");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) GTEQ EQUAL END-EXEC",
+                "GTEQ and EQUAL are mutually exclusive");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) GENERIC END-EXEC",
+                "GENERIC requires KEYLENGTH");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) LENGTH(6) END-EXEC",
+                "READ FILE LENGTH requires a data name");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-ABCODE) LENGTH(WS-RESP) END-EXEC",
+                "LENGTH must be a halfword binary data area");
+        assertRejected("EXEC CICS READ FILE('F') INTO(WS-GRP) RIDFLD(WS-SHORT) RRN END-EXEC",
+                "RRN requires a 4-byte RIDFLD");
+        assertRejected("EXEC CICS DELETE FILE('F') NUMREC(WS-LEN) END-EXEC",
+                "without RIDFLD takes no KEYLENGTH");
+        assertRejected("EXEC CICS STARTBR FILE('F') END-EXEC", "STARTBR FILE requires RIDFLD");
+    }
+
+    @Test
     @DisplayName("ENQで資源を得てDEQで返し、LENGTHの無い形と域を越えるLENGTHは断る")
     void enqueuesAndDequeues() {
         GeneratedLoader loader = new GeneratedLoader();
@@ -1405,6 +1481,7 @@ class CicsGenerationTest {
                 "01 WS-CHAN PIC X(16).",
                 "01 WS-CONT PIC X(16).",
                 "01 WS-FLEN PIC S9(8) COMP.",
+                "01 WS-LEN PIC S9(4) COMP.",
                 "01 WS-GRP.",
                 "   03 WS-QTIME PIC 9(6).",
                 "LINKAGE SECTION.",

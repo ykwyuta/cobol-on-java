@@ -1,0 +1,105 @@
+# 設計 82: CICS の file control、一時記憶・一時データのキュー、START / RETRIEVE
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | file control を実装 (§3)。一時記憶・一時データ・間隔制御の開始は後続の節で足す |
+| 対応要件 | FR-080, FR-101、設計 77 §4、設計 79 |
+| 検証レベル | V1。実機の CICS と突き合わせていない |
+
+## 1. 位置づけ
+
+Bank-of-Z の CICS 資産 32 本は、この文書の命令をほとんど使わない (ファイル制御は ABNDPROC の `WRITE FILE` だけ)。
+そのため測定では増分の順を決められない。代わりに CICS TS の公開文書の、命令ごとの頁と表を基準に置く。
+
+- **文書に数と意味が書かれた条件だけを返す。** 書かれていない形は、近い条件を選ばず `CicsTaskStateException` で失敗させる
+- 実機の CICS のソースは参照しない
+
+## 2. 共通の決めごと
+
+| 項目 | 決めごと | 出典 |
+| --- | --- | --- |
+| RESP の数 | 表にある名前はその数、表から読めなかった名前は命令の頁の数を使う | CICS TS 6.x「Response codes of EXEC CICS commands」、命令の頁 |
+| ENDFILE | 20。READNEXT の頁の値。AEIx の abend の並び (AEIS NOTOPEN 19、AEIT ENDFILE、AEIU ILLOGIC 21) とも合う | READNEXT の頁、TXSeries の AEIx の一覧 |
+| EIBFN | 表の値 | CICS TS 5.6「Function codes of EXEC CICS commands」 |
+| EIBRCODE | binary zero。群ごとの byte を確かめていない。起きてよい群の外で起きたら処理系の誤りとして失敗させる | 設計 79 §3.3 |
+| 回復 | すべて回復不能。`SYNCPOINT ROLLBACK` は書いたものを戻さない | — |
+| 構成 | region の構成 `CicsEnvironment` が port を持ち、task どうしで分け合う。複数の JVM では分け合わない | 設計 79 §3.2 |
+
+## 3. file control
+
+### 3.1 file の定義
+
+`CicsFileDefinition` が 1 つの file を表す。
+
+| 項目 | 内容 |
+| --- | --- |
+| 編成 | KSDS (主鍵の位置と長さ) と RRDS。ESDS は RBA の数え方を公開文書から決められないので持たない |
+| 長さ | 固定長か可変長 (最大の長さ) |
+| 許す操作 | READ / UPDATE / ADD / DELETE / BROWSE (FILE 定義の同名の属性にあたる) |
+| 置き場 | バッチの `IndexedDataSet` / `RelativeDataSet` と同じ形のデータセット。ジョブがそのまま読める |
+
+命令のたびにデータセットを開いて閉じ、region の中の命令は 1 つの監視で順に通す。大きな file の性能は測っていない。
+
+### 3.2 命令と返す条件
+
+| 命令 | EIBFN | 返す条件 (RESP / RESP2) |
+| --- | --- | --- |
+| READ | 0602 | FILENOTFOUND 12/1、NOTFND 13/80、INVREQ 16/20 (UPDATE を許さない)・25・26・28 (READ UPDATE の二重)・42、LENGERR 22/11、IOERR 17/120 |
+| WRITE | 0604 | FILENOTFOUND、DUPREC 14/150、NOSPACE 18/100、LENGERR 22/12 (最大を越える)・14 (固定長と違う)、IOERR |
+| REWRITE | 0606 | FILENOTFOUND、INVREQ 16/30 (READ UPDATE が無い)、NOTFND 13/80、LENGERR 12・14、IOERR |
+| DELETE | 0608 | FILENOTFOUND、INVREQ 16/20・22 (KSDS 以外の総称)・25・26・31 (RIDFLD も READ UPDATE も無い)・42、NOTFND 13/80、IOERR |
+| UNLOCK | 060A | FILENOTFOUND |
+| STARTBR | 060C | FILENOTFOUND、INVREQ 16/20・25・26・33 (REQID が使用中)・42、NOTFND 13/80、IOERR |
+| READNEXT | 060E | FILENOTFOUND、ENDFILE 20/90、INVREQ 16/25・26・34 (browse が無い)・37 (RRN と鍵を変えた)・42、LENGERR 22/11、IOERR |
+| READPREV | 0610 | FILENOTFOUND、ENDFILE 20/90、NOTFND 13/80、INVREQ 16/24 (GENERIC の browse)・26・37・41 (browse が無い)、LENGERR 22/11、IOERR |
+| ENDBR | 0612 | FILENOTFOUND、INVREQ 16/35 |
+| RESETBR | 0614 | FILENOTFOUND、INVREQ 16/25・26・36 (browse が無い)・37・42、NOTFND 13/80、IOERR |
+
+条件の既定の扱い (ABEND) は、ほかの命令と同じく `HANDLE CONDITION` が無ければ task を失敗させる。
+`HANDLE CONDITION` に書ける名前へ FILENOTFOUND、NOTFND、DUPREC、INVREQ、IOERR、NOSPACE、LENGERR、ENDFILE を足した。
+
+### 3.3 鍵と RIDFLD
+
+- `KEYLENGTH` を書かなければ定義の鍵の長さ。GENERIC を書かない `KEYLENGTH` は定義の長さと同じでなければ INVREQ 26。
+  GENERIC の `KEYLENGTH` は負なら 42、鍵の長さ以上なら 25
+- `KEYLENGTH(0) GENERIC GTEQ` は先頭の record を指す。GTEQ の無い `KEYLENGTH(0)` の結果は文書に無いので失敗させる
+- 総称か GTEQ の READ と、browse の読みは、見つけた record の完全な識別 (鍵か 4 byte の相対レコード番号) を RIDFLD へ返す
+- RRN の RIDFLD は 4 byte。1 以上の番号を読み書きする。0 は GTEQ の位置づけにだけ使える
+
+### 3.4 読んだ record の移し方
+
+- `LENGTH` を書かなければ INTO の長さを最大の長さとする。COBOL の翻訳系が INTO の長さを補う形にあたる
+- 可変長の record が長ければ切り詰めて LENGERR 11。`LENGTH` の域には record の本来の長さを置く
+- 可変長の record が短ければ record の長さだけを移す。INTO の残りは変えない (文書は「予測できない」とする)
+- 固定長の record を違う長さで読む形は LENGERR 13 だが、そのとき域へ何を移すかが書かれていないので失敗させる
+- READ UPDATE で切り詰めた場合、record を持ち続けるかが書かれていないので失敗させる
+
+### 3.5 更新のための排他
+
+- READ UPDATE で得た record は、REWRITE / DELETE / UNLOCK、SYNCPOINT、task の終わりで返す
+- 他の task が持つ record への READ UPDATE と DELETE は task の期限まで待ち、越えれば失敗させる。更新しない READ は待たない
+- REWRITE は鍵を変えてはならない。変えたときの条件は書かれていないので失敗させる
+- READ UPDATE を持ったまま同じ file へ RIDFLD つきの DELETE をする形は、結果が書かれていないので失敗させる
+
+### 3.6 browse の位置
+
+| 場面 | 振る舞い | 出典 |
+| --- | --- | --- |
+| STARTBR の既定 | KSDS / RRDS とも GTEQ | STARTBR の頁 |
+| RIDFLD がすべて X'FF' | データセットの終わりへ位置づけ、READPREV が最後の record を返す | STARTBR の頁 |
+| 向きを変える | 同じ record をもう一度返す | 「Browsing records」の頁 |
+| READPREV が STARTBR / RESETBR の直後 | RIDFLD の record が無ければ NOTFND 80 | READPREV の頁 |
+| RIDFLD を変えた | GTEQ の browse は変えた値以上の最初の record から、GENERIC の browse は総称の鍵で位置づけ直す | READNEXT の頁 |
+| EQUAL の browse で RIDFLD を変えた | 文書に無いので失敗させる | — |
+| KEYLENGTH を変えた (GENERIC) | その長さの総称の鍵で位置づけ直す。`KEYLENGTH(0)` は先頭へ | READNEXT の頁 |
+| 終わりを越えた | ENDFILE 90 | READNEXT / READPREV の頁 |
+| SYNCPOINT、task の終わり | browse は終わる | 「Browsing records」の頁 |
+| RESETBR が NOTFND | 次の読みの位置は書かれていないので、次の READNEXT / READPREV を失敗させる | — |
+
+総称の browse が総称の鍵に合わなくなったあとも読み続けるかは、文書に書かれていない。ここでは読み続ける
+(位置づけだけが総称であり、終わりは ENDFILE が決める)。
+
+### 3.7 断るもの
+
+`SET` (CICS が持つ域への pointer)、`SYSID`、`RBA` / `XRBA`、`TOKEN`、`NOSUSPEND`、`CONSISTENT` / `REPEATABLE` (RLS)、
+`DEBKEY` / `DEBREC` (BDAM)、`MASSINSERT`、browse の `UPDATE`、ESDS。いずれも表す file や記憶域の設計を持たない。

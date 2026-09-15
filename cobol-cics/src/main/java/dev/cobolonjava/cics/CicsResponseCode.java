@@ -17,6 +17,11 @@ public final class CicsResponseCode {
     public static final int INVREQ = 16;
     public static final int IOERR = 17;
     public static final int NOSPACE = 18;
+    /**
+     * browse が file の終わりを越えた。数は CICS TS 6.x の READNEXT の文書による (暫定判断 P-136)。
+     * AEIx の abend の並び (AEIS NOTOPEN 19、AEIT ENDFILE、AEIU ILLOGIC 21) とも合う。
+     */
+    public static final int ENDFILE = 20;
     public static final int ILLOGIC = 21;
     public static final int NOTAUTH = 70;
     /** 受取域が送られたデータより短い (GET CONTAINER)。 */
@@ -48,6 +53,7 @@ public final class CicsResponseCode {
             case "INVREQ" -> INVREQ;
             case "IOERR" -> IOERR;
             case "NOSPACE" -> NOSPACE;
+            case "ENDFILE" -> ENDFILE;
             case "ILLOGIC" -> ILLOGIC;
             case "NOTAUTH" -> NOTAUTH;
             case "LENGERR" -> LENGERR;
@@ -68,6 +74,15 @@ public final class CicsResponseCode {
         return switch (normalized) {
             case "PGMIDERR" -> PGMIDERR;
             case "MAPFAIL" -> MAPFAIL;
+            // file control が返しうる condition (暫定判断 P-136)
+            case "FILENOTFOUND" -> FILENOTFOUND;
+            case "NOTFND" -> NOTFND;
+            case "DUPREC" -> DUPREC;
+            case "INVREQ" -> INVREQ;
+            case "IOERR" -> IOERR;
+            case "NOSPACE" -> NOSPACE;
+            case "LENGERR" -> LENGERR;
+            case "ENDFILE" -> ENDFILE;
             case "ERROR" -> ERROR_HANDLER_KEY;
             default -> throw new IllegalArgumentException(
                     "unsupported CICS handler condition: " + normalized);

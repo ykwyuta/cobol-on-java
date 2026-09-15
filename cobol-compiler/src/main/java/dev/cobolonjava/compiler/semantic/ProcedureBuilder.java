@@ -1017,6 +1017,20 @@ public final class ProcedureBuilder {
             java.util.stream.Stream.of(association.applid(), association.userid(), association.facilityName(),
                     association.networkId(), association.facilityType()).filter(java.util.Objects::nonNull)
                     .forEach(out::add);
+        } else if (statement instanceof Statement.CicsFileCommand file) {
+            int kind = file.kind();
+            if (kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READ
+                    || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READNEXT
+                    || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READPREV) {
+                out.add(file.data());
+                out.add(file.ridfld());
+                if (file.lengthArea() != null) {
+                    out.add(file.lengthArea());
+                }
+            }
+            if (file.numrec() != null) {
+                out.add(file.numrec());
+            }
         } else if (statement instanceof Statement.CicsContainer container && !container.put()) {
             out.add(container.area());
             if (container.lengthData() != null) {
@@ -1782,42 +1796,8 @@ public final class ProcedureBuilder {
                 return withCicsResponse(new Statement.CicsInquireAssociation(texts[0], texts[1], texts[2], texts[3],
                         facilityType, parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
             }
-            if (parsed.writeFile() != null) {
-                CicsBlockParser.FileWriteSpec spec = parsed.writeFile();
-                DataReference fileData = null;
-                if (spec.fileData() != null) {
-                    fileData = resolver.resolveName(spec.fileData(), origin);
-                    if (fileData == null) {
-                        return null;
-                    }
-                    if (DataCategory.of(fileData) != DataCategory.ALPHANUMERIC
-                            || fileData.constantLength().isEmpty() || fileData.constantLength().getAsInt() != 8) {
-                        throw new IllegalArgumentException("WRITE FILE data area must be an 8-byte alphanumeric item");
-                    }
-                }
-                DataReference from = resolver.resolveName(spec.from(), origin);
-                DataReference ridfld = resolver.resolveName(spec.ridfld(), origin);
-                if (from == null || ridfld == null) {
-                    return null;
-                }
-                for (DataReference area : List.of(from, ridfld)) {
-                    if (area.constantLength().isEmpty()
-                            || !(DataCategory.of(area).isAlphanumericLike() || DataCategory.of(area) == DataCategory.GROUP)) {
-                        throw new IllegalArgumentException(
-                                "WRITE FILE FROM and RIDFLD must be alphanumeric or group data areas of fixed length");
-                    }
-                }
-                if (spec.length() > from.constantLength().getAsInt()) {
-                    throw new IllegalArgumentException("WRITE FILE LENGTH " + spec.length()
-                            + " exceeds the FROM data area of " + from.constantLength().getAsInt() + " bytes");
-                }
-                if (spec.keyLength() > ridfld.constantLength().getAsInt()) {
-                    throw new IllegalArgumentException("WRITE FILE KEYLENGTH " + spec.keyLength()
-                            + " exceeds the RIDFLD data area of " + ridfld.constantLength().getAsInt() + " bytes");
-                }
-                return withCicsResponse(new Statement.CicsWriteFile(spec.fileLiteral(), fileData, from, ridfld,
-                        spec.length(), spec.keyLength(), parsed.response() != null || parsed.noHandle(), origin),
-                        parsed, origin);
+            if (parsed.fileCommand() != null) {
+                return cicsFileStatement(parsed, origin);
             }
             if (parsed.terminal() != null) {
                 CicsBlockParser.TerminalSpec spec = parsed.terminal();
@@ -1963,6 +1943,90 @@ public final class ProcedureBuilder {
     }
 
     /** RESP / RESP2 があれば、command のあとで EIBRESP / EIBRESP2 を受取項目へ転記する。 */
+    /** file control の域を解決する (暫定判断 P-131、P-136)。 */
+    private Statement cicsFileStatement(CicsBlockParser.Parsed parsed, Origin origin) {
+        CicsBlockParser.FileCommandSpec spec = parsed.fileCommand();
+        int kind = spec.kind();
+        String label = dev.cobolonjava.cics.CicsRuntimeOps.FILE_COMMANDS.get(kind) + " FILE";
+        boolean reads = kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READ
+                || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READNEXT
+                || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READPREV;
+        boolean rrn = (spec.flags() & dev.cobolonjava.cics.CicsRuntimeOps.FILE_RRN) != 0;
+        DataReference fileData = null;
+        if (spec.fileData() != null) {
+            fileData = resolver.resolveName(spec.fileData(), origin);
+            if (fileData == null) {
+                return null;
+            }
+            if (DataCategory.of(fileData) != DataCategory.ALPHANUMERIC
+                    || fileData.constantLength().isEmpty() || fileData.constantLength().getAsInt() != 8) {
+                throw new IllegalArgumentException(label + " data area must be an 8-byte alphanumeric item");
+            }
+        }
+        DataReference data = null;
+        if (spec.data() != null) {
+            data = resolver.resolveName(spec.data(), origin);
+            if (data == null) {
+                return null;
+            }
+            requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+        }
+        DataReference ridfld = null;
+        if (spec.ridfld() != null) {
+            ridfld = resolver.resolveName(spec.ridfld(), origin);
+            if (ridfld == null) {
+                return null;
+            }
+            if (rrn) {
+                Usage usage = ridfld.item().usage() == null ? Usage.DISPLAY : ridfld.item().usage();
+                boolean binary = (usage == Usage.COMP || usage == Usage.COMP_5) && DataCategory.of(ridfld).isNumeric();
+                if (ridfld.constantLength().isEmpty() || ridfld.constantLength().getAsInt() != Integer.BYTES
+                        || !(binary || DataCategory.of(ridfld).isAlphanumericLike()
+                        || DataCategory.of(ridfld) == DataCategory.GROUP)) {
+                    throw new IllegalArgumentException(label + " RRN requires a 4-byte RIDFLD");
+                }
+            } else {
+                requireRecordArea(ridfld, label + " RIDFLD");
+            }
+        }
+        DataReference[] numbers = new DataReference[4];
+        String[] names = {spec.length(), spec.keyLength(), spec.reqid(), spec.numrec()};
+        String[] options = {"LENGTH", "KEYLENGTH", "REQID", "NUMREC"};
+        for (int i = 0; i < names.length; i++) {
+            if (names[i] == null) {
+                continue;
+            }
+            numbers[i] = resolver.resolveName(names[i], origin);
+            if (numbers[i] == null) {
+                return null;
+            }
+            Usage usage = numbers[i].item().usage() == null ? Usage.DISPLAY : numbers[i].item().usage();
+            if ((usage != Usage.COMP && usage != Usage.COMP_5) || numbers[i].item().length() != Short.BYTES
+                    || !DataCategory.of(numbers[i]).isNumeric()) {
+                throw new IllegalArgumentException(label + " " + options[i] + " must be a halfword binary data area");
+            }
+        }
+        if (data != null && spec.lengthLiteral() > data.constantLength().getAsInt()) {
+            throw new IllegalArgumentException(label + " LENGTH " + spec.lengthLiteral()
+                    + " exceeds the FROM data area of " + data.constantLength().getAsInt() + " bytes");
+        }
+        if (ridfld != null && spec.keyLengthLiteral() > ridfld.constantLength().getAsInt()) {
+            throw new IllegalArgumentException(label + " KEYLENGTH " + spec.keyLengthLiteral()
+                    + " exceeds the RIDFLD data area of " + ridfld.constantLength().getAsInt() + " bytes");
+        }
+        return withCicsResponse(new Statement.CicsFileCommand(kind, spec.fileLiteral(), fileData, data,
+                numbers[0], spec.lengthLiteral(), ridfld, numbers[1], spec.keyLengthLiteral(), numbers[2],
+                spec.reqidLiteral(), numbers[3], spec.flags(), parsed.response() != null || parsed.noHandle(), origin),
+                parsed, origin);
+    }
+
+    private static void requireRecordArea(DataReference area, String option) {
+        if (area.constantLength().isEmpty()
+                || !(DataCategory.of(area).isAlphanumericLike() || DataCategory.of(area) == DataCategory.GROUP)) {
+            throw new IllegalArgumentException(option + " must be an alphanumeric or group data area of fixed length");
+        }
+    }
+
     private Statement withCicsResponse(
             Statement command, CicsBlockParser.Parsed parsed, Origin origin) {
         if (parsed.response() == null) {

@@ -62,7 +62,8 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                 .build();
         // 資源は session より先に返す。task がどう終わっても (ABEND や例外でも) 持ち越さない
         try (CobolSession session = runtime.openSession(services);
-             Release ignored = () -> environment.enqueues().releaseTask(task.taskId())) {
+             Release ignored = () -> environment.enqueues().releaseTask(task.taskId());
+             Release files = () -> environment.files().releaseTask(task.taskId())) {
             execution.bind(new DefaultCicsGateway(task, definition, session, syncpoints));
             ProgramId program = definition.initialProgram();
             CicsPayload payload = input;

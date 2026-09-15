@@ -43,9 +43,22 @@ final class CicsBlockParser {
     /** INQUIRE ASSOCIATION。ASSOCIATION は option として後ろで読む。 */
     private static final Pattern ASSOCIATION_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+INQUIRE\\s+(ASSOCIATION\\b.*?)END-EXEC\\s*$");
-    /** WRITE (file control)。WRITEQ は別の語なので当たらない。 */
-    private static final Pattern WRITE_FILE_BLOCK = Pattern.compile(
-            "(?is)^\\s*EXEC\\s+CICS\\s+WRITE\\b(.*?)END-EXEC\\s*$");
+    /** file control の命令。READQ / WRITEQ / DELETEQ は別の語なので当たらない。 */
+    private static final Pattern FILE_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+(READ|WRITE|REWRITE|DELETE|UNLOCK|STARTBR|READNEXT|READPREV|ENDBR|RESETBR)\\b"
+                    + "(.*?)END-EXEC\\s*$");
+    /** file control の命令ごとに、FILE / RESP / RESP2 / NOHANDLE のほかに受ける option。種類の番号の順。 */
+    private static final List<Set<String>> FILE_OPTIONS = List.of(
+            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "RRN", "UPDATE", "UNCOMMITTED"),
+            Set.of("FROM", "RIDFLD", "LENGTH", "KEYLENGTH", "RRN"),
+            Set.of("FROM", "LENGTH"),
+            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "NUMREC", "RRN"),
+            Set.of(),
+            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN"),
+            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN"),
+            Set.of("INTO", "RIDFLD", "LENGTH", "KEYLENGTH", "REQID", "RRN"),
+            Set.of("REQID"),
+            Set.of("RIDFLD", "KEYLENGTH", "GENERIC", "GTEQ", "EQUAL", "REQID", "RRN"));
     private static final Pattern RECEIVE_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+RECEIVE\\b(.*?)END-EXEC\\s*$");
     private static final Pattern DELAY_BLOCK = Pattern.compile(
@@ -130,9 +143,9 @@ final class CicsBlockParser {
         if (association.matches()) {
             return parseAssociation(association.group(1));
         }
-        Matcher writeFile = WRITE_FILE_BLOCK.matcher(source);
-        if (writeFile.matches()) {
-            return parseWriteFile(writeFile.group(1));
+        Matcher fileCommand = FILE_BLOCK.matcher(source);
+        if (fileCommand.matches()) {
+            return parseFileCommand(fileCommand.group(1).toUpperCase(Locale.ROOT), fileCommand.group(2));
         }
         Matcher terminal = TERMINAL_BLOCK.matcher(source);
         if (terminal.matches()) {
@@ -613,12 +626,14 @@ final class CicsBlockParser {
     }
 
     /**
-     * WRITE FILE を読む (暫定判断 P-131)。
+     * file control の命令を読む (暫定判断 P-131、P-136)。
      *
-     * <p>固定長の KSDS へ鍵で書く形だけを受ける。MASSINSERT、SYSID、RBA / RRN / XRBA、NOSUSPEND は
+     * <p>SET (CICS が持つ域への pointer)、SYSID、RBA / XRBA、TOKEN、NOSUSPEND、CONSISTENT / REPEATABLE (RLS)、
+     * DEBKEY / DEBREC (BDAM)、MASSINSERT、browse の UPDATE は、表す file や記憶域の設計を持たないので
      * 名前をつけて断る。
      */
-    private static Parsed parseWriteFile(String source) {
+    private static Parsed parseFileCommand(String verb, String source) {
+        int kind = dev.cobolonjava.cics.CicsRuntimeOps.FILE_COMMANDS.indexOf(verb);
         java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
         Matcher option = SEND_OPTION.matcher(source);
         int position = 0;
@@ -629,31 +644,82 @@ final class CicsBlockParser {
             }
             String name = option.group(1).toUpperCase(Locale.ROOT);
             if (options.containsKey(name)) {
-                throw new IllegalArgumentException("duplicate WRITE option: " + name);
+                throw new IllegalArgumentException("duplicate " + verb + " option: " + name);
             }
             options.put(name, new String[] {option.group(2), option.group(3),
                     option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
             position = option.end();
         }
         if (!options.containsKey("FILE")) {
-            throw new IllegalArgumentException("WRITE requires FILE; only file control WRITE is supported");
+            throw new IllegalArgumentException(verb + " requires FILE; only file control " + verb + " is supported");
         }
         for (String name : options.keySet()) {
-            if (!Set.of("FILE", "FROM", "RIDFLD", "LENGTH", "KEYLENGTH", "RESP", "RESP2", "NOHANDLE").contains(name)) {
-                throw new IllegalArgumentException("unsupported WRITE FILE option: " + name);
+            if (!FILE_OPTIONS.get(kind).contains(name) && !Set.of("FILE", "RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported " + verb + " FILE option: " + name);
             }
         }
+        String label = verb + " FILE";
         String[] file = options.get("FILE");
         if (file[0] == null && file[2] == null) {
-            throw new IllegalArgumentException("WRITE FILE requires FILE('name') or FILE(data-name)");
+            throw new IllegalArgumentException(label + " requires FILE('name') or FILE(data-name)");
         }
-        String from = sendDataName(options.get("FROM"), "FROM");
+        String fileLiteral = file[0] == null ? null : file[0].stripTrailing();
+        if (fileLiteral != null && !fileLiteral.matches("[A-Z@#$][A-Z0-9@#$]{0,7}")) {
+            throw new IllegalArgumentException(label + " name must be 1 to 8 characters: " + file[0]);
+        }
+        boolean reads = kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READ
+                || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READNEXT
+                || kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_READPREV;
+        String dataOption = reads ? "INTO" : "FROM";
+        String data = sendDataName(options.get(dataOption), dataOption);
         String ridfld = sendDataName(options.get("RIDFLD"), "RIDFLD");
-        if (from == null || ridfld == null) {
-            throw new IllegalArgumentException("WRITE FILE requires FROM and RIDFLD");
+        String numrec = sendDataName(options.get("NUMREC"), "NUMREC");
+        if (data == null && FILE_OPTIONS.get(kind).contains(dataOption)) {
+            throw new IllegalArgumentException(label + " requires " + dataOption);
         }
-        int length = integerOption(options.get("LENGTH"), "LENGTH");
-        int keyLength = integerOption(options.get("KEYLENGTH"), "KEYLENGTH");
+        if (ridfld == null && FILE_OPTIONS.get(kind).contains("RIDFLD")
+                && kind != dev.cobolonjava.cics.CicsRuntimeOps.FILE_DELETE) {
+            throw new IllegalArgumentException(label + " requires RIDFLD");
+        }
+        int flags = fileFlag(options, "GENERIC", dev.cobolonjava.cics.CicsRuntimeOps.FILE_GENERIC)
+                | fileFlag(options, "GTEQ", dev.cobolonjava.cics.CicsRuntimeOps.FILE_GTEQ)
+                | fileFlag(options, "EQUAL", dev.cobolonjava.cics.CicsRuntimeOps.FILE_EQUAL)
+                | fileFlag(options, "RRN", dev.cobolonjava.cics.CicsRuntimeOps.FILE_RRN)
+                | fileFlag(options, "UPDATE", dev.cobolonjava.cics.CicsRuntimeOps.FILE_UPDATE);
+        // UNCOMMITTED は RLS でない file の既定であり、何も変えない
+        fileFlag(options, "UNCOMMITTED", 0);
+        if (options.containsKey("GTEQ") && options.containsKey("EQUAL")) {
+            throw new IllegalArgumentException(label + " GTEQ and EQUAL are mutually exclusive");
+        }
+        if (options.containsKey("UPDATE") && options.containsKey("UNCOMMITTED")) {
+            throw new IllegalArgumentException(label + " UPDATE and UNCOMMITTED are mutually exclusive");
+        }
+        if (options.containsKey("GENERIC") && !options.containsKey("KEYLENGTH")) {
+            throw new IllegalArgumentException(label + " GENERIC requires KEYLENGTH");
+        }
+        if (options.containsKey("RRN") && (options.containsKey("GENERIC") || options.containsKey("KEYLENGTH"))) {
+            throw new IllegalArgumentException(label + " RRN does not take GENERIC or KEYLENGTH");
+        }
+        if (kind == dev.cobolonjava.cics.CicsRuntimeOps.FILE_DELETE && ridfld == null
+                && (options.containsKey("KEYLENGTH") || options.containsKey("GENERIC")
+                || options.containsKey("NUMREC") || options.containsKey("RRN"))) {
+            throw new IllegalArgumentException(label + " without RIDFLD takes no KEYLENGTH, GENERIC, NUMREC, or RRN");
+        }
+        String[] length = options.get("LENGTH");
+        String lengthName = null;
+        int lengthLiteral = -1;
+        if (length != null) {
+            if (length[2] != null) {
+                lengthName = length[2];
+            } else if (length[1] != null && !reads) {
+                lengthLiteral = Integer.parseInt(length[1]);
+            } else {
+                throw new IllegalArgumentException(label + " LENGTH requires "
+                        + (reads ? "a data name" : "an integer literal or a data name"));
+            }
+        }
+        String[] keyLength = fileNumber(options.get("KEYLENGTH"), label + " KEYLENGTH");
+        String[] reqid = fileNumber(options.get("REQID"), label + " REQID");
         String[] noHandle = options.get("NOHANDLE");
         if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
             throw new IllegalArgumentException("NOHANDLE does not take a value");
@@ -663,26 +729,37 @@ final class CicsBlockParser {
         if (response2 != null && response == null) {
             throw new IllegalArgumentException("RESP2 requires RESP");
         }
-        String fileLiteral = file[0] == null ? null : file[0].stripTrailing();
-        if (fileLiteral != null && !fileLiteral.matches("[A-Z@#$][A-Z0-9@#$]{0,7}")) {
-            throw new IllegalArgumentException("WRITE FILE name must be 1 to 8 characters: " + file[0]);
-        }
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
                 null, null, null, null, null,
-                new FileWriteSpec(fileLiteral, file[2], from, ridfld, length, keyLength), null);
+                new FileCommandSpec(kind, fileLiteral, file[2], data, lengthName, lengthLiteral, ridfld,
+                        keyLength[0], keyLength[1] == null ? -1 : Integer.parseInt(keyLength[1]),
+                        reqid[0], reqid[1] == null ? -1 : Integer.parseInt(reqid[1]), numrec, flags),
+                null);
     }
 
-    /** 整数定数だけを受ける option。書かなければ -1。 */
-    private static int integerOption(String[] value, String option) {
+    /** 値を持たない option の印。書かれていなければ 0。 */
+    private static int fileFlag(java.util.Map<String, String[]> options, String name, int flag) {
+        String[] value = options.get(name);
         if (value == null) {
-            return -1;
+            return 0;
         }
-        if (value[1] == null) {
-            throw new IllegalArgumentException("WRITE FILE " + option + " accepts only an integer literal");
+        if (value[0] != null || value[1] != null || value[2] != null) {
+            throw new IllegalArgumentException(name + " does not take a value");
         }
-        return Integer.parseInt(value[1]);
+        return flag;
+    }
+
+    /** データ名か整数定数の option。{データ名, 定数} の形で返し、書かれていなければどちらも null。 */
+    private static String[] fileNumber(String[] value, String option) {
+        if (value == null) {
+            return new String[2];
+        }
+        if (value[2] == null && value[1] == null) {
+            throw new IllegalArgumentException(option + " requires an integer literal or a data name");
+        }
+        return new String[] {value[2], value[1]};
     }
 
     /**
@@ -1199,7 +1276,7 @@ final class CicsBlockParser {
             ContainerSpec container,
             EnqueueSpec enqueue,
             TerminalSpec terminal,
-            FileWriteSpec writeFile,
+            FileCommandSpec fileCommand,
             AssociationSpec association) {
         Parsed {
             conditions = List.copyOf(conditions);
@@ -1226,9 +1303,13 @@ final class CicsBlockParser {
                            String facilityType) {
     }
 
-    /** WRITE FILE の、データ名を解決する前の形。LENGTH / KEYLENGTH は書かなければ -1。 */
-    record FileWriteSpec(String fileLiteral, String fileData, String from, String ridfld,
-                         int length, int keyLength) {
+    /**
+     * file control の、データ名を解決する前の形。数の option はデータ名か定数のどちらかで、定数を書かなければ -1。
+     * {@code data} は INTO か FROM。
+     */
+    record FileCommandSpec(int kind, String fileLiteral, String fileData, String data, String length,
+                           int lengthLiteral, String ridfld, String keyLength, int keyLengthLiteral,
+                           String reqid, int reqidLiteral, String numrec, int flags) {
     }
 
     /** INQUIRE / SET TERMINAL の、データ名を解決する前の形。端末は定数かデータ名のどちらか。 */

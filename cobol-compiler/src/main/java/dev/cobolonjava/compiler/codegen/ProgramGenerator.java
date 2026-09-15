@@ -771,8 +771,8 @@ public final class ProgramGenerator {
                 planCicsEnqueue(enqueue, body);
             } else if (statement instanceof Statement.CicsTerminalUctran terminal) {
                 planCicsTerminal(terminal, body);
-            } else if (statement instanceof Statement.CicsWriteFile writeFile) {
-                planCicsWriteFile(writeFile, body);
+            } else if (statement instanceof Statement.CicsFileCommand fileCommand) {
+                planCicsFileCommand(fileCommand, body);
             } else if (statement instanceof Statement.CicsInquireAssociation association) {
                 planCicsInquireAssociation(association, body);
             } else if (statement instanceof Statement.CicsDeedit deedit) {
@@ -1107,24 +1107,42 @@ public final class ProgramGenerator {
         });
     }
 
-    private void planCicsWriteFile(Statement.CicsWriteFile statement, List<Runnable> body) {
+    private void planCicsFileCommand(Statement.CicsFileCommand statement, List<Runnable> body) {
         Runnable file = planAreaBytes(statement.fileData(), statement.origin());
-        Runnable from = planWholeView(statement.from(), statement.origin());
-        Runnable ridfld = planWholeView(statement.ridfld(), statement.origin());
-        if (file == null || from == null || ridfld == null) {
+        if (file == null) {
             return;
+        }
+        // 並びは data、LENGTH、RIDFLD、KEYLENGTH、REQID、NUMREC
+        List<Runnable> views = new ArrayList<>();
+        for (DataReference area : java.util.Arrays.asList(statement.data(), statement.lengthArea(), statement.ridfld(),
+                statement.keyLengthArea(), statement.reqidArea(), statement.numrec())) {
+            Runnable view = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
+                    : planWholeView(area, statement.origin());
+            if (view == null) {
+                return;
+            }
+            views.add(view);
         }
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);
+            push(statement.kind());
             pushNullableString(statement.fileLiteral());
             file.run();
-            from.run();
-            ridfld.run();
-            push(statement.length());
-            push(statement.keyLength());
+            views.get(0).run();
+            views.get(1).run();
+            push(statement.lengthLiteral());
+            views.get(2).run();
+            views.get(3).run();
+            push(statement.keyLengthLiteral());
+            views.get(4).run();
+            push(statement.reqidLiteral());
+            views.get(5).run();
+            push(statement.flags());
             run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "writeFileCondition",
-                    "(" + CONTEXT + "Ljava/lang/String;[BL" + DATA_VIEW + ";L" + DATA_VIEW + ";IIZ)I", false);
+            String view = "L" + DATA_VIEW + ";";
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "fileCommandCondition",
+                    "(" + CONTEXT + "ILjava/lang/String;[B" + view + view + "I" + view + view + "I" + view + "I"
+                            + view + "IZ)I", false);
             emitCicsConditionTransfer();
         });
     }

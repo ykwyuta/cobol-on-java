@@ -121,14 +121,26 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
-    /** EXEC CICS WRITE FILE (暫定判断 P-131)。LENGTH / KEYLENGTH は書かなければ -1。 */
-    record CicsWriteFile(
+    /**
+     * EXEC CICS の file control (暫定判断 P-131、P-136)。
+     *
+     * <p>{@code kind} と {@code flags} は {@code CicsRuntimeOps.FILE_*} の値。数の option は、データ名なら
+     * 域、定数なら literal で持つ。書かなければ域は null、literal は -1。{@code data} は INTO か FROM。
+     */
+    record CicsFileCommand(
+            int kind,
             String fileLiteral,
             DataReference fileData,
-            DataReference from,
+            DataReference data,
+            DataReference lengthArea,
+            int lengthLiteral,
             DataReference ridfld,
-            int length,
-            int keyLength,
+            DataReference keyLengthArea,
+            int keyLengthLiteral,
+            DataReference reqidArea,
+            int reqidLiteral,
+            DataReference numrec,
+            int flags,
             boolean suppressDefaultHandling,
             Origin origin) implements Statement {
     }

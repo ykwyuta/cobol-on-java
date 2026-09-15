@@ -538,6 +538,14 @@ EXEC CICS IGNORE CONDITION 条件名... END-EXEC
 EXEC CICS HANDLE ABEND (LABEL(段落名) | CANCEL | RESET) END-EXEC
 EXEC CICS PUSH HANDLE END-EXEC
 EXEC CICS POP HANDLE END-EXEC
+EXEC CICS READ FILE(名前) INTO(域) RIDFLD(域) [LENGTH(S9(4) COMP項目)] [KEYLENGTH(n | 項目) [GENERIC]] [GTEQ | EQUAL] [RRN] [UPDATE] END-EXEC
+EXEC CICS WRITE FILE(名前) FROM(域) RIDFLD(域) [LENGTH(n | 項目)] [KEYLENGTH(n | 項目)] [RRN] END-EXEC
+EXEC CICS REWRITE FILE(名前) FROM(域) [LENGTH(n | 項目)] END-EXEC
+EXEC CICS DELETE FILE(名前) [RIDFLD(域) [KEYLENGTH(n | 項目) [GENERIC]] [NUMREC(S9(4) COMP項目)] [RRN]] END-EXEC
+EXEC CICS UNLOCK FILE(名前) END-EXEC
+EXEC CICS (STARTBR | RESETBR) FILE(名前) RIDFLD(域) [KEYLENGTH(n | 項目) [GENERIC]] [GTEQ | EQUAL] [REQID(n | 項目)] [RRN] END-EXEC
+EXEC CICS (READNEXT | READPREV) FILE(名前) INTO(域) RIDFLD(域) [LENGTH(S9(4) COMP項目)] [KEYLENGTH(n | 項目)] [REQID(n | 項目)] [RRN] END-EXEC
+EXEC CICS ENDBR FILE(名前) [REQID(n | 項目)] END-EXEC
 ```
 - **振る舞い**:
   - `DFHEIBLK` (EIB: `EIBTRNID`, `EIBCALEN`, `EIBFN`, `EIBRCODE`, `EIBRESP`, `EIBRESP2`) の各フィールドを CICS コマンド実行の都度更新します。
@@ -546,7 +554,7 @@ EXEC CICS POP HANDLE END-EXEC
   - `RETURN TRANSID(...) IMMEDIATE` は、次の task を端末入力なしで始める指定を task 結果 (`CicsTaskReply.immediateNext`) に残します。次の task を起動するのは transport adapter です。
   - `BIF DEEDIT` は項目から数字以外を除き、数字を右へ詰めて左を `0` で埋めます。末尾が `-` / `CR` なら右端のゾーンを負にします (暫定判断 P-124)。
   - `ABEND ABCODE(項目)` は 4 byte の英数字項目の値を実行時に読んで ABEND コードにします。
-  - `WRITE FILE('名前') FROM(域) RIDFLD(域) [LENGTH(n)] [KEYLENGTH(n)]` は、region に定義した固定長 KSDS へ鍵で書きます。同じ鍵があれば `DUPREC`、定義の無い file は `FILENOTFOUND` です。長さや鍵の食い違いは失敗させます (暫定判断 P-131)。
+  - file control (`READ` / `WRITE` / `REWRITE` / `DELETE` / `UNLOCK` と browse) は、region に定義した KSDS / RRDS (固定長か可変長) を、バッチと同じデータセットとして読み書きします。返す条件は公開文書に RESP2 の書かれたものだけで、書かれていない形 (鍵を変える `REWRITE`、固定長の record を違う長さで読む形など) は失敗させます。`READ UPDATE` で得た record は `REWRITE` / `DELETE` / `UNLOCK`、`SYNCPOINT`、task の終わりで返し、他の task は期限まで待ちます。file は回復不能として扱います (設計 82 §3、暫定判断 P-131、P-136)。
   - `GET` / `PUT CONTAINER` は task 内の channel に container を置き、読みます。GET でデータが受取域より長ければ入る分だけ写して `LENGERR`、container が無ければ `CONTAINERERR`、channel が無ければ `CHANNELERR` です。変換 option (`DATATYPE` 等) は未対応です (設計 79 §9、暫定判断 P-125)。
   - `LINK` は同一トランザクション/セッション内で副プログラムを呼び出し、COMMAREA のコピーバックを保証します。
   - `HANDLE CONDITION` / `IGNORE CONDITION` によるエラーハンドラ段落への自動ジャンプ、および `PUSH HANDLE` / `POP HANDLE` によるハンドラ退避スタック（リンクレベル分離）を完全に再現します。

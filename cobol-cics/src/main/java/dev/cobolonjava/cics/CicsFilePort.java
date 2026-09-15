@@ -1,98 +1,147 @@
 package dev.cobolonjava.cics;
 
-import dev.cobolonjava.runtime.file.DataSetAttributes;
-import dev.cobolonjava.runtime.file.FileStatus;
-import dev.cobolonjava.runtime.file.IndexedDataSet;
-import dev.cobolonjava.runtime.file.OpenMode;
-import dev.cobolonjava.runtime.file.RecordFormat;
-import java.util.Arrays;
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.function.Function;
-import java.util.stream.Collectors;
+import java.util.OptionalInt;
 
 /**
- * file control (暫定判断 P-131)。region の構成が持ち、task どうしで分け合う。
+ * file control (暫定判断 P-131、P-136)。region の構成が持ち、task どうしで分け合う。
  *
- * <p>返す RESP / RESP2 は CICS TS の公開文書で数を確かめたものだけである。
+ * <p>返す RESP / RESP2 は CICS TS の公開文書で数を確かめたものだけである。数の option を書かなかったことは
+ * {@link #ABSENT} で表す。
  */
 public interface CicsFilePort {
 
-    /** file 命令の結果。 */
+    /** KEYLENGTH などの数の option を書かなかったことを表す値。 */
+    int ABSENT = Integer.MIN_VALUE;
+
+    /** 応答だけを返す命令の結果。 */
     record Result(int response, int response2) {
     }
 
-    /**
-     * {@code WRITE FILE}。
-     *
-     * @param key RIDFLD の先頭 key 長ぶん
-     */
-    Result write(String file, byte[] key, byte[] record);
-
-    /** 定義を持つ実装。鍵の長さを答える。 */
-    interface DataSetFiles extends CicsFilePort, CicsFileKeyLengths {
+    /** 読んだ record。NORMAL でなければ data と id は null。id は KSDS の鍵か、RRDS の 4 byte の相対レコード番号。 */
+    record Found(int response, int response2, byte[] data, byte[] id) {
     }
 
-    /** file を 1 つも定義していない region。どの名前も FILENOTFOUND になる。 */
+    /** DELETE の結果。count は消した record の数 (NUMREC)。 */
+    record Deleted(int response, int response2, int count) {
+    }
+
+    /** WRITE。ridfld は KSDS なら鍵、RRDS なら 4 byte の相対レコード番号。 */
+    Result write(CicsTaskId task, String file, byte[] ridfld, boolean rrn, byte[] record);
+
+    /** READ。maxWait は他の task が record を更新のために持っているときに待てる長さ (null なら限りなく待つ)。 */
+    Found read(CicsTaskId task, String file, byte[] ridfld, boolean rrn, int keyLength, boolean generic,
+               boolean gteq, boolean update, Duration maxWait);
+
+    Result rewrite(CicsTaskId task, String file, byte[] record);
+
+    /** DELETE。ridfld が null なら直前の READ UPDATE の record を消す。 */
+    Deleted delete(CicsTaskId task, String file, byte[] ridfld, boolean rrn, int keyLength, boolean generic,
+                   Duration maxWait);
+
+    Result unlock(CicsTaskId task, String file);
+
+    Result startBrowse(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn, int keyLength,
+                       boolean generic, boolean equal);
+
+    Found readNext(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn, int keyLength);
+
+    Found readPrevious(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn, int keyLength);
+
+    Result endBrowse(CicsTaskId task, String file, int reqid);
+
+    Result resetBrowse(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn, int keyLength,
+                       boolean generic, boolean equal);
+
+    /** SYNCPOINT で、更新のために持つ record を返し、browse を終える。 */
+    void releaseUnitOfWork(CicsTaskId task);
+
+    /** task の終わりに、持っている record と browse をすべて返す。 */
+    void releaseTask(CicsTaskId task);
+
+    /** KSDS の鍵の長さ。定義が無いか RRDS なら空。 */
+    default OptionalInt keyLengthOf(String file) {
+        return OptionalInt.empty();
+    }
+
+    /** 可変長の定義か。 */
+    default boolean variableLength(String file) {
+        return false;
+    }
+
+    /** file を 1 つも定義していない region。どの名前も FILENOTFOUND (RESP2 1) になる。 */
     static CicsFilePort none() {
-        return (file, key, record) -> new Result(CicsResponseCode.FILENOTFOUND, 1);
-    }
-
-    /** 定義した file を、バッチと同じ索引編成のデータセットとして持つ。 */
-    static CicsFilePort dataSets(List<CicsFileDefinition> definitions) {
-        Map<String, CicsFileDefinition> byName = definitions.stream()
-                .collect(Collectors.toUnmodifiableMap(CicsFileDefinition::name, Function.identity()));
-        return new DataSetFiles() {
+        Result missing = new Result(CicsResponseCode.FILENOTFOUND, 1);
+        Found notFound = new Found(CicsResponseCode.FILENOTFOUND, 1, null, null);
+        return new CicsFilePort() {
             @Override
-            public java.util.OptionalInt keyLengthOf(String file) {
-                CicsFileDefinition definition = byName.get(file);
-                return definition == null ? java.util.OptionalInt.empty()
-                        : java.util.OptionalInt.of(definition.keyLength());
+            public Result write(CicsTaskId task, String file, byte[] ridfld, boolean rrn, byte[] record) {
+                return missing;
             }
 
             @Override
-            public Result write(String file, byte[] key, byte[] record) {
-                CicsFileDefinition definition = byName.get(Objects.requireNonNull(file, "file"));
-                if (definition == null) {
-                    // FILENOTFOUND (RESP2 1): FILE に書いた名前が CICS に定義されていない
-                    return new Result(CicsResponseCode.FILENOTFOUND, 1);
-                }
-                if (record.length != definition.recordLength()) {
-                    // 実機は切り詰めか詰め物をして LENGERR (RESP2 14) を返す。その書き方を持たないので失敗させる
-                    throw new CicsTaskStateException("WRITE FILE(" + file + ") record length " + record.length
-                            + " differs from the fixed length " + definition.recordLength());
-                }
-                if (key.length != definition.keyLength() || !Arrays.equals(key, Arrays.copyOfRange(record,
-                        definition.keyOffset(), definition.keyOffset() + definition.keyLength()))) {
-                    // RIDFLD とレコードの鍵が食い違う形は INVREQ だが、RESP2 の値を確かめていない
-                    throw new CicsTaskStateException("WRITE FILE(" + file + ") RIDFLD does not match the record key");
-                }
-                synchronized (definition) {
-                    IndexedDataSet dataSet = IndexedDataSet.at(definition.path(),
-                            new DataSetAttributes(RecordFormat.FIXED, definition.recordLength(),
-                                    definition.codePage()),
-                            new IndexedDataSet.Key(definition.keyOffset(), definition.keyLength(), false), List.of());
-                    String opened = dataSet.open(OpenMode.IO, true);
-                    if (!FileStatus.succeeded(opened)) {
-                        throw new CicsTaskStateException("WRITE FILE(" + file + ") cannot open the data set: " + opened);
-                    }
-                    String written = dataSet.writeKey(record);
-                    String closed = dataSet.close();
-                    if (!FileStatus.succeeded(closed)) {
-                        throw new CicsTaskStateException("WRITE FILE(" + file + ") cannot close the data set: " + closed);
-                    }
-                    return switch (written) {
-                        case FileStatus.OK -> new Result(CicsResponseCode.NORMAL, 0);
-                        // DUPREC (RESP2 150): 同じ鍵のレコードが既にある
-                        case FileStatus.DUPLICATE_KEY -> new Result(CicsResponseCode.DUPREC, 150);
-                        // NOSPACE (RESP2 100): 装置に置く場所が無い
-                        case FileStatus.BOUNDARY -> new Result(CicsResponseCode.NOSPACE, 100);
-                        default -> throw new CicsTaskStateException(
-                                "WRITE FILE(" + file + ") failed with file status " + written);
-                    };
-                }
+            public Found read(CicsTaskId task, String file, byte[] ridfld, boolean rrn, int keyLength,
+                              boolean generic, boolean gteq, boolean update, Duration maxWait) {
+                return notFound;
+            }
+
+            @Override
+            public Result rewrite(CicsTaskId task, String file, byte[] record) {
+                return missing;
+            }
+
+            @Override
+            public Deleted delete(CicsTaskId task, String file, byte[] ridfld, boolean rrn, int keyLength,
+                                  boolean generic, Duration maxWait) {
+                return new Deleted(CicsResponseCode.FILENOTFOUND, 1, 0);
+            }
+
+            @Override
+            public Result unlock(CicsTaskId task, String file) {
+                return missing;
+            }
+
+            @Override
+            public Result startBrowse(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn,
+                                      int keyLength, boolean generic, boolean equal) {
+                return missing;
+            }
+
+            @Override
+            public Found readNext(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn, int keyLength) {
+                return notFound;
+            }
+
+            @Override
+            public Found readPrevious(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn,
+                                      int keyLength) {
+                return notFound;
+            }
+
+            @Override
+            public Result endBrowse(CicsTaskId task, String file, int reqid) {
+                return missing;
+            }
+
+            @Override
+            public Result resetBrowse(CicsTaskId task, String file, int reqid, byte[] ridfld, boolean rrn,
+                                      int keyLength, boolean generic, boolean equal) {
+                return missing;
+            }
+
+            @Override
+            public void releaseUnitOfWork(CicsTaskId task) {
+            }
+
+            @Override
+            public void releaseTask(CicsTaskId task) {
             }
         };
+    }
+
+    /** 定義した file を、バッチと同じ索引編成・相対レコード編成のデータセットとして持つ。 */
+    static CicsFilePort dataSets(List<CicsFileDefinition> definitions) {
+        return new CicsFileControl(definitions);
     }
 }

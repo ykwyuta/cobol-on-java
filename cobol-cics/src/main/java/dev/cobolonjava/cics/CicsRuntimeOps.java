@@ -33,8 +33,29 @@ public final class CicsRuntimeOps {
     /** INQUIRE / SET TERMINAL (SPI)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int INQUIRE_TERMINAL_FUNCTION = 0x5202;
     private static final int SET_TERMINAL_FUNCTION = 0x5204;
-    /** WRITE (file control)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
-    private static final int WRITE_FILE_FUNCTION = 0x0604;
+    /** file control の命令の種類 (暫定判断 P-136)。生成コードが渡す。 */
+    public static final int FILE_READ = 0;
+    public static final int FILE_WRITE = 1;
+    public static final int FILE_REWRITE = 2;
+    public static final int FILE_DELETE = 3;
+    public static final int FILE_UNLOCK = 4;
+    public static final int FILE_STARTBR = 5;
+    public static final int FILE_READNEXT = 6;
+    public static final int FILE_READPREV = 7;
+    public static final int FILE_ENDBR = 8;
+    public static final int FILE_RESETBR = 9;
+    /** file control の値を持たない option の印。 */
+    public static final int FILE_GENERIC = 1;
+    public static final int FILE_GTEQ = 2;
+    public static final int FILE_EQUAL = 4;
+    public static final int FILE_RRN = 8;
+    public static final int FILE_UPDATE = 16;
+    /** 種類の番号の順の命令名。 */
+    public static final java.util.List<String> FILE_COMMANDS = java.util.List.of(
+            "READ", "WRITE", "REWRITE", "DELETE", "UNLOCK", "STARTBR", "READNEXT", "READPREV", "ENDBR", "RESETBR");
+    /** 種類の番号の順の function code。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
+    private static final int[] FILE_FUNCTIONS = {
+        0x0602, 0x0604, 0x0606, 0x0608, 0x060A, 0x060C, 0x060E, 0x0610, 0x0612, 0x0614};
     /** INQUIRE ASSOCIATION (SPI)。CICS TS 5.6「Function codes of EXEC CICS commands」の表による。 */
     private static final int INQUIRE_ASSOCIATION_FUNCTION = 0xC402;
     private static final java.util.regex.Pattern CONTAINER_NAME =
@@ -215,9 +236,11 @@ public final class CicsRuntimeOps {
             return target;
         }
         requireControl(outcome, SyncpointCompletion.class, "SYNCPOINT");
-        // UOW の間だけ持つ ENQ の資源は、SYNCPOINT (ROLLBACK を含む) で返す
+        // UOW の間だけ持つ ENQ の資源は、SYNCPOINT (ROLLBACK を含む) で返す。READ UPDATE で得た record と
+        // browse も SYNCPOINT で終わる (暫定判断 P-136)
         CicsExecution execution = execution(context);
         execution.environment().enqueues().releaseUnitOfWork(execution.task().taskId());
+        execution.environment().files().releaseUnitOfWork(execution.task().taskId());
         return NO_CONDITION_TRANSFER;
     }
 
@@ -283,34 +306,145 @@ public final class CicsRuntimeOps {
     }
 
     /**
-     * WRITE FILE(名前) FROM(域) RIDFLD(域) (暫定判断 P-131)。
+     * file control の命令 (暫定判断 P-131、P-136)。
      *
-     * @param length    LENGTH の定数。書かなければ -1 で、FROM の長さを使う
-     * @param keyLength KEYLENGTH の定数。書かなければ -1 で、file 定義の鍵の長さを使う
+     * <p>数の option は、データ名なら域 (半語の 2 進)、定数なら literal で渡る。どちらも無ければ域は null、
+     * literal は負である。受取域の無い option は null で渡る。
+     *
+     * <h2>読んだ record の移し方</h2>
+     * <p>LENGTH を書かなければ INTO の域の長さを最大の長さとする (COBOL の翻訳系が INTO の長さを補う)。
+     * 可変長の record が長ければ切り詰めて LENGERR (RESP2 11)、短ければ record の長さだけを移し、
+     * 残りの byte は変えない (文書は「予測できない」とする)。固定長の record を違う長さで読む形は
+     * LENGERR (RESP2 13) だが、そのとき域へ何を移すかを確かめていないので失敗させる。
      */
-    public static int writeFileCondition(ProgramContext context, String fileLiteral, byte[] fileData,
-            DataView from, DataView ridfld, int length, int keyLength, boolean suppressDefaultHandling) {
+    public static int fileCommandCondition(ProgramContext context, int kind, String fileLiteral, byte[] fileData,
+            DataView data, DataView lengthArea, int lengthLiteral, DataView ridfld, DataView keyLengthArea,
+            int keyLengthLiteral, DataView reqidArea, int reqidLiteral, DataView numrec, int flags,
+            boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
+        String command = FILE_COMMANDS.get(kind);
         String file = (fileLiteral != null ? fileLiteral : required.codePage().decode(fileData)).stripTrailing();
-        DataView area = Objects.requireNonNull(from, "from");
-        int recordLength = length < 0 ? area.length() : length;
-        if (recordLength > area.length()) {
-            throw new CicsTaskStateException("WRITE FILE(" + file + ") LENGTH " + recordLength
-                    + " exceeds the FROM area of " + area.length() + " bytes");
-        }
-        byte[] record = area.subView(0, recordLength).toByteArray();
-        byte[] ridfldBytes = Objects.requireNonNull(ridfld, "ridfld").toByteArray();
-        int effectiveKey = keyLength < 0 ? Math.min(ridfldBytes.length, keyLengthOf(required, file, ridfldBytes))
-                : keyLength;
-        if (effectiveKey > ridfldBytes.length) {
-            throw new CicsTaskStateException("WRITE FILE(" + file + ") KEYLENGTH exceeds the RIDFLD area");
-        }
+        String label = command + " FILE(" + file + ")";
         CicsExecution execution = execution(required);
-        CicsFilePort.Result result = execution.environment().files()
-                .write(file, java.util.Arrays.copyOf(ridfldBytes, effectiveKey), record);
+        CicsFilePort files = execution.environment().files();
+        CicsTaskId task = execution.task().taskId();
+        int keyLength = keyLengthArea != null ? halfword(keyLengthArea)
+                : keyLengthLiteral >= 0 ? keyLengthLiteral : CicsFilePort.ABSENT;
+        int reqid = reqidArea != null ? halfword(reqidArea) : Math.max(0, reqidLiteral);
+        boolean generic = (flags & FILE_GENERIC) != 0;
+        boolean gteq = (flags & FILE_GTEQ) != 0;
+        boolean equal = (flags & FILE_EQUAL) != 0;
+        boolean rrn = (flags & FILE_RRN) != 0;
+        boolean update = (flags & FILE_UPDATE) != 0;
+        CicsFilePort.Result result;
+        switch (kind) {
+            case FILE_READ, FILE_READNEXT, FILE_READPREV -> {
+                int max = lengthArea != null ? halfword(lengthArea) : data.length();
+                if (max < 0 || max > data.length()) {
+                    throw new CicsTaskStateException(label + " LENGTH " + max + " does not fit the INTO area of "
+                            + data.length() + " bytes");
+                }
+                byte[] id = ridfld.toByteArray();
+                CicsFilePort.Found found = switch (kind) {
+                    case FILE_READ -> files.read(task, file, id, rrn, keyLength, generic, gteq, update,
+                            maxWait(execution));
+                    case FILE_READNEXT -> files.readNext(task, file, reqid, id, rrn, keyLength);
+                    default -> files.readPrevious(task, file, reqid, id, rrn, keyLength);
+                };
+                result = new CicsFilePort.Result(found.response(), found.response2());
+                if (found.response() == CicsResponseCode.NORMAL) {
+                    byte[] record = found.data();
+                    if (!files.variableLength(file) && record.length != max) {
+                        throw new CicsTaskStateException(label + " reads a fixed-length record of " + record.length
+                                + " bytes with LENGTH " + max + "; what LENGERR moves is not verified");
+                    }
+                    if (record.length > max && update) {
+                        throw new CicsTaskStateException(label + " UPDATE truncated the record;"
+                                + " whether the record stays held is not verified");
+                    }
+                    int moved = Math.min(record.length, max);
+                    data.subView(0, moved).setBytes(java.util.Arrays.copyOf(record, moved));
+                    if (lengthArea != null) {
+                        setHalfword(lengthArea, record.length);
+                    }
+                    if (kind != FILE_READ || generic || gteq) {
+                        // 総称・GTEQ の READ と browse は、見つけた record の完全な識別を RIDFLD へ返す
+                        if (found.id().length > ridfld.length()) {
+                            throw new CicsTaskStateException(label + " RIDFLD is shorter than the record identifier");
+                        }
+                        ridfld.subView(0, found.id().length).setBytes(found.id());
+                    }
+                    if (record.length > max) {
+                        // LENGERR (RESP2 11): record が LENGTH より長く、切り詰めた
+                        result = new CicsFilePort.Result(CicsResponseCode.LENGERR, 11);
+                    }
+                }
+            }
+            case FILE_WRITE, FILE_REWRITE -> {
+                int length = lengthArea != null ? halfword(lengthArea)
+                        : lengthLiteral >= 0 ? lengthLiteral : data.length();
+                if (length < 0 || length > data.length()) {
+                    throw new CicsTaskStateException(label + " LENGTH " + length + " exceeds the FROM area of "
+                            + data.length() + " bytes");
+                }
+                byte[] record = data.subView(0, length).toByteArray();
+                if (kind == FILE_REWRITE) {
+                    result = files.rewrite(task, file, record);
+                } else {
+                    byte[] id = ridfld.toByteArray();
+                    if (!rrn) {
+                        int effective = keyLength == CicsFilePort.ABSENT
+                                ? files.keyLengthOf(file).orElse(id.length) : keyLength;
+                        if (effective < 0 || effective > id.length) {
+                            throw new CicsTaskStateException(label + " KEYLENGTH exceeds the RIDFLD area");
+                        }
+                        id = java.util.Arrays.copyOf(id, effective);
+                    }
+                    result = files.write(task, file, id, rrn, record);
+                }
+            }
+            case FILE_DELETE -> {
+                CicsFilePort.Deleted deleted = files.delete(task, file, ridfld == null ? null : ridfld.toByteArray(),
+                        rrn, keyLength, generic, maxWait(execution));
+                result = new CicsFilePort.Result(deleted.response(), deleted.response2());
+                if (deleted.response() == CicsResponseCode.NORMAL && numrec != null) {
+                    setHalfword(numrec, deleted.count());
+                }
+            }
+            case FILE_UNLOCK -> result = files.unlock(task, file);
+            case FILE_STARTBR -> result = files.startBrowse(task, file, reqid, ridfld.toByteArray(), rrn, keyLength,
+                    generic, equal);
+            case FILE_RESETBR -> result = files.resetBrowse(task, file, reqid, ridfld.toByteArray(), rrn, keyLength,
+                    generic, equal);
+            case FILE_ENDBR -> result = files.endBrowse(task, file, reqid);
+            default -> throw new IllegalArgumentException("unknown file control command: " + kind);
+        }
         execution.eib(required.codePage()).setDataset(file, required.codePage());
-        return containerOutcome(required, WRITE_FILE_FUNCTION, result.response(), result.response2(),
-                suppressDefaultHandling, "WRITE FILE");
+        return containerOutcome(required, FILE_FUNCTIONS[kind], result.response(), result.response2(),
+                suppressDefaultHandling, command + " FILE");
+    }
+
+    /** 他の task が持つ資源を待てる長さ。task の期限が無ければ null (限りなく待つ)。 */
+    private static java.time.Duration maxWait(CicsExecution execution) {
+        return execution.deadline()
+                .map(deadline -> java.time.Duration.between(execution.environment().clock().instant(), deadline))
+                .orElse(null);
+    }
+
+    /** 半語の 2 進の域の値 (符号つき)。 */
+    private static int halfword(DataView view) {
+        byte[] bytes = view.toByteArray();
+        if (bytes.length != Short.BYTES) {
+            throw new CicsTaskStateException("a halfword binary data area must be 2 bytes: " + bytes.length);
+        }
+        return (short) (((bytes[0] & 0xFF) << 8) | (bytes[1] & 0xFF));
+    }
+
+    private static void setHalfword(DataView view, int value) {
+        if (view.length() != Short.BYTES || value < Short.MIN_VALUE || value > Short.MAX_VALUE) {
+            throw new CicsTaskStateException("value " + value + " does not fit a halfword binary data area");
+        }
+        view.setBytes(new byte[] {(byte) (value >>> 8), (byte) value});
     }
 
     /**
@@ -357,13 +491,6 @@ public final class CicsRuntimeOps {
             throw new CicsTaskStateException("INQUIRE ASSOCIATION origin value must fit an 8-byte area: " + value);
         }
         area.setBytes(context.codePage().encode(value + " ".repeat(8 - value.length())));
-    }
-
-    /** KEYLENGTH を省いたときの鍵の長さ。file 定義を知らない port では RIDFLD の長さとする。 */
-    private static int keyLengthOf(ProgramContext context, String file, byte[] ridfld) {
-        return execution(context).environment().files() instanceof CicsFileKeyLengths lengths
-                ? lengths.keyLength(file).orElse(ridfld.length)
-                : ridfld.length;
     }
 
     /** DEQ RESOURCE(域) LENGTH(n)。持っていない資源を返しても NORMAL とする。 */

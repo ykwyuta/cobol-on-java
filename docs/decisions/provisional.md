@@ -3996,7 +3996,7 @@ MDT set」等) を載せるが値を載せない。そこで意味を 3270 デ�
 | 項目 | 内容 |
 | --- | --- |
 | 状態 | 未解決 (2026-09-15) |
-| 場所 | `CicsFilePort`、`CicsFileDefinition`、`CicsRuntimeOps.writeFileCondition`、`CicsEib.setDataset` |
+| 場所 | `CicsFilePort`、`CicsFileDefinition`、`CicsFileControl`、`CicsRuntimeOps.fileCommandCondition`、`CicsEib.setDataset` |
 | 関連要件 | FR-080, FR-101 |
 
 **暫定の扱い**:
@@ -4014,8 +4014,10 @@ MDT set」等) を載せるが値を載せない。そこで意味を 3270 デ�
 - 書いたレコードは直ちにデータセットへ残す。recoverable file の SYNCPOINT / ROLLBACK との一体化は持たない
 - EIBRCODE は binary zero を置く (表の EIBRCODE の列は確かめきれていない)
 
-**どこがずれうるか**: NOTOPEN / DISABLED の数は表から読めなかったので返さない。可変長レコード、ESDS / RRDS、
-READ / REWRITE / DELETE / browse は後続増分とする。
+**どこがずれうるか**: NOTOPEN / DISABLED の数は表から読めなかったので返さない。
+
+**追記 (P-136)**: 固定長と違う長さの WRITE は、REWRITE の頁の RESP2 14「固定長 record の長さが正しくない」に合わせて
+LENGERR (RESP2 14) を返し、書かないことにした。可変長レコード、RRDS、READ / REWRITE / DELETE / browse は P-136 で入れた。
 
 **解消条件**: 実機で DUPREC / LENGERR / INVREQ の RESP2 と EIBRCODE を採る。recoverable file の設計を UOW と合わせて入れる。
 
@@ -4124,3 +4126,36 @@ lease の期限 (5 分) と会話の期限 (30 分) は既定値で、transactio
 container の data type (BIT / CHAR) と code page の変換は持たない。
 
 **解消条件**: 冪等キーの再送と結果照会を入れる。JSON の型付き DTO (記号マップから生成) を設計する。
+
+## P-136 file control は文書に RESP2 のある条件だけを返し、回復不能の KSDS / RRDS として扱う
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15) |
+| 場所 | `CicsFileControl`、`CicsFilePort`、`CicsFileDefinition`、`CicsRuntimeOps.fileCommandCondition`、`CicsBlockParser.parseFileCommand` |
+| 関連要件 | FR-080, FR-101、設計 82 §3 |
+
+**暫定の扱い**:
+
+- READ / WRITE / REWRITE / DELETE / UNLOCK / STARTBR / READNEXT / READPREV / ENDBR / RESETBR を扱う。返す RESP2 は
+  各命令の頁に書かれた値だけで、表は設計 82 §3.2 にある。EIBFN は CICS TS 5.6 の表 (X'0602'〜X'0614')
+- ENDFILE の RESP は 20。6.x の表からは読めなかったが、READNEXT の頁に値がある。AEIx の abend の並び
+  (AEIS NOTOPEN 19、AEIT ENDFILE、AEIU ILLOGIC 21) とも合う
+- 編成は KSDS と RRDS、固定長と可変長。ESDS は RBA の数え方を決められないので持たない
+- file は回復不能とする。SYNCPOINT ROLLBACK は書いたものを戻さない。READ UPDATE の record と browse は
+  SYNCPOINT と task の終わりで返す。他の task が持つ record は task の期限まで待ち、越えれば失敗させる
+- 文書が条件を示さない形は失敗させる: 鍵を変える REWRITE、固定長の record を違う長さで読む READ (LENGERR 13 で何を
+  移すかが無い)、READ UPDATE の切り詰め、READ UPDATE を持ったままの RIDFLD つき DELETE、EQUAL の browse の
+  位置づけ直し、NOTFND になった RESETBR のあとの読み、GTEQ の無い `KEYLENGTH(0)`、定義が READ / ADD を許さない file
+- 可変長の record を短く読んだとき INTO の残りは変えない。文書は「予測できない」とする
+- 総称の browse は総称の鍵に合わなくなっても読み続ける (文書に止まるとは書かれていない)
+- `HANDLE CONDITION` に FILENOTFOUND、NOTFND、DUPREC、INVREQ、IOERR、NOSPACE、LENGERR、ENDFILE を書けるようにした
+- LENGTH / KEYLENGTH / REQID / NUMREC のデータ名は半語の 2 進 (`S9(4) COMP`) に限る。READ 系の LENGTH は域でなければならない
+- SET、SYSID、RBA / XRBA、TOKEN、NOSUSPEND、CONSISTENT / REPEATABLE、DEBKEY / DEBREC、MASSINSERT、browse の UPDATE は断る
+- 命令のたびにデータセットを開いて閉じ、region の中の命令を 1 つの監視で順に通す
+
+**どこがずれうるか**: 実機の VSAM の排他は制御域単位で、ここは record 単位である。NOTOPEN / DISABLED / DUPKEY / LOCKED は
+file の状態や副索引を持たないので返さない。性能は測っていない。
+
+**解消条件**: 実機で EIBRCODE、固定長の LENGERR 13 のときの域、総称の browse の終わり、EQUAL の browse の位置づけ直しを採る。
+回復可能な file を UOW と合わせて設計する。
