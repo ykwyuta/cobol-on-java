@@ -69,6 +69,17 @@ class InMemoryCicsTerminalRegistryTest {
     }
 
     @Test
+    @DisplayName("固定の端末名は同じownerなら使い回し、別のownerが使っていれば登録せず、期限が過ぎれば別のownerが使える")
+    void registersNamedTerminals() {
+        assertTrue(registry.registerNamed("PRT1", "alice", NOW.plusSeconds(60), NOW));
+        assertTrue(registry.registerNamed("PRT1", "alice", NOW.plusSeconds(600), NOW));
+        assertEquals(NOW.plusSeconds(600), registry.find("PRT1", NOW).orElseThrow().expiresAt());
+        assertFalse(registry.registerNamed("PRT1", "bob", NOW.plusSeconds(60), NOW));
+        assertTrue(registry.registerNamed("PRT1", "bob", NOW.plusSeconds(1200), NOW.plusSeconds(600)));
+        assertEquals("bob", registry.find("PRT1", NOW.plusSeconds(600)).orElseThrow().owner());
+    }
+
+    @Test
     @DisplayName("task が動いている端末は消さず、期限の過ぎた端末の名前は登録し直せる")
     void removesOnlyIdleTerminals() {
         String id = registry.register("alice", NOW.plusSeconds(60), NOW);

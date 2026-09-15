@@ -66,6 +66,13 @@ class CicsBrowserEndpointTest {
     @SpringBootApplication
     static class TestApplication {
 
+        /** carol と dave に同じ固定の端末名を与える。 */
+        @Bean
+        CicsBrowserTerminalNames terminalNames() {
+            return principal -> principal.equals("carol") || principal.equals("dave")
+                    ? Optional.of("PRT9") : Optional.empty();
+        }
+
         @Bean
         CicsTransactionRegistry registry() {
             return new CicsTransactionRegistry(List.of(new CicsTransactionDefinition(
@@ -159,6 +166,25 @@ class CicsBrowserEndpointTest {
         }
         assertThat(RUNS.get()).isEqualTo(before);
         assertThat(conversationOf(session)).isPresent();
+    }
+
+    @Test
+    @DisplayName("利用者ごとに固定の端末名を構成でき、同じ名前を別の利用者が使っていれば409でtaskを動かさない")
+    void usesFixedTerminalNames() throws Exception {
+        MvcResult started = mvc.perform(post("/cics/SCR1").with(user("carol")).with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+        MockHttpSession session = (MockHttpSession) started.getRequest().getSession();
+        assertThat(terminalOf(session)).isEqualTo("PRT9");
+        MvcResult entered = mvc.perform(post("/cics/SCR1").session(session).with(user("carol")).with(csrf())
+                        .param("aid", "ENTER").param("bms.CUSTNO.1", "042"))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(entered.getResponse().getContentAsString()).contains("TERMINAL PRT9", "USER CAROL");
+
+        int before = RUNS.get();
+        MvcResult other = mvc.perform(post("/cics/SCR1").with(user("dave")).with(csrf()))
+                .andExpect(status().isConflict()).andReturn();
+        assertThat(other.getResponse().getContentAsString()).contains("in use");
+        assertThat(RUNS.get()).isEqualTo(before);
     }
 
     private static String terminalOf(MockHttpSession session) {

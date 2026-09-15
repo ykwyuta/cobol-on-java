@@ -64,6 +64,35 @@ public final class JdbcTerminalRegistry implements CicsTerminalRegistryPort {
     }
 
     @Override
+    public boolean registerNamed(String terminalId, String owner, Instant expiresAt, Instant now) {
+        CicsTerminalRegistryPort.requireTerminalId(terminalId);
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(expiresAt, "expiresAt");
+        Objects.requireNonNull(now, "now");
+        if (owner.isBlank()) {
+            throw new IllegalArgumentException("terminal owner must not be blank");
+        }
+        if (!expiresAt.isAfter(now)) {
+            throw new IllegalArgumentException("a terminal must expire in the future");
+        }
+        try {
+            separate.executeWithoutResult(status -> {
+                jdbc.update("DELETE FROM COBOL_TERMINAL WHERE TERMINAL_ID = ? AND EXPIRES_AT <= ? AND LEASED_UNTIL <= ?",
+                        terminalId, millis(now), millis(now));
+                jdbc.update("INSERT INTO COBOL_TERMINAL (TERMINAL_ID, OWNER_NAME, EXPIRES_AT, LEASE_TOKEN, LEASED_UNTIL,"
+                                + " CONVERSATION_ID, CONVERSATION_VERSION, NEXT_TRANSID) VALUES (?, ?, ?, NULL, 0, NULL, NULL, NULL)",
+                        terminalId, owner, millis(expiresAt));
+            });
+            return true;
+        } catch (DuplicateKeyException taken) {
+            // 期限の過ぎていない端末がある。同じ owner なら期限を延ばしてそれを使う
+            return updated(() -> jdbc.update("UPDATE COBOL_TERMINAL SET EXPIRES_AT = CASE WHEN EXPIRES_AT < ? THEN ?"
+                            + " ELSE EXPIRES_AT END WHERE TERMINAL_ID = ? AND OWNER_NAME = ? AND EXPIRES_AT > ?",
+                    millis(expiresAt), millis(expiresAt), terminalId, owner, millis(now)));
+        }
+    }
+
+    @Override
     public Optional<Terminal> find(String terminalId, Instant now) {
         Objects.requireNonNull(terminalId, "terminalId");
         Objects.requireNonNull(now, "now");

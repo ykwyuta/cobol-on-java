@@ -59,6 +59,31 @@ final class InMemoryCicsTerminalRegistry implements CicsTerminalRegistryPort {
     }
 
     @Override
+    public boolean registerNamed(String terminalId, String owner, Instant expiresAt, Instant now) {
+        CicsTerminalRegistryPort.requireTerminalId(terminalId);
+        String required = requireOwner(owner);
+        Objects.requireNonNull(expiresAt, "expiresAt");
+        Objects.requireNonNull(now, "now");
+        if (!expiresAt.isAfter(now)) {
+            throw new IllegalArgumentException("a terminal must expire in the future");
+        }
+        AtomicBoolean registered = new AtomicBoolean();
+        entries.compute(terminalId, (ignored, current) -> {
+            if (current == null || (current.expiredAt(now) && !current.leasedAt(now))) {
+                registered.set(true);
+                return Entry.registered(required, expiresAt);
+            }
+            if (!current.expiredAt(now) && current.owner().equals(required)) {
+                registered.set(true);
+                Instant later = expiresAt.isAfter(current.expiresAt()) ? expiresAt : current.expiresAt();
+                return new Entry(current.owner(), later, current.conversation(), current.token(), current.leasedUntil());
+            }
+            return current;
+        });
+        return registered.get();
+    }
+
+    @Override
     public Optional<Terminal> find(String terminalId, Instant now) {
         Objects.requireNonNull(terminalId, "terminalId");
         Objects.requireNonNull(now, "now");

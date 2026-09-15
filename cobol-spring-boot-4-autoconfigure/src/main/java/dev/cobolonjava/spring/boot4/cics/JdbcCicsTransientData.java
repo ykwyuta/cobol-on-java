@@ -1,9 +1,16 @@
 package dev.cobolonjava.spring.boot4.cics;
 
 import dev.cobolonjava.cics.CicsResponseCode;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort.Terminal;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalConversation;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort.TerminalLease;
+import dev.cobolonjava.cics.CicsTerminalTasks;
 import dev.cobolonjava.cics.CicsTransientDataPort;
 import dev.cobolonjava.cics.CicsTransientDataQueueDefinition;
+import dev.cobolonjava.cics.CicsTransientDataQueueDefinition.Facility;
 import dev.cobolonjava.cics.CicsTransientDataTrigger;
+import dev.cobolonjava.cics.ConversationEnvelope;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -20,7 +27,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
+import java.util.function.Function;
 import javax.sql.DataSource;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.dao.DuplicateKeyException;
@@ -44,11 +51,14 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>{@code PENDING}: dispatcher が task の token を置いて {@code ATTACHED} にし、task を起こす。token がある間は
  *       次の task を起こさない (trigger の task はキューに対して逐次)</li>
  *   <li>READQ TD が QZERO を返せば {@code ARMED} に戻す (回復不能のキュー)</li>
- *   <li>task が正常に終われば、ATIFACILITY(FILE) は trigger を戻して token を外す。数が trigger level 以上なら
- *       {@code PENDING}。空にする前に ABEND すれば {@code BLOCKED} にし、次の QZERO まで起こさない</li>
+ *   <li>task が正常に終われば token を外す。ATIFACILITY(FILE) は trigger を戻し、数が trigger level 以上なら {@code PENDING}。
+ *       TERMINAL で空にしていなければ同じ task をまた起こす ({@code PENDING})。空にする前に ABEND すれば {@code BLOCKED} にし、
+ *       次の QZERO まで起こさない</li>
  *   <li>token の期限が過ぎれば (JVM が止まった等) task が終わったか分からないので、ABEND と同じに扱う</li>
  * </ul>
- * ATIFACILITY(TERMINAL) はまだ持たず、構成の時点で断る。
+ *
+ * <p>ATIFACILITY(TERMINAL) の task は、FACILITYID の端末が登録されていて、task が動いておらず、疑似会話の途中でもないときに、
+ * 端末を lease して端末の owner で起こす (利用者の決定、P-144)。task が返した次の疑似会話を端末に置く。
  */
 public final class JdbcCicsTransientData implements CicsTransientDataPort, SmartLifecycle {
 
@@ -64,7 +74,9 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
     private final Clock clock;
     private final String regionOwner;
     private final Optional<String> defaultUserId;
-    private final Consumer<CicsTransientDataTrigger> launcher;
+    private final CicsTerminalRegistryPort terminals;
+    private final Duration terminalLease;
+    private final Function<CicsTransientDataTrigger, Optional<ConversationEnvelope>> launcher;
     private final Duration taskLease;
     private final Duration pollInterval;
     private final Executor tasks;
@@ -75,30 +87,36 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
     public JdbcCicsTransientData(DataSource dataSource, PlatformTransactionManager transactionManager,
                                  List<CicsTransientDataQueueDefinition> queues) {
         this(dataSource, transactionManager, queues, Clock.systemUTC(), null, Optional.empty(), null,
-                Duration.ofMinutes(5), Duration.ofSeconds(1), Runnable::run);
+                Duration.ofMinutes(5), null, Duration.ofMinutes(5), Duration.ofSeconds(1), Runnable::run);
     }
 
     /**
      * trigger level で task を起こすキューを持てる region。
      *
      * @param regionOwner   ATIFACILITY(FILE) の task を動かす owner 名
-     * @param defaultUserId 定義に USERID が無いときの user ID。どちらも無い trigger の定義は断る
-     * @param launcher      trigger の task を起こす ({@link CicsTransientDataTrigger#launching})。例外は ABEND と扱う
+     * @param defaultUserId 定義に USERID が無いときの FILE の task の user ID。どちらも無い FILE の trigger の定義は断る
+     * @param terminals     ATIFACILITY(TERMINAL) の端末の登録。TERMINAL の定義が無ければ null でよい
+     * @param terminalLease TERMINAL の task の間、端末を lease する長さ
+     * @param launcher      trigger の task を起こし、端末の次の疑似会話を返す ({@link CicsTransientDataTrigger#launching})。
+     *                      例外は ABEND と扱う
      * @param taskLease     trigger の task の token の長さ。task の期限より長くなければならない
      * @param pollInterval  PENDING のキューを探す間隔
      */
     public JdbcCicsTransientData(DataSource dataSource, PlatformTransactionManager transactionManager,
                                  List<CicsTransientDataQueueDefinition> queues, Clock clock, String regionOwner,
-                                 Optional<String> defaultUserId, Consumer<CicsTransientDataTrigger> launcher,
+                                 Optional<String> defaultUserId, CicsTerminalRegistryPort terminals,
+                                 Duration terminalLease,
+                                 Function<CicsTransientDataTrigger, Optional<ConversationEnvelope>> launcher,
                                  Duration taskLease, Duration pollInterval) {
-        this(dataSource, transactionManager, queues, clock, regionOwner, defaultUserId, launcher, taskLease,
-                pollInterval, null);
+        this(dataSource, transactionManager, queues, clock, regionOwner, defaultUserId, terminals, terminalLease,
+                launcher, taskLease, pollInterval, null);
     }
 
     /** 試験は task を起こす executor を替え、task が終わる時を決める。 */
     JdbcCicsTransientData(DataSource dataSource, PlatformTransactionManager transactionManager,
                           List<CicsTransientDataQueueDefinition> queues, Clock clock, String regionOwner,
-                          Optional<String> defaultUserId, Consumer<CicsTransientDataTrigger> launcher,
+                          Optional<String> defaultUserId, CicsTerminalRegistryPort terminals, Duration terminalLease,
+                          Function<CicsTransientDataTrigger, Optional<ConversationEnvelope>> launcher,
                           Duration taskLease, Duration pollInterval, Executor tasks) {
         this.jdbc = new JdbcTemplate(Objects.requireNonNull(dataSource, "dataSource"));
         this.separate = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
@@ -106,24 +124,31 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
         this.clock = Objects.requireNonNull(clock, "clock");
         this.regionOwner = regionOwner;
         this.defaultUserId = Objects.requireNonNull(defaultUserId, "defaultUserId");
+        this.terminals = terminals;
+        this.terminalLease = Objects.requireNonNull(terminalLease, "terminalLease");
         this.launcher = launcher;
         this.taskLease = Objects.requireNonNull(taskLease, "taskLease");
         this.pollInterval = Objects.requireNonNull(pollInterval, "pollInterval");
-        if (taskLease.isNegative() || taskLease.isZero() || pollInterval.isNegative() || pollInterval.isZero()) {
-            throw new IllegalArgumentException("task lease and poll interval must be positive");
+        if (taskLease.isNegative() || taskLease.isZero() || pollInterval.isNegative() || pollInterval.isZero()
+                || terminalLease.isNegative() || terminalLease.isZero()) {
+            throw new IllegalArgumentException("leases and poll interval must be positive");
         }
         for (CicsTransientDataQueueDefinition queue : Objects.requireNonNull(queues, "queues")) {
             if (queue.triggers()) {
-                if (launcher == null || regionOwner == null || regionOwner.isBlank()) {
-                    throw new IllegalArgumentException("trigger level requires a launcher and a region owner: "
-                            + queue.name());
+                if (launcher == null) {
+                    throw new IllegalArgumentException("trigger level requires a launcher: " + queue.name());
                 }
-                if (queue.facility() != CicsTransientDataQueueDefinition.Facility.FILE) {
-                    throw new IllegalArgumentException("ATIFACILITY(TERMINAL) is not supported yet: " + queue.name());
-                }
-                if (queue.userId().isEmpty() && defaultUserId.isEmpty()) {
-                    // 推測で空の user ID の task を起こさない
-                    throw new IllegalArgumentException("trigger level requires USERID or a default user ID: "
+                if (queue.facility() == Facility.FILE) {
+                    if (regionOwner == null || regionOwner.isBlank()) {
+                        throw new IllegalArgumentException("ATIFACILITY(FILE) requires a region owner: " + queue.name());
+                    }
+                    if (queue.userId().isEmpty() && defaultUserId.isEmpty()) {
+                        // 推測で空の user ID の task を起こさない
+                        throw new IllegalArgumentException("trigger level requires USERID or a default user ID: "
+                                + queue.name());
+                    }
+                } else if (terminals == null) {
+                    throw new IllegalArgumentException("ATIFACILITY(TERMINAL) requires a terminal registry: "
                             + queue.name());
                 }
             }
@@ -213,7 +238,8 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
      * @return この呼び出しが起こした task の数
      */
     public int dispatchDue() {
-        long now = clock.instant().toEpochMilli();
+        Instant instant = clock.instant();
+        long now = instant.toEpochMilli();
         // token の期限が過ぎた task は終わったか分からない。空にする前 (ATTACHED) なら次の QZERO まで起こさない
         separate.executeWithoutResult(status -> jdbc.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE ="
                 + " CASE WHEN TRIGGER_STATE = 'ATTACHED' THEN 'BLOCKED' ELSE TRIGGER_STATE END,"
@@ -226,28 +252,58 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
             if (definition == null || !definition.triggers()) {
                 continue;
             }
+            TerminalLease lease = null;
+            String owner = regionOwner;
+            Optional<String> userId = definition.userId().or(() -> defaultUserId);
+            Optional<String> terminalId = Optional.empty();
+            if (definition.facility() == Facility.TERMINAL) {
+                Optional<Terminal> found = terminals.find(definition.terminalId(), instant);
+                if (found.isEmpty() || found.orElseThrow().leased() || found.orElseThrow().conversation().isPresent()) {
+                    // 端末が登録されて空くまで待つ (ATI の頁、利用者の決定)
+                    continue;
+                }
+                Terminal terminal = found.orElseThrow();
+                Optional<TerminalLease> acquired = terminals.lease(terminal.id(), terminal.owner(), terminalLease,
+                        instant);
+                if (acquired.isEmpty()) {
+                    continue;
+                }
+                lease = acquired.orElseThrow();
+                owner = terminal.owner();
+                userId = CicsTerminalTasks.userIdOf(terminal.owner());
+                terminalId = Optional.of(terminal.id());
+            }
             String token = UUID.randomUUID().toString();
-            long until = Instant.ofEpochMilli(now).plus(taskLease).toEpochMilli();
+            long until = instant.plus(taskLease).toEpochMilli();
             Integer claimed = separate.execute(status -> jdbc.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = 'ATTACHED',"
                     + " TASK_TOKEN = ?, TASK_UNTIL = ? WHERE QUEUE_NAME = ? AND TRIGGER_STATE = 'PENDING'"
                     + " AND TASK_TOKEN IS NULL", token, until, definition.name()));
             if (claimed == null || claimed != 1) {
+                if (lease != null) {
+                    terminals.release(lease, clock.instant());
+                }
                 continue;
             }
             launched++;
             CicsTransientDataTrigger trigger = new CicsTransientDataTrigger(definition.name(),
-                    definition.transaction().orElseThrow(), regionOwner, definition.userId().or(() -> defaultUserId));
-            tasks.execute(() -> runTrigger(definition, trigger, token));
+                    definition.transaction().orElseThrow(), owner, userId, terminalId);
+            TerminalLease held = lease;
+            tasks.execute(() -> runTrigger(definition, trigger, token, held));
         }
         return launched;
     }
 
     private void runTrigger(CicsTransientDataQueueDefinition definition, CicsTransientDataTrigger trigger,
-                            String token) {
+                            String token, TerminalLease lease) {
         boolean normal = false;
         try {
-            launcher.accept(trigger);
+            Optional<ConversationEnvelope> next = launcher.apply(trigger);
             normal = true;
+            if (lease != null && !terminals.setConversation(lease, next.map(envelope -> new TerminalConversation(
+                    envelope.id(), envelope.version(), envelope.nextTransaction())), clock.instant())) {
+                LOG.log(System.Logger.Level.WARNING, "terminal lease expired while the trigger-level task for queue "
+                        + trigger.queue() + " was running; the terminal keeps its previous conversation");
+            }
         } catch (RuntimeException failure) {
             LOG.log(System.Logger.Level.WARNING, "trigger-level task TRANSID(" + trigger.transaction().value()
                     + ") for queue " + trigger.queue() + " failed", failure);
@@ -258,18 +314,26 @@ public final class JdbcCicsTransientData implements CicsTransientDataPort, Smart
                 // token は期限で片付く
                 LOG.log(System.Logger.Level.WARNING, "failed to record the end of a trigger-level task", failure);
             }
+            if (lease != null) {
+                try {
+                    terminals.release(lease, clock.instant());
+                } catch (RuntimeException failure) {
+                    LOG.log(System.Logger.Level.WARNING, "failed to release a terminal lease", failure);
+                }
+            }
         }
     }
 
     /** task の終わり。token が合うときだけ変える (期限で片付けられたあとの古い task は何も変えない)。 */
     private void finish(CicsTransientDataQueueDefinition definition, String token, boolean normal) {
+        // 空にしないまま (ATTACHED) 正常に終われば、FILE は trigger を戻し、端末へ送るキューは同じ task をまた起こす。
+        // 空にする前の ABEND は次の QZERO まで起こさない (ATI の頁)
+        String ended = !normal ? "BLOCKED" : definition.facility() == Facility.TERMINAL ? "PENDING" : "ARMED";
         separate.executeWithoutResult(status -> {
-            int ended = jdbc.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = CASE WHEN TRIGGER_STATE = 'ATTACHED'"
+            int updated = jdbc.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = CASE WHEN TRIGGER_STATE = 'ATTACHED'"
                     + " THEN ? ELSE TRIGGER_STATE END, TASK_TOKEN = NULL, TASK_UNTIL = 0"
-                    + " WHERE QUEUE_NAME = ? AND TASK_TOKEN = ?",
-                    // FILE の task の正常な終わりは trigger を戻す。空にする前の ABEND は次の QZERO まで起こさない
-                    normal ? "ARMED" : "BLOCKED", definition.name(), token);
-            if (ended == 1) {
+                    + " WHERE QUEUE_NAME = ? AND TASK_TOKEN = ?", ended, definition.name(), token);
+            if (updated == 1) {
                 jdbc.update("UPDATE COBOL_TD_QUEUE SET TRIGGER_STATE = 'PENDING'"
                         + " WHERE QUEUE_NAME = ? AND TRIGGER_STATE = 'ARMED' AND RECORD_COUNT >= ?",
                         definition.name(), definition.triggerLevel());

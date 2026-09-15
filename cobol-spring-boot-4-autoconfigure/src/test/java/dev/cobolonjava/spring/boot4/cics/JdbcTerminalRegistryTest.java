@@ -106,6 +106,17 @@ class JdbcTerminalRegistryTest {
     }
 
     @Test
+    @DisplayName("固定の端末名は2つのJVMから同じownerなら使い回し、別のownerが使っていれば登録せず、期限が過ぎれば別のownerが使える")
+    void registersNamedTerminalsAcrossJvms() {
+        assertTrue(first.registerNamed("PRT1", "alice", NOW.plusSeconds(60), NOW));
+        assertTrue(second.registerNamed("PRT1", "alice", NOW.plusSeconds(600), NOW));
+        assertEquals(NOW.plusSeconds(600), first.find("PRT1", NOW).orElseThrow().expiresAt());
+        assertFalse(second.registerNamed("PRT1", "bob", NOW.plusSeconds(60), NOW));
+        assertTrue(second.registerNamed("PRT1", "bob", NOW.plusSeconds(1200), NOW.plusSeconds(600)));
+        assertEquals("bob", first.find("PRT1", NOW.plusSeconds(600)).orElseThrow().owner());
+    }
+
+    @Test
     @DisplayName("期限の過ぎた端末は見えず、purgeで消える")
     void purgesExpiredTerminals() {
         String id = first.register("alice", NOW.plusSeconds(60), NOW);

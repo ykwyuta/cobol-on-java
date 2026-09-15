@@ -1,9 +1,16 @@
 package dev.cobolonjava.spring.boot4.cics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.cobolonjava.cics.CicsPayload;
 import dev.cobolonjava.cics.CicsResponseCode;
+import dev.cobolonjava.cics.CicsTerminalRegistryPort;
+import dev.cobolonjava.cics.ConversationEnvelope;
+import dev.cobolonjava.cics.ConversationId;
+import dev.cobolonjava.cics.IdempotencyKey;
 import dev.cobolonjava.cics.CicsTransientDataPort;
 import dev.cobolonjava.cics.CicsTransientDataQueueDefinition;
 import dev.cobolonjava.cics.CicsTransientDataQueueDefinition.Facility;
@@ -85,11 +92,12 @@ class JdbcCicsTransientDataTest {
         return new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource),
                 List.of(new CicsTransientDataQueueDefinition("ATIQ", 8, level, Optional.of(TransId.of("TRG1")),
                         Facility.FILE, Optional.empty(), Optional.of("ATIUSER"))),
-                clock, "cics-region", Optional.empty(), trigger -> {
+                clock, "cics-region", Optional.empty(), null, Duration.ofSeconds(30), trigger -> {
                     triggered.add(trigger);
                     if (abend.get()) {
                         throw new IllegalStateException("trigger task abended");
                     }
+                    return Optional.empty();
                 }, Duration.ofMinutes(5), Duration.ofSeconds(1), held::add);
     }
 
@@ -109,8 +117,54 @@ class JdbcCicsTransientDataTest {
     }
 
     private String state() {
+        return state("ATIQ");
+    }
+
+    private String state(String queue) {
         return new JdbcTemplate(dataSource).queryForObject(
-                "SELECT TRIGGER_STATE FROM COBOL_TD_QUEUE WHERE QUEUE_NAME = 'ATIQ'", String.class).strip();
+                "SELECT TRIGGER_STATE FROM COBOL_TD_QUEUE WHERE QUEUE_NAME = ?", String.class, queue).strip();
+    }
+
+    @Test
+    @DisplayName("ATIFACILITY(TERMINAL)は端末が登録されて空くまで待ち、端末の利用者でtaskを起こし、空にせず終われば同じtaskをまた起こす")
+    void startsTriggerTasksOnTerminals() {
+        JdbcTerminalRegistry terminals = new JdbcTerminalRegistry(dataSource, new JdbcTransactionManager(dataSource));
+        AtomicReference<Optional<ConversationEnvelope>> reply = new AtomicReference<>(Optional.empty());
+        JdbcCicsTransientData queue = new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource),
+                List.of(new CicsTransientDataQueueDefinition("PRTQ", 8, 1, Optional.of(TransId.of("PRT1")),
+                        Facility.TERMINAL, Optional.of("PRT1"), Optional.empty())),
+                clock, null, Optional.empty(), terminals, Duration.ofSeconds(30), trigger -> {
+                    triggered.add(trigger);
+                    return reply.get();
+                }, Duration.ofMinutes(5), Duration.ofSeconds(1), held::add);
+
+        queue.write("PRTQ", text("LINE1"));
+        // 端末がまだ登録されていない
+        assertEquals(0, queue.dispatchDue());
+        assertTrue(terminals.registerNamed("PRT1", "alice", NOW.plusSeconds(3600), NOW));
+        CicsTerminalRegistryPort.TerminalLease busy = terminals.lease("PRT1", "alice", Duration.ofSeconds(30), NOW)
+                .orElseThrow();
+        assertEquals(0, queue.dispatchDue());
+        terminals.release(busy, NOW);
+
+        assertEquals(1, queue.dispatchDue());
+        assertTrue(terminals.find("PRT1", NOW).orElseThrow().leased());
+        reply.set(Optional.of(new ConversationEnvelope(new ConversationId("conversation_ati01"), 0, "alice",
+                TransId.of("PRT2"), CicsPayload.empty(), NOW.plusSeconds(600), new IdempotencyKey("ati-conversation-1"),
+                Optional.empty())));
+        runHeld();
+
+        CicsTransientDataTrigger trigger = triggered.poll();
+        assertEquals(Optional.of("PRT1"), trigger.terminalId());
+        assertEquals("alice", trigger.owner());
+        assertEquals(Optional.of("ALICE"), trigger.userId());
+        // 空にせず正常に終わったので、同じ task をまた起こす
+        assertEquals("PENDING", state("PRTQ"));
+        CicsTerminalRegistryPort.Terminal after = terminals.find("PRT1", NOW).orElseThrow();
+        assertFalse(after.leased());
+        assertEquals("PRT2", after.conversation().orElseThrow().nextTransaction().value());
+        // 端末が疑似会話の途中なので、会話が終わるまで起こさない
+        assertEquals(0, queue.dispatchDue());
     }
 
     @Test
@@ -249,16 +303,20 @@ class JdbcCicsTransientDataTest {
 
         CicsTransientDataQueueDefinition terminal = new CicsTransientDataQueueDefinition("ATIQ", 8, 1,
                 Optional.of(TransId.of("TRG1")), Facility.TERMINAL, Optional.of("W001"), Optional.empty());
+        // TERMINAL は端末の登録が要る
         assertThrows(IllegalArgumentException.class, () -> new JdbcCicsTransientData(dataSource,
                 new JdbcTransactionManager(dataSource), List.of(terminal), clock, "cics-region", Optional.empty(),
-                trigger -> { }, Duration.ofMinutes(5), Duration.ofSeconds(1)));
+                null, Duration.ofSeconds(30), trigger -> Optional.empty(), Duration.ofMinutes(5),
+                Duration.ofSeconds(1)));
         CicsTransientDataQueueDefinition noUser = new CicsTransientDataQueueDefinition("ATIQ", 8, 1,
                 Optional.of(TransId.of("TRG1")), Facility.FILE, Optional.empty(), Optional.empty());
         assertThrows(IllegalArgumentException.class, () -> new JdbcCicsTransientData(dataSource,
                 new JdbcTransactionManager(dataSource), List.of(noUser), clock, "cics-region", Optional.empty(),
-                trigger -> { }, Duration.ofMinutes(5), Duration.ofSeconds(1)));
+                null, Duration.ofSeconds(30), trigger -> Optional.empty(), Duration.ofMinutes(5),
+                Duration.ofSeconds(1)));
         new JdbcCicsTransientData(dataSource, new JdbcTransactionManager(dataSource), List.of(noUser), clock,
-                "cics-region", Optional.of("DEFAULT"), trigger -> { }, Duration.ofMinutes(5), Duration.ofSeconds(1));
+                "cics-region", Optional.of("DEFAULT"), null, Duration.ofSeconds(30), trigger -> Optional.empty(),
+                Duration.ofMinutes(5), Duration.ofSeconds(1));
         assertThrows(IllegalArgumentException.class, () -> new JdbcCicsTransientData(dataSource,
                 new JdbcTransactionManager(dataSource), List.of(noUser)));
         assertThrows(IllegalArgumentException.class, () -> CicsTransientDataPort.inMemory(List.of(noUser)));

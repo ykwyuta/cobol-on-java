@@ -72,14 +72,25 @@ public class CicsBrowserController {
     private final BmsTerminalInputBinder binder;
     private final Clock clock;
     private final Duration terminalLease;
+    private final CicsBrowserTerminalNames names;
+
+    /** 固定の端末名を別の利用者が使っている。 */
+    static final class TerminalInUseException extends RuntimeException {
+
+        TerminalInUseException() {
+            super("the fixed terminal name is in use by another user");
+        }
+    }
 
     /**
      * @param policy 端末の lease の長さは会話の lease ({@link CicsTaskPolicy#leaseDuration}) と同じにする。
      *               会話の lease は task の期限と IMMEDIATE の連鎖より長いことを利用者が保証する
+     * @param names  利用者ごとの固定の端末名
      */
     public CicsBrowserController(CicsTaskCoordinator coordinator, ConversationStorePort conversations,
                                  CicsTerminalRegistryPort terminals, BmsScreenViewFactory views,
-                                 BmsTerminalInputBinder binder, Clock clock, CicsTaskPolicy policy) {
+                                 BmsTerminalInputBinder binder, Clock clock, CicsTaskPolicy policy,
+                                 CicsBrowserTerminalNames names) {
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         this.conversations = Objects.requireNonNull(conversations, "conversations");
         this.terminals = Objects.requireNonNull(terminals, "terminals");
@@ -87,6 +98,7 @@ public class CicsBrowserController {
         this.binder = Objects.requireNonNull(binder, "binder");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.terminalLease = Objects.requireNonNull(policy, "policy").leaseDuration();
+        this.names = Objects.requireNonNull(names, "names");
     }
 
     @GetMapping("/cics/{transid}")
@@ -255,6 +267,11 @@ public class CicsBrowserController {
                 "The screen is out of date. Start the transaction again.");
     }
 
+    @ExceptionHandler(TerminalInUseException.class)
+    public String terminalInUse(HttpServletResponse response, Model model) {
+        return error(response, model, HttpServletResponse.SC_CONFLICT, "The terminal is in use by another user.");
+    }
+
     @ExceptionHandler(UnknownTransactionException.class)
     public String unknown(HttpServletResponse response, Model model) {
         return error(response, model, HttpServletResponse.SC_NOT_FOUND, "The transaction is not defined.");
@@ -311,6 +328,15 @@ public class CicsBrowserController {
     private String terminalOf(HttpSession session, String owner, Instant now) {
         int seconds = session.getMaxInactiveInterval();
         Instant expiresAt = now.plus(seconds > 0 ? Duration.ofSeconds(seconds) : DEFAULT_TERMINAL_LIFETIME);
+        Optional<String> fixed = names.terminalFor(owner);
+        if (fixed.isPresent()) {
+            // 固定の端末名。同じ利用者の別の session は同じ端末を使い、別の利用者が使っていれば動かさない
+            if (!terminals.registerNamed(fixed.orElseThrow(), owner, expiresAt, now)) {
+                throw new TerminalInUseException();
+            }
+            session.setAttribute(TERMINAL, fixed.orElseThrow());
+            return fixed.orElseThrow();
+        }
         String terminal = (String) session.getAttribute(TERMINAL);
         if (terminal != null && terminals.touch(terminal, owner, expiresAt, now)) {
             return terminal;
@@ -322,8 +348,7 @@ public class CicsBrowserController {
 
     /** CICS の user ID の形 (8 文字まで) に収まる principal 名だけを user ID にする。推測で切り詰めない。 */
     private static Optional<String> userIdOf(String principal) {
-        String upper = principal.toUpperCase(Locale.ROOT);
-        return upper.matches("[A-Z0-9@#$]{1,8}") ? Optional.of(upper) : Optional.empty();
+        return dev.cobolonjava.cics.CicsTerminalTasks.userIdOf(principal);
     }
 
     private static IdempotencyKey idempotencyKey() {

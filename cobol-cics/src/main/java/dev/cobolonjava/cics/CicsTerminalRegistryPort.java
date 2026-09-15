@@ -67,6 +67,23 @@ public interface CicsTerminalRegistryPort {
      */
     String register(String owner, Instant expiresAt, Instant now);
 
+    /**
+     * 名前を決めた端末を登録する (利用者ごとの固定の端末名、設計 83 §4.1)。
+     *
+     * <p>期限の過ぎていない同じ名前の端末が同じ owner のものなら、期限を延ばしてそれを使う (同じ利用者の別の HTTP session も
+     * 同じ端末になる)。別の owner のものなら何もせず false を返す。
+     */
+    boolean registerNamed(String terminalId, String owner, Instant expiresAt, Instant now);
+
+    /** 端末の名前の形 (1〜4 文字)。 */
+    static String requireTerminalId(String terminalId) {
+        Objects.requireNonNull(terminalId, "terminalId");
+        if (!terminalId.matches("[A-Z0-9@#$]{1,4}")) {
+            throw new IllegalArgumentException("terminal ID must be 1 to 4 characters: " + terminalId);
+        }
+        return terminalId;
+    }
+
     /** 登録されていて期限の過ぎていない端末。 */
     Optional<Terminal> find(String terminalId, Instant now);
 

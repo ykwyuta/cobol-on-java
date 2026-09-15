@@ -37,9 +37,17 @@ public class CicsBrowserAutoConfiguration {
                                                      ConversationStorePort conversations,
                                                      CicsTerminalRegistryPort terminals, CicsTaskPolicy policy,
                                                      BmsScreenViewFactory views, BmsTerminalInputBinder binder,
-                                                     @Qualifier("cobolCicsClock") ObjectProvider<Clock> clock) {
+                                                     @Qualifier("cobolCicsClock") ObjectProvider<Clock> clock,
+                                                     CicsBrowserTerminalNames names) {
         return new CicsBrowserController(coordinator, conversations, terminals, views, binder,
-                clock.getIfAvailable(Clock::systemUTC), policy);
+                clock.getIfAvailable(Clock::systemUTC), policy, names);
+    }
+
+    /** 固定の端末名 (設計 83 §4.1)。既定はどの利用者にも与えず、session ごとに乱数の端末名を振る。 */
+    @Bean
+    @ConditionalOnMissingBean
+    CicsBrowserTerminalNames cobolCicsBrowserTerminalNames() {
+        return CicsBrowserTerminalNames.dynamic();
     }
 
     @Bean

@@ -95,23 +95,14 @@ public interface CicsStartPort {
     static Function<CicsStartData, Optional<ConversationEnvelope>> conversing(
             Supplier<CicsTaskCoordinator> coordinator) {
         return data -> {
-            CicsTaskReply reply = coordinator.get().launch(new CicsTaskRequest(data.transaction().value(),
-                    data.owner(), CicsPayload.empty(), Optional.empty(), new IdempotencyKey("start-" + UUID.randomUUID()),
-                    Optional.empty(), data.terminalId(), data.userId(), Optional.of(data)));
-            if (data.terminalId().isEmpty()) {
-                return Optional.empty();
+            if (data.terminalId().isPresent()) {
+                return CicsTerminalTasks.run(coordinator.get(), data.transaction(), data.owner(), data.userId(),
+                        data.terminalId().orElseThrow(), Optional.of(data), "start");
             }
-            for (int step = 0; reply.immediateNext(); step++) {
-                if (step >= 8) {
-                    throw new IllegalStateException("RETURN IMMEDIATE chain exceeded 8 tasks");
-                }
-                ConversationEnvelope next = reply.nextConversation().orElseThrow();
-                reply = coordinator.get().launch(new CicsTaskRequest(next.nextTransaction().value(), data.owner(),
-                        next.payload(), Optional.of(new ConversationReference(next.id(), next.version())),
-                        new IdempotencyKey("start-" + UUID.randomUUID()), Optional.empty(), data.terminalId(),
-                        data.userId()));
-            }
-            return reply.nextConversation();
+            coordinator.get().launch(new CicsTaskRequest(data.transaction().value(), data.owner(), CicsPayload.empty(),
+                    Optional.empty(), new IdempotencyKey("start-" + UUID.randomUUID()), Optional.empty(),
+                    Optional.empty(), data.userId(), Optional.of(data)));
+            return Optional.empty();
         };
     }
 }

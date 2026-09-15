@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID)、増分 4 (TD の ATI の FILE) を実装 |
+| 状態 | 設計を決めた (2026-09-15)。§10 の増分 1 (端末の表と lease、会話の参照の移動) と増分 2 (START と TD の表、dispatcher)、増分 3 (START TERMID)、増分 4 (TD の ATI の FILE)、増分 5 (ATI の TERMINAL と固定の端末名) を実装 |
 | 対応要件 | 設計 77 §4、設計 81 §5、設計 82 §5・§6 |
 | 検証レベル | V0。実機の CICS と突き合わせていない |
 | 暫定判断 | P-144 |
@@ -66,6 +66,10 @@
 - 実装 (増分 1): `CicsTerminalRegistryPort` (既定は 1 つの JVM の中) と `JdbcTerminalRegistry` (STRICT の構成)。表は
   `JdbcConversationStore.SCHEMA` の DDL に足した。`SCREEN_VERSION` / `SCREEN` の列は画面の byte 列の形を決める §7 の増分で足す。
   端末の lease の長さは会話の lease (`CicsTaskPolicy.leaseDuration`) と同じにした
+- 実装 (増分 5): 固定の端末名は `CicsBrowserTerminalNames` の bean (principal 名 → 端末名) で与え、
+  `CicsTerminalRegistryPort.registerNamed` で登録する。同じ利用者の別の HTTP session は同じ端末を分け合い、別の利用者が
+  使っている間は 409 で task を動かさない。どれかの session が破棄されると端末と会話を捨てるので、同じ利用者の残りの
+  session は次の要求で端末を登録し直し、会話は失う
 - 端末の名前の割り当て: 既定は `W` と 36 進 3 桁を乱数で選んで INSERT し、重なれば選び直す。同時に持てる端末は
   46656 までである。足りなければ接頭の文字を構成で増やす。利用者ごとに固定の端末名を構成で与えることもでき、
   `ATIFACILITY(TERMINAL)` の `FACILITYID` のように名前を決め打ちする資産はこれを使う
@@ -157,7 +161,11 @@ JSON API の入口は端末名を持たない (設計 77 §4.4)。端末へ出�
 - trigger の task の例外はすべて ABEND と同じに扱う (`BLOCKED`)
 - 1 つの JVM の中の `inMemory` のキューと、launcher を渡さない `JdbcCicsTransientData` は、trigger level を書いた定義を断る。
   USERID も region の既定の user ID も無い trigger の定義は、推測で空の user ID の task を起こさず構成の時点で断る
-- `ATIFACILITY(TERMINAL)` は増分 5 まで構成の時点で断る
+- 実装 (増分 5): `ATIFACILITY(TERMINAL)` は、FACILITYID (無ければキューの名前) の端末が登録されていて、task が動いておらず、
+  疑似会話の途中でもないときに、端末を lease して端末の owner で起こす。user ID は端末の owner から作る
+  (`CicsTerminalTasks.userIdOf`)。端末が登録されていなければ `PENDING` のまま待ち、捨てない (文書は端末が空くまで起こさないと
+  だけ書く)。空にせず正常に終われば `PENDING` にして同じ task をまた起こし、task が返した次の疑似会話を端末に置く
+- 端末で task を起こす手順 (IMMEDIATE の連鎖を含む) は START TERMID と共通の `CicsTerminalTasks.run` にした
 - `DELETEQ TD` は trigger の状態を変えない (文書が書かない)
 
 ## 7. ブラウザへの配信
