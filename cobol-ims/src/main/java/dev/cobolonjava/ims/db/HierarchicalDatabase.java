@@ -24,9 +24,17 @@ public final class HierarchicalDatabase {
 
     private final DatabaseDefinition definition;
     private final List<Segment> roots = new ArrayList<>();
+    private UndoLog undoLog;
 
     public HierarchicalDatabase(DatabaseDefinition definition) {
         this.definition = Objects.requireNonNull(definition, "definition");
+    }
+
+    /**
+     * 以後の ISRT / REPL / DLET の取り消しを {@code log} に積む。{@link #restore} (保存したものの読み戻し) は積まない。
+     */
+    public void attach(UndoLog log) {
+        this.undoLog = log;
     }
 
     public DatabaseDefinition definition() {
@@ -120,6 +128,12 @@ public final class HierarchicalDatabase {
         }
         Segment segment = new Segment(type, parent, data);
         twins.add(index, segment);
+        if (undoLog != null) {
+            undoLog.record(() -> {
+                twins.remove(indexOf(twins, segment));
+                segment.markDeleted();
+            });
+        }
         return segment;
     }
 
@@ -159,7 +173,11 @@ public final class HierarchicalDatabase {
 
     /** 値を置き換える。順序フィールドを変えないことは呼ぶ側が確かめる。 */
     public void replace(Segment segment, byte[] data) {
+        byte[] previous = segment.data();
         segment.replace(data);
+        if (undoLog != null) {
+            undoLog.record(() -> segment.replace(previous));
+        }
     }
 
     /** セグメントとその子孫を消す。 */
@@ -171,6 +189,12 @@ public final class HierarchicalDatabase {
         }
         twins.remove(index);
         segment.markDeleted();
+        if (undoLog != null) {
+            undoLog.record(() -> {
+                twins.add(index, segment);
+                segment.markRestored();
+            });
+        }
     }
 
     /** 順序フィールドの値。順序フィールドを持たなければ空。 */

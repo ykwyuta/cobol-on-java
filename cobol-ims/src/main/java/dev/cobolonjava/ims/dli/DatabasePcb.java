@@ -329,6 +329,20 @@ final class DatabasePcb {
         return StatusCode.OK;
     }
 
+    /**
+     * 同期点 (I/O PCB への GU、CHKP、SYNC、ROLB) で位置を捨てる (設計 78 §3.5、暫定判断 P-157)。
+     * 次の GN はデータベースの先頭から始まり、GNP は親境界が無いので GP になる。
+     */
+    void resetPosition() {
+        current = null;
+        before = false;
+        atEnd = false;
+        parentage = null;
+        held = null;
+        lastLevel = 0;
+        lastType = null;
+    }
+
     /** 同じデータベースのセグメントが消される前に、位置と親境界と Hold を部分木の外へ移す。 */
     void beforeDelete(Segment deleted) {
         if (current != null && current.isWithin(deleted)) {

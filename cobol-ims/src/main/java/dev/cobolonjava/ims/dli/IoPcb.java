@@ -37,24 +37,34 @@ final class IoPcb {
 
     /** まだ持たない電文の呼び出し。知らない機能コード (AD) と分けて、止めて知らせる。 */
     private static final Set<String> NOT_YET = Set.of(
-            "CHNG", "CHKP", "SYNC", "ROLB", "ROLL", "ROLS", "SETS", "SETU", "INQY", "LOG", "CMD", "GCMD", "AUTH",
+            "CHNG", "ROLL", "ROLS", "SETS", "SETU", "INQY", "LOG", "CMD", "GCMD", "AUTH",
             "XRST", "INIT", "ICAL", "APSB", "DPSB");
+
+    /** 領域の同期点。データベースの確定と巻き戻しは領域が受け持つ。 */
+    interface SyncPoint {
+
+        void commit();
+
+        void rollback();
+    }
 
     private final Storage mask;
     private final MessageQueue queue;
     private final CodePage codePage;
     private final Clock clock;
+    private final SyncPoint syncPoint;
 
     private InputMessage current;
     private int nextSegment;
     private List<byte[]> output = new ArrayList<>();
     private int sequence;
 
-    IoPcb(Storage mask, MessageQueue queue, CodePage codePage, Clock clock) {
+    IoPcb(Storage mask, MessageQueue queue, CodePage codePage, Clock clock, SyncPoint syncPoint) {
         this.mask = mask;
         this.queue = queue;
         this.codePage = codePage;
         this.clock = clock;
+        this.syncPoint = syncPoint;
         mask.whole().fill((byte) 0);
         text(TERMINAL, 8, "");
         text(STATUS, 2, "");
@@ -68,6 +78,10 @@ final class IoPcb {
             throw new DliCallException("DL/I function " + function
                     + " on the I/O PCB is not supported yet (design 78 section 4)");
         }
+        if (function.equals("CHKP") && !rest.isEmpty()) {
+            throw new DliCallException("the symbolic CHKP (saving areas for XRST) is not supported"
+                    + " (provisional P-110)");
+        }
         if (!rest.isEmpty()) {
             throw new DliCallException("a MOD name or SSA on an I/O PCB call is not supported yet: " + function);
         }
@@ -76,13 +90,15 @@ final class IoPcb {
             case "GN" -> getNext(required(io, function));
             case "ISRT" -> insert(required(io, function));
             case "PURG" -> purge(io);
+            case "CHKP", "SYNC" -> checkpoint(function);
+            case "ROLB" -> backout(io);
             default -> StatusCode.AD;
         };
         text(STATUS, 2, status);
         return status;
     }
 
-    /** プログラムが戻ったあと。正常なら積んだ応答を送り、異常終了なら捨てる (P-156)。 */
+    /** プログラムが戻ったあと。正常なら積んだ応答を送り、異常終了なら捨てる (P-156)。データベースは領域が受け持つ。 */
     void finish(boolean normal) {
         if (normal) {
             complete();
@@ -91,9 +107,39 @@ final class IoPcb {
         current = null;
     }
 
+    /**
+     * 基本形の CHKP と SYNC。データベースを確定し、位置を捨てる (P-157)。
+     *
+     * <p>メッセージを処理する領域の CHKP は次の電文を取り出す働きも持つが、それはまだ持たないので止める。
+     */
+    private String checkpoint(String function) {
+        if (queue != null) {
+            throw new DliCallException(function + " in a message processing region is not supported yet;"
+                    + " the GU on the I/O PCB is the sync point there");
+        }
+        syncPoint.commit();
+        return StatusCode.OK;
+    }
+
+    /**
+     * ROLB。最後の同期点までデータベースを戻し、積みかけの応答を捨てる。I/O 域を渡せば、処理中の入力の電文の
+     * 1 つ目のセグメントを渡し直す (P-157)。
+     */
+    private String backout(DataView io) {
+        output = new ArrayList<>();
+        syncPoint.rollback();
+        if (io != null && current != null) {
+            nextSegment = 0;
+            return deliver(io);
+        }
+        return StatusCode.OK;
+    }
+
     private String getUnique(DataView io) {
         requireQueue("GU");
+        // 次の電文を取り出すところが同期点である。前の電文の更新と応答をここで確定する
         complete();
+        syncPoint.commit();
         current = queue.next();
         nextSegment = 0;
         if (current == null) {

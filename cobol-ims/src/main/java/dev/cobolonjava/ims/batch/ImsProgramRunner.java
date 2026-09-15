@@ -91,14 +91,20 @@ public final class ImsProgramRunner {
             loaded.validateArguments(pcbs);
             loaded.program().runFresh(ims, pcbs);
         } catch (RuntimeException | Error e) {
+            // 最後の同期点まで戻してから書く。確定した電文や CHKP までの更新は残る (P-157)
             region.finish(false);
+            write(files, databases);
             throw e;
         }
         region.finish(true);
+        write(files, databases);
+        return ims.returnCode();
+    }
+
+    private static void write(Map<String, DatabaseFile> files, Map<String, HierarchicalDatabase> databases) {
         for (Map.Entry<String, HierarchicalDatabase> database : databases.entrySet()) {
             files.get(database.getKey()).write(database.getValue());
         }
-        return ims.returnCode();
     }
 
     private static <T> T generated(String member, Supplier<T> generation) {

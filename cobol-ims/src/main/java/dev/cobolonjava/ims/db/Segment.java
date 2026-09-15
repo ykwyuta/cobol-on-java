@@ -90,10 +90,19 @@ public final class Segment {
     }
 
     void markDeleted() {
-        deleted = true;
+        mark(true);
+    }
+
+    /** 取り消しで戻したとき。部分木の子孫も戻す。 */
+    void markRestored() {
+        mark(false);
+    }
+
+    private void mark(boolean value) {
+        deleted = value;
         for (List<Segment> twins : children.values()) {
             for (Segment child : twins) {
-                child.markDeleted();
+                child.mark(value);
             }
         }
     }

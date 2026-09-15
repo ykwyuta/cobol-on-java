@@ -9,7 +9,7 @@
 | 基準環境 | Java 21, Spring Boot 4.1.x, PostgreSQL / IBM Db2 |
 | 改訂 | 2026-09-13。[批判的レビュー](../reviews/2026-09-13-ims-research-critical-review.md) の全 34 指摘を反映 |
 | 測定 | 2026-09-15。Bank-of-Z の IMS の COBOL 11 本のうち翻訳が通るのは 10 本 (IBTRAN は `REPOSITORY` / JNI)。入口は P-152。DBD 9 本・PSB 8 本はすべて読める (`verify ims-gen`、P-153) |
-| 実装 | 2026-09-16。第 1 増分の DBD / PSB の読み取りと `DFSRRC00` (DLI / DBB)、第 2 増分の SSA・PCB の状態・メモリの上の DL/I (`ImsRegion`) を置いた。Bank-of-Z の読み込み 5 本が JCL で流れる。第 4 増分の一部として I/O PCB (GU / GN / ISRT / PURG) と中立の `MessageQueue` を置き、オンライン 5 本が電文に応答する。JMS、同期点、SPA、`CHKP`、BMP は未実装。暫定判断は P-154〜P-156 |
+| 実装 | 2026-09-16。第 1 増分の DBD / PSB の読み取りと `DFSRRC00` (DLI / DBB)、第 2 増分の SSA・PCB の状態・メモリの上の DL/I (`ImsRegion`) を置いた。Bank-of-Z の読み込み 5 本が JCL で流れる。第 4 増分の一部として I/O PCB (GU / GN / ISRT / PURG) と中立の `MessageQueue` を置き、オンライン 5 本が電文に応答する。同期点 (I/O PCB への GU、基本 CHKP、SYNC、ROLB と異常終了の巻き戻し、§3.5 の位置破棄) を入れた (P-157)。JMS、SPA、記号 CHKP / XRST、BMP は未実装。暫定判断は P-154〜P-157 |
 
 ---
 

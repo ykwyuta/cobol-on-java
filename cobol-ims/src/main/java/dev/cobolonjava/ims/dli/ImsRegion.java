@@ -2,6 +2,7 @@ package dev.cobolonjava.ims.dli;
 
 import dev.cobolonjava.ims.db.HierarchicalDatabase;
 import dev.cobolonjava.ims.db.Segment;
+import dev.cobolonjava.ims.db.UndoLog;
 import dev.cobolonjava.ims.dbd.DatabaseDefinition;
 import dev.cobolonjava.ims.dbd.FieldDefinition;
 import dev.cobolonjava.ims.dbd.SegmentDefinition;
@@ -50,6 +51,7 @@ public final class ImsRegion {
     private final Map<String, HierarchicalDatabase> databases = new LinkedHashMap<>();
     private final List<Storage> storages = new ArrayList<>();
     private final Map<Storage, DatabasePcb> databasePcbs = new IdentityHashMap<>();
+    private final UndoLog undo = new UndoLog();
     private Storage ioStorage;
     private IoPcb ioPcb;
 
@@ -87,10 +89,24 @@ public final class ImsRegion {
                 throw new IllegalArgumentException("DBD " + database.definition().name() + " is given twice");
             }
         }
+        for (HierarchicalDatabase database : this.databases.values()) {
+            database.attach(undo);
+        }
         if (ioPcb) {
             ioStorage = Storage.allocate(IO_MASK + RESERVE);
             storages.add(ioStorage);
-            this.ioPcb = new IoPcb(ioStorage, queue, codePage, Objects.requireNonNull(clock, "clock"));
+            this.ioPcb = new IoPcb(ioStorage, queue, codePage, Objects.requireNonNull(clock, "clock"),
+                    new IoPcb.SyncPoint() {
+                        @Override
+                        public void commit() {
+                            ImsRegion.this.commit();
+                        }
+
+                        @Override
+                        public void rollback() {
+                            ImsRegion.this.rollback();
+                        }
+                    });
         }
         for (PcbDefinition pcb : psb.pcbs()) {
             if (pcb instanceof PcbDefinition.Database definition) {
@@ -215,6 +231,23 @@ public final class ImsRegion {
         if (ioPcb != null) {
             ioPcb.finish(normal);
         }
+        if (normal) {
+            commit();
+        } else {
+            rollback();
+        }
+    }
+
+    /** 同期点。データベースの変更を確定し、DB PCB の位置を捨てる (P-157)。 */
+    public void commit() {
+        undo.commit();
+        databasePcbs.values().forEach(DatabasePcb::resetPosition);
+    }
+
+    /** 最後の同期点までデータベースを戻し、DB PCB の位置を捨てる (P-157)。 */
+    public void rollback() {
+        undo.rollback();
+        databasePcbs.values().forEach(DatabasePcb::resetPosition);
     }
 
     /** 同じデータベースを見る PCB の位置を先に動かしてから消す。 */
