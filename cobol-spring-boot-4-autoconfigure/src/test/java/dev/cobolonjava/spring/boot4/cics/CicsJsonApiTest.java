@@ -56,6 +56,9 @@ class CicsJsonApiTest {
             card("         DFHMSD TYPE=FINAL", false),
             card("         END", false)) + "\n";
 
+    /** program が動いた回数。再送で task が動かないことを見る。 */
+    static final java.util.concurrent.atomic.AtomicInteger RUNS = new java.util.concurrent.atomic.AtomicInteger();
+
     @SpringBootApplication
     static class TestApplication {
 
@@ -74,6 +77,7 @@ class CicsJsonApiTest {
                     new BmsScreenComposer.SendOptions(true, true, false, true, false, false, OptionalInt.empty(), false),
                     CodePages.DEFAULT);
             return (definition, input, task, syncpoints) -> {
+                RUNS.incrementAndGet();
                 if (task.terminalInput().isEmpty()) {
                     byte first = input.commarea().length == 0 ? 0 : input.commarea()[0];
                     return new TaskCompletion(Optional.of(TransId.of("API1")),
@@ -133,6 +137,40 @@ class CicsJsonApiTest {
                 .andExpect(jsonPath("$.screen.text").value("RECEIVED CUSTNO=042"))
                 .andExpect(jsonPath("$.commarea").value("Bg=="))
                 .andExpect(jsonPath("$.conversation").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("同じ冪等キーの再送はtaskを動かさず同じ応答を返し、会話が進んだあとの再送も同じ応答、同じキーの違う要求は409")
+    void replaysRequestsWithTheSameIdempotencyKey() throws Exception {
+        String body = "{\"commarea\":\"BQ==\",\"idempotencyKey\":\"client-replay-0001\"}";
+        int before = RUNS.get();
+        String first = mvc.perform(post("/api/cics/API1").with(user("carol")).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String second = mvc.perform(post("/api/cics/API1").with(user("carol")).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(second).isEqualTo(first);
+        assertThat(RUNS.get() - before).isEqualTo(1);
+
+        Matcher id = Pattern.compile("\"id\":\"([A-Za-z0-9_-]+)\"").matcher(first);
+        assertThat(id.find()).isTrue();
+        String next = "{\"conversation\":{\"id\":\"" + id.group(1) + "\",\"version\":0},"
+                + "\"idempotencyKey\":\"client-replay-0002\","
+                + "\"terminal\":{\"aid\":\"ENTER\",\"fields\":[{\"name\":\"custno\",\"value\":\"7\"}]}}";
+        String done = mvc.perform(post("/api/cics/API1").with(user("carol")).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(next))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        // 会話はもう完了している。同じキーの再送は覚えた結果を返す
+        String replayed = mvc.perform(post("/api/cics/API1").with(user("carol")).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(next))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(replayed).isEqualTo(done);
+        assertThat(RUNS.get() - before).isEqualTo(2);
+
+        mvc.perform(post("/api/cics/API1").with(user("carol")).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"commarea\":\"Bg==\",\"idempotencyKey\":\"client-replay-0001\"}"))
+                .andExpect(status().isConflict());
     }
 
     @Test

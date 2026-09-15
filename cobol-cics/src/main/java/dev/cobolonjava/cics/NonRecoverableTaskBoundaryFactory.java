@@ -13,9 +13,21 @@ import java.util.Optional;
 public final class NonRecoverableTaskBoundaryFactory implements CicsTaskBoundaryFactory {
 
     private final ConversationStorePort conversations;
+    private final Optional<CicsOutcomeStorePort> outcomes;
 
     public NonRecoverableTaskBoundaryFactory(ConversationStorePort conversations) {
+        this(conversations, Optional.empty());
+    }
+
+    /** 冪等キーの結果も覚える境界 (暫定判断 P-142)。 */
+    public NonRecoverableTaskBoundaryFactory(ConversationStorePort conversations, CicsOutcomeStorePort outcomes) {
+        this(conversations, Optional.of(outcomes));
+    }
+
+    private NonRecoverableTaskBoundaryFactory(ConversationStorePort conversations,
+                                              Optional<CicsOutcomeStorePort> outcomes) {
         this.conversations = Objects.requireNonNull(conversations, "conversations");
+        this.outcomes = Objects.requireNonNull(outcomes, "outcomes");
     }
 
     @Override
@@ -38,6 +50,25 @@ public final class NonRecoverableTaskBoundaryFactory implements CicsTaskBoundary
                     throw new CicsTaskCommitException("conversation mutation failed: " + result,
                             CommitFailureState.NOT_COMMITTED, null);
                 }
+            }
+
+            @Override
+            public void commit(TaskCommit commit, Instant now) {
+                if (commit.outcome().isPresent() && outcomes.isEmpty()) {
+                    throw new CicsTaskCommitException("this task boundary has no idempotent outcome store",
+                            CommitFailureState.NOT_COMMITTED, null);
+                }
+                commit(commit.conversation(), now);
+                commit.outcome().ifPresent(outcome -> {
+                    try {
+                        outcomes.orElseThrow().record(outcome.owner(), outcome.key(), outcome.reply(),
+                                outcome.retainUntil(), now);
+                    } catch (RuntimeException failure) {
+                        // 会話の変更はもう確定しているので、結果を覚えられなければ確定の状態は分からない
+                        throw new CicsTaskCommitException("idempotent outcome could not be recorded",
+                                CommitFailureState.UNKNOWN, failure);
+                    }
+                });
             }
 
             @Override

@@ -1,6 +1,7 @@
 package dev.cobolonjava.spring.boot4.cics;
 
 import dev.cobolonjava.cics.CicsAsyncPort;
+import dev.cobolonjava.cics.CicsOutcomeStorePort;
 import dev.cobolonjava.cics.CicsStartPort;
 import dev.cobolonjava.cics.CicsTaskBoundaryFactory;
 import dev.cobolonjava.cics.CicsTaskCoordinator;
@@ -40,8 +41,19 @@ public class CicsTaskAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    CicsTaskBoundaryFactory cobolTaskBoundaryFactory(ConversationStorePort conversations) {
-        return new NonRecoverableTaskBoundaryFactory(conversations);
+    CicsTaskBoundaryFactory cobolTaskBoundaryFactory(ConversationStorePort conversations,
+                                                     CicsOutcomeStorePort outcomes) {
+        return new NonRecoverableTaskBoundaryFactory(conversations, outcomes);
+    }
+
+    /**
+     * 冪等キーの結果の置き場 (暫定判断 P-142)。既定は 1 つの JVM の中。task 境界を替えるときは、境界が
+     * {@code commit(TaskCommit, Instant)} で結果を業務の UOW と一緒に確定できなければならない。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    CicsOutcomeStorePort cobolOutcomeStore() {
+        return CicsOutcomeStorePort.inMemory();
     }
 
     @Bean
@@ -96,8 +108,8 @@ public class CicsTaskAutoConfiguration {
                                              ConversationStorePort conversations,
                                              CicsTaskBoundaryFactory boundaries, CicsTaskProgramPort programs,
                                              CicsTaskPolicy policy, ConversationIdFactory conversationIds,
-                                             Clock cobolCicsClock) {
+                                             Clock cobolCicsClock, CicsOutcomeStorePort outcomes) {
         return new CicsTaskCoordinator(transactions, conversations, boundaries, programs, policy,
-                conversationIds, cobolCicsClock);
+                conversationIds, cobolCicsClock, outcomes);
     }
 }

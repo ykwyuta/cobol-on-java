@@ -16,6 +16,7 @@ public final class CicsTaskCoordinator {
     private final CicsTaskPolicy policy;
     private final ConversationIdFactory conversationIds;
     private final Clock clock;
+    private final Optional<CicsOutcomeStorePort> outcomes;
 
     public CicsTaskCoordinator(
             CicsTransactionRegistry transactions,
@@ -25,6 +26,36 @@ public final class CicsTaskCoordinator {
             CicsTaskPolicy policy,
             ConversationIdFactory conversationIds,
             Clock clock) {
+        this(transactions, conversations, boundaries, programs, policy, conversationIds, clock, Optional.empty());
+    }
+
+    /**
+     * 冪等キーの再送に覚えた結果を返す coordinator (設計 77 §4.3、暫定判断 P-142)。
+     *
+     * <p>境界は {@link CicsTaskBoundary#commit(TaskCommit, Instant)} で結果を業務の UOW と一緒に確定できなければならない。
+     */
+    public CicsTaskCoordinator(
+            CicsTransactionRegistry transactions,
+            ConversationStorePort conversations,
+            CicsTaskBoundaryFactory boundaries,
+            CicsTaskProgramPort programs,
+            CicsTaskPolicy policy,
+            ConversationIdFactory conversationIds,
+            Clock clock,
+            CicsOutcomeStorePort outcomes) {
+        this(transactions, conversations, boundaries, programs, policy, conversationIds, clock,
+                Optional.of(outcomes));
+    }
+
+    private CicsTaskCoordinator(
+            CicsTransactionRegistry transactions,
+            ConversationStorePort conversations,
+            CicsTaskBoundaryFactory boundaries,
+            CicsTaskProgramPort programs,
+            CicsTaskPolicy policy,
+            ConversationIdFactory conversationIds,
+            Clock clock,
+            Optional<CicsOutcomeStorePort> outcomes) {
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.conversations = Objects.requireNonNull(conversations, "conversations");
         this.boundaries = Objects.requireNonNull(boundaries, "boundaries");
@@ -32,13 +63,53 @@ public final class CicsTaskCoordinator {
         this.policy = Objects.requireNonNull(policy, "policy");
         this.conversationIds = Objects.requireNonNull(conversationIds, "conversationIds");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.outcomes = Objects.requireNonNull(outcomes, "outcomes");
     }
 
+    /**
+     * task を動かす。
+     *
+     * <p>冪等キーの置き場があれば、先に冪等キーを予約する。同じ要求がもう commit していれば task を動かさず覚えた結果を返し、
+     * 動いている最中か違う要求なら {@link IdempotencyConflictException}。commit しなかった task の予約は外す。
+     * commit の状態が分からない失敗 (UNKNOWN) では予約を残し、期限まで再送を動かさない。
+     */
     public CicsTaskReply launch(CicsTaskRequest request) {
         Objects.requireNonNull(request, "request");
         Instant startedAt = clock.instant();
         CicsTransactionDefinition definition = transactions.resolve(request.transactionId());
         definition.validate(request.payload());
+        if (outcomes.isEmpty()) {
+            return run(request, definition, startedAt, false);
+        }
+        CicsOutcomeStorePort store = outcomes.orElseThrow();
+        CicsOutcomeStorePort.Reservation reservation = store.reserve(request.owner(), request.idempotencyKey(),
+                CicsRequestFingerprint.of(request), policy.leaseDuration(), startedAt);
+        switch (reservation.status()) {
+            case REPLAY -> {
+                return reservation.reply().orElseThrow();
+            }
+            case IN_PROGRESS, MISMATCH -> throw new IdempotencyConflictException(reservation.status());
+            case RESERVED -> {
+            }
+        }
+        try {
+            return run(request, definition, startedAt, true);
+        } catch (RuntimeException | Error failure) {
+            boolean unknown = failure instanceof CicsTaskCommitException commitFailure
+                    && commitFailure.state() != CommitFailureState.NOT_COMMITTED;
+            if (!unknown) {
+                try {
+                    store.release(request.owner(), request.idempotencyKey(), clock.instant());
+                } catch (RuntimeException | Error releaseFailure) {
+                    failure.addSuppressed(releaseFailure);
+                }
+            }
+            throw failure;
+        }
+    }
+
+    private CicsTaskReply run(CicsTaskRequest request, CicsTransactionDefinition definition, Instant startedAt,
+                              boolean recordOutcome) {
         CicsTaskId taskId = CicsTaskId.create();
         // 直前の画面は会話にある。claim してから task 文脈へ入れる
         Optional<ConversationLease> lease = claim(request, definition, startedAt);
@@ -61,12 +132,18 @@ public final class CicsTaskCoordinator {
             TaskCompletion completion = Objects.requireNonNull(
                     programs.execute(definition, request.payload(), task, boundary),
                     "program result");
-            CompletionPlan plan = planCompletion(request, taskId, lease, completion, clock.instant());
-            commitStarted = true;
-            boundary.commit(plan.mutation, clock.instant());
-            runAfterCommit(completion);
-            return new CicsTaskReply(taskId, definition.transId(), completion.payload(), plan.next,
+            Instant completedAt = clock.instant();
+            CompletionPlan plan = planCompletion(request, taskId, lease, completion, completedAt);
+            CicsTaskReply reply = new CicsTaskReply(taskId, definition.transId(), completion.payload(), plan.next,
                     completion.immediate(), completion.screen());
+            Optional<TaskCommit.RecordedOutcome> outcome = recordOutcome
+                    ? Optional.of(new TaskCommit.RecordedOutcome(request.owner(), request.idempotencyKey(), reply,
+                            completedAt.plus(policy.conversationTtl())))
+                    : Optional.empty();
+            commitStarted = true;
+            boundary.commit(new TaskCommit(plan.mutation, outcome), clock.instant());
+            runAfterCommit(completion);
+            return reply;
         } catch (RuntimeException failure) {
             runtimeFailure = failure;
             cleanupFailure(boundary, lease, failure, commitStarted);

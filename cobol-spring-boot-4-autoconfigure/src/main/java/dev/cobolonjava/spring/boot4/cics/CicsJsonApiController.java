@@ -13,6 +13,7 @@ import dev.cobolonjava.cics.ConversationId;
 import dev.cobolonjava.cics.ConversationReference;
 import dev.cobolonjava.cics.ConversationStorePort;
 import dev.cobolonjava.cics.DisabledTransactionException;
+import dev.cobolonjava.cics.IdempotencyConflictException;
 import dev.cobolonjava.cics.IdempotencyKey;
 import dev.cobolonjava.cics.TransId;
 import dev.cobolonjava.cics.UnknownTransactionException;
@@ -96,11 +97,16 @@ public class CicsJsonApiController {
             ConversationEnvelope envelope = conversations.load(id, clock.instant())
                     .filter(loaded -> loaded.version() == version)
                     .orElse(null);
-            if (envelope == null) {
+            reference = Optional.of(new ConversationReference(id, version));
+            if (envelope != null) {
+                payload = envelope.payload();
+            } else if (body.idempotencyKey() != null) {
+                // 同じ冪等キーの再送なら会話はもう進んでいる。coordinator が覚えた結果を返すか、版の衝突で断る。
+                // 続ける会話の要約は payload を含まないので、空で渡してよい (暫定判断 P-142)
+                payload = CicsPayload.empty();
+            } else {
                 return problem(HttpStatus.CONFLICT, "The conversation is out of date.");
             }
-            reference = Optional.of(new ConversationReference(id, version));
-            payload = envelope.payload();
         } else {
             payload = new CicsPayload(decode(body.commarea()), containersOf(body.containers()));
         }
@@ -114,9 +120,12 @@ public class CicsJsonApiController {
                 throw new IllegalStateException("RETURN IMMEDIATE chain exceeded " + MAX_IMMEDIATE + " tasks");
             }
             ConversationEnvelope next = reply.nextConversation().orElseThrow();
+            // client の冪等キーから連鎖の段ごとのキーを作る。再送でも同じキーになり、各段の覚えた結果が返る
+            IdempotencyKey stepKey = body.idempotencyKey() != null
+                    ? new IdempotencyKey(body.idempotencyKey() + "." + (step + 1))
+                    : new IdempotencyKey("api-" + UUID.randomUUID().toString().replace("-", ""));
             reply = coordinator.launch(new CicsTaskRequest(next.nextTransaction().value(), owner, next.payload(),
-                    Optional.of(new ConversationReference(next.id(), next.version())),
-                    new IdempotencyKey("api-" + UUID.randomUUID().toString().replace("-", "")),
+                    Optional.of(new ConversationReference(next.id(), next.version())), stepKey,
                     Optional.empty(), Optional.empty(), userIdOf(owner)));
         }
         return ResponseEntity.ok(replyOf(reply));
@@ -125,6 +134,11 @@ public class CicsJsonApiController {
     @ExceptionHandler(ConversationConflictException.class)
     public ResponseEntity<ProblemDetail> conflict() {
         return problem(HttpStatus.CONFLICT, "The conversation is out of date.");
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ResponseEntity<ProblemDetail> idempotencyConflict() {
+        return problem(HttpStatus.CONFLICT, "A request with this idempotency key is in progress or differs.");
     }
 
     @ExceptionHandler(UnknownTransactionException.class)

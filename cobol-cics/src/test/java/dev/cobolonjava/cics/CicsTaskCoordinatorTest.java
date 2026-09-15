@@ -285,6 +285,50 @@ class CicsTaskCoordinatorTest {
         assertEquals("close failed", failure.getSuppressed()[1].getMessage());
     }
 
+    @Test
+    @DisplayName("同じ冪等キーの再送はtaskを動かさず覚えた結果を返し、違う要求はMISMATCH、動いている最中はIN_PROGRESS、失敗したtaskの予約は外す")
+    void replaysCommittedOutcomes() {
+        int[] runs = {0};
+        boolean[] fail = {false};
+        InMemoryConversationStore store = new InMemoryConversationStore();
+        CicsOutcomeStorePort outcomes = CicsOutcomeStorePort.inMemory();
+        CicsTaskCoordinator coordinator = new CicsTaskCoordinator(registry(), store,
+                new NonRecoverableTaskBoundaryFactory(store, outcomes), (definition, input, task, syncpoints) -> {
+                    runs[0]++;
+                    if (fail[0]) {
+                        throw new IllegalStateException("program failed");
+                    }
+                    return new TaskCompletion(Optional.empty(), CicsPayload.ofCommarea(new byte[] {(byte) runs[0]}));
+                }, new CicsTaskPolicy(Duration.ofMinutes(5), Duration.ofSeconds(10)), () -> CONVERSATION,
+                Clock.fixed(NOW, ZoneOffset.UTC), outcomes);
+
+        CicsTaskReply first = coordinator.launch(request(Optional.empty(), new byte[] {1}));
+        CicsTaskReply again = coordinator.launch(request(Optional.empty(), new byte[] {1}));
+        assertEquals(1, runs[0]);
+        assertEquals(first.taskId(), again.taskId());
+        assertArrayEquals(first.payload().commarea(), again.payload().commarea());
+
+        IdempotencyConflictException mismatch = assertThrows(IdempotencyConflictException.class,
+                () -> coordinator.launch(request(Optional.empty(), new byte[] {2})));
+        assertEquals(CicsOutcomeStorePort.Status.MISMATCH, mismatch.status());
+
+        CicsTaskRequest failing = new CicsTaskRequest("TX01", "owner", CicsPayload.ofCommarea(new byte[] {3}),
+                Optional.empty(), new IdempotencyKey("request-2002"));
+        fail[0] = true;
+        assertThrows(IllegalStateException.class, () -> coordinator.launch(failing));
+        fail[0] = false;
+        coordinator.launch(failing);
+        assertEquals(3, runs[0]);
+
+        CicsTaskRequest busy = new CicsTaskRequest("TX01", "owner", CicsPayload.ofCommarea(new byte[] {4}),
+                Optional.empty(), new IdempotencyKey("request-3003"));
+        outcomes.reserve("owner", busy.idempotencyKey(), CicsRequestFingerprint.of(busy), Duration.ofSeconds(10), NOW);
+        IdempotencyConflictException inProgress = assertThrows(IdempotencyConflictException.class,
+                () -> coordinator.launch(busy));
+        assertEquals(CicsOutcomeStorePort.Status.IN_PROGRESS, inProgress.status());
+        assertEquals(3, runs[0]);
+    }
+
     private static CicsTaskProgramPort returningNext() {
         return (definition, input, task, syncpoints) ->
                 new TaskCompletion(Optional.of(TransId.of("NXT1")), CicsPayload.empty());

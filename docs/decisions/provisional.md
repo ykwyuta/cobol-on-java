@@ -4304,3 +4304,33 @@ adapter と合わせて設計する。PROTECT を task の境界の commit と�
 あとに別に登録するので、その間に JVM が止まれば START は消える。
 
 **解消条件**: 実機で ROLLBACK のときの PROTECT の START を採る。START の登録を task 境界の UOW に参加させる設計を入れる。
+
+## P-142 同じ冪等キーの再送には commit した task の結果を返し、task をもう一度動かさない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-15)。利用者が「結果を保存して再送に返す」を選んだ |
+| 場所 | `CicsOutcomeStorePort`、`InMemoryCicsOutcomeStore`、`CicsRequestFingerprint`、`TaskCommit`、`CicsTaskBoundary.commit(TaskCommit, Instant)`、`CicsTaskCoordinator`、`CicsJsonApiController` |
+| 関連要件 | 設計 77 §4.3・§4.6 |
+
+**暫定の扱い**:
+
+- coordinator は task を動かす前に (owner、冪等キー) を予約する。予約は他の要求から見える必要があるので task の UOW とは別に確定する
+- 同じキーの要求がもう commit していれば task を動かさず覚えた `CicsTaskReply` を返す。動いている最中なら IN_PROGRESS、
+  同じキーで内容が違えば MISMATCH とし、JSON の入口は 409 を返す
+- 結果は task 境界の commit の中で会話の変更と一緒に記録する (`TaskCommit`)。結果を記録できない境界は、記録するものがあれば
+  何も確定せずに NOT_COMMITTED で失敗させる。黙って落とすと再送が task をもう一度動かす
+- commit しなかった task の予約は外し、同じキーの再送はもう一度 task を動かす。commit の状態が分からない失敗 (UNKNOWN) では
+  予約を残し、lease の長さが過ぎるまで再送を動かさない
+- 内容の要約は TRANSID、会話の ID と版、端末の名前、端末入力 (AID、cursor、field) を SHA-256 でまとめる。新しい task では
+  COMMAREA、channel の名前と container も含める。続ける会話の payload は会話の版が決め、再送のときには会話が進んでいて読めないので含めない
+- 結果は会話と同じ期限 (`conversationTtl`) まで覚える。既定の置き場は 1 つの JVM の中で、予約 256 回ごとに期限切れを掃く
+- JSON の入口は、client がキーを書いたときだけ再送が効く。会話がもう進んだ再送でも coordinator へ渡し、覚えた結果か版の衝突を返す。
+  IMMEDIATE の連鎖の段は `キー.段` を使うので、連鎖の再送も各段の結果を返す (キーは 126 文字まで)
+- ブラウザの入口は要求ごとに server がキーを作るので、再送は効かない (二重送信の検出は会話の版の 409 のまま)
+
+**どこがずれうるか**: 既定の置き場では JVM が止まれば結果は消え、再送は task をもう一度動かす。会話の変更と結果の記録は
+既定の境界では別々の map への書き込みであり、原子的でない (STRICT の JDBC の境界で同じ transaction に入れる)。
+
+**解消条件**: STRICT の JDBC の会話ストアで予約と結果を業務の transaction と合わせて確定する。ブラウザの画面に
+冪等キーと会話の版を載せ、二重送信も覚えた結果を返すようにする。

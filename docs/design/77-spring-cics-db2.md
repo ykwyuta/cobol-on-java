@@ -307,6 +307,10 @@ HTTP クライアント切断は COBOL の安全な即時停止と同義では�
 サーバ側タイムアウトと取消し点で協調的に終了させる。結果が不明なクライアントには同じ冪等キーで
 結果照会または再送できるようにする。
 
+実装 (暫定判断 P-142): coordinator が (owner、冪等キー) を予約し、commit した task の `CicsTaskReply` を task 境界の
+commit の中で `CicsOutcomeStorePort` に記録する。同じ内容の再送には task を動かさず記録した応答を返し、動いている最中か
+内容の違う再送は `IdempotencyConflictException` (JSON の入口では 409) にする。
+
 ### 4.4 CICS コマンドの写像
 
 | CICS 概念 | Java 上の設計 |
