@@ -32,6 +32,13 @@
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- 実 Db2 を使う試験だけが使う。DB2_IT_ENABLED が無ければ流れない -->
+    <dependency>
+      <groupId>com.ibm.db2</groupId>
+      <artifactId>jcc</artifactId>
+      <version>${db2-jcc.version}</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>

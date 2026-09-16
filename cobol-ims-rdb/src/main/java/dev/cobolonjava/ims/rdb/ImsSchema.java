@@ -11,6 +11,7 @@ import java.sql.Statement;
  * <p>ADR-0013 の主キー {@code (DBD_NAME, ROOT_KEY_RAW, HIERARCHY_PATH)} は、根のキーが重なる DBD
  * (順序フィールドが {@code M}、Bank-of-Z の CUSTACCS) とキーを持たない根を表せない。そこで同じキーの根の並びを
  * {@code ROOT_SEQ} として主キーに足す。{@code HIERARCHY_PATH} は PostgreSQL では {@code COLLATE "C"} を付ける。
+ * 方言は H2・PostgreSQL・Db2 で、{@link Dialect} だけが差を知る。
  * ただし読み込むときは Java の側で並べ直すので、置き場の照合順序には頼らない。
  */
 final class ImsSchema {
@@ -18,26 +19,66 @@ final class ImsSchema {
     private ImsSchema() {
     }
 
-    /** 表が無ければ作る。 */
-    static void ensure(Connection connection) throws SQLException {
-        String product = connection.getMetaData().getDatabaseProductName();
-        String key;
-        String data;
-        String ordered;
-        switch (product) {
-            case "H2" -> {
-                key = "VARBINARY(256)";
-                data = "VARBINARY(32767)";
-                ordered = "";
-            }
-            case "PostgreSQL" -> {
-                key = "BYTEA";
-                data = "BYTEA";
-                ordered = " COLLATE \"C\"";
-            }
-            default -> throw new DatabaseStoreException("the IMS tables are not defined for " + product
-                    + " yet; H2 and PostgreSQL are (provisional P-160)");
+    /**
+     * 置き場の方言。<b>製品ごとの差を知るのはここだけ</b>にする (設計 78 §2.2、暫定判断 P-160)。
+     *
+     * <p>Db2 の値は 2026-09-16 に Db2 12.1 へ直接訊いて決めた。{@code CREATE TABLE IF NOT EXISTS}、
+     * {@code SELECT ... FOR UPDATE}、{@code DEFAULT CURRENT_TIMESTAMP} はそのまま通る。違うのは
+     * {@code VARBINARY} の上限 (32672 byte) と、{@code SELECT} に {@code FROM} が要ることである。
+     */
+    enum Dialect {
+
+        H2("VARBINARY(256)", "VARBINARY(32767)", "", "SELECT CURRENT_TIMESTAMP"),
+        POSTGRESQL("BYTEA", "BYTEA", " COLLATE \"C\"", "SELECT CURRENT_TIMESTAMP"),
+        DB2("VARBINARY(256)", "VARBINARY(32672)", "", "SELECT CURRENT TIMESTAMP FROM SYSIBM.SYSDUMMY1");
+
+        private final String key;
+        private final String data;
+        private final String ordered;
+        private final String currentTimestamp;
+
+        Dialect(String key, String data, String ordered, String currentTimestamp) {
+            this.key = key;
+            this.data = data;
+            this.ordered = ordered;
+            this.currentTimestamp = currentTimestamp;
         }
+
+        /** 置き場の時計を読む文。Db2 は {@code FROM} の無い {@code SELECT} を受け付けない。 */
+        String currentTimestampSql() {
+            return currentTimestamp;
+        }
+    }
+
+    /**
+     * 製品名から方言を決める。
+     *
+     * <p>Db2 の製品名は機種を含む ({@code DB2/LINUXX8664}) ので、前方一致で見る。
+     */
+    private static Dialect dialectOf(String product) {
+        if (product.equals("H2")) {
+            return Dialect.H2;
+        }
+        if (product.equals("PostgreSQL")) {
+            return Dialect.POSTGRESQL;
+        }
+        if (product.startsWith("DB2")) {
+            return Dialect.DB2;
+        }
+        throw new DatabaseStoreException("the IMS tables are not defined for " + product
+                + " yet; H2, PostgreSQL and Db2 are (provisional P-160)");
+    }
+
+    /**
+     * 表が無ければ作る。
+     *
+     * @return この接続の方言。置き場が方言ごとの文を組むのに使う
+     */
+    static Dialect ensure(Connection connection) throws SQLException {
+        Dialect dialect = dialectOf(connection.getMetaData().getDatabaseProductName());
+        String key = dialect.key;
+        String data = dialect.data;
+        String ordered = dialect.ordered;
         try (Statement statement = connection.createStatement()) {
             statement.execute("CREATE TABLE IF NOT EXISTS IMS_SEGMENT_STORE ("
                     + "DBD_NAME VARCHAR(8) NOT NULL, "
@@ -85,5 +126,6 @@ final class ImsSchema {
                     + "VERSION BIGINT NOT NULL, "
                     + "CONSTRAINT PK_IMS_ROOT_LOCK PRIMARY KEY (DBD_NAME, ROOT_KEY_RAW))");
         }
+        return dialect;
     }
 }

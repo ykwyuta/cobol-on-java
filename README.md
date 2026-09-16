@@ -71,7 +71,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
 | `cobol-ims` | IMS の DBD / PSB と DL/I 呼び出しの中立モデル (設計 78) | DBDGEN / PSBGEN の原文を読む。Bank-of-Z の DBD 9 本・PSB 8 本がすべて読める (P-153)。`CALL 'CBLTDLI'` の DB 呼び出し (GU / GN / GNP / GH* / ISRT / REPL / DLET) をメモリの上の階層型データベースで動かす (P-154)。ジョブの `EXEC PGM=DFSRRC00,PARM='DLI,...'` でバッチを流し、データベースをデータセットに書き戻す (P-155)。I/O PCB の GU / GN / ISRT / PURG と、1 つの JVM の中の電文のキューで MPP を動かす (P-156)。I/O PCB への GU・基本 CHKP・SYNC を同期点とし、ROLB と異常終了は最後の同期点まで戻す (P-157)。`PARM='BMP,...'` は電文を読まない形だけ受け、I/O PCB を置いて CHKP できる (P-158)。SSA のコマンドコード C / D / F / L / N / P / Q を扱う (U / V は断る、P-159)。データベースの置き場は中立の口の裏にあり、既定はデータセット、`cobol.ims.jdbc.url` を指定すれば `cobol-ims-rdb` の RDB の表 (P-160)。電文のキューは中立の口の裏にあり、既定はこの JVM の中、`cobol.ims.jms.factory` を指定すれば `cobol-ims-jms` が JMS で運ぶ (P-162、P-165)。記号 CHKP が退避した域を業務の更新と同じ確定で置き場に残し、XRST が作業域か `CKPTID=` の検査点から書き戻す (P-164)。SPA、電文を読む BMP、GSAM は未実装 (Bank-of-Z がどれも使っていないので測る基準が無い、P-166) |
-| `cobol-ims-rdb` | IMS のデータベースを RDB の表に生バイトで置く JDBC の置き場 (設計 78 §3.2、ADR-0013) | `IMS_SEGMENT_STORE` / `IMS_ROOT_INDEX` を H2 と PostgreSQL に作り、同期点ごとに変わった根だけを書き直す。どちらも実サーバで測っている (PostgreSQL は 17.11、`infra/postgres`)。主キーに `ROOT_SEQ` を足した (P-160)。ルートアンカーロック (ADR-0015) は同期点の確定で昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (P-161)。処理済みの電文を `IMS_MESSAGE_INBOX` に業務の更新と同じトランザクションで書き、再配信を捨てる (P-163)。記号 CHKP が退避した域を `IMS_CHECKPOINT` に同じ確定で書く (P-164)。取引コードのキューを読む領域を `IMS_QUEUE_LEASE` の借用で 1 つに限り、2 つ目は起こさずに断る (P-167)。GH の時点の排他、競合の自動の再試行、根ごとの遅延読み込み、Db2 は未実装 |
+| `cobol-ims-rdb` | IMS のデータベースを RDB の表に生バイトで置く JDBC の置き場 (設計 78 §3.2、ADR-0013) | `IMS_SEGMENT_STORE` / `IMS_ROOT_INDEX` を H2・PostgreSQL・Db2 に作り、同期点ごとに変わった根だけを書き直す。方言の差を知るのは `ImsSchema.Dialect` だけで、どれも実サーバで測っている (PostgreSQL 17.11 は `infra/postgres`、Db2 12.1 は `infra/db2`)。主キーに `ROOT_SEQ` を足した (P-160)。ルートアンカーロック (ADR-0015) は同期点の確定で昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (P-161)。処理済みの電文を `IMS_MESSAGE_INBOX` に業務の更新と同じトランザクションで書き、再配信を捨てる (P-163)。記号 CHKP が退避した域を `IMS_CHECKPOINT` に同じ確定で書く (P-164)。取引コードのキューを読む領域を `IMS_QUEUE_LEASE` の借用で 1 つに限り、2 つ目は起こさずに断る (P-167)。GH の時点の排他、競合の自動の再試行、根ごとの遅延読み込みは未実装 |
 | `cobol-ims-jms` | IMS TM の電文のキューを JMS 3.0 で運ぶアダプタ (設計 78 §4、ADR-0014) | 取引コードごとのキューを `BytesMessage` で読み、LL / ZZ 付きのセグメントを運ぶ。応答は端末ごとのキューへ。同期点で取り出しと応答を 1 つの JMS のトランザクションで確定する (P-162)。ブローカは `infra/rabbitmq` の compose。実ブローカ (RabbitMQ 4.1.8) での起動と試験を確認し、Bank-of-Z のオンライン 5 本をブローカ越しに測った (P-162)。`cobol.ims.jms.factory` に `ConnectionFactory` のクラス名を書くと差し込まれる (P-165)。`JMSMessageID` を運び、置き場の inbox で再配信を捨てる (P-163)。XA、SPA (P-166)、`CHNG` は未実装 |
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
@@ -259,13 +259,16 @@ Bank-of-Z の読み込み 5 本を H2 のファイルの DB へ流しても全�
 一度も実行しておらず、対応を主張しているだけだった。`infra/postgres` の環境を足して測ったところ、読み込み 5 本は
 全段 RC=0 でセグメント数 100 / 265 / 265 / 265 / 265、オンライン 5 本も全て復帰コード 0 で、データセットと H2 の
 置き場に一致した。
+<b>実 Db2 (12.1) でも同じ結果である</b>。IMS の資産がいちばん移りやすい RDB であり、これまでは断っていた。
+方言の差は 3 つだけだった (製品名に機種が入る、`VARBINARY` の上限が 32672 byte、素の `SELECT CURRENT_TIMESTAMP`
+が使えない)。差を知るのは `ImsSchema.Dialect` だけである。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
 バイト列</b>を出すことも見る。要件 13 章が P1 の受け入れ基準に置いている形である。
-テスト 2370 件 (この環境で `mvn -B -o clean test` で流れた数)。実サーバを使う試験は環境変数で有効にしたときだけ流れる。
+テスト 2374 件 (この環境で `mvn -B -o clean test` で流れた数)。実サーバを使う試験は環境変数で有効にしたときだけ流れる。
 有効化していなければ、実 Db2 の 2 件 (`cobol-db2-jdbc`)、実 RabbitMQ の 2 件 (`cobol-ims-jms`)、
-実 PostgreSQL の 4 件 (`cobol-ims-rdb`) がスキップされる。
+IMS の置き場を実 PostgreSQL と実 Db2 で流す 4 件ずつ (`cobol-ims-rdb`) がスキップされる。
 うち 6 件はコーパスを取ってきていなければスキップされる。
 Hercules 上での実行と突き合わせる**検証レベル V2** の検査は、期待値を採れない環境では流れない。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい

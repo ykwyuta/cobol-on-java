@@ -48,3 +48,30 @@ mvn -pl cobol-spring-boot-4-autoconfigure -am test "-Dtest=Db2StrictStoresIntegr
 
 初回起動、health check、commit後FETCH試験、コンテナ再起動、再起動後の同試験を通過した。
 詳細と未検証項目は[検証報告](../../docs/report/20260911-db2-community-validation.md)を参照する。
+
+## IMS のデータベースの置き場 (cobol-ims-rdb) を Db2 で流す
+
+`cobol-ims-rdb` は IMS のデータベースを RDB の表に置く (設計 78 §3.2、ADR-0013、暫定判断 P-160)。
+Db2 は 2026-09-16 に対応した。実 Db2 の試験は次で流す。
+
+```powershell
+$env:DB2_IT_ENABLED = "true"
+$env:DB2_HOST = "localhost"; $env:DB2_PORT = "50000"; $env:DB2_DATABASE = "COBOLDB"
+$env:DB2_USER = "db2inst1"; $env:DB2_PASSWORD = "<infra/db2/.envと同じ値>"
+mvn -pl cobol-ims-rdb -am test
+```
+
+Bank-of-Z を Db2 の置き場へ流すには、`-Dcobol.ims.jdbc.url=jdbc:db2://localhost:50000/COBOLDB` と
+`-Dcobol.ims.jdbc.user` / `.password` を与える。
+
+### 2026-09-16 の検証基準
+
+- server: Db2 12.1 (`DB2/LINUXX8664`、`SQL120150`)、image digest は上と同じ
+- client: IBM JCC 12.1.4.0 (Maven の test scope)
+- `Db2StoreIntegrationTest` の 4 件 (生バイトの往復と階層の順、根の版による競合、inbox と検査点、取引コードの借用) が通った
+- Bank-of-Z の読み込み 5 本が全段 RC=0、セグメント数 100 / 265 / 265 / 265 / 265。オンライン 5 本も全て復帰コード 0
+
+方言の差は 3 つだけだった。製品名に機種が入る (`DB2/LINUXX8664`)、`VARBINARY` の上限が 32672 byte、
+素の `SELECT CURRENT_TIMESTAMP` が使えず `FROM SYSIBM.SYSDUMMY1` が要る。`CREATE TABLE IF NOT EXISTS`、
+`SELECT ... FOR UPDATE`、`DEFAULT CURRENT_TIMESTAMP` はそのまま通る。<b>JCC はトランザクションが動いたままの
+`close()` を断る</b> (ERRORCODE=-4471) ので、置き場は閉じる前に巻き戻すようにした。

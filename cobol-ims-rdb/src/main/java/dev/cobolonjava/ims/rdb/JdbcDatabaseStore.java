@@ -63,6 +63,8 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
     private static final int MAX_TWINS = 999_999;
 
     private final Connection connection;
+    /** この接続の方言。置き場の時計を読む文が製品で違う (P-160)。 */
+    private final ImsSchema.Dialect dialect;
     /** DBD ごとに、この置き場が読んだか書いた根の版。排他の行が無い根は載せない (版 0 とみなす)。 */
     private final Map<String, Map<ByteBuffer, Long>> versions = new HashMap<>();
     /** 次の確定で処理済みとして書く電文の ID (P-163)。 */
@@ -77,7 +79,7 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
         this.connection = Objects.requireNonNull(connection, "connection");
         try {
             connection.setAutoCommit(false);
-            ImsSchema.ensure(connection);
+            dialect = ImsSchema.ensure(connection);
             connection.commit();
         } catch (SQLException e) {
             rollbackQuietly();
@@ -337,7 +339,7 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
 
     /** 置き場の時計で測る。領域ごとの時計がずれていても、借用の判断は 1 つの時計で決まる。 */
     private Timestamp currentTimestamp() throws SQLException {
-        try (PreparedStatement select = connection.prepareStatement("SELECT CURRENT_TIMESTAMP");
+        try (PreparedStatement select = connection.prepareStatement(dialect.currentTimestampSql());
              ResultSet result = select.executeQuery()) {
             result.next();
             return result.getTimestamp(1);
@@ -631,6 +633,13 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
     @Override
     public void close() {
         try {
+            // 読みだけのトランザクションが残っていることがある (seen / load は確定しない)。
+            // Db2 の JCC は、トランザクションが動いたままの close を断る (ERRORCODE=-4471)。
+            // H2 と PostgreSQL は黙って巻き戻すので、この差は Db2 で測って初めて出た。
+            // 確定していないものは捨ててよいので、閉じる前に戻す
+            if (!connection.isClosed() && !connection.getAutoCommit()) {
+                connection.rollback();
+            }
             connection.close();
         } catch (SQLException e) {
             throw new DatabaseStoreException("cannot close the IMS tables", e);
