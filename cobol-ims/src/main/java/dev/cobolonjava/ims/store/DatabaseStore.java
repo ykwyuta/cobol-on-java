@@ -39,6 +39,15 @@ public interface DatabaseStore extends AutoCloseable {
         return null;
     }
 
+    /**
+     * 取引コードのキューを読む領域を 1 つに限る借用 (P-167)。プロセスをまたいで数えられる置き場だけが持つ。
+     *
+     * @return 持たなければ {@code null} (二重に起こしても気づけない)
+     */
+    default QueueLease queueLease() {
+        return null;
+    }
+
     @Override
     void close();
 }

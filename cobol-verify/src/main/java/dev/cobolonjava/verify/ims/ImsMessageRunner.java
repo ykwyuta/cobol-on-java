@@ -56,6 +56,15 @@ public final class ImsMessageRunner {
             return delegate.next();
         }
 
+        /**
+         * 包んだキューの取引コードをそのまま名乗る。覆いが名乗らないと、領域は「名乗らないキュー」とみなして
+         * 借用 (P-167) を取らない。覆いが包んだ相手の能力を落としてはならない。
+         */
+        @Override
+        public String transactionCode() {
+            return delegate.transactionCode();
+        }
+
         @Override
         public void send(OutputMessage message) {
             sent.add(message);
@@ -152,7 +161,12 @@ public final class ImsMessageRunner {
 
         StringBuilder out = new StringBuilder("IMS のメッセージ処理 (設計 78 §4)\n");
         out.append("==============================\n\n");
-        out.append("キュー: ").append(transport).append('\n');
+        // どの仕掛けが効いていたかを測定の側に出す。借用が働いていないことに気づけなかったので (P-167)
+        out.append("キュー: ").append(transport)
+                .append(queue.transactionCode().isBlank()
+                        ? " (取引コードを名乗らないので借用は働かない)"
+                        : " 取引コード " + queue.transactionCode())
+                .append('\n');
         out.append(String.format("%s: 入力 %d 件、応答 %d 件、復帰コード %d%n", program, input.size(), sent.size(),
                 returnCode));
         if (failure != null) {

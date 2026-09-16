@@ -77,6 +77,11 @@ public final class JmsMessageQueue implements MessageQueue, AutoCloseable {
     }
 
     @Override
+    public String transactionCode() {
+        return transactionCode;
+    }
+
+    @Override
     public InputMessage next() {
         try {
             Message message = timeoutMillis == 0 ? consumer.receiveNoWait() : consumer.receive(timeoutMillis);

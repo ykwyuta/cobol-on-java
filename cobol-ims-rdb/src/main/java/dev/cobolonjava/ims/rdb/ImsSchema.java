@@ -73,6 +73,12 @@ final class ImsSchema {
                     + "AREA_DATA " + data + " NOT NULL, "
                     + "RECORDED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL, "
                     + "CONSTRAINT PK_IMS_CHECKPOINT PRIMARY KEY (PSB_NAME, CHKP_ID, AREA_SEQ))");
+            // 取引コードのキューを読む領域を 1 つに限る借用 (P-167)。心拍が古くなれば引き継げる
+            statement.execute("CREATE TABLE IF NOT EXISTS IMS_QUEUE_LEASE ("
+                    + "TRANSACTION_CODE VARCHAR(64) NOT NULL, "
+                    + "LEASE_OWNER VARCHAR(128) NOT NULL, "
+                    + "HEARTBEAT_AT TIMESTAMP NOT NULL, "
+                    + "CONSTRAINT PK_IMS_QUEUE_LEASE PRIMARY KEY (TRANSACTION_CODE))");
             statement.execute("CREATE TABLE IF NOT EXISTS IMS_ROOT_LOCK ("
                     + "DBD_NAME VARCHAR(8) NOT NULL, "
                     + "ROOT_KEY_RAW " + key + " NOT NULL, "

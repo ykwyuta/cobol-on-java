@@ -9,11 +9,14 @@ import dev.cobolonjava.ims.store.DatabaseConflictException;
 import dev.cobolonjava.ims.store.DatabaseStore;
 import dev.cobolonjava.ims.store.DatabaseStoreException;
 import dev.cobolonjava.ims.store.MessageInbox;
+import dev.cobolonjava.ims.store.QueueLease;
+import dev.cobolonjava.ims.store.QueueLeaseException;
 import java.nio.ByteBuffer;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -53,7 +56,7 @@ import java.util.Objects;
  * <p>開くときはデータベース全体をメモリに読む。GH で押さえる形 (ADR-0015 の読みの排他)、競合したときの自動の
  * 再試行 (P-107)、根ごとの遅延読み込みは無い。読み直しは同期点ごとに排他の表を DBD ごとに全件読む。
  */
-public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, CheckpointStore {
+public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, CheckpointStore, QueueLease {
 
     private static final int LL = 2;
     private static final int MAX_LEVELS = 15;
@@ -66,6 +69,9 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
     private final List<String> inbox = new ArrayList<>();
     /** 次の確定で書く検査点 (P-164)。同じ ID を 2 度書けば、あとのものが残る。 */
     private final Map<String, PendingCheckpoint> pendingCheckpoints = new LinkedHashMap<>();
+    /** 借りている取引コードと借り手 (P-167)。借りていなければ {@code null}。 */
+    private String leasedTransactionCode;
+    private String leaseOwner;
 
     public JdbcDatabaseStore(Connection connection) {
         this.connection = Objects.requireNonNull(connection, "connection");
@@ -127,6 +133,8 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
             writeInbox();
             // 記号 CHKP が退避した域も同じトランザクションで書く (P-164)
             writeCheckpoints();
+            // 借用の心拍も同期点で打つ。引き継がれていれば、ここで競合として止まる (P-167)
+            refreshLease();
             connection.commit();
         } catch (SQLException e) {
             rollbackQuietly();
@@ -224,6 +232,124 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
             insert.executeBatch();
         }
         pendingCheckpoints.clear();
+    }
+
+    @Override
+    public QueueLease queueLease() {
+        return this;
+    }
+
+    /**
+     * 取引コードを借りる (P-167)。ほかの借り手が居ても、心拍が古ければ引き継ぐ。落ちた領域の借用を
+     * 誰も返せないので、引き継げないと二度と起こせなくなるからである。
+     */
+    @Override
+    public Held acquire(String transactionCode, String owner) {
+        try {
+            Timestamp now = currentTimestamp();
+            String holder = null;
+            Timestamp heartbeat = null;
+            try (PreparedStatement select = connection.prepareStatement(
+                    "SELECT LEASE_OWNER, HEARTBEAT_AT FROM IMS_QUEUE_LEASE"
+                            + " WHERE TRANSACTION_CODE = ? FOR UPDATE")) {
+                select.setString(1, transactionCode);
+                try (ResultSet result = select.executeQuery()) {
+                    if (result.next()) {
+                        holder = result.getString(1);
+                        heartbeat = result.getTimestamp(2);
+                    }
+                }
+            }
+            if (holder == null) {
+                insertLease(transactionCode, owner, now);
+            } else if (holder.equals(owner) || expired(now, heartbeat)) {
+                updateLease(transactionCode, owner, now);
+            } else {
+                rollbackQuietly();
+                throw new QueueLeaseException("another region is reading the queue of transaction code "
+                        + transactionCode + " (owner " + holder + ", last heartbeat " + heartbeat
+                        + "); two regions on one transaction code do not keep the order of its messages");
+            }
+            connection.commit();
+        } catch (SQLException e) {
+            rollbackQuietly();
+            throw new QueueLeaseException("cannot take the queue lease of transaction code "
+                    + transactionCode, e);
+        }
+        leasedTransactionCode = transactionCode;
+        leaseOwner = owner;
+        return () -> release(transactionCode, owner);
+    }
+
+    private void release(String transactionCode, String owner) {
+        leasedTransactionCode = null;
+        leaseOwner = null;
+        try (PreparedStatement delete = connection.prepareStatement(
+                "DELETE FROM IMS_QUEUE_LEASE WHERE TRANSACTION_CODE = ? AND LEASE_OWNER = ?")) {
+            delete.setString(1, transactionCode);
+            delete.setString(2, owner);
+            delete.executeUpdate();
+            connection.commit();
+        } catch (SQLException e) {
+            rollbackQuietly();
+            throw new QueueLeaseException("cannot give back the queue lease of transaction code "
+                    + transactionCode, e);
+        }
+    }
+
+    /** 同期点ごとに心拍を打つ。引き継がれていれば 1 行も更新できないので、そこで気づける。 */
+    private void refreshLease() throws SQLException {
+        if (leasedTransactionCode == null) {
+            return;
+        }
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE IMS_QUEUE_LEASE SET HEARTBEAT_AT = ?"
+                        + " WHERE TRANSACTION_CODE = ? AND LEASE_OWNER = ?")) {
+            update.setTimestamp(1, currentTimestamp());
+            update.setString(2, leasedTransactionCode);
+            update.setString(3, leaseOwner);
+            if (update.executeUpdate() == 0) {
+                throw new DatabaseConflictException("another region took over the queue of transaction code "
+                        + leasedTransactionCode + "; this region stopped reading it");
+            }
+        }
+    }
+
+    private void insertLease(String transactionCode, String owner, Timestamp now) throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO IMS_QUEUE_LEASE (TRANSACTION_CODE, LEASE_OWNER, HEARTBEAT_AT) VALUES (?, ?, ?)")) {
+            insert.setString(1, transactionCode);
+            insert.setString(2, owner);
+            insert.setTimestamp(3, now);
+            insert.executeUpdate();
+        }
+    }
+
+    private void updateLease(String transactionCode, String owner, Timestamp now) throws SQLException {
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE IMS_QUEUE_LEASE SET LEASE_OWNER = ?, HEARTBEAT_AT = ? WHERE TRANSACTION_CODE = ?")) {
+            update.setString(1, owner);
+            update.setTimestamp(2, now);
+            update.setString(3, transactionCode);
+            update.executeUpdate();
+        }
+    }
+
+    /** 置き場の時計で測る。領域ごとの時計がずれていても、借用の判断は 1 つの時計で決まる。 */
+    private Timestamp currentTimestamp() throws SQLException {
+        try (PreparedStatement select = connection.prepareStatement("SELECT CURRENT_TIMESTAMP");
+             ResultSet result = select.executeQuery()) {
+            result.next();
+            return result.getTimestamp(1);
+        }
+    }
+
+    /**
+     * 心拍が古ければ、その借り手は落ちたとみなす。長さは実機から採った値ではない (P-167)。
+     */
+    private static boolean expired(Timestamp now, Timestamp heartbeat) {
+        long seconds = Long.parseLong(System.getProperty("cobol.ims.queue.lease-seconds", "60"));
+        return now.getTime() - heartbeat.getTime() >= seconds * 1000L;
     }
 
     @Override

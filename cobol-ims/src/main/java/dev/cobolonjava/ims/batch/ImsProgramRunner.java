@@ -11,6 +11,7 @@ import dev.cobolonjava.ims.psb.ProgramSpecification;
 import dev.cobolonjava.ims.psb.PsbParser;
 import dev.cobolonjava.ims.store.DatabaseStore;
 import dev.cobolonjava.ims.store.DatabaseStores;
+import dev.cobolonjava.ims.store.QueueLease;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.PartitionedDataSet;
@@ -42,6 +43,10 @@ public final class ImsProgramRunner {
 
     /** PSB と DBD の原文を置くライブラリの DD 名。 */
     public static final String LIBRARY = "IMS";
+
+    /** 借用の借り手の名前 (P-167)。どの領域が借りているかを人が見て分かるようにする。 */
+    private static final String OWNER = ProcessHandle.current().pid() + "@"
+            + java.util.UUID.randomUUID().toString().substring(0, 8);
 
     private ImsProgramRunner() {
     }
@@ -80,7 +85,9 @@ public final class ImsProgramRunner {
 
         // RDB の置き場が構成されていればそちら、無ければデータセットの置き場 (P-160)
         DatabaseStore configured = DatabaseStores.open(context);
-        try (DatabaseStore store = configured != null ? configured : new DataSetDatabaseStore(context)) {
+        try (DatabaseStore store = configured != null ? configured : new DataSetDatabaseStore(context);
+             // 同じ取引コードのキューを 2 つの領域が読むと順序が崩れるので、借りられなければ起こさない (P-167)
+             QueueLease.Held lease = acquireLease(store, queue)) {
             Map<String, HierarchicalDatabase> databases = new LinkedHashMap<>();
             for (PcbDefinition pcb : psb.pcbs()) {
                 if (!(pcb instanceof PcbDefinition.Database database) || databases.containsKey(database.dbdName())) {
@@ -119,6 +126,20 @@ public final class ImsProgramRunner {
             region.finish(true);
             return ims.returnCode();
         }
+    }
+
+    /**
+     * 取引コードを借りる (P-167)。借用を持つ置き場と、取引コードを名乗るキューがそろったときだけ働く。
+     * そろわなければ何もしない持ち手を返す (1 つの JVM の中のキューは、そもそも二重にならない)。
+     */
+    private static QueueLease.Held acquireLease(DatabaseStore store, MessageQueue queue) {
+        QueueLease lease = queue == null ? null : store.queueLease();
+        String transactionCode = queue == null ? "" : queue.transactionCode();
+        if (lease == null || transactionCode.isBlank()) {
+            return () -> {
+            };
+        }
+        return lease.acquire(transactionCode, OWNER);
     }
 
     private static <T> T generated(String member, Supplier<T> generation) {
