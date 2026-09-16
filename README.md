@@ -70,9 +70,9 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
-| `cobol-ims` | IMS の DBD / PSB と DL/I 呼び出しの中立モデル (設計 78) | DBDGEN / PSBGEN の原文を読む。Bank-of-Z の DBD 9 本・PSB 8 本がすべて読める (P-153)。`CALL 'CBLTDLI'` の DB 呼び出し (GU / GN / GNP / GH* / ISRT / REPL / DLET) をメモリの上の階層型データベースで動かす (P-154)。ジョブの `EXEC PGM=DFSRRC00,PARM='DLI,...'` でバッチを流し、データベースをデータセットに書き戻す (P-155)。I/O PCB の GU / GN / ISRT / PURG と、1 つの JVM の中の電文のキューで MPP を動かす (P-156)。I/O PCB への GU・基本 CHKP・SYNC を同期点とし、ROLB と異常終了は最後の同期点まで戻す (P-157)。`PARM='BMP,...'` は電文を読まない形だけ受け、I/O PCB を置いて CHKP できる (P-158)。SSA のコマンドコード C / D / F / L / N / P / Q を扱う (U / V は断る、P-159)。データベースの置き場は中立の口の裏にあり、既定はデータセット、`cobol.ims.jdbc.url` を指定すれば `cobol-ims-rdb` の RDB の表 (P-160)。電文のキューは `cobol-ims-jms` が JMS で運ぶ (P-162)。記号 CHKP が退避した域を業務の更新と同じ確定で置き場に残し、XRST が作業域か `CKPTID=` の検査点から書き戻す (P-164)。SPA、電文を読む BMP、GSAM は未実装 |
+| `cobol-ims` | IMS の DBD / PSB と DL/I 呼び出しの中立モデル (設計 78) | DBDGEN / PSBGEN の原文を読む。Bank-of-Z の DBD 9 本・PSB 8 本がすべて読める (P-153)。`CALL 'CBLTDLI'` の DB 呼び出し (GU / GN / GNP / GH* / ISRT / REPL / DLET) をメモリの上の階層型データベースで動かす (P-154)。ジョブの `EXEC PGM=DFSRRC00,PARM='DLI,...'` でバッチを流し、データベースをデータセットに書き戻す (P-155)。I/O PCB の GU / GN / ISRT / PURG と、1 つの JVM の中の電文のキューで MPP を動かす (P-156)。I/O PCB への GU・基本 CHKP・SYNC を同期点とし、ROLB と異常終了は最後の同期点まで戻す (P-157)。`PARM='BMP,...'` は電文を読まない形だけ受け、I/O PCB を置いて CHKP できる (P-158)。SSA のコマンドコード C / D / F / L / N / P / Q を扱う (U / V は断る、P-159)。データベースの置き場は中立の口の裏にあり、既定はデータセット、`cobol.ims.jdbc.url` を指定すれば `cobol-ims-rdb` の RDB の表 (P-160)。電文のキューは中立の口の裏にあり、既定はこの JVM の中、`cobol.ims.jms.factory` を指定すれば `cobol-ims-jms` が JMS で運ぶ (P-162、P-165)。記号 CHKP が退避した域を業務の更新と同じ確定で置き場に残し、XRST が作業域か `CKPTID=` の検査点から書き戻す (P-164)。SPA、電文を読む BMP、GSAM は未実装 |
 | `cobol-ims-rdb` | IMS のデータベースを RDB の表に生バイトで置く JDBC の置き場 (設計 78 §3.2、ADR-0013) | `IMS_SEGMENT_STORE` / `IMS_ROOT_INDEX` を H2 と PostgreSQL に作り、同期点ごとに変わった根だけを書き直す。主キーに `ROOT_SEQ` を足した (P-160)。ルートアンカーロック (ADR-0015) は同期点の確定で昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (P-161)。処理済みの電文を `IMS_MESSAGE_INBOX` に業務の更新と同じトランザクションで書き、再配信を捨てる (P-163)。記号 CHKP が退避した域を `IMS_CHECKPOINT` に同じ確定で書く (P-164)。GH の時点の排他、競合の自動の再試行、根ごとの遅延読み込み、Db2 は未実装 |
-| `cobol-ims-jms` | IMS TM の電文のキューを JMS 3.0 で運ぶアダプタ (設計 78 §4、ADR-0014) | 取引コードごとのキューを `BytesMessage` で読み、LL / ZZ 付きのセグメントを運ぶ。応答は端末ごとのキューへ。同期点で取り出しと応答を 1 つの JMS のトランザクションで確定する (P-162)。ブローカは `infra/rabbitmq` の compose。実ブローカ (RabbitMQ 4.1.8) での起動と試験を確認した (P-162)。`JMSMessageID` を運び、置き場の inbox で再配信を捨てる (P-163)。XA、SPA、`CHNG` は未実装 |
+| `cobol-ims-jms` | IMS TM の電文のキューを JMS 3.0 で運ぶアダプタ (設計 78 §4、ADR-0014) | 取引コードごとのキューを `BytesMessage` で読み、LL / ZZ 付きのセグメントを運ぶ。応答は端末ごとのキューへ。同期点で取り出しと応答を 1 つの JMS のトランザクションで確定する (P-162)。ブローカは `infra/rabbitmq` の compose。実ブローカ (RabbitMQ 4.1.8) での起動と試験を確認し、Bank-of-Z のオンライン 5 本をブローカ越しに測った (P-162)。`cobol.ims.jms.factory` に `ConnectionFactory` のクラス名を書くと差し込まれる (P-165)。`JMSMessageID` を運び、置き場の inbox で再配信を捨てる (P-163)。XA、SPA、`CHNG` は未実装 |
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS task の coordinator の自動構成と、JSON の入口 `POST /api/cics/{transid}` (Spring Security があるときだけ、P-135) を実装。同じ冪等キーの再送には task を動かさず commit した結果を返す (P-142)。`cobol.cics.conversation.consistency=strict` で、会話と冪等キーの結果を業務の Db2 と同じ UOW で表に確定する (P-143)。driver管理 `WITH HOLD` は未実装 |
@@ -233,7 +233,14 @@ DBDGEN / PSBGEN の原文は `verify ims-gen <置き場>` で測り、<b>DBD 9 �
 で電文を流して測る (P-156)。読み込んだデータベースに対し、<b>翻訳が通るオンライン 5 本 (IBLOGIN1 / IBGCUDAT / IBSCUDAT /
 IBACSUM / IBLOGOUT) はすべて復帰コード 0 で、資産の意図どおりの応答を返す</b> (ログインの成功・二重ログイン・パスワード誤り・
 顧客なし、顧客の取得と更新、口座の要約、ログアウト)。前の段の更新はデータベースに書き戻され、次の段が読む。
-電文のキューは 1 つの JVM の中だけである。I/O PCB への GU、基本形の CHKP と SYNC を同期点とし、同期点で DB PCB の位置を捨てる。
+電文のキューは既定ではこの JVM の中だが、`-Dcobol.ims.jms.factory=<ConnectionFactory のクラス名>` を指定すると
+`cobol-ims-jms` が差し込まれ、電文がブローカを経由する (P-165)。<b>RabbitMQ 4.1.8 越しに同じオンライン 5 本を流しても、
+すべて復帰コード 0 で応答はメモリのキューと同じ</b>である。応答 10 件はブローカの端末ごとのキュー (LTERM001 に 5、
+LTERM002 に 2、LTERM003 に 3) に届き、取引コードのキューはすべて空になった (取り出しが ACK されている)。
+ブローカを通すと電文が `JMSMessageID` を持つので、RDB の置き場と併せると冪等化 (P-163) が実際に効く。H2 の置き場へ
+読み込んでから IBLOGIN1 をブローカ越しに流すと、<b>`IMS_MESSAGE_INBOX` に処理した 4 件の ID が業務の更新と同じ
+トランザクションで残る</b>。ファイルから電文を作るときは ID を持たないので、そこでは冪等化は効かない。
+I/O PCB への GU、基本形の CHKP と SYNC を同期点とし、同期点で DB PCB の位置を捨てる。
 ROLB と異常終了は最後の同期点まで戻すので、途中で異常終了しても確定した電文の更新は残る (P-157)。
 `EXEC PGM=DFSRRC00,PARM='BMP,プログラム,PSB'` も受け、I/O PCB を置いて CHKP で確定しながら流せる (電文を読む `IN=` は断る、P-158)。
 記号 CHKP は退避した域を<b>業務の更新と同じ確定</b>で置き場に残し、XRST は作業域か `PARM` の `CKPTID=` の検査点から書き戻す (P-164)。
@@ -246,7 +253,7 @@ Bank-of-Z の読み込み 5 本を H2 のファイルの DB へ流しても全�
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
 バイト列</b>を出すことも見る。要件 13 章が P1 の受け入れ基準に置いている形である。
-テスト 2358 件 (この環境で `mvn -B -o clean test` で流れた数)。実 Db2 を使う試験は有効化していないので
+テスト 2363 件 (この環境で `mvn -B -o clean test` で流れた数)。実 Db2 を使う試験は有効化していないので
 `cobol-db2-jdbc` の 2 件はスキップされる。
 うち 6 件はコーパスを取ってきていなければスキップされる。
 Hercules 上での実行と突き合わせる**検証レベル V2** の検査は、期待値を採れない環境では流れない。

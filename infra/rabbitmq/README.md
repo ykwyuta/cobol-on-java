@@ -26,6 +26,27 @@ mvn -pl cobol-ims-jms -am test
 
 `RABBITMQ_IT_ENABLED` を設定しなければ、実ブローカを使う試験だけがスキップされる。Db2 の環境と同じ構えである。
 
+## Bank-of-Z のオンラインをブローカ越しに測る
+
+`verify ims-mpp` は、既定ではこの JVM の中のメモリのキューを使う。次のシステムプロパティを与えると
+`cobol-ims-jms` が差し込まれ、電文がブローカを経由する (暫定判断 P-165)。`cobol-ims-jms` と JMS クライアントの
+jar を classpath に足しておく。
+
+```powershell
+java "-Dcobol.ims.jms.factory=com.rabbitmq.jms.admin.RMQConnectionFactory" `
+     "-Dcobol.ims.jms.factory.host=localhost" "-Dcobol.ims.jms.factory.port=5672" `
+     "-Dcobol.ims.jms.factory.username=cobol" "-Dcobol.ims.jms.factory.password=<.env と同じ値>" `
+     "-Dcobol.ims.jms.queue=IBLOGIN1" "-Dcobol.ims.jms.reply-prefix=IMS.LTERM." `
+     -cp <classpath> dev.cobolonjava.verify.Main ims-mpp <置き場> -d <翻訳した組> -p IBLOGIN1 -s IBLOGIN -m <電文>
+```
+
+接続の欄は `cobol.ims.jms.factory.<欄>` が `ConnectionFactory` の setter に流れる (`host` なら `setHost`)。
+測定の出力の「キュー:」の行に、メモリかブローカかが出る。応答が届いたかはブローカの側でも確かめられる。
+
+```powershell
+docker exec cobol-on-java-rabbitmq-rabbitmq-1 rabbitmqctl list_queues name messages
+```
+
 停止は `docker compose --env-file .env stop`、再開は `docker compose --env-file .env start` を使う。
 データを消すときに限り、対象の project を確かめてから `docker compose --env-file .env down -v` を実行する。
 

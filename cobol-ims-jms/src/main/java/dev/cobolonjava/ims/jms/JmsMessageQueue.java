@@ -42,9 +42,13 @@ public final class JmsMessageQueue implements MessageQueue, AutoCloseable {
     private final MessageConsumer consumer;
     private final MessageProducer producer;
     private final String replyPrefix;
+    private final String transactionCode;
     private final long timeoutMillis;
     /** 応答の宛先の論理端末。JMS の宛先は電文ごとに決まる。 */
     private final List<OutputMessage> pending = new ArrayList<>();
+    /** 入力のキューへ積むためのセッション。測定と試験だけが使うので、要るまで作らない (P-165)。 */
+    private Session seedSession;
+    private MessageProducer seedProducer;
 
     /**
      * @param factory         ブローカへの接続。呼ぶ側が構成する (RabbitMQ なら {@code RMQConnectionFactory})
@@ -55,6 +59,7 @@ public final class JmsMessageQueue implements MessageQueue, AutoCloseable {
     public JmsMessageQueue(ConnectionFactory factory, String transactionCode, String replyPrefix, Duration timeout) {
         Objects.requireNonNull(factory, "factory");
         this.replyPrefix = Objects.requireNonNull(replyPrefix, "replyPrefix");
+        this.transactionCode = Objects.requireNonNull(transactionCode, "transactionCode");
         this.timeoutMillis = Math.max(0, timeout.toMillis());
         try {
             connection = factory.createConnection();
@@ -89,6 +94,30 @@ public final class JmsMessageQueue implements MessageQueue, AutoCloseable {
                     MessageSegments.decode(body));
         } catch (JMSException e) {
             throw new JmsQueueException("cannot read the next message", e);
+        }
+    }
+
+    /**
+     * 入力のキューへ電文を積む (P-165)。端末の代わりに測定と試験が使う。
+     *
+     * <p>取り出しのセッションとは別のセッションで、確定してから戻る。同じ transacted なセッションで積むと、
+     * 同期点まで送り出されず、これから取り出す電文が見えない。
+     */
+    @Override
+    public boolean enqueue(InputMessage message) {
+        try {
+            if (seedSession == null) {
+                seedSession = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+                seedProducer = seedSession.createProducer(seedSession.createQueue(transactionCode));
+            }
+            BytesMessage bytes = seedSession.createBytesMessage();
+            bytes.writeBytes(MessageSegments.encode(message.segments()));
+            bytes.setStringProperty("IMS_LTERM", message.logicalTerminal());
+            seedProducer.send(bytes);
+            return true;
+        } catch (JMSException e) {
+            throw new JmsQueueException("cannot put a message on the queue of transaction code "
+                    + transactionCode, e);
         }
     }
 

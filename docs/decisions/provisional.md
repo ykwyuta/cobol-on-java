@@ -4390,6 +4390,37 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-165 電文のキューは差し込みの口で選び、JMS の接続はクラス名と setter の反射で組み立てる
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-16)。P-162 の解消条件「`verify ims-mpp` から JMS のキューを選べるようにする」を満たすために置いた |
+| 場所 | `MessageQueueProvider`、`MessageQueues`、`MessageQueue.enqueue`、`JmsMessageQueueProvider`、`JmsMessageQueue.enqueue`、`ImsMessageRunner` |
+| 関連要件 | FR-164、設計 78 §2.2・§4、ADR-0014、P-156、P-162、P-163 |
+
+**暫定の扱い**:
+
+- 電文のキューは {@code ServiceLoader} の差し込みで選ぶ。`cobol-ims` は JMS の型を持たず (設計 78 §2.2)、
+  `cobol-ims-jms` が差し込む。`DatabaseStoreProvider` (P-160) と同じ形である
+- 差し込みは `cobol.ims.jms.factory` に `ConnectionFactory` の**クラス名**を書いたときだけ効く。接続の欄は
+  `cobol.ims.jms.factory.<欄>` を JavaBean の setter へ反射で流し込む (`host` なら `setHost`)。String・int・long・
+  boolean だけを変換し、無い欄と変換できない型は断る
+- 取引コードは `cobol.ims.jms.queue`、応答の接頭辞は `cobol.ims.jms.reply-prefix`、待つ長さは
+  `cobol.ims.jms.timeout-seconds`。取引コードを省けば、呼ぶ側が渡した名前 (測定ではプログラム名) を使う
+- 中立の口に `enqueue` を足した。**端末の代わりに測定と試験が入力のキューへ電文を入れる**ための口であり、
+  業務のプログラムは呼ばない。積む手立てを持たない実装は `false` を返す。JMS は取り出しとは別のセッションで積む
+  (同じ transacted なセッションで積むと、同期点まで送り出されず、これから取り出す電文が見えない)
+- `verify ims-mpp` は、領域が送った応答を覆いで控えて数える。送り先がメモリでもブローカでも同じ数を出すためである
+
+**どこがずれうるか**: JDBC の URL にあたる中立の接続の書き方が JMS には無いので、クラス名と setter という
+**この処理系の決めごと**を置いた。ブローカの接続の欄が setter で表せない形 (コンストラクタ引数、URL 一本、JNDI)
+であれば、この書き方では構成できない。実機の IMS は取引コードを IMS の定義 (TRANSACT マクロ) で決めるが、ここは
+システムプロパティである。`enqueue` は実機の IMS には無い口である (端末と OTMA が入れる)。
+
+**解消条件**: Spring の `ConnectionFactory` (JNDI や自動構成) から差し込む形を入れるときに、クラス名と反射を
+やめて注入に替える。ブローカを RabbitMQ 以外 (IBM MQ、Artemis) にしたときに、setter で構成できるかを確かめる。
+取引コードを PSB か IMS の定義から採れるようになったら、システムプロパティをやめる。
+
 ## P-164 記号 CHKP は退避した域を業務の更新と同じ確定で置き場に残し、XRST は作業域か CKPTID= の検査点から書き戻す
 
 | 項目 | 内容 |
@@ -4426,7 +4457,7 @@ DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分�
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 (2026-09-16)。ADR-0014 の決定 2 の残り (P-104 の「業務が 2 度呼ばれうる」) を埋めた。H2 で、再配信を読み飛ばすこと・巻き戻した電文は覚えないことを確かめた |
+| 状態 | 未解決 (2026-09-16)。ADR-0014 の決定 2 の残り (P-104 の「業務が 2 度呼ばれうる」) を埋めた。H2 で、再配信を読み飛ばすこと・巻き戻した電文は覚えないことを確かめた。実ブローカ越しの測定でも、`JMSMessageID` が実際に `IMS_MESSAGE_INBOX` に書かれることを確かめた (P-165) |
 | 場所 | `cobol-ims` / `MessageInbox`・`DatabaseStore.inbox`・`InputMessage.id`・`IoPcb.getUnique` / `recordProcessed` / `forgetProcessed`・`ImsRegion.withInbox`、`cobol-ims-rdb` / `JdbcDatabaseStore`・`ImsSchema` の `IMS_MESSAGE_INBOX`、`cobol-ims-jms` / `JmsMessageQueue` |
 | 関連要件 | FR-164、ADR-0014、P-104、P-156、P-157、P-160、P-162 |
 
@@ -4448,13 +4479,15 @@ ID を運ぶキュー (JMS) と、inbox を持つ置き場 (RDB) がそろって
 ID は無期限に積もる。
 
 **解消条件**: 保持期間と刈り取り (古い ID を消すジョブ) を決める。ID が空のキューでも冪等化できるよう、
-`verify ims-mpp` の電文に ID を書けるようにする。XA を選ぶ構成 (P-104) を入れるなら、そちらでは inbox を止める。
+`verify ims-mpp` の電文に ID を書けるようにする (ブローカを選べば ID は付く (P-165) ので、残るのはメモリのキューと
+電文のファイルである。2026-09-16 に H2 + RabbitMQ で IBLOGIN1 を流し、処理した 4 件の `JMSMessageID` が
+業務の更新と同じトランザクションで残ることを測った)。XA を選ぶ構成 (P-104) を入れるなら、そちらでは inbox を止める。
 
 ## P-162 電文のキューは JMS で運び、同期点で取り出しと応答を 1 つのトランザクションとして確定する
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 (2026-09-16)。**実ブローカでの起動と試験は 2026-09-16 に確認した** (rabbitmq 4.1.8、下記)。残るのは `verify ims-mpp` をブローカ越しに測ることである |
+| 状態 | 未解決 (2026-09-16)。**実ブローカでの起動と試験、Bank-of-Z のオンライン 5 本のブローカ越しの測定を確認した** (rabbitmq 4.1.8)。残るのは、ブローカを落として再開したときの再配信と順序である |
 | 場所 | `infra/rabbitmq/compose.yaml`、`cobol-ims-jms` / `JmsMessageQueue`・`MessageSegments`、`cobol-ims` / `MessageQueue.commit` / `rollback`、`ImsRegion.commit` / `rollback` |
 | 関連要件 | FR-164、設計 78 §4、ADR-0014、P-104、P-105、P-156、P-157 |
 
@@ -4482,8 +4515,11 @@ ID は無期限に積もる。
 
 **解消条件**: ~~docker の使える環境で `infra/rabbitmq` を起動し、`RABBITMQ_IT_ENABLED=true` で実ブローカの試験を流して、
 版を README に固定する~~ (2026-09-16 に実施。起動と試験 2 件が通り、digest を固定した)。
-~~inbox を置き場の表に持たせて冪等化を入れる~~ (P-163 で実施)。`verify ims-mpp` から JMS のキューを選べるようにし、
-Bank-of-Z のオンラインをブローカ越しに測る。ブローカを落として再開したときの再配信と順序を測る。
+~~inbox を置き場の表に持たせて冪等化を入れる~~ (P-163 で実施)。
+~~`verify ims-mpp` から JMS のキューを選べるようにし、Bank-of-Z のオンラインをブローカ越しに測る~~
+(2026-09-16 に実施。差し込みの口は P-165。オンライン 5 本すべて復帰コード 0 で、応答 10 件がブローカの
+端末ごとのキューに届き、取引コードのキューはすべて空になった)。
+ブローカを落として再開したときの再配信と順序を測る。
 
 ## P-161 ルートアンカーロックは同期点の確定で押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す
 

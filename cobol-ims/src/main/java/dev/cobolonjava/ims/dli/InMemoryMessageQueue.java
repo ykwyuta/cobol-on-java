@@ -19,6 +19,12 @@ public final class InMemoryMessageQueue implements MessageQueue {
     }
 
     @Override
+    public synchronized boolean enqueue(InputMessage message) {
+        offer(message);
+        return true;
+    }
+
+    @Override
     public synchronized InputMessage next() {
         return input.pollFirst();
     }

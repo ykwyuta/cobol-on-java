@@ -30,4 +30,15 @@ public interface MessageQueue {
     /** 最後の同期点まで戻す。取り出した電文は戻され、送っていない応答は捨てられる。 */
     default void rollback() {
     }
+
+    /**
+     * 入力のキューへ電文を積む。端末の代わりに測定と試験が電文を入れるための口である (P-165)。
+     *
+     * <p>実機では端末や OTMA がキューへ入れるので、業務のプログラムはこれを呼ばない。
+     *
+     * @return 積めなければ {@code false} (積む手立てを持たない実装)
+     */
+    default boolean enqueue(InputMessage message) {
+        return false;
+    }
 }
