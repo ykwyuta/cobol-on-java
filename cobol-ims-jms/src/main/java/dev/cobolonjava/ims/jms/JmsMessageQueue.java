@@ -30,7 +30,9 @@ import java.util.Objects;
  *
  * <h2>まだ持たないもの</h2>
  * <p>処理済みの電文を見分ける inbox (冪等化) は無い。再配信されれば業務は 2 度動く (P-104)。XA も無い。
- * 消費者は 1 つで、取引コードの中の順を保つ (P-105)。CHNG による宛先の差し替えと代替 PCB、SPA は無い。
+ * 取引コードの中の順は、<b>消費者が 1 つであるかぎり</b>保たれる。これは運用の決めごとであり、ここでは強制しない。
+ * 同じキューを 2 つの領域が読めば、電文は交互に配られて順序は崩れる (実測、P-105)。prefetch は効かない。
+ * CHNG による宛先の差し替えと代替 PCB、SPA は無い。
  */
 public final class JmsMessageQueue implements MessageQueue, AutoCloseable {
 
