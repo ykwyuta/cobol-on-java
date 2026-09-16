@@ -43,6 +43,13 @@
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
+    <!-- IMS のデータベースを RDB に置く利用者だけが足す (P-169) -->
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-ims-rdb</artifactId>
+      <version>${project.version}</version>
+      <optional>true</optional>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-autoconfigure</artifactId>

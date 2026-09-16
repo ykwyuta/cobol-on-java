@@ -4412,6 +4412,34 @@ docs/report/20260915-db2-strict-stores-and-browser-sse.md)。z/OS の Db2 と、
 purge を合わせる等)。実 container と Spring Session Redis で listener に event が届くことを試験する。z/OS の Db2 で
 DDL と同時実行を試験し、lock timeout / deadlock (-911 / -913) の分類を決める。
 
+## P-169 容器の DataSource は静的な口で置き場へ預け、IMS の置き場は自前の接続を同期点で確定する
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-16)。P-160 の解消条件「Spring の DataSource / UOW へのつなぎ込み」のうち、DataSource の側を満たす。UOW (容器のトランザクションとの相乗り) は<b>意図して見送った</b> |
+| 場所 | `JdbcDatabaseStoreProvider.useDataSource`、`CobolImsSpringAutoConfiguration`、`ImsDataSourceRegistrar` |
+| 関連要件 | FR-164、設計 78 §2.2・§3.2、ADR-0013、P-157、P-160 |
+
+**暫定の扱い**:
+
+- 置き場は `ServiceLoader` で差し込まれるので、容器の bean を直には見つけられない。容器の側から
+  **静的な口へ預ける** (`JdbcDatabaseStoreProvider.useDataSource`) ことで橋渡しする。Spring の自動構成が
+  起きたときに預け、畳むときに {@code null} で戻す
+- 明示の `cobol.ims.jdbc.url` は、預かった接続元より<b>優先する</b>。明示は暗黙に勝つ
+- **置き場は預かった接続元から自前の接続を取り、同期点で自分で確定する**。容器が管理するトランザクションには
+  相乗りしない。IMS の同期点 (P-157) が確定の時機を決めるからである
+- 切るには `cobol.ims.spring-data-source=false`
+
+**どこがずれうるか**: <b>同じ要求の中の Spring 管理の JDBC 作業と、IMS の更新は原子的にならない</b>。IMS の
+同期点で先に確定した分は、あとで容器のトランザクションが戻っても残る。実機の IMS も DB2 との間は 2 相コミットで
+揃えるので、そこは合っていない。静的な口は JVM に 1 つなので、<b>1 つの JVM で複数の容器 (別々の DataSource) を
+同時に動かす形は表せない</b>。試験で容器を並べるときは、預けたものを戻す順に気をつける必要がある。接続は
+領域ごとに取って閉じるので、接続プールの設定 (最大数) が領域の数を縛る。
+
+**解消条件**: 容器のトランザクションと IMS の同期点を揃えるかを決める。揃えるなら、XA か、同期点を容器の
+コミットに寄せる形 (P-104 と同じ判断) が要る。静的な口をやめて、領域を起こす側 (`ProgramContext`) に接続元を
+持たせる形にできないかを見直す。
+
 ## P-168 競合した電文駆動の領域は、置き場から読み直して頭から動かし直し、使い切れば U0777 で落とす
 
 | 項目 | 内容 |
@@ -4705,8 +4733,9 @@ JVM を叩き落とし、ブローカを落として再開したあと、積ま�
 - 領域はデータベースをメモリの上で動かし、**同期点ごとに** `DatabaseStore.commit` で置き場へ確定する。確定が失敗すれば例外で止まり、
   メモリの変更は最後の同期点まで戻る (P-157)。置き場は RDB が構成されていればそれ、無ければデータセット (P-155 の形)
 - `cobol-ims` は JDBC の型を持たない (設計 78 §2.2)。RDB の置き場は `cobol-ims-rdb` が `ServiceLoader` で差し込み、システムプロパティ
-  `cobol.ims.jdbc.url` (と `.user` / `.password`) を指定したときだけ使う。接続は領域ごとに開いて閉じる。Spring の DataSource への
-  つなぎ込みはまだ無い
+  `cobol.ims.jdbc.url` (と `.user` / `.password`) を指定したときだけ使う。接続は領域ごとに開いて閉じる。
+  容器 (Spring) の `DataSource` からも構成できる。容器が静的な口へ預け、置き場はそこから自前の接続を取る (P-169)。
+  容器のトランザクションには相乗りしない
 - 表は ADR-0013 の `IMS_SEGMENT_STORE` と `IMS_ROOT_INDEX`。セグメントは生バイトで、可変長は LL を外した本体と `SEG_LEN`。
   **主キーに `ROOT_SEQ` を足した**: ADR の `(DBD_NAME, ROOT_KEY_RAW, HIERARCHY_PATH)` は、根のキーが重なる DBD (Bank-of-Z の CUSTACCS)
   とキーを持たない根を表せないからである
@@ -4734,7 +4763,9 @@ JVM を叩き落とし、ブローカを落として再開したあと、積ま�
 
 **解消条件**: ADR-0015 のルートアンカーロックを同期点の確定に載せる。根ごとの遅延読み込みを入れて、開くときの全件読みをやめる。
 ~~Db2 の方言~~ (2026-09-16 に実施。Db2 12.1 で結合試験 4 件と Bank-of-Z の読み込み 5 本・オンライン 5 本が通った) と、
-Spring の DataSource / UOW へのつなぎ込みを足す。セグメントが 32672 byte を越える資産が現れたら、Db2 では
+~~Spring の DataSource~~ (2026-09-16 に実施、P-169) / UOW へのつなぎ込みを足す (UOW は意図して見送った。
+IMS の同期点が確定の時機を決めるので、容器のトランザクションと揃えるかは P-169 の解消条件で決める)。
+セグメントが 32672 byte を越える資産が現れたら、Db2 では
 `VARBINARY` に収まらないので `BLOB` へ移すかを決める。
 
 ## P-159 SSA のコマンドコードは C / D / F / L / N / P を読み、Q と - は読み飛ばし、U / V は断る
