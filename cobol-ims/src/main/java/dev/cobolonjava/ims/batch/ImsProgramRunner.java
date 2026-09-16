@@ -88,44 +88,59 @@ public final class ImsProgramRunner {
         try (DatabaseStore store = configured != null ? configured : new DataSetDatabaseStore(context);
              // 同じ取引コードのキューを 2 つの領域が読むと順序が崩れるので、借りられなければ起こさない (P-167)
              QueueLease.Held lease = acquireLease(store, queue)) {
-            Map<String, HierarchicalDatabase> databases = new LinkedHashMap<>();
-            for (PcbDefinition pcb : psb.pcbs()) {
-                if (!(pcb instanceof PcbDefinition.Database database) || databases.containsKey(database.dbdName())) {
-                    continue;
-                }
-                DatabaseDefinition dbd = generated(database.dbdName(),
-                        () -> DbdParser.parse(member(library, database.dbdName(), codePage)));
-                databases.put(dbd.name(), store.open(dbd));
-            }
-
-            ImsRegion region;
-            try {
-                region = new ImsRegion(psb, databases.values(), codePage,
-                        ioPcb || queue != null || psb.compatibility(), queue, context.clock())
-                        .onCommit(store::commit)
-                        .withInbox(store.inbox())
-                        .withCheckpoints(store.checkpoints(), restartId);
-            } catch (IllegalArgumentException e) {
-                throw new ImsBatchException(e.getMessage(), e);
-            }
-            ProgramContext ims = context.withProgramResolver(
-                    region.register(ProgramCatalog.builder()).legacyClassNameFallback().build());
-            try {
-                ProgramContext.Loaded loaded = ims.resolve(program, loader);
-                ProgramSignature signature = loaded.signature() != null
-                        ? loaded.signature() : loaded.program().programSignature();
-                DataView[] pcbs = region.programArguments(signature);
-                loaded.validateArguments(pcbs);
-                loaded.program().runFresh(ims, pcbs);
-            } catch (RuntimeException | Error e) {
-                // 最後の同期点まで戻す。置き場には同期点で確定した分だけが残る (P-157、P-160)
-                region.finish(false);
-                throw e;
-            }
-            // 正常終了も同期点であり、ここで置き場へ確定する
-            region.finish(true);
-            return ims.returnCode();
+            // ほかの領域に競合で負けたら、巻き戻して頭から動かし直す。電文駆動の領域だけである (P-168)
+            return ConflictRetry.run(queue != null, () -> attempt(context, loader, program, psb, library,
+                    store, queue, ioPcb, restartId));
         }
+    }
+
+    /**
+     * 1 回分の実行。置き場からデータベースを読み直すところから始める。
+     *
+     * <p>やり直すときに読み直すのは、巻き戻してもメモリが最後の同期点に戻るだけで、置き場が持つ根の版は
+     * 古いままだからである。読み直さなければ、同じ競合を繰り返すだけになる (P-168)。
+     */
+    private static int attempt(ProgramContext context, ClassLoader loader, String program,
+                               ProgramSpecification psb, Path library, DatabaseStore store,
+                               MessageQueue queue, boolean ioPcb, String restartId) {
+        CodePage codePage = context.codePage();
+        Map<String, HierarchicalDatabase> databases = new LinkedHashMap<>();
+        for (PcbDefinition pcb : psb.pcbs()) {
+            if (!(pcb instanceof PcbDefinition.Database database) || databases.containsKey(database.dbdName())) {
+                continue;
+            }
+            DatabaseDefinition dbd = generated(database.dbdName(),
+                    () -> DbdParser.parse(member(library, database.dbdName(), codePage)));
+            databases.put(dbd.name(), store.open(dbd));
+        }
+
+        ImsRegion region;
+        try {
+            region = new ImsRegion(psb, databases.values(), codePage,
+                    ioPcb || queue != null || psb.compatibility(), queue, context.clock())
+                    .onCommit(store::commit)
+                    .withInbox(store.inbox())
+                    .withCheckpoints(store.checkpoints(), restartId);
+        } catch (IllegalArgumentException e) {
+            throw new ImsBatchException(e.getMessage(), e);
+        }
+        ProgramContext ims = context.withProgramResolver(
+                region.register(ProgramCatalog.builder()).legacyClassNameFallback().build());
+        try {
+            ProgramContext.Loaded loaded = ims.resolve(program, loader);
+            ProgramSignature signature = loaded.signature() != null
+                    ? loaded.signature() : loaded.program().programSignature();
+            DataView[] pcbs = region.programArguments(signature);
+            loaded.validateArguments(pcbs);
+            loaded.program().runFresh(ims, pcbs);
+        } catch (RuntimeException | Error e) {
+            // 最後の同期点まで戻す。置き場には同期点で確定した分だけが残る (P-157、P-160)
+            region.finish(false);
+            throw e;
+        }
+        // 正常終了も同期点であり、ここで置き場へ確定する
+        region.finish(true);
+        return ims.returnCode();
     }
 
     /**
