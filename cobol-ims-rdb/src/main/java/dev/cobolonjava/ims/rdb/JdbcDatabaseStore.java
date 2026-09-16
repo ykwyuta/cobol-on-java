@@ -18,6 +18,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -58,6 +59,10 @@ import java.util.Objects;
  */
 public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, CheckpointStore, QueueLease {
 
+    /** 処理済みの電文の ID を残す日数 (P-163)。0 以下なら刈らない。 */
+    public static final String INBOX_RETENTION_DAYS = "cobol.ims.inbox-retention-days";
+
+    private static final long DEFAULT_RETENTION_DAYS = 7;
     private static final int LL = 2;
     private static final int MAX_LEVELS = 15;
     private static final int MAX_TWINS = 999_999;
@@ -80,6 +85,8 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
         try {
             connection.setAutoCommit(false);
             dialect = ImsSchema.ensure(connection);
+            // 古い処理済みの ID を落とす。領域を起こすたびに 1 回だけである (P-163)
+            pruneInbox();
             connection.commit();
         } catch (SQLException e) {
             rollbackQuietly();
@@ -371,6 +378,44 @@ public final class JdbcDatabaseStore implements DatabaseStore, MessageInbox, Che
     @Override
     public void record(String messageId) {
         inbox.add(messageId);
+    }
+
+    /**
+     * 保持期間を過ぎた処理済みの ID を落とす (P-163)。
+     *
+     * <p>期限は<b>置き場の時計</b>で測り、引数で渡す。方言ごとの期間の書き方 (`INTERVAL` など) を増やさないためである。
+     * 刈るのは置き場を開くときだけにしている。同期点ごとに刈ると確定が重くなり、別のジョブにすると運用
+     * ユーティリティの未決 (P-109) に巻き込まれるからである。
+     */
+    private void pruneInbox() throws SQLException {
+        long days = retentionDays();
+        if (days <= 0) {
+            return;
+        }
+        Timestamp cutoff = Timestamp.from(currentTimestamp().toInstant().minus(Duration.ofDays(days)));
+        try (PreparedStatement delete = connection.prepareStatement(
+                "DELETE FROM IMS_MESSAGE_INBOX WHERE RECORDED_AT < ?")) {
+            delete.setTimestamp(1, cutoff);
+            delete.executeUpdate();
+        }
+    }
+
+    /**
+     * 処理済みの ID を残す日数。実機から採った値ではない (P-163)。
+     *
+     * @return 0 以下なら刈らない
+     */
+    private static long retentionDays() {
+        String written = System.getProperty(INBOX_RETENTION_DAYS);
+        if (written == null || written.isBlank()) {
+            return DEFAULT_RETENTION_DAYS;
+        }
+        try {
+            return Long.parseLong(written.trim());
+        } catch (NumberFormatException e) {
+            throw new DatabaseStoreException(INBOX_RETENTION_DAYS
+                    + " is the number of days to keep processed message ids, but it is written as " + written);
+        }
     }
 
     private void writeInbox() throws SQLException {
