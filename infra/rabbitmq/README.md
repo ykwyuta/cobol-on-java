@@ -37,8 +37,14 @@ java "-Dcobol.ims.jms.factory=com.rabbitmq.jms.admin.RMQConnectionFactory" `
      "-Dcobol.ims.jms.factory.host=localhost" "-Dcobol.ims.jms.factory.port=5672" `
      "-Dcobol.ims.jms.factory.username=cobol" "-Dcobol.ims.jms.factory.password=<.env と同じ値>" `
      "-Dcobol.ims.jms.queue=IBLOGIN1" "-Dcobol.ims.jms.reply-prefix=IMS.LTERM." `
+     "-Dcobol.ims.queue.lease-required=false" `
      -cp <classpath> dev.cobolonjava.verify.Main ims-mpp <置き場> -d <翻訳した組> -p IBLOGIN1 -s IBLOGIN -m <電文>
 ```
+
+`cobol.ims.queue.lease-required=false` が要るのは、データセットの置き場が**取引コードの借用を持てない**ためである
+(暫定判断 P-167)。借用が無ければ同じ取引コードを 2 領域が読んでも気づけないので、既定では領域を起こさずに断る。
+ここは 1 領域しか動かさない測定なので、旗を立てて降りる。RDB の置き場 (`-Dcobol.ims.jdbc.url=...`) を使うときは
+借用が効くので、この旗は要らない。
 
 接続の欄は `cobol.ims.jms.factory.<欄>` が `ConnectionFactory` の setter に流れる (`host` なら `setHost`)。
 測定の出力の「キュー:」の行に、メモリかブローカかが出る。応答が届いたかはブローカの側でも確かめられる。

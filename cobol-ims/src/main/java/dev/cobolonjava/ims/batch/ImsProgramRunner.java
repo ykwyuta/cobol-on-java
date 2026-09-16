@@ -12,6 +12,7 @@ import dev.cobolonjava.ims.psb.PsbParser;
 import dev.cobolonjava.ims.store.DatabaseStore;
 import dev.cobolonjava.ims.store.DatabaseStores;
 import dev.cobolonjava.ims.store.QueueLease;
+import dev.cobolonjava.ims.store.QueueLeaseException;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.PartitionedDataSet;
@@ -43,6 +44,14 @@ public final class ImsProgramRunner {
 
     /** PSB と DBD の原文を置くライブラリの DD 名。 */
     public static final String LIBRARY = "IMS";
+
+    /**
+     * 借用を必須とするか (P-167)。既定は必須である。
+     *
+     * <p>{@code false} にすると、借用を持てない置き場 (データセット) でも、ブローカのキューを読む領域を起こす。
+     * 二重に起こしても気づけない構成になるので、1 領域しか動かさないと分かっているときだけである。
+     */
+    static final String LEASE_REQUIRED = "cobol.ims.queue.lease-required";
 
     /** 借用の借り手の名前 (P-167)。どの領域が借りているかを人が見て分かるようにする。 */
     private static final String OWNER = ProcessHandle.current().pid() + "@"
@@ -147,14 +156,27 @@ public final class ImsProgramRunner {
      * 取引コードを借りる (P-167)。借用を持つ置き場と、取引コードを名乗るキューがそろったときだけ働く。
      * そろわなければ何もしない持ち手を返す (1 つの JVM の中のキューは、そもそも二重にならない)。
      */
-    private static QueueLease.Held acquireLease(DatabaseStore store, MessageQueue queue) {
-        QueueLease lease = queue == null ? null : store.queueLease();
+    static QueueLease.Held acquireLease(DatabaseStore store, MessageQueue queue) {
         String transactionCode = queue == null ? "" : queue.transactionCode();
-        if (lease == null || transactionCode.isBlank()) {
+        if (transactionCode.isBlank()) {
+            // バッチと、1 つの JVM の中のキュー。プロセスをまたいで二重にはならない
             return () -> {
             };
         }
-        return lease.acquire(transactionCode, OWNER);
+        QueueLease lease = store.queueLease();
+        if (lease != null) {
+            return lease.acquire(transactionCode, OWNER);
+        }
+        // 取引コードを名乗るキュー (ブローカ) なのに借用を持てない置き場である。黙って無防備に動かさない
+        if (!Boolean.parseBoolean(System.getProperty(LEASE_REQUIRED, "true"))) {
+            return () -> {
+            };
+        }
+        throw new QueueLeaseException("the queue of transaction code " + transactionCode
+                + " can be read by another region, but this store cannot keep a lease (only the RDB store can);"
+                + " two regions on one transaction code do not keep the order of its messages."
+                + " Give the region an RDB store (cobol.ims.jdbc.url), or set " + LEASE_REQUIRED
+                + "=false to run this region without the lease");
     }
 
     private static <T> T generated(String member, Supplier<T> generation) {
