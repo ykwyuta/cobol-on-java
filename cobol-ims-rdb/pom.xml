@@ -26,6 +26,12 @@
       <artifactId>h2</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- 実 PostgreSQL を使う試験だけが使う。POSTGRES_IT_ENABLED が無ければ流れない -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
