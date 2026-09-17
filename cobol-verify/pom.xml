@@ -19,6 +19,12 @@
 
   <dependencies>
     <dependency>
+      <!-- CCVS85 が存在しない PL/I は、外部コーパスと参照処理系の出力で測る。 -->
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>pli-compiler</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>dev.cobolonjava</groupId>
       <artifactId>cobol-compiler</artifactId>
       <version>${project.version}</version>

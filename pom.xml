@@ -31,6 +31,7 @@
     <module>cobol-spring-boot-4-bms-thymeleaf</module>
     <module>cobol-oracle</module>
     <module>cobol-compiler</module>
+    <module>pli-compiler</module>
     <module>cobol-junit</module>
     <module>cobol-job</module>
     <module>cobol-verify</module>
