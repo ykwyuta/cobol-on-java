@@ -52,6 +52,8 @@ public final class Main {
             System.err.println("usage: verify ccvs85     <newcob.val> [-x x-cards] [-o out]");
             System.err.println("       verify ccvs85-run <newcob.val> [-x x-cards] [-o out]");
             System.err.println("       verify corpus     <directory> [-I copybooks]... [-o out]");
+            System.err.println("       verify ims-gen    <directory> [-o out]");
+            System.err.println("       verify ims-mpp    <base> -d classes -p program -s psb -m messages [-o out]");
             System.exit(2);
             return;
         }
@@ -60,6 +62,9 @@ public final class Main {
             case "ccvs85" -> ccvs85(Path.of(args[1]), option(args, "-x"));
             case "ccvs85-run" -> ccvs85Run(Path.of(args[1]), option(args, "-x"));
             case "corpus" -> corpus(Path.of(args[1]), options(args, "-I"));
+            case "ims-gen" -> imsGeneration(Path.of(args[1]));
+            case "ims-mpp" -> dev.cobolonjava.verify.ims.ImsMessageRunner.run(Path.of(args[1]),
+                    option(args, "-d"), word(args, "-p"), word(args, "-s"), option(args, "-m"));
             default -> null;
         };
         if (text == null) {
@@ -151,6 +156,16 @@ public final class Main {
         return report.text("OSS コーパス (要件 NFR-042)") + '\n' + report.csv();
     }
 
+    /** IMS の DBDGEN / PSBGEN の原文を読めるか数える (設計 78)。 */
+    private static String imsGeneration(Path root) {
+        if (!Files.isDirectory(root)) {
+            System.err.println("置き場が無い: " + root);
+            System.exit(1);
+        }
+        return dev.cobolonjava.verify.ims.ImsGenerationRunner.text(
+                dev.cobolonjava.verify.ims.ImsGenerationRunner.run(root));
+    }
+
     /**
      * 書かれた順に探す。先に見つかったものを使うのは、ホストの連結ライブラリと同じである。
      *
@@ -171,6 +186,18 @@ public final class Main {
                 .map(resolver -> resolver.resolve(textName, libraryName))
                 .flatMap(Optional::stream)
                 .findFirst();
+    }
+
+    /** 語の指定を読む。書かれていなければ止める。 */
+    private static String word(String[] args, String name) {
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals(name)) {
+                return args[i + 1];
+            }
+        }
+        System.err.println(name + " is required");
+        System.exit(2);
+        return null;
     }
 
     /** 同じ指定を何度でも読む。 */

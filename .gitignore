@@ -4,4 +4,6 @@ target/
 *.iml
 .vscode/
 infra/db2/.env
+infra/rabbitmq/.env
+infra/postgres/.env
 reference/

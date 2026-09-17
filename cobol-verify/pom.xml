@@ -31,6 +31,12 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <!-- IMS の DBDGEN / PSBGEN が読めるかを数える (設計 78) -->
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-ims</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>

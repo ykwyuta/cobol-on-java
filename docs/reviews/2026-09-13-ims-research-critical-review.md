@@ -571,7 +571,7 @@ P0 ゲートが未合格の機能は experimental と表示し、互換保証の
 | IR-23 2 相コミット | **at-least-once + 冪等化 (inbox) を採用**。残る差（業務ロジックが 2 度呼ばれうる）を明記。ADR-0014 の影響欄へ記録 ([P-104](../decisions/provisional.md)) |
 | IR-24 SPA | 会話型トランザクションと SPA を追加。「CICS より容易」の結論を書き直し |
 | IR-25 複数セグメント電文 | I/O PCB の `GN`、`PURG`、`CHNG`、代替 PCB を契約の未決事項として明記 |
-| IR-26 電文順序 | 単一コンシューマ・`prefetch=1` を既定に ([P-105](../decisions/provisional.md)) |
+| IR-26 電文順序 | 単一コンシューマ・`prefetch=1` を既定に ([P-105](../decisions/provisional.md))。<b>2026-09-16 訂正</b>: `prefetch=1` は実装されず、設定しても配分は変わらないと実測した。順序を守っているのは消費者が 1 つであることだけである |
 | IR-27 依存の版 | 「確認してから固定する」と明記し、プラグイン要否も記載 |
 | IR-28 MFS の流用元 | 流用率の数値を削除。Phase 1 の前提を AR-12 合格に ([P-108](../decisions/provisional.md)) |
 | IR-29 MFS 固有機構 | `PFK=`、`DPAGE COND=`、`MFLD` リテラル、`FILL=` / `JUST=`、`EXIT=`、MFS バイパス、DFS メッセージを追加 |

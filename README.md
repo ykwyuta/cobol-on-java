@@ -70,9 +70,12 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
+| `cobol-ims` | IMS の DBD / PSB と DL/I 呼び出しの中立モデル (設計 78) | DBDGEN / PSBGEN の原文を読む。Bank-of-Z の DBD 9 本・PSB 8 本がすべて読める (P-153)。`CALL 'CBLTDLI'` の DB 呼び出し (GU / GN / GNP / GH* / ISRT / REPL / DLET) をメモリの上の階層型データベースで動かす (P-154)。ジョブの `EXEC PGM=DFSRRC00,PARM='DLI,...'` でバッチを流し、データベースをデータセットに書き戻す (P-155)。I/O PCB の GU / GN / ISRT / PURG と、1 つの JVM の中の電文のキューで MPP を動かす (P-156)。I/O PCB への GU・基本 CHKP・SYNC を同期点とし、ROLB と異常終了は最後の同期点まで戻す (P-157)。`PARM='BMP,...'` は電文を読まない形だけ受け、I/O PCB を置いて CHKP できる (P-158)。SSA のコマンドコード C / D / F / L / N / P / Q を扱う (U / V は断る、P-159)。データベースの置き場は中立の口の裏にあり、既定はデータセット、`cobol.ims.jdbc.url` を指定すれば `cobol-ims-rdb` の RDB の表 (P-160)。電文のキューは中立の口の裏にあり、既定はこの JVM の中、`cobol.ims.jms.factory` を指定すれば `cobol-ims-jms` が JMS で運ぶ (P-162、P-165)。記号 CHKP が退避した域を業務の更新と同じ確定で置き場に残し、XRST が作業域か `CKPTID=` の検査点から書き戻す (P-164)。SPA、電文を読む BMP、GSAM は未実装 (Bank-of-Z がどれも使っていないので測る基準が無い、P-166) |
+| `cobol-ims-rdb` | IMS のデータベースを RDB の表に生バイトで置く JDBC の置き場 (設計 78 §3.2、ADR-0013) | `IMS_SEGMENT_STORE` / `IMS_ROOT_INDEX` を H2・PostgreSQL・Db2 に作り、同期点ごとに変わった根だけを書き直す。方言の差を知るのは `ImsSchema.Dialect` だけで、どれも実サーバで測っている (PostgreSQL 17.11 は `infra/postgres`、Db2 12.1 は `infra/db2`)。主キーに `ROOT_SEQ` を足した (P-160)。ルートアンカーロック (ADR-0015) は同期点の確定で昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (P-161)。処理済みの電文を `IMS_MESSAGE_INBOX` に業務の更新と同じトランザクションで書き、再配信を捨てる。保持期間 (既定 7 日) を過ぎた ID は、置き場を開くときに落とす (P-163)。記号 CHKP が退避した域を `IMS_CHECKPOINT` に同じ確定で書く (P-164)。取引コードのキューを読む領域を `IMS_QUEUE_LEASE` の借用で 1 つに限り、2 つ目は起こさずに断る (P-167)。競合したら電文駆動の領域を置き場から読み直して頭から動かし直し、使い切れば U0777 で落とす (P-168)。容器 (Spring Boot) の `DataSource` からも構成でき、そこから取った接続を同期点で自分で確定する (容器のトランザクションには相乗りしない、P-169)。GH の時点の排他と根ごとの遅延読み込みは未実装 |
+| `cobol-ims-jms` | IMS TM の電文のキューを JMS 3.0 で運ぶアダプタ (設計 78 §4、ADR-0014) | 取引コードごとのキューを `BytesMessage` で読み、LL / ZZ 付きのセグメントを運ぶ。応答は端末ごとのキューへ。同期点で取り出しと応答を 1 つの JMS のトランザクションで確定する (P-162)。ブローカは `infra/rabbitmq` の compose。実ブローカ (RabbitMQ 4.1.8) での起動と試験を確認し、Bank-of-Z のオンライン 5 本をブローカ越しに測った (P-162)。`cobol.ims.jms.factory` に `ConnectionFactory` のクラス名を書くと差し込まれる (P-165)。`JMSMessageID` を運び、置き場の inbox で再配信を捨てる (P-163)。XA、SPA (P-166)、`CHNG` は未実装 |
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
-| `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS task の coordinator の自動構成と、JSON の入口 `POST /api/cics/{transid}` (Spring Security があるときだけ、P-135) を実装。同じ冪等キーの再送には task を動かさず commit した結果を返す (P-142)。`cobol.cics.conversation.consistency=strict` で、会話と冪等キーの結果を業務の Db2 と同じ UOW で表に確定する (P-143)。driver管理 `WITH HOLD` は未実装 |
+| `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS task の coordinator の自動構成と、JSON の入口 `POST /api/cics/{transid}` (Spring Security があるときだけ、P-135) を実装。同じ冪等キーの再送には task を動かさず commit した結果を返す (P-142)。`cobol.cics.conversation.consistency=strict` で、会話と冪等キーの結果を業務の Db2 と同じ UOW で表に確定する (P-143)。IMS のデータベースの置き場へ容器の `DataSource` を預ける (`cobol-ims-rdb` を置いた利用者だけ。`cobol.ims.spring-data-source=false` で切る、P-169)。driver管理 `WITH HOLD` は未実装 |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 画面の Thymeleaf view、端末 JavaScript、CSS | 表示モデル、共通 template、端末操作、form の入力変換を実装。Bank-of-Z の 2 画面をブラウザで測り、JavaScript の有無によらず全 field の行・桁・幅が一致 (設計 81)。ブラウザの入口 `POST /cics/{transid}` は Spring Security があるときだけ構成し、COMMAREA と画面は server の会話ストアから読む。会話ストアの既定は 1 つの JVM の中だけ (P-134) |
 
 ## ビルド
@@ -216,12 +219,58 @@ TD の区画外のキューは順編成のデータセットに置き、回復�
 START の `CHANNEL` / `ATTACH` / `NOCHECK` / `SYSID`、REQID の無い `CANCEL`、TS / TD の `SYSID` / `NOSUSPEND` も暫定の仕様で変換する (P-149)。
 `SET ptr TO ADDRESS OF` と `SET ADDRESS OF` は、POINTER に実行単位の中で振った番号を置いて扱う (P-150)。
 その上に、file control / TS / TD / RETRIEVE の `SET` を置き場の番地として入れた (P-151)。
+IMS は、同じ Bank-of-Z の IMS の COBOL 11 本を `verify corpus <cobol> -I <copy>` で流して測っている。
+<b>翻訳が通るのは 10 本</b>である (測り始めは 0 本)。手続き部の先頭の `ENTRY "DLITCBL" USING` をプログラムの引数とし (P-152)、
+`PROGRAM-ID` の終止符の欠落と、演算子に空白を置かない `<=1` を受ける。残る IBTRAN は OO COBOL の `REPOSITORY` と JNI で止まる。
+DBDGEN / PSBGEN の原文は `verify ims-gen <置き場>` で測り、<b>DBD 9 本・PSB 8 本がすべて読める</b> (P-153)。
+`CALL 'CBLTDLI'` の DB 呼び出しは、メモリの上の階層型データベースで動く (P-154)。DL/I には CCVS85 や Hercules に
+あたる外の基準が無いので、振る舞いは公開仕様の説明から起こして試験で固定しており、<b>実機と突き合わせていない</b> (P-099)。
+バッチは `EXEC PGM=DFSRRC00,PARM='DLI,プログラム,PSB'` で流す。`//IMS` のライブラリに PSB と DBD の原文を置き、
+データベースは DBD の `DATASET DD1=` の DD に書き戻す (P-155)。Bank-of-Z の<b>読み込み 5 本を JCL で流すと全段 RC=0 で、
+各データベースのセグメント数が入力の件数と一致する</b> (顧客 100、口座 265、顧客口座 265、履歴 265、取引の状態 265)。
+測定の JCL と入力のデータセットは資産から作るので同梱しない。
+オンライン (MPP) は I/O PCB への GU / GN / ISRT / PURG を持ち、`verify ims-mpp <置き場> -d <翻訳した組> -p <プログラム> -s <PSB> -m <電文>`
+で電文を流して測る (P-156)。読み込んだデータベースに対し、<b>翻訳が通るオンライン 5 本 (IBLOGIN1 / IBGCUDAT / IBSCUDAT /
+IBACSUM / IBLOGOUT) はすべて復帰コード 0 で、資産の意図どおりの応答を返す</b> (ログインの成功・二重ログイン・パスワード誤り・
+顧客なし、顧客の取得と更新、口座の要約、ログアウト)。前の段の更新はデータベースに書き戻され、次の段が読む。
+電文のキューは既定ではこの JVM の中だが、`-Dcobol.ims.jms.factory=<ConnectionFactory のクラス名>` を指定すると
+`cobol-ims-jms` が差し込まれ、電文がブローカを経由する (P-165)。<b>RabbitMQ 4.1.8 越しに同じオンライン 5 本を流しても、
+すべて復帰コード 0 で応答はメモリのキューと同じ</b>である。応答 10 件はブローカの端末ごとのキュー (LTERM001 に 5、
+LTERM002 に 2、LTERM003 に 3) に届き、取引コードのキューはすべて空になった (取り出しが ACK されている)。
+ブローカを通すと電文が `JMSMessageID` を持つので、RDB の置き場と併せると冪等化 (P-163) が実際に効く。H2 の置き場へ
+読み込んでから IBLOGIN1 をブローカ越しに流すと、<b>`IMS_MESSAGE_INBOX` に処理した 4 件の ID が業務の更新と同じ
+トランザクションで残る</b>。ファイルから電文を作るときは ID を持たないので、そこでは冪等化は効かない。
+ブローカを落として再開しても、取引コードのキューの電文は残る。領域が確定しないまま落ちても (JVM を叩き落としても)
+取り出した電文はキューへ戻る。再開したあと<b>積まずに残りだけを流すと、応答は 4 件で、順序は積んだときのまま</b>である。
+1 通目が `LOGIN SUCCESSFUL`、2 通目が同じ端末で `CUSTOMER ALREADY LOGGED IN` になるので、入れ替わっていれば分かる。
+同じ取引コードを 2 つの領域が読むと順序は崩れる。そこで<b>置き場の借用の行で取引コードを 1 つの領域に限り、
+2 つ目は起こさずに断る</b> (P-167)。実測では、2 つ目の領域は電文を 1 通も取らずデータベースにも触れずに断られ、
+1 つ目の応答は投入した順のままだった。借用が働くのは RDB の置き場と JMS のキューがそろったときだけである。そろわないときは二重に起こしても
+気づけないので、<b>既定では領域を起こさずに断る</b>。1 領域しか動かさないと分かっているなら
+`cobol.ims.queue.lease-required=false` で降りられる (P-167)。
+I/O PCB への GU、基本形の CHKP と SYNC を同期点とし、同期点で DB PCB の位置を捨てる。
+ROLB と異常終了は最後の同期点まで戻すので、途中で異常終了しても確定した電文の更新は残る (P-157)。
+`EXEC PGM=DFSRRC00,PARM='BMP,プログラム,PSB'` も受け、I/O PCB を置いて CHKP で確定しながら流せる (電文を読む `IN=` は断る、P-158)。
+記号 CHKP は退避した域を<b>業務の更新と同じ確定</b>で置き場に残し、XRST は作業域か `PARM` の `CKPTID=` の検査点から書き戻す (P-164)。
+確定が失敗すれば検査点も残らないので、再始動した域とデータベースの状態が揃う。GSAM のデータセットの位置づけ直しは持たない。
+データベースの置き場は、`-Dcobol.ims.jdbc.url=<JDBC の URL>` を指定すると `cobol-ims-rdb` の RDB の表になる (P-160)。
+Bank-of-Z の読み込み 5 本を H2 のファイルの DB へ流しても全段 RC=0 で、表のセグメント数は入力の件数と一致し、オンライン 5 本の
+応答はデータセットの置き場と同じである。顧客口座 (CUSTACCS) は同じ顧客の根が最大 5 つ重なり、ADR-0013 の主キーに `ROOT_SEQ` を
+足さなければ置けなかった。
+<b>実 PostgreSQL (17.11) でも同じ結果である</b>。`BYTEA` と `COLLATE "C"` を使う PostgreSQL の枝は長いあいだ
+一度も実行しておらず、対応を主張しているだけだった。`infra/postgres` の環境を足して測ったところ、読み込み 5 本は
+全段 RC=0 でセグメント数 100 / 265 / 265 / 265 / 265、オンライン 5 本も全て復帰コード 0 で、データセットと H2 の
+置き場に一致した。
+<b>実 Db2 (12.1) でも同じ結果である</b>。IMS の資産がいちばん移りやすい RDB であり、これまでは断っていた。
+方言の差は 3 つだけだった (製品名に機種が入る、`VARBINARY` の上限が 32672 byte、素の `SELECT CURRENT_TIMESTAMP`
+が使えない)。差を知るのは `ImsSchema.Dialect` だけである。
 これとは別に、<b>原文から出力バイト列まで</b>を 1 本のバッチとして流す検査がある
 (`BatchJobEndToEndTest`)。COBOL を翻訳し、JCL で 3 段 — 抽出・整列・印字 — を流し、
 段の間のデータセットと最後の紙をバイトで突き合わせる。JCL と宣言的形式が<b>同じ
 バイト列</b>を出すことも見る。要件 13 章が P1 の受け入れ基準に置いている形である。
-テスト 2267 件 (この環境で流れた数)。実 Db2 を使う試験は有効化していないので
-`cobol-db2-jdbc` の 2 件はスキップされる。
+テスト 2389 件 (この環境で `mvn -B -o clean test` で流れた数)。実サーバを使う試験は環境変数で有効にしたときだけ流れる。
+有効化していなければ、実 Db2 の 2 件 (`cobol-db2-jdbc`)、実 RabbitMQ の 2 件 (`cobol-ims-jms`)、
+IMS の置き場を実 PostgreSQL と実 Db2 で流す 4 件ずつ (`cobol-ims-rdb`) がスキップされる。
 うち 6 件はコーパスを取ってきていなければスキップされる。
 Hercules 上での実行と突き合わせる**検証レベル V2** の検査は、期待値を採れない環境では流れない。
 `STRING` / `UNSTRING` のように単一の機械語命令に対応しない意味論は、V1 に留まるのが正しい

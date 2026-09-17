@@ -55,6 +55,17 @@ class TokenizerTest {
     }
 
     @Test
+    @DisplayName("空白を置かずに <= や > と接した語も分ける (Bank-of-Z の LOADHIST の IF X <=1)")
+    void aRelationalOperatorTouchingAWordIsSplit() {
+        assertEquals("WORD(IF) WORD(INPUT-RECORDS) WORD(<=) WORD(1)",
+                shape(tokens("IF INPUT-RECORDS <=1")));
+        assertEquals("WORD(IF) WORD(A) WORD(<) WORD(B) WORD(>) WORD(C) WORD(>=) WORD(D)",
+                shape(tokens("IF A<B >C >=D")));
+        // 演算子だけの語は分けない
+        assertEquals("WORD(IF) WORD(A) WORD(<=) WORD(B)", shape(tokens("IF A <= B")));
+    }
+
+    @Test
     @DisplayName("括弧はつねに区切り文字である (ARC-8)")
     void parenthesesAreAlwaysSeparators() {
         assertEquals("WORD(IF) SEPARATOR(() WORD(A) SEPARATOR()) SEPARATOR(.)",

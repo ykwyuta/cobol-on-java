@@ -60,7 +60,16 @@ public enum AbendCode {
      * <p>{@code SSRANGE} の範囲外参照や、{@code FILE STATUS} を書いていないファイルの異常が
      * ここへ来る。ホストでもメッセージ ({@code IGZ0006S} など) を出してこのコードで終わる。
      */
-    U4038("U4038", "condition detected by the language environment");
+    U4038("U4038", "condition detected by the language environment"),
+
+    /**
+     * IMS の領域が、ほかの領域との競合で再試行を使い切った。
+     *
+     * <p>実機の IMS はロック待ちやデッドロックで領域を再スケジュールする。この綴りが実機の規定と
+     * 一致するかは<b>確かめていない</b> (暫定判断 P-107)。JCL の {@code COND=} から見えるように、
+     * ここに置いている。
+     */
+    U0777("U0777", "IMS deadlock or conflict retry exhausted");
 
     private final String text;
     private final String reason;

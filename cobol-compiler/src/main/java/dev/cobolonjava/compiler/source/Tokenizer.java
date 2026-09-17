@@ -182,23 +182,30 @@ public final class Tokenizer {
     }
 
     /**
-     * 空白を置かずに {@code =} と接した語を分ける位置。分けなければ {@code start} を返す。
+     * 空白を置かずに関係演算子 ({@code =}、{@code <}、{@code >}、{@code <=}、{@code >=}) と接した語を
+     * 分ける位置。分けなければ {@code start} を返す。
      *
-     * <p>規格は関係演算子の前後に空白を求めるが、Enterprise COBOL は {@code NOT= DFHRESP(NORMAL)} を
-     * 受け付ける (Bank-of-Z の ABNDPROC がそう書いてホストで翻訳されている)。{@code =} は COBOL 語の
-     * 文字ではないので、語の文字の並びと {@code =} の境目で分けても別の語を作らない。
-     * {@code >=} や {@code <=} は語の文字で始まらないので、ここでは分けない。
+     * <p>規格は関係演算子の前後に空白を求めるが、Enterprise COBOL は {@code NOT= DFHRESP(NORMAL)}
+     * (Bank-of-Z の ABNDPROC) も {@code IF INPUT-RECORDS <=1} (Bank-of-Z の IMS の LOADHIST) も受け付け、
+     * ホストで翻訳されている。演算子の文字は COBOL 語の文字ではないので、語の文字の並びとの境目で
+     * 分けても別の語を作らない。
+     *
+     * <p>以前は {@code =} だけを分け、「{@code <=} は語の文字で始まらない」として分けなかった。
+     * そのため {@code <=1} が 1 語になり、級名として読まれて止まっていた。
      */
     private int equalSignSplit(int start, int end) {
         if (end - start < 2) {
             return start;
         }
-        if (text.charAt(start) == '=') {
-            return isCobolWordChar(text.charAt(start + 1)) ? start + 1 : start;
+        int operator = operatorLength(start, end);
+        if (operator > 0) {
+            // 演算子で始まる語は、演算子のあとに語の文字が続くときだけ分ける。{@code >=} だけなら 1 語である
+            return start + operator < end && isCobolWordChar(text.charAt(start + operator))
+                    ? start + operator : start;
         }
         for (int k = start; k < end; k++) {
             char c = text.charAt(k);
-            if (c == '=') {
+            if (c == '=' || c == '<' || c == '>') {
                 return k;
             }
             if (!isCobolWordChar(c)) {
@@ -206,6 +213,18 @@ public final class Tokenizer {
             }
         }
         return start;
+    }
+
+    /** 位置 {@code j} から始まる関係演算子の長さ。演算子でなければ 0。 */
+    private int operatorLength(int j, int end) {
+        char c = text.charAt(j);
+        if (c == '=') {
+            return 1;
+        }
+        if (c != '<' && c != '>') {
+            return 0;
+        }
+        return j + 1 < end && text.charAt(j + 1) == '=' ? 2 : 1;
     }
 
     private static boolean isCobolWordChar(char c) {
