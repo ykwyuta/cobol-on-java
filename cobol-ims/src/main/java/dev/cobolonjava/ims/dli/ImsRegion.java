@@ -31,7 +31,7 @@ import java.util.function.Consumer;
  * 1 本のプログラムを動かす IMS の領域。PSB と、それが名指すデータベースを束ねる (設計 78 §2)。
  *
  * <p>PCB の記憶域を PSB の並びで作り、{@link #programArguments} でプログラムへ渡す。{@link #register} で
- * program catalog に {@code CBLTDLI} を置くと、COBOL の {@code CALL 'CBLTDLI'} がここへ来る。どの PCB への
+ * program catalog に {@code CBLTDLI} と {@code PLITDLI} を置くと、COBOL / PL/I の DL/I 呼出しがここへ来る。どの PCB への
  * 呼び出しかは、渡された PCB の記憶域そのもので見分ける。
  *
  * <p>PCB の記憶域はマスクの長さ (DB PCB は 36 byte とキー帰還域) の後ろに予備を持つ。プログラムは
@@ -180,9 +180,11 @@ public final class ImsRegion {
         return out;
     }
 
-    /** {@code CBLTDLI} を catalog に置く。 */
+    /** COBOL と PL/I の DL/I 入口を catalog に置く。 */
     public ProgramCatalog.Builder register(ProgramCatalog.Builder builder) {
-        return builder.javaProgram("CBLTDLI", () -> (context, arguments) -> call(arguments));
+        return builder
+                .javaProgram("CBLTDLI", () -> (context, arguments) -> call(arguments))
+                .javaProgram("PLITDLI", () -> (context, arguments) -> call(arguments));
     }
 
     /**
@@ -204,7 +206,7 @@ public final class ImsRegion {
             index = 1;
         }
         if (arguments.size() < index + 2) {
-            throw new DliCallException("CBLTDLI requires a function code and a PCB");
+            throw new DliCallException("DL/I requires a function code and a PCB");
         }
         DataView functionView = arguments.get(index);
         if (functionView.length() < 4) {
@@ -223,7 +225,7 @@ public final class ImsRegion {
                     && storages.stream().anyMatch(storage -> storage == pcbView.storage());
             throw new DliCallException(terminal
                     ? "DL/I calls on a TP PCB are not supported yet (design 78 section 4): " + function
-                    : "the PCB parameter of CBLTDLI is not a PCB of PSB " + psb.name());
+                    : "the PCB parameter of DL/I is not a PCB of PSB " + psb.name());
         }
         DataView io = arguments.size() > index + 2 ? arguments.get(index + 2) : null;
         List<DataView> ssas = arguments.size() > index + 3

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Assumptions;
  * <ul>
  *   <li>{@code CCVS85} — {@code newcob.val} の在り処
  *   <li>{@code COBOL_CORPUS} — OSS 資産の置き場
+ *   <li>{@code PLI_CORPUS} — PL/I 資産と参照出力の置き場
  * </ul>
  */
 public final class VerifySupport {
@@ -29,6 +30,11 @@ public final class VerifySupport {
     /** OSS 資産の置き場。無ければ理由を示してスキップする。 */
     public static Path requireCorpus() {
         return required("COBOL_CORPUS", "tools/verify/fetch-corpus.sh で取ってくること");
+    }
+
+    /** PL/I の外部コーパス。無ければ理由を示してスキップする。 */
+    public static Path requirePliCorpus() {
+        return required("PLI_CORPUS", "設計 26 に従って外部に用意すること");
     }
 
     private static Path required(String variable, String how) {

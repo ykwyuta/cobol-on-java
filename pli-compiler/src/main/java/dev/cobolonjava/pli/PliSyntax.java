@@ -1,0 +1,890 @@
+package dev.cobolonjava.pli;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/** Bank-of-Z が使う構造化 PL/I サブセットの字句解析と構文木。 */
+final class PliSyntax {
+
+    private PliSyntax() {
+    }
+
+    static ParseResult parse(String fileName, String source) {
+        try {
+            return new Parser(fileName, new Lexer(fileName, source).scan()).parse();
+        } catch (ParseFailure failure) {
+            return new ParseResult(null, List.of(new Diagnostic(Diagnostic.Severity.ERROR,
+                    fileName, failure.token.line(), failure.token.column(), failure.getMessage())));
+        }
+    }
+
+    record ParseResult(Program program, List<Diagnostic> diagnostics) {
+        boolean succeeded() {
+            return program != null && diagnostics.stream()
+                    .noneMatch(d -> d.severity() == Diagnostic.Severity.ERROR);
+        }
+    }
+
+    record Program(String name, List<String> parameters, List<Stmt> body,
+                   Map<String, Procedure> procedures) {
+    }
+
+    record Procedure(String name, List<String> parameters, List<Stmt> body) {
+    }
+
+    sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
+            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Ignored {
+    }
+
+    record Declare(List<Decl> declarations) implements Stmt {
+    }
+
+    enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE }
+
+    record Decl(String name, int level, Type type, int precision, int scale,
+                Expr initial, String basedOn) {
+    }
+
+    record Assign(String target, Expr value) implements Stmt {
+    }
+
+    record Put(boolean skip, List<Expr> values) implements Stmt {
+    }
+
+    record If(Expr condition, Stmt whenTrue, Stmt whenFalse) implements Stmt {
+    }
+
+    record Loop(boolean until, Expr condition, List<Stmt> body) implements Stmt {
+    }
+
+    record IterativeLoop(String control, Expr start, Expr finish, Expr step,
+                         List<Stmt> body) implements Stmt {
+    }
+
+    record Call(String name, List<Expr> arguments) implements Stmt {
+    }
+
+    record Return() implements Stmt {
+    }
+
+    record Block(List<Stmt> body) implements Stmt {
+    }
+
+    record GoTo(String label) implements Stmt {
+    }
+
+    record Label(String name) implements Stmt {
+    }
+
+    record OnEndFile(String file, List<Stmt> handler) implements Stmt {
+    }
+
+    enum FileAction { OPEN, READ, CLOSE }
+
+    record FileOperation(FileAction action, String file, String target) implements Stmt {
+    }
+
+    record Sql(String source) implements Stmt {
+    }
+
+    record Ignored(String keyword) implements Stmt {
+    }
+
+    sealed interface Expr permits Literal, Reference, Unary, Binary, Function {
+    }
+
+    record Literal(Object value) implements Expr {
+    }
+
+    record Reference(String name) implements Expr {
+    }
+
+    record Unary(String operator, Expr operand) implements Expr {
+    }
+
+    record Binary(String operator, Expr left, Expr right) implements Expr {
+    }
+
+    record Function(String name, List<Expr> arguments) implements Expr {
+    }
+
+    private enum Kind { IDENT, NUMBER, STRING, SYMBOL, EOF }
+
+    private record Token(Kind kind, String text, int line, int column) {
+        boolean is(String value) {
+            return kind != Kind.STRING && text.equalsIgnoreCase(value);
+        }
+    }
+
+    private static final class Lexer {
+        private final String fileName;
+        private final String source;
+        private final List<Token> tokens = new ArrayList<>();
+        private int at;
+        private int line = 1;
+        private int column = 1;
+
+        Lexer(String fileName, String source) {
+            this.fileName = fileName;
+            this.source = source;
+        }
+
+        List<Token> scan() {
+            while (at < source.length()) {
+                char c = source.charAt(at);
+                if (Character.isWhitespace(c)) {
+                    advance(c);
+                } else if (c == '/' && peek(1) == '*') {
+                    comment();
+                } else if (c == '\'' || c == '"') {
+                    string(c);
+                } else if (Character.isDigit(c)) {
+                    number();
+                } else if (isIdentifierStart(c)) {
+                    identifier();
+                } else {
+                    symbol();
+                }
+            }
+            tokens.add(new Token(Kind.EOF, "<EOF>", line, column));
+            return List.copyOf(tokens);
+        }
+
+        private void comment() {
+            int startLine = line;
+            int startColumn = column;
+            advance('/');
+            advance('*');
+            while (at < source.length() && !(source.charAt(at) == '*' && peek(1) == '/')) {
+                advance(source.charAt(at));
+            }
+            if (at >= source.length()) {
+                throw new ParseFailure(new Token(Kind.SYMBOL, "/*", startLine, startColumn),
+                        "unterminated comment in " + fileName);
+            }
+            advance('*');
+            advance('/');
+        }
+
+        private void string(char quote) {
+            int tokenLine = line;
+            int tokenColumn = column;
+            advance(quote);
+            StringBuilder value = new StringBuilder();
+            boolean closed = false;
+            while (at < source.length()) {
+                char c = source.charAt(at);
+                if (c == quote) {
+                    advance(c);
+                    if (at < source.length() && source.charAt(at) == quote) {
+                        value.append(quote);
+                        advance(quote);
+                        continue;
+                    }
+                    closed = true;
+                    break;
+                }
+                value.append(c);
+                advance(c);
+            }
+            if (!closed) {
+                throw new ParseFailure(new Token(Kind.STRING, value.toString(), tokenLine,
+                        tokenColumn), "unterminated string literal");
+            }
+            tokens.add(new Token(Kind.STRING, value.toString(), tokenLine, tokenColumn));
+        }
+
+        private void number() {
+            int start = at;
+            int tokenLine = line;
+            int tokenColumn = column;
+            while (at < source.length() && Character.isDigit(source.charAt(at))) {
+                advance(source.charAt(at));
+            }
+            if (at < source.length() && source.charAt(at) == '.'
+                    && Character.isDigit(peek(1))) {
+                advance('.');
+                while (at < source.length() && Character.isDigit(source.charAt(at))) {
+                    advance(source.charAt(at));
+                }
+            }
+            tokens.add(new Token(Kind.NUMBER, source.substring(start, at), tokenLine, tokenColumn));
+        }
+
+        private void identifier() {
+            int start = at;
+            int tokenLine = line;
+            int tokenColumn = column;
+            while (at < source.length() && isIdentifierPart(source.charAt(at))) {
+                advance(source.charAt(at));
+            }
+            tokens.add(new Token(Kind.IDENT,
+                    source.substring(start, at).toUpperCase(Locale.ROOT), tokenLine, tokenColumn));
+        }
+
+        private void symbol() {
+            int tokenLine = line;
+            int tokenColumn = column;
+            char first = source.charAt(at);
+            String two = at + 1 < source.length() ? source.substring(at, at + 2) : "";
+            if (List.of("^=", "¬=", "<=", ">=", "||", "**", "=>").contains(two)) {
+                advance(first);
+                advance(source.charAt(at));
+                tokens.add(new Token(Kind.SYMBOL, two, tokenLine, tokenColumn));
+            } else {
+                advance(first);
+                tokens.add(new Token(Kind.SYMBOL, String.valueOf(first), tokenLine, tokenColumn));
+            }
+        }
+
+        private char peek(int ahead) {
+            return at + ahead < source.length() ? source.charAt(at + ahead) : '\0';
+        }
+
+        private void advance(char c) {
+            at++;
+            if (c == '\n') {
+                line++;
+                column = 1;
+            } else {
+                column++;
+            }
+        }
+
+        private static boolean isIdentifierStart(char c) {
+            return Character.isLetter(c) || c == '_' || c == '$' || c == '#' || c == '@';
+        }
+
+        private static boolean isIdentifierPart(char c) {
+            return isIdentifierStart(c) || Character.isDigit(c);
+        }
+    }
+
+    private static final class Parser {
+        private final String fileName;
+        private final List<Token> tokens;
+        private int at;
+
+        Parser(String fileName, List<Token> tokens) {
+            this.fileName = fileName;
+            this.tokens = tokens;
+        }
+
+        ParseResult parse() {
+            while (!check(Kind.EOF) && !procedureAhead()) {
+                at++;
+            }
+            if (check(Kind.EOF)) {
+                throw fail(peek(), "a labeled PROCEDURE was not found");
+            }
+            ProcedureBuilder main = parseProcedure();
+            return new ParseResult(new Program(main.name, main.parameters,
+                    List.copyOf(main.body), Map.copyOf(main.procedures)), List.of());
+        }
+
+        private ProcedureBuilder parseProcedure() {
+            String name = expect(Kind.IDENT, "procedure name").text();
+            expect(":");
+            expect("PROCEDURE");
+            List<String> parameters = new ArrayList<>();
+            if (match("(")) {
+                if (!check(")")) {
+                    do {
+                        parameters.add(qualifiedName());
+                    } while (match(","));
+                }
+                expect(")");
+            }
+            // OPTIONS、RETURNS その他の入口属性はセミコロンまで保持する必要がない。
+            skipToSemicolon();
+            ProcedureBuilder result = new ProcedureBuilder(name, List.copyOf(parameters));
+            while (!check(Kind.EOF)) {
+                if (procedureAhead()) {
+                    ProcedureBuilder nested = parseProcedure();
+                    result.procedures.put(nested.name, nested.freeze());
+                    result.procedures.putAll(nested.procedures);
+                    continue;
+                }
+                if (check("END") && (check(1, ";") || check(1, name))) {
+                    next();
+                    if (check(Kind.IDENT)) {
+                        next();
+                    }
+                    expect(";");
+                    return result;
+                }
+                result.body.add(statement());
+            }
+            throw fail(peek(), "procedure " + name + " has no matching END");
+        }
+
+        private Stmt statement() {
+            if (match("DCL") || match("DECLARE")) {
+                return declaration();
+            }
+            if (match("PUT")) {
+                return put();
+            }
+            if (match("IF")) {
+                return ifStatement();
+            }
+            if (match("DO")) {
+                return loop();
+            }
+            if (match("BEGIN")) {
+                expect(";");
+                return new Block(blockBody());
+            }
+            if (match("CALL")) {
+                return call();
+            }
+            if (match("RETURN")) {
+                skipToSemicolon();
+                return new Return();
+            }
+            if (match("GO")) {
+                match("TO");
+                String target = expect(Kind.IDENT, "label after GO TO").text();
+                expect(";");
+                return new GoTo(target);
+            }
+            if (match("ON")) {
+                return onCondition();
+            }
+            if (match("OPEN")) {
+                return fileOperation(FileAction.OPEN);
+            }
+            if (match("READ")) {
+                return fileOperation(FileAction.READ);
+            }
+            if (match("CLOSE")) {
+                return fileOperation(FileAction.CLOSE);
+            }
+            if (match("EXEC")) {
+                if (!match("SQL")) {
+                    String kind = check(Kind.IDENT) ? next().text() : "EXEC";
+                    skipToSemicolon();
+                    return new Ignored("EXEC " + kind);
+                }
+                return new Sql(renderSql(collectToSemicolon()));
+            }
+            if (check(Kind.IDENT) && check(1, ":")) {
+                String label = next().text();
+                next();
+                return new Label(label);
+            }
+            if (check(Kind.IDENT)) {
+                int save = at;
+                String target = qualifiedName();
+                if (match("=")) {
+                    Expr value = expression();
+                    expect(";");
+                    return new Assign(target, value);
+                }
+                at = save;
+            }
+            String keyword = peek().text();
+            skipToSemicolon();
+            return new Ignored(keyword);
+        }
+
+        private Stmt declaration() {
+            List<Token> declaration = collectToSemicolon();
+            return new Declare(parseDeclarations(declaration));
+        }
+
+        private List<Decl> parseDeclarations(List<Token> declaration) {
+            List<List<Token>> parts = split(declaration, ",");
+            List<Decl> out = new ArrayList<>();
+            Type inheritedType = Type.GROUP;
+            int inheritedPrecision = 0;
+            int inheritedScale = 0;
+            for (List<Token> part : parts) {
+                if (part.isEmpty()) {
+                    continue;
+                }
+                int p = 0;
+                int level = 0;
+                if (part.get(p).kind() == Kind.NUMBER && !part.get(p).text().contains(".")) {
+                    level = Integer.parseInt(part.get(p++).text());
+                }
+                if (p >= part.size()) {
+                    continue;
+                }
+                if (part.get(p).is("(")) {
+                    // 名前リストは、同じ属性を各名前へ適用する。
+                    int close = findClosing(part, p);
+                    List<String> names = part.subList(p + 1, close).stream()
+                            .filter(t -> t.kind() == Kind.IDENT).map(Token::text).toList();
+                    TypeInfo info = typeInfo(part, close + 1, inheritedType,
+                            inheritedPrecision, inheritedScale);
+                    for (String name : names) {
+                        out.add(new Decl(name, level, info.type, info.precision, info.scale,
+                                initial(part), basedOn(part)));
+                    }
+                    inheritedType = info.type;
+                    inheritedPrecision = info.precision;
+                    inheritedScale = info.scale;
+                    continue;
+                }
+                Token nameToken = part.get(p++);
+                if (nameToken.kind() != Kind.IDENT && !nameToken.is("*")) {
+                    continue;
+                }
+                TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
+                        inheritedPrecision, inheritedScale);
+                out.add(new Decl(nameToken.text(), level, info.type, info.precision, info.scale,
+                        initial(part), basedOn(part)));
+                inheritedType = info.type;
+                inheritedPrecision = info.precision;
+                inheritedScale = info.scale;
+            }
+            return List.copyOf(out);
+        }
+
+        private static TypeInfo typeInfo(List<Token> tokens, int from, Type inherited,
+                                         int inheritedPrecision, int inheritedScale) {
+            for (int i = from; i < tokens.size(); i++) {
+                if (tokens.get(i).is("CHAR") || tokens.get(i).is("CHARACTER")) {
+                    return new TypeInfo(Type.CHAR, parenthesizedInt(tokens, i + 1, 1), 0);
+                }
+                if (tokens.get(i).is("BIT")) {
+                    return new TypeInfo(Type.BIT, parenthesizedInt(tokens, i + 1, 1), 0);
+                }
+                if (tokens.get(i).is("POINTER")) {
+                    return new TypeInfo(Type.POINTER, 0, 0);
+                }
+                if (tokens.get(i).is("FILE")) {
+                    return new TypeInfo(Type.FILE, 0, 0);
+                }
+                if (tokens.get(i).is("ENTRY")) {
+                    return new TypeInfo(Type.ENTRY, 0, 0);
+                }
+                if (tokens.get(i).is("PIC") || tokens.get(i).is("PICTURE")) {
+                    int digits = 1;
+                    if (i + 1 < tokens.size()) {
+                        String picture = tokens.get(i + 1).text();
+                        digits = picture.chars().filter(c -> c == '9').count() > 0
+                                ? (int) picture.chars().filter(c -> c == '9').count() : 9;
+                    }
+                    return new TypeInfo(Type.PICTURE, digits, 0);
+                }
+                if (tokens.get(i).is("FIXED")) {
+                    int j = i + 1;
+                    if (j < tokens.size() && (tokens.get(j).is("BIN")
+                            || tokens.get(j).is("BINARY"))) {
+                        return new TypeInfo(Type.BINARY,
+                                parenthesizedInt(tokens, j + 1, 31), 0);
+                    }
+                    if (j < tokens.size() && (tokens.get(j).is("DEC")
+                            || tokens.get(j).is("DECIMAL"))) {
+                        int precision = parenthesizedInt(tokens, j + 1, 15);
+                        int scale = parenthesizedSecondInt(tokens, j + 1, 0);
+                        return new TypeInfo(Type.DECIMAL, precision, scale);
+                    }
+                }
+            }
+            return new TypeInfo(inherited, inheritedPrecision, inheritedScale);
+        }
+
+        private static Expr initial(List<Token> tokens) {
+            for (int i = 0; i < tokens.size(); i++) {
+                if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL"))
+                        && i + 2 < tokens.size() && tokens.get(i + 1).is("(")) {
+                    Token value = tokens.get(i + 2);
+                    if (value.kind() == Kind.STRING) {
+                        boolean bit = i + 3 < tokens.size() && tokens.get(i + 3).is("B");
+                        return new Literal(bit ? !value.text().equals("0") : value.text());
+                    }
+                    if (value.kind() == Kind.NUMBER) {
+                        return new Literal(new java.math.BigDecimal(value.text()));
+                    }
+                }
+            }
+            return null;
+        }
+
+        private static String basedOn(List<Token> tokens) {
+            for (int i = 0; i + 2 < tokens.size(); i++) {
+                if (tokens.get(i).is("BASED") && tokens.get(i + 1).is("(")) {
+                    if (tokens.get(i + 2).is("ADDR") && i + 4 < tokens.size()) {
+                        return tokens.get(i + 4).text();
+                    }
+                    return tokens.get(i + 2).text();
+                }
+            }
+            return null;
+        }
+
+        private Stmt put() {
+            boolean skip = match("SKIP");
+            if (!(match("LIST") || match("EDIT"))) {
+                skipToSemicolon();
+                return new Put(skip, List.of());
+            }
+            List<Expr> values = arguments();
+            // EDIT の書式リストは値ではない。
+            if (check("(")) {
+                skipBalanced();
+            }
+            expect(";");
+            return new Put(skip, values);
+        }
+
+        private Stmt ifStatement() {
+            Expr condition = expression();
+            expect("THEN");
+            Stmt whenTrue = statement();
+            Stmt whenFalse = match("ELSE") ? statement() : null;
+            return new If(condition, whenTrue, whenFalse);
+        }
+
+        private Stmt loop() {
+            if (check(Kind.IDENT) && check(1, "=")) {
+                String control = next().text();
+                expect("=");
+                Expr start = expression();
+                expect("TO");
+                Expr finish = expression();
+                Expr step = match("BY") ? expression()
+                        : new Literal(java.math.BigDecimal.ONE);
+                expect(";");
+                return new IterativeLoop(control, start, finish, step, blockBody());
+            }
+            boolean until = false;
+            Expr condition = new Literal(Boolean.TRUE);
+            if (match("WHILE")) {
+                condition = parenthesizedExpression();
+            } else if (match("UNTIL")) {
+                until = true;
+                condition = parenthesizedExpression();
+            }
+            // 反復指定をまだ意味実行しない場合も、対応する END までの構造は保つ。
+            if (!match(";")) {
+                skipToSemicolon();
+            }
+            return new Loop(until, condition, blockBody());
+        }
+
+        private List<Stmt> blockBody() {
+            List<Stmt> body = new ArrayList<>();
+            while (!check("END") && !check(Kind.EOF)) {
+                body.add(statement());
+            }
+            expect("END");
+            if (check(Kind.IDENT)) {
+                next();
+            }
+            expect(";");
+            return List.copyOf(body);
+        }
+
+        private Stmt call() {
+            String name = qualifiedName();
+            List<Expr> args = check("(") ? arguments() : List.of();
+            expect(";");
+            return new Call(name, args);
+        }
+
+        private Stmt onCondition() {
+            if (!match("ENDFILE")) {
+                String keyword = "ON " + peek().text();
+                skipToSemicolon();
+                return new Ignored(keyword);
+            }
+            expect("(");
+            String file = qualifiedName();
+            expect(")");
+            expect("BEGIN");
+            expect(";");
+            return new OnEndFile(file, blockBody());
+        }
+
+        private Stmt fileOperation(FileAction action) {
+            expect("FILE");
+            expect("(");
+            String file = qualifiedName();
+            expect(")");
+            String target = null;
+            if (action == FileAction.READ) {
+                expect("INTO");
+                expect("(");
+                target = qualifiedName();
+                expect(")");
+            }
+            expect(";");
+            return new FileOperation(action, file, target);
+        }
+
+        private Expr parenthesizedExpression() {
+            expect("(");
+            Expr value = expression();
+            expect(")");
+            return value;
+        }
+
+        private List<Expr> arguments() {
+            expect("(");
+            List<Expr> values = new ArrayList<>();
+            if (!check(")")) {
+                do {
+                    values.add(expression());
+                } while (match(","));
+            }
+            expect(")");
+            return List.copyOf(values);
+        }
+
+        private Expr expression() {
+            return binary(0);
+        }
+
+        private Expr binary(int minimum) {
+            Expr left = unary();
+            while (true) {
+                int precedence = precedence(peek().text());
+                if (precedence < minimum) {
+                    break;
+                }
+                String operator = next().text();
+                Expr right = binary(precedence + 1);
+                left = new Binary(operator, left, right);
+            }
+            return left;
+        }
+
+        private Expr unary() {
+            if (match("^") || match("¬") || match("-") || match("+")) {
+                return new Unary(previous().text(), unary());
+            }
+            return primary();
+        }
+
+        private Expr primary() {
+            if (match("(")) {
+                Expr value = expression();
+                expect(")");
+                return value;
+            }
+            if (check(Kind.STRING)) {
+                String value = next().text();
+                if (match("B")) {
+                    return new Literal(!value.equals("0"));
+                }
+                return new Literal(value);
+            }
+            if (check(Kind.NUMBER)) {
+                return new Literal(new java.math.BigDecimal(next().text()));
+            }
+            if (check(Kind.IDENT)) {
+                String name = qualifiedName();
+                if (check("(")) {
+                    return new Function(name, arguments());
+                }
+                return new Reference(name);
+            }
+            throw fail(peek(), "expression expected, found " + peek().text());
+        }
+
+        private String qualifiedName() {
+            StringBuilder name = new StringBuilder(expect(Kind.IDENT, "identifier").text());
+            while (match(".")) {
+                name.append('.').append(expect(Kind.IDENT, "qualified identifier").text());
+            }
+            return name.toString();
+        }
+
+        private boolean procedureAhead() {
+            return check(Kind.IDENT) && check(1, ":") && check(2, "PROCEDURE");
+        }
+
+        private void skipBalanced() {
+            expect("(");
+            int depth = 1;
+            while (depth > 0 && !check(Kind.EOF)) {
+                if (match("(")) {
+                    depth++;
+                } else if (match(")")) {
+                    depth--;
+                } else {
+                    next();
+                }
+            }
+        }
+
+        private List<Token> collectToSemicolon() {
+            int start = at;
+            int depth = 0;
+            while (!check(Kind.EOF)) {
+                if (check("(") ) {
+                    depth++;
+                } else if (check(")")) {
+                    depth--;
+                } else if (check(";") && depth == 0) {
+                    List<Token> result = List.copyOf(tokens.subList(start, at));
+                    at++;
+                    return result;
+                }
+                at++;
+            }
+            throw fail(peek(), "semicolon expected");
+        }
+
+        private void skipToSemicolon() {
+            collectToSemicolon();
+        }
+
+        private static List<List<Token>> split(List<Token> values, String separator) {
+            List<List<Token>> parts = new ArrayList<>();
+            int start = 0;
+            int depth = 0;
+            for (int i = 0; i < values.size(); i++) {
+                if (values.get(i).is("(")) {
+                    depth++;
+                } else if (values.get(i).is(")")) {
+                    depth--;
+                } else if (values.get(i).is(separator) && depth == 0) {
+                    parts.add(List.copyOf(values.subList(start, i)));
+                    start = i + 1;
+                }
+            }
+            parts.add(List.copyOf(values.subList(start, values.size())));
+            return parts;
+        }
+
+        private static String renderSql(List<Token> tokens) {
+            StringBuilder sql = new StringBuilder();
+            Token previous = null;
+            for (Token token : tokens) {
+                boolean tight = token.kind() == Kind.SYMBOL
+                        && List.of(",", ")", ".", ":").contains(token.text());
+                boolean afterTight = previous != null && previous.kind() == Kind.SYMBOL
+                        && List.of("(", ".", ":").contains(previous.text());
+                if (!sql.isEmpty() && !tight && !afterTight) sql.append(' ');
+                if (token.kind() == Kind.STRING) {
+                    sql.append('\'').append(token.text().replace("'", "''")).append('\'');
+                } else {
+                    sql.append(token.text());
+                }
+                previous = token;
+            }
+            return sql.toString();
+        }
+
+        private static int findClosing(List<Token> values, int open) {
+            int depth = 0;
+            for (int i = open; i < values.size(); i++) {
+                if (values.get(i).is("(")) depth++;
+                if (values.get(i).is(")") && --depth == 0) return i;
+            }
+            return values.size() - 1;
+        }
+
+        private static int parenthesizedInt(List<Token> values, int at, int fallback) {
+            if (at + 1 < values.size() && values.get(at).is("(")
+                    && values.get(at + 1).kind() == Kind.NUMBER) {
+                return Integer.parseInt(values.get(at + 1).text().split("\\.")[0]);
+            }
+            return fallback;
+        }
+
+        private static int parenthesizedSecondInt(List<Token> values, int at, int fallback) {
+            if (at + 3 < values.size() && values.get(at).is("(")
+                    && values.get(at + 2).is(",") && values.get(at + 3).kind() == Kind.NUMBER) {
+                return Integer.parseInt(values.get(at + 3).text().split("\\.")[0]);
+            }
+            return fallback;
+        }
+
+        private static int precedence(String operator) {
+            return switch (operator.toUpperCase(Locale.ROOT)) {
+                case "|" -> 1;
+                case "&" -> 2;
+                case "=", "^=", "¬=", "<", ">", "<=", ">=" -> 3;
+                case "||" -> 4;
+                case "+", "-" -> 5;
+                case "*", "/" -> 6;
+                default -> -1;
+            };
+        }
+
+        private boolean match(String value) {
+            if (!check(value)) return false;
+            at++;
+            return true;
+        }
+
+        private boolean check(String value) {
+            return peek().is(value);
+        }
+
+        private boolean check(int ahead, String value) {
+            return token(ahead).is(value);
+        }
+
+        private boolean check(Kind kind) {
+            return peek().kind() == kind;
+        }
+
+        private Token expect(String value) {
+            if (!check(value)) throw fail(peek(), value + " expected, found " + peek().text());
+            return next();
+        }
+
+        private Token expect(Kind kind, String what) {
+            if (!check(kind)) throw fail(peek(), what + " expected, found " + peek().text());
+            return next();
+        }
+
+        private Token next() {
+            return tokens.get(at++);
+        }
+
+        private Token previous() {
+            return tokens.get(at - 1);
+        }
+
+        private Token peek() {
+            return token(0);
+        }
+
+        private Token token(int ahead) {
+            return tokens.get(Math.min(at + ahead, tokens.size() - 1));
+        }
+
+        private ParseFailure fail(Token token, String message) {
+            return new ParseFailure(token, message + " in " + fileName);
+        }
+    }
+
+    private record TypeInfo(Type type, int precision, int scale) {
+    }
+
+    private static final class ProcedureBuilder {
+        final String name;
+        final List<String> parameters;
+        final List<Stmt> body = new ArrayList<>();
+        final Map<String, Procedure> procedures = new LinkedHashMap<>();
+
+        ProcedureBuilder(String name, List<String> parameters) {
+            this.name = name;
+            this.parameters = parameters;
+        }
+
+        Procedure freeze() {
+            return new Procedure(name, parameters, List.copyOf(body));
+        }
+    }
+
+    private static final class ParseFailure extends RuntimeException {
+        final Token token;
+
+        ParseFailure(Token token, String message) {
+            super(message);
+            this.token = token;
+        }
+    }
+}

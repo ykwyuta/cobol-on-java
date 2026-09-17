@@ -15,14 +15,14 @@ import java.util.regex.Pattern;
  * <p>そこで数字と引用符の中身を伏せてから数える。伏せるのは<b>数えるときだけ</b>で、
  * 元の文面は残してある。直す人が見るのはそちらだからである。
  */
-final class Reasons {
+public final class Reasons {
 
 
     private Reasons() {
     }
 
     /** 位置と個別の名前を伏せる。 */
-    static String normalized(String message) {
+    public static String normalized(String message) {
         if (message == null) {
             return "";
         }

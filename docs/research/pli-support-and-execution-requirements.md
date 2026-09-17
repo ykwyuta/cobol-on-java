@@ -5,11 +5,16 @@
 | **作成日** | 2026-09-11 |
 | **対象言語** | **PL/I (Programming Language One)**（Enterprise PL/I for z/OS 準拠） |
 | **対象資材** | `reference/Bank-of-Z/src/base/batch/pli/BNKSTMT.pli`, `reference/Bank-of-Z/src/base/ims/pli/IBLOGIN.pli` |
-| **関連文書** | [Bank-of-Z ビルド要件レポート](bank-of-z-build-and-execution-requirements.md), [設計 77 (Db2)](../design/77-spring-cics-db2.md), [設計 78 (IMS)](../design/78-ims-subsystem.md), [設計 90 (Job)](../design/90-job.md) |
+| **関連文書** | [PL/I の外部検証とコーパス](../design/26-pli-verification.md), [Bank-of-Z ビルド要件レポート](bank-of-z-build-and-execution-requirements.md), [設計 77 (Db2)](../design/77-spring-cics-db2.md), [設計 78 (IMS)](../design/78-ims-subsystem.md), [設計 90 (Job)](../design/90-job.md) |
 
 ---
 
 ## 1. はじめに
+
+> **実装状況 (2026-09-17):** `pli-compiler`、共通 Db2 ポートへの `EXEC SQL`、IMS の
+> `PLITDLI`、配備カタログまで実装済みであり、対象 2 本は無修正で翻訳できる。本書の
+> 「必要要件」は初期調査時の記録として残し、今後の拡張と外部検証は
+> [設計 26](../design/26-pli-verification.md) に従う。
 
 Bank-of-Z 資産の調査において、COBOL 資産群に加え、以下の **PL/I 言語資産** が存在することが確認されました：
 1. **`src/base/batch/pli/BNKSTMT.pli`**:
