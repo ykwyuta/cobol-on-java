@@ -20,6 +20,10 @@
       <artifactId>cobol-runtime</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm</artifactId>
+    </dependency>
     <!-- 試験だけが使う。Hercules で裏づけ済みの機械語組み立てと突き合わせる -->
     <dependency>
       <groupId>dev.cobolonjava</groupId>
