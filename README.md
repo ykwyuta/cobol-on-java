@@ -44,6 +44,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [DL/I の複雑仕様と実行時セマンティクス詳細検討](docs/research/ims-dli-complex-semantics-report.md) — コマンドコード (*D/*F/*P)、親境界 (Parentage)、重複キー規則、ステータスコード完全対応
 - [PL/I 資産のコンパイルおよび実行要件](docs/research/pli-support-and-execution-requirements.md) — Bank-of-Z の PL/I 2本を対象にした言語・Db2・IMS連携の範囲
 - [PL/I の外部検証とコーパス](docs/design/26-pli-verification.md) — CCVS85 相当がない条件での規格試験・IBM参照出力・実資産による三層検証
+- [HLASM 資産のコンパイルおよび実行方式検討](docs/research/hlasm-support-and-execution-requirements.md) — PL/I と同じ手法が効く範囲と効かない範囲、Hercules を命令単位のオラクルとして使う測り方
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
 
 ## 主要な技術方針
@@ -69,10 +70,11 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | --- | --- | --- |
 | `cobol-runtime` | データ表現・10 進演算・編集移送・文字コード変換・データセットの意味論 | P0-a 第 1 増分 実装済。順編成・相対編成・索引編成の読み書き、割当ての検査 (領域の限り・形・開く段)、区分データセットのディレクトリ (メンバの一覧と並び) を追加 |
 | `cobol-oracle` | Hercules 用テストの生成と期待値の採取 | 第 1 増分 実装済 |
-| `cobol-verify` | 外の基準で測る。NIST CCVS85、COBOL OSS コーパス、PL/I 外部コーパスを処理系へ流し、合格率と未対応構文を数える | PL/I は `.pli` と参照処理系から採取した `.out` を組にし、翻訳率と実行結果一致率を別々に数える。コーパスは同梱しない |
+| `cobol-verify` | 外の基準で測る。NIST CCVS85、COBOL OSS コーパス、PL/I・HLASM の外部コーパスを処理系へ流し、合格率と未対応構文を数える | PL/I は `.pli` と参照処理系から採取した `.out` を組にし、翻訳率と実行結果一致率を別々に数える。HLASM は 6 状態で数え、`.obj` (機械語) と `.out` (実行結果) を別の段として測る。機械語が違う本は実行しない。コーパスは同梱しない |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
 | `pli-compiler` | PL/I プリプロセッサ・構文解析・共通メモリ上の意味実行・ASM による JVM クラス生成 | Bank-of-Z subset。`*PROCESS` / `%INCLUDE`、`CHAR` / `FIXED BIN` / `FIXED DEC` / `BIT` / `POINTER` / `BASED`、構造体、内部 `PROCEDURE`、`IF`、`DO WHILE` / `DO UNTIL` / `DO ... TO ... BY`、`PUT`、順編成入力、組み込み文字列関数、参照渡し `CALL` を実装。`BNKSTMT.pli` と `IBLOGIN.pli` を無修正で翻訳できる。`EXEC SQL` は共通 Db2 ポートを使って SQLCA、host variable、cursor、UOW を処理する |
+| `hlasm-assembler` | HLASM の原文を読み、機械語へ組み立てて実行する (設計 27) | 増分 1 実装済。**組み立て**: 固定形式の読み取り (継続・属性参照 `L'` の読み分け・`ICTL` は断る)、`CSECT` / `DSECT` / `USING` / `DROP` / `DC` / `DS` / `EQU` / `ORG` / `LTORG` / `END`、式 (自己定義項・所在カウンタ・長さ属性・再配置属性の検査)、リテラルプール、RR / RX / RS / SI / SS 形式の機械命令 96 個と拡張ニーモニック。**実行**: 線形の番地空間 (呼ぶ側の記憶域をそのまま指し、エイリアシングを保つ)、16 本の汎用レジスタ、`EX` による自己書き換えと計算分岐、10 進命令は `cobol-runtime` の Hercules で裏づけ済みの層へ委ねる。標準リンケージ (R1 の引数表 ↔ `DataView[]`) で `CobolProgram` ABI に着地し、COBOL と同じ `CALL` で呼べる。マクロと条件付きアセンブリは<b>持たない</b>。知らない命令欄は読み飛ばさずに断る。`ED` / `EDMK` / `TRT` / `MVO` / `SRP` / `SVC` は組み立てられるがまだ実行できず、演算例外で断る。組み立ては `cobol-oracle` の `Insn` と突き合わせ済み。**実行の Hercules 突き合わせは未了** (P-175) |
 | `cobol-ims` | IMS の DBD / PSB と DL/I 呼び出しの中立モデル (設計 78) | DBDGEN / PSBGEN の原文を読む。Bank-of-Z の DBD 9 本・PSB 8 本がすべて読める (P-153)。`CALL 'CBLTDLI'` の DB 呼び出し (GU / GN / GNP / GH* / ISRT / REPL / DLET) をメモリの上の階層型データベースで動かす (P-154)。ジョブの `EXEC PGM=DFSRRC00,PARM='DLI,...'` でバッチを流し、データベースをデータセットに書き戻す (P-155)。I/O PCB の GU / GN / ISRT / PURG と、1 つの JVM の中の電文のキューで MPP を動かす (P-156)。I/O PCB への GU・基本 CHKP・SYNC を同期点とし、ROLB と異常終了は最後の同期点まで戻す (P-157)。`PARM='BMP,...'` は電文を読まない形だけ受け、I/O PCB を置いて CHKP できる (P-158)。SSA のコマンドコード C / D / F / L / N / P / Q を扱う (U / V は断る、P-159)。データベースの置き場は中立の口の裏にあり、既定はデータセット、`cobol.ims.jdbc.url` を指定すれば `cobol-ims-rdb` の RDB の表 (P-160)。電文のキューは中立の口の裏にあり、既定はこの JVM の中、`cobol.ims.jms.factory` を指定すれば `cobol-ims-jms` が JMS で運ぶ (P-162、P-165)。記号 CHKP が退避した域を業務の更新と同じ確定で置き場に残し、XRST が作業域か `CKPTID=` の検査点から書き戻す (P-164)。SPA、電文を読む BMP、GSAM は未実装 (Bank-of-Z がどれも使っていないので測る基準が無い、P-166) |
 | `cobol-ims-rdb` | IMS のデータベースを RDB の表に生バイトで置く JDBC の置き場 (設計 78 §3.2、ADR-0013) | `IMS_SEGMENT_STORE` / `IMS_ROOT_INDEX` を H2・PostgreSQL・Db2 に作り、同期点ごとに変わった根だけを書き直す。方言の差を知るのは `ImsSchema.Dialect` だけで、どれも実サーバで測っている (PostgreSQL 17.11 は `infra/postgres`、Db2 12.1 は `infra/db2`)。主キーに `ROOT_SEQ` を足した (P-160)。ルートアンカーロック (ADR-0015) は同期点の確定で昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (P-161)。処理済みの電文を `IMS_MESSAGE_INBOX` に業務の更新と同じトランザクションで書き、再配信を捨てる。保持期間 (既定 7 日) を過ぎた ID は、置き場を開くときに落とす (P-163)。記号 CHKP が退避した域を `IMS_CHECKPOINT` に同じ確定で書く (P-164)。取引コードのキューを読む領域を `IMS_QUEUE_LEASE` の借用で 1 つに限り、2 つ目は起こさずに断る (P-167)。競合したら電文駆動の領域を置き場から読み直して頭から動かし直し、使い切れば U0777 で落とす (P-168)。容器 (Spring Boot) の `DataSource` からも構成でき、そこから取った接続を同期点で自分で確定する (容器のトランザクションには相乗りしない、P-169)。GH の時点の排他と根ごとの遅延読み込みは未実装 |
 | `cobol-ims-jms` | IMS TM の電文のキューを JMS 3.0 で運ぶアダプタ (設計 78 §4、ADR-0014) | 取引コードごとのキューを `BytesMessage` で読み、LL / ZZ 付きのセグメントを運ぶ。応答は端末ごとのキューへ。同期点で取り出しと応答を 1 つの JMS のトランザクションで確定する (P-162)。ブローカは `infra/rabbitmq` の compose。実ブローカ (RabbitMQ 4.1.8) での起動と試験を確認し、Bank-of-Z のオンライン 5 本をブローカ越しに測った (P-162)。`cobol.ims.jms.factory` に `ConnectionFactory` のクラス名を書くと差し込まれる (P-165)。`JMSMessageID` を運び、置き場の inbox で再配信を捨てる (P-163)。XA、SPA (P-166)、`CHNG` は未実装 |
@@ -109,11 +111,31 @@ IMS 領域は `CBLTDLI` と `PLITDLI` の両方を登録する。PL/I の先頭�
 単一行 `SELECT`、`INSERT` / `UPDATE` / `DELETE`、cursor の宣言・開閉・取得、
 `COMMIT` / `ROLLBACK` を共通 Db2 実行ポートへ渡す。
 
+HLASM も同じ ABI に着地する。標準リンケージの R1 の引数表が `DataView[]` に対応するので、
+COBOL の `CALL 'BUMP' USING ...` からそのまま呼べる。`-l` は組み立て表 (変位と機械語) を出す。
+組み立てと実行を<b>別に</b>突き合わせるためにある (設計 27 §3)。
+
+```
+java -cp <classpath> dev.cobolonjava.hlasm.Main -d out -l BUMP.asm
+java -cp out:<classpath> hlasm.generated.BUMP
+```
+
+マクロと条件付きアセンブリはまだ無い。`WTO` や `OPEN` のようなマクロ呼出しは、読み飛ばさずに
+診断を出して断る。読み飛ばすと、展開されるはずだった命令が消えたまま組み立てが通るためである。
+
 PL/I の外部コーパスは次の入口で測る。同名の `.out` があれば参照処理系の出力として
 実行結果まで照合し、なければ翻訳の受理だけを数える。
 
 ```
 java -cp <classpath> dev.cobolonjava.verify.Main pli-corpus path/to/pli-corpus -o pli-report.txt
+```
+
+HLASM の外部コーパスは組み立てと実行を<b>別々に</b>数える (設計 27 §3)。隣に `.obj` があれば
+機械語を、`.out` があれば実行結果を照合する。機械語が期待値と違う本は実行まで進めない。
+誤った機械語を動かした結果を「実行の不一致」として数えると、どちらが悪いのか分からなくなる。
+
+```
+java -cp <classpath> dev.cobolonjava.verify.Main hlasm-corpus path/to/hlasm-corpus -o hlasm-report.txt
 ```
 
 ## ジョブとして動かす

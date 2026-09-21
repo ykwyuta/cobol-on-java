@@ -26,6 +26,11 @@
     </dependency>
     <dependency>
       <groupId>dev.cobolonjava</groupId>
+      <artifactId>hlasm-assembler</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
       <artifactId>cobol-compiler</artifactId>
       <version>${project.version}</version>
     </dependency>
