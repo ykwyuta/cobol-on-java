@@ -75,8 +75,9 @@ public final class Cpu {
         instructionAddress = entry;
         while (instructionAddress != RETURN_SENTINEL) {
             if (++steps > stepLimit) {
-                throw new MachineException(MachineException.OPERATION,
-                        "the program did not return within " + stepLimit + " instructions");
+                // プログラム割込みとは別の例外である。戻ってこないのは資産の出来事ではなく、
+                // 測定の側から見た「結果が取れなかった」である
+                throw new RunawayProgramException(stepLimit);
             }
             int at = instructionAddress;
             try {

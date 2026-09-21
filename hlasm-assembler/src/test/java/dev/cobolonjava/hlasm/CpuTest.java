@@ -452,8 +452,9 @@ class CpuTest {
         Cpu cpu = new Cpu(builder.build(), 1000);
         // USING TEST,15 で組み立てているので、ベースレジスタを入口の番地にしておく
         cpu.setRegister(15, base);
-        MachineException failure = assertThrows(MachineException.class, () -> cpu.run(base));
-        assertTrue(failure.getMessage().contains("did not return within"), failure.getMessage());
+        RunawayProgramException failure =
+                assertThrows(RunawayProgramException.class, () -> cpu.run(base));
+        assertEquals(1000, failure.steps());
         assertEquals(1001, cpu.steps());
     }
 }

@@ -78,6 +78,8 @@ public final class HlasmRuntime {
         try {
             return cpu.run(textBase + module.entryOffset());
         } catch (MachineException failure) {
+            // 割込みは観測できる結果なので、実行時の例外として包む。
+            // RunawayProgramException は包まずに通す。測る側がそれと分かる必要がある
             throw new HlasmExecutionException(module.name() + ": " + failure.getMessage(), failure);
         }
     }

@@ -70,7 +70,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | --- | --- | --- |
 | `cobol-runtime` | データ表現・10 進演算・編集移送・文字コード変換・データセットの意味論 | P0-a 第 1 増分 実装済。順編成・相対編成・索引編成の読み書き、割当ての検査 (領域の限り・形・開く段)、区分データセットのディレクトリ (メンバの一覧と並び) を追加 |
 | `cobol-oracle` | Hercules 用テストの生成と期待値の採取 | 第 1 増分 実装済 |
-| `cobol-verify` | 外の基準で測る。NIST CCVS85、COBOL OSS コーパス、PL/I 外部コーパスを処理系へ流し、合格率と未対応構文を数える | PL/I は `.pli` と参照処理系から採取した `.out` を組にし、翻訳率と実行結果一致率を別々に数える。コーパスは同梱しない |
+| `cobol-verify` | 外の基準で測る。NIST CCVS85、COBOL OSS コーパス、PL/I・HLASM の外部コーパスを処理系へ流し、合格率と未対応構文を数える | PL/I は `.pli` と参照処理系から採取した `.out` を組にし、翻訳率と実行結果一致率を別々に数える。HLASM は 6 状態で数え、`.obj` (機械語) と `.out` (実行結果) を別の段として測る。機械語が違う本は実行しない。コーパスは同梱しない |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
 | `pli-compiler` | PL/I プリプロセッサ・構文解析・共通メモリ上の意味実行・ASM による JVM クラス生成 | Bank-of-Z subset。`*PROCESS` / `%INCLUDE`、`CHAR` / `FIXED BIN` / `FIXED DEC` / `BIT` / `POINTER` / `BASED`、構造体、内部 `PROCEDURE`、`IF`、`DO WHILE` / `DO UNTIL` / `DO ... TO ... BY`、`PUT`、順編成入力、組み込み文字列関数、参照渡し `CALL` を実装。`BNKSTMT.pli` と `IBLOGIN.pli` を無修正で翻訳できる。`EXEC SQL` は共通 Db2 ポートを使って SQLCA、host variable、cursor、UOW を処理する |
@@ -128,6 +128,14 @@ PL/I の外部コーパスは次の入口で測る。同名の `.out` があれ�
 
 ```
 java -cp <classpath> dev.cobolonjava.verify.Main pli-corpus path/to/pli-corpus -o pli-report.txt
+```
+
+HLASM の外部コーパスは組み立てと実行を<b>別々に</b>数える (設計 27 §3)。隣に `.obj` があれば
+機械語を、`.out` があれば実行結果を照合する。機械語が期待値と違う本は実行まで進めない。
+誤った機械語を動かした結果を「実行の不一致」として数えると、どちらが悪いのか分からなくなる。
+
+```
+java -cp <classpath> dev.cobolonjava.verify.Main hlasm-corpus path/to/hlasm-corpus -o hlasm-report.txt
 ```
 
 ## ジョブとして動かす

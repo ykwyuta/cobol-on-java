@@ -30,6 +30,7 @@ import java.util.Optional;
  * verify ccvs85-run &lt;newcob.val&gt; [-x 差し込み札] [-o 出力先]   動かして合否を数える
  * verify corpus     &lt;置き場&gt;      [-I 写し句の置き場]... [-o 出力先]
  * verify pli-corpus &lt;置き場&gt;      [-o 出力先]
+ * verify hlasm-corpus &lt;置き場&gt;    [-o 出力先]   組み立てと実行を別々に数える
  * </pre>
  *
  * <p>どちらも<b>数だけ</b>を出す。コーパスの中身は出さないし、同梱もしない
@@ -54,6 +55,7 @@ public final class Main {
             System.err.println("       verify ccvs85-run <newcob.val> [-x x-cards] [-o out]");
             System.err.println("       verify corpus     <directory> [-I copybooks]... [-o out]");
             System.err.println("       verify pli-corpus <directory> [-o out]");
+            System.err.println("       verify hlasm-corpus <directory> [-o out]");
             System.err.println("       verify ims-gen    <directory> [-o out]");
             System.err.println("       verify ims-mpp    <base> -d classes -p program -s psb -m messages [-o out]");
             System.exit(2);
@@ -65,6 +67,7 @@ public final class Main {
             case "ccvs85-run" -> ccvs85Run(Path.of(args[1]), option(args, "-x"));
             case "corpus" -> corpus(Path.of(args[1]), options(args, "-I"));
             case "pli-corpus" -> pliCorpus(Path.of(args[1]));
+            case "hlasm-corpus" -> hlasmCorpus(Path.of(args[1]));
             case "ims-gen" -> imsGeneration(Path.of(args[1]));
             case "ims-mpp" -> dev.cobolonjava.verify.ims.ImsMessageRunner.run(Path.of(args[1]),
                     option(args, "-d"), word(args, "-p"), word(args, "-s"), option(args, "-m"));
@@ -168,6 +171,22 @@ public final class Main {
         var report = dev.cobolonjava.verify.pli.PliVerificationRunner.standard()
                 .run(dev.cobolonjava.verify.pli.PliSourceDirectory.read(root));
         return report.text("PL/I コーパス") + '\n' + report.csv();
+    }
+
+    /**
+     * HLASM の外部コーパスを組み立て、期待値があれば機械語と実行結果を照合する (設計 27 §3)。
+     *
+     * <p>組み立てと実行を<b>別々に</b>数える。機械語が期待値と違う本は実行しない。
+     * 誤った機械語を動かした結果を「実行の不一致」として数えると、どちらが悪いのか分からない。
+     */
+    private static String hlasmCorpus(Path root) {
+        if (!Files.isDirectory(root)) {
+            System.err.println("HLASM コーパスの置き場が無い: " + root);
+            System.exit(1);
+        }
+        var report = dev.cobolonjava.verify.hlasm.HlasmVerificationRunner.standard()
+                .run(dev.cobolonjava.verify.hlasm.HlasmSourceDirectory.read(root));
+        return report.text("HLASM コーパス") + '\n' + report.csv();
     }
 
     /** IMS の DBDGEN / PSBGEN の原文を読めるか数える (設計 78)。 */
