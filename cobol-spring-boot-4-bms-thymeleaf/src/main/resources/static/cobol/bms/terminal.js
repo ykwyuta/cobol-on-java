@@ -13,6 +13,22 @@ if (form) {
     input.addEventListener('input', () => {
       input.dataset.modified = 'true';
     });
+    // field に入るのは文字数ではなく桁数ぶんである。maxlength は文字数しか見ないので、
+    // DBCS を入れると桁が溢れる。溢れる入力はここで止める (server も同じことを確かめる)
+    input.addEventListener('beforeinput', (event) => {
+      const inserted = event.data != null
+        ? event.data
+        : (event.dataTransfer ? event.dataTransfer.getData('text') : '');
+      if (!inserted) {
+        return;
+      }
+      const start = input.selectionStart == null ? input.value.length : input.selectionStart;
+      const end = input.selectionEnd == null ? start : input.selectionEnd;
+      const next = input.value.slice(0, start) + inserted + input.value.slice(end);
+      if (cells(next) > Number(input.dataset.length)) {
+        event.preventDefault();
+      }
+    });
     if (input.dataset.numeric === 'true') {
       // 3270 の数字 lock が受ける文字だけを通す
       input.addEventListener('beforeinput', (event) => {
@@ -74,13 +90,35 @@ if (form) {
     form.submit();
   }
 
+  // 3270 の桁数の見積り。DBCS の 1 文字は 2 桁を占め、混在 field では前後のシフトアウトと
+  // シフトインも 1 桁ずつ占める。どの文字が DBCS になるかを決めるのは対象コードページであり、
+  // client はそれを持たない。ここで出せるのは見積りまでであって、判定は server が対象
+  // コードページへ符号化して行う (ADR-0010)。Latin-1 と半角カタカナ以外では実際と違う値に
+  // なりうる。多く数えれば 1 打鍵早く止まるだけ、少なく数えれば server が断る
+  function cells(text) {
+    let count = 0;
+    let shifted = false;
+    for (const character of text) {
+      const code = character.codePointAt(0);
+      // Latin-1 までと半角カタカナ (U+FF61〜U+FF9F) は、混在コードページでも 1 byte である
+      const double = code > 0xFF && !(code >= 0xFF61 && code <= 0xFF9F);
+      if (double !== shifted) {
+        count += 1;
+        shifted = double;
+      }
+      count += double ? 2 : 1;
+    }
+    return shifted ? count + 1 : count;
+  }
+
   function prepare(aid) {
     // cursor 位置を画面先頭からの offset で送る
     const cursor = form.querySelector('input[name="cursor"]');
     const active = document.activeElement;
     if (inputs.includes(active)) {
       const row = Number(active.dataset.row) - 1;
-      const column = Number(active.dataset.column) - 1 + (active.selectionStart || 0);
+      // cursor は画面の桁で送る。caret の位置は文字数なので、桁数に直す
+      const column = Number(active.dataset.column) - 1 + cells(active.value.slice(0, active.selectionStart || 0));
       cursor.value = String(row * columns + column);
     }
     // 変更した field と FSET の field だけを送る。CLEAR と PA は field を送らない

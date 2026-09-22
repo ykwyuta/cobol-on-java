@@ -67,7 +67,7 @@
 | --- | --- |
 | `BmsScreenView` / `BmsScreenViewFactory` | snapshot から表示モデルを作る。属性は列挙した class へだけ写す。DRK の値は持たない。画面端をまたぐ field と重なる field は断る |
 | `templates/cobol/bms/screen.html` | 共通 template。`th:text` / `th:value` / `th:attr` だけを使い、`th:utext` と style を使わない |
-| `static/cobol/bms/bms.css` / `terminal.js` | theme と端末操作。外部 file なので CSP の `script-src 'self'` で動く |
+| `static/cobol/bms/bms.css` / `terminal.js` | theme と端末操作。外部 file なので CSP の `script-src 'self'` で動く。桁数 (DBCS を 2 桁と見積る) で溢れる入力を止め、cursor も桁で送る。見積りは少なめに出し、最終判定は server が行う |
 | `BmsTerminalInputBinder` | form (`aid`、`cursor`、`bms.NAME.occurrence`) を `BmsTerminalInput` にする。形だけを確かめ、画面との照合は `BmsInputDecoder` に任せる |
 | `BmsThymeleafAutoConfiguration` | 上の 2 つの部品を bean にする |
 
@@ -96,7 +96,8 @@ JSON 専用の構成でこの module を外せるよう、BMS Thymeleaf adapter 
 
 ## 6. 未検証の項目 (次の spike)
 
-- IME、全角文字、DBCS の SO / SI と cell 幅
+- IME と、DBCS の cell 幅 (server 側の桁数の扱いは設計 79 §8.6 で入れた。ブラウザの等幅 font が
+  DBCS を 2 桁ぶんの幅で描くかは測っていない)
 - insert / overwrite、erase EOF、Tab / Backtab を field 単位で扱う 3270 の操作意味論 (今はブラウザ既定)
 - 画面端で折り返す field の visual segment
 - font の読み込み前後で cell 幅が変わらないことの測定と fallback

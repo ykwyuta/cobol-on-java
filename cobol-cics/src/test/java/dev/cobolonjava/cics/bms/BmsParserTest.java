@@ -11,6 +11,7 @@ import dev.cobolonjava.cics.bms.BmsModel.Field;
 import dev.cobolonjava.cics.bms.BmsModel.Highlight;
 import dev.cobolonjava.cics.bms.BmsModel.Mapset;
 import dev.cobolonjava.cics.bms.BmsModel.Mode;
+import dev.cobolonjava.cics.bms.BmsModel.Sosi;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
@@ -149,6 +150,23 @@ class BmsParserTest {
                 card("SET4     DFHMSD TYPE=MAP,LANG=PLI,TIOAPFX=YES", false),
                 card("         DFHMSD TYPE=FINAL", false)),
                 "only LANG=COBOL", 1);
+    }
+
+    @Test
+    @DisplayName("SOSIはYES・NOを受け、書かれていなければempty。ほかの値は断る")
+    void readsTheSosiOperand() {
+        Mapset parsed = BmsParser.parse(mapset(
+                card("MIX      DFHMDF POS=(1,2),LENGTH=8,ATTRB=UNPROT,SOSI=YES", false),
+                card("SBCS     DFHMDF POS=(2,2),LENGTH=8,ATTRB=UNPROT,SOSI=NO", false),
+                card("PLAIN    DFHMDF POS=(3,2),LENGTH=8,ATTRB=UNPROT", false)));
+        List<Field> fields = parsed.maps().get(0).fields();
+
+        assertEquals(Optional.of(Sosi.YES), fields.get(0).sosi());
+        assertEquals(Optional.of(Sosi.NO), fields.get(1).sosi());
+        assertEquals(Optional.empty(), fields.get(2).sosi());
+
+        assertRejected(mapset(card("F1       DFHMDF POS=(1,2),LENGTH=2,SOSI=MAYBE", false)),
+                "unsupported SOSI=MAYBE", 6);
     }
 
     private static void assertRejected(String source, String message, int line) {

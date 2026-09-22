@@ -17,6 +17,7 @@ import dev.cobolonjava.cics.bms.BmsModel.Justify;
 import dev.cobolonjava.cics.bms.BmsModel.Mapset;
 import dev.cobolonjava.cics.bms.BmsModel.Mode;
 import dev.cobolonjava.cics.bms.BmsModel.Position;
+import dev.cobolonjava.cics.bms.BmsModel.Sosi;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -192,7 +193,7 @@ public final class BmsParser {
                 throw fail(statement, "DFHMDF outside DFHMDI");
             }
             only(statement, Set.of("POS", "LENGTH", "ATTRB", "COLOR", "HILIGHT", "INITIAL",
-                    "PICIN", "PICOUT", "JUSTIFY", "OCCURS"));
+                    "PICIN", "PICOUT", "JUSTIFY", "OCCURS", "SOSI"));
             Optional<String> fieldName = statement.label() == null
                     ? Optional.empty() : Optional.of(name(statement, FIELD_NAME, "field"));
             int[] pos = pair(statement, "POS");
@@ -228,8 +229,12 @@ public final class BmsParser {
             Optional<Highlight> highlight = enumValue(statement, "HILIGHT", Highlight.class)
                     .or(mapDefaults::highlight);
             Set<Justify> justify = enumList(statement, "JUSTIFY", Justify.class);
+            // SOSI=YES は SBCS と DBCS の混在 field の宣言である。こちらは混在データを
+            // 画面位置で数えて扱えるので (BmsFieldText)、断らずに受ける。SOSI=NO は
+            // SBCS だけの field であり、RECEIVE MAP が DBCS の入力を断る根拠になる
+            Optional<Sosi> sosi = enumValue(statement, "SOSI", Sosi.class);
             fields.add(new Field(statement.line(), fieldName, position, length, attributes,
-                    color, highlight, initial, pictureIn, pictureOut, justify, occurs));
+                    color, highlight, initial, pictureIn, pictureOut, justify, occurs, sosi));
         }
 
         private Defaults defaults(Statement statement, Defaults inherited) {

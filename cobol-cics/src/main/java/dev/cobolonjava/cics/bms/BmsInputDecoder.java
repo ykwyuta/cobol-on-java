@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -18,6 +19,10 @@ import java.util.Set;
  *
  * <p>入力は直前の画面と照合して再検証する。保護 field への入力や長さ超過をブラウザの判定に
  * 任せると、HTTP 要求の改変で COBOL の記憶域へ届く (ADR-0010)。
+ *
+ * <p><b>長さは画面位置 (cell) で数える</b> ({@link BmsFieldText})。DBCS の 1 文字は 2 桁、
+ * 混在 field のシフトアウト / シフトインは 1 桁ずつを占める。文字数で数えていたときは、
+ * 日本語を 1 文字入れるだけで「1 文字が 1 byte にならない」と断っていた (暫定判断 P-179)。
  */
 public final class BmsInputDecoder {
 
@@ -75,9 +80,11 @@ public final class BmsInputDecoder {
             }
             int index = indexOf(fields, field.name(), field.occurrence());
             FieldState state = fields.get(index);
-            validate(state, field.value(), key);
+            validate(state, definitionOf(map, field.name()), field.value(), key, codePage);
             entered.put(key, field.value());
-            fields.set(index, state.withData(pad(field.value(), state.length(), ' ')).withModified(true));
+            fields.set(index, state
+                    .withData(BmsFieldText.fill(field.value(), state.length(), ' ', codePage))
+                    .withModified(true));
         }
         BmsSymbolicLayout layout = BmsSymbolicLayout.of(mapset, map);
         byte[] out = new byte[layout.length()];
@@ -92,15 +99,20 @@ public final class BmsInputDecoder {
             String key = key(slot.name(), slot.occurrence());
             // 画面に置かれたまま送られる FSET field は、表示のために詰めた空白を送らない
             String value = entered.containsKey(key) ? entered.get(key) : state.data().stripTrailing();
-            out[slot.lengthOffset()] = (byte) (value.length() >>> 8);
-            out[slot.lengthOffset() + 1] = (byte) value.length();
+            // L は端末が送った画面位置の数である。DBCS の 1 文字は 2 桁、混在 field のシフト符号は
+            // 1 桁を占めるので、文字数ではなくコードページで符号化した byte 数を入れる
+            int transmitted = BmsFieldText.cells(value, codePage);
+            out[slot.lengthOffset()] = (byte) (transmitted >>> 8);
+            out[slot.lengthOffset() + 1] = (byte) transmitted;
             if (entered.containsKey(key) && value.isEmpty()) {
                 out[slot.flagOffset()] = (byte) 0x80;
                 continue;
             }
-            byte[] data = codePage.encode(justify(value, slot.field()));
+            byte[] data = codePage.encode(justify(value, slot.field(), codePage));
             if (data.length != slot.dataLength()) {
-                throw new IllegalArgumentException("field " + key + " does not encode to one byte per character");
+                // ここへ来るのは詰め方の誤りである。長さは validate と justify で確かめてある
+                throw new IllegalStateException("field " + key + " encodes to " + data.length
+                        + " bytes but the map reserves " + slot.dataLength());
             }
             System.arraycopy(data, 0, out, slot.dataOffset(), data.length);
         }
@@ -113,16 +125,28 @@ public final class BmsInputDecoder {
                 screen.columns(), fields, cursor, false, false));
     }
 
-    private static void validate(FieldState state, String value, String key) {
+    private static void validate(FieldState state, Optional<BmsModel.Field> definition, String value,
+                                 String key, CodePage codePage) {
         if (state.attributes().contains(BasicAttribute.PROT)
                 || state.attributes().contains(BasicAttribute.ASKIP)) {
             throw new IllegalArgumentException("field " + key + " is protected");
         }
-        if (value.length() > state.length()) {
-            throw new IllegalArgumentException("field " + key + " is longer than " + state.length());
-        }
         if (value.codePoints().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("field " + key + " contains control characters");
+        }
+        // 表せない文字はここで断る。診断は文字と符号位置とコードページの名前を持つ
+        // (UnrepresentableCharacterException)。長さは画面位置で数える: DBCS の 1 文字は 2 桁、
+        // 混在 field のシフト符号は 1 桁を占める
+        int cells = BmsFieldText.cells(value, codePage);
+        if (cells > state.length()) {
+            throw new IllegalArgumentException("field " + key + " needs " + cells
+                    + " screen positions but the field is " + state.length());
+        }
+        if (definition.flatMap(BmsModel.Field::sosi).filter(sosi -> sosi == BmsModel.Sosi.NO).isPresent()
+                && cells != value.codePointCount(0, value.length())) {
+            // SOSI=NO は SBCS だけの field である。1 文字が 1 桁で収まらない入力は DBCS を含む
+            throw new IllegalArgumentException("field " + key + " is declared SOSI=NO"
+                    + " and accepts single-byte characters only");
         }
         if (state.attributes().contains(BasicAttribute.NUM)
                 && !value.chars().allMatch(c -> (c >= '0' && c <= '9') || c == '.' || c == '-' || c == ' ')) {
@@ -132,19 +156,24 @@ public final class BmsInputDecoder {
 
     /**
      * JUSTIFY に従って field の長さへ詰める。既定は左寄せで空白、RIGHT は右寄せで 0 (暫定判断 P-119)。
+     *
+     * <p>詰める量は画面位置で数える。DBCS を含む値は文字数と桁数が違う。
      */
-    private static String justify(String value, BmsModel.Field field) {
+    private static String justify(String value, BmsModel.Field field, CodePage codePage) {
         Set<Justify> justify = field.justify();
         if (justify.contains(Justify.RIGHT)) {
             char fill = justify.contains(Justify.BLANK) ? ' ' : '0';
-            return String.valueOf(fill).repeat(field.length() - value.length()) + value;
+            return BmsFieldText.fillLeft(value, field.length(), fill, codePage);
         }
         char fill = justify.contains(Justify.ZERO) ? '0' : ' ';
-        return pad(value, field.length(), fill);
+        return BmsFieldText.fill(value, field.length(), fill, codePage);
     }
 
-    private static String pad(String value, int length, char fill) {
-        return value + String.valueOf(fill).repeat(length - value.length());
+    /** map の定義。画面の記録は SOSI を持たないので、断る根拠は定義から引く。 */
+    private static Optional<BmsModel.Field> definitionOf(BmsModel.Map map, String name) {
+        return map.fields().stream()
+                .filter(field -> field.name().filter(name::equalsIgnoreCase).isPresent())
+                .findFirst();
     }
 
     private static int indexOf(List<FieldState> fields, String name, int occurrence) {

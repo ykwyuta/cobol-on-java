@@ -7,6 +7,7 @@ import dev.cobolonjava.cics.bms.BmsModel;
 import dev.cobolonjava.cics.bms.BmsParser;
 import dev.cobolonjava.cics.bms.BmsScreenComposer;
 import dev.cobolonjava.cics.bms.BmsScreenSnapshot;
+import dev.cobolonjava.cics.bms.BmsSymbolicLayout;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.util.Map;
 import java.util.Optional;
@@ -127,6 +128,32 @@ class BmsScreenRenderingTest {
         assertThat(html).contains("action=\"/cics/OCAC\"", "src=\"/cobol/bms/terminal.js\"");
         assertThat(html).doesNotContain("th:", "style=");
         assertThat(html).contains("class=\"bms-row\"", "bms-len-10");
+    }
+
+    @Test
+    @DisplayName("DBCSのfieldは、文字数ではなく桁数ぶんの幅で描く")
+    void rendersDoubleByteFieldsByScreenPositions() {
+        String japanese = String.join("\n",
+                card("JSET     DFHMSD TYPE=&SYSPARM,MODE=INOUT,LANG=COBOL,TIOAPFX=YES", false),
+                card("SCRMP    DFHMDI SIZE=(24,80)", false),
+                card("NAME     DFHMDF POS=(3,2),LENGTH=8,ATTRB=(UNPROT,NORM),SOSI=YES", false),
+                card("         DFHMSD TYPE=FINAL", false)) + "\n";
+        BmsModel.Mapset mapset = BmsParser.parse(japanese);
+        BmsModel.Map map = mapset.map("SCRMP").orElseThrow();
+        BmsSymbolicLayout layout = BmsSymbolicLayout.of(mapset, map);
+        byte[] symbolic = new byte[layout.length()];
+        byte[] data = CodePages.IBM_930.encode("\u5C71\u7530  ");
+        System.arraycopy(data, 0, symbolic, layout.slots().get(0).dataOffset(), data.length);
+        BmsScreenSnapshot screen = BmsScreenComposer.send(mapset, map, Optional.empty(), symbolic,
+                new BmsScreenComposer.SendOptions(true, false, false, true, false, false,
+                        OptionalInt.empty(), false), CodePages.IBM_930);
+
+        BmsScreenView.Segment name = new BmsScreenViewFactory().create(screen).segments().get(0);
+
+        // 2 文字の値だが、幅は 8 桁である
+        assertThat(name.text()).isEqualTo("\u5C71\u7530  ");
+        assertThat(name.length()).isEqualTo(8);
+        assertThat(name.cssClass()).contains("bms-len-8");
     }
 
     @Test
