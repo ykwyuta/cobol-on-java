@@ -234,9 +234,6 @@ class CicsBrowserSseBrowserTest {
             page.waitForSelector("form.bms-terminal[data-codepage='IBM-1047']");
             Locator field = page.locator("input[name='bms.CUSTNO.1']");
             field.click();
-            // 画面から来た値は長さぶんの空白で埋まっている。3270 の上書きを持たないので、
-            // 打つ前に消す (暫定判断 P-133)
-            page.evaluate(clear());
 
             field.pressSequentially("A\u00E9\u5C71B");
 
@@ -244,7 +241,7 @@ class CicsBrowserSseBrowserTest {
             assertThat(field).hasValue("A\u00E9B");
 
             // 貼り付けや IME の確定のように、値ごと変わる経路も落とす
-            page.evaluate(clear() + """
+            page.evaluate("""
                     const input = document.querySelector("input[name='bms.CUSTNO.1']");
                     input.value = '\u5C71\u7530';
                     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -254,10 +251,25 @@ class CicsBrowserSseBrowserTest {
         }
     }
 
-    private static String clear() {
-        return """
-                document.querySelector("input[name='bms.CUSTNO.1']").value = '';
-                """;
+    @Test
+    @DisplayName("画面を開いてそのまま打てる。詰めた空白が残っているとmaxlengthで1文字も入らない")
+    void acceptsTypingWithoutClearingThePadding() {
+        try (BrowserContext context = browser.newContext()) {
+            Page page = context.newPage();
+            startTransaction(page);
+            Locator field = page.locator("input[name='bms.CUSTNO.1']");
+
+            // 画面から来たままの入力欄に、消さずに打つ
+            assertThat(field).hasValue("");
+            field.click();
+            field.pressSequentially("0000000042");
+
+            assertThat(field).hasValue("0000000042");
+
+            // 打った値が task まで届く
+            page.locator("button[type='submit']").first().click();
+            assertThat(page.locator("pre.bms-text")).hasText("RECEIVED CUSTNO=0000000042");
+        }
     }
 
 }

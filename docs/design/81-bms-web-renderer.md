@@ -65,7 +65,7 @@
 
 | 部品 | 役割 |
 | --- | --- |
-| `BmsScreenView` / `BmsScreenViewFactory` | snapshot から表示モデルを作る。属性は列挙した class へだけ写す。DRK の値は持たない。画面端をまたぐ field と重なる field は断る |
+| `BmsScreenView` / `BmsScreenViewFactory` | snapshot から表示モデルを作る。属性は列挙した class へだけ写す。DRK の値は持たない。画面端をまたぐ field と重なる field は断る。入力 field の値は末尾の空白を落とす (詰めたまま出すと `maxlength` と同じ文字数になり 1 文字も打てない。出力 field は cell を保つため落とさない) |
 | `templates/cobol/bms/screen.html` | 共通 template。`th:text` / `th:value` / `th:attr` だけを使い、`th:utext` と style を使わない |
 | `static/cobol/bms/bms.css` / `terminal.js` | theme と端末操作。外部 file なので CSP の `script-src 'self'` で動く。コードページに無い文字と桁の溢れを止め、cursor は桁で送る (§5.1)。最終判定は server が行う |
 | `BmsTerminalInputBinder` | form (`aid`、`cursor`、`bms.NAME.occurrence`) を `BmsTerminalInput` にする。形だけを確かめ、画面との照合は `BmsInputDecoder` に任せる |
