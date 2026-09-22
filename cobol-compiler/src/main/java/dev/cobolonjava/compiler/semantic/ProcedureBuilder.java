@@ -2916,7 +2916,7 @@ public final class ProcedureBuilder {
             try {
                 return new Operand.Literal(LiteralValue.of(context.inspectLiteral()));
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + context.inspectLiteral().getText());
+                report(origin, LiteralValue.invalidLiteral(context.inspectLiteral().getText(), e));
                 return null;
             }
         }
@@ -3306,7 +3306,7 @@ public final class ProcedureBuilder {
                 replacing.add(new InitializeImage.Replacing(category,
                         LiteralValue.of(rule.literal())));
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + rule.literal().getText());
+                report(origin, LiteralValue.invalidLiteral(rule.literal().getText(), e));
                 return null;
             }
         }
@@ -3678,7 +3678,7 @@ public final class ProcedureBuilder {
             try {
                 return new Operand.Literal(LiteralValue.of(context.literal()));
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + context.literal().getText());
+                report(origin, LiteralValue.invalidLiteral(context.literal().getText(), e));
                 return null;
             }
         }
@@ -3710,7 +3710,7 @@ public final class ProcedureBuilder {
                 }
                 return new Operand.Literal(value);
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + context.literal().getText());
+                report(origin, LiteralValue.invalidLiteral(context.literal().getText(), e));
                 return null;
             }
         }
@@ -5077,7 +5077,7 @@ public final class ProcedureBuilder {
             try {
                 return new Operand.Literal(LiteralValue.of(context.literal()));
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + context.literal().getText());
+                report(origin, LiteralValue.invalidLiteral(context.literal().getText(), e));
                 return null;
             }
         }
@@ -5551,7 +5551,7 @@ public final class ProcedureBuilder {
             try {
                 return new Operand.Literal(LiteralValue.of(context.literal()));
             } catch (RuntimeException e) {
-                report(origin, "invalid literal: " + context.literal().getText());
+                report(origin, LiteralValue.invalidLiteral(context.literal().getText(), e));
                 return null;
             }
         }
@@ -5594,7 +5594,7 @@ public final class ProcedureBuilder {
                     List.of(new Operand.Literal(LiteralValue.of(context.literal()))),
                     true, null, origin);
         } catch (RuntimeException e) {
-            report(origin, "invalid literal: " + context.literal().getText());
+            report(origin, LiteralValue.invalidLiteral(context.literal().getText(), e));
             return null;
         }
     }

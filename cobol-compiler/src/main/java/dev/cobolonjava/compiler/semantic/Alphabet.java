@@ -255,7 +255,8 @@ final class Alphabet {
         try {
             value = LiteralValue.of(context);
         } catch (RuntimeException e) {
-            diagnostics.add(new Diagnostic(origin, "invalid literal: " + context.getText()));
+            diagnostics.add(new Diagnostic(origin,
+                    LiteralValue.invalidLiteral(context.getText(), e)));
             return null;
         }
         if (value instanceof LiteralValue.Text text && text.isHex()) {
@@ -288,7 +289,8 @@ final class Alphabet {
         try {
             value = LiteralValue.of(context);
         } catch (RuntimeException e) {
-            diagnostics.add(new Diagnostic(origin, "invalid literal: " + context.getText()));
+            diagnostics.add(new Diagnostic(origin,
+                    LiteralValue.invalidLiteral(context.getText(), e)));
             return null;
         }
         if (value instanceof LiteralValue.Figure figure) {
