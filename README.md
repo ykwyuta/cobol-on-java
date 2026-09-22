@@ -45,6 +45,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [PL/I 資産のコンパイルおよび実行要件](docs/research/pli-support-and-execution-requirements.md) — Bank-of-Z の PL/I 2本を対象にした言語・Db2・IMS連携の範囲
 - [PL/I の外部検証とコーパス](docs/design/26-pli-verification.md) — CCVS85 相当がない条件での規格試験・IBM参照出力・実資産による三層検証
 - [HLASM 資産のコンパイルおよび実行方式検討](docs/research/hlasm-support-and-execution-requirements.md) — PL/I と同じ手法が効く範囲と効かない範囲、Hercules を命令単位のオラクルとして使う測り方
+- [IBM i (AS/400) 資産のコンパイルおよび実行方式検討](docs/research/ibm-i-support-and-execution-requirements.md) — RPG / DDS / Db2 for i / CL / 5250 が既存ランタイムに載る範囲、エミュレータは無いが実機がオラクルになること、H2 を拡張しない理由
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
 
 ## 主要な技術方針
