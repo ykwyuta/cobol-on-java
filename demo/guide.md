@@ -1,7 +1,7 @@
 # cobol-on-java デモシナリオガイド
 
 本書は、`cobol-on-java` の多彩な機能を体感するためのデモシナリオ一覧と実行ガイドです。
-メインフレーム互換機能（バッチ、ファイル入出力、JCL、システムユーティリティ、CICS）から、オープン化・近代化を支える Java 連携（相互運用、JUnit 5 単体テスト、Spring Boot & Db2 SQL 統合）まで、全 8 つのデモシナリオを提供しています。
+メインフレーム互換機能（バッチ、ファイル入出力、JCL、システムユーティリティ、CICS）から、オープン化・近代化を支える Java 連携（相互運用、JUnit 5 単体テスト、Spring Boot & Db2 SQL 統合）まで、全 9 つのデモシナリオを提供しています。
 
 ---
 
@@ -17,12 +17,13 @@
 | **006** | [JUnit 5 による COBOL 単体テスト & Mocking](file:///d:/workspace/cobol-on-java/demo/006/README.md) | `cobol-junit` (`@RegisterExtension CobolExtension`) を用いた単体テスト、外部 COBOL サブルーチンの Java Mock 差替、SECTION 単位の Spy 検証 | **提供中** |
 | **007** | [CICS トランザクション & 疑似会話制御](file:///d:/workspace/cobol-on-java/demo/007/README.md) | `cobol-cics` による `EXEC CICS LINK` / `XCTL` / `RETURN TRANSID(...) COMMAREA(...)` 制御、EIB 状態管理、疑似会話トランザクション境界 | **提供中** |
 | **008** | [Spring Boot & Db2 SQL 連携](file:///d:/workspace/cobol-on-java/demo/008/README.md) | Spring Boot 4.x / Spring Framework 7 との統合、COBOL ホスト変数による SQL 実行、Spring 管理トランザクション（コミット/ロールバック）との同期 | **提供中** |
+| **009** | [BMS + COBOL + H2 による Todo アプリ](file:///d:/workspace/cobol-on-java/demo/009/README.md) | BMS マップ (`DFHMSD`/`DFHMDI`/`DFHMDF`) からの記号マップ自動生成、`SEND MAP`/`RECEIVE MAP` と `RETURN TRANSID COMMAREA` による疑似会話、COBOL の `EXEC SQL`（カーソルを含む）による H2 アクセス | **提供中** |
 
 ---
 
 ## 2. 各デモシナリオの実行方法
 
-すべてのデモは、Windows 環境向けにワンクリックで実行可能なバッチファイル (`run_demo.bat`) を同梱しています。
+すべてのデモは、Windows 環境向けにワンクリックで実行可能なバッチファイル (`run_demo.bat`) を同梱しています。デモ #009 には Linux / macOS 向けの `run_demo.sh` も付いています。
 
 ### 事前準備
 1. **JDK 21 以上**、**Maven 3.9 以上** が PATH に通っていることを確認します。
@@ -127,3 +128,20 @@
   demo\008\run_demo.bat
   ```
 * **詳細説明**: [`demo/008/README.md`](file:///d:/workspace/cobol-on-java/demo/008/README.md)
+
+---
+
+### デモ #009: BMS + COBOL + H2 による Todo アプリ（サンプルアプリケーション）
+* **概要**: 画面・業務処理・データベースを 1 本のオンライントランザクションにまとめた、動くサンプルアプリケーションです。COBOL の外に業務ロジックはありません。
+  - `TODOSET.bms`: 24x80 の BMS マップ。一覧の 8 行は `OCCURS=8` の欄。記号マップ写し句は翻訳時に原文から生成されます（`-I demo/009`）。
+  - `TODOAPP.cbl`: `EXEC CICS RECEIVE MAP` でコマンド行を読み、`EXEC SQL`（`SELECT` / `INSERT` / `UPDATE` / `DELETE` とカーソル）で H2 の `TODO` 表を操作し、`EXEC CICS SEND MAP` で一覧を描き直して `RETURN TRANSID('TODO') COMMAREA(...)` で疑似会話を継続します。
+  - `TodoTerminal.java`: `BmsScreenSnapshot` を 24x80 の文字格子として端末に描き、打ち込んだ 1 行を 3270 の入力（AID + 変更された欄）に見立てます。
+* **実行コマンド**:
+  ```cmd
+  demo\009\run_demo.bat
+  ```
+  ```sh
+  demo/009/run_demo.sh          # Linux / macOS
+  demo/009/run_demo.sh --demo   # 打たずに一通り流す
+  ```
+* **詳細説明**: [`demo/009/README.md`](file:///d:/workspace/cobol-on-java/demo/009/README.md)

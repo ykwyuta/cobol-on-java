@@ -7,3 +7,5 @@ infra/db2/.env
 infra/rabbitmq/.env
 infra/postgres/.env
 reference/
+# デモの翻訳結果。run_demo が作り直すので、古い配備カタログを残さない
+demo/*/bin/
