@@ -541,7 +541,7 @@ public final class DataDivisionBuilder {
         try {
             return LiteralValue.of(context);
         } catch (RuntimeException e) {
-            report(origin, "invalid literal: " + context.getText());
+            report(origin, LiteralValue.invalidLiteral(context.getText(), e));
             return null;
         }
     }

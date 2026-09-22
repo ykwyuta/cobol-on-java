@@ -2,6 +2,8 @@ package dev.cobolonjava.compiler.semantic;
 
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.codepage.CodePages;
+import dev.cobolonjava.runtime.codepage.UnrepresentableCharacterException;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -22,6 +24,16 @@ public sealed interface LiteralValue {
 
     /** 16 進定数の文字の欄を埋める文字。数字にも英字にも見えないものを置く。 */
     char HEX_PLACEHOLDER = '�';
+
+    /**
+     * 文字定数を符号化するコードページ。
+     *
+     * <p>翻訳時のコードページは処理系のどこでも {@code CodePages.DEFAULT} に固定してある。
+     * {@code CODEPAGE} オプションで選べるようにするのは別の増分であり、暫定判断 P-177
+     * に残した。ここで見ているのは「選ばれたコードページ」ではなく
+     * <b>いま必ず使われるコードページ</b>である。
+     */
+    CodePage SOURCE_CODE_PAGE = CodePages.DEFAULT;
 
     /**
      * 文字定数。引用符は外してある。
@@ -197,7 +209,40 @@ public sealed interface LiteralValue {
             byte[] bytes = HexFormat.of().parseHex(spelling, 2, spelling.length() - 1);
             return new Text(String.valueOf(HEX_PLACEHOLDER).repeat(bytes.length), bytes);
         }
-        return new Text(unquote(spelling));
+        Text text = new Text(unquote(spelling));
+        requireRepresentable(text.text());
+        return text;
+    }
+
+    /**
+     * 文字定数が翻訳時のコードページで表せることを確かめる (要件 FR-051, FR-181)。
+     *
+     * <p><b>ここを素通りさせると原文の文字が消える。</b>IBM-1047 は日本語を持たないので、
+     * {@code VALUE '山田太郎'} は診断も警告もないまま {@code X'3F3F3F3F'} (EBCDIC の SUB)
+     * になる。翻訳は成功し、実行も成功し、{@code DISPLAY} は空行を出す。書いた人が
+     * 気付ける場所がどこにもない。
+     *
+     * <p>16 進定数は通さない。{@code X'0E45650F'} はコードページを経由しないバイトであり、
+     * 日本語の資産をいま扱える唯一の書き方だからである (設計 28 章)。
+     */
+    private static void requireRepresentable(String text) {
+        if (!SOURCE_CODE_PAGE.canEncode(text)) {
+            // 文面は 1 か所で作る。判定と診断で言うことがずれないようにするためである
+            SOURCE_CODE_PAGE.encode(text);
+        }
+    }
+
+    /**
+     * 定数を読めなかったときの診断の文面。
+     *
+     * <p>コードページで表せない文字は<b>理由を名指しする</b>。{@code invalid literal: 山田太郎}
+     * とだけ言われても、綴りが悪いのか処理系が持っていないのかが分からない。
+     * それ以外の誤り (数字定数の綴りなど) はこれまでと同じ文面のままにしてある。
+     */
+    static String invalidLiteral(String spelling, RuntimeException failure) {
+        return failure instanceof UnrepresentableCharacterException unrepresentable
+                ? unrepresentable.getMessage()
+                : "invalid literal: " + spelling;
     }
 
     private static FigurativeConstant constantOf(String text) {

@@ -13,6 +13,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: cobol-runtime (P0-a)](docs/design/10-runtime-p0a.md)
 - [設計: cobol-oracle (V2 期待値の採取)](docs/design/20-oracle.md)
 - [設計: 検証基盤 (CCVS85 と OSS コーパス)](docs/design/25-verification.md)
+- [設計: 日本語の検証 (オラクルが無いところをどう固定するか)](docs/design/28-japanese-verification.md) — バイト透明性を不変量に置く理由、既存テストとの対応、化けていた箇所
 - [設計: cobol-compiler のプリプロセッサ (P0-b)](docs/design/30-compiler-preprocessor.md)
 - [設計: cobol-compiler の構文解析 (P0-b)](docs/design/40-parser.md)
 - [設計: データ部の記憶域割り付け (P0-b)](docs/design/50-data-layout.md)

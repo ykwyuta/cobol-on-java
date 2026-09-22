@@ -433,7 +433,7 @@ public final class SpecialNames {
             value = LiteralValue.of(entry.literal());
         } catch (RuntimeException e) {
             diagnostics.add(new Diagnostic(origin,
-                    "invalid literal: " + entry.literal().getText()));
+                    LiteralValue.invalidLiteral(entry.literal().getText(), e)));
             return null;
         }
         // 通貨記号は PICTURE の中の文字として読む。16 進定数では文字が決まらない
