@@ -5,7 +5,7 @@
   <title th:text="${screen.mapset + ' ' + screen.map}">BMS screen</title>
   <link rel="stylesheet" th:href="${bmsAssets + '/bms.css'}">
 </head>
-<body th:attr="data-terminal-events=${terminalEvents},data-terminal-screen=${terminalScreen},data-screen-version=${screenVersion}">
+<body th:attr="data-terminal-events=${terminalEvents},data-terminal-screen=${terminalScreen},data-screen-version=${screenVersion},data-terminal-codepage=${terminalCodePage}">
 <form class="bms-terminal" method="post"
       th:action="${action}"
       th:attr="data-rows=${screen.rows},data-columns=${screen.columns},data-cursor-row=${screen.cursorRow},data-cursor-column=${screen.cursorColumn},data-alarm=${screen.alarm},data-keyboard-restored=${screen.keyboardRestored}">
