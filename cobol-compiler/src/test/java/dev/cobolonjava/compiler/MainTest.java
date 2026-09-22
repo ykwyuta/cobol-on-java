@@ -135,4 +135,85 @@ class MainTest {
 
         assertTrue(Files.isRegularFile(output.resolve("cobol/generated/FREEONE.class")));
     }
+
+    private static String card(String body, boolean continued) {
+        return continued ? String.format("%-71s*", body) : body;
+    }
+
+    private static final String BMS = String.join("\n",
+            card("SCRSET   DFHMSD TYPE=&SYSPARM,MODE=INOUT,LANG=COBOL,STORAGE=AUTO,", true),
+            card("               TIOAPFX=YES,EXTATT=MAPONLY", false),
+            card("SCRMP    DFHMDI SIZE=(24,80)", false),
+            card("CUSTNO   DFHMDF POS=(5,17),LENGTH=10,ATTRB=(NORM,UNPROT,IC)", false),
+            card("         DFHMSD TYPE=FINAL", false),
+            card("         END", false)) + "\n";
+
+    @Test
+    @DisplayName("BMSの記号マップとCICS・Db2の写し句を、置き場を書くだけで引ける (FR-151, FR-162, FR-180)")
+    void resolvesBmsAndSystemCopybooks(@TempDir Path work) throws IOException {
+        Files.writeString(work.resolve("SCRSET.bms"), BMS, StandardCharsets.ISO_8859_1);
+        Path source = work.resolve("SCREEN.cbl");
+        Files.writeString(source, String.join("\n", List.of(
+                "       IDENTIFICATION DIVISION.",
+                "       PROGRAM-ID. SCREEN.",
+                "       DATA DIVISION.",
+                "       WORKING-STORAGE SECTION.",
+                "       COPY SCRSET.",
+                "       COPY DFHAID.",
+                "       EXEC SQL INCLUDE SQLCA END-EXEC.",
+                "       01  WS-ID PIC S9(4) COMP VALUE 0.",
+                "       01  WS-KEY PIC X.",
+                "       PROCEDURE DIVISION.",
+                "           MOVE 'X' TO CUSTNOO",
+                "           MOVE DFHENTER TO WS-KEY",
+                "           EXEC SQL DELETE FROM TODO WHERE TODO_ID = :WS-ID END-EXEC",
+                "           IF SQLCODE = 0 AND WS-KEY = DFHENTER",
+                "               DISPLAY 'OK'",
+                "           END-IF",
+                "           GOBACK.",
+                "")), StandardCharsets.UTF_8);
+        Path output = work.resolve("out");
+
+        Main.main(new String[] {"-d", output.toString(), "-I", work.toString(),
+                source.toString()});
+
+        assertTrue(Files.isRegularFile(output.resolve("cobol/generated/SCREEN.class")),
+                "BMS 原文・DFHAID・SQLCA が引けていれば翻訳できる");
+    }
+
+    @Test
+    @DisplayName("-Iは何度でも書け、先に書いた置き場が勝つ (FR-090, FR-180)")
+    void searchesCopybookDirectoriesInOrder(@TempDir Path work) throws IOException {
+        Path first = Files.createDirectory(work.resolve("first"));
+        Path second = Files.createDirectory(work.resolve("second"));
+        Files.writeString(first.resolve("REC.cpy"),
+                "       01 WS-A PIC X(5) VALUE 'FIRST'.\n", StandardCharsets.UTF_8);
+        Files.writeString(second.resolve("REC.cpy"),
+                "       01 WS-A PIC X(6) VALUE 'SECOND'.\n", StandardCharsets.UTF_8);
+        Path source = work.resolve("ORDERED.cbl");
+        Files.writeString(source, String.join("\n", List.of(
+                "       IDENTIFICATION DIVISION.",
+                "       PROGRAM-ID. ORDERED.",
+                "       DATA DIVISION.",
+                "       WORKING-STORAGE SECTION.",
+                "       COPY REC.",
+                "       PROCEDURE DIVISION.",
+                "           DISPLAY WS-A.",
+                "")), StandardCharsets.UTF_8);
+        Path output = work.resolve("out");
+
+        Main.main(new String[] {"-d", output.toString(), "-I", first.toString(),
+                "-I", second.toString(), source.toString()});
+
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        try {
+            Class<?> type = new GeneratedLoader().define("cobol.generated.ORDERED",
+                    Files.readAllBytes(output.resolve("cobol/generated/ORDERED.class")));
+            CobolProgram program = (CobolProgram) type.getDeclaredConstructor().newInstance();
+            program.runFresh(ProgramContext.capturing(sink));
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("cannot run the generated program", e);
+        }
+        assertEquals("FIRST" + System.lineSeparator(), sink.toString(StandardCharsets.UTF_8));
+    }
 }

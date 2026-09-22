@@ -42,11 +42,29 @@ java -cp <クラスパス> dev.cobolonjava.compiler.Main [オプション] <ソ�
 | オプション | 説明 | 既定値 |
 | --- | --- | --- |
 | `-d <dir>` | 生成された `.class` ファイルの出力先ディレクトリを指定します。 | `.` (カレントディレクトリ) |
-| `-I <dir>` | `COPY` 文（コピー句）を探索するディレクトリを指定します。 | 指定なし |
+| `-I <dir>` | `COPY` 文（コピー句）を探索するディレクトリを指定します。**何度でも指定でき**、書いた順に探して先に見つかったものを使います（ホストの連結ライブラリと同じ規則）。同じディレクトリに BMS の原文 `<名前>.bms` があれば、`COPY <名前>.` は記号マップの写し句をその場で生成して取り込みます。 | 指定なし |
 | `--free` | 自由形式（Free Format）の COBOL ソースとして解析します。 | 固定形式 (Fixed Format) |
 | `-q <options>` | 翻訳時オプションを指定します（例: `-q SSRANGE` で添字・範囲検査を有効化）。 | 指定なし |
 
 > **Note**: COBOL ソース内の `CBL` / `PROCESS` 行に書かれた指定は、コマンドラインの `-q` オプションを上書きして適用されます。
+
+### システム写し句の自動解決
+
+`-I` で指定したディレクトリをすべて探したあと、最後に以下の「製品が配る写し句」を引きます。
+資産が同名の写し句を自前で持っていれば、そちらが優先されます。
+
+| 写し句 | 提供元 | 内容 |
+| --- | --- | --- |
+| `DFHAID` ほか | CICS | AID キー（`DFHENTER` / `DFHPF3` …）と属性値 (`DFHBMSCA`) |
+| `SQLCA` | Db2 precompiler | `EXEC SQL INCLUDE SQLCA END-EXEC.` が展開する 136 byte の SQLCA |
+| `CEEIGZCT` | Language Environment | feedback code の記号名（`CEE000` のみ） |
+
+そのため、CICS / BMS / Db2 を使う資産も次のように翻訳できます。
+
+```bash
+java -cp <クラスパス> dev.cobolonjava.compiler.Main -d out -I maps -I copybooks TODOAPP.cbl
+```
+
 
 ---
 

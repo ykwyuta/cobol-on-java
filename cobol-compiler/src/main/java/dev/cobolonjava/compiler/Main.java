@@ -1,9 +1,14 @@
 package dev.cobolonjava.compiler;
 
 import dev.cobolonjava.compiler.parser.Diagnostic;
+import dev.cobolonjava.compiler.source.BmsCopyBookResolver;
+import dev.cobolonjava.compiler.source.CicsSystemCopyBookResolver;
 import dev.cobolonjava.compiler.source.CompilerOptions;
+import dev.cobolonjava.compiler.source.CopyBookResolver;
+import dev.cobolonjava.compiler.source.Db2SystemCopyBookResolver;
 import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
 import dev.cobolonjava.compiler.source.FreeFormatReader;
+import dev.cobolonjava.compiler.source.LanguageEnvironmentCopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
 import dev.cobolonjava.compiler.source.ProcessStatement;
 import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
@@ -13,16 +18,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 処理系の起動口 (要件 FR-180)。
  *
  * <pre>
- * cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ] [--free] [-q オプション] ソース...
+ * cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ]... [--free] [-q オプション] ソース...
  * </pre>
  *
  * <p>翻訳したクラスファイルと {@code META-INF/cobol/programs.json} を書き出す。
  * 生成したクラスは {@code main} を持つので、そのまま {@code java} で起動できる。
+ *
+ * <p>{@code -I} は何度でも書ける。書いた順に探し、先に見つかったものを使う。ホストの
+ * 連結ライブラリと同じ規則である。同じ置き場に BMS の原文 ({@code 名前.bms}) があれば、
+ * 記号マップの写し句をその場で作る (要件 FR-162)。
  *
  * <p>{@code -q} には翻訳時オプションを {@code CBL} 文と同じ綴りで書く
  * ({@code -q SSRANGE,ARITH(EXTEND)})。ソースに書かれた {@code CBL} / {@code PROCESS} の
@@ -39,7 +49,7 @@ public final class Main {
             options = Options.parse(args);
         } catch (IllegalArgumentException e) {
             System.err.println(e.getMessage());
-            System.err.println("usage: cobolc [-d dir] [-I copybook-dir] [--free]"
+            System.err.println("usage: cobolc [-d dir] [-I copybook-dir]... [--free]"
                     + " [-q options] source...");
             System.exit(2);
             return;
@@ -93,20 +103,20 @@ public final class Main {
     }
 
     /** 起動時の指定。 */
-    private record Options(List<Path> sources, Path output, Path copybooks, boolean freeFormat,
-                           CompilerOptions compilerOptions) {
+    private record Options(List<Path> sources, Path output, List<Path> copybooks,
+                           boolean freeFormat, CompilerOptions compilerOptions) {
 
         static Options parse(String[] args) {
             List<Path> sources = new ArrayList<>();
             Path output = Path.of(".");
-            Path copybooks = null;
+            List<Path> copybooks = new ArrayList<>();
             boolean freeFormat = false;
             CompilerOptions compilerOptions = CompilerOptions.NONE;
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
                     case "-d" -> output = Path.of(next(args, ++i, "-d"));
-                    case "-I" -> copybooks = Path.of(next(args, ++i, "-I"));
+                    case "-I" -> copybooks.add(Path.of(next(args, ++i, "-I")));
                     case "--free" -> freeFormat = true;
                     case "-q" -> compilerOptions = compilerOptions.merge(
                             ProcessStatement.parse(next(args, ++i, "-q")));
@@ -121,7 +131,7 @@ public final class Main {
             if (sources.isEmpty()) {
                 throw new IllegalArgumentException("no source file given");
             }
-            return new Options(List.copyOf(sources), output, copybooks, freeFormat,
+            return new Options(List.copyOf(sources), output, List.copyOf(copybooks), freeFormat,
                     compilerOptions);
         }
 
@@ -133,12 +143,31 @@ public final class Main {
         }
 
         Preprocessor preprocessor() {
-            return new Preprocessor(
-                    copybooks == null
-                            ? (name, library) -> java.util.Optional.empty()
-                            : new DirectoryCopyBookResolver(copybooks),
+            return new Preprocessor(resolver(),
                     freeFormat ? FreeFormatReader.standard()
                             : dev.cobolonjava.compiler.source.FixedFormatReader.standard());
+        }
+
+        /**
+         * 書かれた順に探し、先に見つかったものを使う。ホストの連結ライブラリと同じである。
+         *
+         * <p>CICS・Db2・Language Environment が配る写し句は<b>最後に</b>引く。資産が自前の
+         * {@code DFHAID} や {@code SQLCA} を置いていれば、そちらを使う。
+         */
+        private CopyBookResolver resolver() {
+            List<CopyBookResolver> chain = new ArrayList<>();
+            for (Path directory : copybooks) {
+                chain.add(new DirectoryCopyBookResolver(directory));
+                chain.add(new BmsCopyBookResolver(directory));
+            }
+            chain.add(new CicsSystemCopyBookResolver());
+            chain.add(new Db2SystemCopyBookResolver());
+            chain.add(new LanguageEnvironmentCopyBookResolver());
+            List<CopyBookResolver> fixed = List.copyOf(chain);
+            return (textName, libraryName) -> fixed.stream()
+                    .map(resolver -> resolver.resolve(textName, libraryName))
+                    .flatMap(Optional::stream)
+                    .findFirst();
         }
     }
 }
