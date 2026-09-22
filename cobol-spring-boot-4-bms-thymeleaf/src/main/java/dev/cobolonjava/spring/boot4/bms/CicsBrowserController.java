@@ -44,6 +44,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.context.SmartLifecycle;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -93,6 +94,7 @@ public class CicsBrowserController implements SmartLifecycle {
     private final CicsTerminalRegistryPort terminals;
     private final BmsScreenViewFactory views;
     private final BmsTerminalInputBinder binder;
+    private final BmsTerminalRepertoire repertoire;
     private final Clock clock;
     private final Duration terminalLease;
     private final CicsBrowserTerminalNames names;
@@ -117,7 +119,7 @@ public class CicsBrowserController implements SmartLifecycle {
     public CicsBrowserController(CicsTaskCoordinator coordinator, ConversationStorePort conversations,
                                  CicsTerminalRegistryPort terminals, BmsScreenViewFactory views,
                                  BmsTerminalInputBinder binder, Clock clock, CicsTaskPolicy policy,
-                                 CicsBrowserTerminalNames names) {
+                                 CicsBrowserTerminalNames names, BmsTerminalRepertoire repertoire) {
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         this.conversations = Objects.requireNonNull(conversations, "conversations");
         this.terminals = Objects.requireNonNull(terminals, "terminals");
@@ -126,6 +128,7 @@ public class CicsBrowserController implements SmartLifecycle {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.terminalLease = Objects.requireNonNull(policy, "policy").leaseDuration();
         this.names = Objects.requireNonNull(names, "names");
+        this.repertoire = Objects.requireNonNull(repertoire, "repertoire");
     }
 
     @GetMapping("/cics/{transid}")
@@ -285,6 +288,23 @@ public class CicsBrowserController implements SmartLifecycle {
     }
 
     /**
+     * 端末が受け付ける文字の一覧 (設計 81 §5.1)。入力欄はコードページに無い文字を弾くのに使う。
+     *
+     * <p>画面ごとに変わらないので、ブラウザに期限つきで持たせる。中身は構成したコードページの
+     * 名前と符号位置の範囲だけで、会話にも利用者にも依らない。弾くのは打ちやすさのためであり、
+     * 判定そのものは RECEIVE MAP が行う (ADR-0010)。
+     */
+    @GetMapping(path = "/cics/terminal/codepage", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<String> codePage(Principal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.maxAge(Duration.ofHours(1)).cachePrivate())
+                .body(repertoire.json());
+    }
+
+    /**
      * 端末の画面の版が {@code version} より進んだら {@code screen} event を 1 度送って閉じる。
      * 画面の中身は送らない (読み直しは通常の要求で認証と一緒に行う)。
      */
@@ -429,6 +449,7 @@ public class CicsBrowserController implements SmartLifecycle {
         model.addAttribute("screenVersion", screenVersion);
         model.addAttribute("terminalEvents", request.getContextPath() + "/cics/terminal/events");
         model.addAttribute("terminalScreen", request.getContextPath() + "/cics/terminal");
+        model.addAttribute("terminalCodePage", request.getContextPath() + "/cics/terminal/codepage");
     }
 
     private String view(CicsTerminalScreen screen, Model model) {

@@ -316,4 +316,25 @@ class CicsBrowserEndpointTest {
         assertThat(stale.getResponse().getContentAsString()).contains("out of date").doesNotContain("RECEIVED");
         assertThat(conversationOf(session)).isEmpty();
     }
+
+    @Test
+    @DisplayName("端末が受け付ける文字の一覧を認証つきで返し、画面はその場所を持つ")
+    void servesTheCodePageRepertoire() throws Exception {
+        assertThat(mvc.perform(get("/cics/terminal/codepage")).andReturn().getResponse().getStatus())
+                .isNotEqualTo(200);
+
+        MvcResult listed = mvc.perform(get("/cics/terminal/codepage").with(user("alice")))
+                .andExpect(status().isOk()).andReturn();
+
+        String json = listed.getResponse().getContentAsString();
+        // 既定は IBM-1047。SBCS なのでシフト符号は使わず、DBCS の範囲は空である
+        assertThat(json).contains("\"codePage\":\"IBM-1047\"", "\"shifted\":false",
+                "\"single\":\"0-ff\"", "\"double\":\"\"");
+        assertThat(listed.getResponse().getHeader("Cache-Control")).contains("max-age");
+
+        MvcResult started = mvc.perform(post("/cics/SCR1").with(user("alice")).with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(started.getResponse().getContentAsString())
+                .contains("data-terminal-codepage=\"/cics/terminal/codepage\"");
+    }
 }

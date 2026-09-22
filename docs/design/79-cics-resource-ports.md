@@ -224,12 +224,44 @@ HTTP 上の task は「送信して終わる」。`SEND MAP` を発行した tas
 
 | 部分 | 値 |
 | --- | --- |
-| L (長さ) | 入力された文字数。変更されていない field は 0 |
+| L (長さ) | 入力が占めた<b>桁数</b>。変更されていない field は 0 |
 | F (flag) | field を消去 (EOF) したときだけ `X'80'`、それ以外 `X'00'` |
 | I (データ) | 入力値。`JUSTIFY` の既定と詰め文字は未確認 (§11) |
 | EIBAID / EIBCPOSN | 入力の AID と cursor 位置 |
 
 変更 field が 1 つも無い、または AID が `CLEAR` / `PA1〜3` のとき `MAPFAIL` (RESP 36)。
+
+入力は直前の画面と照合して再検証する (ADR-0010)。画面に無い field、保護 field、桁数超過、
+NUM field の数字以外、制御文字、コードページで表せない文字は RECEIVE を失敗させる。
+
+### 8.6 長さは文字数ではなく桁数で数える (DBCS)
+
+BMS の `LENGTH` は画面 buffer の位置 (cell) の数である。SBCS は 1 文字 1 桁だが、DBCS は
+1 文字が 2 桁を占め、混在 field では前後のシフトアウト (`X'0E'`) とシフトイン (`X'0F'`) も
+1 桁ずつ占める。混在コードページの符号化はこの規則どおりに byte を置くので、
+<b>符号化した byte 数がそのまま桁数になる</b>。`BmsFieldText` がこの 1 つの規則を持ち、
+SEND (`BmsScreenComposer`) と RECEIVE (`BmsInputDecoder`) の両方が使う。
+
+IBM-930 で測った値:
+
+| 値 | byte | 桁 |
+| --- | --- | --- |
+| `AB` | `X'C1 C2'` | 2 |
+| `山田` | `X'0E 4565 4563 0F'` | 6 |
+| `A山B` | `X'C1 0E 4565 0F C2'` | 6 |
+| `ｱｲ` (半角カタカナ) | `X'81 82'` | 2 |
+
+桁数は連結について加法的でない (`山` 4 桁 + `田` 4 桁 に対して `山田` は 6 桁)。
+詰め物の数は必ず値の全体から数える。
+
+- `BmsScreenSnapshot.FieldState` のデータは<b>文字</b>で持ち、桁数とは一致しない。
+  ちょうど埋まっていることの検査は、コードページを知っている合成側と分解側が行う。
+  画面の記録にコードページを持たせると、会話へ保存する形が変わる
+- 復号した画面データは、同じ桁数へ符号化し直せることを確かめる。シフト符号の片割れや
+  DBCS の半端な byte は復号で黙って落ちる (IBM-930 の末尾の `X'0E'` は消え、7 文字になる)
+- `DFHMDF SOSI=YES` は混在 field の宣言として受ける。`SOSI=NO` の field は DBCS の入力を断る。
+  書かれていない field の扱いは暫定判断 P-179
+- DBCS の 1 文字が 2 桁ぶんの幅で表示されるかは、ブラウザの font に依る (設計 81 §6)
 
 ### 8.5 SEND TEXT / SEND CONTROL
 
@@ -273,5 +305,7 @@ HTTP 上の task は「送信して終わる」。`SEND MAP` を発行した tas
 - FORMATTIME の受取域に書く長さ (§6.2)
 - DELAY の範囲外で返る RESP2 (§7)
 - RECEIVE MAP の I 部分の詰め文字と `JUSTIFY` の既定、NUM field の扱い (§8.4)
+- DBCS の L の値 (桁数か、文字数か) と、SOSI を宣言していない field へ DBCS を入れたときの
+  実機の振る舞い (§8.6)
 - 本書で追加する condition の EIBRCODE byte (§3.3)
 - `ASSIGN PROGRAM` が alias で起動された program に対して返す名前 (§5)

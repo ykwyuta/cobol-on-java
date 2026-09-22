@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
+import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import dev.cobolonjava.cics.CicsPayload;
@@ -141,9 +142,17 @@ class CicsBrowserSseBrowserTest {
         // 導入済みのブラウザを使うので、Playwright にブラウザを取得させない
         playwright = Playwright.create(new Playwright.CreateOptions()
                 .setEnv(Map.of("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")));
-        String channel = Optional.ofNullable(System.getenv("BROWSER_CHANNEL")).filter(value -> !value.isBlank())
-                .orElse("msedge");
-        browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setChannel(channel).setHeadless(true));
+        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(true);
+        // 導入済みの版が Playwright の求める版と違うことがある。そのときは BROWSER_EXECUTABLE で
+        // 実行ファイルを直に指す (channel では版の違う実行ファイルを探しに行って失敗する)
+        String executable = System.getenv("BROWSER_EXECUTABLE");
+        if (executable != null && !executable.isBlank()) {
+            options.setExecutablePath(java.nio.file.Path.of(executable));
+        } else {
+            options.setChannel(Optional.ofNullable(System.getenv("BROWSER_CHANNEL"))
+                    .filter(value -> !value.isBlank()).orElse("msedge"));
+        }
+        browser = playwright.chromium().launch(options);
     }
 
     @AfterAll
@@ -215,4 +224,52 @@ class CicsBrowserSseBrowserTest {
             assertThat(page.locator("pre.bms-text")).hasText("RECEIVED CUSTNO=042");
         }
     }
+    @Test
+    @DisplayName("コードページに無い文字は入力欄に入らない。打鍵も、値ごと入る経路も落とす")
+    void refusesCharactersOutsideTheCodePage() {
+        try (BrowserContext context = browser.newContext()) {
+            Page page = context.newPage();
+            startTransaction(page);
+            // server から文字の一覧が届くまで待つ。届く前は見積りで動くので、弾く判定はまだ確かでない
+            page.waitForSelector("form.bms-terminal[data-codepage='IBM-1047']");
+            Locator field = page.locator("input[name='bms.CUSTNO.1']");
+            field.click();
+
+            field.pressSequentially("A\u00E9\u5C71B");
+
+            // IBM-1047 は Latin-1 を持つので é は入る。日本語は持たないので 山 は打てない
+            assertThat(field).hasValue("A\u00E9B");
+
+            // 貼り付けや IME の確定のように、値ごと変わる経路も落とす
+            page.evaluate("""
+                    const input = document.querySelector("input[name='bms.CUSTNO.1']");
+                    input.value = '\u5C71\u7530';
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    """);
+
+            assertThat(field).hasValue("");
+        }
+    }
+
+    @Test
+    @DisplayName("画面を開いてそのまま打てる。詰めた空白が残っているとmaxlengthで1文字も入らない")
+    void acceptsTypingWithoutClearingThePadding() {
+        try (BrowserContext context = browser.newContext()) {
+            Page page = context.newPage();
+            startTransaction(page);
+            Locator field = page.locator("input[name='bms.CUSTNO.1']");
+
+            // 画面から来たままの入力欄に、消さずに打つ
+            assertThat(field).hasValue("");
+            field.click();
+            field.pressSequentially("0000000042");
+
+            assertThat(field).hasValue("0000000042");
+
+            // 打った値が task まで届く
+            page.locator("button[type='submit']").first().click();
+            assertThat(page.locator("pre.bms-text")).hasText("RECEIVED CUSTNO=0000000042");
+        }
+    }
+
 }

@@ -78,6 +78,17 @@ public final class BmsModel {
         LEFT, RIGHT, BLANK, ZERO
     }
 
+    /**
+     * DFHMDF SOSI。field が SBCS と DBCS の混在データを持つかどうかの宣言である。
+     *
+     * <p>{@code YES} は field がシフトアウト / シフトインで囲んだ DBCS を持てることを示す。
+     * {@code NO} は SBCS だけを持つ field であり、DBCS の入力を断る根拠になる。
+     * 書かれていない field の扱いは暫定判断 P-179 を見ること。
+     */
+    public enum Sosi {
+        YES, NO
+    }
+
     /** 画面上の位置。行と桁は1始まりである。 */
     public record Position(int row, int column) {
         public Position {
@@ -92,8 +103,9 @@ public final class BmsModel {
      *
      * @param name       記号マップに出る名前。名前の無いfieldは固定文字であり、記号マップに出ない
      * @param position   POSに書かれた属性byteの位置。field本体はその次の桁から始まる
-     * @param length     field本体の長さ
+     * @param length     field本体の長さ。文字数ではなく画面位置 (cell) の数である
      * @param occurs     1以上。2以上なら同じ定義を横に並べる
+     * @param sosi       SOSIに書かれた値。書かれていなければempty
      */
     public record Field(
             int line,
@@ -107,7 +119,8 @@ public final class BmsModel {
             Optional<String> pictureIn,
             Optional<String> pictureOut,
             Set<Justify> justify,
-            int occurs) {
+            int occurs,
+            Optional<Sosi> sosi) {
 
         public Field {
             Objects.requireNonNull(name, "name");
@@ -121,6 +134,7 @@ public final class BmsModel {
             Objects.requireNonNull(initial, "initial");
             Objects.requireNonNull(pictureIn, "pictureIn");
             Objects.requireNonNull(pictureOut, "pictureOut");
+            Objects.requireNonNull(sosi, "sosi");
             if (length < 0) {
                 throw new IllegalArgumentException("BMS field length must not be negative");
             }

@@ -133,11 +133,20 @@ public final class BmsScreenComposer {
         List<FieldState> out = new ArrayList<>();
         for (Field field : map.fields()) {
             for (int occurrence = 1; occurrence <= field.occurs(); occurrence++) {
-                // LENGTH より長い INITIAL は画面へ出すときに LENGTH で切る (暫定判断 P-112)
+                // LENGTH より長い INITIAL は画面へ出すときに LENGTH で切る (暫定判断 P-112)。
+                // 長さは画面位置で数え、切るのは符号位置の単位である。byte の途中で切ると
+                // DBCS の 1 文字が半分になる
                 String initial = field.initial().orElse("");
-                String data = initial.length() >= field.length()
-                        ? initial.substring(0, field.length())
-                        : initial + " ".repeat(field.length() - initial.length());
+                String data;
+                try {
+                    data = BmsFieldText.fill(
+                            BmsFieldText.truncate(initial, field.length(), codePage),
+                            field.length(), ' ', codePage);
+                } catch (IllegalArgumentException unrepresentable) {
+                    throw new IllegalStateException("INITIAL of field "
+                            + field.name().orElse("(literal)") + " cannot be put on the screen: "
+                            + unrepresentable.getMessage(), unrepresentable);
+                }
                 out.add(new FieldState(field.name(), occurrence,
                         positionOf(map, field, occurrence), field.length(),
                         field.attributes(), field.color(), field.highlight(), data,
@@ -183,9 +192,22 @@ public final class BmsScreenComposer {
                 byte[] bytes = new byte[slot.dataLength()];
                 System.arraycopy(symbolic, slot.dataOffset(), bytes, 0, bytes.length);
                 String text = codePage.decode(bytes).replace(' ', ' ');
-                if (text.length() != state.length()) {
+                // 復号した文字列が同じ桁数へ戻ることを確かめる。DBCS の 1 文字は 2 桁を占めるので
+                // 文字数では数えられない。シフト符号の片割れや DBCS の半端な byte は復号で黙って
+                // 落ちる (IBM-930 の X'0E 45' は 1 文字に化け、符号化すると X'6F' の 1 byte になる)
+                // ので、桁数の照合で断る
+                int cells;
+                try {
+                    cells = BmsFieldText.cells(text, codePage);
+                } catch (IllegalArgumentException undecodable) {
+                    // 復号できなかった byte は U+FFFD に化けており、符号化し直せない
                     throw new IllegalStateException("field " + slot.name()
-                            + " does not decode to one character per byte");
+                            + " does not hold valid " + codePage.name() + " data", undecodable);
+                }
+                if (cells != state.length()) {
+                    throw new IllegalStateException("field " + slot.name() + " fills " + cells
+                            + " screen positions but the field is " + state.length()
+                            + " (the data is not valid " + codePage.name() + " for this field)");
                 }
                 state = state.withData(text);
             }

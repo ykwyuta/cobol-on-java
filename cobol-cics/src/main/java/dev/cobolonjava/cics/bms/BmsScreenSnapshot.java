@@ -18,6 +18,9 @@ import java.util.Set;
  * Web 画面の描画の両方がこれを読む。データは端末に見える文字として持ち、code page の byte は
  * 持たない。
  *
+ * <p>{@code length} は文字数ではなく画面位置 (cell) の数である。DBCS の 1 文字は 2 cell、
+ * 混在 field のシフト符号は 1 cell を占める ({@link BmsFieldText})。
+ *
  * @param cursorOffset 画面先頭からの cursor 位置。決まっていなければ -1
  */
 public record BmsScreenSnapshot(
@@ -57,8 +60,12 @@ public record BmsScreenSnapshot(
             Objects.requireNonNull(color, "color");
             Objects.requireNonNull(highlight, "highlight");
             Objects.requireNonNull(data, "data");
-            if (data.length() != length) {
-                throw new IllegalArgumentException("field data must fill the field length");
+            // 長さは画面位置 (cell) で数える。DBCS の 1 文字は 2 cell を占めるので、文字数は
+            // cell 数と一致しない。ちょうど埋まっていることの検査はコードページを知っている側
+            // (BmsScreenComposer と BmsInputDecoder) が BmsFieldText で行う。ここに置くと
+            // 画面の記録がコードページを持つことになり、会話へ保存する形が変わってしまう
+            if (data.length() > length) {
+                throw new IllegalArgumentException("field data must not exceed the field length");
             }
         }
 

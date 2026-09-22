@@ -65,9 +65,9 @@
 
 | 部品 | 役割 |
 | --- | --- |
-| `BmsScreenView` / `BmsScreenViewFactory` | snapshot から表示モデルを作る。属性は列挙した class へだけ写す。DRK の値は持たない。画面端をまたぐ field と重なる field は断る |
+| `BmsScreenView` / `BmsScreenViewFactory` | snapshot から表示モデルを作る。属性は列挙した class へだけ写す。DRK の値は持たない。画面端をまたぐ field と重なる field は断る。入力 field の値は末尾の空白を落とす (詰めたまま出すと `maxlength` と同じ文字数になり 1 文字も打てない。出力 field は cell を保つため落とさない) |
 | `templates/cobol/bms/screen.html` | 共通 template。`th:text` / `th:value` / `th:attr` だけを使い、`th:utext` と style を使わない |
-| `static/cobol/bms/bms.css` / `terminal.js` | theme と端末操作。外部 file なので CSP の `script-src 'self'` で動く |
+| `static/cobol/bms/bms.css` / `terminal.js` | theme と端末操作。外部 file なので CSP の `script-src 'self'` で動く。コードページに無い文字と桁の溢れを止め、cursor は桁で送る (§5.1)。最終判定は server が行う |
 | `BmsTerminalInputBinder` | form (`aid`、`cursor`、`bms.NAME.occurrence`) を `BmsTerminalInput` にする。形だけを確かめ、画面との照合は `BmsInputDecoder` に任せる |
 | `BmsThymeleafAutoConfiguration` | 上の 2 つの部品を bean にする |
 
@@ -90,13 +90,41 @@ base の `cobol-spring-boot-4-autoconfigure` の `CicsTaskAutoConfiguration` が
 | 端末へ出す task の画面 | START TERMID / ATI の task の画面は端末の現在の画面になり版が進む。画面は版を持ち、SSE (`/cics/terminal/events`) で進んだことを受けて `/cics/terminal` を読み直す。SSE が無ければ古い版の送信は task を動かさず現在の画面を返す (設計 83 §7) |
 | 失敗 | 応答へ入力の内容や例外の文面を出さない。ABEND だけは code を示す |
 
+### 5.1 端末が受け付ける文字の一覧
+
+ブラウザの入力欄は Unicode を何でも受ける。コードページに無い文字は、送ったあと RECEIVE MAP が
+符号化するところで初めて断られる。利用者から見れば<b>打てたのに送れない</b>であり、実機の 3270
+(キーボードがその文字を出さない) とは違う。そこで、入る文字の一覧を server から渡して client が
+同じ判断をできるようにした。
+
+| 部品 | 役割 |
+| --- | --- |
+| `CodePageRepertoire` (cobol-runtime) | 符号位置を端から端まで符号化し、1 桁の文字と 2 桁の文字 (DBCS) の範囲に分ける。コードページごとに 1 度だけ |
+| `BmsTerminalRepertoire` | それを JSON にする。`{"codePage":"IBM-930","shifted":true,"single":"0-ff","double":"a6-a8,..."}`。範囲は符号位置の 16 進で両端を含む |
+| `GET /cics/terminal/codepage` | 認証つきで返す。画面ごとに変わらないので `Cache-Control` を付ける |
+| `terminal.js` | 一覧を 1 度読み、入らない文字を `beforeinput` で止め、値ごと変わる経路 (貼り付け、IME の確定) は変更後に落とす。桁数もこの一覧で正確に数える |
+
+- 一覧は<b>実行時と同じ charset</b> に聞いて作る。表の写しを持たないので、server が受ける文字と
+  client が通す文字がずれない
+- <b>client は最終判定ではない</b>。要求は改変できるので、server は RECEIVE MAP で同じことを
+  確かめ直す (ADR-0010)。一覧が読めなかったときは見積り (Latin-1 と半角カタカナは 1 桁、
+  ほかは 2 桁) で桁数だけを見て、文字は弾かない。弾けないぶんは server が断る
+- 端末のコードページは `CodePage` の bean か `cobol.cics.bms.code-page` で決める。<b>実行時の
+  コードページと同じでなければならない</b>が、生成コードのコードページは `CobolRuntime` が持って
+  いて bean として見えるとは限らないので、突き合わせられない (暫定判断 P-180)
+- 走査は byte の側から (256 通りと 65536 通りの byte を復号して) 作るほうが 10 倍速いが、
+  <b>対応が 1 対 1 ではない</b>ので使えない。IBM-930 は U+2014 を符号化できるのに、その byte 列は
+  U+2015 に復号される。byte の側から数えると、こういう文字が 50 個あまり落ちる。落ちた文字は
+  client が弾いて server が受けるので、打てるはずの文字が打てなくなる (測って分かった)
+
 設計 77 §3.1 は MVC の入口を `cobol-spring-boot-4-autoconfigure` に置く。ブラウザの入口は画面の描画と切り離せず、
 JSON 専用の構成でこの module を外せるよう、BMS Thymeleaf adapter の側に置いた。JSON API の入口は autoconfigure の
 増分として残す。
 
 ## 6. 未検証の項目 (次の spike)
 
-- IME、全角文字、DBCS の SO / SI と cell 幅
+- IME と、DBCS の cell 幅 (server 側の桁数の扱いは設計 79 §8.6 で入れた。ブラウザの等幅 font が
+  DBCS を 2 桁ぶんの幅で描くかは測っていない)
 - insert / overwrite、erase EOF、Tab / Backtab を field 単位で扱う 3270 の操作意味論 (今はブラウザ既定)
 - 画面端で折り返す field の visual segment
 - font の読み込み前後で cell 幅が変わらないことの測定と fallback

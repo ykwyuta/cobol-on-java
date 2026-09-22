@@ -152,4 +152,62 @@ class BmsScreenComposerTest {
                 BmsAttributeCodes.basic(0x6C).attributes());
         assertTrue(BmsAttributeCodes.basic(0xC1).modified());
     }
+    // --- 混在コードページ (DBCS) -------------------------------------------------
+
+    private static final CodePage MIXED = CodePages.IBM_930;
+    private static final String YAMADA = "\u5C71\u7530";
+
+    private static final Mapset DBCS_MAPSET = BmsParser.parse(source(
+            card("JSET     DFHMSD TYPE=&SYSPARM,MODE=INOUT,LANG=COBOL,TIOAPFX=YES", false),
+            card("JMAP     DFHMDI SIZE=(24,80)", false),
+            card("NAME     DFHMDF POS=(3,2),LENGTH=8,ATTRB=(UNPROT,NORM),SOSI=YES", false),
+            card("         DFHMSD TYPE=FINAL", false)));
+    private static final BmsModel.Map DBCS_MAP = DBCS_MAPSET.maps().get(0);
+    private static final BmsSymbolicLayout DBCS_LAYOUT = BmsSymbolicLayout.of(DBCS_MAPSET, DBCS_MAP);
+
+    private static byte[] dbcsSymbolic(byte[] data) {
+        BmsSymbolicLayout.Slot slot = DBCS_LAYOUT.slots().stream()
+                .filter(s -> s.name().equals("NAME")).findFirst().orElseThrow();
+        byte[] symbolic = new byte[DBCS_LAYOUT.length()];
+        System.arraycopy(data, 0, symbolic, slot.dataOffset(), data.length);
+        return symbolic;
+    }
+
+    @Test
+    @DisplayName("DBCSを持つ記号マップを画面へ出す。桁数で数えるので1文字1byteを求めない")
+    void putsDoubleByteDataOnTheScreen() {
+        // X'0E 4565 4563 0F 40 40' = 8 桁。文字としては「山田」+ 空白 2 つの 4 文字である
+        byte[] symbolic = dbcsSymbolic(MIXED.encode(YAMADA + "  "));
+
+        BmsScreenSnapshot screen = BmsScreenComposer.send(DBCS_MAPSET, DBCS_MAP, Optional.empty(),
+                symbolic, options(true, false, false, false, false), MIXED);
+
+        assertEquals(YAMADA + "  ", screen.field("NAME", 1).orElseThrow().data());
+        assertEquals(8, screen.field("NAME", 1).orElseThrow().length());
+    }
+
+    @Test
+    @DisplayName("復号できない半端なDBCSは断る")
+    void refusesDataThatIsNotValidMixedBytes() {
+        // シフトアウトのあとがシフトインで閉じられず、最後の 1 byte が DBCS の片割れになる
+        byte[] symbolic = dbcsSymbolic(new byte[] {0x0E, 0x45, 0x65, 0x40, 0x40, 0x40, 0x40, 0x40});
+
+        IllegalStateException refused = assertThrows(IllegalStateException.class,
+                () -> BmsScreenComposer.send(DBCS_MAPSET, DBCS_MAP, Optional.empty(), symbolic,
+                        options(true, false, false, false, false), MIXED));
+        assertTrue(refused.getMessage().contains("does not hold valid IBM-930 data"),
+                refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("復号で黙って落ちるシフト符号も、桁数の照合で捕まえる")
+    void refusesDataWhoseShiftCodesDisappearWhenDecoded() {
+        // 末尾のシフトアウトは復号で消える。文字としては空白 7 つになり、8 桁の field が埋まらない
+        byte[] symbolic = dbcsSymbolic(new byte[] {0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x0E});
+
+        IllegalStateException refused = assertThrows(IllegalStateException.class,
+                () -> BmsScreenComposer.send(DBCS_MAPSET, DBCS_MAP, Optional.empty(), symbolic,
+                        options(true, false, false, false, false), MIXED));
+        assertTrue(refused.getMessage().contains("fills 7 screen positions"), refused.getMessage());
+    }
 }

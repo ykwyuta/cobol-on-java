@@ -55,7 +55,14 @@ public final class BmsScreenViewFactory {
             // DRK の値は出さない。ただし出力 field を空にすると幅が 0 になり、同じ行のあとの field が
             // 左へずれる (spike で BNK1CAM の DUMMY が 0 桁になった)。出力は長さぶんの空白で cell を保つ。
             // 入力 field の幅は bms-len-N が決めるので、値は空でよい
-            String text = !dark ? field.data() : input ? "" : " ".repeat(field.length());
+            //
+            // 入力 field は、表示のために詰めた末尾の空白を値に出さない。画面の記録は field を
+            // 空白で埋めており、そのまま value にすると maxlength と同じ文字数になって 1 文字も
+            // 打てない (3270 は上書きなので空白の上に打てるが、HTML の入力欄は挿入である)。
+            // ブラウザで測って分かった。server は受けた値を field の桁まで詰め直すので、
+            // 送る側が末尾の空白を落としても記号マップは変わらない (BmsInputDecoder)
+            String text = dark ? (input ? "" : " ".repeat(field.length()))
+                    : input ? field.data().stripTrailing() : field.data();
             segments.add(new BmsScreenView.Segment(parameterName, row, column, field.length(), input, numeric,
                     dark, field.modified(), text, cssClass(field, input),
                     field.name().map(name -> name + (field.occurrence() > 1 ? " " + field.occurrence() : ""))

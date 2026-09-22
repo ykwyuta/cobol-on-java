@@ -7,6 +7,7 @@ import dev.cobolonjava.cics.bms.BmsModel;
 import dev.cobolonjava.cics.bms.BmsParser;
 import dev.cobolonjava.cics.bms.BmsScreenComposer;
 import dev.cobolonjava.cics.bms.BmsScreenSnapshot;
+import dev.cobolonjava.cics.bms.BmsSymbolicLayout;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import java.util.Map;
 import java.util.Optional;
@@ -127,6 +128,49 @@ class BmsScreenRenderingTest {
         assertThat(html).contains("action=\"/cics/OCAC\"", "src=\"/cobol/bms/terminal.js\"");
         assertThat(html).doesNotContain("th:", "style=");
         assertThat(html).contains("class=\"bms-row\"", "bms-len-10");
+    }
+
+    @Test
+    @DisplayName("DBCSのfieldは、文字数ではなく桁数ぶんの幅で描く")
+    void rendersDoubleByteFieldsByScreenPositions() {
+        String japanese = String.join("\n",
+                card("JSET     DFHMSD TYPE=&SYSPARM,MODE=INOUT,LANG=COBOL,TIOAPFX=YES", false),
+                card("SCRMP    DFHMDI SIZE=(24,80)", false),
+                card("NAME     DFHMDF POS=(3,2),LENGTH=8,ATTRB=(UNPROT,NORM),SOSI=YES", false),
+                card("         DFHMSD TYPE=FINAL", false)) + "\n";
+        BmsModel.Mapset mapset = BmsParser.parse(japanese);
+        BmsModel.Map map = mapset.map("SCRMP").orElseThrow();
+        BmsSymbolicLayout layout = BmsSymbolicLayout.of(mapset, map);
+        byte[] symbolic = new byte[layout.length()];
+        byte[] data = CodePages.IBM_930.encode("\u5C71\u7530  ");
+        System.arraycopy(data, 0, symbolic, layout.slots().get(0).dataOffset(), data.length);
+        BmsScreenSnapshot screen = BmsScreenComposer.send(mapset, map, Optional.empty(), symbolic,
+                new BmsScreenComposer.SendOptions(true, false, false, true, false, false,
+                        OptionalInt.empty(), false), CodePages.IBM_930);
+
+        BmsScreenView.Segment name = new BmsScreenViewFactory().create(screen).segments().get(0);
+
+        // 2 文字の値だが、幅は 8 桁である。詰めた空白は値に出さない (打てなくなるため)
+        assertThat(name.text()).isEqualTo("\u5C71\u7530");
+        assertThat(name.length()).isEqualTo(8);
+        assertThat(name.cssClass()).contains("bms-len-8");
+    }
+
+    @Test
+    @DisplayName("入力fieldの値は末尾の空白を落とす。落とさないとmaxlengthで1文字も打てない")
+    void doesNotFillInputFieldsWithTheirPadding() {
+        BmsScreenView view = new BmsScreenViewFactory().create(snapshot(BMS));
+
+        BmsScreenView.Segment custno = view.segments().stream()
+                .filter(segment -> "bms.CUSTNO.1".equals(segment.parameterName())).findFirst().orElseThrow();
+        // 画面の記録では 10 桁が空白で埋まっている。入力欄の値は空にする
+        assertThat(custno.text()).isEmpty();
+        assertThat(custno.length()).isEqualTo(10);
+
+        // 出力 field は長さぶんの空白を保つ。空にすると幅が 0 になり、後ろの field が左へずれる
+        BmsScreenView.Segment message = view.segments().stream()
+                .filter(segment -> segment.length() == 20).findFirst().orElseThrow();
+        assertThat(message.text()).isEqualTo("HELLO               ");
     }
 
     @Test
