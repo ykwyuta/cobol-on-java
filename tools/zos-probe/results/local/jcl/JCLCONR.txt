@@ -1,3 +1,18 @@
-JCLCONR.jcl:19: IF is missing a closing parenthesis
-JCLCONR.jcl:26: IF is missing a closing parenthesis
-JOB RC=2
+PRB J.R01  |RAN RC=0000|
+PRB J.R02  |RAN ABEND|
+CEE3250C THE SYSTEM OR USER ABEND S0C7 WAS ISSUED.
+  CONDITION: data exception
+  DETAIL:    invalid digit nibble 0xA at position 1 in packed decimal field
+
+TRACEBACK:
+  PROGRAM   STATEMENT  SOURCE
+  CBLRC     36         CBLRC.cbl
+PRB J.R03  |RAN RC=0000|
+PRB J.R04  |RAN RC=0000|
+JCLCONR.R01 ENDED - RC=0
+JCLCONR.R02 ABENDED S0C7 - invalid digit nibble 0xA at position 1 in packed decimal field
+JCLCONR.R03 ENDED - RC=0
+JCLCONR.R04 ENDED - RC=0
+JCLCONR.R05 NOT EXECUTED
+JCLCONR.R06 NOT EXECUTED
+JOB RC=12

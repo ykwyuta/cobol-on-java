@@ -1,7 +1,7 @@
 PRB H.20.BEFORE  ||
 Exception in thread "main" dev.cobolonjava.runtime.program.ProgramNotFoundException: cannot find the called program: ASMPM
 	at dev.cobolonjava.runtime.interop.LegacyClassNameResolver.resolve(LegacyClassNameResolver.java:22)
-	at dev.cobolonjava.runtime.program.ProgramContext.resolve(ProgramContext.java:731)
+	at dev.cobolonjava.runtime.program.ProgramContext.resolve(ProgramContext.java:736)
 	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1505)
 	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1524)
 	at cobol.generated.CBLASMD.paragraph$0(CBLASMD.cbl:44)

@@ -25,9 +25,9 @@
 == CBLOPTN.cbl rc=0
 == CBLPARM.cbl rc=0
 == CBLPRNC.cbl rc=1
-   CBLPRNC.cbl:15:12: unknown function name: C01
-   CBLPRNC.cbl:16:12: unknown function name: C02
-   CBLPRNC.cbl:17:12: unknown function name: C12
+   CBLPRNC.cbl:35:12: ADVANCING CHANNEL-2 (channel 02) is not supported yet: the lines of channels 2 to 12 depend on the printer's forms control (P-076)
+   CBLPRNC.cbl:37:12: ADVANCING CHANNEL-12 (channel 12) is not supported yet: the lines of channels 2 to 12 depend on the printer's forms control (P-076)
+   CBLPRNC.cbl:41:12: ADVANCING CHANNEL-2 (channel 02) is not supported yet: the lines of channels 2 to 12 depend on the printer's forms control (P-076)
 == CBLPRNT.cbl rc=0
 == CBLRC.cbl rc=0
 == CBLSYNC.cbl rc=0
@@ -39,9 +39,8 @@
 == PLISTRM.pli rc=0
 == ASMDC1.asm rc=0
 == ASMDC2.asm rc=1
-   ASMDC2.asm:32: error: a quoted string is not closed
-== ASMDC3.asm rc=1
-   ASMDC3.asm:22: error: a quoted string is not closed
+   ASMDC2.asm:26: error: unsupported constant type: E
+== ASMDC3.asm rc=0
 == ASMEXE.asm rc=0
 == ASMPM.asm rc=1
    ASMPM.asm:23: error: unknown operation: IPM (a macro call would be expanded here; macros are not supported yet)

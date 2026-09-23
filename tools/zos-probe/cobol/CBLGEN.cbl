@@ -21,6 +21,7 @@
        WORKING-STORAGE SECTION.
        COPY PRBWS.
        01  W-FS                PIC X(2).
+       01  W-WFS               PIC X(2).
        01  W-COUNTX            PIC X(9).
        01  W-TAG               PIC X(8).
        01  W-MODE              PIC X(8).
@@ -42,7 +43,12 @@
            END-UNSTRING
            COMPUTE W-COUNT = FUNCTION NUMVAL(W-COUNTX)
            OPEN OUTPUT OUTF
-           PERFORM VARYING W-I FROM 1 BY 1 UNTIL W-I > W-COUNT
+      * Stop at the first WRITE whose status is not 00. With FILE
+      * STATUS declared, an out-of-space condition may come back as
+      * status 34 instead of an x37 abend; which one is the question.
+           MOVE "00" TO W-FS
+           PERFORM VARYING W-I FROM 1 BY 1
+                   UNTIL W-I > W-COUNT OR W-FS NOT = "00"
                MOVE SPACES TO OUTF-REC
                STRING W-TAG DELIMITED BY SPACE
                       " " W-I DELIMITED BY SIZE
@@ -50,11 +56,15 @@
                END-STRING
                WRITE OUTF-REC
            END-PERFORM
+           MOVE W-FS TO W-WFS
            CLOSE OUTF
            MOVE SPACES TO PRB-CASE
            STRING "G." W-TAG DELIMITED BY SPACE INTO PRB-CASE
            SUBTRACT 1 FROM W-I
-           STRING "WROTE " W-I " FS=" W-FS DELIMITED BY SIZE
+           IF W-WFS NOT = "00"
+               SUBTRACT 1 FROM W-I
+           END-IF
+           STRING "WROTE " W-I " FS=" W-WFS DELIMITED BY SIZE
                INTO PRB-TEXT
            MOVE 0 TO PRB-LEN PERFORM PRB-EMIT
       * A third field ABEND ends the step with S0C7 after CLOSE, to

@@ -17,7 +17,7 @@ z/OS の環境が使えるようになったときに、暫定判断 (`docs/deci
 3. 送る  ─────────────────────────▶   4. PRBALLOC (一度だけ)
                                        5. PRBBLDC / PRBBLDP / PRBBLDA (翻訳)
                                        6. PRBRUNC / PRBRUNP / PRBRUNA / PRBABND
-                                       7. JCLCOND ... JCLCP
+                                       7. JCLCOND ... JCLCP (13 本)
 8. 持ち帰る ◀─────────────────────────
 9. ローカル側を流す (run-local.sh)
 10. 突き合わせる (ProbeTool.java)
@@ -145,14 +145,14 @@ FTP の場合は `ascii` モードで 1 本ずつ `put cobol/CBLNUM.cbl 'USER01.
 
 1. `JCLCOND` → `JCLCONR`
 2. `JCLDISP` → `JCLDISP2`
-3. `JCLGDG` → `JCLGDG2`
+3. `JCLGDG0` → `JCLGDG` → `JCLGDG2` → `JCLGDGD`
 4. `JCLSPACE`
 5. `JCLPDS`
 6. `JCLUTIL`
 7. `JCLTSO`
 8. `JCLCP`
 
-`JCLDISP2` は JCL エラーで止まるかもしれない。止まったこと自体が P-054 の答えである。
+`JCLDISP2` と `JCLGDGD` は JCL エラーで止まるかもしれない。止まったこと自体が答えである (P-054、設計 90)。
 
 ## 4. 持ち帰る
 
@@ -272,7 +272,7 @@ JCL の probe は、ステップが流れたかどうか・完了コード・デ
 
 ### 7.3 `DELETE ... GDG FORCE` が権限で拒まれる
 
-`JCLGDG` の `DELGDG` を次の 2 文に換える。
+`JCLGDG0` と `JCLGDGD` の `DELGDG` を次の 2 文に換える (`JCLGDGD` は名前を `GDGD` に読み替える)。
 
 ```
   DELETE YOURID.PROBE.GDG.* PURGE

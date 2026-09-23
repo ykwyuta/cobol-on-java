@@ -9,11 +9,10 @@
 #   <ジョブ>/<ステップ>/<DD 名>     プログラムが書いたファイル (PRTF など)
 #   jcl/<ジョブ>.txt          JCL の probe をジョブ実行 (cobolj) で流したときのジョブログ
 #
-# 言語の probe は、ジョブ実行を通さずプログラムを直に起動する。この処理系の
-# ジョブ実行は ACCEPT を SYSIN の DD へ、DISPLAY を SYSOUT の DD へ結んでいない
-# ので (docs/zos-probe/scenarios.md の「ローカル側で分かったこと」)、SYSIN の
-# 中身は標準入力として渡す。直に起動したプログラムは、ASSIGN の名前のファイルを
-# 作業ディレクトリに作る。
+# 言語の probe は、ジョブ実行を通さずプログラムを直に起動する。ステップごとの
+# 出力を実機と同じ <ジョブ>/<ステップ>/SYSOUT.txt の形で残すためである。SYSIN の
+# 中身は標準入力として渡す (直に起動したプログラムの ACCEPT は標準入力を読む)。
+# 直に起動したプログラムは、ASSIGN の名前のファイルを作業ディレクトリに作る。
 #
 # 数を門にしない (CLAUDE.md §7)。翻訳や実行が失敗しても最後まで流し、0 で終わる。
 # 1 本が返ってこなくても残りを測れるよう、実行には 60 秒の限りを置く (§6)。
@@ -100,14 +99,25 @@ grep -v '^#' "$here/local-steps.txt" | while read -r job step program card; do
 done
 
 # --------------------------------------------------------- JCL の probe
-# 実機の JCL から JOBLIB / STEPLIB の行だけを落として流す。ほかは書き換えない。
-for jcl in "$here"/jcl/JCL*.jcl; do
-  name=$(basename "$jcl" .jcl)
-  work=$target/jobs/$name
-  rm -rf "$work"; mkdir -p "$work"
-  grep -v -e '^//JOBLIB ' -e '^//STEPLIB ' "$jcl" > "$work/$name.jcl"
+# 実機の JCL の JOBLIB / STEPLIB の行だけを注記の行 (//*) に置き換えて流す。ほかは書き換えない。
+# 行を削らないのは、診断の行番号を原文と揃えるためである。以前は削っていたので、ジョブ実行の
+# 報告する行が 1 つずれ、「IF の誤りを ENDIF の行で報告する」という無い不具合を報告した。
+#
+# データセットの置き場 (と目録) は<b>すべてのジョブで 1 つ</b>にする。実機の目録が 1 つだから
+# である。以前はジョブごとに別の置き場で流していたので、JCLDISP2 から JCLDISP が作った
+# DISP.A が見えず、「DISP を書かない DD が既存のデータセットを消す」という、処理系には無い
+# 不具合を報告してしまった (CLAUDE.md §6: 検査の道具が処理系の失敗を作ってはならない)。
+# 順番も実機の手順書 (runbook §3.4) と揃える。前のジョブの結果を読むジョブがあるからである。
+jobs=$target/jobs
+rm -rf "$jobs"; mkdir -p "$jobs"
+for name in JCLCOND JCLCONR JCLDISP JCLDISP2 JCLGDG0 JCLGDG JCLGDG2 JCLGDGD \
+            JCLSPACE JCLPDS JCLUTIL JCLTSO JCLCP; do
+  jcl=$here/jcl/$name.jcl
+  [ -f "$jcl" ] || continue
+  sed -e 's|^//JOBLIB .*|//* JOBLIB (host only)|' \
+      -e 's|^//STEPLIB .*|//* STEPLIB (host only)|' "$jcl" > "$jobs/$name.jcl"
   (
-    cd "$work" || exit 2
+    cd "$jobs" || exit 2
     timeout 120 java -cp "$(jpath "$classes")$sep$cp" dev.cobolonjava.job.Main \
         -d "$(jpath "$classes")" -w work -b datasets "$name.jcl" < /dev/null 2>&1
     echo "JOB RC=$?"

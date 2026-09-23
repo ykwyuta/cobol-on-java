@@ -6,18 +6,9 @@
 //* to (+4), then read (+1) and (+2) again in the same job, LISTCAT.
 //* Q: GnnnnV00 names; when G0001 rolls off (step end or job end);
 //* do relative numbers stay fixed for the whole job?
-//* Run JCLGDG2 afterwards for (0), (-1), (-2) in a new job.
+//* Run JCLGDG0 first (it defines the base), and JCLGDG2 afterwards
+//* for (0), (-1), (-2) in a new job.
 //*--------------------------------------------------------------------
-//DELGDG   EXEC PGM=IDCAMS
-//SYSPRINT DD SYSOUT=*
-//SYSIN    DD *
-  DELETE YOURID.PROBE.GDG GDG FORCE
-/*
-//DEFGDG   EXEC PGM=IDCAMS,COND=EVEN
-//SYSPRINT DD SYSOUT=*
-//SYSIN    DD *
-  DEFINE GDG(NAME(YOURID.PROBE.GDG) LIMIT(3) NOEMPTY SCRATCH)
-/*
 //NEW1     EXEC PGM=CBLGEN
 //OUTF     DD DSN=YOURID.PROBE.GDG(+1),DISP=(NEW,CATLG,DELETE),
 //            SPACE=(TRK,(1,1))
