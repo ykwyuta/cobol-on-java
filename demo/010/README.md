@@ -22,8 +22,9 @@ demo/010/
         └── pli-include/         GREETING.inc
 ```
 
-COBOL と PL/I をモジュールに分けているのは、1 つのモジュールに置けないためです
-([P-182](../../docs/decisions/provisional.md))。
+COBOL と PL/I をモジュールに分けているのは、複数モジュールの見本にするためです。
+3 つの言語 (COBOL・PL/I・HLASM) は 1 つのモジュールにも置けます。生成クラスは同じ名前空間に入り、
+配備カタログも 1 つにまとまります ([設計 91 §6](../../docs/design/91-maven-build.md))。
 
 ## ビルドで起きること
 

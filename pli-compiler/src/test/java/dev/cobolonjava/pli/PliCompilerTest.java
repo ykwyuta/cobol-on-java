@@ -71,7 +71,7 @@ class PliCompilerTest {
     void generatedClassExecutesStructuredPli() throws Exception {
         PliCompiler.Result result = PliCompiler.standard().compile("HELLO.pli", PROGRAM);
         assertTrue(result.succeeded(), () -> result.diagnostics().toString());
-        assertEquals("pli.generated.HELLO", result.className());
+        assertEquals("cobol.generated.HELLO", result.className());
 
         Class<?> generated = new GeneratedLoader().define(result.className(), result.classFile());
         CobolProgram program = (CobolProgram) generated.getDeclaredConstructor().newInstance();
@@ -145,10 +145,10 @@ class PliCompilerTest {
 
         Main.main(new String[] {"-d", output.toString(), source.toString()});
 
-        assertTrue(Files.isRegularFile(output.resolve("pli/generated/HELLO.class")));
+        assertTrue(Files.isRegularFile(output.resolve("cobol/generated/HELLO.class")));
         String catalog = Files.readString(output.resolve("META-INF/cobol/programs.json"));
         assertTrue(catalog.contains("\"programId\": \"HELLO\""));
-        assertTrue(catalog.contains("\"allowedPackage\": \"pli.generated\""));
+        assertTrue(catalog.contains("\"allowedPackage\": \"cobol.generated\""));
         DeployCatalogManifest manifest = DeployCatalogManifest.fromJson(catalog);
         try (URLClassLoader loader = new URLClassLoader(new java.net.URL[] {
                 output.toUri().toURL()}, PliCompilerTest.class.getClassLoader())) {

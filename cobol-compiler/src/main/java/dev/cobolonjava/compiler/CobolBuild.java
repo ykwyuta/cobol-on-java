@@ -51,8 +51,12 @@ public final class CobolBuild {
         }
     }
 
-    /** 翻訳の結末。{@code failedSources} は翻訳できなかったソースの並び。 */
-    public record Result(List<Path> failedSources, List<String> programIds) {
+    /**
+     * 翻訳の結末。{@code failedSources} は翻訳できなかったソースの並び。{@code catalog} は書いた
+     * 配備カタログで、ほかの言語のカタログと 1 つにまとめるときに使う。
+     */
+    public record Result(List<Path> failedSources, List<String> programIds,
+                         DeployCatalogManifest catalog) {
 
         public Result {
             failedSources = List.copyOf(failedSources);
@@ -99,11 +103,11 @@ public final class CobolBuild {
         // 全件失敗でも空catalogを書き、以前の成功ビルドのcatalogを残さない。
         Path catalog = request.output().resolve(DeployCatalogManifest.RESOURCE_NAME);
         Files.createDirectories(catalog.getParent());
-        Files.writeString(catalog, DeployCatalogGenerator.generate(deployed).toJson(),
-                StandardCharsets.UTF_8);
+        DeployCatalogManifest manifest = DeployCatalogGenerator.generate(deployed);
+        Files.writeString(catalog, manifest.toJson(), StandardCharsets.UTF_8);
         return new Result(failed, deployed.stream()
                 .map(program -> program.programSignature().programId().value())
-                .toList());
+                .toList(), manifest);
     }
 
     /**

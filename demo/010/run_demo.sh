@@ -27,7 +27,7 @@ java -cp "target/classes:$(cat target/cp.txt)" dev.cobolonjava.job.Main \
 echo "[4/4] Running the PL/I program HELLO..."
 cd ../greet
 mvn -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt
-java -cp "target/classes:$(cat target/cp.txt)" pli.generated.HELLO
+java -cp "target/classes:$(cat target/cp.txt)" cobol.generated.HELLO
 
 echo "----------------------------------------------------------"
 echo "[SUCCESS] Demo #010 completed successfully."

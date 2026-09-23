@@ -39,7 +39,7 @@ cd /d "%~dp0greet"
 call mvn -q dependency:build-classpath -Dmdep.outputFile=target\cp.txt
 if errorlevel 1 goto ERROR_END
 set /p CP=<target\cp.txt
-java -cp "target\classes;%CP%" pli.generated.HELLO
+java -cp "target\classes;%CP%" cobol.generated.HELLO
 if errorlevel 1 goto ERROR_END
 
 echo ----------------------------------------------------------

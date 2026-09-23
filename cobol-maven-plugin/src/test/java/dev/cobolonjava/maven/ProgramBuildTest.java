@@ -140,31 +140,73 @@ class ProgramBuildTest {
     }
 
     @Test
-    @DisplayName("PL/I を %INCLUDE の置き場を引いて翻訳し、pli.generated のカタログを書く")
+    @DisplayName("PL/I を %INCLUDE の置き場を引いて翻訳し、COBOL と同じ名前空間のカタログを書く")
     void pliIsBuiltFromTheStandardLayout() throws Exception {
         write("src/main/pli/HELLO.pli", PLI);
         write("src/main/pli-include/BODY.inc", "PUT SKIP LIST('HELLO');\n");
 
         build();
 
-        assertTrue(Files.isRegularFile(output().resolve("pli/generated/HELLO.class")),
+        assertTrue(Files.isRegularFile(output().resolve("cobol/generated/HELLO.class")),
                 () -> report.lines.toString());
         DeployCatalogManifest catalog = catalog();
-        assertEquals("pli.generated", catalog.allowedPackage());
+        assertEquals("cobol.generated", catalog.allowedPackage());
         assertEquals(List.of("HELLO"), catalog.programs().stream()
                 .map(program -> program.programId().value()).toList());
     }
 
     @Test
-    @DisplayName("COBOL と PL/I を 1 つのモジュールに置くと、カタログが上書きされる前に断る (P-182)")
-    void cobolAndPliInOneModuleAreRefused() throws Exception {
+    @DisplayName("COBOL と PL/I を 1 つのモジュールに置くと、配備カタログを 1 つにまとめる (P-182 の解消)")
+    void cobolAndPliInOneModuleShareOneCatalog() throws Exception {
         write("src/main/cobol/GREET.cbl", GREET);
+        write("src/main/copybook/GREETW.cpy",
+                "       01 WS-GREETING PIC X(5) VALUE 'HELLO'.\n");
+        write("src/main/bms/TSTSET.bms", MAPSET);
         write("src/main/pli/HELLO.pli", PLI);
+        write("src/main/pli-include/BODY.inc", "PUT SKIP LIST('HELLO');\n");
+
+        build();
+
+        DeployCatalogManifest catalog = catalog();
+        assertEquals(List.of("GREET", "HELLO"), catalog.programs().stream()
+                .map(program -> program.programId().value()).toList());
+        assertEquals(List.of("cobol.generated.GREET", "cobol.generated.HELLO"),
+                catalog.programs().stream().map(program -> program.className()).toList());
+    }
+
+    @Test
+    @DisplayName("COBOL と PL/I に同じ名前のプログラムがあれば断る。ホストの 1 つのロードライブラリと同じ")
+    void aNameUsedByBothLanguagesIsRefused() throws Exception {
+        write("src/main/cobol/HELLO.cbl", GREET.replace("PROGRAM-ID. GREET.", "PROGRAM-ID. HELLO."));
+        write("src/main/copybook/GREETW.cpy",
+                "       01 WS-GREETING PIC X(5) VALUE 'HELLO'.\n");
+        write("src/main/bms/TSTSET.bms", MAPSET);
+        write("src/main/pli/HELLO.pli", PLI);
+        write("src/main/pli-include/BODY.inc", "PUT SKIP LIST('HELLO');\n");
 
         assertThrows(BuildFailure.class, this::build);
 
-        assertTrue(report.lines.stream().anyMatch(line -> line.contains("P-182")));
+        assertTrue(report.lines.stream().anyMatch(line -> line.startsWith("ERROR ")
+                && line.contains("HELLO")), () -> report.lines.toString());
+    }
+
+    @Test
+    @DisplayName("HLASM を組み立てて同じ名前空間に置く。配備カタログには載せない")
+    void hlasmIsAssembledIntoTheSameNameSpace() throws Exception {
+        write("src/main/asm/BUMP.asm", String.join("\n",
+                "BUMP     CSECT",
+                "         USING BUMP,15",
+                "         SR    15,15",
+                "         BR    14",
+                "         END",
+                ""));
+
+        build();
+
+        assertTrue(Files.isRegularFile(output().resolve("cobol/generated/BUMP.class")),
+                () -> report.lines.toString());
         assertFalse(Files.exists(output().resolve(DeployCatalogManifest.RESOURCE_NAME)));
+        assertTrue(report.lines.contains("INFO HLASM: 1 module(s), not in the deploy catalog"));
     }
 
     @Test

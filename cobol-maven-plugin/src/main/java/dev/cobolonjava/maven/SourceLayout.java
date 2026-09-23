@@ -22,17 +22,19 @@ import java.util.stream.Stream;
  * src/main/bms          BMS の mapset       (記号マップを翻訳時に作り、原文を classpath に載せる)
  * src/main/pli          PL/I の原文
  * src/main/pli-include  %INCLUDE のメンバ
+ * src/main/asm          HLASM の原文 (.asm / .hlasm)
  * src/main/jcl          ジョブ記述 (.jcl と宣言的形式 .job)
  * src/main/proclib      目録手続きと JCL の INCLUDE メンバ (PROCLIB / JCLLIB)
  * </pre>
  */
 public record SourceLayout(Path cobol, List<Path> copybooks, Path bms, Path pli,
-                           List<Path> pliIncludes, Path jcl, Path proclib) {
+                           List<Path> pliIncludes, Path hlasm, Path jcl, Path proclib) {
 
     /** COBOL の原文として拾う拡張子。写し句 ({@code .cpy}) は拾わない。 */
     static final Set<String> COBOL_SUFFIXES = Set.of("cbl", "cob", "cobol");
     static final Set<String> PLI_SUFFIXES = Set.of("pli", "pl1");
     static final Set<String> BMS_SUFFIXES = Set.of("bms");
+    static final Set<String> HLASM_SUFFIXES = Set.of("asm", "hlasm");
     /** {@code .jcl} は JCL、{@code .job} は宣言的形式として読む (要件 FR-132)。 */
     static final Set<String> JOB_SUFFIXES = Set.of("jcl", "job");
 
@@ -46,7 +48,7 @@ public record SourceLayout(Path cobol, List<Path> copybooks, Path bms, Path pli,
         Path main = basedir.resolve("src/main");
         return new SourceLayout(main.resolve("cobol"), List.of(main.resolve("copybook")),
                 main.resolve("bms"), main.resolve("pli"), List.of(main.resolve("pli-include")),
-                main.resolve("jcl"), main.resolve("proclib"));
+                main.resolve("asm"), main.resolve("jcl"), main.resolve("proclib"));
     }
 
     /**
@@ -72,6 +74,10 @@ public record SourceLayout(Path cobol, List<Path> copybooks, Path bms, Path pli,
 
     List<Path> pliSources() throws IOException {
         return files(pli, PLI_SUFFIXES);
+    }
+
+    List<Path> hlasmSources() throws IOException {
+        return files(hlasm, HLASM_SUFFIXES);
     }
 
     List<Path> bmsSources() throws IOException {

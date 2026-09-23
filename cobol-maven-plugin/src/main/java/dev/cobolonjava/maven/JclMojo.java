@@ -43,7 +43,7 @@ public class JclMojo extends AbstractMojo {
         }
         SourceLayout standard = SourceLayout.standard(basedir.toPath());
         SourceLayout layout = new SourceLayout(standard.cobol(), standard.copybooks(),
-                standard.bms(), standard.pli(), standard.pliIncludes(),
+                standard.bms(), standard.pli(), standard.pliIncludes(), standard.hlasm(),
                 jclDirectory.toPath(), proclibDirectory.toPath());
         try {
             JobCheck.run(layout, outputDirectory.toPath(), MavenReport.of(getLog()));

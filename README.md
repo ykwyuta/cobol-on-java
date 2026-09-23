@@ -85,7 +85,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS task の coordinator の自動構成と、JSON の入口 `POST /api/cics/{transid}` (Spring Security があるときだけ、P-135) を実装。同じ冪等キーの再送には task を動かさず commit した結果を返す (P-142)。`cobol.cics.conversation.consistency=strict` で、会話と冪等キーの結果を業務の Db2 と同じ UOW で表に確定する (P-143)。IMS のデータベースの置き場へ容器の `DataSource` を預ける (`cobol-ims-rdb` を置いた利用者だけ。`cobol.ims.spring-data-source=false` で切る、P-169)。driver管理 `WITH HOLD` は未実装 |
-| `cobol-maven-plugin` | 利用者のプロジェクトで COBOL・PL/I を翻訳し、BMS と JCL を検める Maven プラグイン (設計 91) | `cobol:compile` (BMS の検査と classpath への配置、COBOL・PL/I の翻訳と配備カタログ) と `cobol:jcl` (実行時と同じ読み取りで JCL・宣言的形式を検め、目録手続きも展開する) を実装。翻訳の手順は `CobolBuild` / `PliBuild` / `JobDescription` にあり、コマンドラインと共有する。COBOL と PL/I を 1 つのモジュールに置くと断る (P-182) |
+| `cobol-maven-plugin` | 利用者のプロジェクトで COBOL・PL/I を翻訳し、BMS と JCL を検める Maven プラグイン (設計 91) | `cobol:compile` (BMS の検査と classpath への配置、COBOL・PL/I・HLASM の翻訳と配備カタログ。3 つの言語を 1 つのモジュールに置ける) と `cobol:jcl` (実行時と同じ読み取りで JCL・宣言的形式を検め、目録手続きも展開する) を実装。翻訳の手順は `CobolBuild` / `PliBuild` / `JobDescription` にあり、コマンドラインと共有する。COBOL と PL/I のカタログは 1 つにまとめ、同じ名前のプログラムは断る (P-182 の解消) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 画面の Thymeleaf view、端末 JavaScript、CSS | 表示モデル、共通 template、端末操作、form の入力変換を実装。Bank-of-Z の 2 画面をブラウザで測り、JavaScript の有無によらず全 field の行・桁・幅が一致 (設計 81)。ブラウザの入口 `POST /cics/{transid}` は Spring Security があるときだけ構成し、COMMAREA と画面は server の会話ストアから読む。会話ストアの既定は 1 つの JVM の中だけ (P-134) |
 
 ## ビルド
@@ -132,12 +132,13 @@ java -cp <classpath> dev.cobolonjava.compiler.Main -d out HELLO.cbl
 java -cp out:<classpath> cobol.generated.HELLO
 ```
 
-PL/I は別の入口を使う。生成クラスも同じ `CobolProgram` ABI を実装するため、既存の
-ジョブ実行・プログラムカタログ・IMS の PCB 引数を共用する。
+PL/I は別の入口を使う。生成クラスも同じ `CobolProgram` ABI を実装し、COBOL と<b>同じ
+名前空間</b> (`cobol.generated`) に置くので、ジョブの `EXEC PGM=`・COBOL の `CALL`・プログラムカタログ・
+IMS の PCB 引数を共用する (HLASM も同じ)。
 
 ```
 java -cp <classpath> dev.cobolonjava.pli.Main -d out -I includes HELLO.pli
-java -cp out:<classpath> pli.generated.HELLO
+java -cp out:<classpath> cobol.generated.HELLO
 ```
 
 IMS 領域は `CBLTDLI` と `PLITDLI` の両方を登録する。PL/I の先頭の引数個数を含む
@@ -151,7 +152,7 @@ COBOL の `CALL 'BUMP' USING ...` からそのまま呼べる。`-l` は組み�
 
 ```
 java -cp <classpath> dev.cobolonjava.hlasm.Main -d out -l BUMP.asm
-java -cp out:<classpath> hlasm.generated.BUMP
+java -cp out:<classpath> cobol.generated.BUMP
 ```
 
 マクロと条件付きアセンブリはまだ無い。`WTO` や `OPEN` のようなマクロ呼出しは、読み飛ばさずに

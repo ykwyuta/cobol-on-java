@@ -29,6 +29,7 @@ my-batch/
         ├── bms/            BMS の mapset       .bms                     (記号マップの元。原文も配る)
         ├── pli/            PL/I の原文         .pli .pl1
         ├── pli-include/    %INCLUDE のメンバ   .inc .pli または拡張子なし
+        ├── asm/            HLASM の原文        .asm .hlasm              (配備カタログには載せない)
         ├── jcl/            ジョブ記述          .jcl (JCL) / .job (宣言的形式)
         ├── proclib/        目録手続きと JCL の INCLUDE メンバ          (PROCLIB / JCLLIB)
         ├── java/           Java (CobolSession で呼ぶ側、JavaCallable 等)
@@ -52,8 +53,7 @@ my-batch/
 
 | 置き場 | 中身 |
 | --- | --- |
-| `cobol/generated/*.class` | COBOL の生成クラス |
-| `pli/generated/*.class` | PL/I の生成クラス |
+| `cobol/generated/*.class` | COBOL・PL/I・HLASM の生成クラス (1 つの名前空間) |
 | `META-INF/cobol/programs.json` | 配備カタログ (設計 75 / 76) |
 | `/*.bms` | BMS の原文。実行時に `/名前.bms` で読む既存の使い方 (デモ 009) に合わせて classpath の根に置く |
 | `META-INF/cobol/jcl/` | 検めたジョブ記述 (下位ディレクトリごと) |
@@ -67,7 +67,8 @@ my-batch/
    翻訳の途中で読まれないので、ここで読まないと誤りが実行時まで残る。根に置くので名前が
    重なれば断る
 2. `cobol/` を翻訳する (`CobolBuild`)
-3. `pli/` を翻訳する (`PliBuild`)
+3. `pli/` を翻訳する (`PliBuild`)。COBOL もあれば、2 つのカタログを 1 つにまとめる
+4. `asm/` を組み立てる (`HlasmCompiler`)。クラスだけを書き、カタログには載せない
 
 1 本が失敗しても<b>残りは翻訳し、診断をすべて出してから</b>ビルドを止める。1 本目で止めると、
 直して流し直すたびに次の 1 本しか見えない。
@@ -98,6 +99,7 @@ my-batch/
 | `bmsDirectory` | `src/main/bms` | |
 | `pliSourceDirectory` | `src/main/pli` | |
 | `pliIncludeDirectories` | `src/main/pli-include` | 複数書ける |
+| `hlasmSourceDirectory` | `src/main/asm` | |
 | `freeFormat` | `false` | COBOL を自由形式で読む |
 | `compilerOptions` | なし | `CBL` 文と同じ綴り。`SSRANGE,ARITH(EXTEND)` |
 | `skip` | `false` | `-Dcobol.skip` |
@@ -151,23 +153,27 @@ JCL に「翻訳」は無い。そのかわり、実行時に `cobolj` が読む
 プラグインの接頭辞は `cobol` である (`mvn cobol:compile`。`pluginGroups` に
 `dev.cobolonjava` を足した場合)。
 
-## 6. COBOL と PL/I を 1 つのモジュールに置けない (P-182)
+## 6. 言語を問わず 1 つの名前空間 (P-182 の解消)
 
-配備カタログは 1 つの classpath に 1 つで、載せられる package も 1 つである
-(`DeployCatalogManifest.allowedPackage`)。COBOL は `cobol.generated`、PL/I は
-`pli.generated` へ出すので、同じ `target/classes` に書くと<b>後から書いたほうのカタログが
-先のものを黙って消す</b>。
+ホストでは COBOL・PL/I・HLASM のロードモジュールが<b>同じロードライブラリ</b>に入り、`CALL` も
+`EXEC PGM=` も言語を問わず名前で引く。これに合わせ、3 つの言語の生成クラスを同じ package
+(`cobol.generated`) に置き、名前の付け方も `ProgramSupport.classNameOf` の 1 つにした。
 
-黙って片方を落とすより断る。両方の原文があれば、何も書かずにビルドを止める。当面は
-言語ごとにモジュールを分ける (デモ 010 の `sales` と `greet`)。
+- COBOL と PL/I を 1 つのモジュールに置ける。`CobolBuild` と `PliBuild` が書いたカタログを
+  `DeployCatalogManifest.merge` で 1 つにまとめて書き直す
+- 同じ名前のプログラムが 2 つあれば断る。ホストで同じロードライブラリに入れられないのと同じである
+- JCL のステップから PL/I と HLASM のプログラムを `PGM=` で呼べ、COBOL から HLASM を `CALL` で呼べる
+  (`MixedLanguageJobTest`)
+- HLASM は配備カタログに載せない。カタログは引数の個数を持つが、HLASM の原文からは決まらない。
+  署名は「0 個から 255 個までの、長さを問わない省略できる引数」とし、名前で引いたときの検査を通す
 
-解消条件は [P-182](../decisions/provisional.md#p-182-cobol-と-pli-を-1-つのモジュールで作れない) に書いた。
+以前は PL/I を `pli.generated`、HLASM を `hlasm.generated` に置いていたので、1 つのモジュールに
+置くとカタログが上書きされ (ビルドで断っていた)、ジョブから PL/I を呼べなかった。
 
 ## 7. まだ無いもの
 
 | 項目 | 扱い |
 | --- | --- |
 | `src/test/cobol` | 置かない。`cobol-junit` は classpath の配備カタログを<b>1 つだけ</b>読む。test 用に 2 つ目を作ると読めなくなる。試験する COBOL は `src/main/cobol` に置き、JUnit から呼ぶ |
-| HLASM (`src/main/asm`) | まだ入れていない。`hlasm-assembler` は配備カタログを書かないので、ここに載せる前にカタログの扱いを決める |
 | ジョブを動かす goal | 無い。実行はビルドではなく運用の側であり、`cobolj` (`dev.cobolonjava.job.Main`) で動かす |
 | 原文の文字コード | UTF-8 固定。コマンドラインと同じ。EBCDIC の原文は取り込むときに変換する |

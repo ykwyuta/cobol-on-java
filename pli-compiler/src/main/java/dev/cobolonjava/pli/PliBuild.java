@@ -3,6 +3,7 @@ package dev.cobolonjava.pli;
 import dev.cobolonjava.runtime.interop.CatalogRevision;
 import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
 import dev.cobolonjava.runtime.interop.GeneratedProgramArtifact;
+import dev.cobolonjava.runtime.program.ProgramSupport;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -25,8 +26,10 @@ import java.util.function.Consumer;
  */
 public final class PliBuild {
 
-    /** 生成クラスの package。配備カタログはこの package のクラスしか載せない。 */
-    public static final String GENERATED_PACKAGE = "pli.generated";
+    /**
+     * 生成クラスの package。COBOL と同じであり、配備カタログはこの package のクラスしか載せない。
+     */
+    public static final String GENERATED_PACKAGE = ProgramSupport.GENERATED_PACKAGE;
 
     private PliBuild() {
     }
@@ -45,8 +48,12 @@ public final class PliBuild {
         }
     }
 
-    /** 翻訳の結末。{@code failedSources} は翻訳できなかったソースの並び。 */
-    public record Result(List<Path> failedSources, List<String> programIds) {
+    /**
+     * 翻訳の結末。{@code failedSources} は翻訳できなかったソースの並び。{@code catalog} は書いた
+     * 配備カタログで、ほかの言語のカタログと 1 つにまとめるときに使う。
+     */
+    public record Result(List<Path> failedSources, List<String> programIds,
+                         DeployCatalogManifest catalog) {
 
         public Result {
             failedSources = List.copyOf(failedSources);
@@ -80,13 +87,13 @@ public final class PliBuild {
             compiled.add(result);
         }
         // 全件失敗でも空catalogを書き、以前の成功ビルドのcatalogを残さない。
-        writeCatalog(request.output(), compiled);
+        DeployCatalogManifest catalog = writeCatalog(request.output(), compiled);
         return new Result(failed, compiled.stream()
                 .map(result -> result.programSignature().programId().value())
-                .toList());
+                .toList(), catalog);
     }
 
-    private static void writeCatalog(Path output, List<PliCompiler.Result> compiled)
+    private static DeployCatalogManifest writeCatalog(Path output, List<PliCompiler.Result> compiled)
             throws IOException {
         MessageDigest revision = sha256();
         List<GeneratedProgramArtifact> artifacts = new ArrayList<>();
@@ -106,6 +113,7 @@ public final class PliBuild {
         Path target = output.resolve(DeployCatalogManifest.RESOURCE_NAME);
         Files.createDirectories(target.getParent());
         Files.writeString(target, manifest.toJson(), StandardCharsets.UTF_8);
+        return manifest;
     }
 
     /** 置き場を書いた順に探す。名前そのまま、{@code .pli}、{@code .inc} の順に試す。 */

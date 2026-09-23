@@ -73,7 +73,7 @@ class CobolProgramAbiTest {
                 "         BR    14",
                 "         END"));
         assertTrue(result.succeeded(), () -> "diagnostics: " + result.diagnostics());
-        assertEquals("hlasm.generated.BUMP", result.className());
+        assertEquals("cobol.generated.BUMP", result.className());
     }
 
     /**
@@ -81,14 +81,23 @@ class CobolProgramAbiTest {
      * 分からないものを「1 個」などと決めて署名に書くと、呼ぶ前の検査が嘘の根拠で通る。
      */
     @Test
-    @DisplayName("署名は引数を持たない。原文から引数の個数は決まらない")
-    void carriesNoParametersInTheSignature() throws ReflectiveOperationException {
+    @DisplayName("署名は個数を決めない。0 個から上限までの、長さを問わない省略できる引数である")
+    void doesNotFixTheArgumentCountInTheSignature() throws ReflectiveOperationException {
         CobolProgram program = load(
                 "BUMP     CSECT",
                 "         BR    14",
                 "         END");
-        assertEquals("BUMP", program.programSignature().programId().value());
-        assertTrue(program.programSignature().parameters().isEmpty());
+        dev.cobolonjava.runtime.interop.ProgramSignature signature = program.programSignature();
+        assertEquals("BUMP", signature.programId().value());
+        assertTrue(signature.parameters().stream().allMatch(parameter -> parameter.presence()
+                == dev.cobolonjava.runtime.interop.ProgramParameter.Presence.OPTIONAL
+                && parameter.minimumBytes() == 0));
+        // 以前は空の並びで、それは「0 個」と読まれて CALL 'BUMP' USING X が止まっていた
+        for (int count : new int[] {0, 1, 3}) {
+            DataView[] arguments = new DataView[count];
+            for (int i = 0; i < count; i++) arguments[i] = Storage.allocate(4 + i).whole();
+            signature.validate(arguments);
+        }
     }
 
     @Test

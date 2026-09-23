@@ -5600,7 +5600,7 @@ CICS の入口から見える bean ではない (`CicsTaskProgramPort` の向こ
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 (2026-09-23) |
+| 状態 | **解消済** (2026-09-23、生成クラスの package を 1 つに揃えた) |
 | 場所 | `ProgramBuild.run` (`cobol-maven-plugin`) |
 | 関連要件 | FR-180、設計 91 §6 |
 
@@ -5622,6 +5622,12 @@ PL/I のプログラムを `EXEC PGM=` で呼べないのはこの暫定とは�
 **解消条件**: COBOL と PL/I (と HLASM) が 1 つのプログラム名前空間を共有する形を決める。
 カタログに複数の package を許すか、生成クラスの package を 1 つに揃えるかのどちらかであり、
 いずれも配備カタログの形式 (信頼境界) の変更になる。
+
+**解消**: 生成クラスの package を 1 つ (`cobol.generated`) に揃えた。カタログの形式は変えて
+いない。名前の付け方は `ProgramSupport.classNameOf` の 1 つで、PL/I と HLASM もそれを使う。
+プラグインは COBOL と PL/I のカタログを `DeployCatalogManifest.merge` でまとめ、名前が重なれば
+断る。JCL の `EXEC PGM=` から PL/I と HLASM を呼べるようになった (設計 91 §6)。HLASM は配備
+カタログに載せず、署名を「0〜255 個の省略できる引数」にした。
 
 ---
 

@@ -1,9 +1,9 @@
 package dev.cobolonjava.pli;
 
 import dev.cobolonjava.runtime.interop.ProgramSignature;
+import dev.cobolonjava.runtime.program.ProgramSupport;
 import dev.cobolonjava.runtime.procedure.ProcedureManifest;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 
 /** PL/I ソース 1 本を JVM クラスへ翻訳する入口。 */
@@ -28,25 +28,13 @@ public final class PliCompiler {
         if (!parsed.succeeded()) {
             return new Result(null, null, null, null, parsed.diagnostics());
         }
-        String simpleName = javaName(parsed.program().name());
-        String className = "pli.generated." + simpleName;
+        // COBOL と同じ名前空間に置く。ホストでは COBOL と PL/I のロードモジュールが同じロード
+        // ライブラリに入り、CALL も EXEC PGM= も言語を問わず名前で引く (暫定判断 P-182 の解消)
+        String className = ProgramSupport.classNameOf(parsed.program().name());
         byte[] classFile = PliClassGenerator.generate(className, fileName, preprocessed.source());
         ProgramSignature signature = PliRuntime.signature(fileName, preprocessed.source());
         ProcedureManifest procedures = PliRuntime.procedureManifest(fileName, preprocessed.source());
         return new Result(className, classFile, signature, procedures, List.of());
-    }
-
-    private static String javaName(String programName) {
-        String normalized = programName.toUpperCase(Locale.ROOT).replace('-', '_');
-        StringBuilder result = new StringBuilder();
-        for (int i = 0; i < normalized.length(); i++) {
-            char c = normalized.charAt(i);
-            result.append(Character.isJavaIdentifierPart(c) ? c : '_');
-        }
-        if (result.isEmpty() || !Character.isJavaIdentifierStart(result.charAt(0))) {
-            result.insert(0, '_');
-        }
-        return result.toString();
     }
 
     public record Result(String className, byte[] classFile, ProgramSignature programSignature,

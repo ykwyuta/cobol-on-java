@@ -52,6 +52,11 @@ public class CompileMojo extends AbstractMojo {
     @Parameter
     private List<File> pliIncludeDirectories;
 
+    /** HLASM の原文の置き場。拡張子 {@code .asm} / {@code .hlasm}。配備カタログには載せない。 */
+    @Parameter(property = "cobol.hlasmSourceDirectory",
+            defaultValue = "${project.basedir}/src/main/asm")
+    private File hlasmSourceDirectory;
+
     /** COBOL を自由形式で読む。既定は固定形式 (7〜72 桁)。 */
     @Parameter(property = "cobol.freeFormat", defaultValue = "false")
     private boolean freeFormat;
@@ -79,7 +84,7 @@ public class CompileMojo extends AbstractMojo {
                 bmsDirectory.toPath(), pliSourceDirectory.toPath(),
                 pliIncludeDirectories == null ? standard.pliIncludes()
                         : pliIncludeDirectories.stream().map(File::toPath).toList(),
-                standard.jcl(), standard.proclib());
+                hlasmSourceDirectory.toPath(), standard.jcl(), standard.proclib());
         CompilerOptions options = compilerOptions == null || compilerOptions.isBlank()
                 ? CompilerOptions.NONE : ProcessStatement.parse(compilerOptions);
         try {
