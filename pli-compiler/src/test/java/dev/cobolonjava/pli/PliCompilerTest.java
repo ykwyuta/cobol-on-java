@@ -22,6 +22,7 @@ import dev.cobolonjava.db2.UnitOfWorkOptions;
 import dev.cobolonjava.db2.UnitOfWorkPort;
 import dev.cobolonjava.db2.UnitOfWorkState;
 import dev.cobolonjava.runtime.codepage.CodePages;
+import dev.cobolonjava.runtime.file.DataSetCatalog;
 import dev.cobolonjava.runtime.interop.CobolRuntime;
 import dev.cobolonjava.runtime.interop.CobolSession;
 import dev.cobolonjava.runtime.interop.ProgramCatalog;
@@ -35,6 +36,7 @@ import java.time.Duration;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Test;
 
@@ -215,6 +217,80 @@ class PliCompilerTest {
         public UnitOfWorkState state() { return state; }
         public void commit() { state = UnitOfWorkState.COMMITTED; }
         public void rollback(RollbackReason reason) { state = UnitOfWorkState.ROLLED_BACK; }
+    }
+
+    /**
+     * Bank-of-Z の BNKSTMT を原文のまま<b>動かす</b>。翻訳できることしか測っていなかったので、
+     * {@code IF ... THEN DO; ... END;} が上限まで回って止まることに気付けなかった。
+     * Db2 は口座を 1 件も返さず、DATECARD と SORTCODE は割り当てない。
+     */
+    @Test
+    void bankOfZStatementProgramRunsToCompletionWithoutAccounts() throws Exception {
+        Path source = Path.of("..", "reference", "Bank-of-Z-main", "src", "base", "batch", "pli",
+                "BNKSTMT.pli");
+        Assumptions.assumeTrue(Files.isRegularFile(source), "Bank-of-Z is not checked out");
+        PliCompiler.Result result = PliCompiler.standard().compile("BNKSTMT.pli",
+                Files.readString(source, StandardCharsets.UTF_8));
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        GeneratedLoader loader = new GeneratedLoader();
+        CobolProgram program = (CobolProgram) loader.define(result.className(), result.classFile())
+                .getDeclaredConstructor().newInstance();
+        SqlExecutorPort noRows = new SqlExecutorPort() {
+            public Db2ExecutionProfile profile() { return Db2ExecutionProfile.SPRING_MANAGED; }
+            public SqlOutcome execute(SqlPlan plan, SqlBindings bindings,
+                                      CobolSession session, UnitOfWork unit) {
+                return plan.operation() == SqlOperation.FETCH_CURSOR
+                        ? new SqlOutcome(100, "02000", 0, List.of(), false)
+                        : SqlOutcome.success(0);
+            }
+        };
+        FakeUnit unit = new FakeUnit();
+        UnitOfWorkPort units = new UnitOfWorkPort() {
+            public Db2ExecutionProfile profile() { return Db2ExecutionProfile.SPRING_MANAGED; }
+            public UnitOfWork begin(UnitOfWorkOptions options) { return unit; }
+            public void close() { }
+        };
+        Db2Execution execution = new Db2Execution(new Db2TaskRuntime(new UnitOfWorkOptions(
+                Db2ExecutionProfile.SPRING_MANAGED, Duration.ofSeconds(5), false, false),
+                units, noRows));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("BNKSTMT", program.programSignature(), () -> program).build();
+        // BNKSTMT.jcl と同じ埋め込みデータ。SORTCODE は 123456、DATECARD は 202606
+        // DD * の埋め込みデータは 80 桁の固定長 (既定の属性) である
+        Path sortCode = Files.write(temporary.resolve("SORTCODE"),
+                CodePages.DEFAULT.encode(String.format("%-80s", "123456")));
+        Path dateCard = Files.write(temporary.resolve("DATECARD"),
+                CodePages.DEFAULT.encode(String.format("%-80s", "202606")));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (CobolSession session = CobolRuntime.builder(catalog).classLoader(loader)
+                .dataSets(() -> new DataSetCatalog(temporary)
+                        .assign("SORTCODE", sortCode).assign("DATECARD", dateCard))
+                .build()
+                .openSession(output, RuntimeServices.builder()
+                        .service(Db2Execution.class, execution).build())) {
+            execution.bind(session);
+            session.runMain("BNKSTMT");
+        }
+
+        // PRINT ファイルの list-directed: 項目は tab 位置 25, 49, 73 に揃い、PAGE_COUNT
+        // (FIXED BIN(15)) は幅 9 の欄に右寄せになる
+        assertEquals(List.of(
+                "BNKSTMT - BANK MONTHLY STATEMENT PROGRAM",
+                "==========================================",
+                " ",
+                String.format("%-48s%s", "SORT CODE FROM PARAMETER: ", "123456"),
+                String.format("%-48s%s", "REPORTING MONTH FROM DATECARD: ", "202606"),
+                String.format("%-24s%-24s%-24s%s", "STATEMENT PERIOD: ", "20260601", " TO ",
+                        "20260630"),
+                "INITIALIZING DB2 CONNECTION...",
+                "DB2 CONNECTION ESTABLISHED VIA DSN RUN",
+                String.format("%-48s%s", "PROCESSING ACCOUNTS FOR SORT CODE: ", "123456"),
+                "TERMINATING DB2 CONNECTION...",
+                "DB2 CONNECTION TERMINATED",
+                " ",
+                "BNKSTMT COMPLETED SUCCESSFULLY",
+                String.format("%-48s%9s", "TOTAL STATEMENTS GENERATED: ", "0")),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
     }
 
     private static final class RecordingSql implements SqlExecutorPort {

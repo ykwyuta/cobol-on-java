@@ -148,9 +148,15 @@ public final class PliRuntime {
                 execute(truth(value(branch.condition(), env)) ? branch.whenTrue()
                         : branch.whenFalse(), env);
             } else if (statement instanceof PliSyntax.Loop loop) {
+                // WHILE は繰り返す前、UNTIL は繰り返した後に調べる。UNTIL だけなら少なくとも 1 度動く
                 int guard = 0;
-                while (loop.until() != truth(value(loop.condition(), env))) {
+                while (loop.whileCondition() == null
+                        || truth(value(loop.whileCondition(), env))) {
                     execute(loop.body(), env);
+                    if (loop.untilCondition() != null
+                            && truth(value(loop.untilCondition(), env))) {
+                        break;
+                    }
                     if (++guard > 10_000_000) {
                         throw new PliExecutionException("loop iteration limit exceeded");
                     }
@@ -171,9 +177,6 @@ public final class PliRuntime {
                 file(operation, env);
             } else if (statement instanceof PliSyntax.Sql sql) {
                 sql(sql.source(), env);
-            } else if (statement instanceof PliSyntax.Ignored ignored) {
-                throw new PliExecutionException("PL/I statement is parsed but not executable yet: "
-                        + ignored.keyword());
             }
         }
 

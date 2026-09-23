@@ -36,7 +36,7 @@ final class PliSyntax {
     }
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
-            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Ignored {
+            Block, GoTo, Label, OnEndFile, FileOperation, Sql {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -77,7 +77,14 @@ final class PliSyntax {
     record If(Expr condition, Stmt whenTrue, Stmt whenFalse) implements Stmt {
     }
 
-    record Loop(boolean until, Expr condition, List<Stmt> body) implements Stmt {
+    /**
+     * 繰り返す do-group (LRM "DO statement" の Type 2 と Type 4)。
+     *
+     * @param whileCondition 繰り返す<b>前</b>に調べる条件。無ければ {@code null}
+     * @param untilCondition 繰り返した<b>後</b>に調べる条件。無ければ {@code null}。
+     *                       どちらも無ければ {@code DO LOOP} (無限の繰り返し) である
+     */
+    record Loop(Expr whileCondition, Expr untilCondition, List<Stmt> body) implements Stmt {
     }
 
     record IterativeLoop(String control, Expr start, Expr finish, Expr step,
@@ -108,9 +115,6 @@ final class PliSyntax {
     }
 
     record Sql(String source) implements Stmt {
-    }
-
-    record Ignored(String keyword) implements Stmt {
     }
 
     sealed interface Expr permits Literal, Reference, Unary, Binary, Function {
@@ -342,6 +346,12 @@ final class PliSyntax {
         }
 
         private Stmt statement() {
+            if (check("%") && (check(1, "PAGE") || check(1, "SKIP") || check(1, "PRINT")
+                    || check(1, "NOPRINT") || check(1, "PUSH") || check(1, "POP"))) {
+                // 翻訳の listing だけを整える指示で、実行には何も起こさない (LRM "%PAGE directive" ほか)
+                skipToSemicolon();
+                return new Block(List.of());
+            }
             if (match("DCL") || match("DECLARE")) {
                 return declaration();
             }
@@ -362,7 +372,12 @@ final class PliSyntax {
                 return call();
             }
             if (match("RETURN")) {
-                skipToSemicolon();
+                if (check("(")) {
+                    // 値を返すのは RETURNS を持つ関数の手続きだけで、それはまだ持たない。
+                    // 以前は値を読み飛ばしていた
+                    throw fail(previous(), "RETURN with a value is not supported yet");
+                }
+                expect(";");
                 return new Return();
             }
             if (match("GO")) {
@@ -385,9 +400,7 @@ final class PliSyntax {
             }
             if (match("EXEC")) {
                 if (!match("SQL")) {
-                    String kind = check(Kind.IDENT) ? next().text() : "EXEC";
-                    skipToSemicolon();
-                    return new Ignored("EXEC " + kind);
+                    throw fail(peek(), "EXEC " + peek().text() + " is not supported yet");
                 }
                 return new Sql(renderSql(collectToSemicolon()));
             }
@@ -406,9 +419,9 @@ final class PliSyntax {
                 }
                 at = save;
             }
-            String keyword = peek().text();
-            skipToSemicolon();
-            return new Ignored(keyword);
+            // 知らない文は読み飛ばさずに断る。以前は翻訳が通り、実行したときに初めて止まっていた。
+            // それでは「翻訳できた」の数が、動かせない資産まで数えてしまう
+            throw fail(peek(), "statement " + peek().text() + " is not supported yet");
         }
 
         private Stmt declaration() {
@@ -650,19 +663,31 @@ final class PliSyntax {
                 expect(";");
                 return new IterativeLoop(control, start, finish, step, blockBody());
             }
-            boolean until = false;
-            Expr condition = new Literal(Boolean.TRUE);
-            if (match("WHILE")) {
-                condition = parenthesizedExpression();
-            } else if (match("UNTIL")) {
-                until = true;
-                condition = parenthesizedExpression();
+            if (match(";")) {
+                // Type 1。繰り返さず、1 度だけ実行する。以前は条件の無い繰り返しとして扱い、
+                // IF ... THEN DO; ... END; が上限まで回っていた
+                return new Block(blockBody());
             }
-            // 反復指定をまだ意味実行しない場合も、対応する END までの構造は保つ。
-            if (!match(";")) {
-                skipToSemicolon();
+            if (match("LOOP") || match("FOREVER")) {
+                expect(";");
+                return new Loop(null, null, blockBody());
             }
-            return new Loop(until, condition, blockBody());
+            Expr whileCondition = null;
+            Expr untilCondition = null;
+            // WHILE と UNTIL はどちらが先でもよく、両方書ける (LRM "DO statement" Type 2)。
+            // 以前は 2 つ目を読み飛ばしていた
+            for (int i = 0; i < 2; i++) {
+                if (whileCondition == null && match("WHILE")) {
+                    whileCondition = parenthesizedExpression();
+                } else if (untilCondition == null && match("UNTIL")) {
+                    untilCondition = parenthesizedExpression();
+                }
+            }
+            if (whileCondition == null && untilCondition == null) {
+                throw fail(peek(), "DO option " + peek().text() + " is not supported yet");
+            }
+            expect(";");
+            return new Loop(whileCondition, untilCondition, blockBody());
         }
 
         private List<Stmt> blockBody() {
@@ -687,9 +712,7 @@ final class PliSyntax {
 
         private Stmt onCondition() {
             if (!match("ENDFILE")) {
-                String keyword = "ON " + peek().text();
-                skipToSemicolon();
-                return new Ignored(keyword);
+                throw fail(peek(), "ON " + peek().text() + " is not supported yet");
             }
             expect("(");
             String file = qualifiedName();
@@ -855,8 +878,10 @@ final class PliSyntax {
             StringBuilder sql = new StringBuilder();
             Token previous = null;
             for (Token token : tokens) {
+                // ':' の前は詰めない。詰めると INTO:HV になり、FETCH の INTO を読み取れない。
+                // 標識変数は :HV :IND と空白を挟んでも同じ意味である
                 boolean tight = token.kind() == Kind.SYMBOL
-                        && List.of(",", ")", ".", ":").contains(token.text());
+                        && List.of(",", ")", ".").contains(token.text());
                 boolean afterTight = previous != null && previous.kind() == Kind.SYMBOL
                         && List.of("(", ".", ":").contains(previous.text());
                 if (!sql.isEmpty() && !tight && !afterTight) sql.append(' ');
