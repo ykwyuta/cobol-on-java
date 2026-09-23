@@ -15,6 +15,8 @@ import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.interop.ProgramCatalog;
 import dev.cobolonjava.runtime.interop.ProgramParameter;
 import dev.cobolonjava.runtime.interop.ProgramSignature;
+import dev.cobolonjava.runtime.program.AddressSpace;
+import dev.cobolonjava.runtime.interop.JavaCallContext;
 import dev.cobolonjava.runtime.storage.DataView;
 import dev.cobolonjava.runtime.storage.Storage;
 import java.time.Clock;
@@ -183,8 +185,8 @@ public final class ImsRegion {
     /** COBOL と PL/I の DL/I 入口を catalog に置く。 */
     public ProgramCatalog.Builder register(ProgramCatalog.Builder builder) {
         return builder
-                .javaProgram("CBLTDLI", () -> (context, arguments) -> call(arguments))
-                .javaProgram("PLITDLI", () -> (context, arguments) -> call(arguments));
+                .javaProgram("CBLTDLI", () -> (context, arguments) -> call(arguments, false))
+                .javaProgram("PLITDLI", () -> (context, arguments) -> call(arguments, true, context));
     }
 
     /**
@@ -194,6 +196,22 @@ public final class ImsRegion {
      * 始まるので取り違えない。
      */
     void call(List<DataView> arguments) {
+        call(arguments, false);
+    }
+
+    /**
+     * @param pli {@code PLITDLI} から来たか。電文のセグメントの長さの欄が PL/I では 4 byte になる
+     *            ({@link IoPcb})
+     */
+    void call(List<DataView> arguments, boolean pli) {
+        call(arguments, pli, null);
+    }
+
+    /**
+     * @param context 呼んだ側の実行単位。PL/I の PCB の引数が POINTER のとき、その値 (AddressSpace の
+     *                番号) から PCB を引くのに使う
+     */
+    void call(List<DataView> arguments, boolean pli, JavaCallContext context) {
         int index = 0;
         if (!arguments.isEmpty() && arguments.get(0).length() == 4 && arguments.get(0).get(0) == 0) {
             byte[] count = arguments.get(0).toByteArray();
@@ -213,10 +231,12 @@ public final class ImsRegion {
             throw new DliCallException("a DL/I function code is 4 bytes");
         }
         String function = codePage.decode(functionView.subView(0, 4).toByteArray()).stripTrailing();
-        DataView pcbView = arguments.get(index + 1);
+        DataView pcbView = pli ? dereference(arguments.get(index + 1), context)
+                : arguments.get(index + 1);
         if (ioPcb != null && pcbView.offset() == 0 && pcbView.storage() == ioStorage) {
             ioPcb.call(function, arguments.size() > index + 2 ? arguments.get(index + 2) : null,
-                    arguments.size() > index + 3 ? arguments.subList(index + 3, arguments.size()) : List.of());
+                    arguments.size() > index + 3 ? arguments.subList(index + 3, arguments.size()) : List.of(),
+                    pli);
             return;
         }
         DatabasePcb pcb = pcbView.offset() == 0 ? databasePcbs.get(pcbView.storage()) : null;
@@ -231,6 +251,28 @@ public final class ImsRegion {
         List<DataView> ssas = arguments.size() > index + 3
                 ? arguments.subList(index + 3, arguments.size()) : List.of();
         pcb.call(function, io, ssas);
+    }
+
+    /**
+     * PL/I の DL/I 呼出しは PCB を POINTER で渡すのが普通である ({@code CALL PLITDLI(FOUR, GU,
+     * PCB_PTR, ...)})。引数は参照で渡るので、ここに来るのは POINTER の 4 byte であり、その値が PCB を
+     * 指す。PCB のマスクそのもの (BASED の構造) を渡したときは、そのまま PCB として扱う。
+     */
+    private DataView dereference(DataView argument, JavaCallContext context) {
+        if (context == null || argument.length() < 4 || isPcb(argument)) {
+            return argument;
+        }
+        int address = java.nio.ByteBuffer.wrap(argument.toByteArray(), 0, 4).getInt();
+        AddressSpace.Location location = context.locate(address);
+        if (location == null || location.offset() != 0
+                || storages.stream().noneMatch(storage -> storage == location.storage())) {
+            return argument;
+        }
+        return location.storage().whole();
+    }
+
+    private boolean isPcb(DataView view) {
+        return view.offset() == 0 && storages.stream().anyMatch(storage -> storage == view.storage());
     }
 
     /**

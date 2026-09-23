@@ -30,10 +30,11 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: 断っていた CICS / Db2 の形の暫定仮仕様 (file control の残り、SYSID、NOSUSPEND、TD、START)](docs/design/85-cics-provisional-specs.md)
 - [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
+- [設計: Maven による資産のビルドと標準ディレクトリ体系](docs/design/91-maven-build.md) — `src/main/cobol` / `copybook` / `bms` / `pli` / `pli-include` / `jcl` / `proclib` と `cobol-maven-plugin`
 - [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
 - [未対応構文とその理由](docs/unsupported-syntax-and-rationale.md) — 未対応の構文・オプション、設計判断の根拠、代替手段
 - [利用ガイド](docs/guide.md) — コンパイラ起動オプション、単一・複数プログラムの翻訳と実行手順
-- [デモシナリオガイド](demo/guide.md) — 動かして確かめる 9 本のデモ。#009 は BMS + COBOL + H2 の Todo アプリ ([demo/009](demo/009/README.md))
+- [デモシナリオガイド](demo/guide.md) — 動かして確かめる 10 本のデモ。#009 は BMS + COBOL + H2 の Todo アプリ ([demo/009](demo/009/README.md))、#010 は Maven の標準ディレクトリ体系 ([demo/010](demo/010/README.md))
 - [アーキテクチャ決定記録 (ADR)](docs/decisions/README.md)
 - [敵対的設計レビュー: Java / JUnit / CICS / Db2 / BMS](docs/reviews/2026-09-09-interop-adversarial-review.md)
 - [IMS の概要と対応検討](docs/research/ims-overview-and-support-scope.md) — IMS (TM/DB) の仕組み、CICS/Db2 との違い、COBOL (DL/I) 連携と移行スコープ
@@ -76,7 +77,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-verify` | 外の基準で測る。NIST CCVS85、COBOL OSS コーパス、PL/I・HLASM の外部コーパスを処理系へ流し、合格率と未対応構文を数える | PL/I は `.pli` と参照処理系から採取した `.out` を組にし、翻訳率と実行結果一致率を別々に数える。HLASM は 6 状態で数え、`.obj` (機械語) と `.out` (実行結果) を別の段として測る。機械語が違う本は実行しない。コーパスは同梱しない |
 | `cobol-job` | 内部ジョブモデル・ジョブ実行・JCL と宣言的形式のフロントエンド | FR-130〜FR-137 と FR-141〜FR-143 のうち、内部モデル・実行機構・宣言的形式・JCL (目録手続き・シンボリックパラメタ・`IF`・`DISP`・`ABENDCC` を含む)、ユーティリティ (`IEFBR14` / `IEBGENER` (`GENERATE` / `RECORD` による組み替えを含む) / `IEBCOPY` / `IDCAMS` / `SORT` (`OUTFIL` の振り分け・見出しと末尾・分割、欄の書式と `TO=` / `EDIT=` を含む) / `ICETOOL` (操作子はすべて) / `IKJEFT01`)、`SPACE`、目録 (`KEEP` / `CATLG` / `UNCATLG` / `VOL=SER`)、区分データセットのメンバと一覧・別名・ISPF 統計・ディレクトリの上限、世代データグループ (相対世代・`LIMIT` によるロールオフ)、異常終了コードと診断出力を実装済。ユーティリティも翻訳した資産と同じ検査を通る |
 | `cobol-compiler` | プリプロセッサ・構文解析・ASM によるコード生成 | P0-b 着手。主要COBOL文に加え、静的PROGRAM / TRANSIDと単純COMMAREAを使う初期`EXEC CICS` subsetをクラスファイルまで変換する |
-| `pli-compiler` | PL/I プリプロセッサ・構文解析・共通メモリ上の意味実行・ASM による JVM クラス生成 | Bank-of-Z subset。`*PROCESS` / `%INCLUDE`、`CHAR` / `FIXED BIN` / `FIXED DEC` / `BIT` / `POINTER` / `BASED`、構造体、内部 `PROCEDURE`、`IF`、`DO WHILE` / `DO UNTIL` / `DO ... TO ... BY`、`PUT`、順編成入力、組み込み文字列関数、参照渡し `CALL` を実装。`BNKSTMT.pli` と `IBLOGIN.pli` を無修正で翻訳できる。`EXEC SQL` は共通 Db2 ポートを使って SQLCA、host variable、cursor、UOW を処理する |
+| `pli-compiler` | PL/I プリプロセッサ・構文解析・共通メモリ上の意味実行・ASM による JVM クラス生成 | Bank-of-Z subset。`*PROCESS` / `%INCLUDE`、`CHAR` / `FIXED BIN` / `FIXED DEC` / `BIT` / `POINTER` / `BASED`、構造体、内部 `PROCEDURE`、`IF`、`DO WHILE` / `DO UNTIL` / `DO ... TO ... BY`、`PUT`、順編成入力、組み込み文字列関数、参照渡し `CALL` を実装。`PUT` は SYSPRINT を PRINT ファイルとして扱い (tab 位置・LINESIZE・PAGESIZE・`PAGE`)、`PUT STRING` と書式 `A` / `X` / `F` を持つ。算術値は属性ごと運び、文字にするときの幅を規格の規則で決める。演算結果の精度は `*PROCESS` の `RULES(IBM|ANS)` と `LIMITS` に従う (P-183)。`BNKSTMT.pli` と `IBLOGIN.pli` を無修正で翻訳できる。`BNKSTMT.pli` は口座と取引を返す Db2 の模擬で、明細・合計行 (`PUT STRING ... F(10,2)`)・改ページまで原文のまま動く (それまでは `THEN DO; ... END;` が繰り返しになり動かなかった)。IMS の `IBLOGIN.pli` は Bank-of-Z の DBD / PSB で、パスワード違い・顧客なし・成功・ログイン済みの電文に応答する (PLITDLI の電文の長さの欄は 4 byte)。構造は LRM の配置の規則で置く (`ALIGNED` / `UNALIGNED`、対を順にまとめて隙間を構造の前へ出す)。POINTER は 4 byte の値 (COBOL と同じ番号) を持ち、`BASED(P)` は代入のたびに重ね直す。UNALIGNED のビット列はビット単位で詰めて置く (P-185)。知らない文は実行まで待たずに翻訳で断る。`EXEC SQL` は共通 Db2 ポートを使って SQLCA、host variable、cursor、UOW を処理する |
 | `hlasm-assembler` | HLASM の原文を読み、機械語へ組み立てて実行する (設計 27) | 増分 1 実装済。**組み立て**: 固定形式の読み取り (継続・属性参照 `L'` の読み分け・`ICTL` は断る)、`CSECT` / `DSECT` / `USING` / `DROP` / `DC` / `DS` / `EQU` / `ORG` / `LTORG` / `END`、式 (自己定義項・所在カウンタ・長さ属性・再配置属性の検査)、リテラルプール、RR / RX / RS / SI / SS 形式の機械命令 96 個と拡張ニーモニック。**実行**: 線形の番地空間 (呼ぶ側の記憶域をそのまま指し、エイリアシングを保つ)、16 本の汎用レジスタ、`EX` による自己書き換えと計算分岐、10 進命令は `cobol-runtime` の Hercules で裏づけ済みの層へ委ねる。標準リンケージ (R1 の引数表 ↔ `DataView[]`) で `CobolProgram` ABI に着地し、COBOL と同じ `CALL` で呼べる。マクロと条件付きアセンブリは<b>持たない</b>。知らない命令欄は読み飛ばさずに断る。`ED` / `EDMK` / `TRT` / `MVO` / `SRP` / `SVC` は組み立てられるがまだ実行できず、演算例外で断る。組み立ては `cobol-oracle` の `Insn` と突き合わせ済み。**実行の Hercules 突き合わせは未了** (P-175) |
 | `cobol-ims` | IMS の DBD / PSB と DL/I 呼び出しの中立モデル (設計 78) | DBDGEN / PSBGEN の原文を読む。Bank-of-Z の DBD 9 本・PSB 8 本がすべて読める (P-153)。`CALL 'CBLTDLI'` の DB 呼び出し (GU / GN / GNP / GH* / ISRT / REPL / DLET) をメモリの上の階層型データベースで動かす (P-154)。ジョブの `EXEC PGM=DFSRRC00,PARM='DLI,...'` でバッチを流し、データベースをデータセットに書き戻す (P-155)。I/O PCB の GU / GN / ISRT / PURG と、1 つの JVM の中の電文のキューで MPP を動かす (P-156)。I/O PCB への GU・基本 CHKP・SYNC を同期点とし、ROLB と異常終了は最後の同期点まで戻す (P-157)。`PARM='BMP,...'` は電文を読まない形だけ受け、I/O PCB を置いて CHKP できる (P-158)。SSA のコマンドコード C / D / F / L / N / P / Q を扱う (U / V は断る、P-159)。データベースの置き場は中立の口の裏にあり、既定はデータセット、`cobol.ims.jdbc.url` を指定すれば `cobol-ims-rdb` の RDB の表 (P-160)。電文のキューは中立の口の裏にあり、既定はこの JVM の中、`cobol.ims.jms.factory` を指定すれば `cobol-ims-jms` が JMS で運ぶ (P-162、P-165)。記号 CHKP が退避した域を業務の更新と同じ確定で置き場に残し、XRST が作業域か `CKPTID=` の検査点から書き戻す (P-164)。SPA、電文を読む BMP、GSAM は未実装 (Bank-of-Z がどれも使っていないので測る基準が無い、P-166) |
 | `cobol-ims-rdb` | IMS のデータベースを RDB の表に生バイトで置く JDBC の置き場 (設計 78 §3.2、ADR-0013) | `IMS_SEGMENT_STORE` / `IMS_ROOT_INDEX` を H2・PostgreSQL・Db2 に作り、同期点ごとに変わった根だけを書き直す。方言の差を知るのは `ImsSchema.Dialect` だけで、どれも実サーバで測っている (PostgreSQL 17.11 は `infra/postgres`、Db2 12.1 は `infra/db2`)。主キーに `ROOT_SEQ` を足した (P-160)。ルートアンカーロック (ADR-0015) は同期点の確定で昇順に押さえ、根の版で遅れた更新を競合として止め、確定のあと他の領域の確定を読み直す (P-161)。処理済みの電文を `IMS_MESSAGE_INBOX` に業務の更新と同じトランザクションで書き、再配信を捨てる。保持期間 (既定 7 日) を過ぎた ID は、置き場を開くときに落とす (P-163)。記号 CHKP が退避した域を `IMS_CHECKPOINT` に同じ確定で書く (P-164)。取引コードのキューを読む領域を `IMS_QUEUE_LEASE` の借用で 1 つに限り、2 つ目は起こさずに断る (P-167)。競合したら電文駆動の領域を置き場から読み直して頭から動かし直し、使い切れば U0777 で落とす (P-168)。容器 (Spring Boot) の `DataSource` からも構成でき、そこから取った接続を同期点で自分で確定する (容器のトランザクションには相乗りしない、P-169)。GH の時点の排他と根ごとの遅延読み込みは未実装 |
@@ -84,6 +85,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS task の coordinator の自動構成と、JSON の入口 `POST /api/cics/{transid}` (Spring Security があるときだけ、P-135) を実装。同じ冪等キーの再送には task を動かさず commit した結果を返す (P-142)。`cobol.cics.conversation.consistency=strict` で、会話と冪等キーの結果を業務の Db2 と同じ UOW で表に確定する (P-143)。IMS のデータベースの置き場へ容器の `DataSource` を預ける (`cobol-ims-rdb` を置いた利用者だけ。`cobol.ims.spring-data-source=false` で切る、P-169)。driver管理 `WITH HOLD` は未実装 |
+| `cobol-maven-plugin` | 利用者のプロジェクトで COBOL・PL/I を翻訳し、BMS と JCL を検める Maven プラグイン (設計 91) | `cobol:compile` (BMS の検査と classpath への配置、COBOL・PL/I・HLASM の翻訳と配備カタログ。3 つの言語を 1 つのモジュールに置ける) と `cobol:jcl` (実行時と同じ読み取りで JCL・宣言的形式を検め、目録手続きも展開する) を実装。翻訳の手順は `CobolBuild` / `PliBuild` / `JobDescription` にあり、コマンドラインと共有する。COBOL と PL/I のカタログは 1 つにまとめ、同じ名前のプログラムは断る (P-182 の解消) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 画面の Thymeleaf view、端末 JavaScript、CSS | 表示モデル、共通 template、端末操作、form の入力変換を実装。Bank-of-Z の 2 画面をブラウザで測り、JavaScript の有無によらず全 field の行・桁・幅が一致 (設計 81)。ブラウザの入口 `POST /cics/{transid}` は Spring Security があるときだけ構成し、COMMAREA と画面は server の会話ストアから読む。会話ストアの既定は 1 つの JVM の中だけ (P-134) |
 
 ## ビルド
@@ -94,6 +96,35 @@ mvn test
 
 Java 21 と Maven 3.9 以上が必要。
 
+## Maven で資産を作る
+
+利用者のプロジェクトは次の置き場に資産を置き、`cobol-maven-plugin` の `compile` と `jcl` を
+並べれば `mvn package` で jar になる。詳しくは[設計 91](docs/design/91-maven-build.md)、
+見本は[デモ 010](demo/010/README.md)。
+
+```text
+src/main/cobol        COBOL の原文 (.cbl .cob .cobol)
+src/main/copybook     COPY の写し句
+src/main/bms          BMS の mapset (記号マップを作り、原文も classpath へ載せる)
+src/main/pli          PL/I の原文 (.pli .pl1)
+src/main/pli-include  %INCLUDE のメンバ
+src/main/jcl          ジョブ記述 (.jcl と宣言的形式 .job)
+src/main/proclib      目録手続きと JCL の INCLUDE メンバ
+```
+
+```xml
+<plugin>
+  <groupId>dev.cobolonjava</groupId>
+  <artifactId>cobol-maven-plugin</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <executions>
+    <execution>
+      <goals><goal>compile</goal><goal>jcl</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+```
+
 ## 翻訳して動かす
 
 ```
@@ -101,12 +132,13 @@ java -cp <classpath> dev.cobolonjava.compiler.Main -d out HELLO.cbl
 java -cp out:<classpath> cobol.generated.HELLO
 ```
 
-PL/I は別の入口を使う。生成クラスも同じ `CobolProgram` ABI を実装するため、既存の
-ジョブ実行・プログラムカタログ・IMS の PCB 引数を共用する。
+PL/I は別の入口を使う。生成クラスも同じ `CobolProgram` ABI を実装し、COBOL と<b>同じ
+名前空間</b> (`cobol.generated`) に置くので、ジョブの `EXEC PGM=`・COBOL の `CALL`・プログラムカタログ・
+IMS の PCB 引数を共用する (HLASM も同じ)。
 
 ```
 java -cp <classpath> dev.cobolonjava.pli.Main -d out -I includes HELLO.pli
-java -cp out:<classpath> pli.generated.HELLO
+java -cp out:<classpath> cobol.generated.HELLO
 ```
 
 IMS 領域は `CBLTDLI` と `PLITDLI` の両方を登録する。PL/I の先頭の引数個数を含む
@@ -120,7 +152,7 @@ COBOL の `CALL 'BUMP' USING ...` からそのまま呼べる。`-l` は組み�
 
 ```
 java -cp <classpath> dev.cobolonjava.hlasm.Main -d out -l BUMP.asm
-java -cp out:<classpath> hlasm.generated.BUMP
+java -cp out:<classpath> cobol.generated.BUMP
 ```
 
 マクロと条件付きアセンブリはまだ無い。`WTO` や `OPEN` のようなマクロ呼出しは、読み飛ばさずに

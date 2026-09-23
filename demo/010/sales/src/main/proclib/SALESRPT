@@ -1,0 +1,7 @@
+//SALESRPT PROC SALES=SALES.DAT
+//* ------------------------------------------------------------------
+//*  売上レポートの目録手続き。PROCLIB (src/main/proclib) に置く
+//* ------------------------------------------------------------------
+//RPT      EXEC PGM=PRT_SALES
+//INDD     DD   DSN=&SALES,DISP=SHR
+//SYSPRINT DD   SYSOUT=*

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>dev.cobolonjava</groupId>
+    <artifactId>cobol-on-java</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>cobol-maven-plugin</artifactId>
+  <packaging>maven-plugin</packaging>
+  <name>cobol-maven-plugin</name>
+  <description>
+    利用者のプロジェクトで COBOL・PL/I を翻訳し、BMS と JCL を検める Maven プラグイン
+    (設計 91)。翻訳の手順は各コンパイラの Build クラスにあり、コマンドラインと同じものを呼ぶ。
+  </description>
+
+  <properties>
+    <maven-plugin-tools.version>3.15.1</maven-plugin-tools.version>
+    <!-- 実行する側の Maven が API を与える。プラグインが持ち込むと版が衝突する -->
+    <maven-api.version>3.9.11</maven-api.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-compiler</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>pli-compiler</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>hlasm-assembler</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-job</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-plugin-api</artifactId>
+      <version>${maven-api.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-core</artifactId>
+      <version>${maven-api.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.maven.plugin-tools</groupId>
+      <artifactId>maven-plugin-annotations</artifactId>
+      <version>${maven-plugin-tools.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-plugin-plugin</artifactId>
+        <version>${maven-plugin-tools.version}</version>
+        <configuration>
+          <goalPrefix>cobol</goalPrefix>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

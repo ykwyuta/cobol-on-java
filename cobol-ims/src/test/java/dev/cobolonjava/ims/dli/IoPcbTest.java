@@ -94,6 +94,52 @@ class IoPcbTest {
     }
 
     @Test
+    @DisplayName("PLITDLI の電文は長さの欄が 4 byte (LLLL)。値は COBOL の LL と同じ「本文 + 4」で、本文は 6 byte 目から")
+    void pliMessageSegmentsHaveAFullwordLength() {
+        queue.offer(message("LTERM001", "IBLOGIN 16918    PASSWORD"));
+        Storage area = Storage.allocate(40);
+
+        assertEquals("  ", pliCall("GU", area.whole()));
+        // IMS Application Programming: 本文 12 byte なら LLLL は 24 (= 4 + 2 + 8 + 12 - 2)
+        assertEquals(25 + 4, ByteBuffer.wrap(area.view(0, 4).toByteArray()).getInt());
+        assertEquals(0, ByteBuffer.wrap(area.view(4, 2).toByteArray()).getShort());
+        assertEquals("IBLOGIN 16918    PASSWORD", EBCDIC.decode(area.view(6, 25).toByteArray()));
+
+        // 出力: LLLL = 本文 + 4。IBLOGIN は SIZE(OUTPUT_AREA) - 2 と書く
+        byte[] body = EBCDIC.encode("LOGIN SUCCESSFUL");
+        Storage reply = Storage.allocate(6 + body.length);
+        reply.view(0, 4).setBytes(ByteBuffer.allocate(4).putInt(body.length + 4).array());
+        reply.view(6, body.length).setBytes(body);
+        assertEquals("  ", pliCall("ISRT", reply.whole()));
+        assertEquals("QC", pliCall("GU", area.whole()));
+
+        assertEquals(List.of("LOGIN SUCCESSFUL"), texts(queue.sent().get(0)));
+    }
+
+    @Test
+    @DisplayName("PLITDLI の LLLL を 2 byte の LL と読まない。上位の 2 byte が 0 の LL として断っていた")
+    void aPliLengthIsNotReadAsAHalfword() {
+        queue.offer(message("LTERM001", "IBLOGIN"));
+        assertEquals("  ", pliCall("GU", Storage.allocate(40).whole()));
+        byte[] body = EBCDIC.encode("OK");
+        Storage reply = Storage.allocate(6 + body.length);
+        reply.view(0, 4).setBytes(ByteBuffer.allocate(4).putInt(body.length + 4).array());
+        reply.view(6, body.length).setBytes(body);
+
+        assertThrows(DliCallException.class, () -> call("ISRT", reply.whole()));
+        assertEquals("  ", pliCall("ISRT", reply.whole()));
+    }
+
+    private String pliCall(String function, DataView area) {
+        List<DataView> arguments = new ArrayList<>();
+        arguments.add(Storage.wrap(EBCDIC.encode(function + " ".repeat(4 - function.length()))).whole());
+        arguments.add(ioPcb);
+        arguments.add(area);
+        region.call(arguments, true);
+        return EBCDIC.decode(ioPcb.subView(IoPcb.STATUS, 2).toByteArray());
+    }
+
+    @Test
     @DisplayName("ISRT した応答は次の GU で 1 つの電文として送られ、キューが空なら QC を返す")
     void repliesAreSentAtTheNextGetUnique() {
         queue.offer(message("LTERM001", "CUSTINQ 0001")).offer(message("LTERM002", "CUSTINQ 0002"));

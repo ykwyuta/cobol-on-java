@@ -5593,3 +5593,186 @@ CICS の入口から見える bean ではない (`CicsTaskProgramPort` の向こ
 (golden image) を入れるときは、版を固定する必要がある。
 
 **解消条件**: 検査に使うブラウザの版を決めて固定し、取得の方法 (環境側で入れる) を要件に書く。
+
+---
+
+## P-182 COBOL と PL/I を 1 つのモジュールで作れない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | **解消済** (2026-09-23、生成クラスの package を 1 つに揃えた) |
+| 場所 | `ProgramBuild.run` (`cobol-maven-plugin`) |
+| 関連要件 | FR-180、設計 91 §6 |
+
+**暫定の扱い**: `src/main/cobol` と `src/main/pli` の両方に原文があれば、何も書かずに
+ビルドを止める。言語ごとにモジュールを分けてもらう。
+
+**なぜ作れないか**: 配備カタログ (`META-INF/cobol/programs.json`) は 1 つの classpath に
+1 つで、載せられる package も 1 つである (`DeployCatalogManifest.allowedPackage`)。
+COBOL は `cobol.generated`、PL/I は `pli.generated` へ出すので、同じ置き場に書くと後から
+書いたほうが先のものを<b>黙って消す</b>。片方だけ載ったカタログで動かすより断る。
+
+**どこがずれうるか**: ホストでは COBOL と PL/I のロードモジュールは<b>同じ</b>ロードライブラリに
+入り、`CALL 'X'` は言語を問わず引ける。モジュールを分けると、この 1 つの名前空間を
+jar の境界で割ることになる。分けた jar を 1 つの classpath に並べると、`cobol-junit` の
+`DeployCatalogManifest.fromResource` は 2 つのカタログを見て断る。
+ジョブ実行 (`cobolj`) はカタログでなくクラス名 (`cobol.generated.名前`) で引くので、
+PL/I のプログラムを `EXEC PGM=` で呼べないのはこの暫定とは別の、既存の制約である。
+
+**解消条件**: COBOL と PL/I (と HLASM) が 1 つのプログラム名前空間を共有する形を決める。
+カタログに複数の package を許すか、生成クラスの package を 1 つに揃えるかのどちらかであり、
+いずれも配備カタログの形式 (信頼境界) の変更になる。
+
+**解消**: 生成クラスの package を 1 つ (`cobol.generated`) に揃えた。カタログの形式は変えて
+いない。名前の付け方は `ProgramSupport.classNameOf` の 1 つで、PL/I と HLASM もそれを使う。
+プラグインは COBOL と PL/I のカタログを `DeployCatalogManifest.merge` でまとめ、名前が重なれば
+断る。JCL の `EXEC PGM=` から PL/I と HLASM を呼べるようになった (設計 91 §6)。HLASM は配備
+カタログに載せず、署名を「0〜255 個の省略できる引数」にした。
+
+---
+
+## P-183 PL/I のストリーム出力と、算術値を文字にする規則の前提
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-23) |
+| 場所 | `FixedValue`、`PrintFile`、`PliRuntime.Executor.put` / `edit` / `putString`、`PliPreprocessor` |
+| 関連要件 | 設計 26、Bank-of-Z `BNKSTMT.pli` |
+
+**何が起きていたか**: `PUT LIST` は項目を区切りなしで連結し、数は最短の形 (`3`) で書き、
+`PUT` 1 つを 1 行にしていた。`PUT STRING`・`PUT PAGE`・`PUT SKIP(n)`・`PUT FILE(...)` は
+<b>何もせずに通っていた</b>。`BNKSTMT` は明細の合計行を `PUT STRING(REPORT_LINE) EDIT(...) (A, F(10,2))`
+で作っており、前の行の中身がそのまま印字されていた。`REPEAT(x, y)` は y 個を返していた
+(規格は y+1 個)。自分のテスト (`"HELLO WORLD 3"`、`"24"`、`"15\n"`) がこの形を正しいこととして
+固定していた。
+
+**いまの扱い** (Enterprise PL/I for z/OS 5.3 Language Reference と Programming Guide に従う):
+
+- 算術値は `FixedValue` として<b>属性ごと</b>運ぶ。文字にする規則は "Target: CHARACTER" のとおりで、
+  `FIXED BIN(p)` は 10 進の精度 `1+CEIL(p/3.32)` へ移し、幅 `p+3` の欄に右寄せする。
+  `PUT LIST`・`||`・`CHAR`・文字の変数への代入が同じ規則を使う
+- 演算結果の属性は RULES(IBM) の表 (LRM Table 28)、`*PROCESS RULES(ANS)` なら Table 26 / 27。
+  精度の上限は `LIMITS` の既定 `FIXEDDEC(15,31) FIXEDBIN(31,63)` で、式に下の限りを超える被演算子が
+  あれば上の限りになる (Programming Guide "LIMITS")。`*PROCESS LIMITS(...)` で変えられる。
+  整数の 2 進どうしの除算は切り捨てる
+- SYSPRINT は PRINT ファイルとして、LINESIZE 120、PAGESIZE 60、tab 位置 25 / 49 / 73 / 97 / 121
+  (PLITABS の既定)。`SKIP` は書く<b>前</b>に改行する。行幅を超えた文字は次の行へ送る
+- 改ページ (`PAGE` と、61 行目を書くときの ENDPAGE の既定の動き) は、新しいページの最初の行の
+  頭に改ページ文字 (`\f`) を置く。POSIX の `asa` が ANS の制御文字 '1' を写すのと同じ形である
+- `EDIT` の書式は `A`、`A(w)`、`X(w)`、`F(w)`、`F(w,d)`。`PUT STRING` は `EDIT` だけ
+
+**断るもの**: `PUT LINE(n)`、`PUT SKIP(0)`、SYSPRINT 以外の `FILE`、上記以外の書式項目
+(`E`、`P`、`COLUMN`、反復の係数など)、`PUT STRING ... LIST`、許されない `LIMITS`
+(`FIXEDDEC(31,15)` など)。属性の分からない算術値 (文字から作った数) を
+出力しようとしたら実行時に止める。
+
+**実機と突き合わせていないこと**:
+
+- 開いた直後の `PUT SKIP` を 1 行目に着くだけとした (空行を作らない)
+- list-directed の項目がちょうど tab の手前で終わったとき、空白なしで次の tab に続けるか。
+  いまは少なくとも 1 つ空白を置き、置けなければ次の tab へ進める
+- `SKIP` の途中で PAGESIZE を超えたときの残りの行の扱い。いまは空行を書き、次に文字を
+  書く行で改ページする
+- 開いた直後の `PUT PAGE` を何もしないとした
+- LINESIZE を SYSPRINT の DD の LRECL から取らない (`BNKSTMT.jcl` の SYSPRINT は DCB を書いて
+  いないので、実機でも既定の 120 になるはずである)。その結果、`BNKSTMT` の `CHAR(132)` の行は
+  120 桁と 12 桁の 2 行に分かれ、物理行で数えて 61 行目で改ページする (`BankOfZStatementTest`)。
+  資産の作り手が 132 桁の印字を意図していたなら、実機でも同じように分かれているはずである
+- 位取りのある 2 進 (`FIXED BIN(p,q)`、q ≠ 0) の除算は、2 進の小数を 10 進で切れないので値を切らない
+
+**`*PROCESS` の扱いの解消 (2026-09-23)**: `*PROCESS` を前処理で外すとき、実行時の原文に注記として
+残し、実行時の算術 (`FixedValue.Arithmetic`) が同じ `RULES` と `LIMITS` を使うようにした (`PliOptions`)。
+あわせて、既定の `LIMITS` を 15 / 31 で打ち切っていた誤りを直した。`FIXED DEC(20)` どうしの和まで
+15 桁に切っていた。「式に広い被演算子があるか」は式の頭で葉の精度を見て決める。
+
+**解消条件**: IBM Enterprise PL/I で上の各形を流した SYSPRINT を採り、PL/I の外部コーパス
+(設計 26) の `.out` として照合する。
+
+---
+
+## P-184 PL/I の構造の要素を詰めて置き、境界合わせをしない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | **解消済** (2026-09-23、LRM の配置の規則を `StructureMapping` に実装した) |
+| 場所 | `PliRuntime.Executor.declareGroup` / `declareChildren` |
+| 関連要件 | 設計 26、Bank-of-Z `BNKSTMT.pli` / `IBLOGIN.pli` |
+
+**暫定の扱い**: 構造の要素を宣言の順に隙間なく並べる。すべてを UNALIGNED として置くのと同じである。
+
+**どこがずれうるか**: PL/I の既定では FIXED BINARY・FIXED DECIMAL・POINTER などは ALIGNED で、
+語や半語の境界に置かれ、前との間に詰め物が入る (LRM "Structure mapping")。文字の要素のあとに
+2 進の要素が来ると、実機とは位置がずれる。たとえば `BNKSTMT` の `HV_CUST_DOB FIXED BIN(31)` は
+前の文字が 130 byte なので、実機では 132 byte 目に置かれるはずである。
+
+`IBLOGIN` の構造は、どれも 2 進の要素が境界に来る並びか、`UNALIGNED` と書いてあるので、ずれない
+(`OUTPUT_AREA` は 38 byte、`INPUT_AREA` は 39 byte、DB PCB のマスクは IMS の配置と一致する)。
+`BNKSTMT` のずれる構造は、要素を 1 つずつ SQL の host variable として使うだけなので、結果に出ない。
+構造をまとめて別の記憶域 (ファイルのレコード、IMS のセグメント、COBOL との CALL) へ渡すと出る。
+
+**解消条件**: LRM の構造の配置の規則 (要素の対を境界に合わせてまとめていく手順) を実装し、
+`ALIGNED` / `UNALIGNED` の属性を読む。Hercules 上の Enterprise PL/I か、公開されている配置の例と
+突き合わせる。
+
+**解消**: LRM の "Structure mapping" の手順 (対を順にまとめ、1 つ目を 2 つ目の方へ自分の境界合わせが
+許すだけずらす) を `StructureMapping` に実装し、`ALIGNED` / `UNALIGNED` を読むようにした。要素ごとの
+既定 (ビット列・文字・PICTURE は UNALIGNED、ほかは ALIGNED) と、構造から要素への受け継ぎも持つ。
+あわせて `FIXED BIN(p)` の大きさ (p ≦ 7 は 1 byte、≦ 63 は 8 byte まで)、位取りのある 2 進、
+ビット列を 8 ビットごとに 1 byte で置くこと、精度を省いたときの既定 (BIN は 15、DEC は 5。以前は
+31 と 15) を直した。
+
+**上の記述の誤り**: 「`HV_CUST_DOB` は実機では 132 byte 目」と書いたのは C の配置の考え方だった。
+PL/I では前の文字の 130 byte が DOB の方へずれ、隙間は構造の前に出る。DOB は構造の頭から 130 byte
+目で、構造そのものが倍語の境界から 2 byte ずれたところに置かれる。
+
+公開の配置の例 (LRM Figure 12) は図であり、数を突き合わせていない。手で追える小さな例で試験した
+(`StructureMappingTest`)。残る断りは P-185 に書いた。
+
+---
+
+## P-185 PL/I の構造の中の POINTER、ビット単位で詰まるビット列、複数ビットの論理演算
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | **解消済** (2026-09-23、実機と突き合わせていない点は下に残す) |
+| 場所 | `StructureMapping.element`、`PliRuntime.Executor` の `&` / `|` / `^` |
+| 関連要件 | 設計 26 |
+
+**暫定の扱い**: 次の形は翻訳で断る。
+
+- 構造の要素としての POINTER。この処理系の POINTER の変数は、指す先の記憶域そのものとして
+  持っており、4 byte の値 (AddressSpace の番号、P-150) を置く場所がない
+- 8 の倍数でない UNALIGNED のビット列の要素。UNALIGNED のビット列は前後とビット単位で詰まるが、
+  この処理系は byte 単位でしか置けない (単独の変数と ALIGNED の要素は 8 ビットごとに 1 byte で置ける)
+
+複数ビットのビット列の `&` / `|` / `^` は、ビットごとの演算ではなく真偽 (どれか 1 ビットが 1) の
+演算になる。1 ビットのものは正しい。
+
+**解消条件**: POINTER を 4 byte の値として持つ形に変え、`BASED(P)` を番号から引くようにする。
+ビット列の要素にビット単位の位置を持たせる。ビット列の論理演算をビットごとにする。
+
+**解消**:
+
+- POINTER の変数は 4 byte の値 (AddressSpace の番号、COBOL の `SET ADDRESS OF` と同じ) を持つ。
+  `ADDR(X)`、`P = ADDR(X)`、`P = Q`、POINTER どうしの比較、構造の中の POINTER (全語の境界) を持つ。
+  `BASED(P)` は P の値の番号が指す記憶域に重なり、P へ代入すると重ね直す
+- PL/I の主手続きの POINTER の入口引数は、渡された記憶域の番号を値に持つ。ほかの型と宣言した入口
+  引数は、渡された記憶域そのものになる (以前は新しい記憶域を取り、渡されたものを読んでいなかった)
+- `PLITDLI` は PCB の引数が POINTER の 4 byte なら、その値から PCB を引く (`CALL PLITDLI(n, f,
+  PCB_PTR, ...)` の形)。`JavaCallContext.locate` を足した
+- 構造の配置をビットで数え、UNALIGNED のビット列を前後とビット単位で詰めて置く。書き込みは自分の
+  ビットだけを変える
+- 2 ビット以上のビット列の `&` / `|` / `^` はビットごとに演算し、比較は短いほうを右に 0 で埋める
+
+**実機と突き合わせていないこと**:
+
+- PCB のマスク (BASED の構造) そのものを `PLITDLI` に渡したときも PCB として扱う。IBLOGIN は
+  GU / ISRT にマスクを、GHU に POINTER を渡している。実機の PLITDLI がマスクの形を受けるかは
+  確かめていない
+- 構造の先頭の UNALIGNED のビット列が後ろの byte の境界の要素の方へずれると、最初の byte の頭の
+  ビットが空く (`1 S, 2 A BIT(1), 2 B BIT(1), 2 C BIT(1), 2 D CHAR(1)` で A は 5 ビット目)。配置の
+  手順をそのまま当てはめた結果である
+- 呼んだ先のプログラムが POINTER を書き換えたとき、呼んだ側の BASED は重ね直さない。重ね直すのは
+  同じプログラムの中の代入だけである
+
+**解消条件**: 上の 3 点を Hercules 上の Enterprise PL/I と IMS で確かめる。

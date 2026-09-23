@@ -29,6 +29,11 @@ mvn clean package -DskipTests
 
 ## 2. コンパイラ (`Main`) の基本コマンド仕様
 
+> 資産一式をプロジェクトとして作るなら、`Main` を直接呼ぶ代わりに `cobol-maven-plugin` を使えます。
+> 標準の置き場 (`src/main/cobol`、`src/main/copybook`、`src/main/pli`、`src/main/jcl` など) に置けば
+> `mvn package` で翻訳と JCL の検査まで行います。[設計 91](design/91-maven-build.md) と
+> [デモ #010](../demo/010/README.md) を参照してください。翻訳の手順は `Main` と同じものです。
+
 コンパイラの起動エントリポイントは [`dev.cobolonjava.compiler.Main`](file:///d:/workspace/cobol-on-java/cobol-compiler/src/main/java/dev/cobolonjava/compiler/Main.java) です。
 
 ### コマンド構文

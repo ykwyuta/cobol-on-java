@@ -84,6 +84,9 @@ public final class HlasmRuntime {
         }
     }
 
+    /** 署名が受ける引数の数の上限。 */
+    static final int ARGUMENT_LIMIT = 255;
+
     /** 入口の引数は参照渡しであり、実際の範囲は呼ぶ側が決める。 */
     public static ProgramSignature signature(String fileName, String source) {
         Assembler.Result assembled = Assembler.assemble(fileName, source);
@@ -91,8 +94,15 @@ public final class HlasmRuntime {
             return null;
         }
         // 引数の個数も長さも、原文からは分からない。R1 の表を何個読むかを決めるのは
-        // プログラム自身である。だから署名は「個数を問わない」形にする
+        // プログラム自身である。だから署名は「個数を問わない」形にする。以前は空の並びにしており、
+        // それは「引数 0 個」と読まれて、COBOL の CALL 'BUMP' USING X が署名の不一致で止まっていた。
+        // 上限の 255 は、この処理系が置く割り切りである (実機の引数の表に決まった上限は無い)
         List<ProgramParameter> parameters = new ArrayList<>();
+        for (int i = 1; i <= ARGUMENT_LIMIT; i++) {
+            parameters.add(new ProgramParameter("ARG" + i, 0, Short.MAX_VALUE,
+                    ProgramParameter.Presence.OPTIONAL, ProgramParameter.PassingMode.REFERENCE,
+                    ProgramParameter.Direction.INOUT, "hlasm-r1-v1"));
+        }
         return ProgramSignature.of(assembled.module().name(), parameters);
     }
 

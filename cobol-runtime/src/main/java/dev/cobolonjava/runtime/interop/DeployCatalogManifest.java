@@ -61,6 +61,44 @@ public record DeployCatalogManifest(
         }
     }
 
+    /**
+     * 同じ package の配備カタログを 1 つにまとめる。COBOL と PL/I を 1 つの成果物に置くときに使う。
+     *
+     * <p>ホストでは言語を問わずロードモジュールが 1 つのロードライブラリに入り、名前は 1 つの
+     * 名前空間を作る。同じ名前のプログラムが 2 つあれば、構築子が重複として断る。revision は
+     * まとめたカタログの revision を並べた値の hash である。
+     *
+     * @param compilerVersion まとめたものの翻訳系の版
+     * @throws IllegalArgumentException package が違うか、プログラムの名前が重なるとき
+     */
+    public static DeployCatalogManifest merge(String compilerVersion,
+                                              List<DeployCatalogManifest> parts) {
+        if (parts.isEmpty()) {
+            throw new IllegalArgumentException("no deploy catalog to merge");
+        }
+        String allowed = parts.get(0).allowedPackage();
+        java.security.MessageDigest digest;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+        digest.update("merged-deploy-catalog-v1\n".getBytes(StandardCharsets.UTF_8));
+        List<GeneratedProgramArtifact> programs = new ArrayList<>();
+        for (DeployCatalogManifest part : parts) {
+            if (!part.allowedPackage().equals(allowed)) {
+                throw new IllegalArgumentException("deploy catalogs of different packages cannot"
+                        + " be merged: " + allowed + ", " + part.allowedPackage());
+            }
+            digest.update((part.revision().value() + "\n").getBytes(StandardCharsets.UTF_8));
+            programs.addAll(part.programs());
+        }
+        programs.sort(java.util.Comparator.comparing(program -> program.programId().value()));
+        return new DeployCatalogManifest(CURRENT_FORMAT_VERSION,
+                new CatalogRevision("sha256:" + java.util.HexFormat.of().formatHex(digest.digest())),
+                compilerVersion, CURRENT_RUNTIME_ABI_VERSION, allowed, programs);
+    }
+
     /** マニフェストの固定revisionと署名を使う本番向けカタログを作る。 */
     public ProgramCatalog toProgramCatalog() {
         ProgramCatalog.Builder builder = ProgramCatalog.builder().revision(revision.value());

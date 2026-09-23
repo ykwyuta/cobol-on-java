@@ -36,7 +36,7 @@ final class PliSyntax {
     }
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
-            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Ignored {
+            Block, GoTo, Label, OnEndFile, FileOperation, Sql {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -44,20 +44,53 @@ final class PliSyntax {
 
     enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE }
 
+    /**
+     * 宣言 1 つ。
+     *
+     * @param aligned {@code ALIGNED} なら真、{@code UNALIGNED} なら偽、書かなければ {@code null}
+     *                (型ごとの既定、構造からは受け継ぐ。LRM "ALIGNED and UNALIGNED attributes")
+     */
     record Decl(String name, int level, Type type, int precision, int scale,
-                Expr initial, String basedOn) {
+                Expr initial, String basedOn, Boolean aligned) {
     }
 
     record Assign(String target, Expr value) implements Stmt {
     }
 
-    record Put(boolean skip, List<Expr> values) implements Stmt {
+    /**
+     * {@code PUT} 文。出力先は SYSPRINT か、{@code STRING} に書いた文字の変数である。
+     *
+     * @param string {@code STRING(変数)} の変数名。SYSPRINT へ書くなら {@code null}
+     * @param page   {@code PAGE} を書いたか
+     * @param skip   {@code SKIP(n)} の n。書かなければ 0
+     * @param edit   {@code EDIT} なら真、{@code LIST} (または値なし) なら偽
+     * @param format {@code EDIT} の書式並び
+     */
+    record Put(String string, boolean page, int skip, boolean edit, List<Expr> values,
+               List<FormatItem> format) implements Stmt {
+    }
+
+    /**
+     * {@code EDIT} の書式項目。いまは {@code A} / {@code A(w)} / {@code X(w)} / {@code F(w)} /
+     * {@code F(w,d)} だけを持つ。
+     *
+     * @param width    欄の幅。{@code A} で省いたときは -1
+     * @param fraction {@code F} の小数の桁数。省けば 0
+     */
+    record FormatItem(char code, int width, int fraction) {
     }
 
     record If(Expr condition, Stmt whenTrue, Stmt whenFalse) implements Stmt {
     }
 
-    record Loop(boolean until, Expr condition, List<Stmt> body) implements Stmt {
+    /**
+     * 繰り返す do-group (LRM "DO statement" の Type 2 と Type 4)。
+     *
+     * @param whileCondition 繰り返す<b>前</b>に調べる条件。無ければ {@code null}
+     * @param untilCondition 繰り返した<b>後</b>に調べる条件。無ければ {@code null}。
+     *                       どちらも無ければ {@code DO LOOP} (無限の繰り返し) である
+     */
+    record Loop(Expr whileCondition, Expr untilCondition, List<Stmt> body) implements Stmt {
     }
 
     record IterativeLoop(String control, Expr start, Expr finish, Expr step,
@@ -90,13 +123,27 @@ final class PliSyntax {
     record Sql(String source) implements Stmt {
     }
 
-    record Ignored(String keyword) implements Stmt {
-    }
-
     sealed interface Expr permits Literal, Reference, Unary, Binary, Function {
     }
 
     record Literal(Object value) implements Expr {
+    }
+
+    /**
+     * 2 ビット以上のビット列の定数。1 ビットのものは真偽値として持つ。以前はビット列の定数を
+     * すべて真偽値にしていたので、{@code '10100000'B} が {@code '1'B} になっていた。
+     */
+    record BitString(String bits) {
+    }
+
+    /** {@code '...'B} の値。'0' と '1' のほかの字は誤りである。 */
+    private static Object bitLiteral(Token token) {
+        String bits = token.text();
+        if (!bits.chars().allMatch(c -> c == '0' || c == '1')) {
+            throw new ParseFailure(token, "bit string constant '" + bits + "'B has a character"
+                    + " other than 0 and 1");
+        }
+        return bits.length() == 1 ? (Object) bits.equals("1") : new BitString(bits);
     }
 
     record Reference(String name) implements Expr {
@@ -322,6 +369,12 @@ final class PliSyntax {
         }
 
         private Stmt statement() {
+            if (check("%") && (check(1, "PAGE") || check(1, "SKIP") || check(1, "PRINT")
+                    || check(1, "NOPRINT") || check(1, "PUSH") || check(1, "POP"))) {
+                // 翻訳の listing だけを整える指示で、実行には何も起こさない (LRM "%PAGE directive" ほか)
+                skipToSemicolon();
+                return new Block(List.of());
+            }
             if (match("DCL") || match("DECLARE")) {
                 return declaration();
             }
@@ -342,7 +395,12 @@ final class PliSyntax {
                 return call();
             }
             if (match("RETURN")) {
-                skipToSemicolon();
+                if (check("(")) {
+                    // 値を返すのは RETURNS を持つ関数の手続きだけで、それはまだ持たない。
+                    // 以前は値を読み飛ばしていた
+                    throw fail(previous(), "RETURN with a value is not supported yet");
+                }
+                expect(";");
                 return new Return();
             }
             if (match("GO")) {
@@ -365,9 +423,7 @@ final class PliSyntax {
             }
             if (match("EXEC")) {
                 if (!match("SQL")) {
-                    String kind = check(Kind.IDENT) ? next().text() : "EXEC";
-                    skipToSemicolon();
-                    return new Ignored("EXEC " + kind);
+                    throw fail(peek(), "EXEC " + peek().text() + " is not supported yet");
                 }
                 return new Sql(renderSql(collectToSemicolon()));
             }
@@ -386,9 +442,9 @@ final class PliSyntax {
                 }
                 at = save;
             }
-            String keyword = peek().text();
-            skipToSemicolon();
-            return new Ignored(keyword);
+            // 知らない文は読み飛ばさずに断る。以前は翻訳が通り、実行したときに初めて止まっていた。
+            // それでは「翻訳できた」の数が、動かせない資産まで数えてしまう
+            throw fail(peek(), "statement " + peek().text() + " is not supported yet");
         }
 
         private Stmt declaration() {
@@ -423,7 +479,7 @@ final class PliSyntax {
                             inheritedPrecision, inheritedScale);
                     for (String name : names) {
                         out.add(new Decl(name, level, info.type, info.precision, info.scale,
-                                initial(part), basedOn(part)));
+                                initial(part), basedOn(part), alignment(part)));
                     }
                     inheritedType = info.type;
                     inheritedPrecision = info.precision;
@@ -437,12 +493,20 @@ final class PliSyntax {
                 TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
                         inheritedPrecision, inheritedScale);
                 out.add(new Decl(nameToken.text(), level, info.type, info.precision, info.scale,
-                        initial(part), basedOn(part)));
+                        initial(part), basedOn(part), alignment(part)));
                 inheritedType = info.type;
                 inheritedPrecision = info.precision;
                 inheritedScale = info.scale;
             }
             return List.copyOf(out);
+        }
+
+        private static Boolean alignment(List<Token> part) {
+            for (Token token : part) {
+                if (token.is("UNALIGNED") || token.is("UNAL")) return Boolean.FALSE;
+                if (token.is("ALIGNED")) return Boolean.TRUE;
+            }
+            return null;
         }
 
         private static TypeInfo typeInfo(List<Token> tokens, int from, Type inherited,
@@ -464,24 +528,24 @@ final class PliSyntax {
                     return new TypeInfo(Type.ENTRY, 0, 0);
                 }
                 if (tokens.get(i).is("PIC") || tokens.get(i).is("PICTURE")) {
-                    int digits = 1;
-                    if (i + 1 < tokens.size()) {
-                        String picture = tokens.get(i + 1).text();
-                        digits = picture.chars().filter(c -> c == '9').count() > 0
-                                ? (int) picture.chars().filter(c -> c == '9').count() : 9;
+                    if (i + 1 >= tokens.size() || tokens.get(i + 1).kind() != Kind.STRING) {
+                        throw new ParseFailure(tokens.get(i), "PICTURE needs a quoted specification");
                     }
-                    return new TypeInfo(Type.PICTURE, digits, 0);
+                    return picture(tokens.get(i + 1));
                 }
                 if (tokens.get(i).is("FIXED")) {
                     int j = i + 1;
                     if (j < tokens.size() && (tokens.get(j).is("BIN")
                             || tokens.get(j).is("BINARY"))) {
+                        // 精度を省けば (15,0)、10 進は (5,0) (LRM Table 40, DEFAULT(IBM))。
+                        // 以前は 2 進を 31、10 進を 15 とし、2 進の位取りを読んでいなかった
                         return new TypeInfo(Type.BINARY,
-                                parenthesizedInt(tokens, j + 1, 31), 0);
+                                parenthesizedInt(tokens, j + 1, 15),
+                                parenthesizedSecondInt(tokens, j + 1, 0));
                     }
                     if (j < tokens.size() && (tokens.get(j).is("DEC")
                             || tokens.get(j).is("DECIMAL"))) {
-                        int precision = parenthesizedInt(tokens, j + 1, 15);
+                        int precision = parenthesizedInt(tokens, j + 1, 5);
                         int scale = parenthesizedSecondInt(tokens, j + 1, 0);
                         return new TypeInfo(Type.DECIMAL, precision, scale);
                     }
@@ -497,10 +561,10 @@ final class PliSyntax {
                     Token value = tokens.get(i + 2);
                     if (value.kind() == Kind.STRING) {
                         boolean bit = i + 3 < tokens.size() && tokens.get(i + 3).is("B");
-                        return new Literal(bit ? !value.text().equals("0") : value.text());
+                        return new Literal(bit ? bitLiteral(value) : value.text());
                     }
                     if (value.kind() == Kind.NUMBER) {
-                        return new Literal(new java.math.BigDecimal(value.text()));
+                        return new Literal(FixedValue.constant(value.text()));
                     }
                 }
             }
@@ -519,19 +583,95 @@ final class PliSyntax {
             return null;
         }
 
+        /**
+         * {@code PUT} の選択子は順を問わない。知らない選択子は<b>読み飛ばさずに断る</b>。
+         * 以前は読み飛ばしていたので、{@code PUT SKIP(2) LIST(...)} や {@code PUT FILE(RPT) ...}
+         * が何も出さずに通っていた。
+         */
         private Stmt put() {
-            boolean skip = match("SKIP");
-            if (!(match("LIST") || match("EDIT"))) {
-                skipToSemicolon();
-                return new Put(skip, List.of());
+            String string = null;
+            boolean page = false;
+            int skip = 0;
+            Boolean edit = null;
+            List<Expr> values = List.of();
+            List<FormatItem> format = List.of();
+            while (!check(";")) {
+                Token option = peek();
+                if (match("PAGE")) {
+                    page = true;
+                } else if (match("SKIP")) {
+                    skip = 1;
+                    if (match("(")) {
+                        Token count = expect(Kind.NUMBER, "SKIP count");
+                        expect(")");
+                        skip = Integer.parseInt(count.text());
+                        if (skip < 1) {
+                            // SKIP(0) は重ね打ち (復帰だけで改行しない)。標準出力では表せない
+                            throw fail(count, "PUT SKIP(0) is not supported");
+                        }
+                    }
+                } else if (match("STRING")) {
+                    expect("(");
+                    string = qualifiedName();
+                    expect(")");
+                } else if (match("FILE")) {
+                    expect("(");
+                    Token file = expect(Kind.IDENT, "file name");
+                    expect(")");
+                    if (!file.is("SYSPRINT")) {
+                        throw fail(file, "PUT FILE(" + file.text() + ") is not supported yet;"
+                                + " only SYSPRINT is");
+                    }
+                } else if ((check("LIST") || check("EDIT")) && edit == null) {
+                    edit = next().is("EDIT");
+                    values = arguments();
+                    if (edit) {
+                        format = formatList();
+                    }
+                } else {
+                    throw fail(option, "PUT option " + option.text() + " is not supported yet");
+                }
             }
-            List<Expr> values = arguments();
-            // EDIT の書式リストは値ではない。
-            if (check("(")) {
-                skipBalanced();
+            if (string != null && (page || skip > 0 || edit == null || !edit)) {
+                // PAGE と SKIP はファイルにしか書けない。STRING への LIST は区切りと引用符の規則が
+                // PRINT ファイルと違い、まだ持たない
+                throw fail(peek(), "PUT STRING supports only EDIT without PAGE or SKIP");
             }
             expect(";");
-            return new Put(skip, values);
+            return new Put(string, page, skip, edit != null && edit, values, format);
+        }
+
+        private List<FormatItem> formatList() {
+            expect("(");
+            List<FormatItem> items = new ArrayList<>();
+            do {
+                Token item = expect(Kind.IDENT, "format item");
+                int width = -1;
+                int fraction = 0;
+                boolean fractionGiven = false;
+                if (match("(")) {
+                    width = Integer.parseInt(expect(Kind.NUMBER, "field width").text());
+                    if (match(",")) {
+                        fraction = Integer.parseInt(
+                                expect(Kind.NUMBER, "fractional digits").text());
+                        fractionGiven = true;
+                    }
+                    expect(")");
+                }
+                if (item.is("A") && !fractionGiven) {
+                    items.add(new FormatItem('A', width, 0));
+                } else if (item.is("X") && width >= 0 && !fractionGiven) {
+                    items.add(new FormatItem('X', width, 0));
+                } else if (item.is("F") && width >= 0) {
+                    // 3 つ目の scaling-factor は ")" を期待したところで断られる
+                    items.add(new FormatItem('F', width, fraction));
+                } else {
+                    throw fail(item, "PUT EDIT format item " + item.text()
+                            + " is not supported yet");
+                }
+            } while (match(","));
+            expect(")");
+            return List.copyOf(items);
         }
 
         private Stmt ifStatement() {
@@ -554,19 +694,31 @@ final class PliSyntax {
                 expect(";");
                 return new IterativeLoop(control, start, finish, step, blockBody());
             }
-            boolean until = false;
-            Expr condition = new Literal(Boolean.TRUE);
-            if (match("WHILE")) {
-                condition = parenthesizedExpression();
-            } else if (match("UNTIL")) {
-                until = true;
-                condition = parenthesizedExpression();
+            if (match(";")) {
+                // Type 1。繰り返さず、1 度だけ実行する。以前は条件の無い繰り返しとして扱い、
+                // IF ... THEN DO; ... END; が上限まで回っていた
+                return new Block(blockBody());
             }
-            // 反復指定をまだ意味実行しない場合も、対応する END までの構造は保つ。
-            if (!match(";")) {
-                skipToSemicolon();
+            if (match("LOOP") || match("FOREVER")) {
+                expect(";");
+                return new Loop(null, null, blockBody());
             }
-            return new Loop(until, condition, blockBody());
+            Expr whileCondition = null;
+            Expr untilCondition = null;
+            // WHILE と UNTIL はどちらが先でもよく、両方書ける (LRM "DO statement" Type 2)。
+            // 以前は 2 つ目を読み飛ばしていた
+            for (int i = 0; i < 2; i++) {
+                if (whileCondition == null && match("WHILE")) {
+                    whileCondition = parenthesizedExpression();
+                } else if (untilCondition == null && match("UNTIL")) {
+                    untilCondition = parenthesizedExpression();
+                }
+            }
+            if (whileCondition == null && untilCondition == null) {
+                throw fail(peek(), "DO option " + peek().text() + " is not supported yet");
+            }
+            expect(";");
+            return new Loop(whileCondition, untilCondition, blockBody());
         }
 
         private List<Stmt> blockBody() {
@@ -591,9 +743,7 @@ final class PliSyntax {
 
         private Stmt onCondition() {
             if (!match("ENDFILE")) {
-                String keyword = "ON " + peek().text();
-                skipToSemicolon();
-                return new Ignored(keyword);
+                throw fail(peek(), "ON " + peek().text() + " is not supported yet");
             }
             expect("(");
             String file = qualifiedName();
@@ -670,14 +820,15 @@ final class PliSyntax {
                 return value;
             }
             if (check(Kind.STRING)) {
-                String value = next().text();
+                Token literal = next();
+                String value = literal.text();
                 if (match("B")) {
-                    return new Literal(!value.equals("0"));
+                    return new Literal(bitLiteral(literal));
                 }
                 return new Literal(value);
             }
             if (check(Kind.NUMBER)) {
-                return new Literal(new java.math.BigDecimal(next().text()));
+                return new Literal(FixedValue.constant(next().text()));
             }
             if (check(Kind.IDENT)) {
                 String name = qualifiedName();
@@ -759,8 +910,10 @@ final class PliSyntax {
             StringBuilder sql = new StringBuilder();
             Token previous = null;
             for (Token token : tokens) {
+                // ':' の前は詰めない。詰めると INTO:HV になり、FETCH の INTO を読み取れない。
+                // 標識変数は :HV :IND と空白を挟んでも同じ意味である
                 boolean tight = token.kind() == Kind.SYMBOL
-                        && List.of(",", ")", ".", ":").contains(token.text());
+                        && List.of(",", ")", ".").contains(token.text());
                 boolean afterTight = previous != null && previous.kind() == Kind.SYMBOL
                         && List.of("(", ".", ":").contains(previous.text());
                 if (!sql.isEmpty() && !tight && !afterTight) sql.append(' ');
@@ -861,6 +1014,47 @@ final class PliSyntax {
     }
 
     private record TypeInfo(Type type, int precision, int scale) {
+    }
+
+    /**
+     * PICTURE の指定を読む。反復の係数 {@code (n)c} は c を n 個並べたものなので、開いてから字を
+     * 数える。以前は '9' の字を数えていたので、{@code '(9)9'} (9 が 9 個) を 2 桁と読んでいた。
+     *
+     * <ul>
+     *   <li>{@code 9} と高々 1 つの {@code V} だけなら数の PICTURE。FIXED DEC(桁数, V より右の桁数) の
+     *       値を持ち、記憶域は数字だけ (V は場所を取らない)</li>
+     *   <li>{@code X} / {@code A} / {@code 9} だけなら文字の PICTURE。CHAR と同じに扱う</li>
+     *   <li>ほかの字 (Z、S、$、小数点、編集の字など) はまだ持たないので断る</li>
+     * </ul>
+     */
+    private static TypeInfo picture(Token specification) {
+        StringBuilder expanded = new StringBuilder();
+        String text = specification.text().toUpperCase(Locale.ROOT);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '(') {
+                int close = text.indexOf(')', i);
+                if (close < 0 || close + 1 >= text.length()) {
+                    throw new ParseFailure(specification, "bad PICTURE repetition: '" + text + "'");
+                }
+                int count = Integer.parseInt(text.substring(i + 1, close).strip());
+                expanded.append(String.valueOf(text.charAt(close + 1)).repeat(count));
+                i = close + 1;
+            } else if (c != ' ') {
+                expanded.append(c);
+            }
+        }
+        String picture = expanded.toString();
+        if (!picture.isEmpty() && picture.matches("9*V?9*")) {
+            int point = picture.indexOf('V');
+            int digits = picture.replace("V", "").length();
+            return new TypeInfo(Type.PICTURE, digits, point < 0 ? 0 : picture.length() - point - 1);
+        }
+        if (!picture.isEmpty() && picture.matches("[XA9]*")) {
+            return new TypeInfo(Type.CHAR, picture.length(), 0);
+        }
+        throw new ParseFailure(specification, "PICTURE '" + specification.text()
+                + "' is not supported yet; only 9 and V, or X, A and 9");
     }
 
     private static final class ProcedureBuilder {

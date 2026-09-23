@@ -26,7 +26,24 @@ public final class PliPreprocessor {
 
     public Result process(String fileName, String source) {
         List<Diagnostic> diagnostics = new ArrayList<>();
-        String current = PROCESS.matcher(source).replaceAll("\n");
+        // *PROCESS の算術の指定 (RULES と LIMITS) は、実行時の原文に注記として残し、実行時の
+        // 算術も同じ規則にする (PliOptions)。以前は RULES(ANS) と LIMITS を断っていた (P-183)
+        Matcher process = PROCESS.matcher(source);
+        StringBuilder kept = new StringBuilder();
+        while (process.find()) {
+            String options = process.group().strip();
+            options = options.substring("*PROCESS".length(), options.length() - 1).strip();
+            try {
+                PliOptions.DEFAULT.with(options);
+            } catch (IllegalArgumentException invalid) {
+                diagnostics.add(new Diagnostic(Diagnostic.Severity.ERROR, fileName,
+                        lineOf(source, process.start()), 1, invalid.getMessage()));
+            }
+            process.appendReplacement(kept, Matcher.quoteReplacement(
+                    PliOptions.note(options) + "\n"));
+        }
+        process.appendTail(kept);
+        String current = kept.toString();
         // 展開後にも include が現れる場合があるため、有限の深さで繰り返す。
         for (int depth = 0; depth < 32; depth++) {
             Matcher matcher = INCLUDE.matcher(current);
@@ -53,6 +70,14 @@ public final class PliPreprocessor {
         diagnostics.add(new Diagnostic(Diagnostic.Severity.ERROR, fileName, 1, 1,
                 "include nesting exceeds 32 levels"));
         return new Result(current, List.copyOf(diagnostics));
+    }
+
+    private static int lineOf(String source, int offset) {
+        int line = 1;
+        for (int i = 0; i < offset; i++) {
+            if (source.charAt(i) == '\n') line++;
+        }
+        return line;
     }
 
     public record Result(String source, List<Diagnostic> diagnostics) {

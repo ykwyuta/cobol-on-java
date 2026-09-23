@@ -1,7 +1,7 @@
 package dev.cobolonjava.hlasm;
 
+import dev.cobolonjava.runtime.program.ProgramSupport;
 import java.util.List;
-import java.util.Locale;
 
 /** HLASM の原文 1 本を JVM クラスへ翻訳する入口。 */
 public final class HlasmCompiler {
@@ -19,22 +19,10 @@ public final class HlasmCompiler {
             return new Result(null, null, null, assembled.diagnostics());
         }
         ObjectModule module = assembled.module();
-        String className = "hlasm.generated." + javaName(module.name());
+        // COBOL・PL/I と同じ名前空間に置き、CALL と EXEC PGM= が名前で引けるようにする (P-182)
+        String className = ProgramSupport.classNameOf(module.name());
         byte[] classFile = HlasmClassGenerator.generate(className, fileName, source, module.name());
         return new Result(className, classFile, module, List.of());
-    }
-
-    private static String javaName(String programName) {
-        String normalized = programName.toUpperCase(Locale.ROOT).replace('-', '_');
-        StringBuilder result = new StringBuilder();
-        for (int i = 0; i < normalized.length(); i++) {
-            char c = normalized.charAt(i);
-            result.append(Character.isJavaIdentifierPart(c) ? c : '_');
-        }
-        if (result.isEmpty() || !Character.isJavaIdentifierStart(result.charAt(0))) {
-            result.insert(0, '_');
-        }
-        return result.toString();
     }
 
     public record Result(String className, byte[] classFile, ObjectModule module,

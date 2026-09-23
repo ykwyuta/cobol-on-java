@@ -1,7 +1,7 @@
 # cobol-on-java デモシナリオガイド
 
 本書は、`cobol-on-java` の多彩な機能を体感するためのデモシナリオ一覧と実行ガイドです。
-メインフレーム互換機能（バッチ、ファイル入出力、JCL、システムユーティリティ、CICS）から、オープン化・近代化を支える Java 連携（相互運用、JUnit 5 単体テスト、Spring Boot & Db2 SQL 統合）まで、全 9 つのデモシナリオを提供しています。
+メインフレーム互換機能（バッチ、ファイル入出力、JCL、システムユーティリティ、CICS）から、オープン化・近代化を支える Java 連携（相互運用、JUnit 5 単体テスト、Spring Boot & Db2 SQL 統合）まで、全 10 のデモシナリオを提供しています。
 
 ---
 
@@ -18,6 +18,7 @@
 | **007** | [CICS トランザクション & 疑似会話制御](file:///d:/workspace/cobol-on-java/demo/007/README.md) | `cobol-cics` による `EXEC CICS LINK` / `XCTL` / `RETURN TRANSID(...) COMMAREA(...)` 制御、EIB 状態管理、疑似会話トランザクション境界 | **提供中** |
 | **008** | [Spring Boot & Db2 SQL 連携](file:///d:/workspace/cobol-on-java/demo/008/README.md) | Spring Boot 4.x / Spring Framework 7 との統合、COBOL ホスト変数による SQL 実行、Spring 管理トランザクション（コミット/ロールバック）との同期 | **提供中** |
 | **009** | [BMS + COBOL + H2 による Todo アプリ](file:///d:/workspace/cobol-on-java/demo/009/README.md) | BMS マップ (`DFHMSD`/`DFHMDI`/`DFHMDF`) からの記号マップ自動生成、`SEND MAP`/`RECEIVE MAP` と `RETURN TRANSID COMMAREA` による疑似会話、COBOL の `EXEC SQL`（カーソルを含む）による H2 アクセス。同じ素材を Spring Boot + Thymeleaf のブラウザ画面でも動かせる (`run_web`) | **提供中** |
+| **010** | [Maven の標準ディレクトリ体系でのビルド](file:///d:/workspace/cobol-on-java/demo/010/README.md) | `cobol-maven-plugin` による COBOL (写し句つき)・JCL (目録手続きつき)・PL/I (`%INCLUDE` つき) のビルド。`src/main/cobol` / `copybook` / `jcl` / `proclib` / `pli` / `pli-include` の標準の置き場、ビルド時の JCL 検査、ビルド結果からのジョブ実行 | **提供中** |
 
 ---
 
@@ -152,3 +153,18 @@
   demo/009/run_web.sh
   ```
 * **詳細説明**: [`demo/009/README.md`](file:///d:/workspace/cobol-on-java/demo/009/README.md)
+
+---
+
+### デモ #010: Maven の標準ディレクトリ体系でのビルド
+* **概要**: 資産を標準の置き場に置き、`mvn package` 1 回で COBOL・PL/I の翻訳と JCL の検査を行います ([設計 91](file:///d:/workspace/cobol-on-java/docs/design/91-maven-build.md))。
+  - `sales/`: COBOL 2 本が写し句 `SALESREC` を共有し、`SALESJOB.jcl` が PROCLIB の目録手続き `SALESRPT` を呼びます。
+  - `greet/`: PL/I の `HELLO.pli` が `%INCLUDE GREETING` を取り込みます。
+* **実行コマンド**:
+  ```cmd
+  demoun_demo.bat
+  ```
+  ```sh
+  demo/010/run_demo.sh          # Linux / macOS
+  ```
+* **詳細説明**: [`demo/010/README.md`](file:///d:/workspace/cobol-on-java/demo/010/README.md)

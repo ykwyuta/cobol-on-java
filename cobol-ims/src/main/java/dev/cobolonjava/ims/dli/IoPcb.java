@@ -63,6 +63,8 @@ final class IoPcb {
 
     private InputMessage current;
     private int nextSegment;
+    /** 今の呼び出しが PLITDLI から来たか。電文のセグメントの長さの欄の幅が変わる。 */
+    private boolean pli;
     private List<byte[]> output = new ArrayList<>();
     private int sequence;
     /** 処理済みを覚える口 (P-163)。無ければ冪等化しない。 */
@@ -91,6 +93,19 @@ final class IoPcb {
     }
 
     String call(String function, DataView io, List<DataView> rest) {
+        return call(function, io, rest, false);
+    }
+
+    /**
+     * @param pli {@code PLITDLI} から来たか。PL/I の電文のセグメントは長さの欄が 4 byte (LLLL) で、
+     *            その値は COBOL の LL と同じ「本文 + 4」である。入力も出力も同じ形をとる
+     *            (IMS Application Programming: "For the PLITDLI interface, define the LLLL field as
+     *            4 bytes long. The value in the LLLL field is the input message length minus 2 bytes"、
+     *            出力は "the LL field must be defined as a binary fullword ... the actual segment length
+     *            minus two bytes")。以前は PL/I でも 2 byte の LL として読み書きしていた
+     */
+    String call(String function, DataView io, List<DataView> rest, boolean pli) {
+        this.pli = pli;
         if (NOT_YET.contains(function)) {
             throw new DliCallException("DL/I function " + function
                     + " on the I/O PCB is not supported yet (design 78 section 4)");
@@ -306,13 +321,29 @@ final class IoPcb {
         if (current == null) {
             throw new DliCallException("ISRT to the I/O PCB needs an input message, but there is none");
         }
-        int length = io.length() < 2 ? -1 : ((io.get(0) & 0xFF) << 8) | (io.get(1) & 0xFF);
-        if (length < 4 || length > io.length()) {
-            throw new DliCallException("the LL " + length + " of the output segment is outside the I/O area ("
-                    + io.length() + " bytes)");
+        int prefix = prefixLength();
+        long length;
+        if (io.length() < prefix) {
+            length = -1;
+        } else if (pli) {
+            length = ((long) (io.get(0) & 0xFF) << 24) | ((io.get(1) & 0xFF) << 16)
+                    | ((io.get(2) & 0xFF) << 8) | (io.get(3) & 0xFF);
+        } else {
+            length = ((io.get(0) & 0xFF) << 8) | (io.get(1) & 0xFF);
         }
-        output.add(io.subView(4, length - 4).toByteArray());
+        // 本文の長さは どちらも LL - 4。PL/I は域の上で 2 byte 長いので、域に収まるかは LL + 2 で見る
+        long area = pli ? length + 2 : length;
+        if (length < 4 || area > io.length()) {
+            throw new DliCallException("the " + (pli ? "LLLL " : "LL ") + length
+                    + " of the output segment is outside the I/O area (" + io.length() + " bytes)");
+        }
+        output.add(io.subView(prefix, (int) length - 4).toByteArray());
         return StatusCode.OK;
+    }
+
+    /** LL (PL/I は LLLL) と ZZ の長さ。 */
+    private int prefixLength() {
+        return pli ? 6 : 4;
     }
 
     private String purge(DataView io) {
@@ -330,15 +361,21 @@ final class IoPcb {
         if (length > 0xFFFF) {
             throw new DliCallException("a message segment is longer than 65535 bytes");
         }
-        if (io.length() < length) {
+        int prefix = prefixLength();
+        if (io.length() < body.length + prefix) {
             throw new DliCallException("the I/O area (" + io.length() + " bytes) is shorter than the message segment ("
-                    + length + " bytes)");
+                    + (body.length + prefix) + " bytes)");
         }
-        io.set(0, (byte) (length >>> 8));
-        io.set(1, (byte) length);
-        io.set(2, (byte) 0);
-        io.set(3, (byte) 0);
-        io.subView(4, body.length).setBytes(body);
+        int at = 0;
+        if (pli) {
+            io.set(at++, (byte) 0);
+            io.set(at++, (byte) 0);
+        }
+        io.set(at++, (byte) (length >>> 8));
+        io.set(at++, (byte) length);
+        io.set(at++, (byte) 0);
+        io.set(at, (byte) 0);
+        io.subView(prefix, body.length).setBytes(body);
         return StatusCode.OK;
     }
 
