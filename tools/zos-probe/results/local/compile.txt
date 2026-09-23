@@ -1,0 +1,48 @@
+== CBLABND.cbl rc=0
+== CBLACPT.cbl rc=0
+== CBLASMD.cbl rc=0
+== CBLBIN31.cbl rc=1
+   CBLBIN31.cbl:16:12: PICTURE S9(19) cannot describe W-B19: binary items of 19 digits (16-byte storage) are not implemented yet
+   CBLBIN31.cbl:18:12: PICTURE S9(31) cannot describe W-B31: binary items of 31 digits (16-byte storage) are not implemented yet
+== CBLC72A.cbl rc=0
+== CBLC72B.cbl rc=1
+   CBLC72B.cbl:23:26: a non-numeric literal is left unclosed
+== CBLC72C.cbl rc=0
+== CBLCP.cbl rc=1
+   CBLCP.cbl:45:8: invalid PICTURE character-string: unsupported PICTURE symbol 'N' in: N(4)
+   CBLCP.cbl:45:8: USAGE NATIONAL is not supported yet
+   CBLCP.cbl:45:8: elementary item requires a PICTURE clause: W-NAT
+== CBLDEBUG.cbl rc=0
+== CBLDUMP.cbl rc=0
+== CBLEDIT.cbl rc=0
+== CBLFLT.cbl rc=0
+== CBLFUNC.cbl rc=0
+== CBLFUNX.cbl rc=0
+== CBLGEN.cbl rc=0
+== CBLINSP.cbl rc=0
+== CBLNUM.cbl rc=0
+== CBLOPT.cbl rc=0
+== CBLOPTN.cbl rc=0
+== CBLPARM.cbl rc=0
+== CBLPRNC.cbl rc=1
+   CBLPRNC.cbl:15:12: unknown function name: C01
+   CBLPRNC.cbl:16:12: unknown function name: C02
+   CBLPRNC.cbl:17:12: unknown function name: C12
+== CBLPRNT.cbl rc=0
+== CBLRC.cbl rc=0
+== CBLSYNC.cbl rc=0
+== CBLWSINI.cbl rc=0
+== PLIMAP.pli rc=0
+== PLIPTR.pli rc=0
+== PLIPTRS.pli rc=0
+== PLISTR2.pli rc=0
+== PLISTRM.pli rc=0
+== ASMDC1.asm rc=0
+== ASMDC2.asm rc=1
+   ASMDC2.asm:32: error: a quoted string is not closed
+== ASMDC3.asm rc=1
+   ASMDC3.asm:22: error: a quoted string is not closed
+== ASMEXE.asm rc=0
+== ASMPM.asm rc=1
+   ASMPM.asm:23: error: unknown operation: IPM (a macro call would be expanded here; macros are not supported yet)
+== CBLABND.cbl -q SSRANGE

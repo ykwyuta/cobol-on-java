@@ -1,0 +1,60 @@
+ /*-----------------------------------------------------------------*/
+ /* PLISTRM - stream output to SYSPRINT (P-183)                      */
+ /* Q: Where do lines, tabs and page breaks fall, and how are        */
+ /*    arithmetic values turned into characters? The observation is  */
+ /*    the SYSPRINT dataset itself, record by record, with the ASA   */
+ /*    control character (see ProbeTool.java vba).                   */
+ /*  - is there an empty line for PUT SKIP right after OPEN?         */
+ /*  - an item that ends just before a tab position                  */
+ /*  - F(w,d): rounding, negative values, a value that does not fit  */
+ /*  - REPEAT, PUT SKIP(3), a 130-character item, page overflow      */
+ /*  - FIXED BIN(p,q) division                                       */
+ /* Runs: SYSPRINT without DCB, and with DCB LRECL=137 (LINESIZE).   */
+ /* PLISTR2 covers PUT PAGE right after OPEN.                        */
+ /* Scenario notes (Japanese): docs/zos-probe/scenarios.md           */
+ /*-----------------------------------------------------------------*/
+ PLISTRM: PROCEDURE OPTIONS(MAIN);
+   DCL FB15 FIXED BIN(15) INIT(3);
+   DCL FB31 FIXED BIN(31) INIT(-12345);
+   DCL FD72 FIXED DEC(7,2) INIT(12.5);
+   DCL FD5 FIXED DEC(5) INIT(-7);
+   DCL C23 CHAR(23) INIT('ABCDEFGHIJKLMNOPQRSTUVW');
+   DCL C24 CHAR(24) INIT('ABCDEFGHIJKLMNOPQRSTUVWX');
+   DCL L130 CHAR(130);
+   DCL (FA, FB) FIXED BIN(15,2);
+   DCL S20 CHAR(20);
+   DCL I FIXED BIN(15);
+
+   PUT SKIP LIST('S01 FIRST LINE AFTER OPEN');
+   PUT SKIP LIST('S02', FB15);
+   PUT SKIP LIST('S03', FB31);
+   PUT SKIP LIST('S04', FD72);
+   PUT SKIP LIST('S05', FD5);
+   PUT SKIP LIST(C23, 'S06');
+   PUT SKIP LIST(C24, 'S07');
+   PUT SKIP EDIT('S08', 3.456)(A, F(8,2));
+   PUT SKIP EDIT('S09', -3.456)(A, F(8,2));
+   PUT SKIP EDIT('S10', 2.5)(A, F(3));
+   PUT SKIP EDIT('S11', -2.5)(A, F(3));
+   PUT SKIP EDIT('S13', 'AB')(A, A(5));
+   PUT SKIP EDIT('S14', 'X')(A, X(3), A);
+   PUT SKIP LIST('S15', REPEAT('AB', 2));
+   S20 = FB31;
+   PUT SKIP EDIT('S16 [', S20, ']')(A, A, A);
+   PUT SKIP LIST('S17 ' || FD72);
+   FA = 1;
+   FB = 3;
+   PUT SKIP LIST('S18', FA / FB);
+   PUT SKIP(3) LIST('S19 AFTER SKIP(3)');
+   L130 = REPEAT('0123456789', 12);
+   PUT SKIP LIST(L130);
+   PUT SKIP LIST('S20 AFTER THE LONG ITEM');
+   DO I = 1 TO 50;
+     PUT SKIP LIST('S21 LINE', I);
+   END;
+   PUT PAGE LIST('S22 AFTER PUT PAGE');
+   PUT SKIP LIST('S23 LAST BUT ONE');
+   /* Last on purpose: SIZE is disabled on the host by default, but */
+   /* this implementation raises it and stops.                     */
+   PUT SKIP EDIT('S12', 12345.678)(A, F(5,1));
+ END PLISTRM;

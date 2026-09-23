@@ -48,6 +48,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [PL/I 資産のコンパイルおよび実行要件](docs/research/pli-support-and-execution-requirements.md) — Bank-of-Z の PL/I 2本を対象にした言語・Db2・IMS連携の範囲
 - [PL/I の外部検証とコーパス](docs/design/26-pli-verification.md) — CCVS85 相当がない条件での規格試験・IBM参照出力・実資産による三層検証
 - [HLASM 資産のコンパイルおよび実行方式検討](docs/research/hlasm-support-and-execution-requirements.md) — PL/I と同じ手法が効く範囲と効かない範囲、Hercules を命令単位のオラクルとして使う測り方
+- [z/OS 実機での挙動調査 — 実行手順書](docs/zos-probe/runbook.md) と [シナリオ一覧](docs/zos-probe/scenarios.md) — 暫定判断のうち実機でしか決着しないものを、COBOL・JCL・PL/I・HLASM の probe (`tools/zos-probe/`) で一度に測る。ローカル側の観測は `results/local/`
 - [IBM i (AS/400) 資産のコンパイルおよび実行方式検討](docs/research/ibm-i-support-and-execution-requirements.md) — RPG / DDS / Db2 for i / CL / 5250 が既存ランタイムに載る範囲、エミュレータは無いが実機がオラクルになること、H2 を拡張しない理由
 - [暫定対応の記録](docs/decisions/provisional.md) — 先送りした判断と、その解消条件
 
@@ -58,7 +59,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | 項目 | 決定 |
 | --- | --- |
 | 互換性の基準 | Enterprise COBOL for z/OS 6.x の外部挙動 |
-| 検証オラクル | Hercules (z/Architecture 命令レベル)。z/OS 実機は利用しない |
+| 検証オラクル | Hercules (z/Architecture 命令レベル)。z/OS 実機は常用しない。使えるときに一度に測る一式を [docs/zos-probe](docs/zos-probe/runbook.md) に用意してある |
 | 互換性の管理 | 目標を表す互換性レベル L0〜L3 と、裏付けを表す検証レベル V0〜V2 の 2 軸 |
 | 期待値の採取 | Hercules の `.tst` / `loadcore` 機構。採取と回帰を同一機構で回す |
 | コード生成 | ASM による JVM バイトコードの直接生成 |

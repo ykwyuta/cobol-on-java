@@ -1,0 +1,3 @@
+JCLCONR.jcl:19: IF is missing a closing parenthesis
+JCLCONR.jcl:26: IF is missing a closing parenthesis
+JOB RC=2

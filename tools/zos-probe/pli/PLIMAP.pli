@@ -1,0 +1,138 @@
+ /*-----------------------------------------------------------------*/
+ /* PLIMAP - structure mapping and bit strings (P-184, P-185)        */
+ /* Q: At which offsets does Enterprise PL/I place the elements of   */
+ /*    ALIGNED / UNALIGNED structures, and what is SIZE? Where do     */
+ /*    UNALIGNED bit strings at the head of a structure go? Are      */
+ /*    multi-bit & and | bitwise?                                    */
+ /* How to read: each structure is BASED on X, which is filled with  */
+ /*    '.' (X'4B') first; bytes still 4B afterwards were not         */
+ /*    written. Offsets are relative to the start of the structure.  */
+ /* Output: PRB <case> <hex of X> |SIZE=n|                           */
+ /* Scenario notes (Japanese): docs/zos-probe/scenarios.md           */
+ /*-----------------------------------------------------------------*/
+ PLIMAP: PROCEDURE OPTIONS(MAIN);
+   DCL X CHAR(160);
+   DCL 1 M1 BASED(ADDR(X)),
+         2 A CHAR(3),
+         2 B FIXED BIN(31),
+         2 C CHAR(1);
+   DCL 1 M2 BASED(ADDR(X)),
+         2 A CHAR(1),
+         2 B FIXED BIN(15),
+         2 C FIXED DEC(5,2),
+         2 D CHAR(2),
+         2 E FIXED BIN(31);
+   DCL 1 M3 BASED(ADDR(X)),
+         2 A BIT(1),
+         2 B BIT(1),
+         2 C BIT(1),
+         2 D CHAR(1);
+   DCL 1 M4 UNALIGNED BASED(ADDR(X)),
+         2 A CHAR(3),
+         2 B FIXED BIN(31),
+         2 C CHAR(1);
+   DCL 1 M5 BASED(ADDR(X)),
+         2 A CHAR(1),
+         2 T,
+           3 B FIXED BIN(15),
+           3 C CHAR(1),
+         2 D FIXED BIN(31);
+   DCL 1 M6 BASED(ADDR(X)),
+         2 NAME CHAR(130),
+         2 DOB FIXED BIN(31),
+         2 TAIL CHAR(1);
+   DCL 1 M7 BASED(ADDR(X)),
+         2 A CHAR(1),
+         2 P POINTER,
+         2 B CHAR(1);
+   DCL 1 M8 BASED(ADDR(X)),
+         2 A BIT(3),
+         2 B BIT(7),
+         2 C FIXED BIN(15),
+         2 D BIT(2);
+   DCL 1 M9 BASED(ADDR(X)),
+         2 A CHAR(1),
+         2 B FIXED BIN(7),
+         2 C FIXED BIN(63),
+         2 D FIXED BIN(15,2);
+   DCL BR BIT(8) BASED(ADDR(X));
+   DCL (B1, B2) BIT(8);
+   DCL 1 HW, 2 H CHAR(1), 2 L CHAR(1);
+   DCL W FIXED BIN(15) BASED(ADDR(HW));
+   DCL (I, QQ, R, NB) FIXED BIN(15);
+   DCL OFS FIXED BIN(15) INIT(0);
+   DCL N FIXED BIN(31);
+   DCL CASEID CHAR(12);
+   DCL OUT CHAR(80);
+   DCL DIG CHAR(16) INIT('0123456789ABCDEF');
+
+   X = REPEAT('.', 159);
+   M1.A = 'AAA'; M1.B = 1; M1.C = 'C';
+   CASEID = 'M.P184.M1'; N = SIZE(M1); NB = 16; CALL HEXOUT;
+
+   X = REPEAT('.', 159);
+   M2.A = 'A'; M2.B = 1; M2.C = 12.34; M2.D = 'DD'; M2.E = 2;
+   CASEID = 'M.P184.M2'; N = SIZE(M2); NB = 16; CALL HEXOUT;
+
+   X = REPEAT('.', 159);
+   M3.A = '1'B; M3.B = '0'B; M3.C = '1'B; M3.D = 'D';
+   CASEID = 'M.P185.M3'; N = SIZE(M3); NB = 16; CALL HEXOUT;
+
+   X = REPEAT('.', 159);
+   M4.A = 'AAA'; M4.B = 1; M4.C = 'C';
+   CASEID = 'M.P184.M4'; N = SIZE(M4); NB = 16; CALL HEXOUT;
+
+   X = REPEAT('.', 159);
+   M5.A = 'A'; M5.T.B = 1; M5.T.C = 'C'; M5.D = 2;
+   CASEID = 'M.P184.M5'; N = SIZE(M5); NB = 16; CALL HEXOUT;
+
+   X = REPEAT('.', 159);
+   M6.NAME = 'N'; M6.DOB = 1; M6.TAIL = 'T';
+   /* 144 bytes in four lines: a line must stay within LINESIZE. */
+   N = SIZE(M6); NB = 40;
+   CASEID = 'M.P184.M6.1'; OFS = 0; CALL HEXOUT;
+   CASEID = 'M.P184.M6.2'; OFS = 40; CALL HEXOUT;
+   CASEID = 'M.P184.M6.3'; OFS = 80; CALL HEXOUT;
+   CASEID = 'M.P184.M6.4'; OFS = 120; NB = 24; CALL HEXOUT;
+   OFS = 0;
+
+   X = REPEAT('.', 159);
+   M7.A = 'A'; M7.B = 'B';
+   CASEID = 'M.P185.M7'; N = SIZE(M7); NB = 16; CALL HEXOUT;
+
+   X = REPEAT('.', 159);
+   M8.A = '111'B; M8.B = '1010101'B; M8.C = 1; M8.D = '11'B;
+   CASEID = 'M.P185.M8'; N = SIZE(M8); NB = 16; CALL HEXOUT;
+
+   X = REPEAT('.', 159);
+   M9.A = 'A'; M9.B = 1; M9.C = 2; M9.D = 1.25;
+   CASEID = 'M.P184.M9'; N = SIZE(M9); NB = 24; CALL HEXOUT;
+
+   B1 = '11001010'B;
+   B2 = '10100110'B;
+   X = REPEAT('.', 159);
+   BR = B1 & B2;
+   CASEID = 'M.P185.AND'; N = 1; NB = 1; CALL HEXOUT;
+   BR = B1 | B2;
+   CASEID = 'M.P185.OR'; N = 1; NB = 1; CALL HEXOUT;
+   IF '101'B = '1010'B THEN BR = '11111111'B;
+   ELSE BR = '00000000'B;
+   CASEID = 'M.P185.CMP'; N = 1; NB = 1; CALL HEXOUT;
+
+ /* Show NB bytes of X from offset OFS in hex. Written without     */
+ /* VARYING, arrays, LENGTH or HEX, which this implementation      */
+ /* lacks.                                                          */
+ HEXOUT: PROCEDURE;
+   OUT = ' ';
+   DO I = 1 TO NB;
+     W = 0;
+     L = SUBSTR(X, OFS + I, 1);
+     QQ = W / 16;
+     R = W - QQ * 16;
+     OUT = SUBSTR(OUT, 1, 2 * I - 2) || SUBSTR(DIG, QQ + 1, 1)
+           || SUBSTR(DIG, R + 1, 1);
+   END;
+   PUT SKIP EDIT('PRB ', CASEID, ' ', SUBSTR(OUT, 1, 2 * NB),
+                 ' |SIZE=', N, '|') (A, A, A, A, A, F(4), A);
+ END HEXOUT;
+ END PLIMAP;

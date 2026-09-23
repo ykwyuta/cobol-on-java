@@ -1,0 +1,16 @@
+CEE3250C THE SYSTEM OR USER ABEND S806 WAS ISSUED.
+  CONDITION: module not found
+  DETAIL:    cannot find the called program: CBLCP
+
+TRACEBACK:
+  (no compiled program is on the call chain)
+CEE3250C THE SYSTEM OR USER ABEND S806 WAS ISSUED.
+  CONDITION: module not found
+  DETAIL:    cannot find the called program: BPXBATCH
+
+TRACEBACK:
+  (no compiled program is on the call chain)
+JCLCP.CLEAN ENDED - RC=0
+JCLCP.NAT ABENDED S806 - cannot find the called program: CBLCP
+JCLCP.ICONV ABENDED S806 - cannot find the called program: BPXBATCH
+JOB RC=12

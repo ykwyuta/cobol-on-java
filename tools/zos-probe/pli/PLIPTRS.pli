@@ -1,0 +1,9 @@
+ /*-----------------------------------------------------------------*/
+ /* PLIPTRS - called by PLIPTR: points the parameter at its own      */
+ /*           static storage (P-185)                                 */
+ /*-----------------------------------------------------------------*/
+ PLIPTRS: PROCEDURE(Q);
+   DCL Q POINTER;
+   DCL THEIRS CHAR(4) STATIC INIT('SUBV');
+   Q = ADDR(THEIRS);
+ END PLIPTRS;

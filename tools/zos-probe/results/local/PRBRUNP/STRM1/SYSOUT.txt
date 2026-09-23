@@ -1,0 +1,89 @@
+S01 FIRST LINE AFTER OPEN
+S02                             3
+S03                                  0
+S04                          12.50
+S05                            0
+ABCDEFGHIJKLMNOPQRSTUVW S06
+ABCDEFGHIJKLMNOPQRSTUVWX                        S07
+S08    3.46
+S09   -3.46
+S10  3
+S11 -3
+S13AB   
+S14   X
+S15                     ABABAB
+S16 [             0      ]
+S17      12.50
+S18                            0.33333
+
+
+S19 AFTER SKIP(3)
+012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+0123456789
+S20 AFTER THE LONG ITEM
+S21 LINE                        1
+S21 LINE                        2
+S21 LINE                        3
+S21 LINE                        4
+S21 LINE                        5
+S21 LINE                        6
+S21 LINE                        7
+S21 LINE                        8
+S21 LINE                        9
+S21 LINE                       10
+S21 LINE                       11
+S21 LINE                       12
+S21 LINE                       13
+S21 LINE                       14
+S21 LINE                       15
+S21 LINE                       16
+S21 LINE                       17
+S21 LINE                       18
+S21 LINE                       19
+S21 LINE                       20
+S21 LINE                       21
+S21 LINE                       22
+S21 LINE                       23
+S21 LINE                       24
+S21 LINE                       25
+S21 LINE                       26
+S21 LINE                       27
+S21 LINE                       28
+S21 LINE                       29
+S21 LINE                       30
+S21 LINE                       31
+S21 LINE                       32
+S21 LINE                       33
+S21 LINE                       34
+S21 LINE                       35
+S21 LINE                       36
+S21 LINE                       37
+S21 LINE                       38
+S21 LINE                       39
+S21 LINE                       40
+S21 LINE                       41
+S21 LINE                       42
+S21 LINE                       43
+S21 LINE                       44
+S21 LINE                       45
+S21 LINE                       46
+S21 LINE                       47
+S21 LINE                       48
+S21 LINE                       49
+S21 LINE                       50
+S22 AFTER PUT PAGE
+S23 LAST BUT ONE
+S12
+Exception in thread "main" dev.cobolonjava.pli.PliRuntime$PliExecutionException: SIZE: 12345.678 does not fit in F(5,1)
+	at dev.cobolonjava.pli.PliRuntime$Executor.fixedField(PliRuntime.java:610)
+	at dev.cobolonjava.pli.PliRuntime$Executor.edit(PliRuntime.java:585)
+	at dev.cobolonjava.pli.PliRuntime$Executor.put(PliRuntime.java:465)
+	at dev.cobolonjava.pli.PliRuntime$Executor.execute(PliRuntime.java:208)
+	at dev.cobolonjava.pli.PliRuntime$Executor.execute(PliRuntime.java:190)
+	at dev.cobolonjava.pli.PliRuntime$Executor.run(PliRuntime.java:172)
+	at dev.cobolonjava.pli.PliRuntime.execute(PliRuntime.java:50)
+	at cobol.generated.PLISTRM.run(Unknown Source)
+	at dev.cobolonjava.runtime.program.CobolProgram.runFresh(CobolProgram.java:52)
+	at dev.cobolonjava.runtime.program.CobolProgram.runMain(CobolProgram.java:158)
+	at cobol.generated.PLISTRM.main(Unknown Source)
+RC=1

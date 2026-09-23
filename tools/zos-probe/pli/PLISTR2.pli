@@ -1,0 +1,11 @@
+ /*-----------------------------------------------------------------*/
+ /* PLISTR2 - PUT PAGE right after OPEN (P-183)                      */
+ /* Q: Does the first PUT PAGE produce a page eject (ASA '1') or     */
+ /*    nothing? Does a PUT SKIP(2) right after it leave a line?      */
+ /* Scenario notes (Japanese): docs/zos-probe/scenarios.md           */
+ /*-----------------------------------------------------------------*/
+ PLISTR2: PROCEDURE OPTIONS(MAIN);
+   PUT PAGE LIST('P01 FIRST OUTPUT IS PUT PAGE');
+   PUT SKIP(2) LIST('P02 AFTER SKIP(2)');
+   PUT SKIP LIST('P03 LAST');
+ END PLISTR2;
