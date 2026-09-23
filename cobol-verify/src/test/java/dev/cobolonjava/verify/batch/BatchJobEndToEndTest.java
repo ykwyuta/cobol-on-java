@@ -395,6 +395,61 @@ class BatchJobEndToEndTest {
         assertEquals(0, result.returnCode());
     }
 
+    /** PARM を最大の長さで受け、SYSIN の 1 枚を読んで、どちらも DISPLAY する。 */
+    private static final String PARMS = source(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. PARMS.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01  W-LEN     PIC 9(4).",
+            "01  W-CARD    PIC X(8).",
+            "LINKAGE SECTION.",
+            "01  L-PARM.",
+            "    05 L-LEN  PIC S9(4) COMP.",
+            "    05 L-TEXT PIC X(100).",
+            "PROCEDURE DIVISION USING L-PARM.",
+            "    MOVE L-LEN TO W-LEN",
+            "    ACCEPT W-CARD",
+            "    IF L-LEN > 0",
+            "        DISPLAY 'LEN=' W-LEN ' ' L-TEXT(1:L-LEN) ' CARD=' W-CARD",
+            "    ELSE",
+            "        DISPLAY 'LEN=' W-LEN ' CARD=' W-CARD",
+            "    END-IF",
+            "    GOBACK.");
+
+    /**
+     * ホストの慣わしどおり、PARM を最大の長さで宣言した主プログラムへ短い PARM と PARM なしを
+     * 渡し、制御カードを SYSIN で渡す。以前はどちらも呼ぶ前の検査で止まり、ACCEPT は SYSIN を
+     * 読まなかった (z/OS probe の CBLPARM と、JCL の probe で見つかった)。
+     */
+    @Test
+    @DisplayName("主プログラムは宣言より短い PARM を受け、ACCEPT はステップの SYSIN を読む (FR-134)")
+    void aShortParmAndTheStepsSysinReachTheProgram() {
+        Jcl.Result parsed = Jcl.read(String.join("\n", List.of(
+                "//PARMJOB  JOB (ACCT),'PARM'",
+                "//SHORT    EXEC PGM=PARMS,PARM='SHORT'",
+                "//SYSOUT   DD SYSOUT=*",
+                "//SYSIN    DD *",
+                "CARD1",
+                "/*",
+                "//NONE     EXEC PGM=PARMS",
+                "//SYSOUT   DD SYSOUT=*",
+                "//SYSIN    DD *",
+                "CARD2",
+                "/*")));
+        assertTrue(parsed.succeeded(), () -> parsed.diagnostics().toString());
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        JobRunner.Result result = JobRunner.at(directory.resolve("work"), compiled(PARMS), output)
+                .withBase(directory)
+                .run(parsed.job());
+
+        assertEquals(0, result.returnCode(), () -> result.steps().toString());
+        // W-CARD は 8 桁なので後ろに空白が 3 つ付く
+        assertEquals("LEN=0005 SHORT CARD=CARD1   |LEN=0000 CARD=CARD2   |",
+                output.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "|"));
+    }
+
     private void seed(Path base) {
         try {
             Files.createDirectories(base);

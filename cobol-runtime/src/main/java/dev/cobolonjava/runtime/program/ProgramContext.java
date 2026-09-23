@@ -574,6 +574,11 @@ public final class ProgramContext {
                 registers, catalog, files, programResolver, procedureHook, services);
     }
 
+    /** {@code DISPLAY} が出力へ書くときの文字コード。出力を受け取る側が読み戻すために要る。 */
+    public Charset outputCharset() {
+        return outputCharset;
+    }
+
     /** {@code ACCEPT} が読む行の出どころを差し替えた構成を返す。 */
     public ProgramContext withInput(Supplier<String> value) {
         return new ProgramContext(codePage, out, error, outputCharset, loaded, clock, value,

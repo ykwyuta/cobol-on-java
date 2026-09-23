@@ -11,6 +11,8 @@ import dev.cobolonjava.runtime.file.DataSetCatalog;
 import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.job.utility.SystemPrograms;
 import dev.cobolonjava.job.utility.Utilities;
+import dev.cobolonjava.runtime.interop.ProgramParameter;
+import dev.cobolonjava.runtime.interop.ProgramSignature;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -275,6 +277,17 @@ public final class JobRunner {
                 .withCodePage(codePage)
                 .withOutput(out)
                 .withCatalog(allocation.catalog());
+        // ACCEPT (FROM を書かない) は SYSIN の DD を読み、DISPLAY は SYSOUT の DD へ書く
+        // (Enterprise COBOL の既定)。以前はジョブ実行の標準入出力のままだったので、
+        // //SYSIN DD * に書いた制御カードをどのステップも読めず、ジョブが端末の入力を
+        // 待って止まることさえあった。z/OS probe の JCL をこの処理系で流して見つかった
+        if (allocation.catalog().isAssigned(SYSIN)) {
+            context = context.withInput(recordsOf(allocation.catalog().resolve(SYSIN)));
+        }
+        if (allocation.catalog().isAssigned(SYSOUT)) {
+            context = context.withOutput(new DisplaySink(allocation.catalog().resolve(SYSOUT),
+                    context.outputCharset(), codePage));
+        }
         context.setDumpLevel(dumpLevelOf(allocation.catalog()));
         String failure = null;
         AbendCode code = null;
@@ -290,7 +303,7 @@ public final class JobRunner {
                 utility.runFresh(context, arguments(step));
             } else {
                 ProgramContext.Loaded loaded = context.resolve(step.program(), loader);
-                DataView[] programArguments = arguments(step);
+                DataView[] programArguments = parmFor(step, loaded.signature());
                 loaded.validateArguments(programArguments);
                 loaded.program().runFresh(context, programArguments);
             }
@@ -320,6 +333,70 @@ public final class JobRunner {
         int returnCode = context.returnCode();
         state.completed(step.name(), returnCode);
         return new StepOutcome(step.name(), Status.EXECUTED, returnCode, null);
+    }
+
+    /** {@code ACCEPT} が読む DD 名。 */
+    private static final String SYSIN = "SYSIN";
+    /** {@code DISPLAY} が書く DD 名。 */
+    private static final String SYSOUT = "SYSOUT";
+
+    /**
+     * {@code ACCEPT} が 1 回に読む 1 レコードを、データセットの様式どおりに切って返す。
+     * 尽きたら {@code null} (ランタイムが「入力が尽きた」として扱う、P-083)。
+     */
+    private java.util.function.Supplier<String> recordsOf(Path path) {
+        java.util.Iterator<byte[]> records = Files.isReadable(path)
+                ? dev.cobolonjava.runtime.file.RecordFraming.split(readBytes(path),
+                        DataSetAttributes.read(path), false).records().iterator()
+                : java.util.Collections.emptyIterator();
+        return () -> records.hasNext() ? codePage.decode(records.next()) : null;
+    }
+
+    /**
+     * {@code DISPLAY} の出力を、SYSOUT の DD が指すファイルへ行として書き足す。
+     *
+     * <p>ランタイムは 1 回の {@code DISPLAY} を出力の文字コードで 1 度に書いて流すので、
+     * 流されるたびに文字へ戻し、コードページの改行で区切った行にして書き足す。SYSOUT=* なら
+     * そのファイルはスプールであり、ステップの終わりにジョブの出力へ流し出される。
+     */
+    private static final class DisplaySink extends OutputStream {
+        private final Path path;
+        private final java.nio.charset.Charset charset;
+        private final CodePage codePage;
+        private final java.io.ByteArrayOutputStream pending = new java.io.ByteArrayOutputStream();
+
+        DisplaySink(Path path, java.nio.charset.Charset charset, CodePage codePage) {
+            this.path = path;
+            this.charset = charset;
+            this.codePage = codePage;
+        }
+
+        @Override
+        public void write(int b) {
+            pending.write(b);
+        }
+
+        @Override
+        public void write(byte[] bytes, int offset, int length) {
+            pending.write(bytes, offset, length);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            if (pending.size() == 0) {
+                return;
+            }
+            String text = pending.toString(charset).replace(System.lineSeparator(), "\n");
+            pending.reset();
+            Files.write(path, codePage.encode(text), java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+            new DataSetAttributes(RecordFormat.LINE, 132, codePage).write(path);
+        }
+
+        @Override
+        public void close() throws IOException {
+            flush();
+        }
     }
 
     /** 診断出力の行き先。ジョブが {@code CEEDUMP} を書いていなければジョブの出力へ回す。 */
@@ -918,6 +995,37 @@ public final class JobRunner {
      * 受け取る側は連絡節に {@code 01 PARM. 05 LEN PIC S9(4) COMP. 05 TEXT PIC X(n).}
      * と書いてある。
      */
+    /**
+     * 翻訳したプログラムへ渡す PARM (要件 FR-134、暫定判断 P-090)。
+     *
+     * <p>ホストは主プログラムへ<b>いつも</b> PARM の欄の番地を 1 つ渡す。{@code PARM=} を書かな
+     * ければ長さ 0 の欄である。受ける側は {@code 05 L-TEXT PIC X(100)} のように最大で宣言し、
+     * 長さの半語の分だけを読むのが慣わしで、ホストは長さを検査しない。以前はここで PARM の
+     * 長さちょうどの領域を渡していたので、呼ぶ前の検査が「102 byte を期待したが 7」で止め、
+     * PARM を書かなければ「引数が足りない」で止めていた。z/OS probe の CBLPARM で見つかった。
+     *
+     * <p>いまは、連絡節の 1 つ目が宣言した長さまで領域を取り、頭に長さと PARM を置く。残りは
+     * 空白である (ホストでは不定)。{@code USING} を書かないプログラムには何も渡さない。
+     */
+    private DataView[] parmFor(Step step, ProgramSignature signature) {
+        if (signature == null) {
+            return arguments(step);
+        }
+        List<ProgramParameter> parameters = signature.parameters();
+        if (parameters.isEmpty()) {
+            return new DataView[0];
+        }
+        byte[] text = step.parm() == null ? new byte[0] : codePage.encode(step.parm());
+        int length = Math.max(text.length + 2, parameters.get(0).minimumBytes());
+        Storage storage = Storage.allocate(length);
+        storage.whole().fill(codePage.space());
+        storage.view(0, 2).setBytes(new byte[] {(byte) (text.length >> 8), (byte) text.length});
+        if (text.length > 0) {
+            storage.view(2, text.length).setBytes(text);
+        }
+        return new DataView[] {storage.whole()};
+    }
+
     private DataView[] arguments(Step step) {
         if (step.parm() == null) {
             return new DataView[0];
