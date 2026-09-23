@@ -497,13 +497,10 @@ final class PliSyntax {
                     return new TypeInfo(Type.ENTRY, 0, 0);
                 }
                 if (tokens.get(i).is("PIC") || tokens.get(i).is("PICTURE")) {
-                    int digits = 1;
-                    if (i + 1 < tokens.size()) {
-                        String picture = tokens.get(i + 1).text();
-                        digits = picture.chars().filter(c -> c == '9').count() > 0
-                                ? (int) picture.chars().filter(c -> c == '9').count() : 9;
+                    if (i + 1 >= tokens.size() || tokens.get(i + 1).kind() != Kind.STRING) {
+                        throw new ParseFailure(tokens.get(i), "PICTURE needs a quoted specification");
                     }
-                    return new TypeInfo(Type.PICTURE, digits, 0);
+                    return picture(tokens.get(i + 1));
                 }
                 if (tokens.get(i).is("FIXED")) {
                     int j = i + 1;
@@ -982,6 +979,47 @@ final class PliSyntax {
     }
 
     private record TypeInfo(Type type, int precision, int scale) {
+    }
+
+    /**
+     * PICTURE の指定を読む。反復の係数 {@code (n)c} は c を n 個並べたものなので、開いてから字を
+     * 数える。以前は '9' の字を数えていたので、{@code '(9)9'} (9 が 9 個) を 2 桁と読んでいた。
+     *
+     * <ul>
+     *   <li>{@code 9} と高々 1 つの {@code V} だけなら数の PICTURE。FIXED DEC(桁数, V より右の桁数) の
+     *       値を持ち、記憶域は数字だけ (V は場所を取らない)</li>
+     *   <li>{@code X} / {@code A} / {@code 9} だけなら文字の PICTURE。CHAR と同じに扱う</li>
+     *   <li>ほかの字 (Z、S、$、小数点、編集の字など) はまだ持たないので断る</li>
+     * </ul>
+     */
+    private static TypeInfo picture(Token specification) {
+        StringBuilder expanded = new StringBuilder();
+        String text = specification.text().toUpperCase(Locale.ROOT);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '(') {
+                int close = text.indexOf(')', i);
+                if (close < 0 || close + 1 >= text.length()) {
+                    throw new ParseFailure(specification, "bad PICTURE repetition: '" + text + "'");
+                }
+                int count = Integer.parseInt(text.substring(i + 1, close).strip());
+                expanded.append(String.valueOf(text.charAt(close + 1)).repeat(count));
+                i = close + 1;
+            } else if (c != ' ') {
+                expanded.append(c);
+            }
+        }
+        String picture = expanded.toString();
+        if (!picture.isEmpty() && picture.matches("9*V?9*")) {
+            int point = picture.indexOf('V');
+            int digits = picture.replace("V", "").length();
+            return new TypeInfo(Type.PICTURE, digits, point < 0 ? 0 : picture.length() - point - 1);
+        }
+        if (!picture.isEmpty() && picture.matches("[XA9]*")) {
+            return new TypeInfo(Type.CHAR, picture.length(), 0);
+        }
+        throw new ParseFailure(specification, "PICTURE '" + specification.text()
+                + "' is not supported yet; only 9 and V, or X, A and 9");
     }
 
     private static final class ProcedureBuilder {

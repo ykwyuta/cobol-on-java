@@ -5675,3 +5675,29 @@ PL/I のプログラムを `EXEC PGM=` で呼べないのはこの暫定とは�
 **解消条件**: IBM Enterprise PL/I で上の各形を流した SYSPRINT を採り、PL/I の外部コーパス
 (設計 26) の `.out` として照合する。`*PROCESS` の翻訳時オプションを読むようになったら、
 RULES と LIMITS を `FixedValue` の規則へ渡す。
+
+---
+
+## P-184 PL/I の構造の要素を詰めて置き、境界合わせをしない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-23) |
+| 場所 | `PliRuntime.Executor.declareGroup` / `declareChildren` |
+| 関連要件 | 設計 26、Bank-of-Z `BNKSTMT.pli` / `IBLOGIN.pli` |
+
+**暫定の扱い**: 構造の要素を宣言の順に隙間なく並べる。すべてを UNALIGNED として置くのと同じである。
+
+**どこがずれうるか**: PL/I の既定では FIXED BINARY・FIXED DECIMAL・POINTER などは ALIGNED で、
+語や半語の境界に置かれ、前との間に詰め物が入る (LRM "Structure mapping")。文字の要素のあとに
+2 進の要素が来ると、実機とは位置がずれる。たとえば `BNKSTMT` の `HV_CUST_DOB FIXED BIN(31)` は
+前の文字が 130 byte なので、実機では 132 byte 目に置かれるはずである。
+
+`IBLOGIN` の構造は、どれも 2 進の要素が境界に来る並びか、`UNALIGNED` と書いてあるので、ずれない
+(`OUTPUT_AREA` は 38 byte、`INPUT_AREA` は 39 byte、DB PCB のマスクは IMS の配置と一致する)。
+`BNKSTMT` のずれる構造は、要素を 1 つずつ SQL の host variable として使うだけなので、結果に出ない。
+構造をまとめて別の記憶域 (ファイルのレコード、IMS のセグメント、COBOL との CALL) へ渡すと出る。
+
+**解消条件**: LRM の構造の配置の規則 (要素の対を境界に合わせてまとめていく手順) を実装し、
+`ALIGNED` / `UNALIGNED` の属性を読む。Hercules 上の Enterprise PL/I か、公開されている配置の例と
+突き合わせる。

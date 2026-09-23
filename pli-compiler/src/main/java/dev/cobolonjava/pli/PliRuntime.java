@@ -11,6 +11,7 @@ import dev.cobolonjava.runtime.interop.ProgramParameter;
 import dev.cobolonjava.runtime.interop.ProgramSignature;
 import dev.cobolonjava.runtime.file.DataSet;
 import dev.cobolonjava.runtime.file.OpenMode;
+import dev.cobolonjava.runtime.program.AddressSpace;
 import dev.cobolonjava.runtime.program.Ops;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.procedure.ProcedureManifest;
@@ -235,6 +236,10 @@ public final class PliRuntime {
             }
             Var group = new Var(root.name(), PliSyntax.Type.GROUP, length, 0, area);
             env.put(group);
+            // BASED の構造は自分の記憶域を持たず、別のものの上に重ねる。INITIAL は ALLOCATE で
+            // 記憶域を取ったときにしか効かないので、宣言で重ねた先を書き換えてはならない。
+            // 以前は文字の要素を空白で埋めており、IMS から渡された DB PCB の DBD 名と PROCOPT を消していた
+            boolean based = root.basedOn() != null;
             int offset = 0;
             for (int i = 1; i < tree.size();) {
                 PliSyntax.Decl child = tree.get(i);
@@ -247,20 +252,22 @@ public final class PliRuntime {
                         child.scale(), view);
                 env.put(variable);
                 env.alias(root.name() + "." + child.name(), variable);
-                initialize(variable, child.initial(), env);
+                group.members.add(variable);
+                if (!based) {
+                    initialize(variable, child.initial(), env);
+                }
                 if (child.type() == PliSyntax.Type.GROUP) {
-                    declareChildren(tree.subList(i, end), env, view, root.name());
+                    declareChildren(tree.subList(i, end), env, variable, root.name(), based);
                 }
                 offset += childLength;
                 i = end;
             }
         }
 
-        private void declareChildren(List<PliSyntax.Decl> tree, Env env, DataView area,
-                                     String prefix) {
+        private void declareChildren(List<PliSyntax.Decl> tree, Env env, Var group,
+                                     String prefix, boolean based) {
             PliSyntax.Decl root = tree.get(0);
-            Var group = new Var(root.name(), PliSyntax.Type.GROUP, area.length(), 0, area);
-            env.put(group);
+            DataView area = group.view;
             env.alias(prefix + "." + root.name(), group);
             int offset = 0;
             for (int i = 1; i < tree.size();) {
@@ -275,9 +282,13 @@ public final class PliRuntime {
                 env.put(variable);
                 env.alias(root.name() + "." + child.name(), variable);
                 env.alias(prefix + "." + root.name() + "." + child.name(), variable);
-                initialize(variable, child.initial(), env);
+                group.members.add(variable);
+                if (!based) {
+                    initialize(variable, child.initial(), env);
+                }
                 if (child.type() == PliSyntax.Type.GROUP) {
-                    declareChildren(tree.subList(i, end), env, view, prefix + "." + root.name());
+                    declareChildren(tree.subList(i, end), env, variable,
+                            prefix + "." + root.name(), based);
                 }
                 offset += length;
                 i = end;
@@ -312,7 +323,11 @@ public final class PliRuntime {
                 return; // 入口引数を指すポインタは上書きしない。
             }
             if (declaration.basedOn() != null) {
-                view = env.require(declaration.basedOn()).view;
+                // 重ねる先のうち、自分の長さの分だけを使う。先の全体を使うと、短い変数へ書いたときに
+                // 残りまで書き換えてしまう (PIC'(9)9' を 10 桁の CHAR に重ねると 10 桁目が空白になっていた)
+                DataView base = env.require(declaration.basedOn()).view;
+                int length = byteLength(declaration);
+                view = length > 0 && length < base.length() ? base.subView(0, length) : base;
             } else {
                 int length = byteLength(declaration);
                 view = area == null ? Storage.allocate(length).whole()
@@ -322,7 +337,9 @@ public final class PliRuntime {
                     declaration.precision(), declaration.scale(), view);
             env.put(variable);
             if (alias != null) env.alias(alias, variable);
-            initialize(variable, declaration.initial(), env);
+            if (declaration.basedOn() == null) {
+                initialize(variable, declaration.initial(), env);
+            }
         }
 
         private void initialize(Var variable, PliSyntax.Expr initial, Env env) {
@@ -345,7 +362,30 @@ public final class PliRuntime {
                     return;
                 }
             }
-            target.write(value(assignment.value(), env), context);
+            Object value = value(assignment.value(), env);
+            if (target.type == PliSyntax.Type.GROUP && !target.members.isEmpty()) {
+                // 構造へ単一の値を代入すると、要素ごとの代入に展開される (LRM "Aggregate
+                // assignments")。要素ごとにその型へ変換するので、INPUT_AREA = 0 は数の要素を 0 に、
+                // 文字の要素を '   0' (FIXED DEC(1) を文字にしたもの) にする。以前は域を X'00' で埋めていた
+                for (Var element : elements(target)) {
+                    element.write(value, context);
+                }
+                return;
+            }
+            target.write(value, context);
+        }
+
+        /** 構造の要素を宣言の順に、入れ子を開いて並べる。 */
+        private static List<Var> elements(Var structure) {
+            List<Var> result = new ArrayList<>();
+            for (Var member : structure.members) {
+                if (member.type == PliSyntax.Type.GROUP && !member.members.isEmpty()) {
+                    result.addAll(elements(member));
+                } else {
+                    result.add(member);
+                }
+            }
+            return result;
         }
 
         /** {@code SKIP} は書く<b>前</b>に改行する。以前は書いた後に改行していた。 */
@@ -366,8 +406,58 @@ public final class PliRuntime {
                 return;
             }
             for (PliSyntax.Expr expression : put.values()) {
-                sysprint.listItem(listed(expression, env));
+                for (Object item : items(expression, env)) {
+                    sysprint.listItem(listed(item));
+                }
             }
+        }
+
+        /** ビット列の変数の値。list-directed では引用符と B を付ける。 */
+        private record Bits(String text) {
+        }
+
+        /** POINTER の値。HEX で書く。 */
+        private record Hex(String text) {
+        }
+
+        /**
+         * データ並びの 1 項目を、送る値の並びにする。構造は要素の数だけの項目と同じである
+         * (LRM "An array or structure variable in a data-list is equivalent to n items")。
+         * 以前は構造の記憶域をそのまま文字として書いており、2 進の要素が文字化けしていた。
+         */
+        private List<Object> items(PliSyntax.Expr expression, Env env) {
+            if (expression instanceof PliSyntax.Reference reference) {
+                Var variable = env.require(reference.name());
+                if (variable.type == PliSyntax.Type.GROUP && !variable.members.isEmpty()) {
+                    List<Object> values = new ArrayList<>();
+                    for (Var element : elements(variable)) {
+                        values.add(item(element));
+                    }
+                    return values;
+                }
+                return List.of(item(variable));
+            }
+            return List.of(value(expression, env));
+        }
+
+        private Object item(Var variable) {
+            return switch (variable.type) {
+                case BIT -> new Bits(display(variable.read(context)));
+                case POINTER -> new Hex(hex(variable.view));
+                default -> variable.read(context);
+            };
+        }
+
+        /**
+         * POINTER は HEX で書く (LRM "the contents of the item will be transmitted as if the item had
+         * been specified by applying the HEX built-in function")。この処理系の POINTER の 4 byte は
+         * 実行単位の中で振った番号 (P-150) で、COBOL の SET ADDRESS OF と同じ番号になる。何も指して
+         * いないものは 0 とする。以前は Java の DataView をそのまま書いていた
+         */
+        private String hex(DataView target) {
+            int address = target == null || target.length() == 0 ? 0
+                    : AddressSpace.of(context).addressOf(target.storage(), target.offset());
+            return String.format("%08X", address);
         }
 
         /**
@@ -377,11 +467,9 @@ public final class PliRuntime {
          * した {@code "             5"} である。文字列は PRINT ファイルなので引用符を付けない。
          * ビット列は引用符で囲んで {@code B} を付ける。
          */
-        private String listed(PliSyntax.Expr expression, Env env) {
-            Object value = value(expression, env);
-            if (expression instanceof PliSyntax.Reference reference
-                    && env.require(reference.name()).type == PliSyntax.Type.BIT) {
-                return "'" + display(value) + "'B";
+        private static String listed(Object value) {
+            if (value instanceof Bits bits) {
+                return "'" + bits.text() + "'B";
             }
             if (value instanceof Boolean bit) {
                 return bit ? "'1'B" : "'0'B";
@@ -417,7 +505,11 @@ public final class PliRuntime {
             List<PliSyntax.FormatItem> format = put.format();
             int item = 0;
             int consumedInCycle = 0;
+            List<Object> values = new ArrayList<>();
             for (PliSyntax.Expr expression : put.values()) {
+                values.addAll(items(expression, env));
+            }
+            for (Object value : values) {
                 while (true) {
                     if (item == format.size()) {
                         if (consumedInCycle == 0) {
@@ -432,7 +524,6 @@ public final class PliRuntime {
                         sink.accept(" ".repeat(next.width()));
                         continue;
                     }
-                    Object value = value(expression, env);
                     String text;
                     if (next.code() == 'F') {
                         text = fixedField(number(value), next.width(), next.fraction());
@@ -475,6 +566,8 @@ public final class PliRuntime {
                 throw new PliExecutionException("cannot write an arithmetic value whose"
                         + " precision is unknown (P-183): " + value);
             }
+            if (value instanceof Bits bits) return bits.text();
+            if (value instanceof Hex hex) return hex.text();
             return display(value);
         }
 
@@ -663,6 +756,8 @@ public final class PliRuntime {
          * ({@link #character})。文字から算術への変換の属性はまだ持たない (P-183)。
          */
         private static Object arithmetic(String operator, Object left, Object right) {
+            if (left instanceof NumericPicture picture) left = picture.fixed();
+            if (right instanceof NumericPicture picture) right = picture.fixed();
             if (left instanceof FixedValue a && right instanceof FixedValue b) {
                 return switch (operator) {
                     case "+" -> a.add(b);
@@ -745,16 +840,24 @@ public final class PliRuntime {
         }
 
         private static boolean numeric(Object value) {
-            return value instanceof Number || value instanceof FixedValue;
+            return value instanceof Number || value instanceof FixedValue
+                    || value instanceof NumericPicture;
         }
 
         private static BigDecimal number(Object value) {
             if (value instanceof FixedValue fixed) return fixed.value();
+            if (value instanceof NumericPicture picture) return picture.fixed().value();
             if (value instanceof BigDecimal decimal) return decimal;
             if (value instanceof Number numeric) return new BigDecimal(numeric.toString());
             if (value instanceof Boolean bool) return bool ? BigDecimal.ONE : BigDecimal.ZERO;
+            String text = display(value).strip();
+            if (text.isEmpty()) {
+                // 空の文字列と空白だけの文字列は 0 になり、CONVERSION は起きない (LRM "Target: Coded
+                // arithmetic", CHARACTER)
+                return BigDecimal.ZERO;
+            }
             try {
-                return new BigDecimal(display(value).strip());
+                return new BigDecimal(text);
             } catch (NumberFormatException e) {
                 throw new PliExecutionException("value is not numeric: " + display(value));
             }
@@ -771,6 +874,8 @@ public final class PliRuntime {
             // 算術値から文字への変換は属性で決まる (LRM "Target: CHARACTER")。連結・CHAR・文字の
             // 変数への代入・出力が同じ規則を使う
             if (value instanceof FixedValue fixed) return fixed.toCharacter();
+            // 数の PICTURE を文字にすると、字の形そのものになる
+            if (value instanceof NumericPicture picture) return picture.text();
             // ビット列から文字への変換は '1' と '0' になる
             if (value instanceof Boolean bit) return bit ? "1" : "0";
             if (value instanceof BigDecimal decimal) return decimal.stripTrailingZeros().toPlainString();
@@ -845,6 +950,8 @@ public final class PliRuntime {
         final int precision;
         final int scale;
         final DataView view;
+        /** 構造なら、宣言の順の要素 (名の無い * も含む)。 */
+        final List<Var> members = new ArrayList<>();
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
             this.name = name.toUpperCase(Locale.ROOT);
@@ -856,7 +963,11 @@ public final class PliRuntime {
 
         Object read(ProgramContext context) {
             return switch (type) {
-                case CHAR, BIT, PICTURE, GROUP -> context.codePage().decode(view.toByteArray());
+                case CHAR, BIT, GROUP -> context.codePage().decode(view.toByteArray());
+                // 数の PICTURE は、出力では字をそのまま送り (LRM "For numeric character values, the
+                // character value is transmitted")、演算では FIXED DEC(p,q) として扱う
+                case PICTURE -> new NumericPicture(
+                        context.codePage().decode(view.toByteArray()), precision, scale);
                 case BINARY -> FixedValue.binary(
                         BinaryDecimal.decode(view.toByteArray(), 0).toBigDecimal(), precision, scale);
                 case DECIMAL -> FixedValue.decimal(PackedDecimal.decode(view.toByteArray(), scale,
@@ -868,7 +979,8 @@ public final class PliRuntime {
 
         void write(Object value, ProgramContext context) {
             switch (type) {
-                case CHAR, BIT, PICTURE -> writeText(Executor.display(value), context);
+                case CHAR, BIT -> writeText(Executor.display(value), context);
+                case PICTURE -> writeText(picture(value), context);
                 case GROUP -> {
                     if (Executor.numeric(value) && Executor.number(value).signum() == 0) {
                         view.fill((byte) 0);
@@ -909,11 +1021,40 @@ public final class PliRuntime {
             }
         }
 
+        /**
+         * 数の PICTURE へ入れる字。値を FIXED DEC(p,q) にし、V より右の q 桁で切り捨て、p 桁の数字に
+         * する。字の値 (' 16918   ' など) はまず数に直す (空白だけなら 0)。以前は字をそのまま写していた。
+         * 符号の字を持たない PICTURE に負の値は入らないので、黙って符号を落とさずに止める。
+         */
+        private String picture(Object value) {
+            BigDecimal number = Executor.number(value).setScale(scale, java.math.RoundingMode.DOWN);
+            if (number.signum() < 0) {
+                throw new PliExecutionException("a negative value cannot be stored in the unsigned"
+                        + " PICTURE of " + name + " yet: " + number);
+            }
+            String digits = number.movePointRight(scale).toBigInteger().toString();
+            if (digits.length() > precision) {
+                throw new PliExecutionException("SIZE: " + number + " does not fit the PICTURE of "
+                        + name);
+            }
+            return "0".repeat(precision - digits.length()) + digits;
+        }
+
         private void writeText(String value, ProgramContext context) {
             byte[] encoded = context.codePage().encode(value);
             view.fill(context.codePage().space());
             int length = Math.min(encoded.length, view.length());
             for (int i = 0; i < length; i++) view.set(i, encoded[i]);
+        }
+    }
+
+    /**
+     * 数の PICTURE の値。字の形を持ち、演算に使うときだけ FIXED DEC(p,q) に直す。出力は字を
+     * 送るだけなので、数字でない字が入っていても書ける。
+     */
+    private record NumericPicture(String text, int precision, int scale) {
+        FixedValue fixed() {
+            return FixedValue.decimal(Executor.number(text).movePointLeft(scale), precision, scale);
         }
     }
 

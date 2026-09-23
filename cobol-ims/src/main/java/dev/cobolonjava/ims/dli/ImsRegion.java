@@ -183,8 +183,8 @@ public final class ImsRegion {
     /** COBOL と PL/I の DL/I 入口を catalog に置く。 */
     public ProgramCatalog.Builder register(ProgramCatalog.Builder builder) {
         return builder
-                .javaProgram("CBLTDLI", () -> (context, arguments) -> call(arguments))
-                .javaProgram("PLITDLI", () -> (context, arguments) -> call(arguments));
+                .javaProgram("CBLTDLI", () -> (context, arguments) -> call(arguments, false))
+                .javaProgram("PLITDLI", () -> (context, arguments) -> call(arguments, true));
     }
 
     /**
@@ -194,6 +194,14 @@ public final class ImsRegion {
      * 始まるので取り違えない。
      */
     void call(List<DataView> arguments) {
+        call(arguments, false);
+    }
+
+    /**
+     * @param pli {@code PLITDLI} から来たか。電文のセグメントの長さの欄が PL/I では 4 byte になる
+     *            ({@link IoPcb})
+     */
+    void call(List<DataView> arguments, boolean pli) {
         int index = 0;
         if (!arguments.isEmpty() && arguments.get(0).length() == 4 && arguments.get(0).get(0) == 0) {
             byte[] count = arguments.get(0).toByteArray();
@@ -216,7 +224,8 @@ public final class ImsRegion {
         DataView pcbView = arguments.get(index + 1);
         if (ioPcb != null && pcbView.offset() == 0 && pcbView.storage() == ioStorage) {
             ioPcb.call(function, arguments.size() > index + 2 ? arguments.get(index + 2) : null,
-                    arguments.size() > index + 3 ? arguments.subList(index + 3, arguments.size()) : List.of());
+                    arguments.size() > index + 3 ? arguments.subList(index + 3, arguments.size()) : List.of(),
+                    pli);
             return;
         }
         DatabasePcb pcb = pcbView.offset() == 0 ? databasePcbs.get(pcbView.storage()) : null;
