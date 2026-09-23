@@ -23,6 +23,8 @@ public final class MachineException extends RuntimeException {
     public static final int DECIMAL_OVERFLOW = 0x0A;
     /** 10 進除算例外。 */
     public static final int DECIMAL_DIVIDE = 0x0B;
+    /** 固定小数点オーバーフロー例外。プログラムマスクの第 1 ビットが立っているときだけ起きる。 */
+    public static final int FIXED_OVERFLOW = 0x08;
     /** 固定小数点除算例外。 */
     public static final int FIXED_DIVIDE = 0x09;
     /** アドレッシング例外。存在しない記憶域。 */

@@ -89,6 +89,17 @@ class AssemblerTest {
     }
 
     @Test
+    @DisplayName("SPM は R1 だけの RR、IPM は R1 だけの RRE である")
+    void encodesProgramMaskInstructions() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         SPM   6",
+                "         IPM   7",
+                "         END");
+        assertEquals("0460" + "B2220070", module.hex(0, 6));
+    }
+
+    @Test
     @DisplayName("SVC は命令コードと番号の 2 バイトである")
     void encodesSupervisorCall() {
         ObjectModule module = assemble(

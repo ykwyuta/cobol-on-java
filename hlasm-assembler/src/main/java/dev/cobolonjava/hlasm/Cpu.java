@@ -31,6 +31,12 @@ public final class Cpu {
     /** 戻り番地として置く見張り。ここへ分岐したら実行を終える。 */
     public static final int RETURN_SENTINEL = 0x00000002;
 
+    /** 入口でのプログラムマスク。10 進オーバーフローだけが割込みになる。 */
+    public static final int DEFAULT_PROGRAM_MASK = 0x4;
+
+    private static final int MASK_FIXED_OVERFLOW = 0x8;
+    private static final int MASK_DECIMAL_OVERFLOW = 0x4;
+
     /** 実行する命令数の上限。返ってこないプログラムを見捨てるためにある。 */
     private static final long DEFAULT_STEP_LIMIT = 50_000_000L;
 
@@ -38,6 +44,16 @@ public final class Cpu {
     private final int[] gpr = new int[REGISTERS];
     private final long stepLimit;
     private int conditionCode;
+    /**
+     * PSW のプログラムマスク (4 ビット)。上から固定小数点オーバーフロー、10 進オーバーフロー、
+     * 指数アンダーフロー、有効数字。立っていれば、その事象でプログラム割込みになる。
+     *
+     * <p>既定は 10 進オーバーフローだけを立てる ({@link #DEFAULT_PROGRAM_MASK})。以前の実装の
+     * 振る舞い (固定小数点のあふれは条件コード 3、10 進のあふれは S0CA) と同じにするためである。
+     * COBOL から呼ばれたときに実機のマスクが何であるかは確かめていない (暫定判断 P-174、
+     * z/OS probe の ASMPM)。
+     */
+    private int programMask = DEFAULT_PROGRAM_MASK;
     private int instructionAddress;
     private long steps;
 
@@ -64,6 +80,14 @@ public final class Cpu {
 
     public int conditionCode() {
         return conditionCode;
+    }
+
+    public int programMask() {
+        return programMask;
+    }
+
+    public void setProgramMask(int value) {
+        programMask = value & 0xF;
     }
 
     public long steps() {
@@ -155,6 +179,7 @@ public final class Cpu {
                 int value = gpr[r2(insn)];
                 gpr[r1] = Math.abs(value);
                 conditionCode = value == Integer.MIN_VALUE ? 3 : value == 0 ? 0 : 2;
+                fixedOverflow();
             }
             case 0x11 -> { // LNR
                 int r1 = r1(insn);
@@ -171,6 +196,7 @@ public final class Cpu {
                 int value = gpr[r2(insn)];
                 gpr[r1(insn)] = -value;
                 conditionCode = value == Integer.MIN_VALUE ? 3 : compareToZero(-value);
+                fixedOverflow();
             }
             case 0x14 -> logical(r1(insn), gpr[r1(insn)] & gpr[r2(insn)]); // NR
             case 0x16 -> logical(r1(insn), gpr[r1(insn)] | gpr[r2(insn)]); // OR
@@ -288,6 +314,28 @@ public final class Cpu {
             case 0xF9 -> decimalCompare(insn); // CP
             case 0xFC -> decimalMultiply(insn); // MP
             case 0xFD -> decimalDivide(insn); // DP
+            case 0xF0 -> shiftAndRound(insn); // SRP
+            case 0xF1 -> moveWithOffset(insn); // MVO
+            case 0xDD -> translateAndTest(insn); // TRT
+            case 0xDE -> edit(insn, false); // ED
+            case 0xDF -> edit(insn, true); // EDMK
+            case 0x8F -> shiftDoubleArithmetic(insn, true); // SLDA
+            case 0x8E -> shiftDoubleArithmetic(insn, false); // SRDA
+            case 0x04 -> { // SPM
+                int value = gpr[r1(insn)];
+                conditionCode = (value >>> 28) & 0x3;
+                programMask = (value >>> 24) & 0xF;
+            }
+            case 0xB2 -> { // 2 バイトの命令コードの族。持つのは IPM だけである
+                if ((insn[1] & 0xFF) != 0x22) {
+                    throw new MachineException(MachineException.OPERATION, String.format(
+                            "operation code B2%02X is not implemented", insn[1] & 0xFF));
+                }
+                // IPM: 第 1 演算項の 32〜39 ビットを 0・条件コード・プログラムマスクにする。
+                // 40〜63 ビットは変えない
+                int r1 = (insn[3] >> 4) & 0x0F;
+                gpr[r1] = (gpr[r1] & 0x00FFFFFF) | (conditionCode << 28) | (programMask << 24);
+            }
 
             default -> throw new MachineException(MachineException.OPERATION,
                     String.format("operation code %02X is not implemented", opcode));
@@ -371,19 +419,28 @@ public final class Cpu {
     /**
      * 固定小数点の加算。あふれたら条件コード 3 を立てる。
      *
-     * <p>実機では PSW の固定小数点オーバーフローマスクが 1 なら割込みになる。既定の
-     * マスクは 0 であり、資産は条件コードで見る。ここも割込みにはしない。
+     * <p>PSW の固定小数点オーバーフローマスクが立っていれば、結果を置いたあとでプログラム
+     * 割込み (S0C8) になる。既定のマスクは立っていない ({@link #DEFAULT_PROGRAM_MASK})。
      */
     private void add(int r1, int value) {
         long result = (long) gpr[r1] + value;
         gpr[r1] = (int) result;
         conditionCode = result != (int) result ? 3 : compareToZero((int) result);
+        fixedOverflow();
     }
 
     private void subtract(int r1, int value) {
         long result = (long) gpr[r1] - value;
         gpr[r1] = (int) result;
         conditionCode = result != (int) result ? 3 : compareToZero((int) result);
+        fixedOverflow();
+    }
+
+    /** 条件コード 3 のあふれを、マスクが立っていればプログラム割込みにする。 */
+    private void fixedOverflow() {
+        if (conditionCode == 3 && (programMask & MASK_FIXED_OVERFLOW) != 0) {
+            throw new MachineException(MachineException.FIXED_OVERFLOW, "fixed-point overflow");
+        }
     }
 
     private void addLogical(int r1, int value) {
@@ -439,12 +496,14 @@ public final class Cpu {
     private void shiftLeftArithmetic(byte[] insn) {
         int r1 = r1(insn);
         int amount = shift(insn);
-        long result = (long) gpr[r1] << amount;
-        int signed = (int) result;
-        // 符号ビットが動いたらあふれである
-        boolean overflow = (gpr[r1] < 0) != (signed < 0) || (result >> 31) != (signed >> 31);
+        int value = gpr[r1];
+        long shifted = (long) value << amount;
+        // 符号と違うビットが押し出されたらあふれである。符号ビットそのものは動かない
+        boolean overflow = amount >= 32 ? value != 0 && value != -1 : shifted != (int) shifted;
+        int signed = (int) (shifted & 0x7FFFFFFF) | (value & 0x80000000);
         gpr[r1] = signed;
         conditionCode = overflow ? 3 : compareToZero(signed);
+        fixedOverflow();
     }
 
     private void shiftDoubleLogical(byte[] insn, boolean left) {
@@ -655,17 +714,25 @@ public final class Cpu {
     /**
      * パック 10 進として書く。入りきらなければ 10 進オーバーフローである。
      *
+     * <p>あふれたときは、上の桁を捨てた値を置いて条件コード 3 にする。割込みになるのは
+     * プログラムマスクの 10 進オーバーフローが立っているときだけである (Principles of Operation)。
+     *
      * <p>符号の付け方は {@link Decimal} に委ねる。ゼロ結果の符号が命令ごとに違うという
      * 実測の結果 (暫定判断 P-001) が、そちらに入っている。
      */
     private void writePacked(int address, int length, Decimal value) {
         int digits = length * 2 - 1;
-        if (value.magnitude().toString().length() > digits) {
+        BigInteger limit = BigInteger.TEN.pow(digits);
+        boolean overflow = value.magnitude().compareTo(limit) >= 0;
+        Decimal stored = overflow
+                ? Decimal.of(value.magnitude().mod(limit), value.scale(), value.sign())
+                : value;
+        memory.write(address, PackedDecimal.encode(stored, digits, 0, true));
+        conditionCode = overflow ? 3 : value.signum() == 0 ? 0 : value.signum() < 0 ? 1 : 2;
+        if (overflow && (programMask & MASK_DECIMAL_OVERFLOW) != 0) {
             throw new MachineException(MachineException.DECIMAL_OVERFLOW,
                     "the decimal result does not fit in " + digits + " digit(s)");
         }
-        memory.write(address, PackedDecimal.encode(value, digits, 0, true));
-        conditionCode = value.signum() == 0 ? 0 : value.signum() < 0 ? 1 : 2;
     }
 
     private void decimalAdd(byte[] insn, boolean subtract) {
@@ -691,6 +758,18 @@ public final class Cpu {
     private void decimalMultiply(byte[] insn) {
         Decimal left = readPacked(ssFirst(insn), ssLength1(insn));
         Decimal right = readPacked(ssSecond(insn), ssLength2(insn));
+        // 被乗数は、乗数の桁数以上の 0 を左に持たなければならない。持たなければデータ例外で
+        // ある (Principles of Operation)。このため MP はあふれない
+        int l1 = ssLength1(insn);
+        int l2 = ssLength2(insn);
+        if (l2 > 8 || l2 >= l1) {
+            throw new MachineException(MachineException.SPECIFICATION,
+                    "the MP multiplier must be at most 8 bytes and shorter than the multiplicand");
+        }
+        if (left.magnitude().compareTo(BigInteger.TEN.pow(2 * (l1 - l2) - 1)) >= 0) {
+            throw new MachineException(MachineException.DATA,
+                    "the MP multiplicand does not have enough leading zeros");
+        }
         int saved = conditionCode;
         writePacked(ssFirst(insn), ssLength1(insn), left.multiply(right));
         conditionCode = saved;
@@ -713,6 +792,10 @@ public final class Cpu {
             throw new MachineException(MachineException.SPECIFICATION,
                     "the divisor is not shorter than the dividend");
         }
+        if (quotient.magnitude().compareTo(BigInteger.TEN.pow(quotientLength * 2 - 1)) >= 0) {
+            throw new MachineException(MachineException.DECIMAL_DIVIDE,
+                    "the decimal quotient does not fit in " + quotientLength + " byte(s)");
+        }
         int saved = conditionCode;
         writePacked(first, quotientLength, quotient);
         writePacked(first + quotientLength, l2, remainder);
@@ -732,6 +815,182 @@ public final class Cpu {
                     "the decimal value does not fit in 32 bits");
         }
         gpr[r1(insn)] = signed.intValue();
+    }
+
+    // --- 設計 27 §6.1 で後回しにしていた命令 (Principles of Operation の記述から) ---
+
+    /**
+     * 64 ビットの算術シフト。偶数と奇数のレジスタの対を 1 つの符号付きの数として動かす。
+     *
+     * <p>左シフトは符号ビットを動かさない。符号と違うビットが押し出されたら条件コード 3
+     * であり、マスクが立っていれば固定小数点オーバーフローの割込みになる。
+     */
+    private void shiftDoubleArithmetic(byte[] insn, boolean left) {
+        int r1 = r1(insn);
+        requireEven(r1, left ? "SLDA" : "SRDA");
+        int amount = shift(insn);
+        long pair = ((long) gpr[r1] << 32) | Integer.toUnsignedLong(gpr[r1 + 1]);
+        long result;
+        boolean overflow = false;
+        if (left) {
+            long shifted = pair << amount;
+            overflow = (shifted >> amount) != pair;
+            result = (shifted & Long.MAX_VALUE) | (pair & Long.MIN_VALUE);
+        } else {
+            result = pair >> amount;
+        }
+        gpr[r1] = (int) (result >> 32);
+        gpr[r1 + 1] = (int) result;
+        conditionCode = overflow ? 3 : result == 0 ? 0 : result < 0 ? 1 : 2;
+        fixedOverflow();
+    }
+
+    /**
+     * 表を引いて、0 でない関数バイトを持つ最初のバイトを探す。第 1 演算項は書き換えない。
+     *
+     * <p>見つかれば R1 の下位 31 ビットにそのバイトの番地、R2 の下位 8 ビットに関数バイトを
+     * 置く。R1 の最上位ビットと R2 の上位 24 ビットは変えない (AMODE 31)。
+     */
+    private void translateAndTest(byte[] insn) {
+        int argument = ssFirst(insn);
+        int table = ssSecond(insn);
+        int length = ssLength(insn);
+        for (int k = 0; k < length; k++) {
+            int function = memory.get(table + (memory.get(argument + k) & 0xFF)) & 0xFF;
+            if (function != 0) {
+                gpr[1] = (gpr[1] & 0x80000000) | ((argument + k) & 0x7FFFFFFF);
+                gpr[2] = (gpr[2] & 0xFFFFFF00) | function;
+                conditionCode = k == length - 1 ? 2 : 1;
+                return;
+            }
+        }
+        conditionCode = 0;
+    }
+
+    /**
+     * 第 2 演算項のニブルを、第 1 演算項の右端のニブル (符号) の左へ置く。
+     *
+     * <p>右から 1 バイトずつ取り出して置く。重なった領域の結果がこの順に依存するためである
+     * (PACK / UNPK と同じ)。第 1 演算項の左に余った桁は 0、入りきらない桁は捨てる。
+     * 中身が 10 進数として正しいかは調べない。
+     */
+    private void moveWithOffset(byte[] insn) {
+        int to = ssFirst(insn);
+        int from = ssSecond(insn);
+        int l1 = ssLength1(insn);
+        int l2 = ssLength2(insn);
+        int previous = memory.get(to + l1 - 1) & 0x0F; // 右端のニブルは残す (初回だけ下位に使う)
+        boolean first = true;
+        for (int j = 0; j < l1; j++) {
+            int source = j < l2 ? memory.get(from + l2 - 1 - j) & 0xFF : 0;
+            int low = first ? previous : (previous >> 4) & 0x0F;
+            memory.set(to + l1 - 1 - j, (byte) (((source & 0x0F) << 4) | low));
+            previous = source;
+            first = false;
+        }
+    }
+
+    /**
+     * 10 進数を桁で動かし、右へ動かすときは丸める。
+     *
+     * <p>シフト量は第 2 演算項の番地の下位 6 ビットであり、符号付きである (負なら右へ)。
+     * 右へ動かすときは、押し出される桁の最上位に丸めの桁 I3 を足して、10 を超えたら繰り上げる。
+     * I3 は 10 進の桁として正しいかを調べない (Principles of Operation がそう書いている)。
+     * 0 になった結果の符号は正にする。左へ動かして有効な桁が押し出されたら条件コード 3 である。
+     */
+    private void shiftAndRound(byte[] insn) {
+        int address = ssFirst(insn);
+        int length = ssLength1(insn);
+        int rounding = insn[1] & 0x0F;
+        int amount = ssSecond(insn) & 0x3F;
+        Decimal operand = readPacked(address, length);
+        BigInteger magnitude = operand.magnitude();
+        if (amount < 32) {
+            magnitude = magnitude.multiply(BigInteger.TEN.pow(amount));
+        } else {
+            int right = 64 - amount;
+            BigInteger[] split = magnitude.divideAndRemainder(BigInteger.TEN.pow(right));
+            int dropped = split[1].divide(BigInteger.TEN.pow(right - 1)).intValue();
+            magnitude = split[0];
+            if (dropped + rounding >= 10) {
+                magnitude = magnitude.add(BigInteger.ONE);
+            }
+        }
+        int sign = magnitude.signum() == 0 ? 1 : operand.sign();
+        writePacked(address, length, Decimal.of(magnitude, 0, sign));
+    }
+
+    /**
+     * 模様 (第 1 演算項) に従って、パック 10 進 (第 2 演算項) を文字に直して模様に上書きする。
+     *
+     * <p>模様の最初のバイトが埋め字になる。X'20' は桁の選択、X'21' は有効数字の開始、X'22' は
+     * 欄の区切りであり、ほかは文字としてそのまま残すか埋め字に置き換える。有効数字の表示
+     * (significance indicator) が立っているかどうかで決まる。元のバイトの右ニブルが正の符号なら、
+     * その桁を置いたあとで表示を下ろす。負の符号なら下ろさない。{@code CR} や {@code -} を
+     * 負のときだけ残す定石は、これに依存している。
+     *
+     * <p>条件コードは最後の欄の値で決まる。すべて 0 なら 0、0 でなく表示が立ったまま終われば
+     * 1 (負)、下りていれば 2 (正)。EDMK は、表示が下りていて 0 でない桁が来たとき、その結果の
+     * バイトの番地を R1 の下位 31 ビットに置く。
+     */
+    private void edit(byte[] insn, boolean markFirst) {
+        int pattern = ssFirst(insn);
+        int source = ssSecond(insn);
+        int length = ssLength(insn);
+        int fill = memory.get(pattern) & 0xFF;
+        boolean significance = false;
+        boolean nonZero = false;
+        boolean rightHalf = false; // 次の桁を、いま読んでいるバイトの右ニブルから取るか
+        int current = 0;
+        for (int k = 0; k < length; k++) {
+            int p = memory.get(pattern + k) & 0xFF;
+            int result;
+            if (p == 0x20 || p == 0x21) {
+                int digit;
+                boolean fromLeft = !rightHalf;
+                if (rightHalf) {
+                    digit = current & 0x0F;
+                    rightHalf = false;
+                } else {
+                    current = memory.get(source++) & 0xFF;
+                    digit = (current >> 4) & 0x0F;
+                    if (digit > 9) {
+                        throw new MachineException(MachineException.DATA,
+                                "the ED source has a sign where a digit is required");
+                    }
+                    int right = current & 0x0F;
+                    rightHalf = right <= 9;
+                }
+                if (digit != 0 || significance) {
+                    if (!significance && markFirst) {
+                        gpr[1] = (gpr[1] & 0x80000000) | ((pattern + k) & 0x7FFFFFFF);
+                    }
+                    result = 0xF0 | digit;
+                    significance = true;
+                } else {
+                    result = fill;
+                }
+                nonZero |= digit != 0;
+                if (p == 0x21) {
+                    significance = true;
+                }
+                // 桁を取ったバイトの右ニブルが符号なら、ここで表示を決める
+                if (fromLeft && (current & 0x0F) > 9) {
+                    int sign = current & 0x0F;
+                    if (sign != 0x0B && sign != 0x0D) {
+                        significance = false;
+                    }
+                }
+            } else if (p == 0x22) {
+                result = fill;
+                significance = false;
+                nonZero = false;
+            } else {
+                result = significance ? p : fill;
+            }
+            memory.set(pattern + k, (byte) result);
+        }
+        conditionCode = !nonZero ? 0 : significance ? 1 : 2;
     }
 
     // --- EX ---

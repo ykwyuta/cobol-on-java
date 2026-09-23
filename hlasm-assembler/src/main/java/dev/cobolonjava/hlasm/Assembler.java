@@ -505,6 +505,15 @@ public final class Assembler implements Constants.Scope {
                 yield rr(definition.opcode(), register(operands.get(0), line),
                         register(operands.get(1), line));
             }
+            case RR_R1 -> {
+                require(operands, 1, statement);
+                yield rr(definition.opcode(), register(operands.get(0), line), 0);
+            }
+            case RRE_R1 -> {
+                require(operands, 1, statement);
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode(), 0,
+                        (byte) (register(operands.get(0), line) << 4)};
+            }
             case RR_MASK -> {
                 if (definition.mask() != null) {
                     require(operands, 1, statement);
