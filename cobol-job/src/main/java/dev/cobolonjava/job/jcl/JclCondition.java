@@ -147,7 +147,7 @@ public final class JclCondition {
         }
         String upper = word.toUpperCase(Locale.ROOT);
         if (upper.equals("ABEND")) {
-            return new StepCondition.OnlyIfAbend();
+            return truthValue(new StepCondition.OnlyIfAbend());
         }
         if (upper.equals("ABENDCC")) {
             return abendCode(null);
@@ -164,8 +164,8 @@ public final class JclCondition {
         String kind = upper.substring(dot + 1);
         return switch (kind) {
             case "RC" -> returnCode(step);
-            case "RUN" -> new StepCondition.Ran(step);
-            case "ABEND" -> new StepCondition.OnlyIfAbend();
+            case "RUN" -> truthValue(new StepCondition.Ran(step));
+            case "ABEND" -> truthValue(new StepCondition.OnlyIfAbend());
             case "ABENDCC" -> abendCode(step);
             default -> {
                 report("IF does not understand: " + word);
@@ -200,6 +200,47 @@ public final class JclCondition {
             return null;
         }
         return new StepCondition.Abend(step, comparison == StepCondition.Comparison.EQ, code);
+    }
+
+    /**
+     * 真偽の試験 ({@code ABEND}、{@code 名前.RUN}、{@code 名前.ABEND}) のあとの
+     * {@code = TRUE} / {@code = FALSE} / {@code ¬= TRUE} (z/OS MVS JCL Reference "IF/THEN/ELSE/ENDIF
+     * statement construct" の keyword の表)。書かなければ {@code = TRUE} と同じである。
+     *
+     * <p>以前は比較を読まず、{@code IF (STEP1.RUN = TRUE) THEN} の {@code =} で「閉じ括弧が無い」
+     * と断り、ジョブ全体を止めていた (z/OS probe の JCLCONR で見つかった)。
+     */
+    private StepCondition truthValue(StepCondition test) {
+        if (at >= tokens.size()) {
+            return test;
+        }
+        StepCondition.Comparison comparison = comparisonOf(tokens.get(at));
+        if (comparison == null) {
+            return test;
+        }
+        if (comparison != StepCondition.Comparison.EQ
+                && comparison != StepCondition.Comparison.NE) {
+            report("a true-or-false test compares with = or ¬= only: " + tokens.get(at));
+            return null;
+        }
+        at++;
+        String value = word();
+        if (value == null) {
+            return null;
+        }
+        boolean wanted;
+        switch (value.toUpperCase(Locale.ROOT)) {
+            case "TRUE" -> wanted = true;
+            case "FALSE" -> wanted = false;
+            default -> {
+                report("a true-or-false test compares with TRUE or FALSE: " + value);
+                return null;
+            }
+        }
+        if (comparison == StepCondition.Comparison.NE) {
+            wanted = !wanted;
+        }
+        return wanted ? test : new StepCondition.Not(test);
     }
 
     private StepCondition returnCode(String step) {
