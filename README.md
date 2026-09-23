@@ -30,10 +30,11 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: 断っていた CICS / Db2 の形の暫定仮仕様 (file control の残り、SYSID、NOSUSPEND、TD、START)](docs/design/85-cics-provisional-specs.md)
 - [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
 - [設計: ファイル入出力](docs/design/80-file-io.md)
+- [設計: Maven による資産のビルドと標準ディレクトリ体系](docs/design/91-maven-build.md) — `src/main/cobol` / `copybook` / `bms` / `pli` / `pli-include` / `jcl` / `proclib` と `cobol-maven-plugin`
 - [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
 - [未対応構文とその理由](docs/unsupported-syntax-and-rationale.md) — 未対応の構文・オプション、設計判断の根拠、代替手段
 - [利用ガイド](docs/guide.md) — コンパイラ起動オプション、単一・複数プログラムの翻訳と実行手順
-- [デモシナリオガイド](demo/guide.md) — 動かして確かめる 9 本のデモ。#009 は BMS + COBOL + H2 の Todo アプリ ([demo/009](demo/009/README.md))
+- [デモシナリオガイド](demo/guide.md) — 動かして確かめる 10 本のデモ。#009 は BMS + COBOL + H2 の Todo アプリ ([demo/009](demo/009/README.md))、#010 は Maven の標準ディレクトリ体系 ([demo/010](demo/010/README.md))
 - [アーキテクチャ決定記録 (ADR)](docs/decisions/README.md)
 - [敵対的設計レビュー: Java / JUnit / CICS / Db2 / BMS](docs/reviews/2026-09-09-interop-adversarial-review.md)
 - [IMS の概要と対応検討](docs/research/ims-overview-and-support-scope.md) — IMS (TM/DB) の仕組み、CICS/Db2 との違い、COBOL (DL/I) 連携と移行スコープ
@@ -84,6 +85,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 | `cobol-db2` | Db2 SQL / SQLCA / cursor / UOW の中立契約 | experimentalなprofile固定、遅延UOW、型付きhost variable / codec、fidelity行列を実装 |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection lease / UOW adapter | task専用lease、native SQL executor、commit跨ぎ、reset / discardを実装。Db2 Communityで中立portからcommit後FETCHを検証。障害試験は未実装 |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.x 固有機能を中立ポートへ接続 | Spring Boot 4.1.1 基準の `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS task の coordinator の自動構成と、JSON の入口 `POST /api/cics/{transid}` (Spring Security があるときだけ、P-135) を実装。同じ冪等キーの再送には task を動かさず commit した結果を返す (P-142)。`cobol.cics.conversation.consistency=strict` で、会話と冪等キーの結果を業務の Db2 と同じ UOW で表に確定する (P-143)。IMS のデータベースの置き場へ容器の `DataSource` を預ける (`cobol-ims-rdb` を置いた利用者だけ。`cobol.ims.spring-data-source=false` で切る、P-169)。driver管理 `WITH HOLD` は未実装 |
+| `cobol-maven-plugin` | 利用者のプロジェクトで COBOL・PL/I を翻訳し、BMS と JCL を検める Maven プラグイン (設計 91) | `cobol:compile` (BMS の検査と classpath への配置、COBOL・PL/I の翻訳と配備カタログ) と `cobol:jcl` (実行時と同じ読み取りで JCL・宣言的形式を検め、目録手続きも展開する) を実装。翻訳の手順は `CobolBuild` / `PliBuild` / `JobDescription` にあり、コマンドラインと共有する。COBOL と PL/I を 1 つのモジュールに置くと断る (P-182) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 画面の Thymeleaf view、端末 JavaScript、CSS | 表示モデル、共通 template、端末操作、form の入力変換を実装。Bank-of-Z の 2 画面をブラウザで測り、JavaScript の有無によらず全 field の行・桁・幅が一致 (設計 81)。ブラウザの入口 `POST /cics/{transid}` は Spring Security があるときだけ構成し、COMMAREA と画面は server の会話ストアから読む。会話ストアの既定は 1 つの JVM の中だけ (P-134) |
 
 ## ビルド
@@ -93,6 +95,35 @@ mvn test
 ```
 
 Java 21 と Maven 3.9 以上が必要。
+
+## Maven で資産を作る
+
+利用者のプロジェクトは次の置き場に資産を置き、`cobol-maven-plugin` の `compile` と `jcl` を
+並べれば `mvn package` で jar になる。詳しくは[設計 91](docs/design/91-maven-build.md)、
+見本は[デモ 010](demo/010/README.md)。
+
+```text
+src/main/cobol        COBOL の原文 (.cbl .cob .cobol)
+src/main/copybook     COPY の写し句
+src/main/bms          BMS の mapset (記号マップを作り、原文も classpath へ載せる)
+src/main/pli          PL/I の原文 (.pli .pl1)
+src/main/pli-include  %INCLUDE のメンバ
+src/main/jcl          ジョブ記述 (.jcl と宣言的形式 .job)
+src/main/proclib      目録手続きと JCL の INCLUDE メンバ
+```
+
+```xml
+<plugin>
+  <groupId>dev.cobolonjava</groupId>
+  <artifactId>cobol-maven-plugin</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <executions>
+    <execution>
+      <goals><goal>compile</goal><goal>jcl</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+```
 
 ## 翻訳して動かす
 

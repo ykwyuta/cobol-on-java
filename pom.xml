@@ -36,6 +36,7 @@
     <module>cobol-junit</module>
     <module>cobol-job</module>
     <module>cobol-verify</module>
+    <module>cobol-maven-plugin</module>
   </modules>
 
   <properties>

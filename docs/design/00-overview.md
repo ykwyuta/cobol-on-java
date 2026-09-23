@@ -36,6 +36,7 @@ Maven のマルチモジュール構成とする。
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.1 の MVC、Session、JDBC、transaction、Actuator を中立ポートへ接続 | `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS、Actuatorは未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-starter` | 利用者向け依存関係と標準設定メタデータ | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 中立画面を Thymeleaf、terminal JavaScript、固定セル CSS で 3270 互換表示する任意 UI adapter | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
+| `cobol-maven-plugin` | 利用者のプロジェクトの COBOL・PL/I・BMS・JCL を Maven のライフサイクルで作る。標準ディレクトリ体系を決める | `compile` / `jcl` 実装済 ([設計 91](91-maven-build.md))。翻訳の手順は各コンパイラの `CobolBuild` / `PliBuild` と `cobol-job` の `JobDescription` を呼び、コマンドラインと共有する |
 | `cobol-cli` | コンパイラ・ジョブ実行のコマンドライン入口 | 各モジュールの `Main` が暫定の入口である |
 
 Java と COBOL の双方向呼び出しは、`cobol-runtime` に置く共通の呼び出し境界を使う。
@@ -61,6 +62,8 @@ Spring Boot の更新と別フレームワークへの交換が、生成 COBOL �
 ジョブ実行が動かすのは<b>翻訳済みのクラス</b>であり、どう翻訳されたかは関わりがない。これは要件 ARC-7 の
 「意味論のバグかコード生成のバグかを切り分けられること」を成立させるための構造的な制約であり、
 `cobol-runtime` から他モジュールへの依存が生じた時点でこの性質は失われる。
+`cobol-maven-plugin` もビルド側の葉であり、`cobol-compiler`・`pli-compiler`・`cobol-job` に依存するが、
+誰からも依存されない。生成クラスはプラグインを知らない。
 `cobol-junit` はテスト側の葉として `cobol-compiler` と `cobol-runtime` に依存するが、製品モジュールは
 `cobol-junit` および JUnit API に依存しない。
 `cobol-cics` と `cobol-db2` は `cobol-runtime` だけへ依存し、コンパイラは生成コードの中立命令を

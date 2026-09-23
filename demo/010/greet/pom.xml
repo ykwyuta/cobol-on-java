@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>dev.cobolonjava</groupId>
+    <artifactId>demo-010</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>demo-010-greet</artifactId>
+  <name>demo-010-greet</name>
+  <description>PL/I と %INCLUDE のメンバを標準の置き場に置いたモジュール</description>
+
+  <dependencies>
+    <!-- PL/I の生成クラスは pli-compiler の実行時部品を呼ぶ -->
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>pli-compiler</artifactId>
+      <version>${project.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>dev.cobolonjava</groupId>
+        <artifactId>cobol-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

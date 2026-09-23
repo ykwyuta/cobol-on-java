@@ -5,11 +5,8 @@ import java.io.UncheckedIOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import dev.cobolonjava.job.jcl.Jcl;
 
 /**
  * ジョブ実行のコマンドライン入口 (要件 FR-130, FR-132)。
@@ -54,21 +51,14 @@ public final class Main {
         }
 
         // 拡張子で記述形式を見分ける。どちらも同じ内部モデルへ落ちる (要件 FR-132)
-        String text = read(description);
-        Job job;
-        List<JobDiagnostic> diagnostics;
-        if (description.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
-                .endsWith(".jcl")) {
-            Jcl.Result parsed = Jcl.read(text, procedures == null
-                    ? dev.cobolonjava.job.jcl.JclLibrary.empty()
-                    : dev.cobolonjava.job.jcl.JclLibrary.at(procedures));
-            job = parsed.job();
-            diagnostics = parsed.diagnostics();
-        } else {
-            JobScript.Result parsed = JobScript.read(text);
-            job = parsed.job();
-            diagnostics = parsed.diagnostics();
+        JobDescription.Result parsed;
+        try {
+            parsed = JobDescription.read(description, procedures);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + description, e);
         }
+        Job job = parsed.job();
+        List<JobDiagnostic> diagnostics = parsed.diagnostics();
         if (!diagnostics.isEmpty()) {
             for (JobDiagnostic diagnostic : diagnostics) {
                 System.err.println(description + ":" + diagnostic);
@@ -97,14 +87,6 @@ public final class Main {
             case FAILED -> job + "." + step.name() + " JCL ERROR - " + step.failure();
             case FLUSHED -> job + "." + step.name() + " FLUSHED";
         };
-    }
-
-    private static String read(Path path) {
-        try {
-            return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot read " + path, e);
-        }
     }
 
     private static ClassLoader loaderFor(Path classes) {

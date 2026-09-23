@@ -1,24 +1,11 @@
 package dev.cobolonjava.compiler;
 
-import dev.cobolonjava.compiler.parser.Diagnostic;
-import dev.cobolonjava.compiler.source.BmsCopyBookResolver;
-import dev.cobolonjava.compiler.source.CicsSystemCopyBookResolver;
 import dev.cobolonjava.compiler.source.CompilerOptions;
-import dev.cobolonjava.compiler.source.CopyBookResolver;
-import dev.cobolonjava.compiler.source.Db2SystemCopyBookResolver;
-import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
-import dev.cobolonjava.compiler.source.FreeFormatReader;
-import dev.cobolonjava.compiler.source.LanguageEnvironmentCopyBookResolver;
-import dev.cobolonjava.compiler.source.Preprocessor;
 import dev.cobolonjava.compiler.source.ProcessStatement;
-import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 
 /**
  * 処理系の起動口 (要件 FR-180)。
@@ -37,6 +24,8 @@ import java.util.Optional;
  * <p>{@code -q} には翻訳時オプションを {@code CBL} 文と同じ綴りで書く
  * ({@code -q SSRANGE,ARITH(EXTEND)})。ソースに書かれた {@code CBL} / {@code PROCESS} の
  * 指定のほうが<b>あとに重なる</b>。
+ *
+ * <p>翻訳の手順そのものは {@link CobolBuild} にある。Maven プラグインも同じものを呼ぶ。
  */
 public final class Main {
 
@@ -55,51 +44,13 @@ public final class Main {
             return;
         }
 
-        int failed = 0;
-        List<CobolCompiler.Compiled> deployed = new ArrayList<>();
-        for (Path source : options.sources()) {
-            if (!compile(source, options, deployed)) {
-                failed++;
-            }
-        }
-        // 全件失敗でも空catalogを書き、以前の成功ビルドのcatalogを残さない。
-        writeDeployCatalog(options.output(), deployed);
-        if (failed > 0) {
+        CobolBuild.Result result = CobolBuild.run(new CobolBuild.Request(options.sources(),
+                        options.output(), options.copybooks(), options.freeFormat(),
+                        options.compilerOptions()),
+                (source, diagnostic) -> System.err.println(diagnostic));
+        if (!result.succeeded()) {
             System.exit(1);
         }
-    }
-
-    private static boolean compile(Path source, Options options,
-                                   List<CobolCompiler.Compiled> deployed) throws IOException {
-        Preprocessor preprocessor = options.preprocessor();
-        CobolCompiler.Result result = new CobolCompiler(preprocessor, options.compilerOptions())
-                .compile(source.getFileName().toString(),
-                        Files.readString(source, StandardCharsets.UTF_8));
-
-        for (Diagnostic diagnostic : result.diagnostics()) {
-            System.err.println(diagnostic);
-        }
-        if (!result.succeeded()) {
-            return false;
-        }
-
-        // 1 本のソースにプログラムが何本あってもよい。その数だけクラスを出す
-        for (CobolCompiler.Compiled program : result.programs()) {
-            Path target = options.output()
-                    .resolve(program.className().replace('.', '/') + ".class");
-            Files.createDirectories(target.getParent());
-            Files.write(target, program.classFile());
-            deployed.add(program);
-        }
-        return true;
-    }
-
-    private static void writeDeployCatalog(Path output, List<CobolCompiler.Compiled> programs)
-            throws IOException {
-        Path target = output.resolve(DeployCatalogManifest.RESOURCE_NAME);
-        Files.createDirectories(target.getParent());
-        Files.writeString(target, DeployCatalogGenerator.generate(programs).toJson(),
-                StandardCharsets.UTF_8);
     }
 
     /** 起動時の指定。 */
@@ -140,34 +91,6 @@ public final class Main {
                 throw new IllegalArgumentException(option + " requires a value");
             }
             return args[index];
-        }
-
-        Preprocessor preprocessor() {
-            return new Preprocessor(resolver(),
-                    freeFormat ? FreeFormatReader.standard()
-                            : dev.cobolonjava.compiler.source.FixedFormatReader.standard());
-        }
-
-        /**
-         * 書かれた順に探し、先に見つかったものを使う。ホストの連結ライブラリと同じである。
-         *
-         * <p>CICS・Db2・Language Environment が配る写し句は<b>最後に</b>引く。資産が自前の
-         * {@code DFHAID} や {@code SQLCA} を置いていれば、そちらを使う。
-         */
-        private CopyBookResolver resolver() {
-            List<CopyBookResolver> chain = new ArrayList<>();
-            for (Path directory : copybooks) {
-                chain.add(new DirectoryCopyBookResolver(directory));
-                chain.add(new BmsCopyBookResolver(directory));
-            }
-            chain.add(new CicsSystemCopyBookResolver());
-            chain.add(new Db2SystemCopyBookResolver());
-            chain.add(new LanguageEnvironmentCopyBookResolver());
-            List<CopyBookResolver> fixed = List.copyOf(chain);
-            return (textName, libraryName) -> fixed.stream()
-                    .map(resolver -> resolver.resolve(textName, libraryName))
-                    .flatMap(Optional::stream)
-                    .findFirst();
         }
     }
 }

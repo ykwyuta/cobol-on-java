@@ -5593,3 +5593,32 @@ CICS の入口から見える bean ではない (`CicsTaskProgramPort` の向こ
 (golden image) を入れるときは、版を固定する必要がある。
 
 **解消条件**: 検査に使うブラウザの版を決めて固定し、取得の方法 (環境側で入れる) を要件に書く。
+
+---
+
+## P-182 COBOL と PL/I を 1 つのモジュールで作れない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-23) |
+| 場所 | `ProgramBuild.run` (`cobol-maven-plugin`) |
+| 関連要件 | FR-180、設計 91 §6 |
+
+**暫定の扱い**: `src/main/cobol` と `src/main/pli` の両方に原文があれば、何も書かずに
+ビルドを止める。言語ごとにモジュールを分けてもらう。
+
+**なぜ作れないか**: 配備カタログ (`META-INF/cobol/programs.json`) は 1 つの classpath に
+1 つで、載せられる package も 1 つである (`DeployCatalogManifest.allowedPackage`)。
+COBOL は `cobol.generated`、PL/I は `pli.generated` へ出すので、同じ置き場に書くと後から
+書いたほうが先のものを<b>黙って消す</b>。片方だけ載ったカタログで動かすより断る。
+
+**どこがずれうるか**: ホストでは COBOL と PL/I のロードモジュールは<b>同じ</b>ロードライブラリに
+入り、`CALL 'X'` は言語を問わず引ける。モジュールを分けると、この 1 つの名前空間を
+jar の境界で割ることになる。分けた jar を 1 つの classpath に並べると、`cobol-junit` の
+`DeployCatalogManifest.fromResource` は 2 つのカタログを見て断る。
+ジョブ実行 (`cobolj`) はカタログでなくクラス名 (`cobol.generated.名前`) で引くので、
+PL/I のプログラムを `EXEC PGM=` で呼べないのはこの暫定とは別の、既存の制約である。
+
+**解消条件**: COBOL と PL/I (と HLASM) が 1 つのプログラム名前空間を共有する形を決める。
+カタログに複数の package を許すか、生成クラスの package を 1 つに揃えるかのどちらかであり、
+いずれも配備カタログの形式 (信頼境界) の変更になる。

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- 版は処理系と揃える。処理系の module ではない (全体の build には入れない) -->
+  <parent>
+    <groupId>dev.cobolonjava</groupId>
+    <artifactId>cobol-on-java</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>demo-010</artifactId>
+  <packaging>pom</packaging>
+  <name>demo-010</name>
+  <description>
+    標準ディレクトリ体系 (設計 91) の見本。COBOL と JCL のモジュールと、PL/I のモジュールを
+    cobol-maven-plugin で作る。
+  </description>
+
+  <modules>
+    <module>sales</module>
+    <module>greet</module>
+  </modules>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <!-- 利用者のプロジェクトでは、ここで版を決め、各モジュールで goal を並べる -->
+        <plugin>
+          <groupId>dev.cobolonjava</groupId>
+          <artifactId>cobol-maven-plugin</artifactId>
+          <version>${project.version}</version>
+          <executions>
+            <execution>
+              <goals>
+                <goal>compile</goal>
+                <goal>jcl</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>
