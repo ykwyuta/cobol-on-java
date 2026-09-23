@@ -108,9 +108,15 @@ public final class PliRuntime {
             for (int i = 0; i < arguments.length; i++) {
                 String name = program.parameters().get(i).toUpperCase(Locale.ROOT);
                 parameters.put(name, arguments[i]);
-                // 引数は参照で渡る。POINTER と宣言した引数 (IMS の PCB など) は、渡された記憶域の番号を
-                // 値に持つ。ほかの型と宣言すれば、渡された記憶域そのものになる (declareScalar)
-                globals.put(pointerTo(name, arguments[i]));
+                // 引数は参照で渡る。主手続き (OPTIONS(MAIN)) の POINTER の引数 (IMS の PCB など) は、
+                // 渡された記憶域の番号を値に持つ。主でない手続きの POINTER の引数は、呼んだ側の
+                // POINTER の変数そのものであり、代入すると呼んだ側の値が変わる。以前はどちらも前者と
+                // して扱い、呼んだ先の代入が呼んだ側に届かなかった (z/OS probe の PLIPTRS)。
+                // ほかの型と宣言すれば、渡された記憶域そのものになる (declareScalar)
+                globals.put(program.main() || arguments[i].length() < 4
+                        ? pointerTo(name, arguments[i])
+                        : new Var(name, PliSyntax.Type.POINTER, 0, 0,
+                                arguments[i].subView(0, 4)));
             }
         }
 
@@ -166,9 +172,77 @@ public final class PliRuntime {
             return location.storage().view(location.offset(), length);
         }
 
+        /**
+         * 宣言中の INITIAL を後回しにする置き場。{@code null} なら宣言したその場で初期化する。
+         * {@link #declareAll} が、すべての記憶域を取ってから初期化するために使う。
+         */
+        private List<Runnable> deferredInits;
+
+        /**
+         * 手続きの宣言をすべて、本体を動かす前に済ませる。
+         *
+         * <p>PL/I の宣言は実行する文ではなく、手続きに入ったときに、書いた場所によらず確立する
+         * (LRM "Scopes of declarations")。以前は宣言を文として上から順に動かしていたので、
+         * {@code DCL V CHAR(4) BASED(P);} を {@code DCL P POINTER;} より前に書くと「宣言されて
+         * いない名」で止まっていた。z/OS probe の PLIMAP の下書きで見つかった。
+         *
+         * <p>順は 3 段である。(1) BASED でないものの記憶域を取る、(2) その INITIAL を書いた順に
+         * 評価する ({@code INIT(ADDR(S))} は S が後に書かれていてもよい)、(3) BASED のものを
+         * 重ねる (重ねる先の POINTER は (2) で値を持っている)。
+         */
+        private void declareAll(List<PliSyntax.Stmt> body, Env env) {
+            List<List<PliSyntax.Decl>> chunks = new ArrayList<>();
+            collectDeclarations(body, chunks);
+            List<Runnable> inits = new ArrayList<>();
+            deferredInits = inits;
+            try {
+                for (List<PliSyntax.Decl> chunk : chunks) {
+                    if (chunk.get(0).basedOn() == null) declare(chunk, env);
+                }
+            } finally {
+                deferredInits = null;
+            }
+            inits.forEach(Runnable::run);
+            for (List<PliSyntax.Decl> chunk : chunks) {
+                if (chunk.get(0).basedOn() != null) declare(chunk, env);
+            }
+        }
+
+        /** 宣言を、最上位の 1 つ (スカラーか、構造とその要素) ずつの塊に分けて集める。 */
+        private static void collectDeclarations(List<PliSyntax.Stmt> body,
+                                                List<List<PliSyntax.Decl>> chunks) {
+            for (PliSyntax.Stmt statement : body) {
+                switch (statement) {
+                    case PliSyntax.Declare declare -> {
+                        List<PliSyntax.Decl> chunk = null;
+                        for (PliSyntax.Decl decl : declare.declarations()) {
+                            if (decl.level() <= 1 || chunk == null) {
+                                chunk = new ArrayList<>();
+                                chunks.add(chunk);
+                            }
+                            chunk.add(decl);
+                        }
+                    }
+                    case PliSyntax.Block block -> collectDeclarations(block.body(), chunks);
+                    case PliSyntax.Loop loop -> collectDeclarations(loop.body(), chunks);
+                    case PliSyntax.IterativeLoop loop -> collectDeclarations(loop.body(), chunks);
+                    case PliSyntax.OnEndFile on -> collectDeclarations(on.handler(), chunks);
+                    case PliSyntax.If branch -> {
+                        collectDeclarations(List.of(branch.whenTrue()), chunks);
+                        if (branch.whenFalse() != null) {
+                            collectDeclarations(List.of(branch.whenFalse()), chunks);
+                        }
+                    }
+                    default -> {
+                    }
+                }
+            }
+        }
+
         void run() {
             sysprint.enter();
             try {
+                declareAll(program.body(), globals);
                 execute(program.body(), globals);
             } catch (ReturnSignal ignored) {
                 // 主手続きの RETURN は正常終了である。
@@ -200,8 +274,9 @@ public final class PliRuntime {
         }
 
         private void execute(PliSyntax.Stmt statement, Env env) {
-            if (statement instanceof PliSyntax.Declare declare) {
-                declare(declare.declarations(), env);
+            if (statement instanceof PliSyntax.Declare) {
+                // 手続きに入ったときに declareAll が済ませている
+                return;
             } else if (statement instanceof PliSyntax.Assign assign) {
                 assign(assign, env);
             } else if (statement instanceof PliSyntax.Put put) {
@@ -294,6 +369,13 @@ public final class PliRuntime {
             }
             int length = mapping.size();
             DataView area;
+            if (root.basedOn() != null && nullPointer(root.basedOn(), env)) {
+                // NULL の POINTER に重ねた宣言は誤りではない。誤りなのは、値を持たないまま
+                // 参照することである。POINTER に値が入ったときに重ねる
+                unbound(tree, root.basedOn(), env);
+                remember(root.basedOn(), () -> declareGroup(tree, env));
+                return;
+            }
             if (root.basedOn() != null) {
                 area = basedView(root.basedOn(), length, env);
                 remember(root.basedOn(), () -> declareGroup(tree, env));
@@ -340,6 +422,35 @@ public final class PliRuntime {
             }
         }
 
+        /** {@code name} が今 NULL の POINTER か。POINTER でない (BASED(ADDR(X))) なら偽。 */
+        private boolean nullPointer(String name, Env env) {
+            Var base = env.require(name);
+            return base.type == PliSyntax.Type.POINTER
+                    && ((PointerValue) base.read(context)).address() == 0;
+        }
+
+        /**
+         * NULL の POINTER に重ねた宣言の名を、参照すると止まる印で置く。以前は宣言した時点で
+         * 「NULL の POINTER」で止めていたので、POINTER に後から値を入れる普通の書き方が動かなかった
+         * (z/OS probe の PLIPTR)。構造なら要素の名と修飾した名も置く。
+         */
+        private void unbound(List<PliSyntax.Decl> tree, String pointer, Env env) {
+            List<String> path = new ArrayList<>();
+            for (PliSyntax.Decl decl : tree) {
+                int depth = tree.size() == 1 ? 0 : Math.max(0, decl.level() - 1);
+                while (path.size() > depth) path.remove(path.size() - 1);
+                Var placeholder = new Var(decl.name(), decl.type(), decl.precision(),
+                        decl.scale(), Storage.allocate(0).whole());
+                placeholder.unboundOn = pointer.toUpperCase(Locale.ROOT);
+                env.put(placeholder);
+                for (int from = 0; from < path.size(); from++) {
+                    env.alias(String.join(".", path.subList(from, path.size())) + "."
+                            + decl.name(), placeholder);
+                }
+                path.add(decl.name());
+            }
+        }
+
         /** BASED(P) の宣言を、P へ代入したときに宣言し直せるよう覚えておく。 */
         private void remember(String pointer, Runnable redeclare) {
             basedOn.computeIfAbsent(pointer.toUpperCase(Locale.ROOT), key -> new ArrayList<>())
@@ -368,6 +479,12 @@ public final class PliRuntime {
             if (declaration.type() == PliSyntax.Type.POINTER && parameter) {
                 return; // 入口引数の POINTER は、渡された記憶域の番号をもう持っている
             }
+            if (declaration.basedOn() != null && nullPointer(declaration.basedOn(), env)) {
+                unbound(List.of(declaration), declaration.basedOn(), env);
+                remember(declaration.basedOn(),
+                        () -> declareScalar(declaration, env, area, offset, alias));
+                return;
+            }
             if (declaration.basedOn() != null) {
                 // 重ねる先のうち、自分の長さの分だけを使う。先の全体を使うと、短い変数へ書いたときに
                 // 残りまで書き換えてしまう (PIC'(9)9' を 10 桁の CHAR に重ねると 10 桁目が空白になっていた)
@@ -392,6 +509,14 @@ public final class PliRuntime {
         }
 
         private void initialize(Var variable, PliSyntax.Expr initial, Env env) {
+            if (deferredInits != null) {
+                deferredInits.add(() -> initializeNow(variable, initial, env));
+                return;
+            }
+            initializeNow(variable, initial, env);
+        }
+
+        private void initializeNow(Var variable, PliSyntax.Expr initial, Env env) {
             if (variable.type == PliSyntax.Type.CHAR || variable.type == PliSyntax.Type.PICTURE) {
                 variable.view.fill(context.codePage().space());
             }
@@ -414,13 +539,7 @@ public final class PliRuntime {
             Object value = value(assignment.value(), env);
             if (target.type == PliSyntax.Type.POINTER) {
                 target.write(value, context);
-                List<Runnable> dependents = basedOn.get(target.name);
-                if (dependents != null) {
-                    // 宣言し直すと新しい手順が覚えられるので、今の並びを写してから動かす
-                    List<Runnable> current = List.copyOf(dependents);
-                    dependents.clear();
-                    current.forEach(Runnable::run);
-                }
+                rebase(target.name);
                 return;
             }
             if (target.type == PliSyntax.Type.GROUP && !target.members.isEmpty()) {
@@ -639,6 +758,7 @@ public final class PliRuntime {
                     local.alias(procedure.parameters().get(i), env.require(reference.name()));
                 }
                 try {
+                    declareAll(procedure.body(), local);
                     execute(procedure.body(), local);
                 } catch (ReturnSignal ignored) {
                     // 内部プロシージャから呼出元へ戻る。
@@ -657,6 +777,28 @@ public final class PliRuntime {
                 }
             }
             Ops.call(context, call.name(), loader, arguments);
+            // 呼んだ先が POINTER の引数を書き換えたかもしれない。BASED の変数は参照のたびに
+            // POINTER の値で決まる (LRM "BASED attribute") ので、渡した POINTER に重ねた変数を
+            // 重ね直す。以前は同じプログラムの中の代入でしか重ね直さなかった (P-185 の 3 点目)
+            for (PliSyntax.Expr expression : call.arguments()) {
+                if (expression instanceof PliSyntax.Reference reference) {
+                    Var argument = env.require(reference.name());
+                    if (argument.type == PliSyntax.Type.POINTER) {
+                        rebase(argument.name);
+                    }
+                }
+            }
+        }
+
+        /** POINTER に重ねた BASED の変数を、今の値で宣言し直す。 */
+        private void rebase(String pointer) {
+            List<Runnable> dependents = basedOn.get(pointer.toUpperCase(Locale.ROOT));
+            if (dependents != null) {
+                // 宣言し直すと新しい手順が覚えられるので、今の並びを写してから動かす
+                List<Runnable> current = List.copyOf(dependents);
+                dependents.clear();
+                current.forEach(Runnable::run);
+            }
         }
 
         private void file(PliSyntax.FileOperation operation, Env env) {
@@ -800,6 +942,11 @@ public final class PliRuntime {
 
         private Object evaluate(PliSyntax.Expr expression, Env env) {
             if (expression instanceof PliSyntax.Literal literal) {
+                if (literal.value() instanceof PliSyntax.HexString hex) {
+                    // 16 進の文字の定数は、実行時のコードページで文字に直す。代入で同じコードページへ
+                    // 戻すので、書いた byte がそのまま記憶域に入る
+                    return context.codePage().decode(hex.bytes());
+                }
                 return literal.value();
             }
             if (expression instanceof PliSyntax.Reference reference) {
@@ -861,7 +1008,15 @@ public final class PliRuntime {
                 case "SUBSTR" -> substring(arguments);
                 case "DATETIME" -> ZonedDateTime.now(context.clock()).format(DATETIME);
                 case "CHAR" -> display(arguments.get(0));
-                case "SIZE" -> size(function, env);
+                // STORAGE / STG は SIZE の別名である (LRM "STORAGE")
+                case "SIZE", "STORAGE", "STG" -> size(function, env);
+                // 文字列の長さ。固定長の CHAR(n) なら n、VARYING なら今の長さ (LRM "LENGTH")
+                case "LENGTH" -> FixedValue.binary(
+                        BigDecimal.valueOf(display(arguments.get(0)).length()), 31, 0);
+                // LOW(n) は照合順序のいちばん低い字 (X'00') を n 個、HIGH(n) はいちばん高い字
+                // (X'FF') を n 個 (LRM "LOW", "HIGH")
+                case "LOW" -> filled((byte) 0x00, arguments);
+                case "HIGH" -> filled((byte) 0xFF, arguments);
                 case "ADDR" -> address(function, env);
                 case "CENTRE", "CENTER" -> centre(arguments);
                 // 結果は x と同じ base・scale・precision を持つ (LRM "ABS")
@@ -900,6 +1055,16 @@ public final class PliRuntime {
                 case "*" -> a.multiply(b);
                 default -> a.divide(b, MathContext.DECIMAL128);
             };
+        }
+
+        private String filled(byte value, List<Object> arguments) {
+            int count = number(arguments.get(0)).intValue();
+            if (count < 0) {
+                throw new PliExecutionException("the length must not be negative: " + count);
+            }
+            byte[] bytes = new byte[count];
+            java.util.Arrays.fill(bytes, value);
+            return context.codePage().decode(bytes);
         }
 
         private Object size(PliSyntax.Function function, Env env) {
@@ -1092,6 +1257,10 @@ public final class PliRuntime {
         Var require(String name) {
             Var value = find(name);
             if (value == null) throw new PliExecutionException("undeclared PL/I name: " + name);
+            if (value.unboundOn != null) {
+                throw new PliExecutionException("BASED on " + value.unboundOn
+                        + ", which is a null pointer: " + name);
+            }
             return value;
         }
 
@@ -1121,6 +1290,8 @@ public final class PliRuntime {
         final int bitShift;
         /** 構造なら、宣言の順の要素 (名の無い * も含む)。 */
         final List<Var> members = new ArrayList<>();
+        /** NULL の POINTER に重ねた BASED の変数なら、その POINTER の名。参照すると止まる。 */
+        String unboundOn;
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
             this(name, type, precision, scale, view, 0);

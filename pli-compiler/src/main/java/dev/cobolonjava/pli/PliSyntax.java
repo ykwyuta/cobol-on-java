@@ -28,8 +28,12 @@ final class PliSyntax {
         }
     }
 
+    /**
+     * @param main {@code OPTIONS(MAIN)} を書いたか。主手続きの POINTER の引数は、渡された記憶域の
+     *             番地を値に持つ (IMS の PCB の並び)。そうでない手続きの引数は参照で渡った変数そのもの
+     */
     record Program(String name, List<String> parameters, List<Stmt> body,
-                   Map<String, Procedure> procedures) {
+                   Map<String, Procedure> procedures, boolean main) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
@@ -144,6 +148,29 @@ final class PliSyntax {
                     + " other than 0 and 1");
         }
         return bits.length() == 1 ? (Object) bits.equals("1") : new BitString(bits);
+    }
+
+    /**
+     * 16 進で書いた文字の定数 {@code 'C1C2'X} の byte の並び (LRM "Hexadecimal character constant")。
+     * 文字にするのは実行時のコードページである。翻訳時に文字へ直すと、コードページが違う実行で
+     * 別の byte になる。
+     */
+    record HexString(byte[] bytes) {
+    }
+
+    /** {@code '...'X} の値。16 進の字が偶数個でなければ誤りである。 */
+    private static HexString hexLiteral(Token token) {
+        String digits = token.text();
+        if (digits.length() % 2 != 0
+                || !digits.chars().allMatch(c -> Character.digit(c, 16) >= 0)) {
+            throw new ParseFailure(token, "hexadecimal constant '" + digits
+                    + "'X needs an even number of hexadecimal digits");
+        }
+        byte[] bytes = new byte[digits.length() / 2];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) Integer.parseInt(digits.substring(i * 2, i * 2 + 2), 16);
+        }
+        return new HexString(bytes);
     }
 
     record Reference(String name) implements Expr {
@@ -329,13 +356,16 @@ final class PliSyntax {
             }
             ProcedureBuilder main = parseProcedure();
             return new ParseResult(new Program(main.name, main.parameters,
-                    List.copyOf(main.body), Map.copyOf(main.procedures)), List.of());
+                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main), List.of());
         }
 
         private ProcedureBuilder parseProcedure() {
             String name = expect(Kind.IDENT, "procedure name").text();
             expect(":");
-            expect("PROCEDURE");
+            // PROC は PROCEDURE の略である (LRM "PROCEDURE statement")。以前は断っていた
+            if (!match("PROCEDURE") && !match("PROC")) {
+                throw fail(peek(), "PROCEDURE expected, found " + peek().text());
+            }
             List<String> parameters = new ArrayList<>();
             if (match("(")) {
                 if (!check(")")) {
@@ -345,9 +375,16 @@ final class PliSyntax {
                 }
                 expect(")");
             }
-            // OPTIONS、RETURNS その他の入口属性はセミコロンまで保持する必要がない。
-            skipToSemicolon();
+            // 入口属性のうち要るのは OPTIONS(MAIN) だけである。RETURNS その他は保持しない
+            List<Token> attributes = collectToSemicolon();
             ProcedureBuilder result = new ProcedureBuilder(name, List.copyOf(parameters));
+            for (int i = 0; i + 2 < attributes.size(); i++) {
+                if (attributes.get(i).is("OPTIONS") && attributes.get(i + 1).is("(")) {
+                    int close = findClosing(attributes, i + 1);
+                    result.main = attributes.subList(i + 2, close).stream()
+                            .anyMatch(token -> token.is("MAIN"));
+                }
+            }
             while (!check(Kind.EOF)) {
                 if (procedureAhead()) {
                     ProcedureBuilder nested = parseProcedure();
@@ -554,18 +591,28 @@ final class PliSyntax {
             return new TypeInfo(inherited, inheritedPrecision, inheritedScale);
         }
 
-        private static Expr initial(List<Token> tokens) {
-            for (int i = 0; i < tokens.size(); i++) {
+        /**
+         * {@code INITIAL(...)} の中身を式として読む (LRM "INITIAL attribute")。
+         *
+         * <p>以前は括弧の直後の字句 1 つだけを見ていたので、{@code INIT(-12345)} は負号で止まって
+         * 初期値が無いことになり、黙って 0 になっていた。{@code INIT(ADDR(S))} も同じ理由で
+         * NULL のままだった。z/OS probe の PLISTRM で見つかった。
+         */
+        private Expr initial(List<Token> tokens) {
+            for (int i = 0; i + 1 < tokens.size(); i++) {
                 if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL"))
-                        && i + 2 < tokens.size() && tokens.get(i + 1).is("(")) {
-                    Token value = tokens.get(i + 2);
-                    if (value.kind() == Kind.STRING) {
-                        boolean bit = i + 3 < tokens.size() && tokens.get(i + 3).is("B");
-                        return new Literal(bit ? bitLiteral(value) : value.text());
+                        && tokens.get(i + 1).is("(")) {
+                    int close = findClosing(tokens, i + 1);
+                    List<Token> inner = new ArrayList<>(tokens.subList(i + 2, close));
+                    Token end = tokens.get(close);
+                    inner.add(new Token(Kind.EOF, "<EOF>", end.line(), end.column()));
+                    Parser values = new Parser(fileName, inner);
+                    Expr value = values.expression();
+                    if (!values.check(Kind.EOF)) {
+                        throw values.fail(values.peek(), "INITIAL with more than one value"
+                                + " needs an array");
                     }
-                    if (value.kind() == Kind.NUMBER) {
-                        return new Literal(FixedValue.constant(value.text()));
-                    }
+                    return value;
                 }
             }
             return null;
@@ -825,6 +872,9 @@ final class PliSyntax {
                 if (match("B")) {
                     return new Literal(bitLiteral(literal));
                 }
+                if (match("X")) {
+                    return new Literal(hexLiteral(literal));
+                }
                 return new Literal(value);
             }
             if (check(Kind.NUMBER)) {
@@ -849,7 +899,8 @@ final class PliSyntax {
         }
 
         private boolean procedureAhead() {
-            return check(Kind.IDENT) && check(1, ":") && check(2, "PROCEDURE");
+            return check(Kind.IDENT) && check(1, ":")
+                    && (check(2, "PROCEDURE") || check(2, "PROC"));
         }
 
         private void skipBalanced() {
@@ -1062,6 +1113,7 @@ final class PliSyntax {
         final List<String> parameters;
         final List<Stmt> body = new ArrayList<>();
         final Map<String, Procedure> procedures = new LinkedHashMap<>();
+        boolean main;
 
         ProcedureBuilder(String name, List<String> parameters) {
             this.name = name;
