@@ -20,6 +20,8 @@ import java.util.List;
  *
  * <p>倍率 ({@code P} 型の {@code Sn}) と指数 ({@code En}) の修飾子は受け取らない。
  * 10 進定数の倍率を黙って 0 として組み立てると、値が 10 の冪だけずれるためである。
+ *
+ * <p>浮動小数点 ({@code E} / {@code D} / {@code L}) は {@link FloatingConstants} が組み立てる。
  */
 public final class Constants {
 
@@ -41,7 +43,9 @@ public final class Constants {
             case 'Y' -> new TypeRule(2, 2, false);
             case 'P' -> new TypeRule(1, 1, true);
             case 'Z' -> new TypeRule(1, 1, true);
+            case 'E' -> new TypeRule(4, 4, false);
             case 'D' -> new TypeRule(8, 8, false);
+            case 'L' -> new TypeRule(16, 8, false);
             default -> throw new AssemblyException(line, "unsupported constant type: " + type);
         };
     }
@@ -92,6 +96,13 @@ public final class Constants {
         char type = Character.toUpperCase(operand.charAt(at));
         at++;
         TypeRule rule = ruleOf(type, line);
+        // 浮動小数点の型の拡張 (H: 16 進、B: 2 進、D: 10 進)。書かなければ 16 進である
+        char extension = 'H';
+        if ((type == 'E' || type == 'D' || type == 'L') && at < operand.length()
+                && "HBD".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0) {
+            extension = Character.toUpperCase(operand.charAt(at));
+            at++;
+        }
 
         Integer explicitLength = null;
         if (at < operand.length() && (operand.charAt(at) == 'L' || operand.charAt(at) == 'l')) {
@@ -135,13 +146,19 @@ public final class Constants {
         if (values && nominal == null) {
             throw new AssemblyException(line, "DC requires a value: " + operand);
         }
+        if (values && explicitLength != null && (type == 'E' || type == 'D' || type == 'L')) {
+            // 長さを変えた浮動小数点は、小数部を切るか足すかの規則を突き合わせていない
+            throw new AssemblyException(line,
+                    "a length modifier on a floating-point constant is not supported: " + operand);
+        }
 
         int alignment = explicitLength == null ? rule.alignment() : 1;
         if (nominal == null) {
             int length = explicitLength != null ? explicitLength : rule.defaultLength();
             return new Piece(alignment, length, duplication, null, List.of());
         }
-        return build(type, rule, explicitLength, alignment, duplication, nominal, values, scope, line);
+        return build(type, extension, rule, explicitLength, alignment, duplication, nominal, values,
+                scope, line);
     }
 
     private static boolean isModifierDigit(String operand, int at) {
@@ -149,8 +166,8 @@ public final class Constants {
                 || operand.charAt(at) == '+';
     }
 
-    private static Piece build(char type, TypeRule rule, Integer explicitLength, int alignment,
-                               int duplication, String nominal, boolean values, Scope scope,
+    private static Piece build(char type, char extension, TypeRule rule, Integer explicitLength,
+                               int alignment, int duplication, String nominal, boolean values, Scope scope,
                                int line) {
         List<AddressReference> references = new ArrayList<>();
         List<byte[]> encoded = new ArrayList<>();
@@ -168,6 +185,7 @@ public final class Constants {
                 case 'Z' -> zoned(item, explicitLength, scope.codePage(), line);
                 case 'A', 'Y' -> new byte[explicitLength == null
                         ? rule.defaultLength() : explicitLength];
+                case 'E', 'D', 'L' -> FloatingConstants.encode(type, extension, item, line);
                 default -> throw new AssemblyException(line, "unsupported constant type: " + type);
             };
             if (type == 'A' || type == 'Y') {

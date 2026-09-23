@@ -1,7 +1,8 @@
 *---------------------------------------------------------------------
 * ASMDC2 - floating-point constants (P-018)
-*          This implementation refuses floating-point DC (design 27
-*          section 5); the host gives the reference bytes.
+*          The local expectation follows the HLASM defaults (HFP
+*          rounding mode 1, BFP and DFP round half even); the host
+*          gives the reference bytes.
 * Q: How does HLASM round a decimal constant to HFP (E, D, L),
 *    and what are the BFP (EB, DB) and DFP (ED, DD) encodings?
 *    Compare with CBLFLT (COBOL COMP-1 / COMP-2 VALUE 0.1).
@@ -34,6 +35,6 @@ BLK      DS    0C
          DC    EB'0.1'             68
          DC    DB'0.1'             72
          DC    ED'0.1'             80
-         DC    DD'0.1'             84
+         DC    DD'0.1'             88 (aligned)
 BLKLEN   EQU   *-BLK
          END
