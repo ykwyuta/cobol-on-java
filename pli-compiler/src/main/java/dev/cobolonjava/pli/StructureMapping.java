@@ -109,12 +109,58 @@ final class StructureMapping {
     }
 
     private static Unit element(PliSyntax.Decl decl, boolean unaligned, int index) {
-        if (decl.type() == PliSyntax.Type.BIT && unaligned) {
-            // UNALIGNED のビット列はビットの境界に置き、長さもビットで数える
-            return new Unit(0, Math.max(1, decl.precision()), 1, new HashMap<>(Map.of(index, 0)));
-        }
-        return new Unit(0, length(decl) * 8, (unaligned ? 1 : alignment(decl)) * 8,
+        int alignment = decl.type() == PliSyntax.Type.BIT && unaligned ? 1
+                : (unaligned ? 1 : alignment(decl)) * 8;
+        return new Unit(0, totalBits(decl, unaligned), alignment,
                 new HashMap<>(Map.of(index, 0)));
+    }
+
+    /**
+     * 要素 1 つのビット数。UNALIGNED のビット列はビットで数え、ほかは byte の 8 倍である。
+     */
+    static int elementBits(PliSyntax.Decl decl, boolean unaligned) {
+        return decl.type() == PliSyntax.Type.BIT && unaligned
+                ? Math.max(1, decl.precision()) : length(decl) * 8;
+    }
+
+    /**
+     * 配列の要素の間隔 (ビット)。要素の大きさを境界合わせの倍数に切り上げる。次の要素も
+     * 正しい境界に来なければならないからである (ALIGNED の CHAR(3) VARYING は 5 byte だが、
+     * 半語の境界に置くので間隔は 6 byte)。UNALIGNED のビット列は隙間なく詰まる。
+     *
+     * <p>LRM の配列の配置の規則から読んだもので、実機と突き合わせていない (P-185)。
+     */
+    static int strideBits(PliSyntax.Decl decl, boolean unaligned) {
+        int bits = elementBits(decl, unaligned);
+        int boundary = decl.type() == PliSyntax.Type.BIT && unaligned ? 1
+                : (unaligned ? 1 : alignment(decl)) * 8;
+        return (bits + boundary - 1) / boundary * boundary;
+    }
+
+    /** 配列なら全要素、スカラーならその要素のビット数。最後の要素の後ろには詰め物を付けない。 */
+    static int totalBits(PliSyntax.Decl decl, boolean unaligned) {
+        int count = decl.count();
+        return count <= 1 ? elementBits(decl, unaligned)
+                : strideBits(decl, unaligned) * (count - 1) + elementBits(decl, unaligned);
+    }
+
+    /**
+     * 要素が UNALIGNED か。書かれていなければ構造から受け継ぎ、どこにも無ければ型の既定
+     * (ビット列・文字・PICTURE は UNALIGNED、ほかは ALIGNED)。
+     */
+    static boolean unaligned(List<PliSyntax.Decl> tree, int index) {
+        Boolean effective = tree.get(index).aligned();
+        int level = tree.get(index).level();
+        for (int i = index - 1; i >= 0 && effective == null; i--) {
+            if (tree.get(i).level() < level) {
+                effective = tree.get(i).aligned();
+                level = tree.get(i).level();
+            }
+        }
+        PliSyntax.Type type = tree.get(index).type();
+        return effective != null ? !effective
+                : type == PliSyntax.Type.BIT || type == PliSyntax.Type.CHAR
+                        || type == PliSyntax.Type.PICTURE;
     }
 
     /**
@@ -160,22 +206,7 @@ final class StructureMapping {
 
     private static int elementBits(List<PliSyntax.Decl> tree, int index, Unit root) {
         PliSyntax.Decl decl = tree.get(index);
-        return decl.type() == PliSyntax.Type.BIT && root.offsets().containsKey(index)
-                && isBitPacked(tree, index)
-                ? Math.max(1, decl.precision()) : length(decl) * 8;
-    }
-
-    /** そのビット列が UNALIGNED (ビット単位で詰まる) か。受け継ぎを辿って決める。 */
-    private static boolean isBitPacked(List<PliSyntax.Decl> tree, int index) {
-        Boolean effective = tree.get(index).aligned();
-        int level = tree.get(index).level();
-        for (int i = index - 1; i >= 0 && effective == null; i--) {
-            if (tree.get(i).level() < level) {
-                effective = tree.get(i).aligned();
-                level = tree.get(i).level();
-            }
-        }
-        return effective == null || !effective;
+        return totalBits(decl, root.offsets().containsKey(index) && unaligned(tree, index));
     }
 
     /** 記憶域の大きさ (LRM Table 39)。 */

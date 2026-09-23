@@ -572,10 +572,10 @@ final class PliSyntax {
 
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
-            if (!dimensions.isEmpty() && info.type == Type.BIT) {
-                // UNALIGNED のビット列の配列は要素がビット単位で詰まる。byte ごとに置くと位置が
-                // ずれるので、持つまでは断る
-                throw new ParseFailure(part.get(0), "arrays of bit strings are not supported yet: "
+            if (!dimensions.isEmpty() && info.type == Type.GROUP) {
+                // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
+                // 要素がスカラーの配列 (2 A(5) FIXED BIN) は持つ
+                throw new ParseFailure(part.get(0), "arrays of structures are not supported yet: "
                         + name);
             }
             return new Decl(name, level, info.type, info.precision, info.scale,
@@ -587,7 +587,7 @@ final class PliSyntax {
         /**
          * 名の直後の {@code (n)}、{@code (lo:hi)}、{@code (n, m)} を次元として読む (LRM "DIMENSION
          * attribute")。以前は読み飛ばしていたので、{@code DCL A(10) FIXED BIN} が 1 つの変数に
-         * なっていた。構造の中の配列はまだ持たないので断る。
+         * なっていた。構造の中の配列は、要素がスカラーなら持つ (構造の配列は {@link #declaration} が断る)。
          */
         private List<Bound> dimensions(List<Token> part, int at, int level) {
             if (at >= part.size() || !part.get(at).is("(")) {
@@ -603,9 +603,6 @@ final class PliSyntax {
                     throw new ParseFailure(part.get(at), "bad array bounds");
                 }
                 bounds.add(new Bound(low, high));
-            }
-            if (level > 0) {
-                throw new ParseFailure(part.get(at), "arrays in a structure are not supported yet");
             }
             return List.copyOf(bounds);
         }

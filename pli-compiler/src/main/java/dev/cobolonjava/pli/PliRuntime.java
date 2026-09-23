@@ -412,7 +412,14 @@ public final class PliRuntime {
                     env.alias(prefix + "." + child.name(), variable);
                 }
                 group.members.add(variable);
-                if (!based) {
+                if (!child.dimensions().isEmpty()) {
+                    // 構造の中の配列。要素の間隔は構造の外の配列と同じ規則である
+                    declareElements(variable, child, StructureMapping.unaligned(tree, i),
+                            mapping.bitShift(i));
+                    if (!based) {
+                        initializeElements(variable, child.initialItems(), env);
+                    }
+                } else if (!based) {
                     initialize(variable, child.initial(), env);
                 }
                 if (child.type() == PliSyntax.Type.GROUP) {
@@ -504,7 +511,8 @@ public final class PliRuntime {
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
             if (!declaration.dimensions().isEmpty()) {
-                declareElements(variable, declaration);
+                declareElements(variable, declaration,
+                        StructureMapping.unaligned(List.of(declaration), 0), 0);
             }
             env.put(variable);
             if (alias != null) env.alias(alias, variable);
@@ -519,15 +527,21 @@ public final class PliRuntime {
 
         /**
          * 配列の要素を、行の順 (最後の添字がいちばん速く変わる) に並べる (LRM "Array storage")。
-         * 要素は配列の記憶域を等分した部分である。
+         * 要素の間隔は {@link StructureMapping#strideBits} が決める。UNALIGNED のビット列の配列は
+         * ビット単位で詰まり、要素が byte の途中から始まる。
+         *
+         * @param baseShift 配列の頭が最初の byte の何ビット目から始まるか
          */
-        private static void declareElements(Var array, PliSyntax.Decl declaration) {
+        private static void declareElements(Var array, PliSyntax.Decl declaration,
+                                            boolean unaligned, int baseShift) {
             array.dimensions = declaration.dimensions();
-            int length = StructureMapping.length(declaration);
+            int stride = StructureMapping.strideBits(declaration, unaligned);
+            int bits = StructureMapping.elementBits(declaration, unaligned);
             for (int k = 0; k < declaration.count(); k++) {
+                int at = baseShift + k * stride;
                 Var element = new Var(declaration.name(), declaration.type(),
                         declaration.precision(), declaration.scale(),
-                        array.view.subView(k * length, length));
+                        array.view.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
                 element.varying = declaration.varying();
                 array.elements.add(element);
             }
@@ -577,6 +591,37 @@ public final class PliRuntime {
             }
         }
 
+        /** 配列の式を要素ごとに評価しているときの要素の番号。そうでなければ -1。 */
+        private int elementIndex = -1;
+        /** 要素ごとに評価しているときの、代入先の配列の上下限。 */
+        private List<PliSyntax.Bound> elementShape;
+
+        /**
+         * 式が配列そのものを含むか。添字を付けた要素 ({@code A(I)}) と、配列そのものを引数に取る
+         * 組込み関数 ({@code SIZE} ほか) の中は数えない。
+         */
+        private boolean containsArray(PliSyntax.Expr expression, Env env) {
+            return switch (expression) {
+                case PliSyntax.Literal literal -> false;
+                case PliSyntax.Reference reference -> env.contains(reference.name())
+                        && env.require(reference.name()).dimensions != null;
+                case PliSyntax.Unary unary -> containsArray(unary.operand(), env);
+                case PliSyntax.Binary binary -> containsArray(binary.left(), env)
+                        || containsArray(binary.right(), env);
+                case PliSyntax.Function function -> {
+                    String name = function.name().toUpperCase(Locale.ROOT);
+                    if (List.of("SIZE", "STORAGE", "STG", "ADDR").contains(name)) {
+                        yield false;
+                    }
+                    boolean any = false;
+                    for (PliSyntax.Expr argument : function.arguments()) {
+                        any |= containsArray(argument, env);
+                    }
+                    yield any;
+                }
+            };
+        }
+
         private void assign(PliSyntax.Assign assignment, Env env) {
             if (!assignment.subscripts().isEmpty()) {
                 Var array = arrayNamed(assignment.target(), env);
@@ -604,6 +649,21 @@ public final class PliRuntime {
                     }
                     for (int k = 0; k < target.elements.size(); k++) {
                         target.elements.get(k).write(source.elements.get(k).read(context), context);
+                    }
+                    return;
+                }
+                if (containsArray(assignment.value(), env)) {
+                    // 配列の式 (A = B + 1、A = B * C)。要素ごとに、式の中の配列をその要素に
+                    // 置き換えて評価する (LRM "Array expressions")。上下限の違う配列は混ぜられない
+                    for (int k = 0; k < target.elements.size(); k++) {
+                        elementIndex = k;
+                        elementShape = target.dimensions;
+                        try {
+                            target.elements.get(k).write(value(assignment.value(), env), context);
+                        } finally {
+                            elementIndex = -1;
+                            elementShape = null;
+                        }
                     }
                     return;
                 }
@@ -1056,10 +1116,17 @@ public final class PliRuntime {
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
                 if (variable.dimensions != null) {
-                    // 配列の式 (A + 1 など) はまだ持たない。記憶域をまとめて文字として読むと
-                    // 黙って違う値になるので断る
-                    throw new PliExecutionException("array expressions are not supported yet: "
-                            + variable.name);
+                    if (elementIndex >= 0) {
+                        if (!variable.dimensions.equals(elementShape)) {
+                            throw new PliExecutionException("array " + variable.name
+                                    + " has different bounds from the target of the assignment");
+                        }
+                        return variable.elements.get(elementIndex).read(context);
+                    }
+                    // 配列の式は、配列への代入の右辺にだけ書ける。スカラーへの代入や PUT の中では、
+                    // 記憶域をまとめて読むと黙って違う値になるので断る
+                    throw new PliExecutionException("array expressions are supported only as the"
+                            + " value assigned to an array: " + variable.name);
                 }
                 return variable.read(context);
             }
@@ -1418,8 +1485,9 @@ public final class PliRuntime {
 
         /** 変数の大きさ。POINTER も 4 byte の値を持つ。 */
         private static int byteLength(PliSyntax.Decl declaration) {
-            // 配列は要素の大きさの要素の数倍
-            return StructureMapping.length(declaration) * declaration.count();
+            // 配列は要素の間隔の要素の数倍。UNALIGNED のビット列の配列はビット単位で詰まる
+            return (StructureMapping.totalBits(declaration,
+                    StructureMapping.unaligned(List.of(declaration), 0)) + 7) / 8;
         }
 
         private static void copy(DataView source, DataView target, byte pad) {

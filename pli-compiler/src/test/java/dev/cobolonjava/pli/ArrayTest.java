@@ -131,17 +131,71 @@ class ArrayTest {
     }
 
     @Test
+    @DisplayName("構造の中の配列は、構造の中の場所に要素を並べる")
+    void arraysInsideAStructure() throws Exception {
+        // K (2 byte) と T (1 byte) の対は N (半語) の方へ 1 byte ずれ、隙間は構造の外へ出る。
+        // だから大きさは 8 ではなく 7 (1 + 2 + 4)
+        assertEquals("AB C 7 9 SIZE=7\n", main("""
+                DCL 1 S,
+                      2 K(2) CHAR(1) INIT('A', 'B'),
+                      2 T CHAR(1) INIT('C'),
+                      2 N(2) FIXED BIN(15);
+                N(1) = 7;
+                S.N(2) = 9;
+                PUT SKIP EDIT(K(1), K(2), ' ', T, ' ', N(1), ' ', N(2), ' SIZE=', SIZE(S))
+                             (A, A, A, A, A, F(1), A, F(1), A, F(1));
+                """));
+    }
+
+    @Test
+    @DisplayName("ALIGNED の要素の配列は、要素の境界に合わせて並ぶ")
+    void alignedArrayElementsKeepTheirBoundary() throws Exception {
+        // C は 1 byte、N は全語の境界。対の規則で C は N の直前へずれるので、構造は 1 + 4 x 2 = 9 byte
+        assertEquals("9\n", main("""
+                DCL 1 S, 2 C CHAR(1), 2 N(2) FIXED BIN(31);
+                PUT SKIP EDIT(SIZE(S))(F(1));
+                """));
+    }
+
+    @Test
+    @DisplayName("ビット列の配列は UNALIGNED ならビット単位で詰まる")
+    void bitArraysArePacked() throws Exception {
+        assertEquals("101 SIZE=1 X=A0\n", main("""
+                DCL B(3) BIT(1) INIT('1'B, '0'B, '1'B);
+                DCL X CHAR(1) BASED(ADDR(B));
+                DCL S CHAR(9) VARYING INIT('');
+                IF B(1) THEN S = '1'; ELSE S = '0';
+                IF B(2) THEN S = S || '1'; ELSE S = S || '0';
+                IF B(3) THEN S = S || '1'; ELSE S = S || '0';
+                IF X = 'A0'X THEN S = S || ' SIZE=';
+                PUT SKIP EDIT(S, SIZE(B), ' X=A0')(A, F(1), A);
+                """));
+    }
+
+    @Test
+    @DisplayName("配列の式は、配列への代入の右辺で要素ごとに評価する")
+    void arrayExpressionsAreEvaluatedElementWise() throws Exception {
+        assertEquals("11 22 33\n", main("""
+                DCL A(3) FIXED BIN(15) INIT(1, 2, 3);
+                DCL B(3) FIXED BIN(15) INIT(10, 20, 30);
+                DCL C(3) FIXED BIN(15);
+                C = A + B;
+                PUT SKIP EDIT(C(1), ' ', C(2), ' ', C(3))(F(2), A, F(2), A, F(2));
+                """));
+    }
+
+    @Test
     @DisplayName("まだ持たない配列は、次元を黙って捨てずに断る")
     void unsupportedArraysAreRefused() {
-        assertTrue(rejection("DCL 1 S, 2 A(3) CHAR(1);").contains("structure"));
-        assertTrue(rejection("DCL B(8) BIT(1);").contains("bit strings"));
+        assertTrue(rejection("DCL 1 S(3), 2 A CHAR(1);").contains("arrays of structures"));
+        assertTrue(rejection("DCL 1 S, 2 R(3), 3 A CHAR(1);").contains("arrays of structures"));
         assertTrue(rejection("DCL C(*) CHAR(1);").contains("bounds"));
         RuntimeException expression = assertThrows(RuntimeException.class, () -> main("""
                 DCL A(2) FIXED BIN(15);
                 DCL B FIXED BIN(15);
                 B = A + 1;
                 """));
-        assertTrue(String.valueOf(expression.getMessage()).contains("array expressions"),
+        assertTrue(String.valueOf(expression.getMessage()).contains("assigned to an array"),
                 expression::getMessage);
     }
 }
