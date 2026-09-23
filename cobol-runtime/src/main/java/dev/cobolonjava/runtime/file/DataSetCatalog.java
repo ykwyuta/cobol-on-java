@@ -41,6 +41,16 @@ public final class DataSetCatalog {
         return this;
     }
 
+    /** DD 名の結び付けを外す。TSO の {@code FREE FILE(dd)} である。 */
+    public DataSetCatalog release(String ddName) {
+        String key = ddName.toUpperCase(Locale.ROOT);
+        assignments.remove(key);
+        limits.remove(key);
+        secondaries.remove(key);
+        members.remove(key);
+        return this;
+    }
+
     /**
      * その DD 名が結び付けられているか。
      *
