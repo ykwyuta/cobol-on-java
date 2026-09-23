@@ -3476,8 +3476,11 @@ public final class ProgramGenerator {
                 run.visitLdcInsn(name);
                 run.visitInsn(atEndHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
                 run.visitInsn(invalidKeyHandled ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+                // 領域を使い切ったときの異常終了コードは割当てが決める (SD37 / SB37 / SE37)
+                run.visitVarInsn(Opcodes.ALOAD, 2);
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "checkFile",
-                        "([B" + CODE_PAGE + "Ljava/lang/String;ZZ)V", false);
+                        "([B" + CODE_PAGE + "Ljava/lang/String;ZZ"
+                                + Type.getDescriptor(ProgramContext.class) + ")V", false);
             };
         }
         Runnable storing = store;

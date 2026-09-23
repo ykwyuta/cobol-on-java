@@ -230,7 +230,7 @@ public final class JobRunner {
             for (DdAssignment assignment : step.dd()) {
                 dd.add(new DdAssignment(assignment.name(),
                         withGenerations(assignment.target(), starts),
-                        assignment.space(), assignment.directoryBlocks()));
+                        assignment.space(), assignment.directoryBlocks(), assignment.secondary()));
             }
             steps.add(new Step(step.name(), step.program(), step.parm(), dd, step.condition()));
         }
@@ -557,6 +557,7 @@ public final class JobRunner {
         if (assignment.space() != DdAssignment.UNLIMITED) {
             // 割り当てた大きさを目録へ伝える。使い切れば書けなくなる
             catalog.limit(name, assignment.space());
+            catalog.secondary(name, assignment.secondary());
         }
         switch (assignment.target()) {
             case DdTarget.DataSet target -> {

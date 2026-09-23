@@ -7,8 +7,16 @@ package dev.cobolonjava.job;
  * @param target           実際の行き先
  * @param space            書ける大きさ (バイト)。{@code 0} なら限りなし
  * @param directoryBlocks  ディレクトリブロックの数。{@code 0} なら区分データセットではない
+ * @param secondary        二次割当を書いたか。使い切ったときの異常終了コードが変わる
+ *                         (無ければ SD37、あれば順編成は SB37、区分は SE37。暫定判断 P-052)
  */
-public record DdAssignment(String name, DdTarget target, long space, int directoryBlocks) {
+public record DdAssignment(String name, DdTarget target, long space, int directoryBlocks,
+                           boolean secondary) {
+
+    /** 二次割当を言わない割当。 */
+    public DdAssignment(String name, DdTarget target, long space, int directoryBlocks) {
+        this(name, target, space, directoryBlocks, false);
+    }
 
     /** 限りのない割当。大きさを言わない記述はこちらである。 */
     public static final long UNLIMITED = 0L;

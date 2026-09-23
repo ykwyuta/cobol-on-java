@@ -121,7 +121,9 @@ abstract class UtilityProgram implements CobolProgram {
         String ddName = context.catalog().ddNameFor(path);
         long limit = ddName == null ? 0 : context.catalog().limitOf(ddName);
         if (limit > 0 && bytes.length > limit) {
-            throw new FileOperationException(named(context, path), FileStatus.NO_SPACE);
+            throw new FileOperationException(named(context, path), FileStatus.NO_SPACE,
+                    DataSetAllocation.spaceAbend(context.catalog().hasSecondary(ddName),
+                            context.catalog().isMemberOfLibrary(ddName)));
         }
         writeBytes(path, bytes);
     }

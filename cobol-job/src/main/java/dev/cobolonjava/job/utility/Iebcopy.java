@@ -1,6 +1,7 @@
 package dev.cobolonjava.job.utility;
 
 import dev.cobolonjava.job.jcl.JclOperands;
+import dev.cobolonjava.runtime.file.DataSetAllocation;
 import dev.cobolonjava.runtime.file.DataSetAttributes;
 import dev.cobolonjava.runtime.file.FileStatus;
 import dev.cobolonjava.runtime.file.MemberStatistics;
@@ -437,7 +438,9 @@ public final class Iebcopy extends UtilityProgram {
             }
         }
         if (occupied + bytes.length > limit) {
-            throw new FileOperationException(ddName, FileStatus.NO_SPACE);
+            // 区分データセットはボリュームをまたげない。二次割当があれば SE37 である
+            throw new FileOperationException(ddName, FileStatus.NO_SPACE,
+                    DataSetAllocation.spaceAbend(context.catalog().hasSecondary(ddName), true));
         }
     }
 

@@ -43,6 +43,8 @@ class AbendCodeTest {
         // 装置の誤りと、書ける範囲を越えたことだけがシステムのコードになる
         assertEquals(AbendCode.S001, Abend.codeOf(new FileOperationException("IN", "30")));
         assertEquals(AbendCode.S037, Abend.codeOf(new FileOperationException("OUT", "34")));
+        assertEquals(AbendCode.SB37,
+                Abend.codeOf(new FileOperationException("OUT", "34", AbendCode.SB37)));
         // 開き方の誤りや無効鍵はプログラムの誤りであり、言語環境が検出した条件である
         assertEquals(AbendCode.U4038, Abend.codeOf(new FileOperationException("IN", "37")));
         assertEquals(AbendCode.U4038, Abend.codeOf(new FileOperationException("IN", "23")));

@@ -279,7 +279,7 @@ class LibraryUtilityTest {
      * (暫定判断 P-053)。
      */
     @Test
-    @DisplayName("写し先の領域を越えれば S037 (FR-141、P-053)")
+    @DisplayName("写し先の領域を越えれば SD37 (FR-141、P-053、P-052)")
     void theOutputLibraryHonoursItsSpace() {
         member("A.LIB", "PAYROLL", "AAAAAAAAAAAAAAAAAAAA");
         member("A.LIB", "TAXES", "BBBBBBBBBBBBBBBBBBBB");
@@ -294,7 +294,7 @@ class LibraryUtilityTest {
                 "  COPY INDD=IN,OUTDD=OUT");
 
         assertEquals(JobRunner.Status.ABENDED, result.step("STEP1").status());
-        assertEquals(AbendCode.S037, result.step("STEP1").abendCode());
+        assertEquals(AbendCode.SD37, result.step("STEP1").abendCode());
     }
 
     @Test

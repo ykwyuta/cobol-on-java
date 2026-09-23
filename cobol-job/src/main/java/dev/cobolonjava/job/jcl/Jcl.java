@@ -314,18 +314,23 @@ public final class Jcl {
             }
             lastDd = card.name().toUpperCase(Locale.ROOT);
             dd.add(new DdAssignment(lastDd, allocation.target(), allocation.space(),
-                    allocation.directory()));
+                    allocation.directory(), allocation.secondary()));
         }
 
         /**
          * {@code DD} 文 1 枚が言っていること。行き先と、割り当てる大きさである。
          *
          * @param directory ディレクトリブロックの数。書かなければ {@code 0}
+         * @param secondary 二次割当を書いたか
          */
-        private record Allocation(DdTarget target, long space, int directory) {
+        private record Allocation(DdTarget target, long space, int directory, boolean secondary) {
 
             Allocation(DdTarget target, long space) {
-                this(target, space, 0);
+                this(target, space, 0, false);
+            }
+
+            Allocation(DdTarget target, long space, int directory) {
+                this(target, space, directory, false);
             }
         }
 
@@ -362,6 +367,7 @@ public final class Jcl {
             DdTarget special = null;
             long space = DdAssignment.UNLIMITED;
             int directory = 0;
+            boolean secondary = false;
             String serial = null;
             for (String operand : JclOperands.split(operands)) {
                 String key = JclOperands.key(operand).toUpperCase(Locale.ROOT);
@@ -375,6 +381,7 @@ public final class Jcl {
                         Space allocated = spaceOf(card, value);
                         space = allocated.bytes();
                         directory = allocated.directory();
+                        secondary = allocated.secondary();
                     }
                     case "VOL", "VOLUME" -> serial = serialOf(card, value);
                     // 装置と記述の指定は、ファイルとして持つこの実装では効かない
@@ -394,21 +401,21 @@ public final class Jcl {
             // あとなので、ここまで残っている & は名前の一部である
             if (name.startsWith("&")) {
                 return new Allocation(new DdTarget.Temporary(name.substring(1), disposition),
-                        space, directory);
+                        space, directory, secondary);
             }
             // 括弧の中が相対世代なら、これはメンバではなく世代データグループである
             String qualifier = qualifierOf(name);
             if (qualifier != null && GenerationDataGroup.relative(qualifier)) {
                 return new Allocation(new DdTarget.DataSet(libraryOf(name), null, serial,
                         disposition, Integer.valueOf(Integer.parseInt(qualifier))),
-                        space, directory);
+                        space, directory, secondary);
             }
             String member = memberOf(card, name);
             if (member != null && member.isEmpty()) {
                 return null;
             }
             return new Allocation(new DdTarget.DataSet(libraryOf(name), member, serial,
-                    disposition), space, directory);
+                    disposition), space, directory, secondary);
         }
 
         /**
@@ -485,9 +492,12 @@ public final class Jcl {
         /**
          * {@code SPACE=(単位,(一次,二次))} (要件 FR-141)。
          *
-         * <p>読むのは<b>一次割当と二次割当があるかどうか</b>だけである。二次割当があれば
-         * 使い切っても伸ばせるので、限りなしとして扱う。無ければ一次割当がそのまま限りに
-         * なる。ホストで {@code SPACE} を書き忘れたジョブが途中で止まるのは、この形である。
+         * <p>二次割当が無ければ一次割当がそのまま限りになり、使い切れば {@code SD37} である。
+         * 二次割当があれば、1 つのボリュームに取れるエクステント 16 個 (一次 1 個と二次 15 個) が
+         * 限りになり、使い切れば順編成は {@code SB37}、区分データセットは {@code SE37} である
+         * (暫定判断 P-052)。以前は二次割当があれば限りなしとしていた。二次割当の 1 回が
+         * 1 つのエクステントに収まるとしている。空きが散らばったボリュームでは、1 回の二次割当が
+         * 複数のエクステントになり、実機ではもっと早く止まる。
          *
          * <p>単位は {@code TRK} / {@code CYL} / ブロック長である。トラックとシリンダの
          * 大きさは 3390 のものを使う。実際の装置を持たない以上どこかで決めるほかなく、
@@ -510,12 +520,14 @@ public final class Jcl {
             List<String> amounts = JclOperands.split(JclOperands.unwrap(parts.get(1)));
             // 3 つ目はディレクトリブロックの数である。書いてあれば区分データセットになる
             int directory = amounts.size() >= 3 ? (int) number(amounts.get(2)) : 0;
-            if (amounts.size() >= 2 && number(amounts.get(1)) > 0) {
-                // 二次割当があれば伸ばせる。使い切って止まることはない
-                return new Space(DdAssignment.UNLIMITED, directory);
-            }
             long primary = number(amounts.isEmpty() ? "" : amounts.get(0));
-            return new Space(primary > 0 ? primary * unit : DdAssignment.UNLIMITED, directory);
+            long extension = amounts.size() >= 2 ? number(amounts.get(1)) : 0;
+            if (extension > 0) {
+                // 二次割当は 15 回まで伸ばせる (1 つのボリュームに 16 エクステント)
+                return new Space((primary + 15 * extension) * unit, directory, true);
+            }
+            return new Space(primary > 0 ? primary * unit : DdAssignment.UNLIMITED, directory,
+                    false);
         }
 
         /**
@@ -523,10 +535,11 @@ public final class Jcl {
          *
          * @param bytes     書ける大きさ。{@code 0} なら限りなし
          * @param directory ディレクトリブロックの数。{@code 0} なら区分データセットではない
+         * @param secondary 二次割当を書いたか
          */
-        private record Space(long bytes, int directory) {
+        private record Space(long bytes, int directory, boolean secondary) {
 
-            static final Space NONE = new Space(DdAssignment.UNLIMITED, 0);
+            static final Space NONE = new Space(DdAssignment.UNLIMITED, 0, false);
         }
 
         /** 3390 のトラックは 56664 バイト、シリンダは 15 トラックである。 */

@@ -1255,6 +1255,21 @@ public final class Ops {
     }
 
     /**
+     * {@link #checkFile(byte[], CodePage, String, boolean, boolean)} と同じだが、領域を使い切った
+     * ときの異常終了コードを割当てから決める (二次割当と区分かどうかで SD37 / SB37 / SE37、
+     * 暫定判断 P-052)。
+     */
+    public static void checkFile(byte[] status, CodePage codePage, String name,
+                                 boolean atEndHandled, boolean invalidKeyHandled,
+                                 ProgramContext context) {
+        if (fileFailed(status, codePage, atEndHandled, invalidKeyHandled)) {
+            String decoded = codePage.decode(status);
+            throw new FileOperationException(name, decoded,
+                    FileStatus.NO_SPACE.equals(decoded) ? context.spaceAbendOf(name) : null);
+        }
+    }
+
+    /**
      * 受け止め手のない異常かどうか (要件 FR-104, FR-105)。
      *
      * <p>{@code USE AFTER STANDARD ERROR PROCEDURE} を呼ぶかどうかの判定であり、

@@ -145,15 +145,16 @@ class JclTest {
     }
 
     @Test
-    @DisplayName("二次割当があれば限りなしになる (FR-141)")
-    void aSecondaryAllocationMeansNoLimit() {
+    @DisplayName("二次割当があれば、一次 1 回と二次 15 回 (16 エクステント) が限りになる (FR-141、P-052)")
+    void aSecondaryAllocationExtendsUpToSixteenExtents() {
         Job job = job(
                 "//PAYROLL  JOB  (ACCT)",
                 "//CHECK    EXEC PGM=PAYCHK",
                 "//OUT      DD   DSN=PAY.OUT,DISP=(NEW,CATLG),SPACE=(80,(100,20))");
 
-        // 使い切っても伸ばせる。止まらないのだから限りを設けても意味がない
-        assertEquals(DdAssignment.UNLIMITED, job.steps().get(0).dd().get(0).space());
+        // 以前は「伸ばせるので限りなし」としていたが、ホストは 16 エクステントで止まる (SB37)
+        assertEquals((100L + 15 * 20) * 80, job.steps().get(0).dd().get(0).space());
+        assertTrue(job.steps().get(0).dd().get(0).secondary());
     }
 
     @Test

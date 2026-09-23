@@ -240,8 +240,8 @@ class AbendTest {
     }
 
     @Test
-    @DisplayName("割り当てた領域を使い切って書けなくなるのは S037 (FR-141)")
-    void runningOutOfSpaceIsS037() {
+    @DisplayName("二次割当の無い領域を使い切って書けなくなるのは SD37 (FR-141、P-052)")
+    void runningOutOfSpaceIsSd37() {
         dataSet("IN.DAT", 60, 20);
 
         JobRunner.Result result = run(
@@ -252,7 +252,39 @@ class AbendTest {
                 "//              SPACE=(20,(2))");
 
         assertEquals(JobRunner.Status.ABENDED, result.step("STEP1").status());
-        assertEquals(AbendCode.S037, result.step("STEP1").abendCode());
+        assertEquals(AbendCode.SD37, result.step("STEP1").abendCode());
+    }
+
+    @Test
+    @DisplayName("二次割当も使い切れば SB37。16 エクステント (一次 1、二次 15) が限り (P-052)")
+    void runningOutOfSecondarySpaceIsSb37() {
+        // 20 バイトのレコード 17 件。一次 1 件 + 二次 1 件 x 15 回 = 16 件で止まる
+        dataSet("IN.DAT", 340, 20);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IOFAIL",
+                "//INDD     DD   DSN=IN.DAT,DISP=SHR",
+                "//OUTDD    DD   DSN=OUT.DAT,DISP=(NEW,CATLG),",
+                "//              SPACE=(20,(1,1))");
+
+        assertEquals(JobRunner.Status.ABENDED, result.step("STEP1").status());
+        assertEquals(AbendCode.SB37, result.step("STEP1").abendCode());
+    }
+
+    @Test
+    @DisplayName("16 エクステントに収まれば、二次割当で伸びて止まらない (P-052)")
+    void secondarySpaceExtendsTheDataSet() {
+        dataSet("IN.DAT", 320, 20);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IOFAIL",
+                "//INDD     DD   DSN=IN.DAT,DISP=SHR",
+                "//OUTDD    DD   DSN=OUT.DAT,DISP=(NEW,CATLG),",
+                "//              SPACE=(20,(1,1))");
+
+        assertEquals(JobRunner.Status.EXECUTED, result.step("STEP1").status());
     }
 
     @Test

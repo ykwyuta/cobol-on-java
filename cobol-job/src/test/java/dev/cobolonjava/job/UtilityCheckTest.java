@@ -26,7 +26,7 @@ import org.junit.jupiter.api.io.TempDir;
  * ジョブ全体の合い方が変わってしまう。
  *
  * <p>立つコードは翻訳された資産と同じである。無いメンバは {@code S013}、形が壊れているのは
- * {@code S001}、領域を使い切ったのは {@code S037} である。
+ * {@code S001}、二次割当の無い領域を使い切ったのは {@code SD37} である。
  */
 @Tag("V1")
 class UtilityCheckTest {
@@ -165,8 +165,25 @@ class UtilityCheckTest {
     // ---- 領域の限り (要件 FR-141) ----
 
     @Test
-    @DisplayName("IEBGENER が割り当てた領域に収まらなければ S037 (FR-141)")
-    void copyingPastTheAllocationIsS037() {
+    @DisplayName("区分データセットのメンバが二次割当も使い切れば SE37 (P-052)")
+    void aMemberOutOfExtentsIsSe37() {
+        write("IN.DAT", "A".repeat(85), 5);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=IEBGENER",
+                "//SYSUT1   DD   DSN=IN.DAT,DISP=SHR",
+                "//SYSUT2   DD   DSN=OUT.LIB(MEM1),DISP=(NEW,CATLG),",
+                "//              SPACE=(5,(1,1,1))",
+                "//SYSPRINT DD   SYSOUT=*");
+
+        // 5 バイト x 16 エクステント = 80 バイトへ 85 バイト
+        assertEquals(AbendCode.SE37, result.step("STEP1").abendCode());
+    }
+
+    @Test
+    @DisplayName("IEBGENER が割り当てた領域に収まらなければ SD37 (FR-141、P-052)")
+    void copyingPastTheAllocationIsSd37() {
         write("IN.DAT", "AAAAABBBBBCCCCC", 5);
 
         JobRunner.Result result = run(
@@ -178,7 +195,7 @@ class UtilityCheckTest {
                 "//SYSPRINT DD   SYSOUT=*");
 
         // 10 バイトしか取っていないところへ 15 バイト写そうとしている
-        assertEquals(AbendCode.S037, result.step("STEP1").abendCode());
+        assertEquals(AbendCode.SD37, result.step("STEP1").abendCode());
     }
 
     @Test

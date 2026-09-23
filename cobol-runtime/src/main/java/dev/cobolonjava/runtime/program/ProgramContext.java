@@ -375,6 +375,15 @@ public final class ProgramContext {
      * @param name   {@code FD} に書かれたファイル名
      * @param ddName {@code ASSIGN TO} に書かれた DD 名
      */
+    /**
+     * そのファイルが領域を使い切ったときの異常終了コード (暫定判断 P-052)。まだ開いていない
+     * ファイルなら {@code S037} である。
+     */
+    public dev.cobolonjava.runtime.abend.AbendCode spaceAbendOf(String name) {
+        DataSet file = files.get(name);
+        return file == null ? dev.cobolonjava.runtime.abend.AbendCode.S037 : file.spaceAbend();
+    }
+
     public DataSet file(String name, String ddName) {
         return files.computeIfAbsent(name,
                 k -> allocated(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
@@ -413,6 +422,7 @@ public final class ProgramContext {
     private DataSet allocated(DataSet file, String ddName) {
         file.limit(catalog.limitOf(ddName));
         file.member(catalog.isMemberOfLibrary(ddName));
+        file.secondary(catalog.hasSecondary(ddName));
         return file;
     }
 

@@ -1,5 +1,6 @@
 package dev.cobolonjava.runtime.file;
 
+import dev.cobolonjava.runtime.abend.AbendCode;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,6 +28,8 @@ public final class DataSetAllocation {
     private long limit;
     /** 区分データセットのメンバを指しているか。 */
     private boolean member;
+    /** 二次割当を書いたか。使い切ったときの異常終了コードを決める。 */
+    private boolean secondary;
 
     /**
      * 書ける大きさに限りを設ける (要件 FR-141)。
@@ -49,6 +52,29 @@ public final class DataSetAllocation {
      */
     void member(boolean value) {
         this.member = value;
+    }
+
+    /** 二次割当を書いたと告げる (暫定判断 P-052)。 */
+    void secondary(boolean value) {
+        this.secondary = value;
+    }
+
+    /**
+     * 領域を使い切ったときの異常終了コード ({@code FILE STATUS} を書いていないとき)。
+     *
+     * <p>二次割当が無ければ {@code SD37}、あれば区分データセットのメンバは {@code SE37}、
+     * 順編成は {@code SB37} である (暫定判断 P-052)。
+     */
+    AbendCode spaceAbend() {
+        return spaceAbend(secondary, member);
+    }
+
+    /** 二次割当と区分かどうかから、領域を使い切ったときの異常終了コードを決める。 */
+    public static AbendCode spaceAbend(boolean secondary, boolean partitioned) {
+        if (!secondary) {
+            return AbendCode.SD37;
+        }
+        return partitioned ? AbendCode.SE37 : AbendCode.SB37;
     }
 
     /**
