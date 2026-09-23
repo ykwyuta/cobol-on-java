@@ -161,12 +161,55 @@ java -cp <classpath> dev.cobolonjava.compiler.Main \
 
 ---
 
-## 6. ブラウザで動かすには
+## 6. ブラウザで動かす (Spring Boot + Thymeleaf)
 
-同じ `TODOSET.bms` と `TODOAPP.cbl` は、`cobol-spring-boot-4-bms-thymeleaf` の
-`CicsBrowserController` を構成すれば、そのままブラウザの 3270 画面として出せます
-([設計 81](../../docs/design/81-bms-web-renderer.md))。`TodoTerminal` が
-`BmsScreenSnapshot` を文字の格子に置き直しているところを、Thymeleaf の template が
-HTML に置き直すだけの違いです。**COBOL も BMS も書き換えません。**
-本デモが文字の端末を選んだのは、Spring Boot の起動も認証も要らず、
-1 つのコマンドで動かせるからです。
+同じ `TODOSET.bms` と `TODOAPP.cbl` を、**書き換えずに**ブラウザの 3270 画面として出す版を
+[`web/`](web/) に置いてあります。`TodoTerminal` が `BmsScreenSnapshot` を文字の格子に
+置き直しているところを、`cobol-spring-boot-4-bms-thymeleaf` の Thymeleaf template が
+HTML に置き直します ([設計 81](../../docs/design/81-bms-web-renderer.md))。
+
+### 実行方法
+
+```cmd
+demo\009\run_web.bat
+```
+
+```sh
+demo/009/run_web.sh
+```
+
+`http://localhost:8080/` を開き、`demo` / `demo` でログインすると TODO transaction の開始画面が出ます。
+`Start TODO` で最初の画面、あとは COMMAND 欄に打って `Enter`、終えるときは `PF3` です。
+`Clear` は入力を送らないので、端末版と同じく `MAPFAIL` の画面になります。
+
+### 端末版との違い
+
+Java 側に書いたのは [`TodoWebApplication.java`](web/src/main/java/demo/web/TodoWebApplication.java) の
+bean 2 つ (transaction の登録と、翻訳した TODOAPP の実行) だけです。端末版が手で書いていたものは、
+処理系の自動構成と設定 ([`application.properties`](web/src/main/resources/application.properties)) が受け持ちます。
+
+| 端末版 (`TodoTerminal`) | ブラウザ版 |
+| --- | --- |
+| 1 行を読んで `BmsTerminalInput` を作る | `CicsBrowserController` が form を `BmsTerminalInput` にする |
+| 文字の格子に描く | `templates/cobol/bms/screen.html` が描く。PF キーは button とキーボードの両方 |
+| COMMAREA を変数で次の task へ渡す | 会話ストアが持つ。`cobol.cics.conversation.consistency=strict` で H2 の表に置く |
+| task ごとに `Db2TaskRuntime` を開く境界を手で書く | STRICT の task 境界。**業務の SQL と次の会話が同じ UOW で確定する** (設計 77 §4.6) |
+| 認証なし | `cobol.cics.security.mode=demo` の簡易認証。ブラウザの入口は認証と CSRF が無ければ開かない (設計 84) |
+| 端末名 `T001` | HTTP session ごとに `W` + 3 文字の端末名 |
+
+表の作成と初期の 2 行は `todo-schema.sql` / `todo-data.sql` を Spring Boot の SQL 初期化が流します。
+会話の表は処理系が持つ DDL (`cobol-conversation-schema.sql`) を同じ H2 に作ります。
+
+### 確かめ方
+
+```sh
+mvn -f demo/009/web/pom.xml test
+```
+
+[`TodoWebApplicationTest`](web/src/test/java/demo/web/TodoWebApplicationTest.java) が、ブラウザと同じ
+hidden (冪等キー、会話の ID と版、画面の版) を載せ直しながら、開始 → ADD → DONE → DEL → CLEAR → PF3 を
+ブラウザの入口に送り、画面の文面と H2 の表の中身の両方を確かめます。事前に `run_web` か 5 章の翻訳で
+`demo/009/bin` を作っておいてください。
+
+`TODO_TEXT` は `VARCHAR(60)` ですが、COBOL のホスト変数が固定長の `PIC X(60)` なので、
+**後ろの空白ごと入ります** (Db2 と同じ振る舞い)。端末版でも同じです。
