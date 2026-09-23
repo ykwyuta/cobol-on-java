@@ -4,12 +4,12 @@
 #
 # 形: ジョブ ステップ プログラム [SYSIN の中身 (\n で行を分ける)]
 #
-# 翻訳の変種 (CBLNUMP など) は、ここでは元のプログラムを流す。この処理系の
-# 翻訳は NUMPROC / ARITH / ADV / NUMBER / RENT を読まないので (P-023)、変種を
+# 翻訳の変種 (CBLNUMP など) は、ここでは元のプログラムを流す。この処理系は
+# NUMPROC(PFD/MIG) を断り、ADV / NUMBER / RENT を読まないので (P-023)、変種を
 # 作っても同じクラスになる。実機の変種との差が、そのまま「効いていない
 # オプション」の証拠になる。
 # CEEOPTS の変種 (WSI2, WSI4, DBG2, DBG4) も同じ理由で元と同じに流す。
-# ただし SSRANGE はこの処理系でも効くので、「プログラム@オプション」と書いて
+# ただし SSRANGE と ARITH(EXTEND) はこの処理系でも効くので、「プログラム@オプション」と書いて
 # そのオプションで翻訳し直したものを流す (run-local.sh)。
 PRBRUNC NUMN  CBLNUM
 PRBRUNC NUMP  CBLNUM
@@ -33,9 +33,9 @@ PRBRUNC DBG2  CBLDEBUG
 PRBRUNC DBG3  CBLDEBUG
 PRBRUNC DBG4  CBLDEBUG
 PRBRUNC FUNC  CBLFUNC
-PRBRUNC FUNE  CBLFUNC
-PRBRUNC FUNX  CBLFUNX
-PRBRUNC BIN31 CBLBIN31
+PRBRUNC FUNE  CBLFUNC@ARITH(EXTEND)
+PRBRUNC FUNX  CBLFUNX@ARITH(EXTEND)
+PRBRUNC BIN31 CBLBIN31@ARITH(EXTEND)
 PRBRUNC FLT   CBLFLT
 PRBRUNP STRM1 PLISTRM
 PRBRUNP STRM2 PLISTRM

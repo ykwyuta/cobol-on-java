@@ -123,6 +123,9 @@ public final class ProgramGenerator {
     private final CodePage codePage;
     /** {@code SSRANGE} が効いているか。効いていれば添字と部分参照の位置を実行時に検査する。 */
     private final boolean rangeChecks;
+
+    /** 中間結果の総桁数の上限。{@code ARITH(COMPAT)} は 30、{@code ARITH(EXTEND)} は 31。 */
+    private final int arithmeticDigits;
     private final SpecialNames specialNames;
     /** PICTURE の通貨記号。{@code CURRENCY SIGN IS} で差し替えられる。 */
     private char currency = SpecialNames.DEFAULT_CURRENCY;
@@ -223,6 +226,7 @@ public final class ProgramGenerator {
         this.sourceName = sourceName;
         this.codePage = codePage;
         this.rangeChecks = options.subscriptRangeChecks();
+        this.arithmeticDigits = options.intermediateDigits();
         this.specialNames = specialNames;
     }
 
@@ -4723,7 +4727,8 @@ public final class ProgramGenerator {
         Operand operand = Condition.Relation.operandOf(side);
         return operand != null
                 ? planSourceDecimal(operand, origin)
-                : planExpression(side, IntermediateDigits.of(side, List.of()), origin);
+                : planExpression(side,
+                        IntermediateDigits.of(side, List.of(), arithmeticDigits), origin);
     }
 
     /**
@@ -5135,7 +5140,7 @@ public final class ProgramGenerator {
         Expression argument = function.arguments().get(index);
         IntermediateDigits digits = statementDigits != null
                 ? statementDigits
-                : IntermediateDigits.of(argument, List.of());
+                : IntermediateDigits.of(argument, List.of(), arithmeticDigits);
         return planExpression(argument, digits, origin);
     }
 
@@ -5746,7 +5751,8 @@ public final class ProgramGenerator {
      * 除算だけは結果の桁数が被演算子から決まらないため、この桁数がなければ命令が出せない。
      */
     private void planCompute(Statement.Compute statement, List<Runnable> body) {
-        IntermediateDigits digits = IntermediateDigits.of(statement.value(), statement.targets());
+        IntermediateDigits digits = IntermediateDigits.of(
+                statement.value(), statement.targets(), arithmeticDigits);
         IntermediateDigits enclosing = statementDigits;
         statementDigits = digits;
         try {
@@ -5989,7 +5995,8 @@ public final class ProgramGenerator {
         // 被演算子に組み込み関数を書けるので、その引数にも文全体の dmax を渡す
         IntermediateDigits enclosing = statementDigits;
         statementDigits = IntermediateDigits.of(
-                new Expression.Value(statement.operands().get(0)), statement.targets());
+                new Expression.Value(statement.operands().get(0)), statement.targets(),
+                arithmeticDigits);
         try {
             planArithmeticBody(statement, body);
         } finally {
@@ -6829,7 +6836,7 @@ public final class ProgramGenerator {
         if (subscript instanceof DataReference.Subscript.Computed computed) {
             // 部分参照の算術式。COMPUTE と同じ規則で評価し、整数部を位置にする
             Runnable value = planExpression(computed.expression(),
-                    IntermediateDigits.of(computed.expression(), List.of()), origin);
+                    IntermediateDigits.of(computed.expression(), List.of(), arithmeticDigits), origin);
             if (value == null) {
                 return null;
             }

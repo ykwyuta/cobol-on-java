@@ -18,8 +18,8 @@ public final class BinaryDecimal {
     /**
      * 指定桁数の 2 進項目が占めるバイト長。
      *
-     * <p><b>暫定対応</b>: 19〜31 桁 ({@code ARITH(EXTEND)} 時の 16 バイト項目) は未対応である。
-     * provisional.md の P-005 に記録している。
+     * <p>19 桁以上は断る。{@code ARITH(EXTEND)} が上限を 31 桁へ上げるのは 10 進の項目と数字定数で
+     * あり、2 進の項目は 18 桁のままだと読んでいる (暫定判断 P-005)。実機では確かめていない。
      */
     public static int byteLength(int digits) {
         if (digits >= 1 && digits <= 4) {
@@ -32,7 +32,8 @@ public final class BinaryDecimal {
             return 8;
         }
         throw new UnsupportedOperationException(
-                "binary items of " + digits + " digits (16-byte storage) are not implemented yet");
+                "binary items of " + digits + " digits are not supported: a binary item has at most"
+                + " 18 digits, even under ARITH(EXTEND) (P-005)");
     }
 
     /**

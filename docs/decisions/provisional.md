@@ -116,7 +116,7 @@ Hercules 上での実行結果とランタイムの出力をバイト列で突�
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 |
+| 状態 | 見直し (2026-09-24。`ARITH(EXTEND)` は実装した。2 進は 18 桁までと読み直した。実機は未確認) |
 | 場所 | `BinaryDecimal.byteLength` |
 | 関連要件 | FR-031, FR-041 |
 
@@ -124,6 +124,16 @@ Hercules 上での実行結果とランタイムの出力をバイト列で突�
 2 / 4 / 8 バイトの項目のみ対応している。
 
 **解消条件**: `ARITH(EXTEND)` の実装 (要件 FR-041) と合わせて 16 バイト項目を追加する。
+
+**2026-09-24 の追記**: `ARITH(EXTEND)` を実装した。PICTURE の上限を 18 桁から 31 桁へ、中間結果の
+上限を 30 桁から 31 桁へ上げる (`CompilerOptions.maximumNumericDigits` / `intermediateDigits`)。
+あわせて、COMPAT で 19 桁以上の PICTURE を書いた原文を断るようにした (以前は上限を調べていなかった)。
+
+2 進の項目は 16 バイトを**足さなかった**。解消条件は「`ARITH(EXTEND)` と合わせて 16 バイト項目を
+足す」としていたが、公開されている `ARITH` の説明が 31 桁へ広げるものとして挙げているのは 10 進
+(パック・ゾーン)・数字編集・数字定数であり、2 進は挙がっていない。解消条件のほうが**思い込み**
+だった疑いがある (CLAUDE.md §8)。19 桁以上の 2 進は「18 桁まで」という理由で断り、z/OS probe の
+`CBLBIN31` で実機が翻訳を通すかを見る。通るなら 16 バイトの項目を足す。
 
 ---
 
@@ -202,7 +212,7 @@ COBOL では<b>英数字編集項目</b>である。英字項目は `A` だけ�
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | **一部解消** (2026-09-04、`ARITH(COMPAT)` の規則を実装)。`ARITH(EXTEND)` は未解決 |
+| 状態 | **一部解消** (2026-09-04、`ARITH(COMPAT)` の規則を実装。2026-09-24、`ARITH(EXTEND)` の 31 桁を実装) |
 | 場所 | `IntermediateDigits` (コンパイラ) |
 | 関連要件 | FR-040, FR-041, FR-047 |
 
@@ -215,6 +225,14 @@ COBOL では<b>英数字編集項目</b>である。英字項目は `A` だけ�
 (`Ops.divide` / `Ops.truncate`)。方針 ARC-7 の切り分けはここでも保たれた。
 
 **残っている部分**: `ARITH(EXTEND)` の 32 桁。いまは `ARITH(COMPAT)` の 30 桁で固定である。
+
+**2026-09-24 の追記**: `ARITH(EXTEND)` を実装した。上限は **31 桁**であり、要件 FR-047 の「32 桁」は
+誤りだった (IBM の `ARITH` オプションの説明: 拡張モードの固定小数点の中間結果は最大 31 桁)。要件も
+直した。上限は `CompilerOptions.intermediateDigits` から `IntermediateDigits` へ渡す。
+
+まだ `ARITH` で分けていないもの: `NUMVAL` / `NUMVAL-C` / `NUMVAL-F` の引数の桁数 (18 / 31) と、
+`FACTORIAL` の引数の上限 (28 / 29。いまは 1000 まで計算する)。上限を超えたときに実機が何を返すかを
+確かめていないので、黙って変えずに残す。
 
 べき乗 (`**`) は 2026-09-08 に実装した。桁数は<b>指数で決まる</b> — 0 以上の整数の定数なら
 底の桁を指数の回だけ重ねた数、そうでなければ答えに近似が入るので持てるだけの小数桁を取る。
@@ -631,8 +649,8 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 
 | 分け方 | オプション | 扱い |
 | --- | --- | --- |
-| 効いている、または今の振る舞いと同じ値 | `SOURCEFORMAT`、`SSRANGE`、`CICS`、`SQL`、`DYNAM`、`ARITH(COMPAT)`、`TRUNC(STD)`、`NUMPROC(NOPFD)`、`FLOAT(HEX)`、`CODEPAGE(1047)`、`PGMNAME(COMPAT)`、`INTDATE(ANSI)`、`QUOTE` | 黙って通す |
-| 計算する値を変えるのに、その値を実装していない | `ARITH(EXTEND)`、`TRUNC(BIN/OPT)`、`NUMPROC(PFD/MIG)`、`APOST`、`FLOAT` のほかの値、`CODEPAGE` のほかの値、`ZONEDATA`、`NUMCHECK`、`CURRENCY` ほか | **断る** (FR-181 の「未対応と診断する」) |
+| 効いている、または今の振る舞いと同じ値 | `SOURCEFORMAT`、`SSRANGE`、`CICS`、`SQL`、`DYNAM`、`ARITH(COMPAT)`、`ARITH(EXTEND)` (2026-09-24 に実装、P-009)、`TRUNC(STD)`、`NUMPROC(NOPFD)`、`FLOAT(HEX)`、`CODEPAGE(1047)`、`PGMNAME(COMPAT)`、`INTDATE(ANSI)`、`QUOTE` | 黙って通す |
+| 計算する値を変えるのに、その値を実装していない | `TRUNC(BIN/OPT)`、`NUMPROC(PFD/MIG)`、`APOST`、`FLOAT` のほかの値、`CODEPAGE` のほかの値、`ZONEDATA`、`NUMCHECK`、`CURRENCY` ほか | **断る** (FR-181 の「未対応と診断する」) |
 | 計算する値を変えない (リスト・最適化・デバッグ情報・再入可能性) | `LIST`、`MAP`、`XREF`、`FLAG`、`OPTIMIZE`、`TEST`、`RENT`、`NUMBER`、`ADV`、`NODYNAM`、`NSYMBOL` ほか | 警告して通す。差が暫定判断にあるもの (`ADV` は P-063、`NODYNAM` は P-032、`NUMBER` は P-080) は理由に書く |
 | 知らない名 | — | 警告して通す |
 
@@ -798,7 +816,7 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 - べき乗 (`**`) — 文法は受け付けるが「まだ生成できない」と<b>報告する</b>。
   中間結果の桁数の規則が加減乗除とは別物であり、指数が整数か小数かでも変わる
 - `ROUNDED MODE IS ...` による丸めモードの指定 (既定の最近接・ゼロから遠い方だけ)
-- `ARITH(EXTEND)` の 32 桁 (いまは `ARITH(COMPAT)` の 30 桁で固定)
+- ~~`ARITH(EXTEND)` の 32 桁~~ 2026-09-24 に 31 桁で実装した (32 は誤り。P-009)
 
 **いま危ないこと**: どれも報告されるか構文誤りになるため、黙って違う結果になることはない。
 

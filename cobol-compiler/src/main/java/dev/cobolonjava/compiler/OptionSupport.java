@@ -21,7 +21,7 @@ import java.util.Set;
  * <p>分け方は 3 つである。
  * <ul>
  *   <li><b>黙って通す</b>: 効いているもの (SOURCEFORMAT、SSRANGE、CICS、SQL)、と
- *       この処理系の振る舞いと同じ値 (ARITH(COMPAT)、TRUNC(STD)、NUMPROC(NOPFD)、
+ *       この処理系の振る舞いと同じ値 (ARITH(COMPAT) と ARITH(EXTEND)、TRUNC(STD)、NUMPROC(NOPFD)、
  *       FLOAT(HEX)、CODEPAGE(1047)、DYNAM、QUOTE)</li>
  *   <li><b>警告して通す</b>: プログラムが計算する値を変えないもの。リスト、最適化、
  *       デバッグ情報、再入可能性 (RENT)。振る舞いの差が暫定判断に書いてあるもの
@@ -41,7 +41,7 @@ final class OptionSupport {
 
     /** 値によって、この処理系の振る舞いと同じなら黙って通すオプション。 */
     private static final Map<String, Set<String>> IMPLEMENTED_VALUES = Map.of(
-            "ARITH", Set.of("COMPAT", "C"),
+            "ARITH", Set.of("COMPAT", "C", "EXTEND", "E"),
             "TRUNC", Set.of("STD"),
             "NUMPROC", Set.of("NOPFD"),
             "FLOAT", Set.of("HEX", "S390"),
