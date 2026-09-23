@@ -48,20 +48,22 @@ final class OptionSupport {
             "CODEPAGE", Set.of("1047", "01047", "IBM-1047"),
             "PGMNAME", Set.of("COMPAT", "CO"),
             "INTDATE", Set.of("ANSI"),
+            "NSYMBOL", Set.of("NATIONAL", "NAT"),
             "QUOTE", Set.of(""),
             "Q", Set.of(""));
 
     /** 値を変えるのに実装していない値を持ちうるオプション。値が違えば断る。 */
     private static final Set<String> RESULT_CHANGING = Set.of(
             "ARITH", "TRUNC", "NUMPROC", "FLOAT", "CODEPAGE", "APOST", "APOSTROPHE",
-            "ZONEDATA", "NUMCHECK", "INTDATE", "PGMNAME", "CURRENCY");
+            "ZONEDATA", "NUMCHECK", "INTDATE", "PGMNAME", "CURRENCY",
+            // NSYMBOL(DBCS) は PIC N を DBCS (DISPLAY-1) にする。持っていない
+            "NSYMBOL");
 
     /** 計算する値を変えないので、警告して通すオプション。{@code NO} の付いた形も同じ。 */
     private static final Set<String> NO_EFFECT = Set.of(
             "LIST", "MAP", "XREF", "SOURCE", "OFFSET", "FLAG", "OPTIMIZE", "OPT", "TEST",
             "RENT", "NUMBER", "ADV", "DYNAM", "SEQ", "SEQUENCE", "OBJECT", "NAME", "LIB",
             "COMPILE", "TERMINAL", "TERM", "LINECOUNT", "SPACE", "WORD", "DATA", "DECK",
-            "NSYMBOL",
             "STGOPT", "THREAD", "VBREF", "EXIT", "DUMP", "ADATA", "MDECK", "INVDATA",
             "RULES", "SUPPRMSG", "DISPSIGN", "HGPR", "AFP", "ARCH", "TUNE", "MAXPCF",
             "QUALIFY", "DLL", "EXPORTALL", "WSCLEAR", "LANGUAGE", "LANG", "BUFSIZE",
@@ -74,8 +76,7 @@ final class OptionSupport {
             "NODYNAM", "every CALL is resolved at run time (P-032)",
             "NUMBER", "DEBUG-LINE is the line counted by this compiler (P-080)",
             "NORENT",
-            "working storage is initialised the same way for RENT and NORENT (P-025)",
-            "NSYMBOL", "national (N) literals are not supported yet");
+            "working storage is initialised the same way for RENT and NORENT (P-025)");
 
     private OptionSupport() {
     }

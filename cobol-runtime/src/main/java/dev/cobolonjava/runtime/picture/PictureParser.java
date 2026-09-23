@@ -68,6 +68,7 @@ public final class PictureParser {
         boolean sawV = false;
         boolean anyAlpha = false;
         boolean anyAlnum = false;
+        boolean anyNational = false;
         boolean anyEditing = false;
         boolean anyInsertion = false;
         boolean anyNine = false;
@@ -145,6 +146,11 @@ public final class PictureParser {
                     size++;
                     anyAlnum = true;
                 }
+                case "N" -> {
+                    cells.add(new Cell(Kind.ALNUM, 'N', 1));
+                    size++;
+                    anyNational = true;
+                }
                 default -> {
                     char c = sym.charAt(0);
                     if (c == currency) {
@@ -217,6 +223,17 @@ public final class PictureParser {
         //   英数字項目     — A または X を含み、挿入文字を含まない
         //   数字編集項目   — 数字位置と編集記号を含む
         //   数字項目       — 9 S V P だけからなる
+        // 国字項目は N だけからなる。国字編集 (N と B 0 /) と国字の数字 (USAGE NATIONAL の 9) は
+        // まだ持たない。混ぜた PICTURE を英数字として読むと、1 文字 2 バイトの長さを取り違える
+        if (anyNational) {
+            if (anyAlnum || anyAlpha || anyEditing || anyNine || sawV || signed
+                    || slotStored.size() > 0) {
+                throw new PictureSyntaxException("national-edited PICTUREs (N mixed with other"
+                        + " symbols) are not supported yet: " + source);
+            }
+            return new Picture(source, String.join("", symbols), Category.NATIONAL, size, 0, 0,
+                    SignPosition.UNSIGNED, false, cells);
+        }
         Category category;
         if (anyAlnum || anyAlpha) {
             if (anyInsertion) {

@@ -37,13 +37,21 @@ public final class MoveRules {
         /** {@code Move.toNumericEdited}。編集結果を書き込む。 */
         NUMERIC_EDITED,
         /** {@code Move.toAlphanumericEdited}。挿入文字を置きながら詰める。 */
-        ALPHANUMERIC_EDITED
+        ALPHANUMERIC_EDITED,
+        /**
+         * {@code National.move}。国字の受取項目へ、国字の空白で埋めながら詰める。
+         * 送り側が英数字なら、プログラムのコードページの文字として読んで国字に直す。
+         */
+        NATIONAL
     }
 
     /** 分類の組み合わせから転記の種類を決める。 */
     public static Kind kindOf(DataCategory sender, DataCategory receiver) {
         if (sender == DataCategory.GROUP || receiver == DataCategory.GROUP) {
             return Kind.ALPHANUMERIC;
+        }
+        if (receiver == DataCategory.NATIONAL) {
+            return Kind.NATIONAL;
         }
         if (receiver.isNumeric()) {
             return Kind.NUMERIC;
@@ -68,6 +76,10 @@ public final class MoveRules {
             // 集団項目はバイト範囲そのものであり、転記は無変換で行われる (要件 FR-020)
             return true;
         }
+        if (sender == DataCategory.NATIONAL && receiver != DataCategory.NATIONAL) {
+            // 国字から英数字・数値への転記は書けない。英数字へ直すには DISPLAY-OF を使う
+            return false;
+        }
         return switch (receiver) {
             case ALPHABETIC -> sender == DataCategory.ALPHABETIC
                     || sender == DataCategory.ALPHANUMERIC
@@ -82,12 +94,27 @@ public final class MoveRules {
             case NUMERIC_EDITED -> sender.isNumeric()
                     || sender == DataCategory.ALPHANUMERIC
                     || sender == DataCategory.NUMERIC_EDITED;
+            // 国字の受取側へは、国字と英数字と整数を移せる。英数字は国字に直して移す
+            // (Enterprise COBOL の MOVE の表)
+            case NATIONAL -> sender == DataCategory.NATIONAL
+                    || sender == DataCategory.ALPHABETIC
+                    || sender == DataCategory.ALPHANUMERIC
+                    || sender == DataCategory.ALPHANUMERIC_EDITED
+                    || sender == DataCategory.NUMERIC_EDITED
+                    || sender == DataCategory.NUMERIC_INTEGER;
             case GROUP -> true;
         };
     }
 
     /** 書けない理由の説明。診断に添える。 */
     public static String reason(DataCategory sender, DataCategory receiver) {
+        if (sender == DataCategory.NATIONAL) {
+            return "a national item can be moved only to a national or group item"
+                    + " (use FUNCTION DISPLAY-OF)";
+        }
+        if (receiver == DataCategory.NATIONAL) {
+            return "a non-integer numeric item cannot be moved to a national item";
+        }
         if (receiver.isNumeric() || receiver == DataCategory.NUMERIC_EDITED) {
             return sender == DataCategory.ALPHABETIC
                     ? "an alphabetic item has no numeric value"
@@ -109,6 +136,7 @@ public final class MoveRules {
             case NUMERIC_NONINTEGER -> "non-integer numeric";
             case NUMERIC_EDITED -> "numeric-edited";
             case GROUP -> "group";
+            case NATIONAL -> "national";
         };
     }
 }

@@ -154,6 +154,18 @@ Hercules 上での実行結果とランタイムの出力をバイト列で突�
 2 進整数) にしてある。桁数は実機と突き合わせていないので、暫定判断 P-035 に記録した。
 
 **残っている部分**: `POINTER`、`FUNCTION-POINTER`、`NATIONAL`、`DISPLAY-1` (DBCS)。
+
+**2026-09-24 の追記 (NATIONAL)**: `PIC N` の国字項目を実装した (`National`、`NationalLiterals`、
+`NationalGuard`)。国字は UTF-16 のビッグエンディアンで 1 文字 2 バイトを占め、空白は `X'0020'`、
+`HIGH-VALUE` は `X'FFFF'`。扱えるのは `MOVE` (国字と英数字と整数から。国字から英数字へは
+書けない)、`DISPLAY`、`INITIALIZE`、`CALL`、関係条件 (符号単位の値で比べ、照合順序は使わない)、
+`VALUE`、`N'..'` と `NX'..'`、`NATIONAL-OF` と `DISPLAY-OF` (第 2 引数の CCSID は整数の定数だけ)
+である。ほかの文 (`STRING` / `INSPECT` / `ACCEPT` / ソートのキーなど) と国字の部分参照は
+`NationalGuard` が断る。国字編集 (`NBN`)、国字の数字 (`PIC 9 USAGE NATIONAL`)、DBCS の
+`PIC N` (`USAGE DISPLAY` / `NSYMBOL(DBCS)`) も断る。
+
+変換で表せない文字は断る (`DISPLAY` だけは置換文字で出す)。実機の Unicode 変換サービスは
+置換文字へ倒すと言われているが確かめていない (P-012、z/OS probe の `CBLCP`)。
 また `NumericItem` は PICTURE を前提とした固定小数点の記述子であり、PICTURE を持たない
 `COMP-1` / `COMP-2` はまだ項目として束ねていない。浮動小数点項目のための別の記述子が要る。
 
@@ -279,13 +291,17 @@ COBOL では<b>英数字編集項目</b>である。英字項目は `A` だけ�
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 |
+| 状態 | 一部解消 (2026-09-24、桁数の上限を検査する。PICTURE 文字列の文字数は未) |
 | 場所 | `PictureParser` |
 | 関連要件 | FR-030 |
 
 **暫定の扱い**: PICTURE 文字列の文字数、および数字項目の桁数の上限 (18 / 31 桁) を検査していない。
 
 **解消条件**: `ARITH` オプションの実装 (FR-041) と合わせて桁数上限の検査を追加する。
+
+**2026-09-24 の追記**: `ARITH` を実装し、数字・数字編集項目の桁数を COMPAT で 18、EXTEND で
+31 に限るようにした (`CobolCompiler.digitLimits`)。固定小数点の数字定数も同じ上限で調べる。
+PICTURE 文字列そのものの文字数 (50 字) はまだ調べていない。
 
 ---
 
@@ -302,6 +318,11 @@ IBM CDRA の変換表と一致するかを検証していない。
 
 **なぜ問題になりうるか**: リスク R-5 のとおり、変換表の微細な差異は日本語データの文字化けと
 照合順序の誤りに直結する。特に混在コードページ (930 / 939) はシフトコードの扱いを含めて差異が出やすい。
+
+**2026-09-24 の追記**: 国字 (`NATIONAL-OF` / `DISPLAY-OF` / 英数字から国字への `MOVE`) も同じ JDK の
+表を通る。第 2 引数の CCSID は `National.charsetOf` が JDK の `IBMnnn` / `x-IBMnnn` へ引く。z/OS probe の
+`CBLCP` が 1047 / 037 / 930 / 939 の全バイトを `NATIONAL-OF` に通すので、その実機の値と
+`ProbeTool cp` で比べれば、1 バイトの表と DBCS の表の両方が確かめられる。
 
 **いまの扱い** (2026-09-22): 検体 (`JapaneseFixtures`) とそのバイトを見る検査
 (`JapaneseCodePageTest.fixtureBytesMatchTheJdkTable`) に、**JDK の表に基づく・CDRA 未照合**と

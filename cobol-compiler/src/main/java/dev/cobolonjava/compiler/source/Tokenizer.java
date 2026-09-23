@@ -74,7 +74,17 @@ public final class Tokenizer {
             }
             if (isHexLiteralStart(i)) {
                 int end = scanLiteral(i + 1);
-                requireHexDigits(i, end);
+                requireHexDigits(i, end, 2);
+                emit(SourceTokenKind.LITERAL, i, end);
+                continue;
+            }
+            if (isNationalLiteralStart(i)) {
+                boolean hex = text.charAt(i + 1) == 'X' || text.charAt(i + 1) == 'x';
+                int end = scanLiteral(i + (hex ? 2 : 1));
+                if (hex) {
+                    // NX の中身は符号単位 (2 バイト) の並びなので、16 進の桁は 4 の倍数である
+                    requireHexDigits(i + 1, end, 4);
+                }
                 emit(SourceTokenKind.LITERAL, i, end);
                 continue;
             }
@@ -245,6 +255,22 @@ public final class Tokenizer {
      * <p>語の途中からは始まらない。語は引用符の手前で切れるので、ここへ来るのは
      * いつも字句の先頭である。
      */
+    /**
+     * 位置 {@code j} から国字定数 ({@code N'..'} か {@code NX'..'}) が始まるか。
+     */
+    private boolean isNationalLiteralStart(int j) {
+        char c = text.charAt(j);
+        if (c != 'N' && c != 'n' || j + 1 >= text.length()) {
+            return false;
+        }
+        char next = text.charAt(j + 1);
+        if (next == 'X' || next == 'x') {
+            return j + 2 < text.length()
+                    && (text.charAt(j + 2) == '\'' || text.charAt(j + 2) == '"');
+        }
+        return next == '\'' || next == '"';
+    }
+
     private boolean isHexLiteralStart(int j) {
         char c = text.charAt(j);
         return (c == 'X' || c == 'x') && j + 1 < text.length()
@@ -252,16 +278,19 @@ public final class Tokenizer {
     }
 
     /** 16 進定数の中身は、偶数個の 16 進の桁でなければならない。1 バイトに満たない桁を推測で埋めない。 */
-    private void requireHexDigits(int start, int end) {
+    private void requireHexDigits(int start, int end, int multiple) {
         int from = start + 2;
         int to = end - 1;
-        boolean valid = to > from && (to - from) % 2 == 0;
+        boolean valid = to > from && (to - from) % multiple == 0;
         for (int k = from; valid && k < to; k++) {
             valid = Character.digit(text.charAt(k), 16) >= 0;
         }
         if (!valid) {
             throw new SourceFormatException(source.originOf(start),
-                    "a hexadecimal literal requires an even number of hexadecimal digits");
+                    multiple == 2
+                            ? "a hexadecimal literal requires an even number of hexadecimal digits"
+                            : "a national hexadecimal literal (NX) requires a multiple of four"
+                                    + " hexadecimal digits");
         }
     }
 

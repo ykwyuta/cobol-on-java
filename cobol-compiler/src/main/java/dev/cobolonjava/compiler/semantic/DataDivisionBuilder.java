@@ -581,10 +581,11 @@ public final class DataDivisionBuilder {
             case "COMP-5", "COMPUTATIONAL-5" -> Usage.COMP_5;
             case "COMP-1", "COMPUTATIONAL-1" -> Usage.COMP_1;
             case "COMP-2", "COMPUTATIONAL-2" -> Usage.COMP_2;
+            case "NATIONAL" -> Usage.NATIONAL;
             default -> null;
         };
         if (usage == null) {
-            // POINTER / NATIONAL / DISPLAY-1 はランタイムが未対応 (暫定判断 P-006)
+            // DISPLAY-1 はランタイムが未対応 (暫定判断 P-006)
             report(origin, "USAGE " + name + " is not supported yet");
             return;
         }
@@ -1874,6 +1875,22 @@ public final class DataDivisionBuilder {
         if (picture == null) {
             report(item.origin(), "elementary item requires a PICTURE clause: " + describe(item));
             return 0;
+        }
+        if (picture.category() == Picture.Category.NATIONAL) {
+            // PIC N は既定 (NSYMBOL(NATIONAL)) で国字である。USAGE DISPLAY と書けば DBCS
+            // (DISPLAY-1) の意味になるが、それはまだ持たない
+            if (usage != null && usage != Usage.NATIONAL) {
+                report(item.origin(), "PICTURE N requires USAGE NATIONAL (DBCS items are not"
+                        + " supported yet): " + describe(item));
+                return picture.size() * 2;
+            }
+            item.setUsage(Usage.NATIONAL);
+            return picture.size() * 2;
+        }
+        if (usage == Usage.NATIONAL) {
+            report(item.origin(), "USAGE NATIONAL is supported only with PICTURE N (national"
+                    + " decimal and national-edited items are not supported yet): " + describe(item));
+            return picture.size();
         }
         if (picture.isNumeric()) {
             return numericLength(item, picture, usage == null ? Usage.DISPLAY : usage);

@@ -229,7 +229,11 @@ public final class InitializeImage {
         Storage scratch = Storage.allocate(length);
         try {
             DataCategory category = DataCategory.of(item);
-            if (category == DataCategory.NUMERIC_EDITED) {
+            if (category == DataCategory.NATIONAL) {
+                dev.cobolonjava.runtime.data.National.move(
+                        NationalLiterals.bytesOf(value, length, codePage), scratch, 0, length,
+                        item.justified());
+            } else if (category == DataCategory.NUMERIC_EDITED) {
                 Ops.moveNumericEdited(numberOf(item, value), item.picture(), scratch, 0, codePage);
             } else if (category == DataCategory.ALPHANUMERIC_EDITED) {
                 // 挿入文字はそのまま残る。SPACES を入れても XXBXX/XX は "     /  " である

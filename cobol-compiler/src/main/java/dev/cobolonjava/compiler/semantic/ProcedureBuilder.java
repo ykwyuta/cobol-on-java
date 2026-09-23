@@ -5533,8 +5533,9 @@ public final class ProcedureBuilder {
             return switch (function.returns()) {
                 case INTEGER -> DataCategory.NUMERIC_INTEGER;
                 case NUMERIC -> DataCategory.NUMERIC_NONINTEGER;
-                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP, WIDEST ->
+                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP, WIDEST, FROM_NATIONAL ->
                         DataCategory.ALPHANUMERIC;
+                case NATIONAL -> DataCategory.NATIONAL;
             };
         }
         boolean numericReceiver = receiver.isNumeric() || receiver == DataCategory.NUMERIC_EDITED;

@@ -95,6 +95,8 @@ public final class ProgramGenerator {
 
     private static final String DATA_VIEW = Type.getInternalName(DataView.class);
     private static final String OPS = Type.getInternalName(Ops.class);
+    private static final String NATIONAL =
+            Type.getInternalName(dev.cobolonjava.runtime.data.National.class);
     private static final String CICS_OPS = Type.getInternalName(CicsRuntimeOps.class);
     private static final String PROGRAM_TARGET_TRANSFER =
             Type.getInternalName(ProgramTargetTransfer.class);
@@ -1659,6 +1661,16 @@ public final class ProgramGenerator {
      * 同じ桁数・同じ小数部の {@code DISPLAY} 項目として符号化し直す。
      */
     private Runnable planDisplayBytes(Operand operand, Origin origin) {
+        if (categoryOfArgument(operand) == DataCategory.NATIONAL) {
+            // 国字はコードページの文字へ直して出す。表せない文字は置換文字になる
+            Runnable bytes = planNationalBytes(operand, origin, lengthOf(operand));
+            return bytes == null ? null : () -> {
+                bytes.run();
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "toDisplay",
+                        "([B" + CODE_PAGE + ")[B", false);
+            };
+        }
         if (operand instanceof Operand.Reference reference
                 && needsDisplayConversion(reference.reference())) {
             Runnable value = planSourceDecimal(operand, origin);
@@ -4682,6 +4694,9 @@ public final class ProgramGenerator {
     private Runnable planComparison(Condition.Relation relation) {
         Runnable left;
         Runnable right;
+        if (!relation.numeric() && isNationalRelation(relation)) {
+            return planNationalComparison(relation);
+        }
         if (relation.numeric()) {
             left = planComparisonSide(relation.left(), relation.origin());
             right = planComparisonSide(relation.right(), relation.origin());
@@ -4715,6 +4730,53 @@ public final class ProgramGenerator {
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "compareAlphanumeric",
                         "([B[B" + COLLATING + CODE_PAGE + ")I", false);
             }
+        };
+    }
+
+    /** 国字として見たときのバイト数。定数は綴りから、項目は長さから。 */
+    private static int nationalLength(Operand operand) {
+        if (operand instanceof Operand.Literal literal
+                && literal.value() instanceof LiteralValue.National national) {
+            return national.bytes().length;
+        }
+        if (categoryOfArgument(operand) == DataCategory.NATIONAL) {
+            return lengthOf(operand);
+        }
+        return 2 * alphanumericLength(operand);
+    }
+
+    /** どちらかの辺が国字か。国字があれば、もう一方も国字へ直して比べる。 */
+    private static boolean isNationalRelation(Condition.Relation relation) {
+        Operand left = Condition.Relation.operandOf(relation.left());
+        Operand right = Condition.Relation.operandOf(relation.right());
+        return (left != null && categoryOfArgument(left) == DataCategory.NATIONAL)
+                || (right != null && categoryOfArgument(right) == DataCategory.NATIONAL);
+    }
+
+    /**
+     * 国字の比較。国字でない辺は国字へ直す。短いほうを国字の空白で埋め、符号単位の値で
+     * 比べる。照合順序 ({@code PROGRAM COLLATING SEQUENCE}) は国字には効かない。
+     */
+    private Runnable planNationalComparison(Condition.Relation relation) {
+        Operand leftOperand = Condition.Relation.operandOf(relation.left());
+        Operand rightOperand = Condition.Relation.operandOf(relation.right());
+        if (leftOperand == null || rightOperand == null) {
+            report(relation.origin(), "a national item cannot be compared with an arithmetic"
+                    + " expression");
+            return null;
+        }
+        // 図形定数は相手の国字の長さ (バイト数) まで広げる
+        int length = Math.max(2, Math.max(nationalLength(leftOperand),
+                nationalLength(rightOperand)));
+        Runnable left = planNationalBytes(leftOperand, relation.origin(), length);
+        Runnable right = planNationalBytes(rightOperand, relation.origin(), length);
+        if (left == null || right == null) {
+            return null;
+        }
+        return () -> {
+            left.run();
+            right.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "compare", "([B[B)I", false);
         };
     }
 
@@ -4776,6 +4838,8 @@ public final class ProgramGenerator {
             case TIMESTAMP -> Intrinsics.TIMESTAMP_LENGTH;
             case SAME_LENGTH -> alphanumericLength(argument(function, 0));
             case WIDEST -> widestArgument(function);
+            case NATIONAL -> 2 * alphanumericLength(argument(function, 0));
+            case FROM_NATIONAL -> lengthOf(argument(function, 0)) / 2;
             case INTEGER, NUMERIC -> 0;
         };
     }
@@ -4842,6 +4906,8 @@ public final class ProgramGenerator {
                             "(" + DECIMAL + COLLATING + ")[B", false);
                 };
             }
+            case NATIONAL_OF -> planNationalOf(function);
+            case DISPLAY_OF -> planDisplayOf(function);
             default -> {
                 report(origin, "FUNCTION " + function.intrinsic().spelling()
                         + " does not return an alphanumeric value");
@@ -4983,7 +5049,21 @@ public final class ProgramGenerator {
      * 数えるための命令を出すことになるうえ、答えは同じである。
      */
     private Runnable planConstantLength(Operand.Function function, Origin origin) {
-        int length = alphanumericLength(argument(function, 0));
+        Operand operand = argument(function, 0);
+        if (operand instanceof Operand.Function inner
+                && inner.returns() == Intrinsic.Result.NATIONAL) {
+            // NATIONAL-OF の文字数は実行時に決まる (混在コードページでは SO / SI が消える)
+            Runnable bytes = planFunctionBytes(inner);
+            return bytes == null ? null : () -> {
+                bytes.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "characters",
+                        "([B)" + DECIMAL, false);
+            };
+        }
+        // 国字の長さは文字 (2 バイト) で数える
+        int length = categoryOfArgument(operand) == DataCategory.NATIONAL
+                ? nationalLength(operand) / 2
+                : alphanumericLength(operand);
         if (length <= 0) {
             report(origin, "FUNCTION LENGTH requires an item whose length is known"
                     + " at compile time");
@@ -5145,6 +5225,113 @@ public final class ProgramGenerator {
     }
 
     /** 文字の引数。式は書けないことを意味解析が確かめてある。 */
+    /**
+     * {@code FUNCTION NATIONAL-OF}。英数字をコードページ (または第 2 引数の CCSID) の文字として
+     * 読み、国字にする。
+     */
+    private Runnable planNationalOf(Operand.Function function) {
+        Operand operand = argument(function, 0);
+        if (categoryOfArgument(operand) == DataCategory.NATIONAL) {
+            report(function.origin(), "the argument of FUNCTION NATIONAL-OF must not be national");
+            return null;
+        }
+        Runnable bytes = planAlphanumericArgument(function, 0);
+        Integer ccsid = ccsidArgument(function);
+        Runnable item = ccsid != null && ccsid == -2
+                ? planNumericArgument(function, 1, function.origin()) : null;
+        if (bytes == null || ccsid == null || (ccsid == -2 && item == null)) {
+            return null;
+        }
+        return () -> {
+            bytes.run();
+            if (ccsid == -2) {
+                item.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "fromCcsid",
+                        "([B" + DECIMAL + ")[B", false);
+            } else if (ccsid < 0) {
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "fromAlphanumeric",
+                        "([B" + CODE_PAGE + ")[B", false);
+            } else {
+                push(ccsid);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "fromCcsid", "([BI)[B", false);
+            }
+        };
+    }
+
+    /** {@code FUNCTION DISPLAY-OF}。国字を、コードページ (または第 2 引数の CCSID) の英数字にする。 */
+    private Runnable planDisplayOf(Operand.Function function) {
+        Operand operand = argument(function, 0);
+        if (categoryOfArgument(operand) != DataCategory.NATIONAL) {
+            report(function.origin(), "the argument of FUNCTION DISPLAY-OF must be national");
+            return null;
+        }
+        Runnable bytes = planNationalBytes(operand, function.origin(), lengthOf(operand));
+        Integer ccsid = ccsidArgument(function);
+        Runnable item = ccsid != null && ccsid == -2
+                ? planNumericArgument(function, 1, function.origin()) : null;
+        if (bytes == null || ccsid == null || (ccsid == -2 && item == null)) {
+            return null;
+        }
+        return () -> {
+            bytes.run();
+            if (ccsid == -2) {
+                item.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "toCcsid",
+                        "([B" + DECIMAL + ")[B", false);
+            } else if (ccsid < 0) {
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "toAlphanumeric",
+                        "([B" + CODE_PAGE + ")[B", false);
+            } else {
+                push(ccsid);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "toCcsid", "([BI)[B", false);
+            }
+        };
+    }
+
+    /**
+     * 第 2 引数の CCSID。書かれていなければ -1 (プログラムのコードページ)、項目で書かれていれば
+     * -2 (実行時に読む)。
+     *
+     * <p>定数なら、持っていない CCSID (1390 / 1399 など、P-002) を翻訳時に断る。項目なら
+     * 実行時に断る。
+     */
+    private Integer ccsidArgument(Operand.Function function) {
+        if (function.arguments().size() < 2) {
+            return -1;
+        }
+        Operand operand = argument(function, 1);
+        if (!(operand instanceof Operand.Literal literal)) {
+            return -2;
+        }
+        if (!(literal.value() instanceof LiteralValue.Number number)
+                || number.value().scale() > 0) {
+            report(function.origin(), "the CCSID of FUNCTION " + function.intrinsic().spelling()
+                    + " must be an integer");
+            return null;
+        }
+        int ccsid = number.value().toBigDecimal().intValue();
+        try {
+            dev.cobolonjava.runtime.data.National.charsetOf(ccsid);
+        } catch (java.nio.charset.UnsupportedCharsetException failure) {
+            report(function.origin(), failure.getMessage());
+            return null;
+        }
+        return ccsid;
+    }
+
+    private static DataCategory categoryOfArgument(Operand operand) {
+        if (operand instanceof Operand.Reference reference) {
+            return DataCategory.of(reference.reference());
+        }
+        if (operand instanceof Operand.Literal literal) {
+            return DataCategory.of(literal.value(), false);
+        }
+        return ((Operand.Function) operand).returns() == Intrinsic.Result.NATIONAL
+                ? DataCategory.NATIONAL : DataCategory.ALPHANUMERIC;
+    }
+
     private Runnable planAlphanumericArgument(Operand.Function function, int index) {
         Operand operand = argument(function, index);
         return planSourceBytes(operand, function.origin(), alphanumericLength(operand));
@@ -5518,6 +5705,7 @@ public final class ProgramGenerator {
                 case NUMERIC_EDITED -> planEditedMove(move, target, offset, body);
                 case ALPHANUMERIC_EDITED ->
                         planAlphanumericEditedMove(move, target, offset, body);
+                case NATIONAL -> planNationalMove(move, target, offset, body);
             }
         }
     }
@@ -5552,6 +5740,89 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
                     "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
         });
+    }
+
+    /**
+     * 国字転記。国字の空白 ({@code X'0020'}) で埋めながら詰める。
+     *
+     * <p>送り側が国字でなければ、英数字として読んだバイトをプログラムのコードページの文字として
+     * 国字へ直す。定数と図形定数は翻訳時に直しておく。
+     */
+    private void planNationalMove(Statement.Move move, Statement.Move.Target target,
+                                  Runnable offset, List<Runnable> body) {
+        Runnable length = planLength(target.reference(), move.origin());
+        if (length == null) {
+            return;
+        }
+        int widest = target.reference().constantLength()
+                .orElse(target.reference().item().length());
+        Runnable source = planNationalBytes(move.source(), move.origin(), widest);
+        if (source == null) {
+            return;
+        }
+        boolean justified = target.reference().item().justified();
+        body.add(() -> {
+            source.run();
+            offset.run();
+            length.run();
+            run.visitInsn(justified ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "move",
+                    "([BL" + STORAGE + ";IIZ)V", false);
+        });
+    }
+
+    /**
+     * 国字のバイト列を積む命令。国字でない送り側は国字へ直す。
+     *
+     * @param widest 図形定数を広げるバイト数
+     */
+    private Runnable planNationalBytes(Operand source, Origin origin, int widest) {
+        if (source instanceof Operand.Literal literal) {
+            byte[] bytes = nationalLiteralBytes(literal.value(), widest, origin);
+            if (bytes == null) {
+                return null;
+            }
+            String field = bytesConstant(bytes);
+            return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+        }
+        if (source instanceof Operand.Reference reference
+                && DataCategory.of(reference.reference()) == DataCategory.NATIONAL) {
+            return planSourceBytes(source, origin, widest);
+        }
+        if (source instanceof Operand.Function function
+                && function.intrinsic() == Intrinsic.NATIONAL_OF) {
+            return planFunctionBytes(function);
+        }
+        Runnable bytes = source instanceof Operand.Reference
+                ? planNumericAsAlphanumeric(source, origin, widest)
+                : planSourceBytes(source, origin, widest);
+        if (bytes == null) {
+            return null;
+        }
+        return () -> {
+            bytes.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "fromAlphanumeric",
+                    "([B" + CODE_PAGE + ")[B", false);
+        };
+    }
+
+    /**
+     * 定数を国字にしたバイト列。図形定数は {@code widest} バイトまで広げる。
+     *
+     * <p>国字の図形定数は英数字の図形定数をコードページで直したものではない。
+     * {@code HIGH-VALUE} は {@code X'FFFF'} であり、IBM-1047 の {@code X'FF'} を直した
+     * {@code U+009F} ではない。
+     */
+    private byte[] nationalLiteralBytes(LiteralValue value, int widest, Origin origin) {
+        try {
+            return dev.cobolonjava.compiler.semantic.NationalLiterals.bytesOf(value, widest,
+                    codePage);
+        } catch (IllegalArgumentException failure) {
+            report(origin, "the literal cannot be converted to national characters: "
+                    + failure.getMessage());
+            return null;
+        }
     }
 
     /**

@@ -500,6 +500,10 @@ public final class CobolCompiler {
         ProcedureBuilder.Result procedure = ProcedureBuilder.build(program, data.layout(),
                 specialNames, declared.files(), data.reports());
         diagnostics.addAll(procedure.diagnostics());
+        for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
+            diagnostics.addAll(dev.cobolonjava.compiler.semantic.NationalGuard.check(
+                    paragraph.statements()));
+        }
         if (Diagnostic.blocking(diagnostics)) {
             return failed(data.layout(), diagnostics);
         }
