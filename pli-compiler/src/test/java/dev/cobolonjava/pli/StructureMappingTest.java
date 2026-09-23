@@ -46,6 +46,12 @@ class StructureMappingTest {
                 .map(String::strip).toList());
     }
 
+    private static int[] bytes(StructureMapping.Result mapping) {
+        int[] offsets = new int[mapping.bitOffsets().length];
+        for (int i = 0; i < offsets.length; i++) offsets[i] = mapping.byteOffset(i);
+        return offsets;
+    }
+
     private static StructureMapping.Result map(String declaration) {
         PliSyntax.ParseResult parsed = PliSyntax.parse("M.pli",
                 "M: PROCEDURE OPTIONS(MAIN);\nDCL " + declaration + ";\nEND M;\n");
@@ -60,7 +66,7 @@ class StructureMappingTest {
         StructureMapping.Result mapping = map("1 S, 2 C CHAR(1), 2 B FIXED BIN(31)");
 
         assertEquals(5, mapping.size());
-        assertArrayEquals(new int[] {0, 0, 1}, mapping.offsets());
+        assertArrayEquals(new int[] {0, 0, 1}, bytes(mapping));
     }
 
     @Test
@@ -70,7 +76,7 @@ class StructureMappingTest {
                 "1 S, 2 W FIXED BIN(31), 2 C CHAR(1), 2 H FIXED BIN(15)");
 
         assertEquals(8, mapping.size());
-        assertArrayEquals(new int[] {0, 0, 4, 6}, mapping.offsets());
+        assertArrayEquals(new int[] {0, 0, 4, 6}, bytes(mapping));
     }
 
     @Test
@@ -81,8 +87,8 @@ class StructureMappingTest {
                 "1 S, 2 C CHAR(1), 2 M, 3 X CHAR(1), 3 Y FIXED BIN(31)");
 
         assertEquals(6, mapping.size());
-        assertArrayEquals(new int[] {0, 0, 1, 1, 2}, mapping.offsets());
-        assertEquals(5, mapping.lengths()[2]);
+        assertArrayEquals(new int[] {0, 0, 1, 1, 2}, bytes(mapping));
+        assertEquals(5, mapping.byteLength(2));
     }
 
     @Test
@@ -152,14 +158,62 @@ class StructureMappingTest {
     }
 
     @Test
-    @DisplayName("まだ置けない要素 (構造の中の POINTER、8 の倍数でない UNALIGNED のビット列) は翻訳で断る")
-    void unsupportedMembersAreRefusedAtCompileTime() {
-        PliCompiler.Result pointer = compile("DCL 1 S, 2 P POINTER, 2 C CHAR(1);");
-        assertFalse(pointer.succeeded());
-        assertTrue(pointer.diagnostics().toString().contains("POINTER member P"));
+    @DisplayName("UNALIGNED のビット列は前後とビット単位で詰まる。BIT(1) が 3 つで 1 byte")
+    void unalignedBitsShareBytes() throws Exception {
+        StructureMapping.Result mapping = map("1 S, 2 A BIT(1), 2 B BIT(1), 2 C BIT(1), 2 D CHAR(1)");
 
-        PliCompiler.Result bits = compile("DCL 1 S, 2 F BIT(1), 2 C CHAR(1);");
-        assertFalse(bits.succeeded());
-        assertTrue(bits.diagnostics().toString().contains("BIT(1)"));
+        // 3 ビットは D の方へずれ、最初の byte の 5〜7 ビット目に入る (頭の 5 ビットは空き)
+        assertEquals(2, mapping.size());
+        assertArrayEquals(new int[] {0, 5, 6, 7, 8}, mapping.bitOffsets());
+        // 1 つを書いても、同じ byte の隣のビットは変わらない
+        assertEquals("'1'B,'0'B,'1'B,1", run("""
+                DCL 1 S, 2 A BIT(1), 2 B BIT(1), 2 C BIT(1), 2 D CHAR(1);
+                A = '1'B;
+                C = '1'B;
+                B = '0'B;
+                PUT SKIP LIST(A);
+                PUT SKIP LIST(B);
+                PUT SKIP LIST(C);
+                PUT SKIP LIST(SIZE(S) - 1);
+                """));
+    }
+
+    @Test
+    @DisplayName("2 ビット以上のビット列の & / | / ^ はビットごとに演算する。短いほうは右に 0 を足す")
+    void bitOperationsWorkBitByBit() throws Exception {
+        assertEquals("'1000'B,'1110'B,'0101'B", run("""
+                DCL A BIT(4) INIT('1010'B);
+                DCL B BIT(4) INIT('1100'B);
+                PUT SKIP LIST(A & B);
+                PUT SKIP LIST(A | B);
+                PUT SKIP LIST(^A);
+                """));
+    }
+
+    @Test
+    @DisplayName("POINTER は 4 byte の値を持つ。ADDR を入れ、BASED は代入のたびに重ね直す")
+    void pointersHoldAnAddressAndBasedFollowsThem() throws Exception {
+        assertEquals("FIRST,SECOND,1", run("""
+                DCL A CHAR(6) INIT('FIRST');
+                DCL B CHAR(6) INIT('SECOND');
+                DCL P POINTER;
+                DCL Q POINTER;
+                P = ADDR(A);
+                DCL V CHAR(6) BASED(P);
+                PUT SKIP LIST(V);
+                P = ADDR(B);
+                PUT SKIP LIST(V);
+                Q = P;
+                IF Q = ADDR(B) THEN PUT SKIP LIST(1);
+                """));
+    }
+
+    @Test
+    @DisplayName("構造の中の POINTER は 4 byte で全語の境界に置く")
+    void aPointerInAStructureTakesAFullword() {
+        StructureMapping.Result mapping = map("1 S, 2 C CHAR(1), 2 P POINTER, 2 D CHAR(3)");
+
+        assertEquals(8, mapping.size());
+        assertArrayEquals(new int[] {0, 0, 1, 5}, bytes(mapping));
     }
 }

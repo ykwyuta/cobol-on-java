@@ -106,9 +106,64 @@ public final class PliRuntime {
                         + program.parameters().size() + " argument(s), but got " + arguments.length);
             }
             for (int i = 0; i < arguments.length; i++) {
-                globals.put(new Var(program.parameters().get(i), PliSyntax.Type.POINTER,
-                        0, 0, arguments[i]));
+                String name = program.parameters().get(i).toUpperCase(Locale.ROOT);
+                parameters.put(name, arguments[i]);
+                // 引数は参照で渡る。POINTER と宣言した引数 (IMS の PCB など) は、渡された記憶域の番号を
+                // 値に持つ。ほかの型と宣言すれば、渡された記憶域そのものになる (declareScalar)
+                globals.put(pointerTo(name, arguments[i]));
             }
+        }
+
+        /** 入口引数の記憶域。名は大文字。 */
+        private final Map<String, DataView> parameters = new HashMap<>();
+
+        /**
+         * BASED の変数を、基にした POINTER が変わったときに宣言し直す手順。POINTER の名ごと。
+         * BASED の変数は参照のたびに POINTER の値で決まる (LRM "BASED attribute") ので、
+         * POINTER へ代入したら重ね直す。
+         */
+        private final Map<String, List<Runnable>> basedOn = new HashMap<>();
+
+        /** 記憶域を指す POINTER の変数を作る。値は AddressSpace の番号 (COBOL の SET ADDRESS OF と同じ)。 */
+        private Var pointerTo(String name, DataView target) {
+            Var pointer = new Var(name, PliSyntax.Type.POINTER, 0, 0, Storage.allocate(4).whole());
+            pointer.write(new PointerValue(address(target)), context);
+            return pointer;
+        }
+
+        private int address(DataView target) {
+            return target == null ? 0
+                    : AddressSpace.of(context).addressOf(target.storage(), target.offset());
+        }
+
+        /**
+         * BASED の変数が重なる記憶域。{@code BASED(P)} なら P の値の番号が指す場所、{@code BASED(ADDR(X))}
+         * なら X の記憶域 (前処理で X の名だけが残る)。
+         */
+        private DataView basedView(String name, int length, Env env) {
+            Var base = env.require(name);
+            if (base.type != PliSyntax.Type.POINTER) {
+                if (base.view.length() < length) {
+                    throw new PliExecutionException("BASED variable needs " + length
+                            + " bytes, but " + name + " has " + base.view.length());
+                }
+                return length > 0 && length < base.view.length()
+                        ? base.view.subView(0, length) : base.view;
+            }
+            int address = ((PointerValue) base.read(context)).address();
+            if (address == 0) {
+                throw new PliExecutionException("BASED on " + name + ", which is a null pointer");
+            }
+            AddressSpace.Location location = AddressSpace.of(context).locate(address);
+            if (location == null) {
+                // ホストで壊れた番地を使えば保護例外になる
+                throw new PliExecutionException("S0C4: " + name + " does not point into this run unit");
+            }
+            if (location.offset() + length > location.storage().size()) {
+                throw new PliExecutionException("BASED variable needs " + length
+                        + " bytes at " + name + ", beyond the storage it points to");
+            }
+            return location.storage().view(location.offset(), length);
         }
 
         void run() {
@@ -240,13 +295,10 @@ public final class PliRuntime {
             int length = mapping.size();
             DataView area;
             if (root.basedOn() != null) {
-                Var base = env.require(root.basedOn());
-                if (base.view.length() < length) {
-                    throw new PliExecutionException("BASED structure " + root.name() + " needs "
-                            + length + " bytes, but " + root.basedOn() + " has "
-                            + base.view.length());
-                }
-                area = base.view.subView(0, length);
+                area = basedView(root.basedOn(), length, env);
+                remember(root.basedOn(), () -> declareGroup(tree, env));
+            } else if (parameters.containsKey(root.name().toUpperCase(Locale.ROOT))) {
+                area = argument(root.name(), length);
             } else {
                 area = Storage.allocate(length).whole();
             }
@@ -263,14 +315,14 @@ public final class PliRuntime {
         private void declareMembers(List<PliSyntax.Decl> tree, int index, int end, Env env,
                                     Var group, DataView area, StructureMapping.Result mapping,
                                     String prefix, boolean based) {
-            int base = mapping.offsets()[index];
+            // area は構造全体の記憶域。位置は構造の頭からのビットで決まっている
             for (int i = index + 1; i < end;) {
                 PliSyntax.Decl child = tree.get(i);
                 int childEnd = i + 1;
                 while (childEnd < end && tree.get(childEnd).level() > child.level()) childEnd++;
-                DataView view = area.subView(mapping.offsets()[i] - base, mapping.lengths()[i]);
+                DataView view = area.subView(mapping.byteOffset(i), mapping.byteLength(i));
                 Var variable = new Var(child.name(), child.type(), child.precision(),
-                        child.scale(), view);
+                        child.scale(), view, mapping.bitShift(i));
                 env.put(variable);
                 env.alias(tree.get(index).name() + "." + child.name(), variable);
                 if (index > 0) {
@@ -281,11 +333,27 @@ public final class PliRuntime {
                     initialize(variable, child.initial(), env);
                 }
                 if (child.type() == PliSyntax.Type.GROUP) {
-                    declareMembers(tree, i, childEnd, env, variable, view, mapping,
+                    declareMembers(tree, i, childEnd, env, variable, area, mapping,
                             prefix + "." + child.name(), based);
                 }
                 i = childEnd;
             }
+        }
+
+        /** BASED(P) の宣言を、P へ代入したときに宣言し直せるよう覚えておく。 */
+        private void remember(String pointer, Runnable redeclare) {
+            basedOn.computeIfAbsent(pointer.toUpperCase(Locale.ROOT), key -> new ArrayList<>())
+                    .add(redeclare);
+        }
+
+        /** 入口引数の記憶域を、宣言した長さで読む。 */
+        private DataView argument(String name, int length) {
+            DataView argument = parameters.get(name.toUpperCase(Locale.ROOT));
+            if (argument.length() < length) {
+                throw new PliExecutionException("parameter " + name + " is declared with "
+                        + length + " bytes, but the caller passed " + argument.length());
+            }
+            return length > 0 && length < argument.length() ? argument.subView(0, length) : argument;
         }
 
         private void declareScalar(PliSyntax.Decl declaration, Env env, DataView area,
@@ -295,16 +363,20 @@ public final class PliRuntime {
                 return;
             }
             DataView view;
-            if (declaration.type() == PliSyntax.Type.POINTER
-                    && env.contains(declaration.name())) {
-                return; // 入口引数を指すポインタは上書きしない。
+            boolean parameter = parameters.containsKey(
+                    declaration.name().toUpperCase(Locale.ROOT));
+            if (declaration.type() == PliSyntax.Type.POINTER && parameter) {
+                return; // 入口引数の POINTER は、渡された記憶域の番号をもう持っている
             }
             if (declaration.basedOn() != null) {
                 // 重ねる先のうち、自分の長さの分だけを使う。先の全体を使うと、短い変数へ書いたときに
                 // 残りまで書き換えてしまう (PIC'(9)9' を 10 桁の CHAR に重ねると 10 桁目が空白になっていた)
-                DataView base = env.require(declaration.basedOn()).view;
-                int length = byteLength(declaration);
-                view = length > 0 && length < base.length() ? base.subView(0, length) : base;
+                view = basedView(declaration.basedOn(), byteLength(declaration), env);
+                remember(declaration.basedOn(),
+                        () -> declareScalar(declaration, env, area, offset, alias));
+            } else if (parameter) {
+                // 入口引数は参照で渡る。宣言した型で、渡された記憶域そのものを読む
+                view = argument(declaration.name(), byteLength(declaration));
             } else {
                 int length = byteLength(declaration);
                 view = area == null ? Storage.allocate(length).whole()
@@ -340,6 +412,17 @@ public final class PliRuntime {
                 }
             }
             Object value = value(assignment.value(), env);
+            if (target.type == PliSyntax.Type.POINTER) {
+                target.write(value, context);
+                List<Runnable> dependents = basedOn.get(target.name);
+                if (dependents != null) {
+                    // 宣言し直すと新しい手順が覚えられるので、今の並びを写してから動かす
+                    List<Runnable> current = List.copyOf(dependents);
+                    dependents.clear();
+                    current.forEach(Runnable::run);
+                }
+                return;
+            }
             if (target.type == PliSyntax.Type.GROUP && !target.members.isEmpty()) {
                 // 構造へ単一の値を代入すると、要素ごとの代入に展開される (LRM "Aggregate
                 // assignments")。要素ごとにその型へ変換するので、INPUT_AREA = 0 は数の要素を 0 に、
@@ -420,22 +503,15 @@ public final class PliRuntime {
         private Object item(Var variable) {
             return switch (variable.type) {
                 case BIT -> new Bits(display(variable.read(context)));
-                case POINTER -> new Hex(hex(variable.view));
+                // POINTER は HEX で書く (LRM "the contents of the item will be transmitted as if the
+                // item had been specified by applying the HEX built-in function")。4 byte の値は
+                // 実行単位の中で振った番号 (P-150) で、COBOL の SET ADDRESS OF と同じ番号になる
+                case POINTER -> new Hex(String.format("%08X",
+                        ((PointerValue) variable.read(context)).address()));
                 default -> variable.read(context);
             };
         }
 
-        /**
-         * POINTER は HEX で書く (LRM "the contents of the item will be transmitted as if the item had
-         * been specified by applying the HEX built-in function")。この処理系の POINTER の 4 byte は
-         * 実行単位の中で振った番号 (P-150) で、COBOL の SET ADDRESS OF と同じ番号になる。何も指して
-         * いないものは 0 とする。以前は Java の DataView をそのまま書いていた
-         */
-        private String hex(DataView target) {
-            int address = target == null || target.length() == 0 ? 0
-                    : AddressSpace.of(context).addressOf(target.storage(), target.offset());
-            return String.format("%08X", address);
-        }
 
         /**
          * list-directed で PRINT ファイルへ書く形 (LRM "PUT list-directed")。
@@ -732,7 +808,10 @@ public final class PliRuntime {
             if (expression instanceof PliSyntax.Unary unary) {
                 Object operand = value(unary.operand(), env);
                 return switch (unary.operator()) {
-                    case "^", "¬" -> !truth(operand);
+                    // 2 ビット以上のビット列はビットごとに反転する
+                    case "^", "¬" -> operand instanceof PliSyntax.BitString bits
+                            ? bitwise(bits.bits(), "", (x, y) -> x == '1' ? '0' : '1')
+                            : !truth(operand);
                     case "-" -> operand instanceof FixedValue fixed ? fixed.negate()
                             : number(operand).negate();
                     case "+" -> operand instanceof FixedValue ? operand : number(operand);
@@ -742,9 +821,21 @@ public final class PliRuntime {
             }
             if (expression instanceof PliSyntax.Binary binary) {
                 Object left = value(binary.left(), env);
-                if (binary.operator().equals("|") && truth(left)) return true;
-                if (binary.operator().equals("&") && !truth(left)) return false;
+                boolean logical = binary.operator().equals("|") || binary.operator().equals("&");
+                // 1 ビットどうしなら、左で決まるときは右を評価しない。2 ビット以上のビット列は
+                // ビットごとに演算する (LRM "Bit operations")。以前は真偽の演算にしていた (P-185)
+                if (logical && !(left instanceof PliSyntax.BitString)) {
+                    if (binary.operator().equals("|") && truth(left)) return true;
+                    if (binary.operator().equals("&") && !truth(left)) return false;
+                }
                 Object right = value(binary.right(), env);
+                if (logical && (left instanceof PliSyntax.BitString
+                        || right instanceof PliSyntax.BitString)) {
+                    char and = binary.operator().equals("&") ? '&' : '|';
+                    return bitwise(bitText(left), bitText(right), (x, y) -> and == '&'
+                            ? (x == '1' && y == '1' ? '1' : '0')
+                            : (x == '1' || y == '1' ? '1' : '0'));
+                }
                 return switch (binary.operator()) {
                     case "|" -> truth(left) || truth(right);
                     case "&" -> truth(left) && truth(right);
@@ -826,7 +917,7 @@ public final class PliRuntime {
                     || !(function.arguments().get(0) instanceof PliSyntax.Reference reference)) {
                 throw new PliExecutionException("ADDR requires one data reference");
             }
-            return env.require(reference.name()).view;
+            return new PointerValue(address(env.require(reference.name()).view));
         }
 
         private static String substring(List<Object> arguments) {
@@ -861,9 +952,45 @@ public final class PliRuntime {
             return pad.repeat(left) + text + pad.repeat(width - text.length() - left);
         }
 
+        /** ビット列の値の字の並び。真偽値は 1 ビットである。 */
+        private static String bitText(Object value) {
+            if (value instanceof PliSyntax.BitString bits) return bits.bits();
+            if (value instanceof Boolean bit) return bit ? "1" : "0";
+            return display(value);
+        }
+
+        /** 短いほうを右に 0 で埋めて、ビットごとに演算する。 */
+        private static Object bitwise(String left, String right,
+                                      java.util.function.BinaryOperator<Character> operation) {
+            int length = Math.max(left.length(), right.length());
+            StringBuilder result = new StringBuilder(length);
+            for (int i = 0; i < length; i++) {
+                char x = i < left.length() ? left.charAt(i) : '0';
+                char y = i < right.length() ? right.charAt(i) : '0';
+                result.append(operation.apply(x, y));
+            }
+            return length == 1 ? (Object) (result.charAt(0) == '1')
+                    : new PliSyntax.BitString(result.toString());
+        }
+
+        private static boolean isBits(Object value) {
+            return value instanceof Boolean || value instanceof PliSyntax.BitString;
+        }
+
         private static int compare(Object left, Object right) {
             if (numeric(left) || numeric(right)) {
                 return number(left).compareTo(number(right));
+            }
+            if (left instanceof PointerValue a && right instanceof PointerValue b) {
+                return Integer.compare(a.address(), b.address());
+            }
+            if (isBits(left) && isBits(right)) {
+                // ビット列どうしは短いほうを右に 0 で埋めて比べる
+                String a = bitText(left);
+                String b = bitText(right);
+                int length = Math.max(a.length(), b.length());
+                return (a + "0".repeat(length - a.length()))
+                        .compareTo(b + "0".repeat(length - b.length()));
             }
             if (left instanceof Boolean || right instanceof Boolean) {
                 return Boolean.compare(truth(left), truth(right));
@@ -927,10 +1054,9 @@ public final class PliRuntime {
             return value.toString();
         }
 
-        /** 単独の変数の大きさ。POINTER の変数は指す先の記憶域そのものなので、自分の場所を持たない。 */
+        /** 変数の大きさ。POINTER も 4 byte の値を持つ。 */
         private static int byteLength(PliSyntax.Decl declaration) {
-            return declaration.type() == PliSyntax.Type.POINTER ? 0
-                    : StructureMapping.length(declaration);
+            return StructureMapping.length(declaration);
         }
 
         private static void copy(DataView source, DataView target, byte pad) {
@@ -991,10 +1117,18 @@ public final class PliRuntime {
         final int precision;
         final int scale;
         final DataView view;
+        /** ビット列が最初の byte の何ビット目から始まるか (左から 0)。UNALIGNED の要素だけが 0 でない。 */
+        final int bitShift;
         /** 構造なら、宣言の順の要素 (名の無い * も含む)。 */
         final List<Var> members = new ArrayList<>();
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
+            this(name, type, precision, scale, view, 0);
+        }
+
+        Var(String name, PliSyntax.Type type, int precision, int scale, DataView view,
+            int bitShift) {
+            this.bitShift = bitShift;
             this.name = name.toUpperCase(Locale.ROOT);
             this.type = type;
             this.precision = precision;
@@ -1019,7 +1153,8 @@ public final class PliRuntime {
                         precision, scale);
                 case DECIMAL -> FixedValue.decimal(PackedDecimal.decode(view.toByteArray(), scale,
                         NumProcMode.PFD).toBigDecimal(), precision, scale);
-                case POINTER -> view;
+                case POINTER -> new PointerValue(view.length() < 4 ? 0
+                        : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt());
                 case FILE, ENTRY -> "";
             };
         }
@@ -1039,7 +1174,15 @@ public final class PliRuntime {
                 case BINARY -> writeBinary(Executor.number(value));
                 case DECIMAL -> view.setBytes(PackedDecimal.encode(
                         Decimal.parse(Executor.number(value).toPlainString()), precision, scale, true));
-                case POINTER, FILE, ENTRY -> throw new PliExecutionException(
+                // POINTER へは POINTER の値 (ADDR や別の POINTER) だけが入る (LRM "Non-computational targets")
+                case POINTER -> {
+                    if (!(value instanceof PointerValue pointer)) {
+                        throw new PliExecutionException("only a pointer can be assigned to "
+                                + name + ": " + value);
+                    }
+                    view.setBytes(java.nio.ByteBuffer.allocate(4).putInt(pointer.address()).array());
+                }
+                case FILE, ENTRY -> throw new PliExecutionException(
                         "assignment to " + type + " is not supported: " + name);
             }
         }
@@ -1097,7 +1240,8 @@ public final class PliRuntime {
         private String bits() {
             StringBuilder text = new StringBuilder(precision);
             for (int i = 0; i < precision; i++) {
-                text.append((view.get(i / 8) >> (7 - i % 8) & 1) == 1 ? '1' : '0');
+                int bit = bitShift + i;
+                text.append((view.get(bit / 8) >> (7 - bit % 8) & 1) == 1 ? '1' : '0');
             }
             return text.toString();
         }
@@ -1107,16 +1251,17 @@ public final class PliRuntime {
          * 長ければ右を落とす。以前は 1 ビットを 1 字として文字のまま置いていた。
          */
         private void writeBits(String text) {
-            byte[] bytes = new byte[view.length()];
-            for (int i = 0; i < precision && i < text.length(); i++) {
-                char c = text.charAt(i);
+            // UNALIGNED の要素は前後の要素と byte を分け合うので、自分のビットだけを書き換える
+            byte[] bytes = view.toByteArray();
+            for (int i = 0; i < precision; i++) {
+                char c = i < text.length() ? text.charAt(i) : '0';
                 if (c != '0' && c != '1') {
                     throw new PliExecutionException("CONVERSION: '" + text
                             + "' is not a bit string for " + name);
                 }
-                if (c == '1') {
-                    bytes[i / 8] |= (byte) (1 << (7 - i % 8));
-                }
+                int bit = bitShift + i;
+                int mask = 1 << (7 - bit % 8);
+                bytes[bit / 8] = (byte) (c == '1' ? bytes[bit / 8] | mask : bytes[bit / 8] & ~mask);
             }
             view.setBytes(bytes);
         }
@@ -1146,6 +1291,12 @@ public final class PliRuntime {
             int length = Math.min(encoded.length, view.length());
             for (int i = 0; i < length; i++) view.set(i, encoded[i]);
         }
+    }
+
+    /**
+     * POINTER の値。記憶域の位置に AddressSpace が振った番号で、0 は何も指さない (P-150)。
+     */
+    private record PointerValue(int address) {
     }
 
     /**
