@@ -53,9 +53,10 @@ final class PliSyntax {
      *
      * @param aligned {@code ALIGNED} なら真、{@code UNALIGNED} なら偽、書かなければ {@code null}
      *                (型ごとの既定、構造からは受け継ぐ。LRM "ALIGNED and UNALIGNED attributes")
+     * @param varying {@code CHAR(n) VARYING}。記憶域は長さの半語と n byte (LRM Table 39)
      */
     record Decl(String name, int level, Type type, int precision, int scale,
-                Expr initial, String basedOn, Boolean aligned) {
+                Expr initial, String basedOn, Boolean aligned, boolean varying) {
     }
 
     record Assign(String target, Expr value) implements Stmt {
@@ -516,7 +517,7 @@ final class PliSyntax {
                             inheritedPrecision, inheritedScale);
                     for (String name : names) {
                         out.add(new Decl(name, level, info.type, info.precision, info.scale,
-                                initial(part), basedOn(part), alignment(part)));
+                                initial(part), basedOn(part), alignment(part), varying(part)));
                     }
                     inheritedType = info.type;
                     inheritedPrecision = info.precision;
@@ -530,12 +531,33 @@ final class PliSyntax {
                 TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
                         inheritedPrecision, inheritedScale);
                 out.add(new Decl(nameToken.text(), level, info.type, info.precision, info.scale,
-                        initial(part), basedOn(part), alignment(part)));
+                        initial(part), basedOn(part), alignment(part), varying(part)));
                 inheritedType = info.type;
                 inheritedPrecision = info.precision;
                 inheritedScale = info.scale;
             }
             return List.copyOf(out);
+        }
+
+        /**
+         * {@code VARYING} (略して {@code VAR}) を書いたか。以前は読み飛ばしていたので、
+         * {@code OUT = OUT || X} が固定長の代入になり、OUT は空白のままだった。
+         */
+        private static boolean varying(List<Token> part) {
+            // 宣言する名そのもの (先頭、または段番号の次) は属性ではない
+            int name = !part.isEmpty() && part.get(0).kind() == Kind.NUMBER ? 1 : 0;
+            for (int i = name + 1; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.is("VARYING") || token.is("VAR")) {
+                    // BIT VARYING はまだ持たない。黙って固定長にせず断る
+                    if (part.stream().noneMatch(t -> t.is("CHAR") || t.is("CHARACTER"))) {
+                        throw new ParseFailure(token, "VARYING is supported only for"
+                                + " CHARACTER yet");
+                    }
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static Boolean alignment(List<Token> part) {

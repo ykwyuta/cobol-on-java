@@ -181,7 +181,9 @@ final class StructureMapping {
     /** 記憶域の大きさ (LRM Table 39)。 */
     static int length(PliSyntax.Decl decl) {
         return switch (decl.type()) {
-            case CHAR, PICTURE -> Math.max(1, decl.precision());
+            // VARYING は今の長さを持つ半語が前に付く
+            case CHAR -> Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0);
+            case PICTURE -> Math.max(1, decl.precision());
             // ALIGNED のビット列は 8 ビットごとに 1 byte
             case BIT -> Math.max(1, (decl.precision() + 7) / 8);
             case BINARY -> binaryLength(decl.precision());
@@ -201,6 +203,8 @@ final class StructureMapping {
         return switch (decl.type()) {
             case BINARY -> binaryLength(decl.precision());
             case POINTER -> 4;
+            // ALIGNED の VARYING は長さの半語の境界に置く
+            case CHAR -> decl.varying() ? 2 : 1;
             default -> 1;
         };
     }

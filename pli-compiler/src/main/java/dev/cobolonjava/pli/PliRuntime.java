@@ -405,6 +405,7 @@ public final class PliRuntime {
                 DataView view = area.subView(mapping.byteOffset(i), mapping.byteLength(i));
                 Var variable = new Var(child.name(), child.type(), child.precision(),
                         child.scale(), view, mapping.bitShift(i));
+                variable.varying = child.varying();
                 env.put(variable);
                 env.alias(tree.get(index).name() + "." + child.name(), variable);
                 if (index > 0) {
@@ -501,6 +502,7 @@ public final class PliRuntime {
             }
             Var variable = new Var(declaration.name(), declaration.type(),
                     declaration.precision(), declaration.scale(), view);
+            variable.varying = declaration.varying();
             env.put(variable);
             if (alias != null) env.alias(alias, variable);
             if (declaration.basedOn() == null) {
@@ -519,6 +521,10 @@ public final class PliRuntime {
         private void initializeNow(Var variable, PliSyntax.Expr initial, Env env) {
             if (variable.type == PliSyntax.Type.CHAR || variable.type == PliSyntax.Type.PICTURE) {
                 variable.view.fill(context.codePage().space());
+            }
+            if (variable.varying) {
+                // INITIAL の無い VARYING は長さ 0 から始める (長さの半語を 0 にする)
+                variable.write("", context);
             }
             if (initial != null) {
                 variable.write(value(initial, env), context);
@@ -669,9 +675,9 @@ public final class PliRuntime {
             StringBuilder text = new StringBuilder();
             edit(put, env, text::append);
             Var target = env.require(put.string());
-            if (text.length() > target.view.length()) {
+            if (text.length() > target.capacity()) {
                 throw new PliExecutionException("ERROR: PUT STRING needs " + text.length()
-                        + " characters but " + target.name + " has " + target.view.length());
+                        + " characters but " + target.name + " has " + target.capacity());
             }
             target.write(text.toString(), context);
         }
@@ -808,6 +814,11 @@ public final class PliRuntime {
                 case CLOSE -> checkFileStatus(operation.file(), dataSet.close(), false);
                 case READ -> {
                     Var target = env.require(operation.target());
+                    if (target.varying) {
+                        // VARYING へ読むとレコードの長さが今の長さになる。可変長のレコードをまだ持たない
+                        throw new PliExecutionException("READ INTO a VARYING string is not"
+                                + " supported yet: " + target.name);
+                    }
                     byte[] record = new byte[target.view.length()];
                     java.util.Arrays.fill(record, context.codePage().space());
                     String status = dataSet.read(record);
@@ -1292,6 +1303,8 @@ public final class PliRuntime {
         final List<Var> members = new ArrayList<>();
         /** NULL の POINTER に重ねた BASED の変数なら、その POINTER の名。参照すると止まる。 */
         String unboundOn;
+        /** {@code CHAR(n) VARYING} なら真。記憶域の頭の半語が今の長さ、n は {@link #precision}。 */
+        boolean varying;
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
             this(name, type, precision, scale, view, 0);
@@ -1308,6 +1321,11 @@ public final class PliRuntime {
         }
 
         Object read(ProgramContext context) {
+            if (type == PliSyntax.Type.CHAR && varying) {
+                // 頭の半語が今の長さ (LRM Table 39)。宣言の長さを超える値は壊れた記憶域である
+                int length = currentLength();
+                return context.codePage().decode(view.subView(2, length).toByteArray());
+            }
             return switch (type) {
                 case CHAR, GROUP -> context.codePage().decode(view.toByteArray());
                 // ビット列は 8 ビットごとに 1 byte、左詰め (LRM Table 39)。値は '0' と '1' の並び
@@ -1330,7 +1348,32 @@ public final class PliRuntime {
             };
         }
 
+        /** VARYING の今の長さ。 */
+        int currentLength() {
+            int length = ((view.get(0) & 0xFF) << 8) | (view.get(1) & 0xFF);
+            if (length > precision) {
+                throw new PliExecutionException("the current length " + length + " of " + name
+                        + " exceeds its maximum length " + precision);
+            }
+            return length;
+        }
+
+        /** 文字として入る字の数。VARYING なら宣言の最大の長さ。 */
+        int capacity() {
+            return type == PliSyntax.Type.CHAR && varying ? precision : view.length();
+        }
+
         void write(Object value, ProgramContext context) {
+            if (type == PliSyntax.Type.CHAR && varying) {
+                // 代入した値の長さが今の長さになる。最大を超えた右は落ちる (STRINGSIZE は既定で
+                // 無効。LRM "Assignment to character strings")
+                byte[] encoded = context.codePage().encode(Executor.display(value));
+                int length = Math.min(encoded.length, precision);
+                view.set(0, (byte) (length >> 8));
+                view.set(1, (byte) length);
+                for (int i = 0; i < length; i++) view.set(2 + i, encoded[i]);
+                return;
+            }
             switch (type) {
                 case CHAR -> writeText(Executor.display(value), context);
                 case BIT -> writeBits(Executor.display(value));
@@ -1361,6 +1404,12 @@ public final class PliRuntime {
         void sqlShape(int[] shape, int offset) {
             switch (type) {
                 case CHAR, BIT, PICTURE -> {
+                    if (varying) {
+                        // VARCHAR の host variable はまだ持たない。固定長として渡すと長さの半語が
+                        // 字として DB に入る
+                        throw new PliExecutionException("a VARYING string cannot be an SQL host"
+                                + " variable yet: " + name);
+                    }
                     shape[offset] = Db2RuntimeOps.CHARACTER;
                     shape[offset + 1] = view.length();
                 }

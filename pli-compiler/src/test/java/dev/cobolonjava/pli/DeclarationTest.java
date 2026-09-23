@@ -157,6 +157,43 @@ class DeclarationTest {
     }
 
     /**
+     * 以前は VARYING を読み飛ばしていたので、OUT は固定長 64 字のままで、OUT || 'AB' の結果の
+     * 頭 64 字 (空白) が入り続けていた。z/OS probe の PLIMAP の下書きで見つかった。
+     */
+    @Test
+    @DisplayName("VARYING は代入した値の長さを持ち、連結で伸びる")
+    void varyingStringsKeepTheirCurrentLength() throws Exception {
+        assertEquals("[ABABAB] 6\n", main("""
+                DCL OUT CHAR(64) VARYING;
+                DCL I FIXED BIN(15);
+                OUT = '';
+                DO I = 1 TO 3;
+                  OUT = OUT || 'AB';
+                END;
+                PUT SKIP EDIT('[', OUT, '] ', LENGTH(OUT))(A, A, A, F(1));
+                """));
+    }
+
+    @Test
+    @DisplayName("VARYING の記憶域は長さの半語と最大の長さ。最大を超えた右は落ちる")
+    void varyingStorageAndTruncation() throws Exception {
+        assertEquals("[ABC] 3 5\n", main("""
+                DCL V CHAR(3) VAR INIT('ABCDE');
+                DCL H FIXED BIN(15) BASED(ADDR(V));
+                PUT SKIP EDIT('[', V, '] ', H, ' ', STG(V))(A, A, A, F(1), A, F(1));
+                """));
+    }
+
+    @Test
+    @DisplayName("BIT VARYING はまだ持たないので断る")
+    void bitVaryingIsRefused() {
+        PliCompiler.Result result = PliCompiler.standard().compile("DECLS.pli",
+                "DECLS: PROCEDURE OPTIONS(MAIN); DCL B BIT(8) VARYING; END DECLS;");
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("VARYING"));
+    }
+
+    /**
      * 呼んだ先が POINTER の引数を書き換えたら、呼んだ側の BASED の変数は新しい先を見る
      * (P-185 の 3 点目。z/OS probe の PLIPTR / PLIPTRS と同じ形)。
      */
