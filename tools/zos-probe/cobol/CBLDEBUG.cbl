@@ -1,0 +1,47 @@
+000100*-----------------------------------------------------------------
+000200* CBLDEBUG - DEBUG-LINE of USE FOR DEBUGGING (P-080, P-050)
+000300* Q: What line number does DEBUG-LINE carry: the sequence field
+000400*    (cols 1-6), the listing line number, or something else?
+000500*    What is it for a statement copied from a copybook?
+000600* This file has sequence numbers in columns 1-6 on purpose.
+000700* Variants: NUMBER / NONUMBER; run with LE option DEBUG
+000800*    (CEEOPTS) and without it.
+000900* Keep the compiler listing: DEBUG-LINE is compared with it.
+001000* Scenario notes (Japanese): docs/zos-probe/scenarios.md
+001100*-----------------------------------------------------------------
+001200 IDENTIFICATION DIVISION.
+001300 PROGRAM-ID. CBLDEBUG.
+001400 ENVIRONMENT DIVISION.
+001500 CONFIGURATION SECTION.
+001600 SOURCE-COMPUTER. IBM-370 WITH DEBUGGING MODE.
+001700 DATA DIVISION.
+001800 WORKING-STORAGE SECTION.
+001900 COPY PRBWS.
+002000 01  W-N                 PIC 9(2) VALUE 0.
+002100 01  W-NX REDEFINES W-N  PIC X(2).
+002200 PROCEDURE DIVISION.
+002300 DECLARATIVES.
+002400 DBG SECTION.
+002500     USE FOR DEBUGGING ON P-TARGET.
+002600 DBG-PARA.
+002700     ADD 1 TO W-N
+002900* DISPLAY directly: a declarative must not PERFORM a
+003000* non-declarative procedure such as PRB-EMIT.
+003100     DISPLAY "PRB D.P080." W-NX " |LINE=" DEBUG-LINE
+003200         " NAME=" DEBUG-NAME(1:10) "|".
+003500 END DECLARATIVES.
+003600 MAIN SECTION.
+003700 MAIN-PARA.
+003800     PERFORM P-TARGET
+003900     PERFORM P-TARGET
+004000     COPY PRBDBGC.
+004100     GO TO P-TARGET.
+004200 P-TARGET.
+004300     CONTINUE.
+004700 MAIN-END.
+004800     MOVE "D.P080.END" TO PRB-CASE
+004900     MOVE 0 TO PRB-LEN
+005000     PERFORM PRB-EMIT
+005100     GOBACK.
+005200 PRB SECTION.
+005300 COPY PRBPD.

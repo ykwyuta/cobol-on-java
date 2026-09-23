@@ -40,6 +40,10 @@ public final class NumericItem {
             throw new IllegalArgumentException(
                     "floating-point usage " + usage + " has no PICTURE; use FloatingItem instead");
         }
+        if (usage == Usage.NATIONAL) {
+            // 国字の数字 (PIC 9 USAGE NATIONAL) はまだ持たない (P-006)
+            throw new IllegalArgumentException("national numeric items are not supported yet");
+        }
         this.picture = picture;
         this.usage = usage;
         this.signPosition = signPosition;
@@ -111,8 +115,8 @@ public final class NumericItem {
             case DISPLAY -> ZonedDecimal.byteLength(picture.digits(), signPosition);
             case COMP_3 -> PackedDecimal.byteLength(picture.digits());
             case COMP, COMP_5 -> BinaryDecimal.byteLength(picture.digits());
-            case COMP_1, COMP_2 -> throw new IllegalStateException(
-                    "floating-point usage is rejected by the constructor");
+            case COMP_1, COMP_2, NATIONAL -> throw new IllegalStateException(
+                    "floating-point and national usages are rejected by the constructor");
         };
     }
 
@@ -139,8 +143,8 @@ public final class NumericItem {
                     truncMode.resolve(undefinedBehavior));
             case COMP_5 -> BinaryDecimal.encode(value, picture.digits(), picture.scale(),
                     TruncMode.BIN);
-            case COMP_1, COMP_2 -> throw new IllegalStateException(
-                    "floating-point usage is rejected by the constructor");
+            case COMP_1, COMP_2, NATIONAL -> throw new IllegalStateException(
+                    "floating-point and national usages are rejected by the constructor");
         };
     }
 
@@ -154,8 +158,8 @@ public final class NumericItem {
             case DISPLAY -> ZonedDecimal.decode(bytes, picture.scale(), signPosition, codePage, numProcMode);
             case COMP_3 -> PackedDecimal.decode(bytes, picture.scale(), numProcMode);
             case COMP, COMP_5 -> BinaryDecimal.decode(bytes, picture.scale());
-            case COMP_1, COMP_2 -> throw new IllegalStateException(
-                    "floating-point usage is rejected by the constructor");
+            case COMP_1, COMP_2, NATIONAL -> throw new IllegalStateException(
+                    "floating-point and national usages are rejected by the constructor");
         };
     }
 

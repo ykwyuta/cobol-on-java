@@ -22,6 +22,7 @@ public final class DataSetCatalog {
     private final java.util.Set<String> appended = new java.util.HashSet<>();
     /** DD 名ごとに割り当てた領域の大きさ (バイト)。 */
     private final Map<String, Long> limits = new HashMap<>();
+    private final java.util.Set<String> secondaries = new java.util.HashSet<>();
     /** 区分データセットのメンバを指す DD 名。 */
     private final java.util.Set<String> members = new java.util.HashSet<>();
 
@@ -37,6 +38,16 @@ public final class DataSetCatalog {
     /** DD 名と実際のファイルを結び付ける。 */
     public DataSetCatalog assign(String ddName, Path path) {
         assignments.put(ddName.toUpperCase(Locale.ROOT), path);
+        return this;
+    }
+
+    /** DD 名の結び付けを外す。TSO の {@code FREE FILE(dd)} である。 */
+    public DataSetCatalog release(String ddName) {
+        String key = ddName.toUpperCase(Locale.ROOT);
+        assignments.remove(key);
+        limits.remove(key);
+        secondaries.remove(key);
+        members.remove(key);
         return this;
     }
 
@@ -84,6 +95,19 @@ public final class DataSetCatalog {
     public DataSetCatalog limit(String ddName, long bytes) {
         limits.put(ddName.toUpperCase(Locale.ROOT), bytes);
         return this;
+    }
+
+    /** その DD の SPACE に二次割当が書かれていたと告げる (暫定判断 P-052)。 */
+    public DataSetCatalog secondary(String ddName, boolean value) {
+        if (value) {
+            secondaries.add(ddName.toUpperCase(Locale.ROOT));
+        }
+        return this;
+    }
+
+    /** その DD の SPACE に二次割当が書かれていたか。 */
+    public boolean hasSecondary(String ddName) {
+        return secondaries.contains(ddName.toUpperCase(Locale.ROOT));
     }
 
     /** その DD に割り当てた領域の大きさ。書かれていなければ {@code 0} (限りなし)。 */

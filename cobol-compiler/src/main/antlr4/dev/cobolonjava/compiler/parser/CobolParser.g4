@@ -731,7 +731,15 @@ subscripts
     ;
 
 referenceModifier
-    : LPAREN subscript COLON subscript? RPAREN
+    : LPAREN refModPosition COLON refModPosition? RPAREN
+    ;
+
+// 部分参照の開始位置と長さは<b>算術式</b>である (85 規格 VI-3.3.2.5 の構文規則 4、5)。
+// 添字の形 (定数の足し引き、データ名と相対指定) で読めるものは先の選択肢で今までどおり読み、
+// それ以外 (「W-I * 2 - 1」など) を式として読む。以前は式を書くと構文誤りだった
+refModPosition
+    : subscript
+    | expression
     ;
 
 // 定数どうしの足し引きを書ける。NC224A は「TEST-1-DATA (10 - 7: 6 + 2 - 5)」と書く。

@@ -219,6 +219,39 @@ class JobRunnerTest {
         assertEquals("PARM(6)=202609|", output());
     }
 
+    /**
+     * 以前は ACCEPT がジョブ実行の標準入力を読み、どのステップも自分の SYSIN を読めなかった
+     * (z/OS probe の JCL をこの処理系で流して見つかった)。
+     */
+    @Test
+    @DisplayName("ACCEPT はステップの SYSIN を読み、DISPLAY はステップの SYSOUT へ書く")
+    void acceptAndDisplayUseTheStepsSysinAndSysout() {
+        runner().run(new Job("J", List.of(
+                step("ONE", "ECHOIN", null, new StepCondition.Always(),
+                        new DdAssignment("SYSIN", new DdTarget.Inline(ebcdic("FIRST\n"))),
+                        new DdAssignment("SYSOUT", new DdTarget.Sysout())),
+                step("TWO", "ECHOIN", null, new StepCondition.Always(),
+                        new DdAssignment("SYSIN", new DdTarget.Inline(ebcdic("A\nB\n"))),
+                        new DdAssignment("SYSOUT", new DdTarget.Sysout())))));
+
+        // 1 つ目のステップは 2 回目の ACCEPT で入力が尽きる。2 つ目は自分の SYSIN を頭から読む
+        assertEquals("IN1=[FIRST]|IN2=[]|IN1=[A]|IN2=[B]|", output());
+    }
+
+    @Test
+    @DisplayName("SYSOUT をデータセットに向ければ、DISPLAY はそこへ行として書かれる")
+    void displayGoesToASysoutDataSet() {
+        runner().run(new Job("J", List.of(
+                step("ONE", "ECHOIN", null, new StepCondition.Always(),
+                        new DdAssignment("SYSIN", new DdTarget.Inline(ebcdic("X\n"))),
+                        new DdAssignment("SYSOUT", new DdTarget.DataSet("OUT.LOG", null, null,
+                                Disposition.of(Disposition.Status.NEW,
+                                        Disposition.Action.CATLG, null)))))));
+
+        assertEquals("", output());
+        assertEquals("IN1=[X]\nIN2=[]\n", CodePages.DEFAULT.decode(bytesOf("OUT.LOG")));
+    }
+
     @Test
     @DisplayName("PARM がなければ引数も渡らない (FR-134)")
     void withoutAParmThereIsNoArgument() {

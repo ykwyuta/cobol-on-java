@@ -157,13 +157,19 @@ public final class CobolCompiler {
      */
     public Result compile(String fileName, String source) {
         CompilerOptions effective = options.merge(preprocessor.optionsOf(source));
+        // 効かないオプションを黙って受理しない (要件 FR-181)
+        List<Diagnostic> optionDiagnostics = OptionSupport.check(effective);
+        if (Diagnostic.blocking(optionDiagnostics)) {
+            return failed(null, optionDiagnostics);
+        }
         CobolParsing.Result parsed = CobolParsing.parse(preprocessor, fileName, source);
         if (!parsed.succeeded()) {
             return failed(null, parsed.diagnostics());
         }
         List<Compiled> programs = new ArrayList<>();
         // 告げるだけの診断は翻訳を止めない。積んでおいて結果に載せる (要件 FR-183)
-        List<Diagnostic> warnings = new ArrayList<>(parsed.diagnostics());
+        List<Diagnostic> warnings = new ArrayList<>(optionDiagnostics);
+        warnings.addAll(parsed.diagnostics());
         List<Inherited> inherited = inheritedGlobals(parsed.tree().programUnit());
         // 囲む側の USE GLOBAL 宣言節。親は子より先に翻訳されるので、順に積める
         Map<String, List<ProcedureBuilder.GlobalDeclarative>> globals = new LinkedHashMap<>();
@@ -389,6 +395,67 @@ public final class CobolCompiler {
         return false;
     }
 
+    /**
+     * 数字項目の桁数の上限 (要件 FR-041)。
+     *
+     * <p>{@code ARITH(COMPAT)} では 18 桁、{@code ARITH(EXTEND)} では 31 桁である。2 進
+     * ({@code COMP} / {@code COMP-5}) の 19 桁以上は、ここより前に項目の長さを決めるところで
+     * 断っている (暫定判断 P-005)。以前は上限を調べず、19 桁以上の 10 進の項目を黙って受け取っていた。
+     * COMPAT のまま 19 桁以上を書いた原文は実機では翻訳できないので、ここでも断る。
+     */
+    /**
+     * 固定小数点の数字定数の桁数の上限。{@code ARITH(COMPAT)} で 18、{@code ARITH(EXTEND)} で 31
+     * (IBM Enterprise COBOL の {@code ARITH} オプションの説明)。浮動小数点の定数 ({@code 1.5E10})
+     * は数えない。
+     */
+    private static List<Diagnostic> literalLimits(org.antlr.v4.runtime.tree.ParseTree tree,
+                                                  CompilerOptions options) {
+        List<Diagnostic> diagnostics = new ArrayList<>();
+        collectLiteralLimits(tree, options.maximumNumericDigits(),
+                options.extendedArithmetic() ? "ARITH(EXTEND)" : "ARITH(COMPAT)", diagnostics);
+        return diagnostics;
+    }
+
+    private static void collectLiteralLimits(org.antlr.v4.runtime.tree.ParseTree tree, int limit,
+                                             String arith, List<Diagnostic> diagnostics) {
+        if (tree instanceof org.antlr.v4.runtime.tree.TerminalNode terminal) {
+            var token = terminal.getSymbol();
+            String text = token.getText();
+            if (token.getType() == CobolParser.NUMBER && text.indexOf('E') < 0
+                    && text.indexOf('e') < 0) {
+                long digits = text.chars().filter(Character::isDigit).count();
+                if (digits > limit) {
+                    diagnostics.add(new Diagnostic(token instanceof dev.cobolonjava.compiler.parser.OriginToken origin
+                            ? origin.origin() : null, "the numeric literal "
+                            + text + " has " + digits + " digits; the maximum is " + limit
+                            + " under " + arith));
+                }
+            }
+            return;
+        }
+        for (int k = 0; k < tree.getChildCount(); k++) {
+            collectLiteralLimits(tree.getChild(k), limit, arith, diagnostics);
+        }
+    }
+
+    private static List<Diagnostic> digitLimits(DataLayout layout, CompilerOptions options) {
+        List<Diagnostic> diagnostics = new ArrayList<>();
+        String arith = options.extendedArithmetic() ? "ARITH(EXTEND)" : "ARITH(COMPAT)";
+        for (var item : layout.all()) {
+            var picture = item.picture();
+            if (picture == null || !(picture.isNumeric() || picture.isNumericEdited())) {
+                continue;
+            }
+            int limit = options.maximumNumericDigits();
+            if (picture.digits() > limit) {
+                diagnostics.add(new Diagnostic(item.origin(), "the PICTURE of " + item.name()
+                        + " has " + picture.digits() + " digits; the maximum is " + limit
+                        + " under " + arith));
+            }
+        }
+        return diagnostics;
+    }
+
     /** プログラム 1 本を翻訳する。 */
     private Result compile(CobolParser.ProgramUnitContext program, String fileName,
                            CompilerOptions effective, Inherited inherited,
@@ -409,6 +476,11 @@ public final class CobolCompiler {
         if (!data.succeeded()) {
             return failed(data.layout(), data.diagnostics());
         }
+        List<Diagnostic> limits = digitLimits(data.layout(), effective);
+        limits.addAll(literalLimits(program, effective));
+        if (Diagnostic.blocking(limits)) {
+            return failed(data.layout(), limits);
+        }
         warnings.addAll(data.diagnostics());
 
         // SELECT と FD は離れて書かれる。両方を読み終えてから突き合わせる
@@ -428,6 +500,10 @@ public final class CobolCompiler {
         ProcedureBuilder.Result procedure = ProcedureBuilder.build(program, data.layout(),
                 specialNames, declared.files(), data.reports());
         diagnostics.addAll(procedure.diagnostics());
+        for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
+            diagnostics.addAll(dev.cobolonjava.compiler.semantic.NationalGuard.check(
+                    paragraph.statements()));
+        }
         if (Diagnostic.blocking(diagnostics)) {
             return failed(data.layout(), diagnostics);
         }

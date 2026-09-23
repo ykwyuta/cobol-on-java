@@ -4,6 +4,7 @@ import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.Origin;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
+import dev.cobolonjava.runtime.data.National;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.decimal.Decimal;
 import dev.cobolonjava.runtime.item.FloatingItem;
@@ -236,6 +237,10 @@ public final class InitialImage {
             writeNumeric(image, item, value, picture, usage == null ? Usage.DISPLAY : usage);
             return;
         }
+        if (picture.category() == Picture.Category.NATIONAL) {
+            writeNational(image, item, value);
+            return;
+        }
         // JUSTIFIED は<b>初期値には効かない</b>。規格がそう決めている
         // (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは実行時の転記だけで
         // ある。X(3) JUST VALUE "XY" は "XY " になる (CCVS85 の NC107A)
@@ -285,6 +290,34 @@ public final class InitialImage {
         FloatingItem descriptor = usage == Usage.COMP_1 ? FloatingItem.comp1() : FloatingItem.comp2();
         byte[] encoded = descriptor.encode(number.toBigDecimal().stripTrailingZeros());
         System.arraycopy(encoded, 0, image, 0, Math.min(encoded.length, image.length));
+    }
+
+    /**
+     * 国字項目の初期値。国字定数はそのまま、英数字の定数はコードページの文字として読んで
+     * 国字に直す。余りは国字の空白 ({@code X'0020'}) で埋める。
+     */
+    private void writeNational(byte[] image, DataItem item, LiteralValue value) {
+        if (value instanceof LiteralValue.Number) {
+            report(item.origin(), "a national item takes a national or alphanumeric VALUE: "
+                    + describe(item));
+            return;
+        }
+        byte[] bytes;
+        try {
+            bytes = NationalLiterals.bytesOf(value, image.length, codePage);
+        } catch (IllegalArgumentException failure) {
+            report(item.origin(), "cannot encode VALUE for " + describe(item) + ": "
+                    + failure.getMessage());
+            return;
+        }
+        if (bytes.length > image.length) {
+            report(item.origin(), "VALUE is longer than " + describe(item)
+                    + " (" + bytes.length / 2 + " > " + image.length / 2 + " characters)");
+            return;
+        }
+        byte[] padded = National.repeat(National.SPACE, image.length);
+        System.arraycopy(bytes, 0, padded, 0, bytes.length);
+        System.arraycopy(padded, 0, image, 0, image.length);
     }
 
     /** 英数字・英字・編集項目、および群項目への書き込み。 */

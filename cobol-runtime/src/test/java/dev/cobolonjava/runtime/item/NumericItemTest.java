@@ -74,7 +74,7 @@ class NumericItemTest {
         // 規格がそう決めている。符号を残すと、負の値を移したあと負のまま読み戻される
         // (NC105A の MOVE-TEST-F1-114「MOVE TO COMP (ABS)」)
         for (Usage usage : Usage.values()) {
-            if (usage.isFloatingPoint()) {
+            if (usage.isFloatingPoint() || usage == Usage.NATIONAL) {
                 continue;
             }
             NumericItem item = NumericItem.of("9(5)V99", usage);
@@ -88,7 +88,7 @@ class NumericItemTest {
     @DisplayName("符号を持つ項目では符号がそのまま残る")
     void aSignedItemKeepsItsSign() {
         for (Usage usage : Usage.values()) {
-            if (usage.isFloatingPoint()) {
+            if (usage.isFloatingPoint() || usage == Usage.NATIONAL) {
                 continue;
             }
             NumericItem item = NumericItem.of("S9(5)V99", usage);
@@ -102,7 +102,7 @@ class NumericItemTest {
     @DisplayName("すべての USAGE で符号化と復号が往復する")
     void roundTripAcrossUsages() {
         for (Usage usage : Usage.values()) {
-            if (usage.isFloatingPoint()) {
+            if (usage.isFloatingPoint() || usage == Usage.NATIONAL) {
                 // 浮動小数点項目は PICTURE を持たないため NumericItem の対象外
                 continue;
             }

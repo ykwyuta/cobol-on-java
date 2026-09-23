@@ -1,5 +1,7 @@
 package dev.cobolonjava.runtime.file;
 
+import dev.cobolonjava.runtime.abend.AbendCode;
+
 /**
  * 開かれたデータセット (要件 FR-100, FR-102)。
  *
@@ -40,6 +42,18 @@ public sealed interface DataSet permits SequentialDataSet, KeyedDataSet {
      * ファイルだが、順編成のデータセットも置き場の下のファイルだからである。
      */
     void member(boolean value);
+
+    /** 二次割当を書いたと告げる。領域を使い切ったときの異常終了コードが変わる (暫定判断 P-052)。 */
+    default void secondary(boolean value) {
+    }
+
+    /**
+     * 領域を使い切ったときの異常終了コード。順編成だけが {@code x37} で止まる。鍵で引く編成は
+     * 状態 {@code 24} であり、ここへは来ない。
+     */
+    default AbendCode spaceAbend() {
+        return AbendCode.S037;
+    }
 
     /**
      * 開く。

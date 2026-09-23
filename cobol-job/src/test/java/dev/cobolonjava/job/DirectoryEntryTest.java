@@ -267,11 +267,15 @@ class DirectoryEntryTest {
     }
 
     @Test
-    @DisplayName("データセットそのものの名前は変えられない。黙って 0 では終わらない (FR-137)")
-    void renamingADataSetIsNotSupportedYet() {
+    @DisplayName("メンバを書かなければライブラリそのものの名前を変える。メンバは付いてくる (P-058)")
+    void renamingALibraryMovesItsMembers() {
         member("PAY.LIB", "PAYCALC", "AAAAAAAAAAAAAAAAAAAA");
 
-        assertEquals(12, tso("  RENAME 'PAY.LIB' 'NEW.LIB'").step("STEP1").returnCode());
+        assertEquals(0, tso("  RENAME 'PAY.LIB' 'NEW.LIB'").step("STEP1").returnCode(), output());
+        assertEquals("AAAAAAAAAAAAAAAAAAAA", read("NEW.LIB", "PAYCALC"));
+        // 新しい名前が既にあれば変えない
+        member("OLD.LIB", "X", "BBBBBBBBBBBBBBBBBBBB");
+        assertEquals(12, tso("  RENAME 'OLD.LIB' 'NEW.LIB'").step("STEP1").returnCode());
     }
 
     // ---- 別名を写す ----

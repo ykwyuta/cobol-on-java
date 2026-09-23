@@ -79,11 +79,19 @@ CLAUDE.md の増分の型は「1. 測る」から始まるが、**ここは 1 �
 | --- | --- |
 | 級条件 (`ALPHABETIC` / `NUMERIC`) | `ClassTest` が 1 バイトずつ復号する。IBM-930 で `"日本"` は `?a?e?` に崩れる。混在データに級条件を書くこと自体が規格の範囲外だが、**崩れ方が診断されない**のは直すべきである |
 | `UPPER-CASE` / `LOWER-CASE` | 全角の扱いを決めていない |
-| `PIC N` / `PIC G` / `USAGE NATIONAL` | 未実装。`PictureParser` と `DataDivisionBuilder` が診断で断る (P-006) |
+| `PIC G` / DBCS の `PIC N` (`USAGE DISPLAY-1`、`NSYMBOL(DBCS)`) | 未実装。`DataDivisionBuilder` と `OptionSupport` が診断で断る (P-006) |
+| 国字 (`PIC N`) の `STRING` / `INSPECT` / `ACCEPT` / 部分参照ほか | 国字を扱うのは `MOVE` / `DISPLAY` / `INITIALIZE` / `CALL` / 関係条件 / `NATIONAL-OF` / `DISPLAY-OF` だけである。ほかは `NationalGuard` が断る |
 
 **断っているものは検査しない。**断れていることだけを検査する。
 
-## 5. 日本語をいま書ける唯一の口は 16 進定数である
+## 5. 日本語を原文に書ける口は 16 進定数と国字定数である
+
+**2026-09-24 の追記**: 国字 (`PIC N`、`USAGE NATIONAL`) を実装した。国字定数 `N'山田'` は
+原文の文字を**コードページを経由せずに** UTF-16 にするので、IBM-1047 のままでも日本語を
+書ける。英数字の項目へ日本語を入れるには `FUNCTION DISPLAY-OF(N'山田', 939)` のように
+CCSID を指定して直す。1390 / 1399 は JDK に無いので断る (P-002)。以下はこの追記より前の
+記述である。
+
 
 翻訳時のコードページは処理系のどこでも `CodePages.DEFAULT` (IBM-1047) に固定されて
 おり、`CODEPAGE` オプションは無い (暫定判断 P-177)。IBM-1047 は日本語を持たないので、
@@ -147,7 +155,7 @@ CLAUDE.md の「近い値を黙って返すくらいなら、書けないと断�
 | JDK の `x-IBM930` / `x-IBM939` の変換表が IBM CDRA と一致すること | P-012。CDRA の表と全コードポイントで突き合わせる |
 | IBM-5026 / 5035 / 1390 / 1399 | P-002。登録すらしていない |
 | 切れた位置・シフトコードの付け方が実機と同じであること | 実機かそれに代わるオラクルが要る |
-| `PIC N` / `PIC G` / `NATIONAL` の振る舞い | P-006。断っている |
+| `PIC N` / `NATIONAL` の振る舞いが実機と同じであること | 国字は実装した (2026-09-24)。`NATIONAL-OF` の変換表は P-012、DBCS の `PIC N` と `PIC G` は P-006 で断っている。z/OS probe の `CBLCP` で実機の値と比べる |
 | 日本語を含む原文の桁の数え方 | 原文は UTF-8 で読み、`SourceLine` は Java の `char` で 72 桁を数える。実機は**バイト**で数えるので、日本語を含む行は桁位置がずれる。P-177 で翻訳時のコードページを選べるようにするとき、同時に決める |
 | 3270 / BMS の全角の cell 幅と SO / SI | 設計 81 章と ADR-0010 に未検証として挙げてある。`BmsInputDecoder` は 1 文字 1 バイトでない入力を断る |
 

@@ -55,6 +55,22 @@ public enum AbendCode {
     S037("S037", "output data set error"),
 
     /**
+     * 一次割当を使い切り、二次割当が無い (暫定判断 P-052)。
+     */
+    SD37("SD37", "primary space exhausted and no secondary space"),
+
+    /**
+     * 二次割当も使い切った (1 つのボリュームに 16 エクステント)。順編成である (暫定判断 P-052)。
+     */
+    SB37("SB37", "end of volume and no more space"),
+
+    /**
+     * 区分データセットがエクステントを使い切った。区分データセットはボリュームをまたげない
+     * (暫定判断 P-052)。
+     */
+    SE37("SE37", "no more extents for the partitioned data set"),
+
+    /**
      * 言語環境が検出した条件。
      *
      * <p>{@code SSRANGE} の範囲外参照や、{@code FILE STATUS} を書いていないファイルの異常が

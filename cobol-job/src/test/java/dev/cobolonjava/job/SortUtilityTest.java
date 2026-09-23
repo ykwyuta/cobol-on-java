@@ -553,6 +553,27 @@ class SortUtilityTest {
     // ---- 報告書にする ----
 
     @Test
+    @DisplayName("OUTFIL があっても、SORTOUT の DD があれば OUTFIL でない出力として書く (P-047)")
+    void sortoutIsWrittenBesideOutfil() {
+        write("IN.DAT", "B2A1", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//SORTOUT  DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//RPT      DD   DSN=RPT.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=(1,2,CH,A)",
+                "  OUTFIL FNAMES=RPT,HEADER1=(C'H')");
+
+        assertEquals(0, result.returnCode(), output());
+        assertEquals("A1B2", read("OUT.DAT"));
+        assertTrue(read("RPT.DAT").startsWith("H"), read("RPT.DAT"));
+    }
+
+    @Test
     @DisplayName("HEADER1 は先頭に 1 行足す (FR-137, 暫定判断 P-047 の解消)")
     void header1GoesAtTheTop() {
         write("IN.DAT", "A1B2", 2);
@@ -576,6 +597,53 @@ class SortUtilityTest {
 
         assertEquals(0, result.returnCode());
         assertEquals("A1     B2     TOTAL 2", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("引用符だけの文字と、回数を付けた文字を書ける (P-047)")
+    void headerTakesPlainAndRepeatedLiterals() {
+        write("IN.DAT", "A1", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,HEADER1=('PROBE',3'*')");
+
+        assertEquals(0, result.returnCode());
+        assertEquals("PROBE***A1      ", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("COUNT=(M11,LENGTH=4) は 0 を詰めて 4 桁、M10 は 0 を空白にする (P-047)")
+    void countTakesAnEditMask() {
+        write("IN.DAT", "A1B2C3", 2);
+
+        JobRunner.Result result = sort(
+                "  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,",
+                "    TRAILER1=(COUNT=(M11,LENGTH=4),COUNT=(M10,LENGTH=4))");
+
+        assertEquals(0, result.returnCode(), output());
+        // DFSORT の手引きの例: COUNT=(M11,LENGTH=4) は 0003
+        assertEquals("A1      B2      C3      0003   3", read("OUT.DAT"));
+    }
+
+    @Test
+    @DisplayName("符号を持つ型と、LENGTH の無い型は断る")
+    void refusesMasksItCannotReproduce() {
+        write("IN.DAT", "A1", 2);
+
+        assertEquals(16, sort("  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(COUNT=(M4,LENGTH=6))").returnCode());
+        assertTrue(output().contains("NUMBER FORMAT IS NOT SUPPORTED YET"), output());
+    }
+
+    @Test
+    @DisplayName("型に LENGTH を書かなければ断る (出す幅を確かめていない)")
+    void refusesAMaskWithoutLength() {
+        write("IN.DAT", "A1", 2);
+
+        assertEquals(16, sort("  SORT FIELDS=COPY",
+                "  OUTFIL FNAMES=SORTOUT,TRAILER1=(COUNT=(M11))").returnCode());
     }
 
     @Test

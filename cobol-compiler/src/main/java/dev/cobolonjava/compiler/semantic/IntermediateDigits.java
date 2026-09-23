@@ -29,6 +29,14 @@ public final class IntermediateDigits {
     public static final int MAX_DIGITS = 30;
 
     /**
+     * {@code ARITH(EXTEND)} の中間結果の総桁数の上限 (要件 FR-041)。
+     *
+     * <p>COMPAT の 30 に 1 を足しただけではない。PICTURE の上限も 18 から 31 へ上がる
+     * ({@link dev.cobolonjava.compiler.source.CompilerOptions#maximumNumericDigits})。
+     */
+    public static final int EXTENDED_MAX_DIGITS = 31;
+
+    /**
      * 整数を返す組み込み関数の整数部の桁数。
      *
      * <p>返る値の大きさは引数に依るが、規格の算術は 18 桁までである。上限の 30 桁で
@@ -46,9 +54,11 @@ public final class IntermediateDigits {
     private static final int INTEGER_RESULT_DIGITS = 18;
 
     private final int dmax;
+    private final int maxDigits;
 
-    private IntermediateDigits(int dmax) {
+    private IntermediateDigits(int dmax, int maxDigits) {
         this.dmax = dmax;
+        this.maxDigits = maxDigits;
     }
 
     /**
@@ -64,8 +74,8 @@ public final class IntermediateDigits {
          *
          * <p>削るのは<b>小数部だけ</b>である。整数部を削ると桁あふれが検出できなくなる。
          */
-        Digits capped() {
-            int excess = integerDigits + scale - MAX_DIGITS;
+        Digits capped(int maxDigits) {
+            int excess = integerDigits + scale - maxDigits;
             return excess <= 0 ? this : new Digits(integerDigits, Math.max(0, scale - excess));
         }
     }
@@ -78,8 +88,20 @@ public final class IntermediateDigits {
      */
     public static IntermediateDigits of(Expression expression,
                                         List<Statement.Arithmetic.Target> targets) {
+        return of(expression, targets, MAX_DIGITS);
+    }
+
+    /**
+     * 文全体を見て {@code dmax} を決める。
+     *
+     * @param maxDigits 中間結果の総桁数の上限 ({@link #MAX_DIGITS} か {@link #EXTENDED_MAX_DIGITS})
+     */
+    public static IntermediateDigits of(Expression expression,
+                                        List<Statement.Arithmetic.Target> targets,
+                                        int maxDigits) {
+        IntermediateDigits probe = new IntermediateDigits(0, maxDigits);
         int dmax = 0;
-        for (int scale : dividendScales(expression)) {
+        for (int scale : probe.dividendScales(expression)) {
             dmax = Math.max(dmax, scale);
         }
         boolean rounded = false;
@@ -88,17 +110,17 @@ public final class IntermediateDigits {
             rounded |= target.rounded();
         }
         // 丸めるには 1 桁余分に持っていなければならない
-        return new IntermediateDigits(rounded ? dmax + 1 : dmax);
+        return new IntermediateDigits(rounded ? dmax + 1 : dmax, maxDigits);
     }
 
     /** {@code dmax} に数える被演算子の小数部の桁数。除数は数えない。 */
-    private static List<Integer> dividendScales(Expression expression) {
+    private List<Integer> dividendScales(Expression expression) {
         List<Integer> scales = new ArrayList<>();
         collect(expression, scales);
         return scales;
     }
 
-    private static void collect(Expression expression, List<Integer> scales) {
+    private void collect(Expression expression, List<Integer> scales) {
         if (expression instanceof Expression.Value value) {
             scales.add(scaleOf(value.operand()));
             return;
@@ -128,12 +150,12 @@ public final class IntermediateDigits {
         return switch (binary.operator()) {
             case ADD, SUBTRACT -> new Digits(
                     Math.max(left.integerDigits(), right.integerDigits()) + 1,
-                    Math.max(left.scale(), right.scale())).capped();
+                    Math.max(left.scale(), right.scale())).capped(maxDigits);
             case MULTIPLY -> new Digits(
                     left.integerDigits() + right.integerDigits(),
-                    left.scale() + right.scale()).capped();
+                    left.scale() + right.scale()).capped(maxDigits);
             case DIVIDE -> new Digits(
-                    left.integerDigits() + right.scale(), dmax).capped();
+                    left.integerDigits() + right.scale(), dmax).capped(maxDigits);
             // べき乗の桁は指数で決まる。整数のべきなら底の桁を掛けた数、
             // そうでなければ近似が入るので、持てるだけの小数桁を取る
             case POWER -> powerDigits(left, binary.right());
@@ -150,12 +172,12 @@ public final class IntermediateDigits {
     private Digits powerDigits(Digits base, Expression exponent) {
         Integer times = integerExponentOf(exponent);
         if (times == null || times < 0) {
-            return new Digits(MAX_DIGITS - dmax, dmax).capped();
+            return new Digits(maxDigits - dmax, dmax).capped(maxDigits);
         }
         if (times == 0) {
             return new Digits(1, 0);
         }
-        return new Digits(base.integerDigits() * times, base.scale() * times).capped();
+        return new Digits(base.integerDigits() * times, base.scale() * times).capped(maxDigits);
     }
 
     /** 指数が 0 以上の整数の定数なら、その値。 */
@@ -175,7 +197,7 @@ public final class IntermediateDigits {
         }
     }
 
-    private static Digits digitsOf(Operand operand) {
+    private Digits digitsOf(Operand operand) {
         if (operand instanceof Operand.Literal literal) {
             Decimal value = numberOf(literal.value());
             if (value == null) {
@@ -206,23 +228,23 @@ public final class IntermediateDigits {
      * <p>ここで決めているのは<b>周りの式をどこで打ち切るか</b>だけである。関数が返す値
      * そのものは実行時の {@link Decimal} が自分の小数桁を持っている。
      */
-    private static Digits digitsOf(Operand.Function function) {
+    private Digits digitsOf(Operand.Function function) {
         if (function.intrinsic().returns() == Intrinsic.Result.INTEGER) {
             return new Digits(INTEGER_RESULT_DIGITS, 0);
         }
         int integerDigits = 1;
         int scale = 0;
         for (Expression argument : function.arguments()) {
-            Digits digits = new IntermediateDigits(0).of(argument);
+            Digits digits = new IntermediateDigits(0, maxDigits).of(argument);
             integerDigits = Math.max(integerDigits, digits.integerDigits());
             scale = Math.max(scale, digits.scale());
         }
         boolean accumulates = function.intrinsic() == Intrinsic.SUM
                 || function.intrinsic() == Intrinsic.RANGE;
-        return new Digits(accumulates ? integerDigits + 1 : integerDigits, scale).capped();
+        return new Digits(accumulates ? integerDigits + 1 : integerDigits, scale).capped(maxDigits);
     }
 
-    private static int scaleOf(Operand operand) {
+    private int scaleOf(Operand operand) {
         return digitsOf(operand).scale();
     }
 

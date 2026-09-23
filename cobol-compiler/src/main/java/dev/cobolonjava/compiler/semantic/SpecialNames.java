@@ -178,7 +178,14 @@ public final class SpecialNames {
         /** 標準出力。 */
         SYSOUT,
         /** 標準エラー出力。 */
-        SYSERR;
+        SYSERR,
+        /**
+         * 紙送りの通路 1〜12 ({@code C01}〜{@code C12}) と、行を送らない {@code CSP}
+         * (参照実装の {@code SPECIAL-NAMES} の機能名)。{@code WRITE ... ADVANCING} にだけ書ける。
+         * 以前は機能名の表に無く、{@code C01 IS TOP-OF-FORM} を「知らない機能名」と断っていた
+         * (z/OS probe の CBLPRNC)。
+         */
+        C01, C02, C03, C04, C05, C06, C07, C08, C09, C10, C11, C12, CSP;
 
         /** 機能名の綴りから読み取る。知らない綴りなら {@code null}。 */
         static FunctionName of(String text) {
@@ -187,8 +194,15 @@ public final class SpecialNames {
                 case "SYSIN", "SYSIPT" -> SYSIN;
                 case "SYSOUT", "SYSLIST", "SYSLST", "SYSPRINT" -> SYSOUT;
                 case "SYSERR" -> SYSERR;
+                case "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10",
+                     "C11", "C12", "CSP" -> valueOf(text);
                 default -> null;
             };
+        }
+
+        /** 紙送りの機能名か。{@code DISPLAY} と {@code ACCEPT} には書けない。 */
+        public boolean isCarriageControl() {
+            return ordinal() >= C01.ordinal();
         }
 
         /** 読み取る側かどうか。 */

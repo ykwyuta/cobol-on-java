@@ -46,6 +46,16 @@ public final class PreprocessorLexer {
                 // 16 進定数は 1 個の定数である。X を語として切ると REPLACING ==X== が掴んでしまう
                 kind = TextWordKind.LITERAL;
                 i = scanLiteral(text, i + 1, text.charAt(i + 1), source);
+            } else if ((c == 'N' || c == 'n') && i + 1 < text.length()
+                    && (text.charAt(i + 1) == '\'' || text.charAt(i + 1) == '"')) {
+                // 国字定数 N'..' も 1 個の定数である
+                kind = TextWordKind.LITERAL;
+                i = scanLiteral(text, i + 1, text.charAt(i + 1), source);
+            } else if ((c == 'N' || c == 'n') && i + 2 < text.length()
+                    && (text.charAt(i + 1) == 'X' || text.charAt(i + 1) == 'x')
+                    && (text.charAt(i + 2) == '\'' || text.charAt(i + 2) == '"')) {
+                kind = TextWordKind.LITERAL;
+                i = scanLiteral(text, i + 2, text.charAt(i + 2), source);
             } else if (SEPARATOR_CHARS.indexOf(c) >= 0) {
                 kind = TextWordKind.SEPARATOR;
                 i++;

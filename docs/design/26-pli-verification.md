@@ -106,7 +106,7 @@ IBM 固有機能を使う検査には `ibm-extension`、ISO/ANSI の要求だけ
 | 1 | 宣言、`CHAR`、`FIXED BIN/DEC`、代入、算術・比較 | 初期 subset 実装済み |
 | 2 | `IF`、`DO WHILE/UNTIL`、反復指定 `DO ... TO ... BY` | 実装済み |
 | 3 | 文字列、`SUBSTR`、`TRIM`、連結、PICTURE | Bank-of-Z subset 実装済み |
-| 4 | 配列、添字、`DO` の複数指定、`LEAVE` / `ITERATE` | 未実装 |
+| 4 | 配列、添字、`DO` の複数指定、`LEAVE` / `ITERATE` | 構造の外の配列 (多次元・下限・`BASED`・`INIT` の並びと係数) と擬似変数 `SUBSTR` は実装済み。2026-09-24 に、構造の中の要素の配列 (要素の間隔は境界合わせの倍数)、ビット列の配列 (UNALIGNED ならビット単位で詰まる)、配列への代入の右辺の配列の式 (要素ごと) を足した。構造の配列 (`1 S(3)`、`2 R(3), 3 ...`)・配列への代入でない所の配列の式・`DO` の複数指定・`LEAVE` / `ITERATE` は断る。要素の間隔の規則は実機と突き合わせていない (P-185) |
 | 5 | 条件処理、`ON` / `SIGNAL` / `REVERT` | `ON ENDFILE` のみ |
 | 6 | 記録・ストリーム I/O の全形式 | 順編成入力と `PUT` の初期 subset |
 | 7 | SQL、IMS、外部呼出し | Bank-of-Z subset 実装済み |

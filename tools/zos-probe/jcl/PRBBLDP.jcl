@@ -1,0 +1,48 @@
+//PRBBLDP  JOB (ACCT),'ZOS PROBE',CLASS=A,MSGCLASS=X,REGION=0M
+//*--------------------------------------------------------------------
+//* PRBBLDP - compile and bind the PL/I probes. Keep the job output:
+//* the compiler options list is part of the record (LIMITS, RULES,
+//* the product level).
+//* Site values: the compiler and LE library names below.
+//*--------------------------------------------------------------------
+//         SET PLILIB=IBMZ.V6R1M0.SIBMZCMP
+//         SET LERUN=CEE.SCEERUN
+//         SET LELKED=CEE.SCEELKED
+//PLIC     PROC MEM=
+//COMPILE  EXEC PGM=IBMZPLI,PARM='OBJECT,OPTIONS,SOURCE,AGGREGATE'
+//STEPLIB  DD DISP=SHR,DSN=&PLILIB
+//         DD DISP=SHR,DSN=&LERUN
+//SYSIN    DD DISP=SHR,DSN=YOURID.PROBE.SRC.PLI(&MEM)
+//SYSPRINT DD SYSOUT=*
+//SYSLIN   DD DISP=SHR,DSN=YOURID.PROBE.OBJ(&MEM)
+//SYSUT1   DD UNIT=SYSALLDA,SPACE=(CYL,(1,1))
+//         PEND
+//*
+//* AGGREGATE lists the offsets of every structure element; it is
+//* the second observation for PLIMAP (P-184).
+//PLISTRM  EXEC PLIC,MEM=PLISTRM
+//PLISTR2  EXEC PLIC,MEM=PLISTR2
+//PLIMAP   EXEC PLIC,MEM=PLIMAP
+//PLIPTR   EXEC PLIC,MEM=PLIPTR
+//PLIPTRS  EXEC PLIC,MEM=PLIPTRS
+//*
+//BIND1    EXEC PGM=IEWBLINK,PARM='LIST,MAP,XREF,RENT'
+//SYSLIB   DD DISP=SHR,DSN=&LELKED
+//OBJ      DD DISP=SHR,DSN=YOURID.PROBE.OBJ
+//SYSLMOD  DD DISP=SHR,DSN=YOURID.PROBE.LOAD
+//SYSPRINT DD SYSOUT=*
+//SYSLIN   DD *
+  INCLUDE OBJ(PLISTRM)
+  ENTRY CEESTART
+  NAME PLISTRM(R)
+  INCLUDE OBJ(PLISTR2)
+  ENTRY CEESTART
+  NAME PLISTR2(R)
+  INCLUDE OBJ(PLIMAP)
+  ENTRY CEESTART
+  NAME PLIMAP(R)
+  INCLUDE OBJ(PLIPTR)
+  INCLUDE OBJ(PLIPTRS)
+  ENTRY CEESTART
+  NAME PLIPTR(R)
+/*

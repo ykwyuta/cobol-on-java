@@ -1,0 +1,18 @@
+ /*-----------------------------------------------------------------*/
+ /* PLIPTR - a POINTER changed by the called procedure (P-185)       */
+ /* Q: After PLIPTRS sets its POINTER parameter to its own storage,  */
+ /*    does the caller's BASED(P) variable see the new target?       */
+ /*    (This implementation re-overlays BASED only on assignments    */
+ /*    inside the same program.)                                     */
+ /* Scenario notes (Japanese): docs/zos-probe/scenarios.md           */
+ /*-----------------------------------------------------------------*/
+ PLIPTR: PROCEDURE OPTIONS(MAIN);
+   DCL PLIPTRS ENTRY(POINTER) EXTERNAL;
+   DCL MINE CHAR(4) INIT('MINE');
+   DCL P POINTER;
+   DCL V CHAR(4) BASED(P);
+   P = ADDR(MINE);
+   PUT SKIP EDIT('PRB Q.P185.BEFORE |', V, '|')(A, A, A);
+   CALL PLIPTRS(P);
+   PUT SKIP EDIT('PRB Q.P185.AFTER |', V, '|')(A, A, A);
+ END PLIPTR;

@@ -1,0 +1,23 @@
+PRB B.06.BEFORE  ||
+Exception in thread "main" dev.cobolonjava.runtime.program.ProgramNotFoundException: cannot find the called program: NOSUCHPG
+	at dev.cobolonjava.runtime.interop.LegacyClassNameResolver.resolve(LegacyClassNameResolver.java:22)
+	at dev.cobolonjava.runtime.program.ProgramContext.resolve(ProgramContext.java:746)
+	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1520)
+	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1539)
+	at cobol.generated.CBLABND.paragraph$0(CBLABND.cbl:79)
+	at cobol.generated.CBLABND.dispatch(CBLABND.cbl)
+	at cobol.generated.CBLABND.performRange(CBLABND.cbl)
+	at cobol.generated.CBLABND.run(CBLABND.cbl)
+	at dev.cobolonjava.runtime.program.CobolProgram.runFresh(CobolProgram.java:52)
+	at dev.cobolonjava.runtime.program.CobolProgram.runMain(CobolProgram.java:158)
+	at cobol.generated.CBLABND.main(CBLABND.cbl)
+Caused by: java.lang.ClassNotFoundException: cobol.generated.NOSUCHPG
+	at java.base/jdk.internal.loader.BuiltinClassLoader.loadClass(BuiltinClassLoader.java:641)
+	at java.base/jdk.internal.loader.ClassLoaders$AppClassLoader.loadClass(ClassLoaders.java:188)
+	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:526)
+	at java.base/java.lang.Class.forName0(Native Method)
+	at java.base/java.lang.Class.forName(Class.java:534)
+	at java.base/java.lang.Class.forName(Class.java:513)
+	at dev.cobolonjava.runtime.interop.LegacyClassNameResolver.resolve(LegacyClassNameResolver.java:19)
+	... 10 more
+RC=1

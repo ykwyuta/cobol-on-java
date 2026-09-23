@@ -200,6 +200,27 @@ class SubscriptGenerationTest {
                 "MOVE 'XY' TO WS-A (WS-I:2).").substring(2));
     }
 
+    /**
+     * 部分参照の開始位置と長さは算術式である (85 規格 VI-3.3.2.5)。以前は掛け算を書くと
+     * 構文誤りだった。z/OS probe の CBLCP の下書き ({@code W-HEXOUT(W-I * 2 - 1:1)}) で見つかった。
+     */
+    @Test
+    @DisplayName("部分参照の開始位置と長さに算術式を書ける (FR-026)")
+    void aReferenceModificationMayBeAnArithmeticExpression() {
+        List<String> storage = List.of("01 WS-I PIC 9(3) COMP VALUE 2.",
+                "01 WS-A PIC X(6) VALUE 'ABCDEF'.",
+                "01 WS-R PIC X(4).");
+        // 開始 2 * 2 - 1 = 3、長さ 2
+        assertEquals("CD  ", run(storage,
+                "MOVE WS-A (WS-I * 2 - 1: 2) TO WS-R.").substring(8));
+        // 長さも式。WS-I + WS-I は相対指定ではなく式である
+        assertEquals("BCDE", run(storage,
+                "MOVE WS-A (2: WS-I + WS-I) TO WS-R.").substring(8));
+        // 括弧と割り算
+        assertEquals("EF  ", run(storage,
+                "MOVE WS-A ((WS-I + 8) / 2:) TO WS-R.").substring(8));
+    }
+
     @Test
     @DisplayName("添字と部分参照に定数の足し引きを書ける (FR-024, FR-025)")
     void constantArithmeticIsFoldedInASubscript() {

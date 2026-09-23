@@ -101,6 +101,13 @@ public enum Intrinsic {
     ANNUITY(2, Argument.NUMERIC, Result.NUMERIC),
     /** 割引率と将来の金額から、いまの価値を求める。 */
     PRESENT_VALUE(-1, Argument.NUMERIC, Result.NUMERIC),
+    /**
+     * 英数字を国字にする。第 2 引数は英数字の CCSID であり、書かなければプログラムの
+     * コードページである。
+     */
+    NATIONAL_OF(-2, Argument.ALPHANUMERIC, Result.NATIONAL),
+    /** 国字を英数字にする。第 2 引数は英数字の CCSID である。 */
+    DISPLAY_OF(-2, Argument.ALPHANUMERIC, Result.FROM_NATIONAL),
     /** 0 以上 1 未満の乱数。引数を書けば種になる。 */
     RANDOM(-3, Argument.NUMERIC, Result.NUMERIC);
 
@@ -129,7 +136,11 @@ public enum Intrinsic {
         /** {@code YYYYMMDDhhmmsscc±hhmm} の 21 文字。 */
         TIMESTAMP,
         /** いちばん長い引数と同じ長さのバイト列。 */
-        WIDEST;
+        WIDEST,
+        /** 国字。引数の 1 バイトが 1 文字になる (1 バイトのコードページなら長さは 2 倍)。 */
+        NATIONAL,
+        /** 国字から直した英数字。1 文字が 1 バイトになる (1 バイトのコードページなら長さは半分)。 */
+        FROM_NATIONAL;
 
         /** 数値として使えるか。 */
         public boolean isNumeric() {

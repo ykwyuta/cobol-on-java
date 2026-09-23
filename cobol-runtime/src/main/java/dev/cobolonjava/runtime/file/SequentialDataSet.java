@@ -88,6 +88,16 @@ public final class SequentialDataSet implements DataSet {
     }
 
     @Override
+    public void secondary(boolean value) {
+        allocation.secondary(value);
+    }
+
+    @Override
+    public dev.cobolonjava.runtime.abend.AbendCode spaceAbend() {
+        return allocation.spaceAbend();
+    }
+
+    @Override
     public void member(boolean value) {
         allocation.member(value);
     }

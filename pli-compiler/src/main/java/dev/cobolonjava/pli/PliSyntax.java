@@ -28,8 +28,12 @@ final class PliSyntax {
         }
     }
 
+    /**
+     * @param main {@code OPTIONS(MAIN)} を書いたか。主手続きの POINTER の引数は、渡された記憶域の
+     *             番地を値に持つ (IMS の PCB の並び)。そうでない手続きの引数は参照で渡った変数そのもの
+     */
     record Program(String name, List<String> parameters, List<Stmt> body,
-                   Map<String, Procedure> procedures) {
+                   Map<String, Procedure> procedures, boolean main) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
@@ -49,12 +53,41 @@ final class PliSyntax {
      *
      * @param aligned {@code ALIGNED} なら真、{@code UNALIGNED} なら偽、書かなければ {@code null}
      *                (型ごとの既定、構造からは受け継ぐ。LRM "ALIGNED and UNALIGNED attributes")
+     * @param varying {@code CHAR(n) VARYING}。記憶域は長さの半語と n byte (LRM Table 39)
+     * @param dimensions 配列の次元ごとの上下限。配列でなければ空
+     * @param initialItems 配列の {@code INITIAL} の並び。スカラーなら空で、{@code initial} を使う
      */
     record Decl(String name, int level, Type type, int precision, int scale,
-                Expr initial, String basedOn, Boolean aligned) {
+                Expr initial, String basedOn, Boolean aligned, boolean varying,
+                List<Bound> dimensions, List<InitItem> initialItems) {
+
+        /** 配列の要素の数。配列でなければ 1。 */
+        int count() {
+            int count = 1;
+            for (Bound bound : dimensions) count *= bound.extent();
+            return count;
+        }
     }
 
-    record Assign(String target, Expr value) implements Stmt {
+    /** 配列の 1 つの次元の上下限 (LRM "DIMENSION attribute")。 */
+    record Bound(int low, int high) {
+        int extent() {
+            return high - low + 1;
+        }
+    }
+
+    /**
+     * 配列の {@code INITIAL} の 1 項目。{@code (3)0} の 3 が反復の係数で、{@code (*)} は残りの
+     * 要素すべて ({@code count} が 0)。
+     */
+    record InitItem(int count, Expr value) {
+    }
+
+    /**
+     * 代入。{@code subscripts} は配列の要素の添字、または擬似変数 {@code SUBSTR(x, i, n)} の引数。
+     * どちらでもなければ空である。
+     */
+    record Assign(String target, List<Expr> subscripts, Expr value) implements Stmt {
     }
 
     /**
@@ -144,6 +177,29 @@ final class PliSyntax {
                     + " other than 0 and 1");
         }
         return bits.length() == 1 ? (Object) bits.equals("1") : new BitString(bits);
+    }
+
+    /**
+     * 16 進で書いた文字の定数 {@code 'C1C2'X} の byte の並び (LRM "Hexadecimal character constant")。
+     * 文字にするのは実行時のコードページである。翻訳時に文字へ直すと、コードページが違う実行で
+     * 別の byte になる。
+     */
+    record HexString(byte[] bytes) {
+    }
+
+    /** {@code '...'X} の値。16 進の字が偶数個でなければ誤りである。 */
+    private static HexString hexLiteral(Token token) {
+        String digits = token.text();
+        if (digits.length() % 2 != 0
+                || !digits.chars().allMatch(c -> Character.digit(c, 16) >= 0)) {
+            throw new ParseFailure(token, "hexadecimal constant '" + digits
+                    + "'X needs an even number of hexadecimal digits");
+        }
+        byte[] bytes = new byte[digits.length() / 2];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) Integer.parseInt(digits.substring(i * 2, i * 2 + 2), 16);
+        }
+        return new HexString(bytes);
     }
 
     record Reference(String name) implements Expr {
@@ -329,13 +385,16 @@ final class PliSyntax {
             }
             ProcedureBuilder main = parseProcedure();
             return new ParseResult(new Program(main.name, main.parameters,
-                    List.copyOf(main.body), Map.copyOf(main.procedures)), List.of());
+                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main), List.of());
         }
 
         private ProcedureBuilder parseProcedure() {
             String name = expect(Kind.IDENT, "procedure name").text();
             expect(":");
-            expect("PROCEDURE");
+            // PROC は PROCEDURE の略である (LRM "PROCEDURE statement")。以前は断っていた
+            if (!match("PROCEDURE") && !match("PROC")) {
+                throw fail(peek(), "PROCEDURE expected, found " + peek().text());
+            }
             List<String> parameters = new ArrayList<>();
             if (match("(")) {
                 if (!check(")")) {
@@ -345,9 +404,16 @@ final class PliSyntax {
                 }
                 expect(")");
             }
-            // OPTIONS、RETURNS その他の入口属性はセミコロンまで保持する必要がない。
-            skipToSemicolon();
+            // 入口属性のうち要るのは OPTIONS(MAIN) だけである。RETURNS その他は保持しない
+            List<Token> attributes = collectToSemicolon();
             ProcedureBuilder result = new ProcedureBuilder(name, List.copyOf(parameters));
+            for (int i = 0; i + 2 < attributes.size(); i++) {
+                if (attributes.get(i).is("OPTIONS") && attributes.get(i + 1).is("(")) {
+                    int close = findClosing(attributes, i + 1);
+                    result.main = attributes.subList(i + 2, close).stream()
+                            .anyMatch(token -> token.is("MAIN"));
+                }
+            }
             while (!check(Kind.EOF)) {
                 if (procedureAhead()) {
                     ProcedureBuilder nested = parseProcedure();
@@ -435,10 +501,13 @@ final class PliSyntax {
             if (check(Kind.IDENT)) {
                 int save = at;
                 String target = qualifiedName();
+                // A(I) = ... (配列の要素) と SUBSTR(X, I, N) = ... (擬似変数)。以前はどちらも
+                // 「文を知らない」で断っていた
+                List<Expr> subscripts = check("(") ? arguments() : List.of();
                 if (match("=")) {
                     Expr value = expression();
                     expect(";");
-                    return new Assign(target, value);
+                    return new Assign(target, subscripts, value);
                 }
                 at = save;
             }
@@ -475,11 +544,11 @@ final class PliSyntax {
                     int close = findClosing(part, p);
                     List<String> names = part.subList(p + 1, close).stream()
                             .filter(t -> t.kind() == Kind.IDENT).map(Token::text).toList();
+                    List<Bound> dimensions = dimensions(part, close + 1, level);
                     TypeInfo info = typeInfo(part, close + 1, inheritedType,
                             inheritedPrecision, inheritedScale);
                     for (String name : names) {
-                        out.add(new Decl(name, level, info.type, info.precision, info.scale,
-                                initial(part), basedOn(part), alignment(part)));
+                        out.add(declaration(name, level, info, part, dimensions));
                     }
                     inheritedType = info.type;
                     inheritedPrecision = info.precision;
@@ -490,15 +559,123 @@ final class PliSyntax {
                 if (nameToken.kind() != Kind.IDENT && !nameToken.is("*")) {
                     continue;
                 }
+                List<Bound> dimensions = dimensions(part, p, level);
                 TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
                         inheritedPrecision, inheritedScale);
-                out.add(new Decl(nameToken.text(), level, info.type, info.precision, info.scale,
-                        initial(part), basedOn(part), alignment(part)));
+                out.add(declaration(nameToken.text(), level, info, part, dimensions));
                 inheritedType = info.type;
                 inheritedPrecision = info.precision;
                 inheritedScale = info.scale;
             }
             return List.copyOf(out);
+        }
+
+        private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
+                                 List<Bound> dimensions) {
+            if (!dimensions.isEmpty() && info.type == Type.GROUP) {
+                // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
+                // 要素がスカラーの配列 (2 A(5) FIXED BIN) は持つ
+                throw new ParseFailure(part.get(0), "arrays of structures are not supported yet: "
+                        + name);
+            }
+            return new Decl(name, level, info.type, info.precision, info.scale,
+                    dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
+                    varying(part), dimensions,
+                    dimensions.isEmpty() ? List.of() : initialItems(part));
+        }
+
+        /**
+         * 名の直後の {@code (n)}、{@code (lo:hi)}、{@code (n, m)} を次元として読む (LRM "DIMENSION
+         * attribute")。以前は読み飛ばしていたので、{@code DCL A(10) FIXED BIN} が 1 つの変数に
+         * なっていた。構造の中の配列は、要素がスカラーなら持つ (構造の配列は {@link #declaration} が断る)。
+         */
+        private List<Bound> dimensions(List<Token> part, int at, int level) {
+            if (at >= part.size() || !part.get(at).is("(")) {
+                return List.of();
+            }
+            int close = findClosing(part, at);
+            List<Bound> bounds = new ArrayList<>();
+            for (List<Token> dimension : split(part.subList(at + 1, close), ",")) {
+                List<List<Token>> ends = split(dimension, ":");
+                int low = ends.size() == 2 ? bound(ends.get(0), part.get(at)) : 1;
+                int high = bound(ends.get(ends.size() - 1), part.get(at));
+                if (ends.size() > 2 || high < low) {
+                    throw new ParseFailure(part.get(at), "bad array bounds");
+                }
+                bounds.add(new Bound(low, high));
+            }
+            return List.copyOf(bounds);
+        }
+
+        /** 次元の上限か下限。符号つきの整数だけを読む。{@code *} や式はまだ持たない。 */
+        private static int bound(List<Token> tokens, Token where) {
+            if (tokens.size() == 1 && tokens.get(0).kind() == Kind.NUMBER
+                    && !tokens.get(0).text().contains(".")) {
+                return Integer.parseInt(tokens.get(0).text());
+            }
+            if (tokens.size() == 2 && tokens.get(0).is("-")
+                    && tokens.get(1).kind() == Kind.NUMBER) {
+                return -Integer.parseInt(tokens.get(1).text());
+            }
+            throw new ParseFailure(where, "array bounds must be integer constants yet");
+        }
+
+        /**
+         * 配列の {@code INITIAL(値, (n)値, (*)値)}。反復の係数は括弧に入れた整数か {@code *}。
+         * 括弧の中が式なら、それは係数ではなく値である ({@code INIT((1+2))})。
+         */
+        private List<InitItem> initialItems(List<Token> tokens) {
+            for (int i = 0; i + 1 < tokens.size(); i++) {
+                if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL"))
+                        && tokens.get(i + 1).is("(")) {
+                    int close = findClosing(tokens, i + 1);
+                    List<Token> inner = new ArrayList<>(tokens.subList(i + 2, close));
+                    Token end = tokens.get(close);
+                    inner.add(new Token(Kind.EOF, "<EOF>", end.line(), end.column()));
+                    Parser values = new Parser(fileName, inner);
+                    List<InitItem> items = new ArrayList<>();
+                    do {
+                        int count = 1;
+                        if (values.check("(") && values.check(2, ")")
+                                && (values.token(1).kind() == Kind.NUMBER
+                                        || values.check(1, "*"))
+                                && !values.check(3, ",") && !values.check(3, "<EOF>")) {
+                            values.next();
+                            Token factor = values.next();
+                            values.next();
+                            count = factor.is("*") ? 0 : Integer.parseInt(factor.text());
+                        }
+                        items.add(new InitItem(count, values.expression()));
+                    } while (values.match(","));
+                    if (!values.check(Kind.EOF)) {
+                        throw values.fail(values.peek(), "unexpected " + values.peek().text()
+                                + " in INITIAL");
+                    }
+                    return List.copyOf(items);
+                }
+            }
+            return List.of();
+        }
+
+        /**
+         * {@code VARYING} (略して {@code VAR}) を書いたか。以前は読み飛ばしていたので、
+         * {@code OUT = OUT || X} が固定長の代入になり、OUT は空白のままだった。
+         */
+        private static boolean varying(List<Token> part) {
+            // 宣言する名そのもの (先頭、または段番号の次) は属性ではない
+            int name = !part.isEmpty() && part.get(0).kind() == Kind.NUMBER ? 1 : 0;
+            for (int i = name + 1; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.is("VARYING") || token.is("VAR")) {
+                    // BIT VARYING はまだ持たない。黙って固定長にせず断る
+                    if (part.stream().noneMatch(t -> t.is("CHAR") || t.is("CHARACTER"))) {
+                        throw new ParseFailure(token, "VARYING is supported only for"
+                                + " CHARACTER yet");
+                    }
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static Boolean alignment(List<Token> part) {
@@ -554,18 +731,28 @@ final class PliSyntax {
             return new TypeInfo(inherited, inheritedPrecision, inheritedScale);
         }
 
-        private static Expr initial(List<Token> tokens) {
-            for (int i = 0; i < tokens.size(); i++) {
+        /**
+         * {@code INITIAL(...)} の中身を式として読む (LRM "INITIAL attribute")。
+         *
+         * <p>以前は括弧の直後の字句 1 つだけを見ていたので、{@code INIT(-12345)} は負号で止まって
+         * 初期値が無いことになり、黙って 0 になっていた。{@code INIT(ADDR(S))} も同じ理由で
+         * NULL のままだった。z/OS probe の PLISTRM で見つかった。
+         */
+        private Expr initial(List<Token> tokens) {
+            for (int i = 0; i + 1 < tokens.size(); i++) {
                 if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL"))
-                        && i + 2 < tokens.size() && tokens.get(i + 1).is("(")) {
-                    Token value = tokens.get(i + 2);
-                    if (value.kind() == Kind.STRING) {
-                        boolean bit = i + 3 < tokens.size() && tokens.get(i + 3).is("B");
-                        return new Literal(bit ? bitLiteral(value) : value.text());
+                        && tokens.get(i + 1).is("(")) {
+                    int close = findClosing(tokens, i + 1);
+                    List<Token> inner = new ArrayList<>(tokens.subList(i + 2, close));
+                    Token end = tokens.get(close);
+                    inner.add(new Token(Kind.EOF, "<EOF>", end.line(), end.column()));
+                    Parser values = new Parser(fileName, inner);
+                    Expr value = values.expression();
+                    if (!values.check(Kind.EOF)) {
+                        throw values.fail(values.peek(), "INITIAL with more than one value"
+                                + " needs an array");
                     }
-                    if (value.kind() == Kind.NUMBER) {
-                        return new Literal(FixedValue.constant(value.text()));
-                    }
+                    return value;
                 }
             }
             return null;
@@ -825,6 +1012,9 @@ final class PliSyntax {
                 if (match("B")) {
                     return new Literal(bitLiteral(literal));
                 }
+                if (match("X")) {
+                    return new Literal(hexLiteral(literal));
+                }
                 return new Literal(value);
             }
             if (check(Kind.NUMBER)) {
@@ -849,7 +1039,8 @@ final class PliSyntax {
         }
 
         private boolean procedureAhead() {
-            return check(Kind.IDENT) && check(1, ":") && check(2, "PROCEDURE");
+            return check(Kind.IDENT) && check(1, ":")
+                    && (check(2, "PROCEDURE") || check(2, "PROC"));
         }
 
         private void skipBalanced() {
@@ -1062,6 +1253,7 @@ final class PliSyntax {
         final List<String> parameters;
         final List<Stmt> body = new ArrayList<>();
         final Map<String, Procedure> procedures = new LinkedHashMap<>();
+        boolean main;
 
         ProcedureBuilder(String name, List<String> parameters) {
             this.name = name;

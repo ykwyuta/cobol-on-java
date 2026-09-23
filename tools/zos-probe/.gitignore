@@ -1,0 +1,3 @@
+target/
+# 実機の出力はリポジトリに入れない (docs/zos-probe/runbook.md §8)
+results/zos/

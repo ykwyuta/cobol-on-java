@@ -42,6 +42,56 @@ class JclIfTest {
         return state;
     }
 
+    /**
+     * {@code RUN} と {@code ABEND} は {@code = TRUE} / {@code = FALSE} と比べられる (z/OS MVS JCL
+     * Reference の keyword の表)。以前は {@code =} で「閉じ括弧が無い」と断り、ジョブ全体を
+     * 止めていた (z/OS probe の JCLCONR で見つかった)。
+     */
+    @Test
+    @DisplayName("RUN と ABEND を TRUE / FALSE と比べられる (FR-131)")
+    void runAndAbendCompareWithTrueAndFalse() {
+        Job job = job(
+                "//J        JOB  (ACCT)",
+                "//FIRST    EXEC PGM=A",
+                "//         IF (FIRST.RUN = TRUE) THEN",
+                "//S1       EXEC PGM=B",
+                "//         ENDIF",
+                "//         IF (FIRST.RUN = FALSE) THEN",
+                "//S2       EXEC PGM=B",
+                "//         ENDIF",
+                "//         IF (FIRST.RUN ¬= TRUE) THEN",
+                "//S3       EXEC PGM=B",
+                "//         ENDIF",
+                "//         IF (ABEND = FALSE) THEN",
+                "//S4       EXEC PGM=B",
+                "//         ENDIF",
+                "//         IF (NOT ABEND) THEN",
+                "//S5       EXEC PGM=B",
+                "//         ENDIF");
+        JobState ran = after("FIRST", 0);
+        assertTrue(allows(job.steps().get(1).condition(), ran));
+        assertTrue(!allows(job.steps().get(2).condition(), ran));
+        assertTrue(!allows(job.steps().get(3).condition(), ran));
+        assertTrue(allows(job.steps().get(4).condition(), ran));
+        assertTrue(allows(job.steps().get(5).condition(), ran));
+    }
+
+    @Test
+    @DisplayName("IF の誤りは IF の行で報告する。前に埋め込みのデータがあっても")
+    void anIfErrorPointsAtTheIfLine() {
+        String found = diagnostics(
+                "//J        JOB  (ACCT)",
+                "//FIRST    EXEC PGM=A",
+                "//SYSIN    DD   *",
+                "DATA 1",
+                "DATA 2",
+                "/*",
+                "//         IF (FIRST.RC = ) THEN",
+                "//S1       EXEC PGM=B",
+                "//         ENDIF");
+        assertTrue(found.startsWith("[7: "), found);
+    }
+
     @Test
     @DisplayName("THEN の中のステップに条件が付く (FR-131)")
     void stepsInsideThenGetTheCondition() {

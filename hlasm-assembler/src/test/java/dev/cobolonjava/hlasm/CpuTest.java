@@ -401,26 +401,22 @@ class CpuTest {
     }
 
     /**
-     * 組み立てられる命令のほうが、実行できる命令より多い。{@code ED} / {@code EDMK} /
-     * {@code TRT} / {@code MVO} / {@code SRP} は表にあるので組み立てられるが、まだ実行できない。
+     * 実行できない命令は演算例外 (S0C1) として断る。黙って近い振る舞いで通さない。
      *
-     * <p>この差は<b>意図している</b>。組み立てと実行は別に測る層だからである (設計 27 §3)。
-     * 大事なのは、実行できないものを黙って近い値で通さないことである。
+     * <p>以前はここで {@code ED} を使っていたが、組み立てられる命令はすべて実行できるように
+     * なった。命令コード 00 は z/Architecture に無い。
      */
     @Test
-    @DisplayName("組み立てられても実行できない命令は、演算例外として断る")
-    void refusesInstructionsItCannotExecuteYet() {
+    @DisplayName("実行できない命令は、演算例外として断る")
+    void refusesInstructionsItCannotExecute() {
         HlasmRuntime.HlasmExecutionException failure = assertThrows(
                 HlasmRuntime.HlasmExecutionException.class,
-                () -> run(new byte[16],
+                () -> returnCode(
                         "TEST     CSECT",
-                        "         USING TEST,15",
-                        "         L     2,0(0,1)",
-                        "         ED    0(8,2),8(2)",
+                        "         DC    X'0000'",
                         "         BR    14",
                         "         END"));
         assertTrue(failure.getMessage().contains("S0C1"), failure.getMessage());
-        assertTrue(failure.getMessage().contains("DE"), failure.getMessage());
     }
 
     @Test

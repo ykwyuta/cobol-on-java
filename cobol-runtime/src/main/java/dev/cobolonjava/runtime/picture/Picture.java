@@ -13,7 +13,9 @@ import java.util.List;
 public final class Picture {
 
     public enum Category {
-        ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED
+        ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED,
+        /** 国字 ({@code PIC N}、{@code USAGE NATIONAL})。1 文字が UTF-16 の 2 バイトを占める。 */
+        NATIONAL
     }
 
     /** バイト位置 1 個 (または {@code CR} / {@code DB} の 2 個) の役割。 */

@@ -1,0 +1,23 @@
+PRB H.21.BEFORE  ||
+Exception in thread "main" dev.cobolonjava.hlasm.HlasmRuntime$HlasmExecutionException: ASMPM: S0C8 fixed-point overflow at 00010036
+	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:83)
+	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:41)
+	at cobol.generated.ASMPM.run(Unknown Source)
+	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1524)
+	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1539)
+	at cobol.generated.CBLASMD.paragraph$0(CBLASMD.cbl:44)
+	at cobol.generated.CBLASMD.dispatch(CBLASMD.cbl)
+	at cobol.generated.CBLASMD.performRange(CBLASMD.cbl)
+	at cobol.generated.CBLASMD.run(CBLASMD.cbl)
+	at dev.cobolonjava.runtime.program.CobolProgram.runFresh(CobolProgram.java:52)
+	at dev.cobolonjava.runtime.program.CobolProgram.runMain(CobolProgram.java:158)
+	at cobol.generated.CBLASMD.main(CBLASMD.cbl)
+Caused by: dev.cobolonjava.hlasm.MachineException: S0C8 fixed-point overflow at 00010036
+	at dev.cobolonjava.hlasm.Cpu.fixedOverflow(Cpu.java:442)
+	at dev.cobolonjava.hlasm.Cpu.add(Cpu.java:429)
+	at dev.cobolonjava.hlasm.Cpu.perform(Cpu.java:230)
+	at dev.cobolonjava.hlasm.Cpu.step(Cpu.java:123)
+	at dev.cobolonjava.hlasm.Cpu.run(Cpu.java:108)
+	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:79)
+	... 11 more
+RC=1

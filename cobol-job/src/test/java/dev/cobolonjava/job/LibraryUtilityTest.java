@@ -279,7 +279,7 @@ class LibraryUtilityTest {
      * (暫定判断 P-053)。
      */
     @Test
-    @DisplayName("写し先の領域を越えれば S037 (FR-141、P-053)")
+    @DisplayName("写し先の領域を越えれば SD37 (FR-141、P-053、P-052)")
     void theOutputLibraryHonoursItsSpace() {
         member("A.LIB", "PAYROLL", "AAAAAAAAAAAAAAAAAAAA");
         member("A.LIB", "TAXES", "BBBBBBBBBBBBBBBBBBBB");
@@ -294,7 +294,7 @@ class LibraryUtilityTest {
                 "  COPY INDD=IN,OUTDD=OUT");
 
         assertEquals(JobRunner.Status.ABENDED, result.step("STEP1").status());
-        assertEquals(AbendCode.S037, result.step("STEP1").abendCode());
+        assertEquals(AbendCode.SD37, result.step("STEP1").abendCode());
     }
 
     @Test
@@ -371,6 +371,74 @@ class LibraryUtilityTest {
 
         assertEquals(12, result.step("STEP1").returnCode());
         assertTrue(output().contains("IKJ56500I"), output());
+    }
+
+    @Test
+    @DisplayName("ALLOCATE NEW は空のデータセットを作って目録に載せる。行末の + は次の行へ続く (P-058)")
+    void allocateCreatesACatalogedDataSet() {
+        JobRunner.Result result = tso(
+                "  ALLOCATE DATASET('T.A') NEW CATALOG +",
+                "    SPACE(1,1) TRACKS RECFM(F B) LRECL(80)",
+                "  LISTCAT ENTRIES('T.A')",
+                "  LISTDS 'T.A'");
+
+        assertEquals(0, result.step("STEP1").returnCode(), output());
+        assertTrue(Files.exists(directory.resolve("T.A")));
+        assertTrue(output().contains("NONVSAM ------- T.A"), output());
+        assertTrue(output().contains("F 80"), output());
+    }
+
+    @Test
+    @DisplayName("RENAME と DELETE はメンバを書かなければデータセットそのものに効く (P-058)")
+    void renamesAndDeletesDataSets() {
+        JobRunner.Result result = tso(
+                "  ALLOCATE DATASET('T.A') NEW CATALOG",
+                "  FREE DATASET('T.A')",
+                "  RENAME 'T.A' 'T.B'",
+                "  LISTCAT ENTRIES('T.B')",
+                "  DELETE 'T.B'");
+
+        assertEquals(0, result.step("STEP1").returnCode(), output());
+        assertFalse(Files.exists(directory.resolve("T.A")));
+        assertFalse(Files.exists(directory.resolve("T.B")));
+        assertTrue(output().contains("NONVSAM ------- T.B"), output());
+        assertTrue(output().contains("IDC0550I ENTRY (A) T.B DELETED"), output());
+    }
+
+    @Test
+    @DisplayName("無いデータセットの DELETE は 8、取っていないものの FREE は 12 (P-058)")
+    void reportsWhatIsNotThere() {
+        JobRunner.Result deleting = tso("  DELETE 'NO.SUCH'");
+        assertEquals(8, deleting.step("STEP1").returnCode());
+        assertTrue(output().contains("IDC3012I"), output());
+
+        JobRunner.Result freeing = tso("  FREE DATASET('NO.SUCH')");
+        assertEquals(12, freeing.step("STEP1").returnCode());
+        assertTrue(output().contains("IKJ56247I"), output());
+    }
+
+    @Test
+    @DisplayName("ALLOCATE の DELETE は解放するときに消す。DIR を書けば区分データセット (P-058)")
+    void allocateHonoursItsDisposition() {
+        JobRunner.Result result = tso(
+                "  ALLOCATE DATASET('T.TMP') NEW DELETE",
+                "  ALLOCATE DATASET('T.LIB') NEW CATALOG DIR(5) FILE(LIB)",
+                "  FREE FILE(LIB)");
+
+        assertEquals(0, result.step("STEP1").returnCode(), output());
+        // 解放しないまま終わった割当ても、終わるところで始末する
+        assertFalse(Files.exists(directory.resolve("T.TMP")));
+        assertTrue(Files.isDirectory(directory.resolve("T.LIB")));
+    }
+
+    @Test
+    @DisplayName("装置の指定と知らない語は断る (P-058)")
+    void refusesUnknownAllocateKeywords() {
+        JobRunner.Result result = tso("  ALLOCATE DATASET('T.A') NEW UNIT(SYSDA)");
+
+        assertEquals(12, result.step("STEP1").returnCode());
+        assertTrue(output().contains("IKJ56712I"), output());
+        assertFalse(Files.exists(directory.resolve("T.A")));
     }
 
     @Test

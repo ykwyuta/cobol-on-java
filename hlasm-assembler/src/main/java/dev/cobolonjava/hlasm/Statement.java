@@ -36,7 +36,7 @@ public record Statement(String label, String operation, String operands, int lin
         int start = 0;
         for (int k = 0; k < text.length(); k++) {
             char c = text.charAt(k);
-            if (c == '\'' && Quotes.isDelimiter(text, k)) {
+            if (c == '\'' && Quotes.isDelimiter(text, k, quoted)) {
                 quoted = !quoted;
             } else if (quoted) {
                 continue;

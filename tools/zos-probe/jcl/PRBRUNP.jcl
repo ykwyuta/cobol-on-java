@@ -1,0 +1,33 @@
+//PRBRUNP  JOB (ACCT),'ZOS PROBE',CLASS=A,MSGCLASS=X,REGION=0M
+//JOBLIB   DD DISP=SHR,DSN=YOURID.PROBE.LOAD
+//*--------------------------------------------------------------------
+//* PRBRUNP - run the PL/I probes. The SYSPRINT of PLISTRM and
+//* PLISTR2 is the observation, so it goes to datasets that are
+//* downloaded in record mode (the ASA byte must survive). STRM1 lets
+//* PL/I choose the DCB; STRM2 gives LRECL=137 (LINESIZE 132?).
+//*--------------------------------------------------------------------
+//CLEAN    EXEC PGM=IEFBR14
+//STRM1    DD DSN=YOURID.PROBE.OUT.STRM1,DISP=(MOD,DELETE),
+//            SPACE=(TRK,(1,1))
+//STRM2    DD DSN=YOURID.PROBE.OUT.STRM2,DISP=(MOD,DELETE),
+//            SPACE=(TRK,(1,1))
+//STR2     DD DSN=YOURID.PROBE.OUT.STR2,DISP=(MOD,DELETE),
+//            SPACE=(TRK,(1,1))
+//STRM1    EXEC PGM=PLISTRM,COND=EVEN
+//SYSPRINT DD DSN=YOURID.PROBE.OUT.STRM1,DISP=(NEW,CATLG,DELETE),
+//            SPACE=(TRK,(5,5))
+//CEEDUMP  DD SYSOUT=*
+//STRM2    EXEC PGM=PLISTRM,COND=EVEN
+//SYSPRINT DD DSN=YOURID.PROBE.OUT.STRM2,DISP=(NEW,CATLG,DELETE),
+//            SPACE=(TRK,(5,5)),RECFM=VBA,LRECL=137
+//CEEDUMP  DD SYSOUT=*
+//STR2     EXEC PGM=PLISTR2,COND=EVEN
+//SYSPRINT DD DSN=YOURID.PROBE.OUT.STR2,DISP=(NEW,CATLG,DELETE),
+//            SPACE=(TRK,(5,5))
+//CEEDUMP  DD SYSOUT=*
+//MAP      EXEC PGM=PLIMAP,COND=EVEN
+//SYSPRINT DD SYSOUT=*
+//CEEDUMP  DD SYSOUT=*
+//PTR      EXEC PGM=PLIPTR,COND=EVEN
+//SYSPRINT DD SYSOUT=*
+//CEEDUMP  DD SYSOUT=*

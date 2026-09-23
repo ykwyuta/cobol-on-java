@@ -63,6 +63,32 @@ public record CompilerOptions(Map<String, String> values) {
     }
 
     /**
+     * {@code ARITH(EXTEND)} が指定されているか (要件 FR-041)。既定は {@code COMPAT} である。
+     */
+    public boolean extendedArithmetic() {
+        return value("ARITH").map(text -> {
+            String v = text.strip().toUpperCase(Locale.ROOT);
+            return v.equals("EXTEND") || v.equals("E");
+        }).orElse(false);
+    }
+
+    /** 中間結果の総桁数の上限。{@code ARITH(COMPAT)} は 30、{@code ARITH(EXTEND)} は 31。 */
+    public int intermediateDigits() {
+        return extendedArithmetic() ? 31 : 30;
+    }
+
+    /**
+     * 数字項目の PICTURE と数字定数が持てる桁数の上限。{@code ARITH(COMPAT)} は 18、
+     * {@code ARITH(EXTEND)} は 31。
+     *
+     * <p>2 進 ({@code BINARY} / {@code COMP} / {@code COMP-4} / {@code COMP-5}) は
+     * {@code EXTEND} でも 18 桁のままとした (暫定判断 P-005)。
+     */
+    public int maximumNumericDigits() {
+        return extendedArithmetic() ? 31 : 18;
+    }
+
+    /**
      * {@code 名前} と {@code NO名前} の対で指定するオプションの状態。
      *
      * <p><b>あとに書いたものが効く</b>。{@code CBL NOSSRANGE,SSRANGE} は検査する。

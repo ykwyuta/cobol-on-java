@@ -33,6 +33,21 @@ record SortEdit(SortField.Format to, int length, String pattern) {
     private static final String DIGITS = "IT";
 
     /**
+     * 前もって決まった型 ({@code M0}〜{@code M26}) のうち、符号を持たないもの。綴りは z/OS DFSORT
+     * Application Programming Guide の「Editing numeric fields」の表のとおりである。
+     *
+     * <p>符号を持つ型 ({@code M0}〜{@code M5}、{@code M12} 以降) は持たない。符号の出し方が型ごとに
+     * 違い ({@code +} / {@code -}、空白 / {@code -}、{@code CR})、表だけからは決めきれないからである。
+     */
+    private static final java.util.Map<String, String> MASKS = java.util.Map.of(
+            "M6", "III-TTT-TTTT",
+            "M7", "TTT-TT-TTTT",
+            "M8", "IT:TT:TT",
+            "M9", "IT/TT/TT",
+            "M10", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIT",
+            "M11", "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");
+
+    /**
      * 続けて書かれた飾りを読む。
      *
      * <p>{@code p,l,形} のあとに {@code TO=} / {@code LENGTH=} / {@code EDIT=} が続く。
@@ -43,6 +58,7 @@ record SortEdit(SortField.Format to, int length, String pattern) {
         SortField.Format to = null;
         int length = 0;
         String pattern = null;
+        String mask = null;
         for (String item : items) {
             String key = JclOperands.key(item).trim().toUpperCase(Locale.ROOT);
             String value = JclOperands.value(item).trim();
@@ -51,9 +67,25 @@ record SortEdit(SortField.Format to, int length, String pattern) {
                 case "LENGTH" -> length = digits(value);
                 case "EDIT" -> pattern = JclOperands.unquote(JclOperands.unwrap(value));
                 default -> {
-                    return null;
+                    if (!value.isEmpty() || !key.matches("M[0-9]+")) {
+                        return null;
+                    }
+                    mask = MASKS.get(key);
+                    if (mask == null) {
+                        // 符号を持つ型はまだ持たない
+                        return null;
+                    }
                 }
             }
+        }
+        if (mask != null) {
+            // 前もって決まった型は LENGTH= の長さだけ右から使う。COUNT=(M11,LENGTH=4) は 0003
+            // (DFSORT の手引きの例)。長さを書かなければ出す幅が入力の桁で決まるが、その桁数を
+            // 確かめていないので断る
+            if (to != null || pattern != null || length <= 0 || length > mask.length()) {
+                return null;
+            }
+            return new SortEdit(null, 0, mask.substring(mask.length() - length));
         }
         if (to == null && pattern == null) {
             return null;
@@ -64,7 +96,8 @@ record SortEdit(SortField.Format to, int length, String pattern) {
     /** 続けて書ける飾りの綴りか。ここに無いものは場所の書き方として読む。 */
     static boolean names(String item) {
         String key = JclOperands.key(item).trim().toUpperCase(Locale.ROOT);
-        return key.equals("TO") || key.equals("LENGTH") || key.equals("EDIT");
+        return key.equals("TO") || key.equals("LENGTH") || key.equals("EDIT")
+                || (JclOperands.value(item).trim().isEmpty() && key.matches("M[0-9]+"));
     }
 
     /**
@@ -89,6 +122,10 @@ record SortEdit(SortField.Format to, int length, String pattern) {
     byte[] write(Decimal value, SortField source, CodePage codePage) {
         if (pattern != null) {
             return codePage.encode(edited(value));
+        }
+        if (source == null && length <= 0) {
+            // 件数 (COUNT) には元の場所が無い。幅を言わなければ決められない
+            return null;
         }
         return SortField.at(0, width(capacity(source)), to).encode(value);
     }

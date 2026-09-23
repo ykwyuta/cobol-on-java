@@ -20,6 +20,8 @@ public final class FileOperationException extends RuntimeException implements Ab
     private static final long serialVersionUID = 1L;
 
     private final String status;
+    /** 領域を使い切ったときの異常終了コード。分からなければ {@code null} ({@code S037})。 */
+    private final AbendCode space;
 
     /**
      * ファイル状態コードから異常終了コードを決める。
@@ -33,7 +35,7 @@ public final class FileOperationException extends RuntimeException implements Ab
     public AbendCode abendCode() {
         return switch (status) {
             case FileStatus.IO_ERROR -> AbendCode.S001;
-            case FileStatus.NO_SPACE -> AbendCode.S037;
+            case FileStatus.NO_SPACE -> space != null ? space : AbendCode.S037;
             default -> AbendCode.U4038;
         };
     }
@@ -44,7 +46,16 @@ public final class FileOperationException extends RuntimeException implements Ab
     }
 
     public FileOperationException(String name, String status) {
+        this(name, status, null);
+    }
+
+    /**
+     * @param space 領域を使い切ったときの異常終了コード ({@code SD37} / {@code SB37} /
+     *              {@code SE37}、暫定判断 P-052)。分からなければ {@code null}
+     */
+    public FileOperationException(String name, String status, AbendCode space) {
         super("file " + name + " failed with status " + status);
         this.status = status;
+        this.space = space;
     }
 }

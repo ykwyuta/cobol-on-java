@@ -26,6 +26,10 @@ public final class Instructions {
         I(2),
         /** {@code op R1,R2} — 2 バイト。 */
         RR(2),
+        /** {@code op R1} — 2 バイト。R2 の欄は 0。{@code SPM} が使う。 */
+        RR_R1(2),
+        /** {@code op R1} — 4 バイト。命令コードは 2 バイト、R2 の欄は 0。{@code IPM} が使う。 */
+        RRE_R1(4),
         /** {@code op M1,R2} — 2 バイト。分岐の第 1 演算項はマスクである。 */
         RR_MASK(2),
         /** {@code op R1,D2(X2,B2)} — 4 バイト。 */
@@ -186,6 +190,10 @@ public final class Instructions {
 
         // --- SS 形式 (シフトと丸め) ---
         define("SRP", 0xF0, Format.SS_C);
+        // プログラムマスクと条件コードの出し入れ (P-174)。COBOL から呼ばれた副プログラムが
+        // 固定小数点のあふれを割込みにするかどうかを自分で決めるのに使う
+        define("SPM", 0x04, Format.RR_R1);
+        define("IPM", 0xB222, Format.RRE_R1);
 
         // --- 拡張ニーモニック (BC / BCR のマスクを綴りに畳み込んだもの) ---
         // 算術の比較で立つ条件コードと、10 進・論理の比較で立つ条件コードで綴りが違う。

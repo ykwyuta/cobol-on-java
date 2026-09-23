@@ -102,6 +102,43 @@ public sealed interface LiteralValue {
         }
     }
 
+    /**
+     * 国字定数 ({@code N'..'} と {@code NX'..'})。
+     *
+     * <p>{@link Text} と種別を分けたのは、バイトの意味が違うからである。英数字の定数として
+     * 扱う箇所に黙って流れ込むと、UTF-16 のバイトを EBCDIC として書いてしまう。
+     *
+     * @param text  文字。{@code NX} では符号単位の数と同じ長さの {@link #HEX_PLACEHOLDER} の並び
+     * @param bytes UTF-16 (ビッグエンディアン) のバイト
+     */
+    record National(String text, byte[] bytes) implements LiteralValue {
+
+        public National {
+            Objects.requireNonNull(text, "text");
+            bytes = bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return bytes.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof National that && Arrays.equals(bytes, that.bytes);
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(bytes);
+        }
+
+        @Override
+        public String toString() {
+            return "National[NX'" + HexFormat.of().withUpperCase().formatHex(bytes) + "']";
+        }
+    }
+
     /** 図形定数。項目の長さいっぱいまで埋める。 */
     record Figure(FigurativeConstant constant) implements LiteralValue {
     }
@@ -161,7 +198,7 @@ public sealed interface LiteralValue {
      */
     static LiteralValue of(CobolParser.LiteralContext context) {
         if (context.LITERAL() != null) {
-            return textOf(context.LITERAL().getText());
+            return literalOf(context.LITERAL().getText());
         }
         if (context.NUMBER() != null) {
             String spelling = context.NUMBER().getText();
@@ -189,7 +226,7 @@ public sealed interface LiteralValue {
      */
     static LiteralValue of(CobolParser.InspectLiteralContext context) {
         if (context.LITERAL() != null) {
-            return textOf(context.LITERAL().getText());
+            return literalOf(context.LITERAL().getText());
         }
         if (context.NUMBER() != null) {
             String spelling = context.NUMBER().getText();
@@ -199,12 +236,32 @@ public sealed interface LiteralValue {
     }
 
     /**
+     * 字句のままの定数を読む。{@code N'..'} と {@code NX'..'} は国字定数、ほかは文字定数である。
+     */
+    static LiteralValue literalOf(String spelling) {
+        char first = Character.toUpperCase(spelling.charAt(0));
+        if (first == 'N') {
+            if (Character.toUpperCase(spelling.charAt(1)) == 'X') {
+                byte[] bytes = HexFormat.of().parseHex(spelling, 3, spelling.length() - 1);
+                return new National(String.valueOf(HEX_PLACEHOLDER).repeat(bytes.length / 2), bytes);
+            }
+            String text = unquote(spelling.substring(1));
+            return new National(text, text.getBytes(java.nio.charset.StandardCharsets.UTF_16BE));
+        }
+        return textOf(spelling);
+    }
+
+    /**
      * 字句のままの定数を文字定数にする。
      *
      * <p>16 進の桁が正しいことは字句解析で確かめてある。
      */
     static Text textOf(String spelling) {
         char first = spelling.charAt(0);
+        if (first == 'N' || first == 'n') {
+            // ALL N'..' と、国字定数を英数字の定数として読む箇所。国字の図形定数はまだ持たない
+            throw new IllegalArgumentException("a national literal is not supported here: " + spelling);
+        }
         if (first == 'X' || first == 'x') {
             byte[] bytes = HexFormat.of().parseHex(spelling, 2, spelling.length() - 1);
             return new Text(String.valueOf(HEX_PLACEHOLDER).repeat(bytes.length), bytes);

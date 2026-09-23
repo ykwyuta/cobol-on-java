@@ -231,6 +231,13 @@ public final class Dfsort extends UtilityProgram {
             return;
         }
         note("ICE054I 0 RECORDS - IN: " + read + ", OUT: " + records.size());
+        if (context.catalog().isAssigned(SORTOUT)
+                && outFiles.stream().noneMatch(file -> file.dds().contains(SORTOUT))) {
+            // SORTOUT は「OUTFIL でない、ただ 1 つの出力」である (DFSORT の手引きの「SORTOUT and
+            // OUTFIL DD statements」)。OUTFIL があっても、DD があれば書く。以前は OUTFIL があると
+            // 書かず、z/OS probe の JCLUTIL で後続の ICETOOL が 0 件を数えていた
+            write(context, SORTOUT, records, attributes, inrec != null || outrec != null);
+        }
         writeOutFiles(context, records, attributes, codePage);
     }
 
@@ -420,6 +427,10 @@ public final class Dfsort extends UtilityProgram {
      * @return 読めなければ {@code null}
      */
     private byte[] reportItem(String item, List<byte[]> scope, int page, CodePage codePage) {
+        byte[] quoted = quotedItem(item, codePage);
+        if (quoted != null) {
+            return quoted;
+        }
         char last = item.charAt(item.length() - 1);
         if ((last == 'X' || last == 'Z') && digitsOnly(item.substring(0, item.length() - 1))) {
             int count = number(item.substring(0, item.length() - 1), 1);
@@ -440,6 +451,12 @@ public final class Dfsort extends UtilityProgram {
         if (key.equals("TOTAL") || key.equals("MIN") || key.equals("MAX") || key.equals("AVG")) {
             return summary(key, value, scope, codePage);
         }
+        if (key.equals("COUNT") && !value.isBlank()) {
+            // COUNT=(M11,LENGTH=4) や COUNT=(EDIT=(IIT)) のように書き方を言える。以前は書き方を
+            // 読まずに件数だけを出しており、黙って違う幅の行を作っていた
+            return changed(Decimal.of(scope.size(), 0), null,
+                    JclOperands.split(JclOperands.unwrap(value)), codePage);
+        }
         String text = switch (key) {
             case "&PAGE" -> String.valueOf(page);
             case "&DATE" -> LocalDate.now().format(DateTimeFormatter.ofPattern("MM/dd/yy"));
@@ -452,6 +469,33 @@ public final class Dfsort extends UtilityProgram {
             return null;
         }
         return codePage.encode(text);
+    }
+
+    /**
+     * 引用符で書いた文字 ({@code 'PROBE REPORT'})、または回数を付けた文字 ({@code 3'*'}、
+     * {@code 2C'AB'}、{@code 2X'C1'})。
+     *
+     * @return 引用符の項目でなければ {@code null}
+     */
+    private byte[] quotedItem(String item, CodePage codePage) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("([0-9]*)([CcXx]?)('.*')").matcher(item.trim());
+        if (!matcher.matches() || (matcher.group(1).isEmpty() && !matcher.group(2).isEmpty())) {
+            // C'..' と X'..' だけのものは、これまでどおり下で読む
+            return null;
+        }
+        String kind = matcher.group(2).isEmpty() ? "C" : matcher.group(2).toUpperCase(Locale.ROOT);
+        byte[] one = literal(kind + matcher.group(3), codePage);
+        if (one == null) {
+            fail("ICE000I OUTFIL LITERAL IS NOT VALID: " + item);
+            return null;
+        }
+        int times = matcher.group(1).isEmpty() ? 1 : number(matcher.group(1), 1);
+        byte[] out = new byte[one.length * times];
+        for (int i = 0; i < times; i++) {
+            System.arraycopy(one, 0, out, i * one.length, one.length);
+        }
+        return out;
     }
 
     /**
