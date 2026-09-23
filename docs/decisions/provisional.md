@@ -5688,7 +5688,7 @@ RULES と LIMITS を `FixedValue` の規則へ渡す。
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 (2026-09-23) |
+| 状態 | **解消済** (2026-09-23、LRM の配置の規則を `StructureMapping` に実装した) |
 | 場所 | `PliRuntime.Executor.declareGroup` / `declareChildren` |
 | 関連要件 | 設計 26、Bank-of-Z `BNKSTMT.pli` / `IBLOGIN.pli` |
 
@@ -5707,3 +5707,40 @@ RULES と LIMITS を `FixedValue` の規則へ渡す。
 **解消条件**: LRM の構造の配置の規則 (要素の対を境界に合わせてまとめていく手順) を実装し、
 `ALIGNED` / `UNALIGNED` の属性を読む。Hercules 上の Enterprise PL/I か、公開されている配置の例と
 突き合わせる。
+
+**解消**: LRM の "Structure mapping" の手順 (対を順にまとめ、1 つ目を 2 つ目の方へ自分の境界合わせが
+許すだけずらす) を `StructureMapping` に実装し、`ALIGNED` / `UNALIGNED` を読むようにした。要素ごとの
+既定 (ビット列・文字・PICTURE は UNALIGNED、ほかは ALIGNED) と、構造から要素への受け継ぎも持つ。
+あわせて `FIXED BIN(p)` の大きさ (p ≦ 7 は 1 byte、≦ 63 は 8 byte まで)、位取りのある 2 進、
+ビット列を 8 ビットごとに 1 byte で置くこと、精度を省いたときの既定 (BIN は 15、DEC は 5。以前は
+31 と 15) を直した。
+
+**上の記述の誤り**: 「`HV_CUST_DOB` は実機では 132 byte 目」と書いたのは C の配置の考え方だった。
+PL/I では前の文字の 130 byte が DOB の方へずれ、隙間は構造の前に出る。DOB は構造の頭から 130 byte
+目で、構造そのものが倍語の境界から 2 byte ずれたところに置かれる。
+
+公開の配置の例 (LRM Figure 12) は図であり、数を突き合わせていない。手で追える小さな例で試験した
+(`StructureMappingTest`)。残る断りは P-185 に書いた。
+
+---
+
+## P-185 PL/I の構造の中の POINTER、ビット単位で詰まるビット列、複数ビットの論理演算
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-09-23) |
+| 場所 | `StructureMapping.element`、`PliRuntime.Executor` の `&` / `|` / `^` |
+| 関連要件 | 設計 26 |
+
+**暫定の扱い**: 次の形は翻訳で断る。
+
+- 構造の要素としての POINTER。この処理系の POINTER の変数は、指す先の記憶域そのものとして
+  持っており、4 byte の値 (AddressSpace の番号、P-150) を置く場所がない
+- 8 の倍数でない UNALIGNED のビット列の要素。UNALIGNED のビット列は前後とビット単位で詰まるが、
+  この処理系は byte 単位でしか置けない (単独の変数と ALIGNED の要素は 8 ビットごとに 1 byte で置ける)
+
+複数ビットのビット列の `&` / `|` / `^` は、ビットごとの演算ではなく真偽 (どれか 1 ビットが 1) の
+演算になる。1 ビットのものは正しい。
+
+**解消条件**: POINTER を 4 byte の値として持つ形に変え、`BASED(P)` を番号から引くようにする。
+ビット列の要素にビット単位の位置を持たせる。ビット列の論理演算をビットごとにする。

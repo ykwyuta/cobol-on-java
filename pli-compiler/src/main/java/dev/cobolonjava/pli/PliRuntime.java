@@ -219,9 +219,19 @@ public final class PliRuntime {
             }
         }
 
+        /**
+         * 構造を宣言する。要素の位置は {@link StructureMapping} が LRM の規則で決める。以前は要素を
+         * 隙間なく並べていた (P-184)。
+         */
         private void declareGroup(List<PliSyntax.Decl> tree, Env env) {
             PliSyntax.Decl root = tree.get(0);
-            int length = groupLength(tree, 0, tree.size());
+            StructureMapping.Result mapping;
+            try {
+                mapping = StructureMapping.map(tree);
+            } catch (IllegalArgumentException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            int length = mapping.size();
             DataView area;
             if (root.basedOn() != null) {
                 Var base = env.require(root.basedOn());
@@ -240,75 +250,36 @@ public final class PliRuntime {
             // 記憶域を取ったときにしか効かないので、宣言で重ねた先を書き換えてはならない。
             // 以前は文字の要素を空白で埋めており、IMS から渡された DB PCB の DBD 名と PROCOPT を消していた
             boolean based = root.basedOn() != null;
-            int offset = 0;
-            for (int i = 1; i < tree.size();) {
-                PliSyntax.Decl child = tree.get(i);
-                int end = i + 1;
-                while (end < tree.size() && tree.get(end).level() > child.level()) end++;
-                int childLength = child.type() == PliSyntax.Type.GROUP
-                        ? groupLength(tree, i, end) : byteLength(child);
-                DataView view = area.subView(offset, childLength);
-                Var variable = new Var(child.name(), child.type(), child.precision(),
-                        child.scale(), view);
-                env.put(variable);
-                env.alias(root.name() + "." + child.name(), variable);
-                group.members.add(variable);
-                if (!based) {
-                    initialize(variable, child.initial(), env);
-                }
-                if (child.type() == PliSyntax.Type.GROUP) {
-                    declareChildren(tree.subList(i, end), env, variable, root.name(), based);
-                }
-                offset += childLength;
-                i = end;
-            }
+            declareMembers(tree, 0, tree.size(), env, group, area, mapping, root.name(), based);
         }
 
-        private void declareChildren(List<PliSyntax.Decl> tree, Env env, Var group,
-                                     String prefix, boolean based) {
-            PliSyntax.Decl root = tree.get(0);
-            DataView area = group.view;
-            env.alias(prefix + "." + root.name(), group);
-            int offset = 0;
-            for (int i = 1; i < tree.size();) {
-                PliSyntax.Decl child = tree.get(i);
-                int end = i + 1;
-                while (end < tree.size() && tree.get(end).level() > child.level()) end++;
-                int length = child.type() == PliSyntax.Type.GROUP
-                        ? groupLength(tree, i, end) : byteLength(child);
-                DataView view = area.subView(offset, length);
-                Var variable = new Var(child.name(), child.type(), child.precision(),
-                        child.scale(), view);
-                env.put(variable);
-                env.alias(root.name() + "." + child.name(), variable);
-                env.alias(prefix + "." + root.name() + "." + child.name(), variable);
-                group.members.add(variable);
-                if (!based) {
-                    initialize(variable, child.initial(), env);
-                }
-                if (child.type() == PliSyntax.Type.GROUP) {
-                    declareChildren(tree.subList(i, end), env, variable,
-                            prefix + "." + root.name(), based);
-                }
-                offset += length;
-                i = end;
-            }
-        }
-
-        private static int groupLength(List<PliSyntax.Decl> tree, int root, int end) {
-            int length = 0;
-            int level = tree.get(root).level();
-            for (int i = root + 1; i < end;) {
+        /** {@code index} の構造の直下の要素を宣言する。小構造は入れ子で開く。 */
+        private void declareMembers(List<PliSyntax.Decl> tree, int index, int end, Env env,
+                                    Var group, DataView area, StructureMapping.Result mapping,
+                                    String prefix, boolean based) {
+            int base = mapping.offsets()[index];
+            for (int i = index + 1; i < end;) {
                 PliSyntax.Decl child = tree.get(i);
                 int childEnd = i + 1;
                 while (childEnd < end && tree.get(childEnd).level() > child.level()) childEnd++;
-                if (child.level() > level) {
-                    length += child.type() == PliSyntax.Type.GROUP
-                            ? groupLength(tree, i, childEnd) : byteLength(child);
+                DataView view = area.subView(mapping.offsets()[i] - base, mapping.lengths()[i]);
+                Var variable = new Var(child.name(), child.type(), child.precision(),
+                        child.scale(), view);
+                env.put(variable);
+                env.alias(tree.get(index).name() + "." + child.name(), variable);
+                if (index > 0) {
+                    env.alias(prefix + "." + child.name(), variable);
+                }
+                group.members.add(variable);
+                if (!based) {
+                    initialize(variable, child.initial(), env);
+                }
+                if (child.type() == PliSyntax.Type.GROUP) {
+                    declareMembers(tree, i, childEnd, env, variable, view, mapping,
+                            prefix + "." + child.name(), based);
                 }
                 i = childEnd;
             }
-            return length;
         }
 
         private void declareScalar(PliSyntax.Decl declaration, Env env, DataView area,
@@ -473,6 +444,9 @@ public final class PliRuntime {
             }
             if (value instanceof Boolean bit) {
                 return bit ? "'1'B" : "'0'B";
+            }
+            if (value instanceof PliSyntax.BitString bits) {
+                return "'" + bits.bits() + "'B";
             }
             return character(value);
         }
@@ -847,6 +821,10 @@ public final class PliRuntime {
         private static BigDecimal number(Object value) {
             if (value instanceof FixedValue fixed) return fixed.value();
             if (value instanceof NumericPicture picture) return picture.fixed().value();
+            // ビット列を数にすると、符号なしの 2 進の値になる (LRM "Target: Coded arithmetic", BIT)
+            if (value instanceof PliSyntax.BitString bits) {
+                return new BigDecimal(new java.math.BigInteger(bits.bits(), 2));
+            }
             if (value instanceof BigDecimal decimal) return decimal;
             if (value instanceof Number numeric) return new BigDecimal(numeric.toString());
             if (value instanceof Boolean bool) return bool ? BigDecimal.ONE : BigDecimal.ZERO;
@@ -866,7 +844,12 @@ public final class PliRuntime {
         private static boolean truth(Object value) {
             if (value instanceof Boolean bool) return bool;
             if (numeric(value)) return number(value).signum() != 0;
-            return !display(value).isBlank() && !display(value).equals("0");
+            String text = display(value);
+            // ビット列はどれか 1 ビットが 1 なら真 (LRM "IF statement")。'00'B は偽である
+            if (!text.isEmpty() && text.chars().allMatch(c -> c == '0' || c == '1')) {
+                return text.indexOf('1') >= 0;
+            }
+            return !text.isBlank();
         }
 
         private static String display(Object value) {
@@ -878,18 +861,15 @@ public final class PliRuntime {
             if (value instanceof NumericPicture picture) return picture.text();
             // ビット列から文字への変換は '1' と '0' になる
             if (value instanceof Boolean bit) return bit ? "1" : "0";
+            if (value instanceof PliSyntax.BitString bits) return bits.bits();
             if (value instanceof BigDecimal decimal) return decimal.stripTrailingZeros().toPlainString();
             return value.toString();
         }
 
+        /** 単独の変数の大きさ。POINTER の変数は指す先の記憶域そのものなので、自分の場所を持たない。 */
         private static int byteLength(PliSyntax.Decl declaration) {
-            return switch (declaration.type()) {
-                case CHAR, BIT, PICTURE -> Math.max(1, declaration.precision());
-                case BINARY -> declaration.precision() <= 15 ? 2 : 4;
-                case DECIMAL -> PackedDecimal.byteLength(Math.max(1, declaration.precision()));
-                case POINTER -> 0;
-                case GROUP, FILE, ENTRY -> 0;
-            };
+            return declaration.type() == PliSyntax.Type.POINTER ? 0
+                    : StructureMapping.length(declaration);
         }
 
         private static void copy(DataView source, DataView target, byte pad) {
@@ -963,13 +943,19 @@ public final class PliRuntime {
 
         Object read(ProgramContext context) {
             return switch (type) {
-                case CHAR, BIT, GROUP -> context.codePage().decode(view.toByteArray());
+                case CHAR, GROUP -> context.codePage().decode(view.toByteArray());
+                // ビット列は 8 ビットごとに 1 byte、左詰め (LRM Table 39)。値は '0' と '1' の並び
+                case BIT -> new PliSyntax.BitString(bits());
                 // 数の PICTURE は、出力では字をそのまま送り (LRM "For numeric character values, the
                 // character value is transmitted")、演算では FIXED DEC(p,q) として扱う
                 case PICTURE -> new NumericPicture(
                         context.codePage().decode(view.toByteArray()), precision, scale);
-                case BINARY -> FixedValue.binary(
-                        BinaryDecimal.decode(view.toByteArray(), 0).toBigDecimal(), precision, scale);
+                // FIXED BIN(p,q) の記憶域は 2 の補数の整数で、値はそれを 2 の q 乗で割ったもの
+                case BINARY -> FixedValue.binary(new BigDecimal(
+                        new java.math.BigInteger(view.toByteArray()))
+                        .divide(BigDecimal.valueOf(2).pow(Math.max(0, scale)))
+                        .multiply(BigDecimal.valueOf(2).pow(Math.max(0, -scale))),
+                        precision, scale);
                 case DECIMAL -> FixedValue.decimal(PackedDecimal.decode(view.toByteArray(), scale,
                         NumProcMode.PFD).toBigDecimal(), precision, scale);
                 case POINTER -> view;
@@ -979,7 +965,8 @@ public final class PliRuntime {
 
         void write(Object value, ProgramContext context) {
             switch (type) {
-                case CHAR, BIT -> writeText(Executor.display(value), context);
+                case CHAR -> writeText(Executor.display(value), context);
+                case BIT -> writeBits(Executor.display(value));
                 case PICTURE -> writeText(picture(value), context);
                 case GROUP -> {
                     if (Executor.numeric(value) && Executor.number(value).signum() == 0) {
@@ -988,9 +975,7 @@ public final class PliRuntime {
                         writeText(Executor.display(value), context);
                     }
                 }
-                case BINARY -> view.setBytes(BinaryDecimal.encode(
-                        Decimal.parse(Executor.number(value).toPlainString()),
-                        precision <= 15 ? 4 : 9, 0, TruncMode.BIN));
+                case BINARY -> writeBinary(Executor.number(value));
                 case DECIMAL -> view.setBytes(PackedDecimal.encode(
                         Decimal.parse(Executor.number(value).toPlainString()), precision, scale, true));
                 case POINTER, FILE, ENTRY -> throw new PliExecutionException(
@@ -1007,7 +992,13 @@ public final class PliRuntime {
                 case BINARY -> {
                     shape[offset] = Db2RuntimeOps.BINARY;
                     // Db2 descriptor は10進桁数から物理幅を導く。PL/I の BIN(p) の p はbit精度である。
-                    shape[offset + 1] = view.length() == 2 ? 4 : 9;
+                    shape[offset + 1] = switch (view.length()) {
+                        case 2 -> 4;
+                        case 4 -> 9;
+                        case 8 -> 18;
+                        default -> throw new PliExecutionException("FIXED BIN(" + precision
+                                + ") cannot be an SQL host variable: " + name);
+                    };
                     shape[offset + 3] = 1;
                 }
                 case DECIMAL -> {
@@ -1019,6 +1010,54 @@ public final class PliRuntime {
                 default -> throw new PliExecutionException(
                         "data type cannot be an SQL host variable: " + type + " " + name);
             }
+        }
+
+        /**
+         * 2 の補数の整数として、記憶域の長さ (1 / 2 / 4 / 8 byte) に下位から書く。位取り q は 2 の q 乗を
+         * 掛けて整数にし、小数の端は 0 の方へ切る。入りきらない上位は落ちる (SIZE は既定で無効であり、
+         * 実機の ST / STH と同じく下位だけが残る)。以前は 2 か 4 byte しか書けなかった。
+         */
+        private void writeBinary(BigDecimal value) {
+            BigDecimal scaled = scale >= 0
+                    ? value.multiply(BigDecimal.valueOf(2).pow(scale))
+                    : value.divide(BigDecimal.valueOf(2).pow(-scale));
+            byte[] full = scaled.setScale(0, java.math.RoundingMode.DOWN).toBigInteger()
+                    .toByteArray();
+            byte[] bytes = new byte[view.length()];
+            byte fill = full.length > 0 && full[0] < 0 ? (byte) 0xFF : 0;
+            for (int i = 0; i < bytes.length; i++) {
+                int from = full.length - bytes.length + i;
+                bytes[i] = from < 0 ? fill : full[from];
+            }
+            view.setBytes(bytes);
+        }
+
+        /** ビット列を '0' と '1' の並びとして読む。 */
+        private String bits() {
+            StringBuilder text = new StringBuilder(precision);
+            for (int i = 0; i < precision; i++) {
+                text.append((view.get(i / 8) >> (7 - i % 8) & 1) == 1 ? '1' : '0');
+            }
+            return text.toString();
+        }
+
+        /**
+         * ビット列へ入れる。'0' と '1' 以外の字は CONVERSION であり、短ければ右を 0 で埋め、
+         * 長ければ右を落とす。以前は 1 ビットを 1 字として文字のまま置いていた。
+         */
+        private void writeBits(String text) {
+            byte[] bytes = new byte[view.length()];
+            for (int i = 0; i < precision && i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c != '0' && c != '1') {
+                    throw new PliExecutionException("CONVERSION: '" + text
+                            + "' is not a bit string for " + name);
+                }
+                if (c == '1') {
+                    bytes[i / 8] |= (byte) (1 << (7 - i % 8));
+                }
+            }
+            view.setBytes(bytes);
         }
 
         /**

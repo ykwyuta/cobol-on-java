@@ -44,8 +44,14 @@ final class PliSyntax {
 
     enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE }
 
+    /**
+     * 宣言 1 つ。
+     *
+     * @param aligned {@code ALIGNED} なら真、{@code UNALIGNED} なら偽、書かなければ {@code null}
+     *                (型ごとの既定、構造からは受け継ぐ。LRM "ALIGNED and UNALIGNED attributes")
+     */
     record Decl(String name, int level, Type type, int precision, int scale,
-                Expr initial, String basedOn) {
+                Expr initial, String basedOn, Boolean aligned) {
     }
 
     record Assign(String target, Expr value) implements Stmt {
@@ -121,6 +127,23 @@ final class PliSyntax {
     }
 
     record Literal(Object value) implements Expr {
+    }
+
+    /**
+     * 2 ビット以上のビット列の定数。1 ビットのものは真偽値として持つ。以前はビット列の定数を
+     * すべて真偽値にしていたので、{@code '10100000'B} が {@code '1'B} になっていた。
+     */
+    record BitString(String bits) {
+    }
+
+    /** {@code '...'B} の値。'0' と '1' のほかの字は誤りである。 */
+    private static Object bitLiteral(Token token) {
+        String bits = token.text();
+        if (!bits.chars().allMatch(c -> c == '0' || c == '1')) {
+            throw new ParseFailure(token, "bit string constant '" + bits + "'B has a character"
+                    + " other than 0 and 1");
+        }
+        return bits.length() == 1 ? (Object) bits.equals("1") : new BitString(bits);
     }
 
     record Reference(String name) implements Expr {
@@ -456,7 +479,7 @@ final class PliSyntax {
                             inheritedPrecision, inheritedScale);
                     for (String name : names) {
                         out.add(new Decl(name, level, info.type, info.precision, info.scale,
-                                initial(part), basedOn(part)));
+                                initial(part), basedOn(part), alignment(part)));
                     }
                     inheritedType = info.type;
                     inheritedPrecision = info.precision;
@@ -470,12 +493,20 @@ final class PliSyntax {
                 TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
                         inheritedPrecision, inheritedScale);
                 out.add(new Decl(nameToken.text(), level, info.type, info.precision, info.scale,
-                        initial(part), basedOn(part)));
+                        initial(part), basedOn(part), alignment(part)));
                 inheritedType = info.type;
                 inheritedPrecision = info.precision;
                 inheritedScale = info.scale;
             }
             return List.copyOf(out);
+        }
+
+        private static Boolean alignment(List<Token> part) {
+            for (Token token : part) {
+                if (token.is("UNALIGNED") || token.is("UNAL")) return Boolean.FALSE;
+                if (token.is("ALIGNED")) return Boolean.TRUE;
+            }
+            return null;
         }
 
         private static TypeInfo typeInfo(List<Token> tokens, int from, Type inherited,
@@ -506,12 +537,15 @@ final class PliSyntax {
                     int j = i + 1;
                     if (j < tokens.size() && (tokens.get(j).is("BIN")
                             || tokens.get(j).is("BINARY"))) {
+                        // 精度を省けば (15,0)、10 進は (5,0) (LRM Table 40, DEFAULT(IBM))。
+                        // 以前は 2 進を 31、10 進を 15 とし、2 進の位取りを読んでいなかった
                         return new TypeInfo(Type.BINARY,
-                                parenthesizedInt(tokens, j + 1, 31), 0);
+                                parenthesizedInt(tokens, j + 1, 15),
+                                parenthesizedSecondInt(tokens, j + 1, 0));
                     }
                     if (j < tokens.size() && (tokens.get(j).is("DEC")
                             || tokens.get(j).is("DECIMAL"))) {
-                        int precision = parenthesizedInt(tokens, j + 1, 15);
+                        int precision = parenthesizedInt(tokens, j + 1, 5);
                         int scale = parenthesizedSecondInt(tokens, j + 1, 0);
                         return new TypeInfo(Type.DECIMAL, precision, scale);
                     }
@@ -527,7 +561,7 @@ final class PliSyntax {
                     Token value = tokens.get(i + 2);
                     if (value.kind() == Kind.STRING) {
                         boolean bit = i + 3 < tokens.size() && tokens.get(i + 3).is("B");
-                        return new Literal(bit ? !value.text().equals("0") : value.text());
+                        return new Literal(bit ? bitLiteral(value) : value.text());
                     }
                     if (value.kind() == Kind.NUMBER) {
                         return new Literal(FixedValue.constant(value.text()));
@@ -786,9 +820,10 @@ final class PliSyntax {
                 return value;
             }
             if (check(Kind.STRING)) {
-                String value = next().text();
+                Token literal = next();
+                String value = literal.text();
                 if (match("B")) {
-                    return new Literal(!value.equals("0"));
+                    return new Literal(bitLiteral(literal));
                 }
                 return new Literal(value);
             }
