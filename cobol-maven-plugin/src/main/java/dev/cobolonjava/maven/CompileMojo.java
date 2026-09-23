@@ -62,7 +62,7 @@ public class CompileMojo extends AbstractMojo {
     private boolean freeFormat;
 
     /**
-     * 翻訳時オプション。{@code CBL} 文と同じ綴りで書く ({@code SSRANGE,ARITH(EXTEND)})。
+     * 翻訳時オプション。{@code CBL} 文と同じ綴りで書く ({@code SSRANGE,SOURCEFORMAT(FREE)})。
      * ソースの {@code CBL} / {@code PROCESS} のほうがあとに重なる。
      */
     @Parameter(property = "cobol.compilerOptions")

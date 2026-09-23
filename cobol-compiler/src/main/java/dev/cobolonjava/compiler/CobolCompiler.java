@@ -157,13 +157,19 @@ public final class CobolCompiler {
      */
     public Result compile(String fileName, String source) {
         CompilerOptions effective = options.merge(preprocessor.optionsOf(source));
+        // 効かないオプションを黙って受理しない (要件 FR-181)
+        List<Diagnostic> optionDiagnostics = OptionSupport.check(effective);
+        if (Diagnostic.blocking(optionDiagnostics)) {
+            return failed(null, optionDiagnostics);
+        }
         CobolParsing.Result parsed = CobolParsing.parse(preprocessor, fileName, source);
         if (!parsed.succeeded()) {
             return failed(null, parsed.diagnostics());
         }
         List<Compiled> programs = new ArrayList<>();
         // 告げるだけの診断は翻訳を止めない。積んでおいて結果に載せる (要件 FR-183)
-        List<Diagnostic> warnings = new ArrayList<>(parsed.diagnostics());
+        List<Diagnostic> warnings = new ArrayList<>(optionDiagnostics);
+        warnings.addAll(parsed.diagnostics());
         List<Inherited> inherited = inheritedGlobals(parsed.tree().programUnit());
         // 囲む側の USE GLOBAL 宣言節。親は子より先に翻訳されるので、順に積める
         Map<String, List<ProcedureBuilder.GlobalDeclarative>> globals = new LinkedHashMap<>();

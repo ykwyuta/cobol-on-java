@@ -592,7 +592,7 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 一部解決 (`SOURCEFORMAT` と `SSRANGE` が効く)。残りは未解決 |
+| 状態 | 一部解決 (`SOURCEFORMAT` と `SSRANGE` が効く。2026-09-24、効かないオプションを診断するようにした)。残りは未解決 |
 | 場所 | `ProcessStatement` / `CompilerOptions` / `CobolCompiler` |
 | 関連要件 | FR-093 |
 
@@ -617,6 +617,21 @@ SQL の行注釈 (`--`) やブロック注釈 (`/* */`) は読み飛ばさない
 **解消条件**: 各オプションを使う側の実装が入った時点で `CompilerOptions` から読む。
 それまでの間、効かないオプションを指定したら<b>警告</b>を出す仕組みを P0-b の終わりまでに
 入れる。警告には診断に重大度を持たせる必要があり、いまの `Diagnostic` は誤りしか表せない。
+
+**黙って受理するのをやめた (2026-09-24、z/OS probe で見つかった)**: probe の変種 (`NUMPROC(PFD)`、
+`ARITH(EXTEND)`、`NOADV`、`NUMBER`) をこの処理系で翻訳すると、どれも元と同じクラスになり、
+変種どうしに差が出なかった。`OptionSupport` がオプションを 3 つに分けて診断する。
+
+| 分け方 | オプション | 扱い |
+| --- | --- | --- |
+| 効いている、または今の振る舞いと同じ値 | `SOURCEFORMAT`、`SSRANGE`、`CICS`、`SQL`、`DYNAM`、`ARITH(COMPAT)`、`TRUNC(STD)`、`NUMPROC(NOPFD)`、`FLOAT(HEX)`、`CODEPAGE(1047)`、`PGMNAME(COMPAT)`、`INTDATE(ANSI)`、`QUOTE` | 黙って通す |
+| 計算する値を変えるのに、その値を実装していない | `ARITH(EXTEND)`、`TRUNC(BIN/OPT)`、`NUMPROC(PFD/MIG)`、`APOST`、`FLOAT` のほかの値、`CODEPAGE` のほかの値、`ZONEDATA`、`NUMCHECK`、`CURRENCY` ほか | **断る** (FR-181 の「未対応と診断する」) |
+| 計算する値を変えない (リスト・最適化・デバッグ情報・再入可能性) | `LIST`、`MAP`、`XREF`、`FLAG`、`OPTIMIZE`、`TEST`、`RENT`、`NUMBER`、`ADV`、`NODYNAM`、`NSYMBOL` ほか | 警告して通す。差が暫定判断にあるもの (`ADV` は P-063、`NODYNAM` は P-032、`NUMBER` は P-080) は理由に書く |
+| 知らない名 | — | 警告して通す |
+
+`TRUNC(BIN)` を断るのは実資産に効く。それでも、2 進の項目が PICTURE の桁を超えたときに
+黙って `STD` で切るよりよい。ランタイムには `TruncMode` / `NumProcMode` の受け皿があり、
+残っているのはコード生成からつなぐ経路である。つないだ値から「黙って通す」へ移す。
 
 ---
 
