@@ -2651,7 +2651,7 @@ public final class ProcedureBuilder {
                     + "; declare it in SPECIAL-NAMES");
             return null;
         }
-        if (function == SpecialNames.FunctionName.SYSIN) {
+        if (function == SpecialNames.FunctionName.SYSIN || function.isCarriageControl()) {
             report(origin, "DISPLAY UPON requires an output device: " + mnemonic);
             return null;
         }
@@ -3244,7 +3244,7 @@ public final class ProcedureBuilder {
                             + "; declare it in SPECIAL-NAMES");
                     return null;
                 }
-                if (!function.isInput()) {
+                if (!function.isInput() || function.isCarriageControl()) {
                     report(origin, "ACCEPT FROM requires an input device: " + mnemonic);
                     return null;
                 }
@@ -5836,6 +5836,31 @@ public final class ProcedureBuilder {
     }
 
     /**
+     * {@code ADVANCING 呼び名} の送り (P-076)。{@code C01} は通路 1 で、印字装置の慣わしでは
+     * 頁の先頭である。{@code CSP} は行を送らない (重ね印字)。通路 2〜12 がどの行に当たるかは
+     * 装置の紙送りの設定 (FCB) で決まり、この処理系はそれを持たない。以前はどの呼び名も
+     * 頁の先頭へ送っていたので、黙って違う行へ送らないよう断る。
+     */
+    private Statement.Advancing channelOf(SpecialNames.FunctionName function, String name,
+                                          boolean before, Origin origin) {
+        if (function == SpecialNames.FunctionName.C01) {
+            return new Statement.Advancing(null, null, true, before);
+        }
+        if (function == SpecialNames.FunctionName.CSP) {
+            return new Statement.Advancing(0, null, false, before);
+        }
+        if (function.isCarriageControl()) {
+            report(origin, "ADVANCING " + name + " (channel " + function.name().substring(1)
+                    + ") is not supported yet: the lines of channels 2 to 12 depend on the"
+                    + " printer's forms control (P-076)");
+            return null;
+        }
+        report(origin, name + " is not a carriage-control name; ADVANCING needs C01 to C12"
+                + " or CSP");
+        return null;
+    }
+
+    /**
      * {@code WRITE} の行送りを読む (要件 FR-102)。
      *
      * <p>{@code AFTER} は送ってから書き、{@code BEFORE} は書いてから送る。送る量は
@@ -5855,10 +5880,9 @@ public final class ProcedureBuilder {
         CobolParser.AdvancingLinesContext lines = context.advancingLines();
         if (lines.identifier() != null) {
             String name = lines.identifier().qualifiedDataName().dataName(0).getText();
-            if (specialNames.mnemonic(name) != null) {
-                // 呼び名を書けば、その装置が決めた送りである。紙送りの通路のうち
-                // ほとんどの資産が使うのは「頁の先頭へ」だけなので、そう読む (P-076)
-                return new Statement.Advancing(null, null, true, before);
+            SpecialNames.FunctionName function = specialNames.mnemonic(name);
+            if (function != null) {
+                return channelOf(function, name, before, origin);
             }
             DataReference count = resolver.resolve(lines.identifier());
             return count == null ? null : new Statement.Advancing(null, count, false, before);
