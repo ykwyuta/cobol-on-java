@@ -54,12 +54,40 @@ final class PliSyntax {
      * @param aligned {@code ALIGNED} なら真、{@code UNALIGNED} なら偽、書かなければ {@code null}
      *                (型ごとの既定、構造からは受け継ぐ。LRM "ALIGNED and UNALIGNED attributes")
      * @param varying {@code CHAR(n) VARYING}。記憶域は長さの半語と n byte (LRM Table 39)
+     * @param dimensions 配列の次元ごとの上下限。配列でなければ空
+     * @param initialItems 配列の {@code INITIAL} の並び。スカラーなら空で、{@code initial} を使う
      */
     record Decl(String name, int level, Type type, int precision, int scale,
-                Expr initial, String basedOn, Boolean aligned, boolean varying) {
+                Expr initial, String basedOn, Boolean aligned, boolean varying,
+                List<Bound> dimensions, List<InitItem> initialItems) {
+
+        /** 配列の要素の数。配列でなければ 1。 */
+        int count() {
+            int count = 1;
+            for (Bound bound : dimensions) count *= bound.extent();
+            return count;
+        }
     }
 
-    record Assign(String target, Expr value) implements Stmt {
+    /** 配列の 1 つの次元の上下限 (LRM "DIMENSION attribute")。 */
+    record Bound(int low, int high) {
+        int extent() {
+            return high - low + 1;
+        }
+    }
+
+    /**
+     * 配列の {@code INITIAL} の 1 項目。{@code (3)0} の 3 が反復の係数で、{@code (*)} は残りの
+     * 要素すべて ({@code count} が 0)。
+     */
+    record InitItem(int count, Expr value) {
+    }
+
+    /**
+     * 代入。{@code subscripts} は配列の要素の添字、または擬似変数 {@code SUBSTR(x, i, n)} の引数。
+     * どちらでもなければ空である。
+     */
+    record Assign(String target, List<Expr> subscripts, Expr value) implements Stmt {
     }
 
     /**
@@ -473,10 +501,13 @@ final class PliSyntax {
             if (check(Kind.IDENT)) {
                 int save = at;
                 String target = qualifiedName();
+                // A(I) = ... (配列の要素) と SUBSTR(X, I, N) = ... (擬似変数)。以前はどちらも
+                // 「文を知らない」で断っていた
+                List<Expr> subscripts = check("(") ? arguments() : List.of();
                 if (match("=")) {
                     Expr value = expression();
                     expect(";");
-                    return new Assign(target, value);
+                    return new Assign(target, subscripts, value);
                 }
                 at = save;
             }
@@ -513,11 +544,11 @@ final class PliSyntax {
                     int close = findClosing(part, p);
                     List<String> names = part.subList(p + 1, close).stream()
                             .filter(t -> t.kind() == Kind.IDENT).map(Token::text).toList();
+                    List<Bound> dimensions = dimensions(part, close + 1, level);
                     TypeInfo info = typeInfo(part, close + 1, inheritedType,
                             inheritedPrecision, inheritedScale);
                     for (String name : names) {
-                        out.add(new Decl(name, level, info.type, info.precision, info.scale,
-                                initial(part), basedOn(part), alignment(part), varying(part)));
+                        out.add(declaration(name, level, info, part, dimensions));
                     }
                     inheritedType = info.type;
                     inheritedPrecision = info.precision;
@@ -528,15 +559,105 @@ final class PliSyntax {
                 if (nameToken.kind() != Kind.IDENT && !nameToken.is("*")) {
                     continue;
                 }
+                List<Bound> dimensions = dimensions(part, p, level);
                 TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
                         inheritedPrecision, inheritedScale);
-                out.add(new Decl(nameToken.text(), level, info.type, info.precision, info.scale,
-                        initial(part), basedOn(part), alignment(part), varying(part)));
+                out.add(declaration(nameToken.text(), level, info, part, dimensions));
                 inheritedType = info.type;
                 inheritedPrecision = info.precision;
                 inheritedScale = info.scale;
             }
             return List.copyOf(out);
+        }
+
+        private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
+                                 List<Bound> dimensions) {
+            if (!dimensions.isEmpty() && info.type == Type.BIT) {
+                // UNALIGNED のビット列の配列は要素がビット単位で詰まる。byte ごとに置くと位置が
+                // ずれるので、持つまでは断る
+                throw new ParseFailure(part.get(0), "arrays of bit strings are not supported yet: "
+                        + name);
+            }
+            return new Decl(name, level, info.type, info.precision, info.scale,
+                    dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
+                    varying(part), dimensions,
+                    dimensions.isEmpty() ? List.of() : initialItems(part));
+        }
+
+        /**
+         * 名の直後の {@code (n)}、{@code (lo:hi)}、{@code (n, m)} を次元として読む (LRM "DIMENSION
+         * attribute")。以前は読み飛ばしていたので、{@code DCL A(10) FIXED BIN} が 1 つの変数に
+         * なっていた。構造の中の配列はまだ持たないので断る。
+         */
+        private List<Bound> dimensions(List<Token> part, int at, int level) {
+            if (at >= part.size() || !part.get(at).is("(")) {
+                return List.of();
+            }
+            int close = findClosing(part, at);
+            List<Bound> bounds = new ArrayList<>();
+            for (List<Token> dimension : split(part.subList(at + 1, close), ",")) {
+                List<List<Token>> ends = split(dimension, ":");
+                int low = ends.size() == 2 ? bound(ends.get(0), part.get(at)) : 1;
+                int high = bound(ends.get(ends.size() - 1), part.get(at));
+                if (ends.size() > 2 || high < low) {
+                    throw new ParseFailure(part.get(at), "bad array bounds");
+                }
+                bounds.add(new Bound(low, high));
+            }
+            if (level > 0) {
+                throw new ParseFailure(part.get(at), "arrays in a structure are not supported yet");
+            }
+            return List.copyOf(bounds);
+        }
+
+        /** 次元の上限か下限。符号つきの整数だけを読む。{@code *} や式はまだ持たない。 */
+        private static int bound(List<Token> tokens, Token where) {
+            if (tokens.size() == 1 && tokens.get(0).kind() == Kind.NUMBER
+                    && !tokens.get(0).text().contains(".")) {
+                return Integer.parseInt(tokens.get(0).text());
+            }
+            if (tokens.size() == 2 && tokens.get(0).is("-")
+                    && tokens.get(1).kind() == Kind.NUMBER) {
+                return -Integer.parseInt(tokens.get(1).text());
+            }
+            throw new ParseFailure(where, "array bounds must be integer constants yet");
+        }
+
+        /**
+         * 配列の {@code INITIAL(値, (n)値, (*)値)}。反復の係数は括弧に入れた整数か {@code *}。
+         * 括弧の中が式なら、それは係数ではなく値である ({@code INIT((1+2))})。
+         */
+        private List<InitItem> initialItems(List<Token> tokens) {
+            for (int i = 0; i + 1 < tokens.size(); i++) {
+                if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL"))
+                        && tokens.get(i + 1).is("(")) {
+                    int close = findClosing(tokens, i + 1);
+                    List<Token> inner = new ArrayList<>(tokens.subList(i + 2, close));
+                    Token end = tokens.get(close);
+                    inner.add(new Token(Kind.EOF, "<EOF>", end.line(), end.column()));
+                    Parser values = new Parser(fileName, inner);
+                    List<InitItem> items = new ArrayList<>();
+                    do {
+                        int count = 1;
+                        if (values.check("(") && values.check(2, ")")
+                                && (values.token(1).kind() == Kind.NUMBER
+                                        || values.check(1, "*"))
+                                && !values.check(3, ",") && !values.check(3, "<EOF>")) {
+                            values.next();
+                            Token factor = values.next();
+                            values.next();
+                            count = factor.is("*") ? 0 : Integer.parseInt(factor.text());
+                        }
+                        items.add(new InitItem(count, values.expression()));
+                    } while (values.match(","));
+                    if (!values.check(Kind.EOF)) {
+                        throw values.fail(values.peek(), "unexpected " + values.peek().text()
+                                + " in INITIAL");
+                    }
+                    return List.copyOf(items);
+                }
+            }
+            return List.of();
         }
 
         /**

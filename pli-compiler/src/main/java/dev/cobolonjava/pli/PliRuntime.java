@@ -503,10 +503,54 @@ public final class PliRuntime {
             Var variable = new Var(declaration.name(), declaration.type(),
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
+            if (!declaration.dimensions().isEmpty()) {
+                declareElements(variable, declaration);
+            }
             env.put(variable);
             if (alias != null) env.alias(alias, variable);
             if (declaration.basedOn() == null) {
-                initialize(variable, declaration.initial(), env);
+                if (variable.dimensions == null) {
+                    initialize(variable, declaration.initial(), env);
+                } else {
+                    initializeElements(variable, declaration.initialItems(), env);
+                }
+            }
+        }
+
+        /**
+         * 配列の要素を、行の順 (最後の添字がいちばん速く変わる) に並べる (LRM "Array storage")。
+         * 要素は配列の記憶域を等分した部分である。
+         */
+        private static void declareElements(Var array, PliSyntax.Decl declaration) {
+            array.dimensions = declaration.dimensions();
+            int length = StructureMapping.length(declaration);
+            for (int k = 0; k < declaration.count(); k++) {
+                Var element = new Var(declaration.name(), declaration.type(),
+                        declaration.precision(), declaration.scale(),
+                        array.view.subView(k * length, length));
+                element.varying = declaration.varying();
+                array.elements.add(element);
+            }
+        }
+
+        /**
+         * 配列の INITIAL。並びの値を要素へ順に入れ、{@code (n)} は n 回、{@code (*)} は残り全部に
+         * 繰り返す。並びが尽きた先の要素は初期値を持たない (LRM "INITIAL attribute")。
+         */
+        private void initializeElements(Var array, List<PliSyntax.InitItem> items, Env env) {
+            int next = 0;
+            for (PliSyntax.InitItem item : items) {
+                int count = item.count() == 0 ? array.elements.size() - next : item.count();
+                for (int k = 0; k < count; k++) {
+                    if (next >= array.elements.size()) {
+                        throw new PliExecutionException("INITIAL of " + array.name
+                                + " has more values than the array has elements");
+                    }
+                    initialize(array.elements.get(next++), item.value(), env);
+                }
+            }
+            while (next < array.elements.size()) {
+                initialize(array.elements.get(next++), null, env);
             }
         }
 
@@ -534,7 +578,41 @@ public final class PliRuntime {
         }
 
         private void assign(PliSyntax.Assign assignment, Env env) {
+            if (!assignment.subscripts().isEmpty()) {
+                Var array = arrayNamed(assignment.target(), env);
+                if (array != null) {
+                    element(array, assignment.subscripts(), env)
+                            .write(value(assignment.value(), env), context);
+                    return;
+                }
+                if (assignment.target().equals("SUBSTR") && !env.contains("SUBSTR")) {
+                    substrPseudovariable(assignment, env);
+                    return;
+                }
+                throw new PliExecutionException(assignment.target() + " is not an array");
+            }
             Var target = env.require(assignment.target());
+            if (target.dimensions != null) {
+                // 配列への代入。配列から配列なら要素ごと、スカラーならすべての要素へ
+                // (LRM "Array assignments")
+                if (assignment.value() instanceof PliSyntax.Reference reference
+                        && arrayNamed(reference.name(), env) != null) {
+                    Var source = env.require(reference.name());
+                    if (!source.dimensions.equals(target.dimensions)) {
+                        throw new PliExecutionException("arrays " + source.name + " and "
+                                + target.name + " have different bounds");
+                    }
+                    for (int k = 0; k < target.elements.size(); k++) {
+                        target.elements.get(k).write(source.elements.get(k).read(context), context);
+                    }
+                    return;
+                }
+                Object value = value(assignment.value(), env);
+                for (Var element : target.elements) {
+                    element.write(value, context);
+                }
+                return;
+            }
             if (assignment.value() instanceof PliSyntax.Reference reference) {
                 Var source = env.require(reference.name());
                 if (target.type == PliSyntax.Type.GROUP && source.type == PliSyntax.Type.GROUP) {
@@ -613,6 +691,14 @@ public final class PliRuntime {
         private List<Object> items(PliSyntax.Expr expression, Env env) {
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
+                if (variable.dimensions != null) {
+                    // 配列は要素の数だけの項目と同じ。行の順に送る
+                    List<Object> values = new ArrayList<>();
+                    for (Var element : variable.elements) {
+                        values.add(item(element));
+                    }
+                    return values;
+                }
                 if (variable.type == PliSyntax.Type.GROUP && !variable.members.isEmpty()) {
                     List<Object> values = new ArrayList<>();
                     for (Var element : elements(variable)) {
@@ -930,24 +1016,31 @@ public final class PliRuntime {
                 case PliSyntax.Reference reference -> {
                     Var variable = env.contains(reference.name())
                             ? env.require(reference.name()) : null;
-                    if (variable == null) return;
-                    if ((variable.type == PliSyntax.Type.DECIMAL
-                            || variable.type == PliSyntax.Type.PICTURE)
-                            && variable.precision > options.decimalLow()) {
-                        wide[0] = true;
-                    }
-                    if (variable.type == PliSyntax.Type.BINARY
-                            && variable.precision > options.binaryLow()) {
-                        wide[1] = true;
-                    }
+                    scanVariable(variable, wide);
                 }
                 case PliSyntax.Unary unary -> scan(unary.operand(), env, wide);
                 case PliSyntax.Binary binary -> {
                     scan(binary.left(), env, wide);
                     scan(binary.right(), env, wide);
                 }
-                case PliSyntax.Function function ->
-                        function.arguments().forEach(argument -> scan(argument, env, wide));
+                case PliSyntax.Function function -> {
+                    // 配列の要素は、その配列の型の葉である
+                    scanVariable(arrayNamed(function.name(), env), wide);
+                    function.arguments().forEach(argument -> scan(argument, env, wide));
+                }
+            }
+        }
+
+        private void scanVariable(Var variable, boolean[] wide) {
+            if (variable == null) return;
+            if ((variable.type == PliSyntax.Type.DECIMAL
+                    || variable.type == PliSyntax.Type.PICTURE)
+                    && variable.precision > options.decimalLow()) {
+                wide[0] = true;
+            }
+            if (variable.type == PliSyntax.Type.BINARY
+                    && variable.precision > options.binaryLow()) {
+                wide[1] = true;
             }
         }
 
@@ -961,7 +1054,19 @@ public final class PliRuntime {
                 return literal.value();
             }
             if (expression instanceof PliSyntax.Reference reference) {
-                return env.require(reference.name()).read(context);
+                Var variable = env.require(reference.name());
+                if (variable.dimensions != null) {
+                    // 配列の式 (A + 1 など) はまだ持たない。記憶域をまとめて文字として読むと
+                    // 黙って違う値になるので断る
+                    throw new PliExecutionException("array expressions are not supported yet: "
+                            + variable.name);
+                }
+                return variable.read(context);
+            }
+            if (expression instanceof PliSyntax.Function function
+                    && arrayNamed(function.name(), env) != null) {
+                return element(arrayNamed(function.name(), env), function.arguments(), env)
+                        .read(context);
             }
             if (expression instanceof PliSyntax.Unary unary) {
                 Object operand = value(unary.operand(), env);
@@ -1013,14 +1118,25 @@ public final class PliRuntime {
             }
             PliSyntax.Function function = (PliSyntax.Function) expression;
             String name = function.name();
+            // SIZE と ADDR は引数の値ではなく変数そのものを見る。値を先に求めると、配列を
+            // 渡したときに配列の式として断られる
+            switch (name) {
+                case "SIZE", "STORAGE", "STG" -> {
+                    return size(function, env);
+                }
+                case "ADDR" -> {
+                    return address(function, env);
+                }
+                default -> {
+                }
+            }
             List<Object> arguments = function.arguments().stream().map(e -> value(e, env)).toList();
             return switch (name) {
                 case "TRIM" -> display(arguments.get(0)).strip();
                 case "SUBSTR" -> substring(arguments);
                 case "DATETIME" -> ZonedDateTime.now(context.clock()).format(DATETIME);
                 case "CHAR" -> display(arguments.get(0));
-                // STORAGE / STG は SIZE の別名である (LRM "STORAGE")
-                case "SIZE", "STORAGE", "STG" -> size(function, env);
+                // STORAGE / STG は SIZE の別名である (LRM "STORAGE")。上で済ませている
                 // 文字列の長さ。固定長の CHAR(n) なら n、VARYING なら今の長さ (LRM "LENGTH")
                 case "LENGTH" -> FixedValue.binary(
                         BigDecimal.valueOf(display(arguments.get(0)).length()), 31, 0);
@@ -1028,7 +1144,6 @@ public final class PliRuntime {
                 // (X'FF') を n 個 (LRM "LOW", "HIGH")
                 case "LOW" -> filled((byte) 0x00, arguments);
                 case "HIGH" -> filled((byte) 0xFF, arguments);
-                case "ADDR" -> address(function, env);
                 case "CENTRE", "CENTER" -> centre(arguments);
                 // 結果は x と同じ base・scale・precision を持つ (LRM "ABS")
                 case "ABS" -> arguments.get(0) instanceof FixedValue fixed
@@ -1079,21 +1194,92 @@ public final class PliRuntime {
         }
 
         private Object size(PliSyntax.Function function, Env env) {
-            if (function.arguments().size() != 1
-                    || !(function.arguments().get(0) instanceof PliSyntax.Reference reference)) {
+            if (function.arguments().size() != 1) {
                 throw new PliExecutionException("SIZE requires one data reference");
             }
-            // SIZE は FIXED BIN(31) を返す
-            return FixedValue.binary(BigDecimal.valueOf(env.require(reference.name()).view.length()),
-                    31, 0);
+            // SIZE は FIXED BIN(31) を返す。配列なら全体、要素なら要素の大きさ
+            return FixedValue.binary(BigDecimal.valueOf(
+                    dataReference(function.arguments().get(0), env, "SIZE").view.length()), 31, 0);
         }
 
         private Object address(PliSyntax.Function function, Env env) {
-            if (function.arguments().size() != 1
-                    || !(function.arguments().get(0) instanceof PliSyntax.Reference reference)) {
+            if (function.arguments().size() != 1) {
                 throw new PliExecutionException("ADDR requires one data reference");
             }
-            return new PointerValue(address(env.require(reference.name()).view));
+            return new PointerValue(address(
+                    dataReference(function.arguments().get(0), env, "ADDR").view));
+        }
+
+        /** 変数の参照。名か、配列の要素 {@code A(I)} である。 */
+        private Var dataReference(PliSyntax.Expr expression, Env env, String user) {
+            if (expression instanceof PliSyntax.Reference reference) {
+                return env.require(reference.name());
+            }
+            if (expression instanceof PliSyntax.Function function) {
+                Var array = arrayNamed(function.name(), env);
+                if (array != null) {
+                    return element(array, function.arguments(), env);
+                }
+            }
+            throw new PliExecutionException(user + " requires a data reference");
+        }
+
+        /** {@code name} が宣言した配列なら、その変数。そうでなければ {@code null}。 */
+        private static Var arrayNamed(String name, Env env) {
+            if (!env.contains(name)) {
+                return null;
+            }
+            Var variable = env.require(name);
+            return variable.dimensions != null ? variable : null;
+        }
+
+        /**
+         * 配列の要素。添字が上下限の外なら止める。実機は SUBSCRIPTRANGE が既定で無効で、外の
+         * 記憶域を黙って読み書きする。近い値を黙って返すより断るほうを採る (COBOL の SSRANGE と同じ)。
+         */
+        private Var element(Var array, List<PliSyntax.Expr> subscripts, Env env) {
+            if (subscripts.size() != array.dimensions.size()) {
+                throw new PliExecutionException(array.name + " has " + array.dimensions.size()
+                        + " dimension(s), but " + subscripts.size() + " subscript(s) were given");
+            }
+            int index = 0;
+            for (int d = 0; d < subscripts.size(); d++) {
+                PliSyntax.Bound bound = array.dimensions.get(d);
+                BigDecimal value = number(value(subscripts.get(d), env));
+                int subscript = value.setScale(0, java.math.RoundingMode.DOWN).intValue();
+                if (subscript < bound.low() || subscript > bound.high()) {
+                    throw new PliExecutionException("SUBSCRIPTRANGE: subscript " + subscript
+                            + " of " + array.name + " is outside " + bound.low() + ":"
+                            + bound.high());
+                }
+                index = index * bound.extent() + (subscript - bound.low());
+            }
+            return array.elements.get(index);
+        }
+
+        /**
+         * 擬似変数 {@code SUBSTR(x, i, n) = 値} (LRM "SUBSTR pseudovariable")。x の i 字目から n 字を、
+         * 値を n 字に切るか空白で埋めたもので置き換える。x の長さは変わらない。
+         */
+        private void substrPseudovariable(PliSyntax.Assign assignment, Env env) {
+            List<PliSyntax.Expr> arguments = assignment.subscripts();
+            if (arguments.size() < 2 || arguments.size() > 3) {
+                throw new PliExecutionException("SUBSTR pseudovariable needs 2 or 3 arguments");
+            }
+            Var target = dataReference(arguments.get(0), env, "SUBSTR");
+            String current = display(target.read(context));
+            int start = number(value(arguments.get(1), env)).intValue();
+            int length = arguments.size() > 2 ? number(value(arguments.get(2), env)).intValue()
+                    : current.length() - start + 1;
+            if (start < 1 || length < 0 || start - 1 + length > current.length()) {
+                throw new PliExecutionException("STRINGRANGE: SUBSTR(" + target.name + ", "
+                        + start + ", " + length + ") is outside the string");
+            }
+            String piece = display(value(assignment.value(), env));
+            piece = piece.length() >= length ? piece.substring(0, length)
+                    : piece + " ".repeat(length - piece.length());
+            target.write(current.substring(0, start - 1) + piece
+                    + current.substring(start - 1 + length), context);
         }
 
         private static String substring(List<Object> arguments) {
@@ -1232,7 +1418,8 @@ public final class PliRuntime {
 
         /** 変数の大きさ。POINTER も 4 byte の値を持つ。 */
         private static int byteLength(PliSyntax.Decl declaration) {
-            return StructureMapping.length(declaration);
+            // 配列は要素の大きさの要素の数倍
+            return StructureMapping.length(declaration) * declaration.count();
         }
 
         private static void copy(DataView source, DataView target, byte pad) {
@@ -1305,6 +1492,10 @@ public final class PliRuntime {
         String unboundOn;
         /** {@code CHAR(n) VARYING} なら真。記憶域の頭の半語が今の長さ、n は {@link #precision}。 */
         boolean varying;
+        /** 配列なら次元ごとの上下限、スカラーなら {@code null}。 */
+        List<PliSyntax.Bound> dimensions;
+        /** 配列の要素。行の順。 */
+        final List<Var> elements = new ArrayList<>();
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
             this(name, type, precision, scale, view, 0);
