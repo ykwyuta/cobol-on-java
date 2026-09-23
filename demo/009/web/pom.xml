@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- 版は処理系と同じ Spring Boot の BOM で決める。処理系の module ではない (全体の build には入れない) -->
+  <parent>
+    <groupId>dev.cobolonjava</groupId>
+    <artifactId>cobol-on-java</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>demo-009-web</artifactId>
+  <name>demo-009-web</name>
+  <description>デモ #009 の Todo アプリを、Spring Boot と Thymeleaf のブラウザ端末で動かす</description>
+
+  <dependencies>
+    <!-- BMS 画面の Thymeleaf 描画と、ブラウザの入口 (/cics/{transid}) -->
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-spring-boot-4-bms-thymeleaf</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!-- CICS task の coordinator、STRICT の会話ストア、デモの簡易認証、Db2 の UOW -->
+    <dependency>
+      <groupId>dev.cobolonjava</groupId>
+      <artifactId>cobol-spring-boot-4-autoconfigure</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-thymeleaf</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- 端末版と同じ BMS の原文を、RECEIVE MAP / SEND MAP の mapset として classpath に載せる -->
+      <resource>
+        <directory>..</directory>
+        <includes>
+          <include>TODOSET.bms</include>
+        </includes>
+      </resource>
+      <!-- run_web が demo/009/bin へ翻訳した TODOAPP の class と配備カタログ。端末版の class は載せない -->
+      <resource>
+        <directory>../bin</directory>
+        <includes>
+          <include>cobol/**</include>
+          <include>META-INF/cobol/**</include>
+        </includes>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring-boot.version}</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
