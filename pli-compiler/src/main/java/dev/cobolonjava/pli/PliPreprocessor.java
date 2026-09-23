@@ -14,8 +14,6 @@ public final class PliPreprocessor {
             "(?im)^\\s*\\*PROCESS\\b[^;]*;\\s*");
     private static final Pattern INCLUDE = Pattern.compile(
             "(?im)%INCLUDE\\s+([A-Z_$#@][A-Z0-9_$#@.-]*)\\s*;");
-    private static final Pattern RULES_ANS = Pattern.compile("\\bRULES\\s*\\([^)]*\\bANS\\b");
-    private static final Pattern LIMITS = Pattern.compile("\\bLIMITS\\s*\\(");
     private final IncludeResolver includes;
 
     public PliPreprocessor(IncludeResolver includes) {
@@ -28,18 +26,24 @@ public final class PliPreprocessor {
 
     public Result process(String fileName, String source) {
         List<Diagnostic> diagnostics = new ArrayList<>();
+        // *PROCESS の算術の指定 (RULES と LIMITS) は、実行時の原文に注記として残し、実行時の
+        // 算術も同じ規則にする (PliOptions)。以前は RULES(ANS) と LIMITS を断っていた (P-183)
         Matcher process = PROCESS.matcher(source);
+        StringBuilder kept = new StringBuilder();
         while (process.find()) {
-            String options = process.group().toUpperCase(Locale.ROOT);
-            // 算術の結果の精度と、数を文字にしたときの幅はこの 2 つで変わる。既定の規則
-            // (RULES(IBM)、LIMITS の既定) しか持たないので、読み飛ばして違う数を出すより断る (P-183)
-            if (RULES_ANS.matcher(options).find() || LIMITS.matcher(options).find()) {
+            String options = process.group().strip();
+            options = options.substring("*PROCESS".length(), options.length() - 1).strip();
+            try {
+                PliOptions.DEFAULT.with(options);
+            } catch (IllegalArgumentException invalid) {
                 diagnostics.add(new Diagnostic(Diagnostic.Severity.ERROR, fileName,
-                        lineOf(source, process.start()), 1,
-                        "*PROCESS RULES(ANS) and LIMITS are not supported yet (P-183)"));
+                        lineOf(source, process.start()), 1, invalid.getMessage()));
             }
+            process.appendReplacement(kept, Matcher.quoteReplacement(
+                    PliOptions.note(options) + "\n"));
         }
-        String current = PROCESS.matcher(source).replaceAll("\n");
+        process.appendTail(kept);
+        String current = kept.toString();
         // 展開後にも include が現れる場合があるため、有限の深さで繰り返す。
         for (int depth = 0; depth < 32; depth++) {
             Matcher matcher = INCLUDE.matcher(current);

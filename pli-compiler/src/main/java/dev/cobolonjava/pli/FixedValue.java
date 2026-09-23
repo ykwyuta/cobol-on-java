@@ -12,9 +12,8 @@ import java.util.Objects;
  * (Enterprise PL/I Language Reference, Chapter 4 "Target: CHARACTER")。素の {@code BigDecimal}
  * で運ぶと、この区別が消える。
  *
- * <p>演算結果の属性は RULES(IBM) の表 (LRM Table 28) に従う。精度の上限は LIMITS の既定
- * ({@code FIXEDBIN(31)}、{@code FIXEDDEC(15)}) である。どちらも翻訳時オプションで変わるが、
- * いまは既定しか持たない (暫定判断 P-183)。
+ * <p>演算結果の属性は {@code RULES(IBM)} なら LRM Table 28、{@code RULES(ANS)} なら Table 26 / 27
+ * に従う。精度の上限は {@code LIMITS} で決まる ({@link Arithmetic})。
  *
  * @param binary    {@code FIXED BINARY} なら真、{@code FIXED DECIMAL} なら偽
  * @param precision 桁数。2 進なら bit 数
@@ -22,10 +21,30 @@ import java.util.Objects;
  */
 record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
 
-    /** LIMITS(FIXEDBIN) の既定。 */
-    static final int MAX_BINARY = 31;
-    /** LIMITS(FIXEDDEC) の既定。 */
-    static final int MAX_DECIMAL = 15;
+    /**
+     * 1 つの式の算術の規則。
+     *
+     * <p>{@code LIMITS(FIXEDDEC(15,31))} は「式に 15 桁を超える被演算子が無ければ 15、あれば 31」
+     * を上限にする (Programming Guide "LIMITS")。以前は 15 と 31 で打ち切っており、
+     * {@code FIXED DEC(20)} どうしの和まで 15 桁に切っていた。
+     *
+     * @param wideDecimal 式のどこかに FIXEDDEC の下の限りを超える 10 進の被演算子があるか
+     * @param wideBinary  式のどこかに FIXEDBIN の下の限りを超える 2 進の被演算子があるか
+     */
+    record Arithmetic(PliOptions options, boolean wideDecimal, boolean wideBinary) {
+
+        static final Arithmetic DEFAULT = new Arithmetic(PliOptions.DEFAULT, false, false);
+
+        int decimalLimit(int p1, int p2) {
+            return wideDecimal || Math.max(p1, p2) > options.decimalLow()
+                    ? options.decimalHigh() : options.decimalLow();
+        }
+
+        int binaryLimit(int p1, int p2) {
+            return wideBinary || Math.max(p1, p2) > options.binaryLow()
+                    ? options.binaryHigh() : options.binaryLow();
+        }
+    }
 
     FixedValue {
         Objects.requireNonNull(value, "value");
@@ -64,46 +83,51 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
         return new FixedValue(value.negate(), binary, precision, scale);
     }
 
-    FixedValue add(FixedValue other) {
-        return additive(other, value.add(other.value));
+    FixedValue add(FixedValue other, Arithmetic arithmetic) {
+        return additive(other, value.add(other.value), arithmetic);
     }
 
-    FixedValue subtract(FixedValue other) {
-        return additive(other, value.subtract(other.value));
+    FixedValue subtract(FixedValue other, Arithmetic arithmetic) {
+        return additive(other, value.subtract(other.value), arithmetic);
     }
 
     /** 加減算: p = 1 + MAX(p1-q1, p2-q2) + q、q = MAX(q1, q2)。 */
-    private FixedValue additive(FixedValue other, BigDecimal result) {
-        FixedValue a = common(other);
-        FixedValue b = other.common(this);
+    private FixedValue additive(FixedValue other, BigDecimal result, Arithmetic arithmetic) {
+        FixedValue[] pair = common(this, other, arithmetic);
+        FixedValue a = pair[0];
+        FixedValue b = pair[1];
         int q = Math.max(a.scale, b.scale);
         int p = 1 + Math.max(a.precision - a.scale, b.precision - b.scale) + q;
-        return a.result(result, p, q);
+        return a.result(result, p, q, b, arithmetic);
     }
 
     /** 乗算: p = 1 + p1 + p2、q = q1 + q2。 */
-    FixedValue multiply(FixedValue other) {
-        FixedValue a = common(other);
-        FixedValue b = other.common(this);
+    FixedValue multiply(FixedValue other, Arithmetic arithmetic) {
+        FixedValue[] pair = common(this, other, arithmetic);
+        FixedValue a = pair[0];
+        FixedValue b = pair[1];
         return a.result(value.multiply(other.value), 1 + a.precision + b.precision,
-                a.scale + b.scale);
+                a.scale + b.scale, b, arithmetic);
     }
 
     /**
-     * 除算: p は上限いっぱい、q = 上限 - p1 + q1 - q2。
+     * 除算: p は上限いっぱい、q = 上限 - p1 + q1 - q2。RULES(ANS) の 2 進どうしは q = 0 である
+     * (LRM Table 26: 位取りの無い 2 進の除算は位取りのある結果を作らない)。
      *
      * <p>FIXED の除算は q 桁で<b>切り捨てる</b>。{@code 7/2} を 2 進の整数どうしで割れば 3 である。
      * 2 進の位取りが 0 でないものは、2 進の小数を 10 進の桁で切ることになり正しく表せないので、
      * 値を切らずに返す (暫定判断 P-183)。
      */
-    FixedValue divide(FixedValue other) {
+    FixedValue divide(FixedValue other, Arithmetic arithmetic) {
         if (other.value.signum() == 0) {
             throw new PliRuntime.PliExecutionException("ZERODIVIDE");
         }
-        FixedValue a = common(other);
-        FixedValue b = other.common(this);
-        int limit = a.binary ? MAX_BINARY : MAX_DECIMAL;
-        int q = limit - a.precision + a.scale - b.scale;
+        FixedValue[] pair = common(this, other, arithmetic);
+        FixedValue a = pair[0];
+        FixedValue b = pair[1];
+        int limit = a.binary ? arithmetic.binaryLimit(a.precision, b.precision)
+                : arithmetic.decimalLimit(a.precision, b.precision);
+        int q = a.binary && arithmetic.options().ans() ? 0 : limit - a.precision + a.scale - b.scale;
         int decimalScale = a.binary ? (q == 0 ? 0 : Integer.MIN_VALUE) : q;
         BigDecimal quotient = decimalScale == Integer.MIN_VALUE
                 ? value.divide(other.value, java.math.MathContext.DECIMAL128)
@@ -112,19 +136,50 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
     }
 
     /**
-     * 相手が 2 進なら、10 進の側を同じ値の 2 進へ移した属性にする (RULES(IBM))。
+     * 2 つの被演算子を同じ基数にそろえる。
+     *
+     * <p>RULES(IBM) では、どちらかが 2 進なら 10 進の側を 2 進へ移す。
      * {@code FIXED DEC(p,q)} は {@code FIXED BIN(1+CEIL(p*3.32), CEIL(ABS(q*3.32))*SIGN(q))} になる。
+     *
+     * <p>RULES(ANS) では、位取りのある 10 進と 2 進なら 2 進の側を 10 進へ移す
+     * ({@code FIXED BIN(p)} は {@code FIXED DEC(CEIL(p/3.32))}、LRM Table 27)。位取りの無い
+     * 10 進と 2 進は IBM と同じく 2 進にする (Table 26)。位取りのある 2 進は ANS では許されない。
      */
-    private FixedValue common(FixedValue other) {
-        if (binary || !other.binary) {
+    private static FixedValue[] common(FixedValue a, FixedValue b, Arithmetic arithmetic) {
+        if (arithmetic.options().ans() && ((a.binary && a.scale != 0) || (b.binary && b.scale != 0))) {
+            throw new PliRuntime.PliExecutionException(
+                    "scaled FIXED BINARY is not allowed under RULES(ANS)");
+        }
+        if (a.binary == b.binary) {
+            return new FixedValue[] {a, b};
+        }
+        FixedValue decimal = a.binary ? b : a;
+        if (arithmetic.options().ans() && decimal.scale != 0) {
+            return new FixedValue[] {a.toDecimal(), b.toDecimal()};
+        }
+        return new FixedValue[] {a.toBinary(), b.toBinary()};
+    }
+
+    private FixedValue toBinary() {
+        if (binary) {
             return this;
         }
         return new FixedValue(value, true, 1 + ceilTimes332(precision),
                 Integer.signum(scale) * ceilTimes332(Math.abs(scale)));
     }
 
-    private FixedValue result(BigDecimal result, int p, int q) {
-        return new FixedValue(result, binary, Math.min(p, binary ? MAX_BINARY : MAX_DECIMAL), q);
+    private FixedValue toDecimal() {
+        if (!binary) {
+            return this;
+        }
+        return new FixedValue(value, false, ceilDividedBy332(precision), 0);
+    }
+
+    private FixedValue result(BigDecimal result, int p, int q, FixedValue other,
+                              Arithmetic arithmetic) {
+        int limit = binary ? arithmetic.binaryLimit(precision, other.precision)
+                : arithmetic.decimalLimit(precision, other.precision);
+        return new FixedValue(result, binary, Math.min(p, limit), q);
     }
 
     /**

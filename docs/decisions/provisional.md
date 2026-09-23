@@ -5651,7 +5651,9 @@ PL/I のプログラムを `EXEC PGM=` で呼べないのはこの暫定とは�
 - 算術値は `FixedValue` として<b>属性ごと</b>運ぶ。文字にする規則は "Target: CHARACTER" のとおりで、
   `FIXED BIN(p)` は 10 進の精度 `1+CEIL(p/3.32)` へ移し、幅 `p+3` の欄に右寄せする。
   `PUT LIST`・`||`・`CHAR`・文字の変数への代入が同じ規則を使う
-- 演算結果の属性は RULES(IBM) の表 (LRM Table 28)。精度の上限は `FIXEDBIN(31)`、`FIXEDDEC(15)`。
+- 演算結果の属性は RULES(IBM) の表 (LRM Table 28)、`*PROCESS RULES(ANS)` なら Table 26 / 27。
+  精度の上限は `LIMITS` の既定 `FIXEDDEC(15,31) FIXEDBIN(31,63)` で、式に下の限りを超える被演算子が
+  あれば上の限りになる (Programming Guide "LIMITS")。`*PROCESS LIMITS(...)` で変えられる。
   整数の 2 進どうしの除算は切り捨てる
 - SYSPRINT は PRINT ファイルとして、LINESIZE 120、PAGESIZE 60、tab 位置 25 / 49 / 73 / 97 / 121
   (PLITABS の既定)。`SKIP` は書く<b>前</b>に改行する。行幅を超えた文字は次の行へ送る
@@ -5660,8 +5662,8 @@ PL/I のプログラムを `EXEC PGM=` で呼べないのはこの暫定とは�
 - `EDIT` の書式は `A`、`A(w)`、`X(w)`、`F(w)`、`F(w,d)`。`PUT STRING` は `EDIT` だけ
 
 **断るもの**: `PUT LINE(n)`、`PUT SKIP(0)`、SYSPRINT 以外の `FILE`、上記以外の書式項目
-(`E`、`P`、`COLUMN`、反復の係数など)、`PUT STRING ... LIST`、`*PROCESS RULES(ANS)` と
-`*PROCESS LIMITS(...)` (精度と幅が変わる)。属性の分からない算術値 (文字から作った数) を
+(`E`、`P`、`COLUMN`、反復の係数など)、`PUT STRING ... LIST`、許されない `LIMITS`
+(`FIXEDDEC(31,15)` など)。属性の分からない算術値 (文字から作った数) を
 出力しようとしたら実行時に止める。
 
 **実機と突き合わせていないこと**:
@@ -5678,9 +5680,13 @@ PL/I のプログラムを `EXEC PGM=` で呼べないのはこの暫定とは�
   資産の作り手が 132 桁の印字を意図していたなら、実機でも同じように分かれているはずである
 - 位取りのある 2 進 (`FIXED BIN(p,q)`、q ≠ 0) の除算は、2 進の小数を 10 進で切れないので値を切らない
 
+**`*PROCESS` の扱いの解消 (2026-09-23)**: `*PROCESS` を前処理で外すとき、実行時の原文に注記として
+残し、実行時の算術 (`FixedValue.Arithmetic`) が同じ `RULES` と `LIMITS` を使うようにした (`PliOptions`)。
+あわせて、既定の `LIMITS` を 15 / 31 で打ち切っていた誤りを直した。`FIXED DEC(20)` どうしの和まで
+15 桁に切っていた。「式に広い被演算子があるか」は式の頭で葉の精度を見て決める。
+
 **解消条件**: IBM Enterprise PL/I で上の各形を流した SYSPRINT を採り、PL/I の外部コーパス
-(設計 26) の `.out` として照合する。`*PROCESS` の翻訳時オプションを読むようになったら、
-RULES と LIMITS を `FixedValue` の規則へ渡す。
+(設計 26) の `.out` として照合する。
 
 ---
 

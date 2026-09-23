@@ -46,7 +46,8 @@ public final class PliRuntime {
         if (!parsed.succeeded()) {
             throw new PliExecutionException(parsed.diagnostics().get(0).toString());
         }
-        new Executor(parsed.program(), context, arguments, loader).run();
+        new Executor(parsed.program(), context, arguments, loader,
+                PliOptions.fromSource(source)).run();
     }
 
     /** PL/I の入口引数は参照渡しであり、BASED 宣言が実際の範囲を決める。 */
@@ -86,10 +87,15 @@ public final class PliRuntime {
         private final Env globals;
         private final Map<String, CursorDefinition> cursors = new HashMap<>();
         private final PrintFile sysprint;
+        /** *PROCESS の RULES と LIMITS。翻訳時に原文へ残した注記から読む。 */
+        private final PliOptions options;
+        /** 評価中の式の算術の規則。式の頭で決め、式の中では変えない。 */
+        private FixedValue.Arithmetic arithmetic;
         private int sqlSequence;
 
         Executor(PliSyntax.Program program, ProgramContext context, DataView[] arguments,
-                 ClassLoader loader) {
+                 ClassLoader loader, PliOptions options) {
+            this.options = options;
             this.program = program;
             this.context = context;
             this.loader = loader;
@@ -664,7 +670,59 @@ public final class PliRuntime {
             }
         }
 
+        /**
+         * 式を評価する。式の頭では、式のどこかに LIMITS の下の限りを超える被演算子があるかを
+         * 先に調べ、式の中の演算の精度の上限を決める (Programming Guide "LIMITS")。
+         */
         private Object value(PliSyntax.Expr expression, Env env) {
+            if (arithmetic != null || expression instanceof PliSyntax.Literal
+                    || expression instanceof PliSyntax.Reference) {
+                return evaluate(expression, env);
+            }
+            boolean[] wide = new boolean[2];
+            scan(expression, env, wide);
+            arithmetic = new FixedValue.Arithmetic(options, wide[0], wide[1]);
+            try {
+                return evaluate(expression, env);
+            } finally {
+                arithmetic = null;
+            }
+        }
+
+        /** 式の葉の精度を見る。wide[0] は 10 進、wide[1] は 2 進。 */
+        private void scan(PliSyntax.Expr expression, Env env, boolean[] wide) {
+            switch (expression) {
+                case PliSyntax.Literal literal -> {
+                    if (literal.value() instanceof FixedValue fixed && !fixed.binary()
+                            && fixed.precision() > options.decimalLow()) {
+                        wide[0] = true;
+                    }
+                }
+                case PliSyntax.Reference reference -> {
+                    Var variable = env.contains(reference.name())
+                            ? env.require(reference.name()) : null;
+                    if (variable == null) return;
+                    if ((variable.type == PliSyntax.Type.DECIMAL
+                            || variable.type == PliSyntax.Type.PICTURE)
+                            && variable.precision > options.decimalLow()) {
+                        wide[0] = true;
+                    }
+                    if (variable.type == PliSyntax.Type.BINARY
+                            && variable.precision > options.binaryLow()) {
+                        wide[1] = true;
+                    }
+                }
+                case PliSyntax.Unary unary -> scan(unary.operand(), env, wide);
+                case PliSyntax.Binary binary -> {
+                    scan(binary.left(), env, wide);
+                    scan(binary.right(), env, wide);
+                }
+                case PliSyntax.Function function ->
+                        function.arguments().forEach(argument -> scan(argument, env, wide));
+            }
+        }
+
+        private Object evaluate(PliSyntax.Expr expression, Env env) {
             if (expression instanceof PliSyntax.Literal literal) {
                 return literal.value();
             }
@@ -691,7 +749,9 @@ public final class PliRuntime {
                     case "|" -> truth(left) || truth(right);
                     case "&" -> truth(left) && truth(right);
                     case "||" -> display(left) + display(right);
-                    case "+", "-", "*", "/" -> arithmetic(binary.operator(), left, right);
+                    case "+", "-", "*", "/" -> arithmetic(binary.operator(), left, right,
+                            arithmetic == null ? new FixedValue.Arithmetic(options, false, false)
+                                    : arithmetic);
                     case "=" -> compare(left, right) == 0;
                     case "^=", "¬=" -> compare(left, right) != 0;
                     case "<" -> compare(left, right) < 0;
@@ -729,15 +789,16 @@ public final class PliRuntime {
          * 文字列など属性を持たない値が混ざれば、属性の無い値を返す。そうした値は出力できない
          * ({@link #character})。文字から算術への変換の属性はまだ持たない (P-183)。
          */
-        private static Object arithmetic(String operator, Object left, Object right) {
+        private static Object arithmetic(String operator, Object left, Object right,
+                                         FixedValue.Arithmetic rules) {
             if (left instanceof NumericPicture picture) left = picture.fixed();
             if (right instanceof NumericPicture picture) right = picture.fixed();
             if (left instanceof FixedValue a && right instanceof FixedValue b) {
                 return switch (operator) {
-                    case "+" -> a.add(b);
-                    case "-" -> a.subtract(b);
-                    case "*" -> a.multiply(b);
-                    default -> a.divide(b);
+                    case "+" -> a.add(b, rules);
+                    case "-" -> a.subtract(b, rules);
+                    case "*" -> a.multiply(b, rules);
+                    default -> a.divide(b, rules);
                 };
             }
             BigDecimal a = number(left);

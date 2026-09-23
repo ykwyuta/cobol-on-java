@@ -271,17 +271,74 @@ class PutStatementTest {
     }
 
     @Test
-    @DisplayName("算術の規則を変える *PROCESS RULES(ANS) と LIMITS は断る")
-    void processOptionsThatChangeArithmeticAreRefused() {
-        PliCompiler.Result result = PliCompiler.standard().compile("ANS.pli", """
-                *PROCESS RULES(ANS);
-                ANS: PROCEDURE OPTIONS(MAIN);
-                  PUT SKIP LIST(1);
-                END ANS;
-                """);
+    @DisplayName("LIMITS の既定は FIXEDDEC(15,31)。式に 15 桁を超える被演算子があれば上限は 31")
+    void wideOperandsRaiseTheDecimalLimit() throws Exception {
+        // DEC(20) + DEC(20) は DEC(21)、幅 24。以前は 15 桁で打ち切っていた (幅 18)
+        assertEquals(String.format("%24s", "2") + "\n", run("""
+                DCL A FIXED DEC(20) INIT(1);
+                PUT SKIP LIST(A + A);
+                """));
+    }
 
+    @Test
+    @DisplayName("*PROCESS LIMITS(FIXEDDEC(15)) なら、広い被演算子があっても上限は 15")
+    void limitsFixesTheDecimalLimit() throws Exception {
+        assertEquals(String.format("%18s", "2") + "\n", runWith("LIMITS(FIXEDDEC(15))", """
+                DCL A FIXED DEC(20) INIT(1);
+                PUT SKIP LIST(A + A);
+                """));
+    }
+
+    @Test
+    @DisplayName("RULES(IBM) の BIN(15)/BIN(15) は BIN(31,16)、RULES(ANS) は BIN(31,0) で切り捨てる")
+    void rulesDecideTheScaleOfBinaryDivision() throws Exception {
+        String program = """
+                DCL A FIXED BIN(15) INIT(7);
+                DCL B FIXED BIN(15) INIT(2);
+                PUT SKIP LIST(A / B);
+                """;
+        assertEquals(String.format("%14s", "3.50000") + "\n", run(program));
+        assertEquals(String.format("%14s", "3") + "\n", runWith("RULES(ANS)", program));
+    }
+
+    @Test
+    @DisplayName("RULES(ANS) は位取りのある 10 進と 2 進を 10 進で計算する。IBM は 2 進で計算する")
+    void rulesDecideTheBaseOfMixedArithmetic() throws Exception {
+        String program = """
+                DCL D FIXED DEC(5,2) INIT(1.25);
+                DCL B FIXED BIN(15) INIT(2);
+                PUT SKIP LIST(D + B);
+                """;
+        // IBM: DEC(5,2) は BIN(18,7)、和は BIN(23,7)、文字にすると (8,3)
+        assertEquals(String.format("%11s", "3.250") + "\n", run(program));
+        // ANS: BIN(15) は DEC(5)、和は DEC(8,2)
+        assertEquals(String.format("%11s", "3.25") + "\n", runWith("RULES(ANS)", program));
+    }
+
+    @Test
+    @DisplayName("許されない LIMITS (FIXEDDEC(31,15)) は翻訳で断る")
+    void invalidLimitsAreRefused() {
+        PliCompiler.Result result = PliCompiler.standard().compile("L.pli", """
+                *PROCESS LIMITS(FIXEDDEC(31,15));
+                L: PROCEDURE OPTIONS(MAIN);
+                END L;
+                """);
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().toString().contains("P-183"));
+        assertTrue(result.diagnostics().toString().contains("FIXEDDEC(31,15)"));
+    }
+
+    /** *PROCESS を付けて動かす。 */
+    private static String runWith(String process, String body) throws Exception {
+        PliCompiler.Result result = PliCompiler.standard().compile("PUTS.pli",
+                "*PROCESS " + process + ";\nPUTS: PROCEDURE OPTIONS(MAIN);\n" + body
+                        + "\nEND PUTS;\n");
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        CobolProgram program = (CobolProgram) new GeneratedLoader()
+                .define(result.className(), result.classFile())
+                .getDeclaredConstructor().newInstance();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        program.runFresh(ProgramContext.capturing(output));
+        return output.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "\n");
     }
 
     @Test
