@@ -68,6 +68,8 @@ public final class ProcedureBuilder {
                              SpecialNames specialNames, Map<String, FileDescription> files,
                              List<ReportDescription> reports) {
         this.resolver = new ReferenceResolver(layout, diagnostics);
+        this.resolver.expressions(context -> expressionOf(context,
+                ReferenceResolver.originOf(context)));
         this.layout = layout;
         this.diagnostics = diagnostics;
         this.specialNames = specialNames;

@@ -6739,16 +6739,13 @@ public final class ProgramGenerator {
         if (reference.refMod().leftmost() instanceof DataReference.Subscript.Constant) {
             return () -> { };
         }
-        DataReference.Subscript.Variable given =
-                (DataReference.Subscript.Variable) reference.refMod().leftmost();
-        Runnable push = planSourceDecimal(new Operand.Reference(given.reference()), origin);
+        // データ名 (と相対指定) でも算術式でも、値を int として積む道は同じである
+        Runnable push = planSubscriptValue(reference.refMod().leftmost(), origin);
         if (push == null) {
             return null;
         }
         return () -> {
             push.run();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt", "(" + DECIMAL + ")I", false);
-            addOffset(given.offset());
             emitRefModCheck(reference, origin);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitInsn(Opcodes.ISUB);
@@ -6828,6 +6825,19 @@ public final class ProgramGenerator {
     private Runnable planSubscriptValue(DataReference.Subscript subscript, Origin origin) {
         if (subscript instanceof DataReference.Subscript.Constant value) {
             return () -> push(value.value());
+        }
+        if (subscript instanceof DataReference.Subscript.Computed computed) {
+            // 部分参照の算術式。COMPUTE と同じ規則で評価し、整数部を位置にする
+            Runnable value = planExpression(computed.expression(),
+                    IntermediateDigits.of(computed.expression(), List.of()), origin);
+            if (value == null) {
+                return null;
+            }
+            return () -> {
+                value.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "toInt",
+                        "(" + DECIMAL + ")I", false);
+            };
         }
         if (!(subscript instanceof DataReference.Subscript.Variable given)) {
             report(origin, "ALL may not be written as a reference modification");

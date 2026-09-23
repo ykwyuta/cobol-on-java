@@ -48,6 +48,13 @@ public record DataReference(DataItem item, List<Subscript> subscripts, RefMod re
          */
         record All() implements Subscript {
         }
+
+        /**
+         * 算術式で書いた部分参照の開始位置か長さ ({@code X (W-I * 2 - 1: 1)})。値は実行時に
+         * 式を評価して決まる。添字には書けない (規格が添字に許すのは定数・データ名・相対指定だけ)。
+         */
+        record Computed(Expression expression) implements Subscript {
+        }
     }
 
     /**

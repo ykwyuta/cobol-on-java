@@ -127,6 +127,55 @@ class LinageGenerationTest {
                         "    MOVE LINAGE-COUNTER TO WS-N DISPLAY WS-N.")));
     }
 
+    /**
+     * LINAGE-COUNTER はファイル名で修飾できる (85 規格 VI-2.4.4)。以前は親の項目を探して
+     * 「PRINT-FILE に含まれる LINAGE-COUNTER は無い」と断っていた (z/OS probe の CBLPRNT)。
+     */
+    @Test
+    @DisplayName("LINAGE-COUNTER OF ファイル名 と書ける (FR-113)")
+    void theCounterMayBeQualifiedByTheFile() {
+        assertEquals("0001|", run(directory,
+                program(PAGE_OF_FIVE,
+                        "    MOVE LINAGE-COUNTER OF PRINT-FILE TO WS-N DISPLAY WS-N.")));
+    }
+
+    @Test
+    @DisplayName("LINAGE のファイルが 2 つあれば、修飾すれば書け、修飾しなければあいまいである")
+    void twoLinageFilesNeedQualification() {
+        StringBuilder sb = new StringBuilder();
+        for (String line : List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. TWO.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT F1 ASSIGN TO DD1.",
+                "    SELECT F2 ASSIGN TO DD2.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  F1 LINAGE IS 5 LINES.",
+                "01  R1 PIC X(4).",
+                "FD  F2 LINAGE IS 7 LINES.",
+                "01  R2 PIC X(4).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-N  PIC 9(4).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    OPEN OUTPUT F1 F2",
+                "    WRITE R1 AFTER ADVANCING 3 LINES",
+                "    MOVE LINAGE-COUNTER OF F1 TO WS-N DISPLAY WS-N",
+                "    MOVE LINAGE-COUNTER OF F2 TO WS-N DISPLAY WS-N",
+                "    CLOSE F1 F2",
+                "    STOP RUN.")) {
+            FixedFormatSource.append(sb, line);
+        }
+        assertEquals("0003|0001|", run(directory, sb.toString()));
+        CobolCompiler.Result ambiguous = CobolCompiler.standard().compile(FILE,
+                sb.toString().replace("LINAGE-COUNTER OF F2", "LINAGE-COUNTER"));
+        assertTrue(ambiguous.diagnostics().toString().contains("ambiguous"),
+                () -> ambiguous.diagnostics().toString());
+    }
+
     @Test
     @DisplayName("開いた直後の 1 は「頁を送った直後」とは違う (FR-113)")
     void theInitialOneDoesNotCountAsALineAlreadyPlaced() {

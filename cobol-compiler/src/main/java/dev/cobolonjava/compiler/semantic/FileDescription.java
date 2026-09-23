@@ -484,7 +484,9 @@ public record FileDescription(String name, String ddName, Organization organizat
                 bottom = value;
             }
         }
-        DataReference counter = resolver.resolveName(LINAGE_COUNTER, one.origin());
+        // ファイルで修飾して引く。LINAGE のファイルが 2 つ以上あると、修飾しない名はあいまいである
+        DataReference counter = resolver.resolveName(LINAGE_COUNTER + " OF " + one.name(),
+                one.origin());
         Linage.Slot pageSlot = slotOf(resolver, one, "LNG-PAGE$", page, diagnostics);
         Linage.Slot footingSlot = slotOf(resolver, one, "LNG-FOOT$", footing, diagnostics);
         Linage.Slot topSlot = slotOf(resolver, one, "LNG-TOP$", top, diagnostics);

@@ -437,6 +437,20 @@ public final class DataItem {
         this.fileName = value;
     }
 
+    /**
+     * {@code LINAGE-COUNTER} なら、それを持つファイルの名前。{@code LINAGE-COUNTER OF ファイル名} の
+     * 修飾はデータ項目の親子ではなく、この名前で合わせる (85 規格 VI-2.4.4)。
+     */
+    private String linageFile;
+
+    public String linageFile() {
+        return linageFile;
+    }
+
+    void setLinageFile(String value) {
+        this.linageFile = value;
+    }
+
     void setBase(int value) {
         this.base = value;
     }

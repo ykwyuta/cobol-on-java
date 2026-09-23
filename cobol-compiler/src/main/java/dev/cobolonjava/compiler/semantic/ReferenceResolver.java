@@ -29,6 +29,17 @@ public final class ReferenceResolver {
 
     private final DataLayout layout;
     private final List<Diagnostic> diagnostics;
+    /**
+     * 部分参照の算術式を解く道。式の解決 (関数や一意名を含む) は手続き部の組み立てが持つので、
+     * そちらから差し込む。{@code null} なら式の部分参照は書けない。
+     */
+    private java.util.function.Function<CobolParser.ExpressionContext, Expression> expressions;
+
+    /** 部分参照の算術式を解く道を差し込む。 */
+    void expressions(
+            java.util.function.Function<CobolParser.ExpressionContext, Expression> resolver) {
+        this.expressions = resolver;
+    }
 
     public ReferenceResolver(DataLayout layout, List<Diagnostic> diagnostics) {
         this.layout = layout;
@@ -288,6 +299,12 @@ public final class ReferenceResolver {
 
     /** 修飾子が、外へ向かう順に祖先として現れるか。途中のレベルは飛ばしてよい。 */
     private static boolean qualifiersMatch(DataItem item, List<String> qualifiers) {
+        if (item.linageFile() != null && !qualifiers.isEmpty()) {
+            // LINAGE-COUNTER はファイル名で修飾する。以前は親の項目を探して見つからず、
+            // 「LINF に含まれる LINAGE-COUNTER が無い」と断っていた。LINAGE のファイルが 2 つ
+            // あると、修飾しなければあいまい、修飾すれば無い、でどちらも書けなかった
+            return qualifiers.size() == 1 && qualifiers.get(0).equals(item.linageFile());
+        }
         DataItem current = item.parent();
         for (String qualifier : qualifiers) {
             while (current != null && !qualifier.equals(current.name())) {
@@ -393,18 +410,33 @@ public final class ReferenceResolver {
 
     private DataReference.RefMod resolveRefMod(CobolParser.ReferenceModifierContext context,
                                                Origin origin) {
-        DataReference.Subscript leftmost = resolveSubscript(context.subscript(0), origin);
+        DataReference.Subscript leftmost = resolvePosition(context.refModPosition(0), origin);
         if (leftmost == null) {
             return null;
         }
         DataReference.Subscript length = null;
-        if (context.subscript().size() > 1) {
-            length = resolveSubscript(context.subscript(1), origin);
+        if (context.refModPosition().size() > 1) {
+            length = resolvePosition(context.refModPosition(1), origin);
             if (length == null) {
                 return null;
             }
         }
         return new DataReference.RefMod(leftmost, length);
+    }
+
+    /** 部分参照の開始位置か長さ。添字の形で読めたものはそのまま、ほかは算術式である。 */
+    private DataReference.Subscript resolvePosition(CobolParser.RefModPositionContext context,
+                                                    Origin origin) {
+        if (context.subscript() != null) {
+            return resolveSubscript(context.subscript(), origin);
+        }
+        if (expressions == null) {
+            report(origin, "an arithmetic expression may not be written as a reference"
+                    + " modification here");
+            return null;
+        }
+        Expression expression = expressions.apply(context.expression());
+        return expression == null ? null : new DataReference.Subscript.Computed(expression);
     }
 
     /** 部分参照が項目の外へはみ出していないか。定数で書かれているときだけ判定できる。 */
