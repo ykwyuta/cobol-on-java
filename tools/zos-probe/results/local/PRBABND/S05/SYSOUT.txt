@@ -1,6 +1,6 @@
 PRB B.05.BEFORE  ||
 Exception in thread "main" dev.cobolonjava.runtime.program.RangeCheckException: subscript 5 is outside 1..3 for W-ELT
-	at dev.cobolonjava.runtime.program.Ops.checkSubscript(Ops.java:1678)
+	at dev.cobolonjava.runtime.program.Ops.checkSubscript(Ops.java:1693)
 	at cobol.generated.CBLABND.paragraph$0(CBLABND.cbl:76)
 	at cobol.generated.CBLABND.dispatch(CBLABND.cbl)
 	at cobol.generated.CBLABND.performRange(CBLABND.cbl)

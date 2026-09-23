@@ -1,8 +1,8 @@
 PRB B.03.BEFORE  ||
 Exception in thread "main" dev.cobolonjava.runtime.decimal.DataException: invalid sign nibble 0x9 in packed decimal field
 	at dev.cobolonjava.runtime.data.PackedDecimal.decode(PackedDecimal.java:88)
-	at dev.cobolonjava.runtime.item.NumericItem.decode(NumericItem.java:155)
-	at dev.cobolonjava.runtime.item.NumericItem.load(NumericItem.java:172)
+	at dev.cobolonjava.runtime.item.NumericItem.decode(NumericItem.java:159)
+	at dev.cobolonjava.runtime.item.NumericItem.load(NumericItem.java:176)
 	at dev.cobolonjava.runtime.program.Ops.readNumeric(Ops.java:122)
 	at cobol.generated.CBLABND.paragraph$0(CBLABND.cbl:66)
 	at cobol.generated.CBLABND.dispatch(CBLABND.cbl)

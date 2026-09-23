@@ -1,23 +1,11 @@
 PRB H.31.BEFORE  ||
-Exception in thread "main" dev.cobolonjava.runtime.program.ProgramNotFoundException: cannot find the called program: ASMDC2
-	at dev.cobolonjava.runtime.interop.LegacyClassNameResolver.resolve(LegacyClassNameResolver.java:22)
-	at dev.cobolonjava.runtime.program.ProgramContext.resolve(ProgramContext.java:736)
-	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1505)
-	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1524)
-	at cobol.generated.CBLASMD.paragraph$0(CBLASMD.cbl:44)
-	at cobol.generated.CBLASMD.dispatch(CBLASMD.cbl)
-	at cobol.generated.CBLASMD.performRange(CBLASMD.cbl)
-	at cobol.generated.CBLASMD.run(CBLASMD.cbl)
-	at dev.cobolonjava.runtime.program.CobolProgram.runFresh(CobolProgram.java:52)
-	at dev.cobolonjava.runtime.program.CobolProgram.runMain(CobolProgram.java:158)
-	at cobol.generated.CBLASMD.main(CBLASMD.cbl)
-Caused by: java.lang.ClassNotFoundException: cobol.generated.ASMDC2
-	at java.base/jdk.internal.loader.BuiltinClassLoader.loadClass(BuiltinClassLoader.java:641)
-	at java.base/jdk.internal.loader.ClassLoaders$AppClassLoader.loadClass(ClassLoaders.java:188)
-	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:526)
-	at java.base/java.lang.Class.forName0(Native Method)
-	at java.base/java.lang.Class.forName(Class.java:534)
-	at java.base/java.lang.Class.forName(Class.java:513)
-	at dev.cobolonjava.runtime.interop.LegacyClassNameResolver.resolve(LegacyClassNameResolver.java:19)
-	... 10 more
-RC=1
+PRB H.31.RC  |0000|
+PRB H.31.1 1F0000000000000000000000000000004019999AC019999A41100000386DF37F ||
+PRB H.31.2 401999999999999A40555555555555554019999999999999329999999999999A ||
+PRB H.31.3 4019999A3DCCCCCD3FB999999999999A22400001000000002234000000000001 ||
+PRB H.31.4 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.31.5 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.31.6 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.31.7 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.31.8 0000000000000000000000000000000000000000000000000000000000000000 ||
+RC=0

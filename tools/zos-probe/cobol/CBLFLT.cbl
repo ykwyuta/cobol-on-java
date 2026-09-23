@@ -52,8 +52,9 @@
            MOVE "L.P127.S1TOF" TO PRB-CASE
            MOVE G-F TO PRB-IN MOVE 18 TO PRB-LEN PERFORM PRB-EMIT
       * 2/3 is moved from a decimal literal: this implementation
-      * refuses COMPUTE division on floating point (P-127).
-           MOVE 0.666666666666666667 TO W-D2
+      * refuses COMPUTE division on floating point (P-127). 17
+      * decimals: ARITH(COMPAT) allows 18 digits in a literal.
+           MOVE 0.66666666666666667 TO W-D2
            MOVE W-D2 TO W-F5
            MOVE "L.P127.TWO3" TO PRB-CASE
            MOVE G-F5 TO PRB-IN MOVE 6 TO PRB-LEN PERFORM PRB-EMIT

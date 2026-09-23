@@ -75,9 +75,9 @@ S21 LINE                       50
 S23 LAST BUT ONE
 S12
 Exception in thread "main" dev.cobolonjava.pli.PliRuntime$PliExecutionException: SIZE: 12345.678 does not fit in F(5,1)
-	at dev.cobolonjava.pli.PliRuntime$Executor.fixedField(PliRuntime.java:821)
-	at dev.cobolonjava.pli.PliRuntime$Executor.edit(PliRuntime.java:796)
-	at dev.cobolonjava.pli.PliRuntime$Executor.put(PliRuntime.java:668)
+	at dev.cobolonjava.pli.PliRuntime$Executor.fixedField(PliRuntime.java:881)
+	at dev.cobolonjava.pli.PliRuntime$Executor.edit(PliRuntime.java:856)
+	at dev.cobolonjava.pli.PliRuntime$Executor.put(PliRuntime.java:728)
 	at dev.cobolonjava.pli.PliRuntime$Executor.execute(PliRuntime.java:283)
 	at dev.cobolonjava.pli.PliRuntime$Executor.execute(PliRuntime.java:264)
 	at dev.cobolonjava.pli.PliRuntime$Executor.run(PliRuntime.java:246)

@@ -1,9 +1,10 @@
 PRB H.21.BEFORE  ||
-Exception in thread "main" dev.cobolonjava.runtime.program.ProgramNotFoundException: cannot find the called program: ASMPM
-	at dev.cobolonjava.runtime.interop.LegacyClassNameResolver.resolve(LegacyClassNameResolver.java:22)
-	at dev.cobolonjava.runtime.program.ProgramContext.resolve(ProgramContext.java:736)
-	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1505)
+Exception in thread "main" dev.cobolonjava.hlasm.HlasmRuntime$HlasmExecutionException: ASMPM: S0C8 fixed-point overflow at 00010036
+	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:83)
+	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:41)
+	at cobol.generated.ASMPM.run(Unknown Source)
 	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1524)
+	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1539)
 	at cobol.generated.CBLASMD.paragraph$0(CBLASMD.cbl:44)
 	at cobol.generated.CBLASMD.dispatch(CBLASMD.cbl)
 	at cobol.generated.CBLASMD.performRange(CBLASMD.cbl)
@@ -11,13 +12,12 @@ Exception in thread "main" dev.cobolonjava.runtime.program.ProgramNotFoundExcept
 	at dev.cobolonjava.runtime.program.CobolProgram.runFresh(CobolProgram.java:52)
 	at dev.cobolonjava.runtime.program.CobolProgram.runMain(CobolProgram.java:158)
 	at cobol.generated.CBLASMD.main(CBLASMD.cbl)
-Caused by: java.lang.ClassNotFoundException: cobol.generated.ASMPM
-	at java.base/jdk.internal.loader.BuiltinClassLoader.loadClass(BuiltinClassLoader.java:641)
-	at java.base/jdk.internal.loader.ClassLoaders$AppClassLoader.loadClass(ClassLoaders.java:188)
-	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:526)
-	at java.base/java.lang.Class.forName0(Native Method)
-	at java.base/java.lang.Class.forName(Class.java:534)
-	at java.base/java.lang.Class.forName(Class.java:513)
-	at dev.cobolonjava.runtime.interop.LegacyClassNameResolver.resolve(LegacyClassNameResolver.java:19)
-	... 10 more
+Caused by: dev.cobolonjava.hlasm.MachineException: S0C8 fixed-point overflow at 00010036
+	at dev.cobolonjava.hlasm.Cpu.fixedOverflow(Cpu.java:442)
+	at dev.cobolonjava.hlasm.Cpu.add(Cpu.java:429)
+	at dev.cobolonjava.hlasm.Cpu.perform(Cpu.java:230)
+	at dev.cobolonjava.hlasm.Cpu.step(Cpu.java:123)
+	at dev.cobolonjava.hlasm.Cpu.run(Cpu.java:108)
+	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:79)
+	... 11 more
 RC=1

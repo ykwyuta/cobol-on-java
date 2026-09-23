@@ -228,8 +228,10 @@ java tools/zos-probe/ProbeTool.java prb tools/zos-probe/results/zos/PRBRUNC tool
 | `ZOS-ONLY` | ローカルが出していない | ローカルが翻訳で断ったか、途中で止まった。`compile.txt` とローカルの `SYSOUT.txt` の末尾を見る |
 | `LOCAL-ONLY` | 実機が出していない | 実機が異常終了したか、翻訳できなかった。JES のメッセージを見る |
 
-**変種のステップ (`NUMP`、`FUNE`、`PRNTN` など) の `DIFF` は、この処理系がそのオプションを
-読んでいない証拠である** (P-023)。ローカルは変種でも同じクラスを流している。
+**変種のステップ (`NUMP`、`PRNTN` など) の `DIFF` は、この処理系がそのオプションを
+読んでいない証拠である** (P-023)。ローカルは変種でも同じクラスを流している。ただし `SSRANGE` と
+`ARITH(EXTEND)` はこの処理系でも効くので、そのオプションで翻訳し直して流す (`FUNE`、`FUNX`、`BIN31`、
+`Snn`)。これらの `DIFF` は「効かせたうえでの値の違い」である。
 
 ### 6.2 印字の観測
 

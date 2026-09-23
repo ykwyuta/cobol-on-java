@@ -553,6 +553,27 @@ class SortUtilityTest {
     // ---- 報告書にする ----
 
     @Test
+    @DisplayName("OUTFIL があっても、SORTOUT の DD があれば OUTFIL でない出力として書く (P-047)")
+    void sortoutIsWrittenBesideOutfil() {
+        write("IN.DAT", "B2A1", 2);
+
+        JobRunner.Result result = run(
+                "//J        JOB  (ACCT)",
+                "//STEP1    EXEC PGM=SORT",
+                "//SORTIN   DD   DSN=IN.DAT,DISP=SHR",
+                "//SORTOUT  DD   DSN=OUT.DAT,DISP=(NEW,CATLG)",
+                "//RPT      DD   DSN=RPT.DAT,DISP=(NEW,CATLG)",
+                "//SYSOUT   DD   SYSOUT=*",
+                "//SYSIN    DD   *",
+                "  SORT FIELDS=(1,2,CH,A)",
+                "  OUTFIL FNAMES=RPT,HEADER1=(C'H')");
+
+        assertEquals(0, result.returnCode(), output());
+        assertEquals("A1B2", read("OUT.DAT"));
+        assertTrue(read("RPT.DAT").startsWith("H"), read("RPT.DAT"));
+    }
+
+    @Test
     @DisplayName("HEADER1 は先頭に 1 行足す (FR-137, 暫定判断 P-047 の解消)")
     void header1GoesAtTheTop() {
         write("IN.DAT", "A1B2", 2);

@@ -76,7 +76,10 @@ grep -v '^#' "$here/local-steps.txt" | while read -r job step program card; do
     *@*)
       option=${program#*@}; program=${program%@*}
       run_classes=$target/variant-$option
-      if [ ! -d "$run_classes" ]; then
+      # 置き場はオプションごとだが、翻訳はプログラムごとに要る。以前は置き場があれば翻訳を
+      # 飛ばしていたので、同じオプションの 2 本目 (CBLFUNX、CBLBIN31) が翻訳されず、
+      # 「翻訳できない」と報告していた (CLAUDE.md §6)
+      if [ ! -f "$run_classes/cobol/generated/$program.class" ]; then
         mkdir -p "$run_classes"
         echo "== $program.cbl -q $option" >> "$results/compile.txt"
         java -cp "$cp" dev.cobolonjava.compiler.Main -d "$(jpath "$run_classes")" \

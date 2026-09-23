@@ -2,22 +2,25 @@
 == CBLACPT.cbl rc=0
 == CBLASMD.cbl rc=0
 == CBLBIN31.cbl rc=1
-   CBLBIN31.cbl:16:12: PICTURE S9(19) cannot describe W-B19: binary items of 19 digits (16-byte storage) are not implemented yet
-   CBLBIN31.cbl:18:12: PICTURE S9(31) cannot describe W-B31: binary items of 31 digits (16-byte storage) are not implemented yet
+   CBLBIN31.cbl:16:12: PICTURE S9(19) cannot describe W-B19: binary items of 19 digits are not supported: a binary item has at most 18 digits, even under ARITH(EXTEND) (P-005)
+   CBLBIN31.cbl:18:12: PICTURE S9(31) cannot describe W-B31: binary items of 31 digits are not supported: a binary item has at most 18 digits, even under ARITH(EXTEND) (P-005)
 == CBLC72A.cbl rc=0
 == CBLC72B.cbl rc=1
    CBLC72B.cbl:23:26: a non-numeric literal is left unclosed
 == CBLC72C.cbl rc=0
-== CBLCP.cbl rc=1
-   CBLCP.cbl:45:8: invalid PICTURE character-string: unsupported PICTURE symbol 'N' in: N(4)
-   CBLCP.cbl:45:8: USAGE NATIONAL is not supported yet
-   CBLCP.cbl:45:8: elementary item requires a PICTURE clause: W-NAT
+== CBLCP.cbl rc=0
 == CBLDEBUG.cbl rc=0
 == CBLDUMP.cbl rc=0
 == CBLEDIT.cbl rc=0
 == CBLFLT.cbl rc=0
 == CBLFUNC.cbl rc=0
-== CBLFUNX.cbl rc=0
+== CBLFUNX.cbl rc=1
+   CBLFUNX.cbl:12:12: the PICTURE of W-R has 31 digits; the maximum is 18 under ARITH(COMPAT)
+   CBLFUNX.cbl:14:12: the PICTURE of W-I has 31 digits; the maximum is 18 under ARITH(COMPAT)
+   CBLFUNX.cbl:15:8: the PICTURE of W-A has 30 digits; the maximum is 18 under ARITH(COMPAT)
+   CBLFUNX.cbl:16:8: the PICTURE of W-B has 30 digits; the maximum is 18 under ARITH(COMPAT)
+   CBLFUNX.cbl:17:8: the PICTURE of W-BIG has 31 digits; the maximum is 18 under ARITH(COMPAT)
+   CBLFUNX.cbl:18:22: the numeric literal 1234567890123456789012345678901 has 31 digits; the maximum is 18 under ARITH(COMPAT)
 == CBLGEN.cbl rc=0
 == CBLINSP.cbl rc=0
 == CBLNUM.cbl rc=0
@@ -38,10 +41,13 @@
 == PLISTR2.pli rc=0
 == PLISTRM.pli rc=0
 == ASMDC1.asm rc=0
-== ASMDC2.asm rc=1
-   ASMDC2.asm:26: error: unsupported constant type: E
+== ASMDC2.asm rc=0
 == ASMDC3.asm rc=0
 == ASMEXE.asm rc=0
-== ASMPM.asm rc=1
-   ASMPM.asm:23: error: unknown operation: IPM (a macro call would be expanded here; macros are not supported yet)
+== ASMPM.asm rc=0
+== CBLFUNC.cbl -q ARITH(EXTEND)
+== CBLFUNX.cbl -q ARITH(EXTEND)
+== CBLBIN31.cbl -q ARITH(EXTEND)
+CBLBIN31.cbl:16:12: PICTURE S9(19) cannot describe W-B19: binary items of 19 digits are not supported: a binary item has at most 18 digits, even under ARITH(EXTEND) (P-005)
+CBLBIN31.cbl:18:12: PICTURE S9(31) cannot describe W-B31: binary items of 31 digits are not supported: a binary item has at most 18 digits, even under ARITH(EXTEND) (P-005)
 == CBLABND.cbl -q SSRANGE

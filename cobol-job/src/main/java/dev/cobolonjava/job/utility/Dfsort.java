@@ -231,6 +231,13 @@ public final class Dfsort extends UtilityProgram {
             return;
         }
         note("ICE054I 0 RECORDS - IN: " + read + ", OUT: " + records.size());
+        if (context.catalog().isAssigned(SORTOUT)
+                && outFiles.stream().noneMatch(file -> file.dds().contains(SORTOUT))) {
+            // SORTOUT は「OUTFIL でない、ただ 1 つの出力」である (DFSORT の手引きの「SORTOUT and
+            // OUTFIL DD statements」)。OUTFIL があっても、DD があれば書く。以前は OUTFIL があると
+            // 書かず、z/OS probe の JCLUTIL で後続の ICETOOL が 0 件を数えていた
+            write(context, SORTOUT, records, attributes, inrec != null || outrec != null);
+        }
         writeOutFiles(context, records, attributes, codePage);
     }
 

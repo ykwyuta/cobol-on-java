@@ -2,7 +2,7 @@ PRB B.08.BEFORE  ||
 Exception in thread "main" dev.cobolonjava.runtime.decimal.DecimalDivideException: division by zero
 	at dev.cobolonjava.runtime.decimal.Decimal.divide(Decimal.java:139)
 	at dev.cobolonjava.runtime.verb.Arithmetic.divide(Arithmetic.java:81)
-	at dev.cobolonjava.runtime.program.Ops.divide(Ops.java:1728)
+	at dev.cobolonjava.runtime.program.Ops.divide(Ops.java:1743)
 	at cobol.generated.CBLABND.paragraph$0(CBLABND.cbl:89)
 	at cobol.generated.CBLABND.dispatch(CBLABND.cbl)
 	at cobol.generated.CBLABND.performRange(CBLABND.cbl)

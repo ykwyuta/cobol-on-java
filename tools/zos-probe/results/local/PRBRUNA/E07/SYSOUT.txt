@@ -1,21 +1,11 @@
 PRB H.07.BEFORE  ||
-Exception in thread "main" dev.cobolonjava.hlasm.HlasmRuntime$HlasmExecutionException: ASMEXE: S0C1 operation code 8F is not implemented at 0001019C
-	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:83)
-	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:41)
-	at cobol.generated.ASMEXE.run(Unknown Source)
-	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1509)
-	at dev.cobolonjava.runtime.program.Ops.call(Ops.java:1524)
-	at cobol.generated.CBLASMD.paragraph$0(CBLASMD.cbl:44)
-	at cobol.generated.CBLASMD.dispatch(CBLASMD.cbl)
-	at cobol.generated.CBLASMD.performRange(CBLASMD.cbl)
-	at cobol.generated.CBLASMD.run(CBLASMD.cbl)
-	at dev.cobolonjava.runtime.program.CobolProgram.runFresh(CobolProgram.java:52)
-	at dev.cobolonjava.runtime.program.CobolProgram.runMain(CobolProgram.java:158)
-	at cobol.generated.CBLASMD.main(CBLASMD.cbl)
-Caused by: dev.cobolonjava.hlasm.MachineException: S0C1 operation code 8F is not implemented at 0001019C
-	at dev.cobolonjava.hlasm.Cpu.perform(Cpu.java:293)
-	at dev.cobolonjava.hlasm.Cpu.step(Cpu.java:99)
-	at dev.cobolonjava.hlasm.Cpu.run(Cpu.java:84)
-	at dev.cobolonjava.hlasm.HlasmRuntime.execute(HlasmRuntime.java:79)
-	... 11 more
-RC=1
+PRB H.07.RC  |0000|
+PRB H.07.1 0700000000000000000000000000000000000000000000000300000000000000 ||
+PRB H.07.2 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.07.3 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.07.4 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.07.5 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.07.6 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.07.7 0000000000000000000000000000000000000000000000000000000000000000 ||
+PRB H.07.8 0000000000000000000000000000000000000000000000000000000000000000 ||
+RC=0
