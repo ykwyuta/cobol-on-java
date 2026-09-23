@@ -646,6 +646,10 @@ public final class PliRuntime {
                 case "SIZE" -> size(function, env);
                 case "ADDR" -> address(function, env);
                 case "CENTRE", "CENTER" -> centre(arguments);
+                // 結果は x と同じ base・scale・precision を持つ (LRM "ABS")
+                case "ABS" -> arguments.get(0) instanceof FixedValue fixed
+                        ? (fixed.value().signum() < 0 ? fixed.negate() : fixed)
+                        : number(arguments.get(0)).abs();
                 // x を y 回<b>つなげ足す</b>ので y+1 個になる。y が 0 以下なら x そのもの (LRM "REPEAT")
                 case "REPEAT" -> display(arguments.get(0))
                         .repeat(Math.max(0, number(arguments.get(1)).intValue()) + 1);
@@ -706,12 +710,25 @@ public final class PliRuntime {
             return source.substring(start, start + length);
         }
 
+        /**
+         * CENTER / CENTRE は CENTERLEFT の略である。割り切れないときは余りの 1 桁を右に置く
+         * (中央より 1 桁左に寄る)。3 つ目の引数は埋める文字で、省けば空白 (LRM "CENTERLEFT")。
+         * 以前は 3 つ目を黙って捨てていた。
+         */
         private static String centre(List<Object> arguments) {
             String text = display(arguments.get(0));
             int width = number(arguments.get(1)).intValue();
+            String pad = " ";
+            if (arguments.size() > 2) {
+                pad = display(arguments.get(2));
+                if (pad.length() != 1) {
+                    throw new PliExecutionException("CENTER padding must be CHARACTER(1): '"
+                            + pad + "'");
+                }
+            }
             if (text.length() >= width) return text.substring(0, width);
             int left = (width - text.length()) / 2;
-            return " ".repeat(left) + text + " ".repeat(width - text.length() - left);
+            return pad.repeat(left) + text + pad.repeat(width - text.length() - left);
         }
 
         private static int compare(Object left, Object right) {

@@ -145,6 +145,23 @@ class PutStatementTest {
     }
 
     @Test
+    @DisplayName("ABS は x と同じ属性を持つ。FIXED BIN(15) の -5 は幅 9 の 5 になる")
+    void absKeepsTheAttributesOfItsArgument() throws Exception {
+        assertEquals(String.format("%9s", "5") + "\n", run("""
+                DCL N FIXED BIN(15) INIT(0);
+                N = N - 5;
+                PUT SKIP LIST(ABS(N));
+                """));
+    }
+
+    @Test
+    @DisplayName("CENTRE は余りの 1 桁を右に置き、3 つ目の引数で埋める (LRM の例)")
+    void centreLeansLeftAndUsesThePadCharacter() throws Exception {
+        assertEquals("***Feel the Power****\n",
+                run("PUT SKIP LIST(CENTRE('Feel the Power', 21, '*'));"));
+    }
+
+    @Test
     @DisplayName("REPEAT(x, y) は x を y 回つなげ足すので y+1 個。y が 0 以下なら x そのもの")
     void repeatConcatenatesYMoreCopies() throws Exception {
         assertEquals("ABABAB\nAB\n", run("""
