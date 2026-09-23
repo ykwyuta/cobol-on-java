@@ -14,6 +14,10 @@ class PliVerificationRunnerTest {
     @TempDir
     Path temporary;
 
+    /** FIXED BIN(31) の list-directed は幅 14 の欄に右寄せである (LRM "Target: CHARACTER")。 */
+    private static final String TOTAL_15 = String.format("%14s", "15") + "\n";
+    private static final String TOTAL_14 = String.format("%14s", "14") + "\n";
+
     private static final String LOOP = """
             LOOP: PROCEDURE OPTIONS(MAIN);
               DCL I FIXED BIN(31);
@@ -30,8 +34,8 @@ class PliVerificationRunnerTest {
         PliVerificationRunner runner = PliVerificationRunner.standard();
 
         PliVerificationReport report = runner.run(List.of(
-                new PliVerificationRunner.Source("PASS.pli", "iteration", LOOP, "15\n"),
-                new PliVerificationRunner.Source("WRONG.pli", "iteration", LOOP, "14\n"),
+                new PliVerificationRunner.Source("PASS.pli", "iteration", LOOP, TOTAL_15),
+                new PliVerificationRunner.Source("WRONG.pli", "iteration", LOOP, TOTAL_14),
                 new PliVerificationRunner.Source("COMPILE.pli", "syntax", LOOP, null)));
 
         assertEquals(3, report.translated());
@@ -57,7 +61,7 @@ class PliVerificationRunnerTest {
     void directoryPairsPliWithReferenceOutput() throws Exception {
         Path group = Files.createDirectories(temporary.resolve("iteration"));
         Files.writeString(group.resolve("LOOP.pli"), LOOP);
-        Files.writeString(group.resolve("LOOP.out"), "15\n");
+        Files.writeString(group.resolve("LOOP.out"), TOTAL_15);
         Files.writeString(temporary.resolve("BARE.pl1"), LOOP);
 
         List<PliVerificationRunner.Source> sources = PliSourceDirectory.read(temporary);
@@ -65,6 +69,6 @@ class PliVerificationRunnerTest {
         assertEquals(2, sources.size());
         assertEquals("(root)", sources.get(0).group());
         assertEquals("iteration", sources.get(1).group());
-        assertEquals("15\n", sources.get(1).expectedOutput());
+        assertEquals(TOTAL_15, sources.get(1).expectedOutput());
     }
 }

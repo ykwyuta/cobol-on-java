@@ -43,6 +43,13 @@ class PliCompilerTest {
     @TempDir
     Path temporary;
 
+    /**
+     * PRINT ファイルの list-directed は、項目を左端と tab 位置 25, 49, 73 に揃える
+     * (LRM "PRINT attribute")。N は FIXED BIN(31) なので幅 14 の欄に右寄せになる。
+     */
+    private static final String HELLO_LINE = String.format("%-24s%-24s%-24s%14s",
+            "HELLO ", "WORLD", " ", "3") + System.lineSeparator();
+
     private static final String PROGRAM = """
             HELLO: PROCEDURE OPTIONS(MAIN);
               DCL WHO CHAR(8) INIT('WORLD');
@@ -71,7 +78,7 @@ class PliCompilerTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         program.runFresh(ProgramContext.capturing(output));
 
-        assertEquals("HELLO WORLD 3" + System.lineSeparator(),
+        assertEquals(HELLO_LINE,
                 output.toString(StandardCharsets.UTF_8));
         assertNotNull(program.programSignature());
         assertNotNull(program.procedureManifest());
@@ -99,7 +106,9 @@ class PliCompilerTest {
 
         program.runFresh(ProgramContext.capturing(output));
 
-        assertEquals("24" + System.lineSeparator(), output.toString(StandardCharsets.UTF_8));
+        // TOTAL は FIXED BIN(31)。文字にすると 10 進の精度 11、幅 14 の欄に右寄せになる
+        assertEquals(String.format("%14s", "24") + System.lineSeparator(),
+                output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -147,7 +156,7 @@ class PliCompilerTest {
                     .resolve(ProgramId.of("HELLO"), loader);
             ByteArrayOutputStream captured = new ByteArrayOutputStream();
             deployed.runFresh(ProgramContext.capturing(captured));
-            assertEquals("HELLO WORLD 3" + System.lineSeparator(),
+            assertEquals(HELLO_LINE,
                     captured.toString(StandardCharsets.UTF_8));
         }
     }

@@ -84,6 +84,7 @@ public final class PliRuntime {
         private final ClassLoader loader;
         private final Env globals;
         private final Map<String, CursorDefinition> cursors = new HashMap<>();
+        private final PrintFile sysprint;
         private int sqlSequence;
 
         Executor(PliSyntax.Program program, ProgramContext context, DataView[] arguments,
@@ -92,6 +93,7 @@ public final class PliRuntime {
             this.context = context;
             this.loader = loader;
             this.globals = new Env(null, context);
+            this.sysprint = PrintFile.of(context);
             if (arguments.length != program.parameters().size()) {
                 throw new PliExecutionException("program " + program.name() + " expects "
                         + program.parameters().size() + " argument(s), but got " + arguments.length);
@@ -103,10 +105,13 @@ public final class PliRuntime {
         }
 
         void run() {
+            sysprint.enter();
             try {
                 execute(program.body(), globals);
             } catch (ReturnSignal ignored) {
                 // 主手続きの RETURN は正常終了である。
+            } finally {
+                sysprint.leave();
             }
         }
 
@@ -340,12 +345,134 @@ public final class PliRuntime {
             target.write(value(assignment.value(), env), context);
         }
 
+        /** {@code SKIP} は書く<b>前</b>に改行する。以前は書いた後に改行していた。 */
         private void put(PliSyntax.Put put, Env env) {
-            StringBuilder text = new StringBuilder();
-            for (PliSyntax.Expr expression : put.values()) {
-                text.append(display(value(expression, env)));
+            if (put.string() != null) {
+                putString(put, env);
+                return;
             }
-            context.display(context.codePage().encode(text.toString()), put.skip());
+            // PAGE、SKIP、値の順に効く
+            if (put.page()) {
+                sysprint.page();
+            }
+            if (put.skip() > 0) {
+                sysprint.skip(put.skip());
+            }
+            if (put.edit()) {
+                edit(put, env, sysprint::editItem);
+                return;
+            }
+            for (PliSyntax.Expr expression : put.values()) {
+                sysprint.listItem(listed(expression, env));
+            }
+        }
+
+        /**
+         * list-directed で PRINT ファイルへ書く形 (LRM "PUT list-directed")。
+         *
+         * <p>算術値は代入と同じ規則で文字にする。{@code FIXED BIN(31)} の 5 は 14 桁の欄に右寄せ
+         * した {@code "             5"} である。文字列は PRINT ファイルなので引用符を付けない。
+         * ビット列は引用符で囲んで {@code B} を付ける。
+         */
+        private String listed(PliSyntax.Expr expression, Env env) {
+            Object value = value(expression, env);
+            if (expression instanceof PliSyntax.Reference reference
+                    && env.require(reference.name()).type == PliSyntax.Type.BIT) {
+                return "'" + display(value) + "'B";
+            }
+            if (value instanceof Boolean bit) {
+                return bit ? "'1'B" : "'0'B";
+            }
+            return character(value);
+        }
+
+        /**
+         * edit-directed。書式並びを先頭から使い、値が残っていれば並びの頭へ戻る。
+         * {@code A} は文字にした値、{@code A(w)} は w 桁に切り詰めるか右を空白で埋め、
+         * {@code X(w)} は空白 w 個を書く。
+         */
+        /**
+         * {@code PUT STRING(変数) EDIT ...}。左端から組み立て、文字の変数へ<b>代入する</b>
+         * (LRM "STRING option")。代入なので、短ければ右を空白で埋める。入りきらなければ
+         * ERROR の状態である。
+         *
+         * <p>以前はこの文を読み飛ばしていた。Bank-of-Z の {@code BNKSTMT} は明細の合計行を
+         * この形で作っており、前の行の中身がそのまま印字されていた。
+         */
+        private void putString(PliSyntax.Put put, Env env) {
+            StringBuilder text = new StringBuilder();
+            edit(put, env, text::append);
+            Var target = env.require(put.string());
+            if (text.length() > target.view.length()) {
+                throw new PliExecutionException("ERROR: PUT STRING needs " + text.length()
+                        + " characters but " + target.name + " has " + target.view.length());
+            }
+            target.write(text.toString(), context);
+        }
+
+        private void edit(PliSyntax.Put put, Env env, java.util.function.Consumer<String> sink) {
+            List<PliSyntax.FormatItem> format = put.format();
+            int item = 0;
+            int consumedInCycle = 0;
+            for (PliSyntax.Expr expression : put.values()) {
+                while (true) {
+                    if (item == format.size()) {
+                        if (consumedInCycle == 0) {
+                            throw new PliExecutionException(
+                                    "PUT EDIT format list has no data format item");
+                        }
+                        item = 0;
+                        consumedInCycle = 0;
+                    }
+                    PliSyntax.FormatItem next = format.get(item++);
+                    if (next.code() == 'X') {
+                        sink.accept(" ".repeat(next.width()));
+                        continue;
+                    }
+                    Object value = value(expression, env);
+                    String text;
+                    if (next.code() == 'F') {
+                        text = fixedField(number(value), next.width(), next.fraction());
+                    } else {
+                        text = character(value);
+                        if (next.width() >= 0) {
+                            text = text.length() >= next.width()
+                                    ? text.substring(0, next.width())
+                                    : text + " ".repeat(next.width() - text.length());
+                        }
+                    }
+                    sink.accept(text);
+                    consumedInCycle++;
+                    break;
+                }
+            }
+        }
+
+        /**
+         * {@code F(w,d)} の出力 (LRM "F-format item")。d 桁に<b>四捨五入</b>し (落ちる桁が 5 以上なら
+         * 1 つ上の桁に 1 を足す)、w 桁の欄に右寄せする。1 未満なら点の前に 0 を置き、負なら負号を
+         * 付ける。欄に入らなければ SIZE の状態である。
+         */
+        static String fixedField(BigDecimal value, int width, int fraction) {
+            BigDecimal rounded = value.setScale(fraction, java.math.RoundingMode.HALF_UP);
+            String text = (value.signum() < 0 ? "-" : "") + rounded.abs().toPlainString();
+            if (text.length() > width) {
+                throw new PliExecutionException("SIZE: " + value + " does not fit in F("
+                        + width + "," + fraction + ")");
+            }
+            return " ".repeat(width - text.length()) + text;
+        }
+
+        /**
+         * 出力のための文字への変換。属性の分からない算術値は断る。幅が属性で決まるので、
+         * 近い形を黙って出すより止めたほうがよい (暫定判断 P-183)。
+         */
+        private static String character(Object value) {
+            if (value instanceof Number) {
+                throw new PliExecutionException("cannot write an arithmetic value whose"
+                        + " precision is unknown (P-183): " + value);
+            }
+            return display(value);
         }
 
         private void call(PliSyntax.Call call, Env env) {
@@ -478,8 +605,9 @@ public final class PliRuntime {
                 Object operand = value(unary.operand(), env);
                 return switch (unary.operator()) {
                     case "^", "¬" -> !truth(operand);
-                    case "-" -> number(operand).negate();
-                    case "+" -> number(operand);
+                    case "-" -> operand instanceof FixedValue fixed ? fixed.negate()
+                            : number(operand).negate();
+                    case "+" -> operand instanceof FixedValue ? operand : number(operand);
                     default -> throw new PliExecutionException("unknown unary operator "
                             + unary.operator());
                 };
@@ -493,10 +621,7 @@ public final class PliRuntime {
                     case "|" -> truth(left) || truth(right);
                     case "&" -> truth(left) && truth(right);
                     case "||" -> display(left) + display(right);
-                    case "+" -> number(left).add(number(right));
-                    case "-" -> number(left).subtract(number(right));
-                    case "*" -> number(left).multiply(number(right));
-                    case "/" -> number(left).divide(number(right), MathContext.DECIMAL128);
+                    case "+", "-", "*", "/" -> arithmetic(binary.operator(), left, right);
                     case "=" -> compare(left, right) == 0;
                     case "^=", "¬=" -> compare(left, right) != 0;
                     case "<" -> compare(left, right) < 0;
@@ -518,8 +643,34 @@ public final class PliRuntime {
                 case "SIZE" -> size(function, env);
                 case "ADDR" -> address(function, env);
                 case "CENTRE", "CENTER" -> centre(arguments);
-                case "REPEAT" -> display(arguments.get(0)).repeat(number(arguments.get(1)).intValue());
+                // x を y 回<b>つなげ足す</b>ので y+1 個になる。y が 0 以下なら x そのもの (LRM "REPEAT")
+                case "REPEAT" -> display(arguments.get(0))
+                        .repeat(Math.max(0, number(arguments.get(1)).intValue()) + 1);
                 default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
+            };
+        }
+
+        /**
+         * 算術演算。両方が属性を持てば、結果の属性を RULES(IBM) の規則で決める (LRM Table 28)。
+         * 文字列など属性を持たない値が混ざれば、属性の無い値を返す。そうした値は出力できない
+         * ({@link #character})。文字から算術への変換の属性はまだ持たない (P-183)。
+         */
+        private static Object arithmetic(String operator, Object left, Object right) {
+            if (left instanceof FixedValue a && right instanceof FixedValue b) {
+                return switch (operator) {
+                    case "+" -> a.add(b);
+                    case "-" -> a.subtract(b);
+                    case "*" -> a.multiply(b);
+                    default -> a.divide(b);
+                };
+            }
+            BigDecimal a = number(left);
+            BigDecimal b = number(right);
+            return switch (operator) {
+                case "+" -> a.add(b);
+                case "-" -> a.subtract(b);
+                case "*" -> a.multiply(b);
+                default -> a.divide(b, MathContext.DECIMAL128);
             };
         }
 
@@ -528,7 +679,9 @@ public final class PliRuntime {
                     || !(function.arguments().get(0) instanceof PliSyntax.Reference reference)) {
                 throw new PliExecutionException("SIZE requires one data reference");
             }
-            return BigDecimal.valueOf(env.require(reference.name()).view.length());
+            // SIZE は FIXED BIN(31) を返す
+            return FixedValue.binary(BigDecimal.valueOf(env.require(reference.name()).view.length()),
+                    31, 0);
         }
 
         private Object address(PliSyntax.Function function, Env env) {
@@ -559,7 +712,7 @@ public final class PliRuntime {
         }
 
         private static int compare(Object left, Object right) {
-            if (left instanceof Number || right instanceof Number) {
+            if (numeric(left) || numeric(right)) {
                 return number(left).compareTo(number(right));
             }
             if (left instanceof Boolean || right instanceof Boolean) {
@@ -571,7 +724,12 @@ public final class PliRuntime {
             return a.stripTrailing().compareTo(b.stripTrailing());
         }
 
+        private static boolean numeric(Object value) {
+            return value instanceof Number || value instanceof FixedValue;
+        }
+
         private static BigDecimal number(Object value) {
+            if (value instanceof FixedValue fixed) return fixed.value();
             if (value instanceof BigDecimal decimal) return decimal;
             if (value instanceof Number numeric) return new BigDecimal(numeric.toString());
             if (value instanceof Boolean bool) return bool ? BigDecimal.ONE : BigDecimal.ZERO;
@@ -584,12 +742,17 @@ public final class PliRuntime {
 
         private static boolean truth(Object value) {
             if (value instanceof Boolean bool) return bool;
-            if (value instanceof Number) return number(value).signum() != 0;
+            if (numeric(value)) return number(value).signum() != 0;
             return !display(value).isBlank() && !display(value).equals("0");
         }
 
         private static String display(Object value) {
             if (value == null) return "";
+            // 算術値から文字への変換は属性で決まる (LRM "Target: CHARACTER")。連結・CHAR・文字の
+            // 変数への代入・出力が同じ規則を使う
+            if (value instanceof FixedValue fixed) return fixed.toCharacter();
+            // ビット列から文字への変換は '1' と '0' になる
+            if (value instanceof Boolean bit) return bit ? "1" : "0";
             if (value instanceof BigDecimal decimal) return decimal.stripTrailingZeros().toPlainString();
             return value.toString();
         }
@@ -674,9 +837,10 @@ public final class PliRuntime {
         Object read(ProgramContext context) {
             return switch (type) {
                 case CHAR, BIT, PICTURE, GROUP -> context.codePage().decode(view.toByteArray());
-                case BINARY -> BinaryDecimal.decode(view.toByteArray(), 0).toBigDecimal();
-                case DECIMAL -> PackedDecimal.decode(view.toByteArray(), scale, NumProcMode.PFD)
-                        .toBigDecimal();
+                case BINARY -> FixedValue.binary(
+                        BinaryDecimal.decode(view.toByteArray(), 0).toBigDecimal(), precision, scale);
+                case DECIMAL -> FixedValue.decimal(PackedDecimal.decode(view.toByteArray(), scale,
+                        NumProcMode.PFD).toBigDecimal(), precision, scale);
                 case POINTER -> view;
                 case FILE, ENTRY -> "";
             };
@@ -686,7 +850,7 @@ public final class PliRuntime {
             switch (type) {
                 case CHAR, BIT, PICTURE -> writeText(Executor.display(value), context);
                 case GROUP -> {
-                    if (value instanceof BigDecimal decimal && decimal.signum() == 0) {
+                    if (Executor.numeric(value) && Executor.number(value).signum() == 0) {
                         view.fill((byte) 0);
                     } else {
                         writeText(Executor.display(value), context);

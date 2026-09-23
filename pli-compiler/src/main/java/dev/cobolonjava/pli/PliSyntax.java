@@ -51,7 +51,27 @@ final class PliSyntax {
     record Assign(String target, Expr value) implements Stmt {
     }
 
-    record Put(boolean skip, List<Expr> values) implements Stmt {
+    /**
+     * {@code PUT} 文。出力先は SYSPRINT か、{@code STRING} に書いた文字の変数である。
+     *
+     * @param string {@code STRING(変数)} の変数名。SYSPRINT へ書くなら {@code null}
+     * @param page   {@code PAGE} を書いたか
+     * @param skip   {@code SKIP(n)} の n。書かなければ 0
+     * @param edit   {@code EDIT} なら真、{@code LIST} (または値なし) なら偽
+     * @param format {@code EDIT} の書式並び
+     */
+    record Put(String string, boolean page, int skip, boolean edit, List<Expr> values,
+               List<FormatItem> format) implements Stmt {
+    }
+
+    /**
+     * {@code EDIT} の書式項目。いまは {@code A} / {@code A(w)} / {@code X(w)} / {@code F(w)} /
+     * {@code F(w,d)} だけを持つ。
+     *
+     * @param width    欄の幅。{@code A} で省いたときは -1
+     * @param fraction {@code F} の小数の桁数。省けば 0
+     */
+    record FormatItem(char code, int width, int fraction) {
     }
 
     record If(Expr condition, Stmt whenTrue, Stmt whenFalse) implements Stmt {
@@ -500,7 +520,7 @@ final class PliSyntax {
                         return new Literal(bit ? !value.text().equals("0") : value.text());
                     }
                     if (value.kind() == Kind.NUMBER) {
-                        return new Literal(new java.math.BigDecimal(value.text()));
+                        return new Literal(FixedValue.constant(value.text()));
                     }
                 }
             }
@@ -519,19 +539,95 @@ final class PliSyntax {
             return null;
         }
 
+        /**
+         * {@code PUT} の選択子は順を問わない。知らない選択子は<b>読み飛ばさずに断る</b>。
+         * 以前は読み飛ばしていたので、{@code PUT SKIP(2) LIST(...)} や {@code PUT FILE(RPT) ...}
+         * が何も出さずに通っていた。
+         */
         private Stmt put() {
-            boolean skip = match("SKIP");
-            if (!(match("LIST") || match("EDIT"))) {
-                skipToSemicolon();
-                return new Put(skip, List.of());
+            String string = null;
+            boolean page = false;
+            int skip = 0;
+            Boolean edit = null;
+            List<Expr> values = List.of();
+            List<FormatItem> format = List.of();
+            while (!check(";")) {
+                Token option = peek();
+                if (match("PAGE")) {
+                    page = true;
+                } else if (match("SKIP")) {
+                    skip = 1;
+                    if (match("(")) {
+                        Token count = expect(Kind.NUMBER, "SKIP count");
+                        expect(")");
+                        skip = Integer.parseInt(count.text());
+                        if (skip < 1) {
+                            // SKIP(0) は重ね打ち (復帰だけで改行しない)。標準出力では表せない
+                            throw fail(count, "PUT SKIP(0) is not supported");
+                        }
+                    }
+                } else if (match("STRING")) {
+                    expect("(");
+                    string = qualifiedName();
+                    expect(")");
+                } else if (match("FILE")) {
+                    expect("(");
+                    Token file = expect(Kind.IDENT, "file name");
+                    expect(")");
+                    if (!file.is("SYSPRINT")) {
+                        throw fail(file, "PUT FILE(" + file.text() + ") is not supported yet;"
+                                + " only SYSPRINT is");
+                    }
+                } else if ((check("LIST") || check("EDIT")) && edit == null) {
+                    edit = next().is("EDIT");
+                    values = arguments();
+                    if (edit) {
+                        format = formatList();
+                    }
+                } else {
+                    throw fail(option, "PUT option " + option.text() + " is not supported yet");
+                }
             }
-            List<Expr> values = arguments();
-            // EDIT の書式リストは値ではない。
-            if (check("(")) {
-                skipBalanced();
+            if (string != null && (page || skip > 0 || edit == null || !edit)) {
+                // PAGE と SKIP はファイルにしか書けない。STRING への LIST は区切りと引用符の規則が
+                // PRINT ファイルと違い、まだ持たない
+                throw fail(peek(), "PUT STRING supports only EDIT without PAGE or SKIP");
             }
             expect(";");
-            return new Put(skip, values);
+            return new Put(string, page, skip, edit != null && edit, values, format);
+        }
+
+        private List<FormatItem> formatList() {
+            expect("(");
+            List<FormatItem> items = new ArrayList<>();
+            do {
+                Token item = expect(Kind.IDENT, "format item");
+                int width = -1;
+                int fraction = 0;
+                boolean fractionGiven = false;
+                if (match("(")) {
+                    width = Integer.parseInt(expect(Kind.NUMBER, "field width").text());
+                    if (match(",")) {
+                        fraction = Integer.parseInt(
+                                expect(Kind.NUMBER, "fractional digits").text());
+                        fractionGiven = true;
+                    }
+                    expect(")");
+                }
+                if (item.is("A") && !fractionGiven) {
+                    items.add(new FormatItem('A', width, 0));
+                } else if (item.is("X") && width >= 0 && !fractionGiven) {
+                    items.add(new FormatItem('X', width, 0));
+                } else if (item.is("F") && width >= 0) {
+                    // 3 つ目の scaling-factor は ")" を期待したところで断られる
+                    items.add(new FormatItem('F', width, fraction));
+                } else {
+                    throw fail(item, "PUT EDIT format item " + item.text()
+                            + " is not supported yet");
+                }
+            } while (match(","));
+            expect(")");
+            return List.copyOf(items);
         }
 
         private Stmt ifStatement() {
@@ -677,7 +773,7 @@ final class PliSyntax {
                 return new Literal(value);
             }
             if (check(Kind.NUMBER)) {
-                return new Literal(new java.math.BigDecimal(next().text()));
+                return new Literal(FixedValue.constant(next().text()));
             }
             if (check(Kind.IDENT)) {
                 String name = qualifiedName();

@@ -70,7 +70,7 @@ Bank-of-Z の PL/I コードで使用されている型は、COBOL の内部表�
   - `DATETIME()`（現在日時の取得）
   - `||`（文字列結合。COBOL の `STRING` 文に相当）
 - **ストリーム I/O**:
-  - `PUT SKIP LIST(...)`: 改行付き標準出力（COBOL の `DISPLAY` に相当）
+  - `PUT SKIP LIST(...)`: 改行付き標準出力（COBOL の `DISPLAY` に相当）。実際には PRINT ファイルの規則 (tab 位置への整列、算術値の幅、`SKIP` は書く前に改行) に従う。実装の扱いは [P-183](../decisions/provisional.md) を参照
   - `OPEN FILE(DATECARD)`, `READ FILE(DATECARD) INTO(...)`, `CLOSE FILE(...)`（COBOL の順編成 `READ` に相当）
 - **条件処理（例外ハンドリング）**:
   - `ON ENDFILE(SORTCODE) BEGIN; ... END;`: ファイル終端時の割り込み処理（COBOL の `AT END` に相当）

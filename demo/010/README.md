@@ -68,10 +68,14 @@ GEN-SALES: OUTPUT COMPLETED (3 RECORDS).
 GRAND TOTAL  :      12,200 JPY
 SALESJOB.GEN ENDED - RC=0
 SALESJOB.REPORT ENDED - RC=0
-HELLO FROM PL/I1
-HELLO FROM PL/I2
-HELLO FROM PL/I3
+HELLO FROM PL/I                      1
+HELLO FROM PL/I                      2
+HELLO FROM PL/I                      3
 ```
+
+PL/I の `PUT LIST` は SYSPRINT を PRINT ファイルとして書くので、2 つ目の項目は tab 位置 25 桁目から
+始まります。`N` は `FIXED BIN(31)` なので、幅 14 の欄に右寄せされます
+([P-183](../../docs/decisions/provisional.md))。
 
 `sales` の COBOL・JCL は [デモ #003](../003/README.md) と同じ業務で、
 レコードの形を写し句へ、レポートの段を目録手続きへ切り出しています。
