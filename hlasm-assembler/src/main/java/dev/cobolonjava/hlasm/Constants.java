@@ -198,9 +198,16 @@ public final class Constants {
         return new Piece(alignment, bytes.length, duplication, bytes, references);
     }
 
-    /** {@code C} は左詰めで、余りはコードページの空白で埋める。長いほうは右を切る。 */
+    /**
+     * {@code C} は左詰めで、余りはコードページの空白で埋める。長いほうは右を切る。
+     *
+     * <p>重ねたアンパサンド {@code &&} は 1 つのアンパサンドである (HLASM Language Reference
+     * "Character (C)": 引用符と同じく、定数の中では 2 つで 1 字を表す)。以前は 2 byte に
+     * していたので、後ろの定数の位置がすべて 1 つずれていた。引用符の重ねは {@link #readQuoted}
+     * がすでに 1 字にしている。
+     */
     private static byte[] character(String text, Integer explicitLength, CodePage codePage) {
-        byte[] raw = text.getBytes(codePage.charset());
+        byte[] raw = text.replace("&&", "&").getBytes(codePage.charset());
         int length = explicitLength != null ? explicitLength : Math.max(raw.length, 0);
         byte[] out = new byte[length];
         java.util.Arrays.fill(out, codePage.space());
@@ -268,6 +275,12 @@ public final class Constants {
     private static byte[] zoned(String text, Integer explicitLength, CodePage codePage, int line) {
         Decimal value = decimal(text, line);
         int digits = Math.max(1, value.magnitude().toString().length());
+        if (explicitLength != null && explicitLength > digits) {
+            // 長さを明示して桁が足りないときは、左をゾーンの 0 (X'F0') で埋める
+            // (HLASM Language Reference "Decimal constants": Z 型の詰め物はゾーン 10 進の 0)。
+            // 以前は X'00' で埋めており、ZL4'7' が X'000000C7' になっていた
+            digits = explicitLength;
+        }
         byte[] raw = ZonedDecimal.encode(value, digits, 0, SignPosition.TRAILING, codePage);
         return explicitLength == null ? raw : rightJustify(raw, explicitLength);
     }
@@ -316,7 +329,7 @@ public final class Constants {
         boolean quoted = false;
         for (int k = at; k < operand.length(); k++) {
             char c = operand.charAt(k);
-            if (c == '\'' && Quotes.isDelimiter(operand, k)) {
+            if (c == '\'' && Quotes.isDelimiter(operand, k, quoted)) {
                 quoted = !quoted;
             } else if (quoted) {
                 continue;

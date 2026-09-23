@@ -687,7 +687,7 @@ public final class Assembler implements Constants.Scope {
         boolean quoted = false;
         for (int k = 0; k < text.length(); k++) {
             char c = text.charAt(k);
-            if (c == '\'' && Quotes.isDelimiter(text, k)) {
+            if (c == '\'' && Quotes.isDelimiter(text, k, quoted)) {
                 quoted = !quoted;
             } else if (!quoted && c == '(') {
                 return k;

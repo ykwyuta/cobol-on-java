@@ -130,7 +130,10 @@ public final class HlasmReader {
                 if (c == ' ' && !quoted) {
                     return;
                 }
-                if (c == '\'' && Quotes.isDelimiter(text.toString() + c, text.length())) {
+                // 属性の印かどうかは後ろの字でも決まるので、行の残りを付けて渡す
+                if (c == '\''
+                        && Quotes.isDelimiter(text.toString() + line.substring(k), text.length(),
+                                quoted)) {
                     quoted = !quoted;
                 }
                 text.append(c);

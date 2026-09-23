@@ -238,6 +238,51 @@ class AssemblerTest {
         assertEquals("F1F2C3", module.hex(3, 3));
     }
 
+    /** z/OS probe の ASMDC1 で見つかった。以前は X'000000C7' だった。 */
+    @Test
+    @DisplayName("Z の明示長の余りは、ゾーンの 0 (F0) で左を埋める")
+    void padsZonedConstantsWithZonedZeros() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    ZL4'7'",
+                "         DC    ZL3'-12'",
+                "         DC    ZL2'12345'",
+                "         END");
+        assertEquals("F0F0F0C7", module.hex(0, 4));
+        assertEquals("F0F1D2", module.hex(4, 3));
+        // 長いほうは左を切る
+        assertEquals("F4C5", module.hex(7, 2));
+    }
+
+    /** z/OS probe の ASMDC1 で見つかった。以前は 2 byte で、後ろの定数が 1 つずれていた。 */
+    @Test
+    @DisplayName("C の中の && は 1 つのアンパサンド、'' は 1 つの引用符である")
+    void collapsesDoubledAmpersandsAndQuotes() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    C'&&'",
+                "         DC    C'X''Y'",
+                "         DC    C'A'",
+                "         END");
+        assertEquals(5, module.length());
+        assertEquals("50E77DE8C1", module.hex(0, 5));
+    }
+
+    /** P-171。文字列の中の L'' を属性参照と読み、定数全体を断っていた (z/OS probe の ASMDC3)。 */
+    @Test
+    @DisplayName("文字列の中の L'' は属性参照ではない")
+    void readsAttributeLettersInsideStringsAsText() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    C'L''A'",
+                "         DC    C'A''L'",
+                "         DC    AL1(L'FLD)",
+                "FLD      DC    CL3'ABC'",
+                "         END");
+        // L ' A = D3 7D C1、A ' L = C1 7D D3、L'FLD = 3
+        assertEquals("D37DC1C17DD303C1C2C3", module.hex(0, 10));
+    }
+
     @Test
     @DisplayName("F は 4 バイト境界に合わせ、明示長を書けば合わせない")
     void alignsConstantsOnTheirBoundary() {
