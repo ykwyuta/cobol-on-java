@@ -25,6 +25,19 @@ HERCULES=/path/to/hercules mvn test
 指定がなければ `PATH` 上の `hercules` を使う。見つからない場合、V2 テストは
 **失敗ではなくスキップ**される。オラクルの有無でビルドが壊れないようにするためである。
 
+Windows の公式ポータブル版では標準入出力を使う `herclin.exe` を指定する。
+`hercules.exe` は画面表示用で、バッチ試験では終了待ちになることがある。
+PowerShell からの実行例は次のとおり。
+
+```powershell
+$env:HERCULES = 'C:\path\to\herclin.exe'
+mvn -pl hlasm-assembler -am test
+```
+
+2026-09-24 の実測には公式 SDL Hyperion 4.9.1 の Windows x64 ZIP を使った。
+SHA-256 は `C94522F60139C43D08ECDFBD317BE0A85A1F02B73CBB74DF47A40040F73152C9`。
+この配布物は Rexx を含まないため、命令試験では Rexx を無効化して起動する。
+
 ## 構成
 
 | パッケージ | 責務 |
@@ -75,6 +88,7 @@ r 400.3
 `runtest` コマンドはテストモードでのみ有効になる。`-t` オプションを付けないと
 「Unknown command runtest」となる。あわせて `-n` (パネルを使わない) を指定し、
 スクリプト末尾に `exit` を置かないとプロセスが終了しない。
+Windows の `herclin.exe` では標準入力側にも `exit` を渡す。
 
 ### オラクルの適格性はバージョンではなく能力で判定する
 

@@ -17,9 +17,9 @@ import org.junit.jupiter.api.Test;
  * {@link InsnAgreementTest} が別に測っている。2 つを混ぜないのは、誤った機械語を正しく実行した
  * 結果と突き合わせて「一致した」としないためである (設計 27 §3)。
  *
- * <p>この環境には Hercules が無いため、ここでの期待値は Principles of Operation と、
- * {@code cobol-runtime} が既に Hercules と突き合わせてある層 ({@code Decimal} の
- * ゼロ結果の符号など) から来ている。<b>Hercules との突き合わせは増分 0 で行う。</b>
+ * <p>ここでの期待値は Principles of Operation と、{@code cobol-runtime} が Hercules と
+ * 突き合わせてある層から来ている。実行の一部は {@link HerculesExecutionOracleTest} で
+ * 同じ機械語を Hercules に流して直接比較する。
  */
 class CpuTest {
 

@@ -23,6 +23,7 @@ import java.util.stream.Stream;
  * src/main/pli          PL/I の原文
  * src/main/pli-include  %INCLUDE のメンバ
  * src/main/asm          HLASM の原文 (.asm / .hlasm)
+ * src/main/asmlib       HLASM の COPY メンバ (SYSLIB)
  * src/main/jcl          ジョブ記述 (.jcl と宣言的形式 .job)
  * src/main/proclib      目録手続きと JCL の INCLUDE メンバ (PROCLIB / JCLLIB)
  * </pre>
@@ -78,6 +79,10 @@ public record SourceLayout(Path cobol, List<Path> copybooks, Path bms, Path pli,
 
     List<Path> hlasmSources() throws IOException {
         return files(hlasm, HLASM_SUFFIXES);
+    }
+
+    Path hlasmLibrary() {
+        return hlasm.resolveSibling("asmlib");
     }
 
     List<Path> bmsSources() throws IOException {

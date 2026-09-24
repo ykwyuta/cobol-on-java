@@ -30,6 +30,7 @@ my-batch/
         ├── pli/            PL/I の原文         .pli .pl1
         ├── pli-include/    %INCLUDE のメンバ   .inc .pli または拡張子なし
         ├── asm/            HLASM の原文        .asm .hlasm              (配備カタログには載せない)
+        ├── asmlib/         HLASM の COPY メンバ (SYSLIB 相当)
         ├── jcl/            ジョブ記述          .jcl (JCL) / .job (宣言的形式)
         ├── proclib/        目録手続きと JCL の INCLUDE メンバ          (PROCLIB / JCLLIB)
         ├── java/           Java (CobolSession で呼ぶ側、JavaCallable 等)

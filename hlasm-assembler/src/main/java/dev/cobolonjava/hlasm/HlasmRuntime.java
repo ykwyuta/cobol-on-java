@@ -41,6 +41,15 @@ public final class HlasmRuntime {
         return execute(assembled.module(), context, arguments);
     }
 
+    /** 生成クラスに固定した機械語を実行する。翻訳元のライブラリは実行時に不要。 */
+    public static int executeEncoded(String name, String encodedText, int entryOffset,
+                                     ProgramContext context, DataView[] arguments) {
+        byte[] text = java.util.Base64.getDecoder().decode(encodedText);
+        ObjectModule module = new ObjectModule(name, text, entryOffset,
+                java.util.Map.of(), java.util.Map.of(), List.of());
+        return execute(module, context, arguments);
+    }
+
     public static int execute(ObjectModule module, ProgramContext context, DataView[] arguments) {
         // context は増分 3 (OS のサービス) で使う。今はどの命令も外へ触れない
         byte[] text = module.text();
@@ -97,19 +106,29 @@ public final class HlasmRuntime {
         // プログラム自身である。だから署名は「個数を問わない」形にする。以前は空の並びにしており、
         // それは「引数 0 個」と読まれて、COBOL の CALL 'BUMP' USING X が署名の不一致で止まっていた。
         // 上限の 255 は、この処理系が置く割り切りである (実機の引数の表に決まった上限は無い)
+        return signatureForModule(assembled.module().name());
+    }
+
+    /** 組立て済みモジュールの署名。 */
+    public static ProgramSignature signatureForModule(String name) {
         List<ProgramParameter> parameters = new ArrayList<>();
         for (int i = 1; i <= ARGUMENT_LIMIT; i++) {
             parameters.add(new ProgramParameter("ARG" + i, 0, Short.MAX_VALUE,
                     ProgramParameter.Presence.OPTIONAL, ProgramParameter.PassingMode.REFERENCE,
                     ProgramParameter.Direction.INOUT, "hlasm-r1-v1"));
         }
-        return ProgramSignature.of(assembled.module().name(), parameters);
+        return ProgramSignature.of(name, parameters);
     }
 
     public static ProcedureManifest procedureManifest(String fileName, String source) {
         Assembler.Result assembled = Assembler.assemble(fileName, source);
         return assembled.succeeded()
-                ? ProcedureManifest.of(assembled.module().name(), List.of()) : null;
+                ? procedureManifestForModule(assembled.module().name()) : null;
+    }
+
+    /** 組立て済みモジュールの手続き情報。 */
+    public static ProcedureManifest procedureManifestForModule(String name) {
+        return ProcedureManifest.of(name, List.of());
     }
 
     /** 組み立てまたは実行が続けられなくなったこと。 */

@@ -5,7 +5,7 @@ import java.util.Objects;
 /** HLASM の組み立て診断。位置を持つのは、同じ原因で止まった行を引けるようにするためである。 */
 public record Diagnostic(Severity severity, String fileName, int line, String message) {
 
-    public enum Severity { ERROR, WARNING }
+    public enum Severity { ERROR, WARNING, INFO }
 
     public Diagnostic {
         Objects.requireNonNull(severity, "severity");

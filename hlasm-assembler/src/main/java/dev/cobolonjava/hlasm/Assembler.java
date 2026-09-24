@@ -15,8 +15,9 @@ import java.util.Map;
  * <p>2 周する。1 周目で所在カウンタを進めて記号の値と長さ属性を決め、2 周目でバイト列を作る。
  * {@code USING} は<b>翻訳時の状態</b>であり実行時の値ではないため、2 周目でも同じ順に辿り直す。
  *
- * <p>増分 1 の範囲は「COBOL から呼ばれる副プログラム 1 本」である。マクロと条件付きアセンブリは
- * 持たない。知らない命令欄はマクロ呼出しかもしれないが、<b>勝手に読み飛ばさずに断る</b>。
+ * <p>増分 1 の範囲は「COBOL から呼ばれる副プログラム 1 本」である。ソース内マクロと基本的な
+ * 条件付きアセンブリは {@link MacroProcessor} が先に展開する。知らない命令欄は未定義の
+ * マクロ呼出しかもしれないが、<b>勝手に読み飛ばさずに断る</b>。
  * 読み飛ばすと、展開されるはずだった命令が消えたまま組み立てが通ってしまう。
  */
 public final class Assembler implements Constants.Scope {
@@ -100,9 +101,17 @@ public final class Assembler implements Constants.Scope {
     }
 
     public static Result assemble(String fileName, String source, CodePage codePage) {
+        return assemble(fileName, source, codePage, SourceLibrary.empty());
+    }
+
+    static Result assemble(String fileName, String source, CodePage codePage,
+                           SourceLibrary library) {
         Assembler assembler = new Assembler(fileName, codePage);
         try {
-            List<Statement> statements = HlasmReader.read(source);
+            MacroProcessor.Expansion expansion = MacroProcessor.expand(
+                    HlasmReader.read(source), codePage, fileName, library);
+            assembler.diagnostics.addAll(expansion.diagnostics());
+            List<Statement> statements = expansion.statements();
             assembler.pass(statements, false);
             assembler.prepareText();
             assembler.pass(statements, true);
@@ -428,7 +437,7 @@ public final class Assembler implements Constants.Scope {
      *
      * <p>{@code =F'7'(R2)} のように指標が付くことがあるので、末尾の括弧は落とす。
      */
-    private static String literalTermOf(String operand) {
+    static String literalTermOf(String operand) {
         String text = operand.trim();
         if (!text.startsWith("=")) {
             return null;

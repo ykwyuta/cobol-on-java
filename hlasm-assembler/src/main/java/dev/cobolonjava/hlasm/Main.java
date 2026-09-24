@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * {@code hlasm [-d dir] [-l] source...}。
+ * {@code hlasm [-d dir] [-I library] [-l] source...}。
  *
  * <p>{@code -l} は組み立て表 (変位と機械語) を出す。これは<b>実行とは別に</b>組み立てそのものを
  * 突き合わせるためにある (設計 27 §3)。
@@ -28,6 +28,7 @@ public final class Main {
         System.setErr(new PrintStream(System.err, true, StandardCharsets.UTF_8));
 
         Path output = Path.of(".");
+        Path library = null;
         boolean listing = false;
         List<Path> sources = new ArrayList<>();
         for (int k = 0; k < args.length; k++) {
@@ -40,6 +41,13 @@ public final class Main {
                     output = Path.of(args[k]);
                 }
                 case "-l" -> listing = true;
+                case "-I" -> {
+                    if (++k >= args.length) {
+                        usage("-I requires a library directory");
+                        return;
+                    }
+                    library = Path.of(args[k]);
+                }
                 default -> sources.add(Path.of(args[k]));
             }
         }
@@ -48,7 +56,8 @@ public final class Main {
             return;
         }
 
-        HlasmCompiler compiler = HlasmCompiler.standard();
+        HlasmCompiler compiler = library == null ? HlasmCompiler.standard()
+                : HlasmCompiler.withLibrary(SourceLibrary.directory(library));
         int failures = 0;
         for (Path source : sources) {
             HlasmCompiler.Result result = compiler.compile(source.getFileName().toString(),
@@ -79,7 +88,7 @@ public final class Main {
 
     private static void usage(String message) {
         System.err.println(message);
-        System.err.println("usage: hlasm [-d dir] [-l] source...");
+        System.err.println("usage: hlasm [-d dir] [-I library] [-l] source...");
         System.exit(2);
     }
 }

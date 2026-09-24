@@ -210,6 +210,28 @@ class ProgramBuildTest {
     }
 
     @Test
+    @DisplayName("HLASM の COPY メンバを asmlib から読み、プログラムには数えない")
+    void hlasmCopyUsesSeparateLibrary() throws Exception {
+        write("src/main/asmlib/DEF.asm", String.join("\n",
+                "         MACRO",
+                "         DOIT",
+                "         SR    15,15",
+                "         BR    14",
+                "         MEND"));
+        write("src/main/asm/BUMP.asm", String.join("\n",
+                "BUMP     CSECT",
+                "         COPY  DEF",
+                "         DOIT",
+                "         END"));
+
+        build();
+
+        assertTrue(Files.isRegularFile(output().resolve("cobol/generated/BUMP.class")),
+                () -> report.lines.toString());
+        assertTrue(report.lines.contains("INFO HLASM: 1 module(s), not in the deploy catalog"));
+    }
+
+    @Test
     @DisplayName("原文が無ければ何も書かない")
     void nothingIsWrittenWithoutSources() throws Exception {
         build();

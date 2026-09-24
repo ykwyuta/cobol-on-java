@@ -16,7 +16,7 @@ import java.util.Locale;
  * DBDGEN も BMS も実体は HLASM のマクロ呼出しであり、同じ規則で読める。
  *
  * <p>同じ規則の実装をこの処理系が 3 つ持つことになるが、{@code cobol-ims} と {@code cobol-cics} が
- * この層に依存する形にはしていない。マクロ処理系を入れるとき (増分 2) に 1 つへまとめる。
+ * この層に依存する形にはしていない。共通化はまだ行っていない (P-170)。
  *
  * <p>桁の割当てを変える {@code ICTL} は受け取らない。固定形式の 1/16/71/72 桁を前提にした読み方を
  * 黙って適用すると、原文と違う文を組み立ててしまうためである。
@@ -67,7 +67,10 @@ public final class HlasmReader {
             }
 
             OperandField field = new OperandField();
-            field.take(body, skipBlanks(body, operationEnd));
+            // 条件付きアセンブリの式は引用符の外にも空白を含む。
+            boolean expression = "AIF".equals(operation) || "SETA".equals(operation)
+                    || "SETB".equals(operation) || "SETC".equals(operation);
+            field.take(body, skipBlanks(body, operationEnd), expression);
             boolean continued = continued(raw);
             while (continued) {
                 i++;
@@ -81,14 +84,18 @@ public final class HlasmReader {
                             "a continuation line must start in column 16");
                 }
                 if (field.continues() && part.length() > CONTINUED_START) {
-                    field.take(part, CONTINUED_START);
+                    field.take(part, CONTINUED_START, expression);
                 }
                 continued = continued(next);
             }
             if (field.quoted) {
                 throw new AssemblyException(first, "a quoted string is not closed");
             }
-            out.add(new Statement(label, operation, field.text.toString(), first));
+            String identification = (raw.length() > 72
+                    ? raw.substring(72, Math.min(80, raw.length())) : "");
+            identification = String.format("%-8s", identification);
+            out.add(new Statement(label, operation, field.text.toString().stripTrailing(),
+                    first, identification));
             i++;
         }
         return out;
@@ -124,10 +131,10 @@ public final class HlasmReader {
         private boolean quoted;
 
         /** {@code from} から演算項欄の終わり (引用符の外の空白) までを足す。 */
-        void take(String line, int from) {
+        void take(String line, int from, boolean keepBlanks) {
             for (int k = from; k < line.length(); k++) {
                 char c = line.charAt(k);
-                if (c == ' ' && !quoted) {
+                if (c == ' ' && !quoted && !keepBlanks) {
                     return;
                 }
                 // 属性の印かどうかは後ろの字でも決まるので、行の残りを付けて渡す

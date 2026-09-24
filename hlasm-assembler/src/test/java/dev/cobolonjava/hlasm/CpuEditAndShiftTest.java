@@ -17,9 +17,10 @@ import org.junit.jupiter.api.Test;
  * 設計 27 §6.1 で後回しにしていた命令 ({@code ED} / {@code EDMK} / {@code TRT} / {@code MVO} /
  * {@code SRP} / {@code SLDA} / {@code SRDA} / {@code IPM} / {@code SPM}) と、プログラムマスクの実行。
  *
- * <p>期待値は Principles of Operation の記述から手で導いたものである。<b>実機と突き合わせて
- * いない</b>。z/OS probe の {@code PRBRUNA} の {@code E01}〜{@code E07} と {@code ASMPM} が、
- * 同じ問いを実機に投げる (暫定判断 P-173、P-174)。
+ * <p>期待値は Principles of Operation の記述から手で導いた。
+ * {@link HerculesExecutionOracleTest} がその一部を Hercules と直接比較する。
+ * z/OS probe の {@code PRBRUNA} の {@code E01}〜{@code E07} と {@code ASMPM} は
+ * 残る境界を実機で測るためにある (暫定判断 P-173、P-174)。
  */
 class CpuEditAndShiftTest {
 

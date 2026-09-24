@@ -60,19 +60,45 @@ public final class HerculesRunner {
         String configured = System.getenv("HERCULES");
         if (configured != null && !configured.isBlank()) {
             Path p = Path.of(configured);
-            return Files.isExecutable(p) ? Optional.of(p) : Optional.empty();
+            return Files.isExecutable(p) ? Optional.of(windowsCli(p)) : Optional.empty();
         }
         String path = System.getenv("PATH");
         if (path == null) {
             return Optional.empty();
         }
         for (String dir : path.split(java.io.File.pathSeparator)) {
+            if (isWindows()) {
+                Path cli = Path.of(dir, "herclin.exe");
+                if (Files.isExecutable(cli)) {
+                    return Optional.of(cli);
+                }
+            }
             Path p = Path.of(dir, "hercules");
             if (Files.isExecutable(p)) {
-                return Optional.of(p);
+                return Optional.of(windowsCli(p));
+            }
+            if (isWindows()) {
+                Path windows = Path.of(dir, "hercules.exe");
+                if (Files.isExecutable(windows)) {
+                    return Optional.of(windowsCli(windows));
+                }
             }
         }
         return Optional.empty();
+    }
+
+    private static Path windowsCli(Path executable) {
+        if (isWindows() && executable.getFileName().toString().equalsIgnoreCase("hercules.exe")) {
+            Path cli = executable.resolveSibling("herclin.exe");
+            if (Files.isExecutable(cli)) {
+                return cli;
+            }
+        }
+        return executable;
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name").startsWith("Windows");
     }
 
     /**
@@ -108,8 +134,8 @@ public final class HerculesRunner {
         try {
             ProcessBuilder pb = new ProcessBuilder(hercules.toString(), "--help");
             pb.redirectErrorStream(true);
-            pb.redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")));
             Process p = pb.start();
+            p.getOutputStream().close();
             String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             if (!p.waitFor(15, TimeUnit.SECONDS)) {
                 p.destroyForcibly();
@@ -135,17 +161,22 @@ public final class HerculesRunner {
         Files.writeString(script, testCase.toScript() + "exit\n", StandardCharsets.UTF_8);
 
         Path logFile = workDir.resolve(testCase.name() + ".log");
+        // Windows の NoUI モードでは -r のスクリプト内の exit のあとも
+        // 標準入力側のスクリプトが始まるため、そこにも終了指示を渡す。
+        Path input = workDir.resolve(testCase.name() + ".stdin");
+        Files.writeString(input, "exit\n", StandardCharsets.UTF_8);
         ProcessBuilder pb = new ProcessBuilder(List.of(
                 hercules.toString(),
                 "-f", config.toString(),
                 "-r", script.toString(),
                 "-n",       // パネルを使わない
                 "-t2.0"));  // テストモードを有効にする ($runtest / runtest が使えるようになる)
+        // 命令試験に Rexx は不要。未導入の Windows 版が起動時に E メッセージを出さないようにする。
+        pb.environment().put("HREXX_PACKAGE", "none");
         pb.directory(workDir.toFile());
         pb.redirectErrorStream(true);
         pb.redirectOutput(logFile.toFile());
-        pb.redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")));
-
+        pb.redirectInput(ProcessBuilder.Redirect.from(input.toFile()));
         Process process = pb.start();
         if (!process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             process.destroyForcibly();
@@ -153,7 +184,9 @@ public final class HerculesRunner {
                     + " seconds for case " + testCase.name());
         }
 
-        String log = Files.readString(logFile, StandardCharsets.UTF_8);
+        // Windows 版のコンソールはローカルコードページの非 ASCII バイトを混ぜる。
+        // 解析対象の HHC メッセージと 16 進ダンプは ASCII なので、破損バイトは置換する。
+        String log = new String(Files.readAllBytes(logFile), StandardCharsets.UTF_8);
         List<String> errors = consoleErrors(log);
         if (!errors.isEmpty()) {
             // スクリプトが拒否されても Hercules は実行を続け、記憶域は初期値のまま残る。
@@ -178,6 +211,11 @@ public final class HerculesRunner {
     static List<String> consoleErrors(String log) {
         List<String> errors = new java.util.ArrayList<>();
         for (String line : log.split("\\R")) {
+            // Windows 版のポータブル配布物は Rexx を同梱しない。使用を無効にしても
+            // 起動時にこの E メッセージを出すが、命令試験には影響しない。
+            if (line.contains("HHC17511E REXX() Could not enable default Rexx package")) {
+                continue;
+            }
             if (CONSOLE_ERROR.matcher(line).find()) {
                 errors.add(line.trim());
             }

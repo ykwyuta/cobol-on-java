@@ -6,6 +6,7 @@ import dev.cobolonjava.compiler.CobolBuild;
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.hlasm.HlasmCompiler;
+import dev.cobolonjava.hlasm.SourceLibrary;
 import dev.cobolonjava.pli.PliBuild;
 import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
 import java.io.IOException;
@@ -84,7 +85,7 @@ final class ProgramBuild {
                 failures++;
             }
         }
-        failures += assemble(hlasm, output, catalogs, report);
+        failures += assemble(hlasm, layout.hlasmLibrary(), output, catalogs, report);
         if (cobol.isEmpty() && pli.isEmpty() && hlasm.isEmpty()) {
             report.info("no COBOL, PL/I or HLASM sources in " + layout.cobol() + " / "
                     + layout.pli() + " / " + layout.hlasm());
@@ -101,7 +102,7 @@ final class ProgramBuild {
      *
      * @return 失敗した原文の数
      */
-    private static int assemble(List<Path> sources, Path output,
+    private static int assemble(List<Path> sources, Path library, Path output,
                                 List<DeployCatalogManifest> catalogs, Report report)
             throws IOException {
         if (sources.isEmpty()) {
@@ -110,7 +111,7 @@ final class ProgramBuild {
         Set<String> taken = new HashSet<>();
         catalogs.forEach(catalog -> catalog.programs()
                 .forEach(program -> taken.add(program.className())));
-        HlasmCompiler compiler = HlasmCompiler.standard();
+        HlasmCompiler compiler = HlasmCompiler.withLibrary(SourceLibrary.directory(library));
         int failures = 0;
         int assembled = 0;
         for (Path source : sources) {
@@ -119,6 +120,9 @@ final class ProgramBuild {
             for (dev.cobolonjava.hlasm.Diagnostic diagnostic : result.diagnostics()) {
                 if (diagnostic.severity() == dev.cobolonjava.hlasm.Diagnostic.Severity.ERROR) {
                     report.error(diagnostic.toString());
+                } else if (diagnostic.severity()
+                        == dev.cobolonjava.hlasm.Diagnostic.Severity.INFO) {
+                    report.info(diagnostic.toString());
                 } else {
                     report.warn(diagnostic.toString());
                 }

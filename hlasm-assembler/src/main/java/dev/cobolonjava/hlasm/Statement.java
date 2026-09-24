@@ -14,8 +14,14 @@ import java.util.List;
  * @param operation 命令欄 (大文字)
  * @param operands  演算項欄。書かれていなければ空文字
  * @param line      文が始まる原文の行 (1 起点)
+ * @param identification 73〜80 桁の識別・順序欄
  */
-public record Statement(String label, String operation, String operands, int line) {
+public record Statement(String label, String operation, String operands, int line,
+                        String identification) {
+
+    public Statement(String label, String operation, String operands, int line) {
+        this(label, operation, operands, line, "");
+    }
 
     public boolean hasOperands() {
         return !operands.isEmpty();

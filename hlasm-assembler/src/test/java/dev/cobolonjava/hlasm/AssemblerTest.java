@@ -489,16 +489,16 @@ class AssemblerTest {
     }
 
     @Test
-    @DisplayName("マクロ定義は増分 2 の範囲として断る")
-    void rejectsMacroDefinitions() {
+    @DisplayName("ソース内マクロ定義は組み立て対象の文としては出力しない")
+    void acceptsMacroDefinitions() {
         Assembler.Result result = attempt(
                 "         MACRO",
                 "         MYMAC",
                 "         MEND",
                 "TEST     CSECT",
                 "         END");
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("macro"));
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        assertEquals(0, result.module().length());
     }
 
     @Test

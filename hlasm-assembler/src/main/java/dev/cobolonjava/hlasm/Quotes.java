@@ -16,8 +16,9 @@ package dev.cobolonjava.hlasm;
  *       (記号は数字から始まらない)</li>
  * </ul>
  *
- * <p>扱う属性は長さ {@code L'} だけである。{@code K'} {@code N'} {@code T'} は条件付きアセンブリの
- * ものであり、増分 2 で入れる。
+ * <p>長さ {@code L'} のほか、条件付きアセンブリの {@code D'} {@code I'} {@code K'}
+ * {@code N'} {@code O'} {@code S'} {@code T'} も
+ * 引用符とは読み分ける。評価できない属性式は組み立て診断にする。
  */
 final class Quotes {
 
@@ -34,7 +35,7 @@ final class Quotes {
             return true;
         }
         char previous = text.charAt(index - 1);
-        if (previous != 'L' && previous != 'l') {
+        if ("DIKLNOSTdiklnost".indexOf(previous) < 0) {
             return true;
         }
         if (index >= 2 && Expressions.isNamePart(text.charAt(index - 2))) {
@@ -43,6 +44,7 @@ final class Quotes {
         if (index + 1 < text.length()) {
             char next = text.charAt(index + 1);
             if (!Character.isLetter(next) && next != '@' && next != '#' && next != '$'
+                    && next != '&'
                     && next != '_' && next != '*') {
                 return true;
             }
