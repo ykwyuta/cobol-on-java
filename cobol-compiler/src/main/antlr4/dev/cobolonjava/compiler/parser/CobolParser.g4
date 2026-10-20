@@ -850,8 +850,11 @@ procedureWord
     | NUMBER
     ;
 
+// 文の無い終止符も読む (CardDemo の COADM01C は「END-EXEC.」の次の行に「.」を置く)。
+// 意味解析が警告して読み捨てる
 sentence
     : statement+ PERIOD
+    | PERIOD
     ;
 
 statement

@@ -338,7 +338,10 @@ public final class ProcedureBuilder {
         if (sentences.isEmpty() && !body.paragraph().isEmpty()) {
             sentences = body.paragraph(0).sentence();
         }
-        return sentences.isEmpty() ? null : sentences.get(0).statement(0).entryStatement();
+        if (sentences.isEmpty() || sentences.get(0).statement().isEmpty()) {
+            return null;
+        }
+        return sentences.get(0).statement(0).entryStatement();
     }
 
     /** 引数を並べた USING。手続き部の見出しか、先頭の ENTRY のどちらかにある。 */
@@ -1446,6 +1449,13 @@ public final class ProcedureBuilder {
     private List<Statement> statementsOf(List<CobolParser.SentenceContext> sentences) {
         List<Statement> statements = new ArrayList<>();
         for (CobolParser.SentenceContext sentence : sentences) {
+            if (sentence.statement().isEmpty()) {
+                // 規格は終止符の前に文を求める。Enterprise COBOL は翻訳を続けると見て、告げて捨てる。
+                // 実機がどの重さで告げるかは確かめていない
+                warn(ReferenceResolver.originOf(sentence),
+                        "a separator period without a statement was ignored");
+                continue;
+            }
             List<Statement> body = listOf(sentence.statement());
             statements.add(new Statement.Sentence(body,
                     ReferenceResolver.originOf(sentence)));

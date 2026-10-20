@@ -70,6 +70,18 @@ class ProcedureBuilderTest {
             "01 WS-B PIC X(5).");
 
     @Test
+    @DisplayName("文の無い終止符は告げて読み捨てる")
+    void aSeparatorPeriodWithoutAStatementIsIgnored() {
+        // CardDemo の COADM01C は「END-EXEC.」の次の行に「.」だけを置く
+        ProcedureBuilder.Result result = buildOk(SIMPLE, "MOVE WS-A TO WS-B.", ".");
+
+        assertEquals(1, result.statements().size(), "空の文は残らない");
+        assertTrue(result.diagnostics().stream().anyMatch(d -> d.isWarning()
+                && d.message().contains("separator period without a statement")),
+                () -> result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("MOVE は送り出しと受け取りを結び付ける (FR-060)")
     void moveConnectsItsSourceAndTargets() {
         Statement.Move move = firstMove(buildOk(SIMPLE, "MOVE WS-A TO WS-B."));
