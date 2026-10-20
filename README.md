@@ -28,6 +28,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: 端末へ出す START (TERMID) と一時データの trigger level による ATI](docs/design/83-cics-terminal-start-ati.md)
 - [設計: 3270 端末を TN3270 で受ける CICS の入口](docs/design/86-cics-tn3270.md) — Spring に依らず、x3270 / c3270 などの 3270 エミュレータがそのままつながる
 - [設計: Zeus の検査スイート (ZCVS / ZPVS / ZHVS) を流す](docs/design/87-zeus-suites.md) — 同じ権利者の Zeus が仕様から書いた Enterprise COBOL の自己検査を、コミットで固定して取ってきて流す
+- [設計: IBM MQ の MQI を region の中の待ち行列で動かす](docs/design/88-mq.md) — MQ の写し句を処理系が用意し、`CALL 'MQPUT'` などを Java のプログラムとして置く
 - [設計: デモ環境の簡易認証 (principal と CICS の user ID、transaction と START USERID の権限)](docs/design/84-cics-demo-security.md)
 - [設計: 断っていた CICS / Db2 の形の暫定仮仕様 (file control の残り、SYSID、NOSUSPEND、TD、START)](docs/design/85-cics-provisional-specs.md)
 - [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
@@ -312,6 +313,7 @@ Bank-of-Z の CICS 32 本が全数通るのとは大きな差で、業務資産�
 止まった行で数えた塊は、GenApp の `ASKTIME ABSTIME` に 4 byte の 2 進項目を渡す形 (14 本)、
 `RETURN TRANSID(データ名)` (9 本)、部分参照の中の `LENGTH OF` (7 本)、略記した複合条件 (3 本)、
 `ACCEPT ... FROM SYSIN` (2 本) などである (改善計画 §4 段階 0-2)。
+MQ の写し句 (`CMQGMOV`、`CMQODV` など) を処理系が用意して CardDemo は <b>31 本</b> になった (COACCT01、CODATE01。設計 88)。
 Enterprise COBOL の拡張を測る外の基準として、同じ権利者の Zeus が仕様から書いた検査スイート ZCVS (`d2f1cfc`) を
 (<b>z/OS の実機で期待値を確かめたものではない</b>。数は ZCVS の期待値との一致であって z/OS との一致ではない。設計 87 §1.1)
 `corpus.tsv` で固定して取り、`verify zcvs` で流す (設計 87)。<b>158 本中 64 本が期待どおり</b>で、実行 93 本の検査

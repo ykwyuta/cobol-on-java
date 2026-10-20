@@ -25,6 +25,7 @@
     <module>cobol-ims</module>
     <module>cobol-ims-rdb</module>
     <module>cobol-ims-jms</module>
+    <module>cobol-mq</module>
     <module>cobol-db2</module>
     <module>cobol-db2-jdbc</module>
     <module>cobol-spring-boot-4-autoconfigure</module>

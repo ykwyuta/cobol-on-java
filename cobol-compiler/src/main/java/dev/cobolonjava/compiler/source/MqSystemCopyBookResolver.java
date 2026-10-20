@@ -175,6 +175,8 @@ public final class MqSystemCopyBookResolver implements CopyBookResolver {
             {"MQRC-NONE", 0},
             {"MQRC-ALREADY-CONNECTED", 2002},
             {"MQRC-BUFFER-LENGTH-ERROR", 2005},
+            {"MQRC-CHAR-ATTR-LENGTH-ERROR", 2006},
+            {"MQRC-CHAR-ATTRS-TOO-SHORT", 2008},
             {"MQRC-CONNECTION-BROKEN", 2009},
             {"MQRC-DATA-LENGTH-ERROR", 2010},
             {"MQRC-ENVIRONMENT-ERROR", 2012},
@@ -182,8 +184,11 @@ public final class MqSystemCopyBookResolver implements CopyBookResolver {
             {"MQRC-GET-INHIBITED", 2016},
             {"MQRC-HCONN-ERROR", 2018},
             {"MQRC-HOBJ-ERROR", 2019},
+            {"MQRC-INT-ATTR-COUNT-ERROR", 2021},
+            {"MQRC-INT-ATTR-COUNT-TOO-SMALL", 2022},
             {"MQRC-MD-ERROR", 2026},
             {"MQRC-MSG-TYPE-ERROR", 2029},
+            {"MQRC-MSG-TOO-BIG-FOR-Q", 2030},
             {"MQRC-NO-MSG-AVAILABLE", 2033},
             {"MQRC-NOT-AUTHORIZED", 2035},
             {"MQRC-NOT-OPEN-FOR-INPUT", 2037},
@@ -193,6 +198,7 @@ public final class MqSystemCopyBookResolver implements CopyBookResolver {
             {"MQRC-OBJECT-IN-USE", 2042},
             {"MQRC-OBJECT-TYPE-ERROR", 2043},
             {"MQRC-OD-ERROR", 2044},
+            {"MQRC-OPTION-NOT-VALID-FOR-TYPE", 2045},
             {"MQRC-OPTIONS-ERROR", 2046},
             {"MQRC-PERSISTENCE-ERROR", 2047},
             {"MQRC-PRIORITY-ERROR", 2050},
@@ -206,6 +212,7 @@ public final class MqSystemCopyBookResolver implements CopyBookResolver {
             {"MQRC-TRUNCATED-MSG-FAILED", 2080},
             {"MQRC-UNKNOWN-OBJECT-NAME", 2085},
             {"MQRC-UNKNOWN-REMOTE-Q-MGR", 2087},
+            {"MQRC-WAIT-INTERVAL-ERROR", 2090},
             {"MQRC-FORMAT-ERROR", 2110},
             {"MQRC-NOT-CONVERTED", 2119},
             {"MQRC-Q-MGR-QUIESCING", 2161},
@@ -215,6 +222,7 @@ public final class MqSystemCopyBookResolver implements CopyBookResolver {
             {"MQRC-CONNECTION-QUIESCING", 2202},
             {"MQRC-CONNECTION-STOPPING", 2203},
             {"MQRC-CALL-IN-PROGRESS", 2219},
+            {"MQRC-MATCH-OPTIONS-ERROR", 2247},
             // 接続と対象の handle
             {"MQHC-DEF-HCONN", 0}, {"MQHC-UNUSABLE-HCONN", -1},
             {"MQHO-NONE", 0}, {"MQHO-UNUSABLE-HOBJ", -1},
@@ -281,7 +289,7 @@ public final class MqSystemCopyBookResolver implements CopyBookResolver {
             {"MQQA-GET-ALLOWED", 0}, {"MQQA-GET-INHIBITED", 1}, {"MQQA-PUT-ALLOWED", 0},
             {"MQQA-PUT-INHIBITED", 1}, {"MQQT-LOCAL", 1}, {"MQTC-OFF", 0}, {"MQTC-ON", 1},
             // 応用の種類
-            {"MQAT-CICS", 1}, {"MQAT-MVS", 2}, {"MQAT-ZOS", 2},
+            {"MQAT-NO-CONTEXT", 0}, {"MQAT-CICS", 1}, {"MQAT-MVS", 2}, {"MQAT-ZOS", 2},
     };
 
     /** CMQV の文字の定数: 名前、PICTURE、値。 */

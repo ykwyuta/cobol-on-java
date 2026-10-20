@@ -6383,3 +6383,74 @@ Zeus の読みと揃えた。z/OS で翻訳した `LENGTH OF` と突き合わせ
 IBM の写し句がどちらを使うかは確かめていない (Db2 の SQLCA は COMP-5 にした。P-120)。
 
 **解消条件**: z/OS の COBOL で各写し句を写したプログラムを翻訳し、`LENGTH OF` と各欄の位置、既定値の byte 列を採って比べる。
+
+## P-251 MQ の待ち行列は region の記憶域にあり、振る舞いは公開文書から書いて実機と突き合わせていない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。引数の読み方は Zeus (`d2f1cfc` の `crates/zeus-mq/src/mqi.rs`) から移した (ADR-0016)。待ち行列の振る舞いは Zeus が IBM MQ の client library に任せているので、公開文書から書いた |
+| 場所 | `MqQueueManager`、`LocalQueue`、`QueueDefinition`、`Mqi` |
+| 関連要件 | 設計 88 §3・§4 |
+
+**いまの扱い**: 局所待ち行列だけを持ち、電文は JVM の記憶域にある (再始動で消える。永続性は記述子に残すだけ)。
+定義の既定値は MAXDEPTH 999999999、MAXMSGL 4194304、DEFPRTY 0、DEFPSIST NO。渡す順は優先度、同じなら置いた順。
+PUT / GET の同期点の指定が無ければ同期点の下 (z/OS の既定)。作業単位の中の電文も深さに数える。
+MQGMO_WAIT は壁時計で待つ。切り詰めは既定で電文を残して 2080、ACCEPT_TRUNCATED_MSG で 2079。確かめる順は
+構造体 (目印・版・長さ) → 選択 → 長さ → 記述子の値 → 待ち行列の状態 (禁止・長さの上限・満杯)。
+持たない選択 (browse、文脈の受け渡し、報告電文、グループ、変換など) は理由コードを作らず
+`UnsupportedOperationException` で止める。
+
+**なぜ暫定か**: IBM MQ for z/OS の実機と、同じ呼び出しの完了コード・理由コード・返る記述子を突き合わせていない。
+誤りが重なったときにどの理由コードが先に出るかは、公開文書に順の定めが無く、ここで決めた。
+
+**どこがずれうるか**: 実機の既定値の定義 (SYSTEM.DEFAULT.LOCAL.QUEUE) を変えている環境。MSGDLVSQ(FIFO) の待ち行列
+(優先度を見ない)。誤りが 2 つ以上ある呼び出しの理由コード。MQOPEN が失敗したときの Hobj (ここでは
+MQHO_UNUSABLE_HOBJ を置く)。CICS の下で MQCMIT / MQBACK を呼んだとき (実機は MQRC_ENVIRONMENT_ERROR を返すはず
+だが、ここでは区別しない)。
+
+**解消条件**: IBM MQ for z/OS (または MQ Advanced for Developers の待ち行列管理者を z/OS の既定に寄せたもの) で、
+設計 88 §5 の各場合と、誤りを 2 つ重ねた呼び出しを流し、完了コード・理由コード・記述子の byte 列を採って比べる。
+
+## P-252 MQ の接続は実行単位ごとに 1 つ。MQHC_DEF_HCONN は暗黙の接続、MQDISC は確約、実行単位の終わりは持ち主が閉じる
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。暗黙の接続は Zeus (`d2f1cfc` の `crates/zeus-mq/src/mqi.rs` の `hconn`) の読み方を移した |
+| 場所 | `MqQueueManager.connection`、`Mqi.connect` / `mqdisc`、`JavaCallContext.runUnit` |
+| 関連要件 | 設計 88 §4.1 |
+
+**いまの扱い**: 接続は実行単位の鍵 (`JavaCallContext.runUnit()`) で引く。handle が 0 なら、無ければ作る
+(CICS の下と同じく MQCONN が要らない)。MQCONN / MQCONNX は同じ接続を明示のものにして handle を返し、2 度目は
+MQCC_WARNING / MQRC_ALREADY_CONNECTED。待ち行列管理者の名前が空白でも自分の名前でもなければ 2058。MQCONNX の
+接続の選択 (MQCNO) は見ない。MQDISC は作業単位を確約し、handle を閉じ、Hconn に MQHC_UNUSABLE_HCONN を置く。
+<b>実行単位が終わっても作業単位は確約も取り消しもされない</b>。持ち主が `MqQueueManager.endConnections(commit)` を呼ぶ。
+
+**なぜ暫定か**: z/OS の batch で MQCONN を呼ばずに handle 0 を使えるかは、batch の adapter と CICS の adapter で違う。
+資産 (CardDemo) はどれも CICS の下で 0 を使うので、0 を受けるほうに倒した。batch の MQDISC が確約するか取り消すかは
+RRS の有無で変わる。実行単位の終わりで確約する仕組み (CICS の task の終わり、batch の正常終了) はまだ持たない。
+
+**どこがずれうるか**: batch の資産が MQCONN を忘れたときに、実機は MQRC_HCONN_ERROR で止まるのにここでは動く。
+MQDISC を呼ばずに終わった batch の作業単位 (実機は正常終了で確約、異常終了で取り消し)。
+
+**解消条件**: CICS の SYNCPOINT と task の終わりに作業単位を合わせ (設計 88 §7)、batch の実行単位の終わりにも
+同じ口を作る。実機の batch で MQCONN なしの 0 と、MQDISC の前後の電文を採って比べる。
+
+## P-253 MQ の MsgId は 'CSQ ' と管理者の名前で始めて一意にするだけ。文脈の利用者・応用の名前は空白
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `MqQueueManager.newMessageId`、`MqQueueManager.setPutTime`、`Mqi.context` |
+| 関連要件 | 設計 88 §4.2 |
+
+**いまの扱い**: MsgId は 'CSQ ' と待ち行列管理者の名前の先頭 4 文字 (code page の文字) に、ミリ秒の時刻 8 byte と
+通し番号 8 byte を続ける。既定の文脈では PutApplType (既定 MQAT_ZOS、構築時に選ぶ)、PutDate (YYYYMMDD)、
+PutTime (HHMMSSTH) を UTC で置き、UserIdentifier・PutApplName・ApplIdentityData・ApplOriginData は空白、
+AccountingToken は 0 にする。MQPMO_NO_CONTEXT ではどれも空け、PutApplType を MQAT_NO_CONTEXT にする。
+
+**なぜ暫定か**: z/OS の MsgId の後ろ 16 byte の作り方は公開文書に無い。利用者の名前と応用の名前は task の
+利用者 ID と program の名前が入るはずだが、region がそれを MQI へ渡す口をまだ持たない。
+
+**どこがずれうるか**: MsgId の中身を解いたり、PutApplName で送り手を見分けたりする資産。
+
+**解消条件**: 実機で置いた電文の MsgId と文脈の欄を採る。CICS の task から利用者 ID と transaction を MQI へ渡す口を作る。
