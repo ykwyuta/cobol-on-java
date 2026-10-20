@@ -1,0 +1,3 @@
+PRB B.06.BEFORE  ||
+zcobc: run-time error: program NOSUCHPG not found
+RC=16

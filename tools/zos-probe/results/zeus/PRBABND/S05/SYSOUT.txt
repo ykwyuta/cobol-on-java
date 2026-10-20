@@ -1,0 +1,3 @@
+PRB B.05.BEFORE  ||
+zcobc: run-time error: SSRANGE: table reference W-ELT outside its defined region
+RC=16

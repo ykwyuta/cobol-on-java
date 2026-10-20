@@ -1,0 +1,3 @@
+PRB H.21.BEFORE  ||
+zcobc: run-time error: /home/user/cobol-on-java/tools/zos-probe/hlasm/ASMPM.asm:33: A: fixed-point-overflow exception
+RC=16

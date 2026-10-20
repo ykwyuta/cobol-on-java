@@ -1,0 +1,51 @@
+== CBLABND.cbl rc=0
+== CBLACPT.cbl rc=0
+== CBLASMD.cbl rc=0
+== CBLBIN31.cbl rc=12
+   /home/user/cobol-on-java/tools/zos-probe/cobol/CBLBIN31.cbl:16: S: PICTURE exceeds ARITH(COMPAT/EXTEND) digit limit
+== CBLC72A.cbl rc=0
+== CBLC72B.cbl rc=12
+   /home/user/cobol-on-java/tools/zos-probe/cobol/CBLC72B.cbl:21: S: unterminated literal
+== CBLC72C.cbl rc=0
+== CBLCP.cbl rc=0
+== CBLDEBUG.cbl rc=0
+== CBLDUMP.cbl rc=0
+== CBLEDIT.cbl rc=0
+== CBLFLT.cbl rc=0
+== CBLFUNC.cbl rc=12
+   /home/user/cobol-on-java/tools/zos-probe/cobol/CBLFUNC.cbl:43: S: unknown function EXP
+== CBLFUNX.cbl rc=12
+   /home/user/cobol-on-java/tools/zos-probe/cobol/CBLFUNX.cbl:12: S: PICTURE exceeds ARITH(COMPAT/EXTEND) digit limit
+== CBLGEN.cbl rc=0
+== CBLINSP.cbl rc=0
+== CBLNUM.cbl rc=0
+== CBLOPT.cbl rc=0
+== CBLOPTN.cbl rc=0
+== CBLPARM.cbl rc=0
+== CBLPRNC.cbl rc=0
+== CBLPRNT.cbl rc=0
+== CBLRC.cbl rc=0
+== CBLSYNC.cbl rc=0
+== CBLWSINI.cbl rc=0
+== PLIMAP.pli rc=0
+== PLIPTR.pli rc=0
+== PLIPTRS.pli rc=0
+== PLISTR2.pli rc=0
+== PLISTRM.pli rc=0
+== ASMDC1.asm rc=0
+== ASMDC2.asm rc=12
+   /home/user/cobol-on-java/tools/zos-probe/hlasm/ASMDC2.asm:31: ERROR severity 12: DC: floating-point nominal must be quoted or a parenthesized special value
+   HLASM diagnostics are incomplete; no module will be emitted
+== ASMDC3.asm rc=0
+== ASMEXE.asm rc=12
+   /home/user/cobol-on-java/tools/zos-probe/hlasm/ASMEXE.asm:97: UNRESOLVED_OPERATION severity 12: unsupported instruction or macro MVO; macro member not found
+   /home/user/cobol-on-java/tools/zos-probe/hlasm/ASMEXE.asm:99: UNRESOLVED_OPERATION severity 12: unsupported instruction or macro MVO; macro member not found
+   /home/user/cobol-on-java/tools/zos-probe/hlasm/ASMEXE.asm:35: ERROR severity 12: B: no USING for JTAB
+   HLASM diagnostics are incomplete; no module will be emitted
+== ASMPM.asm rc=0
+== CBLFUNC.cbl --options ARITH(EXTEND) rc=12
+   /home/user/cobol-on-java/tools/zos-probe/cobol/CBLFUNC.cbl:43: S: unknown function EXP
+== CBLFUNX.cbl --options ARITH(EXTEND) rc=12
+   /home/user/cobol-on-java/tools/zos-probe/cobol/CBLFUNX.cbl:27: S: unknown function EXP
+== CBLBIN31.cbl --options ARITH(EXTEND) rc=0
+== CBLABND.cbl --options SSRANGE rc=0

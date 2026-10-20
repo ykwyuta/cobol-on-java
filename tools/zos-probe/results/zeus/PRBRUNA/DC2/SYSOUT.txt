@@ -1,0 +1,3 @@
+PRB H.31.BEFORE  ||
+zcobc: run-time error: program ASMDC2 not found
+RC=16
