@@ -75,8 +75,12 @@ public final class SuiteSummary {
         return out.toString();
     }
 
-    /** 「ZA101A.CBL:12:8: 」の頭を外す。同じ原因が行の番号で散らないようにする。 */
-    private static String stripPosition(String reason) {
-        return reason == null ? "" : reason.replaceFirst("^[^:\\s]+:\\d+:\\d+: ", "");
+    /**
+     * 「ZA101A.CBL:12:8: 」の頭と「 in PA101A.PLI」の尻のファイル名を外す。同じ原因がファイルや行の番号で
+     * 散らないようにする (CLAUDE.md §4)。
+     */
+    static String stripPosition(String reason) {
+        return reason == null ? "" : reason.replaceFirst("^[^:\\s]+:\\d+:\\d+: ", "")
+                .replaceAll(" in [A-Z0-9#@$]+\\.(?i:CBL|PLI|ASM)\\b", "");
     }
 }

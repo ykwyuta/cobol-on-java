@@ -315,6 +315,8 @@ Bank-of-Z の CICS 32 本が全数通るのとは大きな差で、業務資産�
 Enterprise COBOL の拡張を測る外の基準として、同じ権利者の Zeus が仕様から書いた検査スイート ZCVS (`d2f1cfc`) を
 `corpus.tsv` で固定して取り、`verify zcvs` で流す (設計 87)。<b>158 本中 64 本が期待どおり</b>で、実行 93 本の検査
 1,431 件のうち 通った 651 / 落ちた 34 / 途中で止まって出なかった 746 である。断るべき 45 本のうち 17 本を通してしまう。
+同じスイートの PL/I 版 ZPVS は 68 本中 16 本、HLASM 版 ZHVS は 125 本中 32 本が期待どおりで、どちらも実行する本は報告を書く
+前の翻訳で止まる (PL/I のレコード入出力、HLASM の V 型定数とファイルのマクロが無い)。
 IMS は、同じ Bank-of-Z の IMS の COBOL 11 本を `verify corpus <cobol> -I <copy>` で流して測っている。
 <b>翻訳が通るのは 10 本</b>である (測り始めは 0 本)。手続き部の先頭の `ENTRY "DLITCBL" USING` をプログラムの引数とし (P-152)、
 `PROGRAM-ID` の終止符の欠落と、演算子に空白を置かない `<=1` を受ける。残る IBTRAN は OO COBOL の `REPOSITORY` と JNI で止まる。

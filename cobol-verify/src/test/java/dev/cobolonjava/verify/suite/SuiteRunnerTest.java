@@ -23,7 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
  * 断るべきなのに通る本、終了コードを、道具が取り違えずに数えるかを見る。道具が失敗を作れば、
  * 数そのものが信用できなくなる。
  */
-class CobolSuiteRunnerTest {
+class SuiteRunnerTest {
 
     @Test
     @DisplayName("manifest.toml のプログラムごとの条件を読み、知らない鍵は断る")
@@ -51,6 +51,15 @@ class CobolSuiteRunnerTest {
         assertEquals(SuiteManifest.Expect.RUN, manifest.program("ZZ999A").expect());
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                 () -> SuiteManifest.parse("[programs.X]\nretries = 3"));
+    }
+
+    @Test
+    @DisplayName("理由を数えるとき、行の位置とファイル名を外して同じ原因をまとめる")
+    void groupsReasonsWithoutPositionsOrFileNames() {
+        assertEquals("statement WRITE is not supported yet",
+                SuiteSummary.stripPosition("statement WRITE is not supported yet in PA101A.PLI"));
+        assertEquals("undefined data item: TALLY",
+                SuiteSummary.stripPosition("ZS101A.CBL:36:26: undefined data item: TALLY"));
     }
 
     @Test
@@ -106,7 +115,7 @@ class CobolSuiteRunnerTest {
         Files.writeString(ze.resolve("ZE101N.CBL"), program("ZE101N", "MOVE NOWHERE TO R"));
         Files.writeString(ze.resolve("ZE101P.CBL"), program("ZE101P", "MOVE SPACES TO R"));
 
-        Map<String, SuiteOutcome> outcomes = new CobolSuiteRunner(suite).run(Set.of()).stream()
+        Map<String, SuiteOutcome> outcomes = new SuiteRunner(suite, SuiteLanguage.COBOL).run(Set.of()).stream()
                 .collect(Collectors.toMap(SuiteOutcome::program, Function.identity()));
 
         assertEquals(SuiteOutcome.Status.PASSED, outcomes.get("ZA101A").status());

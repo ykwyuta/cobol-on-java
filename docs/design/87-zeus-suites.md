@@ -2,10 +2,10 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | ZCVS (COBOL) を実装。ZPVS (PL/I) と ZHVS (HLASM) は後続の増分 |
+| 状態 | ZCVS (COBOL)、ZPVS (PL/I)、ZHVS (HLASM) を同じハーネスで流す |
 | 対応要件 | NFR-042 (コーパスを同梱しない)、CLAUDE.md §1 (外の基準を先に置く)・§6 (道具が失敗を作らない) |
 | 検証レベル | V1。Zeus のスイートが仕様から書いた期待値で、こちらの処理系を翻訳・実行して測る |
-| 場所 | `cobol-verify` の `dev.cobolonjava.verify.suite`、コマンド `verify zcvs <zeus>/zcvs` |
+| 場所 | `cobol-verify` の `dev.cobolonjava.verify.suite`、コマンド `verify zcvs` / `verify zpvs` / `verify zhvs` (`<zeus>/z?vs`) |
 
 ## 1. 位置づけ
 
@@ -90,4 +90,24 @@ DD 名、`3ef0286`)、次の数になった。
 | 落ちた検査 (ODO の長さ、2 進の境界、NUMPROC の符号、CODE-SET、代替索引、テープの HDR など) | 11 本 34 件 | ZD113A |
 | そのほか 1 本ずつ (`RECORDING MODE S / U`、`TALLY`、`CEEDAYS`、`TITLE`、`SET ... UP BY` の書き方など) | 14 | ZS101A |
 
-ZPVS と ZHVS は後続の増分で同じハーネスに載せる。
+### ZPVS (PL/I) と ZHVS (HLASM)
+
+言語ごとの違いは翻訳だけ (`SuiteLanguage`) で、翻訳したものはどれも `CobolProgram` のクラスなので、動かす段と報告を読む段は
+COBOL と共通である。PL/I の `%INCLUDE` と HLASM のマクロはスイートの `copy/` から引く。報告の行は言語で空白の数が違い
+(COBOL は 5 桁、PL/I は 1 桁、HLASM は名前を 6 桁目に置く)、PL/I と HLASM の報告は「END OF TEST-」ではなく集計の行で終わる。
+
+| スイート | 本数 | 期待どおり | 実行 (全検査が通った) | 検査 (通った / 出なかった) | 断るべきもの (断った) | 対照 (通った) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ZPVS | 68 | 16 | 38 (0) | 318 (0 / 318) | 15 (8) | 15 (8) |
+| ZHVS | 125 | 32 | 85 (0) | 537 (0 / 537) | 20 (17) | 20 (15) |
+
+どちらも、実行する本は報告を書く前の翻訳で止まっている。
+
+- ZPVS: 報告を書く `WRITE FILE(REPORT) FROM(...)` (レコード入出力) が未実装で、38 本中 36 本がここで止まる。ほかに値を返す
+  `RETURN`、`ALLOCATE`、`LEAVE` / `ITERATE`、`LOCATE`、定数でない配列の境界
+- ZHVS: 検査の行を書く補助ルーチンを `L 15,=V(ZHVRPT)` で呼ぶので、V 型の定数が未実装の 83 本がここで止まる。補助ルーチン
+  ZHVRPT 自体もシステムのマクロ `DCB` / `OPEN` / `PUT` / `CLOSE` を使う
+- 断るべきものを通したのは ZPVS 7 本、ZHVS 3 本
+
+PL/I と HLASM の翻訳系は、これまで CCVS85 のような外の基準を持たず、Bank-of-Z の資産で測っていた。実行の段で測るには、
+PL/I のレコード入出力と、HLASM の V 型定数とファイルのマクロが先に要る。

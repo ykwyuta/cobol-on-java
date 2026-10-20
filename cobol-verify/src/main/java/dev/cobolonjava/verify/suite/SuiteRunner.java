@@ -1,10 +1,5 @@
 package dev.cobolonjava.verify.suite;
 
-import dev.cobolonjava.compiler.CobolCompiler;
-import dev.cobolonjava.compiler.source.CompilerOptions;
-import dev.cobolonjava.compiler.source.CopyBookResolver;
-import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
-import dev.cobolonjava.compiler.source.Preprocessor;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.file.DataSetCatalog;
@@ -27,7 +22,6 @@ import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -37,11 +31,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Zeus の COBOL 検査スイート ZCVS を、こちらの処理系で翻訳して動かす (設計 87)。
+ * Zeus の検査スイート (ZCVS / ZPVS / ZHVS) を、こちらの処理系で翻訳して動かす (設計 87)。
  *
- * <p>流し方は Zeus のハーネス ({@code crates/zeus-ccvs/src/runner.rs}) に揃える。モジュールの {@code lib/} にある
- * 補助プログラムを先に翻訳し、主プログラムと同じ読み込み器へ入れて CALL で引けるようにする。報告は
- * {@code ASSIGN TO REPORT} のファイルで、CCVS85 と同じ「END OF TEST-」で終わる。
+ * <p>流し方は Zeus のハーネス ({@code crates/zeus-ccvs/src/runner.rs}) に揃える。スイートとモジュールの
+ * {@code lib/} にある補助プログラムを翻訳し、主プログラムと同じ読み込み器へ入れて CALL で引けるようにする。
+ * 報告は {@code REPORT} の DD へ書かれる。言語ごとの違いは翻訳だけで ({@link SuiteLanguage})、翻訳したものは
+ * どれも {@code CobolProgram} のクラスなので、動かす段と報告を読む段は共通である。
  *
  * <h2>道具が失敗を作らない (CLAUDE.md §6)</h2>
  * <ul>
@@ -52,29 +47,37 @@ import java.util.regex.Pattern;
  *   <li>報告を読むときは {@code coverage.json} の一覧と突き合わせ、書かれなかった検査を「出なかった」と数える</li>
  * </ul>
  */
-public final class CobolSuiteRunner {
+public final class SuiteRunner {
 
     /** 1 本の翻訳と実行のそれぞれに許す時間 (秒)。CCVS85 の道具と同じである。 */
     public static final long LIMIT_SECONDS = 60;
 
-    /** 報告の 1 行。「PASS 」か「FAIL*」、5 桁の空白、検査の名前 (20 桁まで)。 */
+    /**
+     * 報告の 1 行。「PASS」か「FAIL*」、空白、検査の名前 (20 桁まで)。空白の数は言語で違う
+     * (COBOL は 5 桁、PL/I は 1 桁、HLASM は名前を 6 桁目に置く)。
+     */
     private static final Pattern ASSERTION =
-            Pattern.compile("(PASS |FAIL\\*) {5}([A-Z0-9][A-Z0-9#@$-]{0,19})");
+            Pattern.compile("(?<![A-Z0-9*])(PASS|FAIL\\*) +([A-Z0-9][A-Z0-9#@$-]{0,19})");
+    /** 最後まで書いた印。COBOL は「END OF TEST-」、PL/I と HLASM は集計の行で終わる。 */
+    private static final Pattern COMPLETE =
+            Pattern.compile("END OF TEST-|TESTS WERE EXECUTED SUCCESSFULLY");
 
     private final Path suite;
+    private final SuiteLanguage language;
     private final SuiteManifest manifest;
     private final SuiteCoverage coverage;
     private final long limitSeconds;
 
-    public CobolSuiteRunner(Path suite, long limitSeconds) {
+    public SuiteRunner(Path suite, SuiteLanguage language, long limitSeconds) {
         this.suite = suite;
+        this.language = language;
         this.manifest = SuiteManifest.load(suite);
         this.coverage = SuiteCoverage.load(suite);
         this.limitSeconds = limitSeconds;
     }
 
-    public CobolSuiteRunner(Path suite) {
-        this(suite, LIMIT_SECONDS);
+    public SuiteRunner(Path suite, SuiteLanguage language) {
+        this(suite, language, LIMIT_SECONDS);
     }
 
     public SuiteManifest manifest() {
@@ -106,86 +109,97 @@ public final class CobolSuiteRunner {
         SuiteManifest.Program config = manifest.program(program);
         List<String> tests = coverage.testsOf(program);
         int expected = config.expect() == SuiteManifest.Expect.RUN ? tests.size() : 1;
-        CobolCompiler compiler = compiler(config);
-        Compiled main = compile(compiler, source);
-        if (main.timedOut()) {
-            return SuiteOutcome.simple(module, program, config.expect(), SuiteOutcome.Status.TIMED_OUT,
-                    "compilation did not return within " + limitSeconds + "s", expected);
+        Translated main = translate(source, config);
+        if (main.failure() != null) {
+            return SuiteOutcome.simple(module, program, config.expect(), main.status(), main.failure(), expected);
         }
-        if (main.crash() != null) {
-            return SuiteOutcome.simple(module, program, config.expect(), SuiteOutcome.Status.CRASHED,
-                    main.crash(), expected);
-        }
-        CobolCompiler.Result result = main.result();
+        SuiteLanguage.Translation result = main.translation();
         switch (config.expect()) {
             case COMPILE_ERROR -> {
                 if (result.succeeded()) {
                     return SuiteOutcome.simple(module, program, config.expect(),
                             SuiteOutcome.Status.ACCEPTED_WRONGLY, "the program was accepted", 1);
                 }
-                String diagnostics = result.diagnostics().toString();
-                boolean wording = config.diagnosticContains() != null && diagnostics.toLowerCase(Locale.ROOT)
-                        .contains(config.diagnosticContains().toLowerCase(Locale.ROOT));
+                boolean wording = config.diagnosticContains() != null && String.join("\n", result.errors())
+                        .toLowerCase(Locale.ROOT).contains(config.diagnosticContains().toLowerCase(Locale.ROOT));
                 return new SuiteOutcome(module, program, config.expect(), SuiteOutcome.Status.PASSED,
-                        firstDiagnostic(result), 1, 1, 0, 0, wording);
+                        result.errors().get(0), 1, 1, 0, 0, wording);
             }
             case COMPILE_ONLY -> {
                 return result.succeeded()
                         ? new SuiteOutcome(module, program, config.expect(), SuiteOutcome.Status.PASSED, "",
                                 1, 1, 0, 0, false)
                         : SuiteOutcome.simple(module, program, config.expect(),
-                                SuiteOutcome.Status.NOT_COMPILED, firstDiagnostic(result), 1);
+                                SuiteOutcome.Status.NOT_COMPILED, result.errors().get(0), 1);
             }
             default -> {
                 if (!result.succeeded()) {
                     return SuiteOutcome.simple(module, program, config.expect(),
-                            SuiteOutcome.Status.NOT_COMPILED, firstDiagnostic(result), expected);
+                            SuiteOutcome.Status.NOT_COMPILED, result.errors().get(0), expected);
                 }
             }
         }
-        List<CobolCompiler.Compiled> programs = new ArrayList<>(result.programs());
+        List<SuiteLanguage.Unit> units = new ArrayList<>(result.units());
         for (Path helper : helpers) {
-            Compiled called = compile(compiler, helper);
-            if (called.result() == null || !called.result().succeeded()) {
-                String why = called.timedOut() ? "timed out"
-                        : called.crash() != null ? called.crash() : firstDiagnostic(called.result());
+            Translated called = translate(helper, SuiteManifest.Program.DEFAULT);
+            String why = called.failure() != null ? called.failure()
+                    : called.translation().succeeded() ? null : called.translation().errors().get(0);
+            if (why != null) {
                 return SuiteOutcome.simple(module, program, config.expect(), SuiteOutcome.Status.NOT_COMPILED,
                         "helper " + stem(helper) + ": " + why, expected);
             }
-            programs.addAll(called.result().programs());
+            units.addAll(called.translation().units());
         }
-        return execute(module, program, source, config, tests, programs);
+        return execute(module, program, source, config, tests, units, result.signature());
+    }
+
+    /** 翻訳の結末。時間切れと例外は失敗の理由として分けて持つ。 */
+    private record Translated(SuiteLanguage.Translation translation, SuiteOutcome.Status status, String failure) {
+    }
+
+    private Translated translate(Path source, SuiteManifest.Program config) {
+        SuiteLanguage.Translation[] holder = new SuiteLanguage.Translation[1];
+        Throwable thrown = awaited(stem(source), () -> {
+            holder[0] = language.translate(suite, source, config);
+            return null;
+        });
+        if (thrown == TIMED_OUT) {
+            return new Translated(null, SuiteOutcome.Status.TIMED_OUT,
+                    "translation did not return within " + limitSeconds + "s");
+        }
+        if (thrown != null) {
+            return new Translated(null, SuiteOutcome.Status.CRASHED, "translation failed: " + describe(thrown));
+        }
+        return new Translated(holder[0], null, null);
     }
 
     private SuiteOutcome execute(String module, String program, Path source, SuiteManifest.Program config,
-                                 List<String> tests, List<CobolCompiler.Compiled> programs) {
-        CodePage codePage = codePage(config);
+                                 List<String> tests, List<SuiteLanguage.Unit> units, ProgramSignature signature) {
+        CodePage codePage = config.ccsid() < 0 ? CodePages.DEFAULT
+                : CodePages.forName(String.valueOf(config.ccsid()));
         Path directory;
         try {
-            directory = Files.createTempDirectory("zcvs-" + program + "-");
+            directory = Files.createTempDirectory("zeus-suite-" + program + "-");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
         try {
             Generated loader = new Generated();
             Class<?> first = null;
-            ProgramSignature signature = null;
             try {
-                for (CobolCompiler.Compiled compiled : programs) {
-                    Class<?> type = loader.define(compiled.className(), compiled.classFile());
+                for (SuiteLanguage.Unit unit : units) {
+                    Class<?> type = loader.define(unit.className(), unit.classFile());
                     if (first == null) {
                         first = type;
-                        signature = compiled.programSignature();
                     }
                 }
             } catch (RuntimeException | LinkageError thrown) {
                 return SuiteOutcome.simple(module, program, config.expect(), SuiteOutcome.Status.CRASHED,
                         describe(thrown), tests.size());
             }
-            Supplier<String> input = input(source);
             ProgramContext context = ProgramContext.standard()
                     .withOutput(OutputStream.nullOutputStream())
-                    .withInput(input)
+                    .withInput(input(source))
                     .withCodePage(codePage)
                     .withCatalog(new DataSetCatalog(directory));
             DataView[] arguments = parm(config.parm(), signature, codePage);
@@ -210,27 +224,22 @@ public final class CobolSuiteRunner {
     }
 
     /** 報告を一覧と突き合わせる。 */
-    private SuiteOutcome judged(String module, String program, SuiteManifest.Program config, List<String> tests,
-                                String report, Throwable thrown, int returnCode) {
+    private static SuiteOutcome judged(String module, String program, SuiteManifest.Program config,
+                                       List<String> tests, String report, Throwable thrown, int returnCode) {
         Set<String> passed = new LinkedHashSet<>();
         Set<String> failed = new LinkedHashSet<>();
-        List<String> failures = new ArrayList<>();
         Matcher line = ASSERTION.matcher(report);
         while (line.find()) {
-            String name = line.group(2);
-            if (line.group(1).startsWith("PASS")) {
-                passed.add(name);
-            } else {
-                failed.add(name);
-                failures.add(name);
-            }
+            (line.group(1).equals("PASS") ? passed : failed).add(line.group(2));
         }
         int pass = 0;
         int fail = 0;
         int missing = 0;
+        List<String> failures = new ArrayList<>();
         for (String test : tests) {
             if (failed.contains(test)) {
                 fail++;
+                failures.add(test);
             } else if (passed.contains(test)) {
                 pass++;
             } else {
@@ -257,50 +266,9 @@ public final class CobolSuiteRunner {
                 tests.size(), pass, fail, missing, false);
     }
 
-    /** 翻訳と実行のコードページ。翻訳には CODEPAGE オプションとして渡す。 */
-    private static CodePage codePage(SuiteManifest.Program config) {
-        return config.ccsid() < 0 ? CodePages.DEFAULT : CodePages.forName(String.valueOf(config.ccsid()));
-    }
-
-    private CobolCompiler compiler(SuiteManifest.Program config) {
-        CopyBookResolver copies = new DirectoryCopyBookResolver(suite.resolve("copy"));
-        CopyBookResolver alternate = new DirectoryCopyBookResolver(suite.resolve("copyalt"));
-        // COPY X OF COPYALT は copyalt の下から引く (ZX103A)。Zeus も同じ名前の置き場を作って流す
-        CopyBookResolver resolver = (name, library) -> library != null && library.equalsIgnoreCase("COPYALT")
-                ? alternate.resolve(name, null)
-                : copies.resolve(name, null);
-        CobolCompiler compiler = new CobolCompiler(Preprocessor.with(resolver));
-        if (config.ccsid() >= 0) {
-            // 翻訳時のコードページは定数の符号化を決める。こちらが受けない CCSID なら翻訳系が断る
-            compiler = compiler.withOptions(new CompilerOptions(Map.of("CODEPAGE",
-                    String.valueOf(config.ccsid()))));
-        }
-        return compiler;
-    }
-
-    /** 翻訳の結末。時間切れと例外を結果から分けて持つ。 */
-    private record Compiled(CobolCompiler.Result result, String crash, boolean timedOut) {
-    }
-
-    private Compiled compile(CobolCompiler compiler, Path source) {
-        String text = read(source);
-        CobolCompiler.Result[] holder = new CobolCompiler.Result[1];
-        Throwable thrown = awaited(stem(source), () -> {
-            holder[0] = compiler.compile(source.getFileName().toString(), text);
-            return null;
-        });
-        if (thrown == TIMED_OUT) {
-            return new Compiled(null, null, true);
-        }
-        if (thrown != null) {
-            return new Compiled(null, describe(thrown), false);
-        }
-        return new Compiled(holder[0], null, false);
-    }
-
     /**
      * PARM を主プログラムへ渡す。ジョブの実行 ({@code JobRunner}、P-090) と同じく、連絡節の 1 つ目が宣言した長さまで
-     * 領域を取り、頭に長さの半語と PARM を置く。USING を書かないプログラムには何も渡さない。
+     * 領域を取り、頭に長さの半語と PARM を置く。引数を受けないプログラムには何も渡さない。
      */
     private static DataView[] parm(String parm, ProgramSignature signature, CodePage codePage) {
         if (signature == null || signature.parameters().isEmpty()) {
@@ -335,7 +303,7 @@ public final class CobolSuiteRunner {
                     continue;
                 }
                 String text = codePage.decode(Files.readAllBytes(file));
-                if (text.contains("END OF TEST-")) {
+                if (COMPLETE.matcher(text).find()) {
                     return text;
                 }
             }
@@ -343,15 +311,6 @@ public final class CobolSuiteRunner {
         } catch (IOException e) {
             return null;
         }
-    }
-
-    /** 最初の診断。止まった原文の行を持つ (CLAUDE.md §4)。 */
-    private static String firstDiagnostic(CobolCompiler.Result result) {
-        return result.diagnostics().stream()
-                .filter(diagnostic -> !diagnostic.isWarning())
-                .findFirst()
-                .map(Object::toString)
-                .orElse("(no diagnostic)");
     }
 
     /** 時間切れを表す番人。 */
@@ -374,7 +333,7 @@ public final class CobolSuiteRunner {
                 outcome = caught;
             }
             done.offer(outcome);
-        }, "zcvs-" + name, 256L * 1024 * 1024);
+        }, "zeus-suite-" + name, 256L * 1024 * 1024);
         worker.setDaemon(true);
         worker.start();
         try {
@@ -394,7 +353,7 @@ public final class CobolSuiteRunner {
     private static final class Generated extends ClassLoader {
 
         private Generated() {
-            super(CobolSuiteRunner.class.getClassLoader());
+            super(SuiteRunner.class.getClassLoader());
         }
 
         Class<?> define(String name, byte[] classFile) {
@@ -402,12 +361,13 @@ public final class CobolSuiteRunner {
         }
     }
 
-    private static List<Path> sources(Path directory) {
+    private List<Path> sources(Path directory) {
         if (!Files.isDirectory(directory)) {
             return List.of();
         }
+        String suffix = "." + language.extension();
         try (var files = Files.list(directory)) {
-            return files.filter(path -> path.getFileName().toString().toUpperCase(Locale.ROOT).endsWith(".CBL"))
+            return files.filter(path -> path.getFileName().toString().toUpperCase(Locale.ROOT).endsWith(suffix))
                     .sorted(Comparator.comparing(path -> path.getFileName().toString()))
                     .toList();
         } catch (IOException e) {
