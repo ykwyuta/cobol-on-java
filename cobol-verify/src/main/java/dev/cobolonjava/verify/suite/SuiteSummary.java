@@ -20,6 +20,9 @@ public final class SuiteSummary {
     public static String text(String title, List<SuiteOutcome> outcomes) {
         StringBuilder out = new StringBuilder();
         out.append(title).append('\n');
+        // 期待値は Zeus が仕様から書いたもので、z/OS の実機で確かめたものではない (設計 87 §1.1)。
+        // 数を「z/OS との一致」と読み違えないよう、出力の頭に書いておく
+        out.append("(期待値は Zeus が仕様から書いたもので、z/OS の実機では確かめていない。数は z/OS との一致ではない)\n");
         int programs = outcomes.size();
         long passed = outcomes.stream().filter(SuiteOutcome::succeeded).count();
         List<SuiteOutcome> runs = outcomes.stream()

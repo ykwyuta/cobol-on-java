@@ -16,6 +16,9 @@
 
 - 命令レベル: Hercules (`cobol-oracle`)
 - 言語レベル: NIST CCVS85 (`cobol-verify`)
+- Enterprise COBOL / PL/I / HLASM の拡張: Zeus の ZCVS / ZPVS / ZHVS (`cobol-verify`、設計 87)。
+  <b>ただし z/OS の実機で期待値を確かめたものではない</b> (2026-10-20 時点)。落ちても、それだけを根拠に
+  振る舞いを変えない。仕様に戻って決め、根拠を書く
 
 道具を作った当日、<b>自分では思い付かなかった</b>不備が 8 つ出た。以後、増分の順番は
 ほぼすべてこの道具が決めている。
