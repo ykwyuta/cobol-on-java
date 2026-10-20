@@ -237,10 +237,17 @@ CLAUDE.md の型 (外の基準を先に置く → いちばん大きい塊から
 | `FUNCTION TEST-NUMVAL` / `TEST-NUMVAL-C` (P-194) | `0b07a4e` | 2 本が次の塊へ |
 | 端末制御の `SEND FROM` (制御文字の無いデータだけ、P-195) | `0bcee0f` | 3 本が通り、COACTVWC が「壊れた」に出た |
 | 同じ名前の段落が 2 つあると落ちる (手続きの一覧) | `b81d925` | COACTVWC が通った (24 本) |
+| 見出しに USING があっても先頭の `ENTRY 'DLITCBL'` を IMS の入口とする (P-152 を広げた) | `6c72add` | IMS の 3 本が通った (27 本) |
+| `WRITEQ TD` の `LENGTH (LENGTH OF FROM)` | (この日の後半) | CORPT00C が通った |
+| 原文のタブを空白として読む | 〃 | CBSTM03A が次の塊へ |
+| 関数の値の部分参照 `FUNCTION CURRENT-DATE(1:4)` | 〃 | CBIMPORT が次の塊 (作業場所のレコードキー) へ |
+| 文の無い終止符を警告して読み捨てる | 〃 | COADM01C が次の塊へ (29 本) |
+| 修飾した名前の `LENGTH OF X OF G` | 〃 | 2 本が次の塊 (option の添字つきデータ名) へ |
 
-CardDemo は 44 本中 9 → 24 本。残る塊は、入口の別名の `ENTRY` (3 本)、`EXEC` の未知の処理系 (3 本)、
-DB2 の VARCHAR (49 レベルの組) のホスト変数 (2 本)、MQ の写し句 (3 本)、`RECEIVE MAP` の `INTO` の省略、
-修飾した名前の `LENGTH OF` などである。
+CardDemo は 44 本中 9 → 29 本。残る塊は、`EXEC DLI` (3 本。DIB と PCB の番号と SSA の組み立て、CICS の `SCHD` が要る)、
+DB2 の VARCHAR (49 レベルの組) のホスト変数 (2 本)、MQ の写し句 (3 本。IBM の写し句は写さないので公開仕様から作る)、
+`EXEC CICS` の option に添字つきのデータ名を書く形 (2 本)、作業場所に置いたレコードキー (2 本。規格はレコードの中を
+求めるので断りを残す)、`RECEIVE MAP` の `INTO` の省略、可変長の部分参照などである。
 GenApp は 0 本のままで、`ASKTIME ABSTIME` に 4 byte の 2 進項目を渡す形 (14 本) が先頭にある
 (暫定の仕様を置くかどうかは権利者の判断待ち)。
 
