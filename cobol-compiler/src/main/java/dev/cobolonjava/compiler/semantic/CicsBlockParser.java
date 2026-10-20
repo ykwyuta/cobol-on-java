@@ -972,14 +972,16 @@ final class CicsBlockParser {
         String[] length = options.get("LENGTH");
         String lengthName = null;
         int lengthLiteral = -1;
-        if (length != null && !reads && isLengthOfFrom(length[2], data)) {
-            // FROM 自身の長さは、LENGTH を省いて翻訳系が補う長さと同じである (SEND TEXT と同じ規則)
+        if (length != null && isLengthOfFrom(length[2], data)) {
+            // FROM / INTO 自身の長さは、LENGTH を省いて翻訳系が補う長さと同じである (SEND TEXT と同じ規則)。
+            // READQ の LENGTH は読んだ長さを返す域でもあるが、LENGTH OF は翻訳系の作る一時域に入るので、
+            // 返った長さはプログラムに見えない。省いた形でも同じく見えない
             length = null;
         }
         if (length != null) {
             if (length[2] != null && length[2].matches("(?i)LENGTH\\s+OF\\s+.*")) {
-                throw new IllegalArgumentException(command
-                        + " LENGTH(LENGTH OF x) is supported only when x is the FROM data area");
+                throw new IllegalArgumentException(command + " LENGTH(LENGTH OF x) is supported only when x is the "
+                        + (reads ? "INTO" : "FROM") + " data area");
             }
             if (length[2] != null) {
                 lengthName = length[2];

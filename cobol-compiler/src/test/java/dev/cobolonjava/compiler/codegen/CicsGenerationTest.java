@@ -438,7 +438,8 @@ class CicsGenerationTest {
                 "IF WS-RESP = DFHRESP(ITEMERR) MOVE 'E' TO LK-AREA(3:1) END-IF",
                 // FROM 自身の長さを書いた LENGTH は省いた形と同じ。括弧の前の空白も書ける (CardDemo の CORPT00C)
                 "EXEC CICS WRITEQ TD QUEUE('CSMT') FROM(WS-GRP) LENGTH (LENGTH OF WS-GRP) END-EXEC",
-                "EXEC CICS READQ TD QUEUE('CSMT') INTO(WS-GRP) END-EXEC",
+                // GenApp の lgwebst5 の形。INTO 自身の長さを書いた LENGTH も省いた形と同じ
+                "EXEC CICS READQ TD QUEUE('CSMT') INTO(WS-GRP) LENGTH(LENGTH OF WS-GRP) END-EXEC",
                 "EXEC CICS READQ TD QUEUE('CSMT') INTO(WS-GRP) RESP(WS-RESP) END-EXEC",
                 "IF WS-RESP = DFHRESP(QZERO) MOVE 'Z' TO LK-AREA(4:1) END-IF",
                 "EXEC CICS DELETEQ TS QUEUE('SCRATCH') END-EXEC"));
@@ -458,6 +459,8 @@ class CicsGenerationTest {
         assertRejected("EXEC CICS READQ TS QUEUE('Q') INTO(WS-GRP) END-EXEC", "requires either ITEM or NEXT");
         assertRejected("EXEC CICS WRITEQ TD QUEUE('Q') FROM(WS-GRP) LENGTH(LENGTH OF WS-LEN) END-EXEC",
                 "only when x is the FROM data area");
+        assertRejected("EXEC CICS READQ TS QUEUE('Q') INTO(WS-GRP) NEXT LENGTH(LENGTH OF WS-LEN) END-EXEC",
+                "only when x is the INTO data area");
         assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') FROM(WS-GRP) REWRITE END-EXEC", "REWRITE requires ITEM");
         assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') QNAME('Q') FROM(WS-GRP) END-EXEC",
                 "QUEUE and QNAME are mutually exclusive");
