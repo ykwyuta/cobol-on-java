@@ -39,6 +39,8 @@ public final class Assembler implements Constants.Scope {
     private final List<List<String>> pools = new ArrayList<>();
     private int poolIndex;
     private final List<ObjectModule.Line> listing = new ArrayList<>();
+    /** 載せる側が直す番地定数。2 周目で集める。 */
+    private final List<ObjectModule.Relocation> relocations = new ArrayList<>();
 
     private Section current;
     private Section mainSection;
@@ -130,7 +132,7 @@ public final class Assembler implements Constants.Scope {
         sections.values().stream().filter(s -> s.dummy)
                 .forEach(s -> dummies.put(s.name, s.highWater));
         return new ObjectModule(mainSection == null ? fileName : mainSection.name, text,
-                entryOffset, symbols, dummies, listing);
+                entryOffset, symbols, dummies, listing, relocations);
     }
 
     private void prepareText() {
@@ -145,6 +147,7 @@ public final class Assembler implements Constants.Scope {
         // 置き場は 1 周目で決まっている。2 周目はそれを使うので消さない
         poolIndex = 0;
         listing.clear();
+        relocations.clear();
         current = null;
         ended = false;
     }
@@ -314,18 +317,60 @@ public final class Assembler implements Constants.Scope {
     }
 
     private void emitRepeated(Section section, Constants.Piece piece, Statement statement) {
+        int start = emitPiece(section, piece, statement.line());
+        listing.add(new ObjectModule.Line(statement.line(), start,
+                Arrays.copyOfRange(text, start, section.location)));
+    }
+
+    /**
+     * 定数 1 つを反復係数の数だけ置き、番地定数の値を入れる。置いた先頭の変位を返す。
+     *
+     * <p>番地定数は節の先頭からの変位で組み立て、載せる側が直す場所として {@link #relocations} に
+     * 残す。以前は変位のまま置くだけで、実行時に {@code DC A(X)} を番地として使うと、節を置いた番地を
+     * 足していない値を読んでいた。
+     */
+    private int emitPiece(Section section, Constants.Piece piece, int line) {
         byte[] unit = piece.bytes();
         int start = section.location;
         for (int repeat = 0; repeat < piece.duplication(); repeat++) {
             for (Constants.AddressReference reference : piece.references()) {
-                Value value = evaluate(reference.expression(), statement.line());
+                int at = section.location + reference.offset();
+                if (reference.external()) {
+                    writeInt(unit, reference.offset(), reference.length(), 0);
+                    relocations.add(new ObjectModule.Relocation(at, reference.length(),
+                            reference.expression()));
+                    continue;
+                }
+                Value value = evaluate(reference.expression(), line);
+                if (value.isRelocatable()) {
+                    relocatable(value, reference, line);
+                    relocations.add(new ObjectModule.Relocation(at, reference.length(), null));
+                }
                 writeInt(unit, reference.offset(), reference.length(), value.value());
             }
             write(section.location, unit);
             section.advance(unit.length);
         }
-        listing.add(new ObjectModule.Line(statement.line(), start,
-                Arrays.copyOfRange(text, start, section.location)));
+        return start;
+    }
+
+    /**
+     * 番地を持つ値を番地定数に置けるかを確かめる。
+     *
+     * <p>ダミー節の記号は番地ではなく、節の先頭からの変位でしかない (載せる側が置く節がない)。
+     * 3 バイトより短い定数は、載せた番地が入りきらない。どちらも黙って変位のまま置くと、組み立ては
+     * 通って実行時に違う番地を読むので断る。
+     */
+    private void relocatable(Value value, Constants.AddressReference reference, int line) {
+        Section target = sections.get(value.section());
+        if (target != null && target.dummy) {
+            throw new AssemblyException(line, "an address constant cannot point into the dummy section "
+                    + value.section() + ": " + reference.expression());
+        }
+        if (reference.length() < 3) {
+            throw new AssemblyException(line, "a relocatable address needs a constant of 3 or 4 bytes: "
+                    + reference.expression());
+        }
     }
 
     private static void writeInt(byte[] target, int offset, int length, int value) {
@@ -421,12 +466,8 @@ public final class Assembler implements Constants.Scope {
                 section.advance(piece.totalLength());
                 continue;
             }
-            byte[] unit = piece.bytes();
-            int start = section.location;
-            for (int repeat = 0; repeat < piece.duplication(); repeat++) {
-                write(section.location, unit);
-                section.advance(unit.length);
-            }
+            // リテラルの番地定数 (=A(X)、=V(Y)) も値を入れる。以前は 0 のまま置いていた
+            int start = emitPiece(section, piece, line);
             listing.add(new ObjectModule.Line(line, start,
                     Arrays.copyOfRange(text, start, section.location)));
         }
@@ -443,7 +484,30 @@ public final class Assembler implements Constants.Scope {
             return null;
         }
         int open = topLevelParen(text);
+        if (open >= 0 && text.substring(0, open).toUpperCase(Locale.ROOT).matches("=\\d*[AVY](L\\d+)?")) {
+            // =A(X) / =V(X) の括弧は定数の値である。指標の括弧はその後ろにしか来ない
+            int close = closingParen(text, open);
+            int next = close < 0 ? -1 : topLevelParen(text.substring(close + 1));
+            return next < 0 ? text : text.substring(0, close + 1 + next);
+        }
         return open < 0 ? text : text.substring(0, open);
+    }
+
+    /** {@code open} の括弧に対応する閉じ括弧。引用符の中は数えない。無ければ -1。 */
+    private static int closingParen(String text, int open) {
+        boolean quoted = false;
+        int depth = 0;
+        for (int k = open; k < text.length(); k++) {
+            char c = text.charAt(k);
+            if (c == '\'' && Quotes.isDelimiter(text, k, quoted)) {
+                quoted = !quoted;
+            } else if (!quoted && c == '(') {
+                depth++;
+            } else if (!quoted && c == ')' && --depth == 0) {
+                return k;
+            }
+        }
+        return -1;
     }
 
     /** リテラルの綴りを記録し、その場所を指す値を返す。 */
@@ -656,7 +720,10 @@ public final class Assembler implements Constants.Scope {
      */
     private Addr address(String operand, boolean allowIndex, boolean allowLength, int line) {
         String text = operand.trim();
-        int open = topLevelParen(text);
+        String literal = literalTermOf(text);
+        // リテラルの値の括弧 (=V(X)) を指標の括弧と読まない
+        int open = literal == null ? topLevelParen(text)
+                : literal.length() < text.length() ? literal.length() : -1;
         if (open < 0) {
             Value value = evaluate(text, line);
             return resolve(value, 0, null, line, text);

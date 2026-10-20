@@ -15,10 +15,31 @@ import java.util.Map;
  * @param symbols      定義された記号
  * @param dummySections ダミー節 ({@code DSECT}) の長さ
  * @param listing      1 文ごとの変位と機械語。組み立てそのものを突き合わせるために持つ
+ * @param relocations  載せたときに番地を足す場所 (オブジェクトモジュールの RLD に当たる)
  */
 public record ObjectModule(String name, byte[] text, int entryOffset,
                            Map<String, Symbol> symbols, Map<String, Integer> dummySections,
-                           List<Line> listing) {
+                           List<Line> listing, List<Relocation> relocations) {
+
+    /**
+     * 載せる側が直す番地定数 1 つ。
+     *
+     * <p>{@code A(記号)} は節の先頭からの変位で組み立ててある。番地になるのは、載せる側が節を置いた
+     * 番地を足したときである。{@code V(名前)} は外部の名前を指し、組み立てた値は 0 である。
+     * 載せる側が名前を解決して、その入口の番地を足す。
+     *
+     * @param offset   節の先頭からの変位
+     * @param length   定数の長さ (3 か 4)
+     * @param external 外部の名前。自分の節を指すなら {@code null}
+     */
+    public record Relocation(int offset, int length, String external) {
+    }
+
+    /** 番地定数を持たない組み立て結果。 */
+    public ObjectModule(String name, byte[] text, int entryOffset, Map<String, Symbol> symbols,
+                        Map<String, Integer> dummySections, List<Line> listing) {
+        this(name, text, entryOffset, symbols, dummySections, listing, List.of());
+    }
 
     /**
      * 組み立て表の 1 行。
@@ -52,6 +73,13 @@ public record ObjectModule(String name, byte[] text, int entryOffset,
         symbols = Map.copyOf(symbols);
         dummySections = Map.copyOf(dummySections);
         listing = List.copyOf(listing);
+        relocations = List.copyOf(relocations);
+    }
+
+    /** 外部の名前の一覧 (重なりなし、現れた順)。 */
+    public List<String> externals() {
+        return relocations.stream().map(Relocation::external).filter(java.util.Objects::nonNull)
+                .distinct().toList();
     }
 
     @Override
