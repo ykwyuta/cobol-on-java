@@ -112,8 +112,34 @@ class EntryGenerationTest {
     }
 
     @Test
-    @DisplayName("見出しに USING があるプログラムの ENTRY も副入口なので断る (P-152)")
+    @DisplayName("見出しに USING があっても、最初の段落の先頭の ENTRY 'DLITCBL' の USING が引数になる (P-152)")
+    void theImsEntryWinsOverProcedureDivisionUsing() {
+        // CardDemo の PAUDBLOD の形。見出しの USING は主入口のもので、IMS は DLITCBL から呼ぶ。
+        // 見出しの USING が引数なら、1 つ目の引数は IO-PCB に結ばれ DB-NAME に届かない
+        CobolProgram program = load(compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. IMSPGM.",
+                "DATA DIVISION.",
+                "LINKAGE SECTION.",
+                "01 IO-PCB PIC X(12).",
+                "01 DB-PCB.",
+                "   05 DB-NAME PIC X(8).",
+                "PROCEDURE DIVISION USING IO-PCB DB-PCB.",
+                "MAIN-PARA.",
+                "    ENTRY 'DLITCBL' USING DB-PCB.",
+                "    MOVE 'CUSTOMER' TO DB-NAME.",
+                "    GOBACK.")));
+        Storage caller = Storage.wrap(CodePages.DEFAULT.encode("xxxxxxxx"));
+
+        program.runFresh(ProgramContext.standard(), caller.view(0, 8));
+
+        assertEquals("CUSTOMER", CodePages.DEFAULT.decode(caller.array()));
+    }
+
+    @Test
+    @DisplayName("見出しに USING があるプログラムの DLITCBL でない ENTRY は副入口なので断る (P-152)")
     void anEntryAfterProcedureDivisionUsingIsRefused() {
+        // 主入口と副入口のどちらで呼ばれるか、名前からは決まらない
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. IMSPGM.",
@@ -121,7 +147,7 @@ class EntryGenerationTest {
                 "LINKAGE SECTION.",
                 "01 IO-PCB PIC X(12).",
                 "PROCEDURE DIVISION USING IO-PCB.",
-                "    ENTRY 'DLITCBL' USING IO-PCB.",
+                "    ENTRY 'ALTENTRY' USING IO-PCB.",
                 "    GOBACK."));
 
         assertFalse(result.succeeded());

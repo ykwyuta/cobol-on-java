@@ -303,14 +303,41 @@ public final class ProcedureBuilder {
      * {@code ENTRY 'DLITCBL' USING} で PCB を受け取る。生成クラスは入口を 1 つしか持たないので、
      * 先頭の ENTRY の USING をプログラムの引数とする (暫定判断 P-152)。
      *
-     * @return 見出しに USING が無く、手続き部の最初の文が ENTRY なら、その文。ほかは {@code null}
+     * <p>見出しにも USING を書き、最初の段落の先頭で {@code ENTRY 'DLITCBL'} と書く形もある
+     * (CardDemo の DBUNLDGS、PAUDBLOD)。IMS が呼ぶのは DLITCBL の入口なので、その USING を
+     * 引数とする。見出しの USING は主入口のものであり、IMS からは使われない。見出しに USING が
+     * あって名前が DLITCBL でなければ、どちらの入口で呼ばれるか決まらないので副入口として断る。
+     *
+     * @return 手続き部の最初の文 (最初の段落の先頭を含む) が IMS の入口の ENTRY なら、その文。
+     *         ほかは {@code null}
      */
     static CobolParser.EntryStatementContext programEntryOf(
             CobolParser.ProcedureDivisionContext division) {
-        if (division == null || !division.procedureParameter().isEmpty()) {
+        if (division == null) {
             return null;
         }
-        List<CobolParser.SentenceContext> sentences = division.procedureBody().sentence();
+        CobolParser.EntryStatementContext entry = firstStatementEntry(division.procedureBody());
+        if (entry == null) {
+            return null;
+        }
+        if (!division.procedureParameter().isEmpty()
+                && !entry.LITERAL().getText().replaceAll("^['\"]|['\"]$", "")
+                        .equalsIgnoreCase(IMS_ENTRY)) {
+            return null;
+        }
+        return entry;
+    }
+
+    /** IMS が COBOL のプログラムを呼ぶ入口の名前。 */
+    private static final String IMS_ENTRY = "DLITCBL";
+
+    /** 手続き部の最初の文が ENTRY ならその文。見出しより前に文が無ければ最初の段落の先頭を見る。 */
+    private static CobolParser.EntryStatementContext firstStatementEntry(
+            CobolParser.ProcedureBodyContext body) {
+        List<CobolParser.SentenceContext> sentences = body.sentence();
+        if (sentences.isEmpty() && !body.paragraph().isEmpty()) {
+            sentences = body.paragraph(0).sentence();
+        }
         return sentences.isEmpty() ? null : sentences.get(0).statement(0).entryStatement();
     }
 
