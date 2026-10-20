@@ -119,6 +119,7 @@ public final class Assembler implements Constants.Scope {
             // DCB / OPEN / PUT / CLOSE はライブラリのマクロが無ければ組み込みの展開を使う
             List<Statement> statements = SystemMacros.expand(expansion.statements());
             assembler.pass(statements, false);
+            assembler.resolveDeferredEquates();
             assembler.prepareText();
             assembler.pass(statements, true);
         } catch (AssemblyException failure) {
@@ -146,7 +147,11 @@ public final class Assembler implements Constants.Scope {
         text = new byte[mainSection.highWater];
         // 2 周目は状態を作り直す。USING は翻訳時の状態であり、1 周目の残りを持ち越してはならない
         Arrays.fill(usings, null);
-        sections.values().forEach(section -> section.location = 0);
+        // 最高位置も戻す。戻さないと 2 周目の「ORG」(演算項なし) が節の最後まで飛び、1 周目と番地がずれる
+        sections.values().forEach(section -> {
+            section.location = 0;
+            section.highWater = 0;
+        });
         pendingLiterals.clear();
         // 置き場は 1 周目で決まっている。2 周目はそれを使うので消さない
         poolIndex = 0;
@@ -220,6 +225,7 @@ public final class Assembler implements Constants.Scope {
             throw new AssemblyException(statement.line(),
                     "START with a nonzero origin is not supported; the loader decides the address");
         }
+        boolean resumed = sections.containsKey(name);
         Section section = sections.computeIfAbsent(name, key -> new Section(key, dummy));
         if (section.dummy != dummy) {
             throw new AssemblyException(statement.line(),
@@ -233,7 +239,8 @@ public final class Assembler implements Constants.Scope {
             throw new AssemblyException(statement.line(),
                     "more than one control section is not supported yet: " + name);
         }
-        if (!emitting) {
+        if (!emitting && !resumed) {
+            // 同じ名前の CSECT をもう一度書くと、その節の続きから組み立てる (節の再開)。記号は最初の 1 度だけ
             define(name, new Symbol(name, Value.in(name, 0), 1), statement.line());
         }
     }
@@ -433,14 +440,63 @@ public final class Assembler implements Constants.Scope {
         if (!statement.hasOperands()) {
             throw new AssemblyException(statement.line(), "EQU requires a value");
         }
+        if (emitting) {
+            return;
+        }
+        Value counter = current == null ? null : Value.in(current.name, current.location);
+        try {
+            defineEquate(statement, counter);
+        } catch (AssemblyException failure) {
+            if (!failure.getMessage().startsWith("undefined symbol")) {
+                throw failure;
+            }
+            // あとで定義される記号を指す EQU (FORWARD EQU NEXT+5 / NEXT EQU 12) は、1 周目の終わりに
+            // 解き直す (HLASM Language Reference "EQU instruction": 前方参照は許される)。所在カウンタ * は
+            // EQU を書いた位置の値で解く
+            deferredEquates.add(new DeferredEquate(statement, counter, failure));
+        }
+    }
+
+    /** 1 周目で値が決まらなかった EQU と、そのときの所在カウンタ。 */
+    private record DeferredEquate(Statement statement, Value counter, AssemblyException failure) {
+    }
+
+    private final List<DeferredEquate> deferredEquates = new ArrayList<>();
+
+    private void defineEquate(Statement statement, Value counter) {
         List<String> operands = statement.operandList();
-        Value value = evaluate(operands.get(0), statement.line());
-        int length = operands.size() > 1 && !operands.get(1).isBlank()
-                ? absolute(operands.get(1), statement.line())
-                : lengthAttributeOf(operands.get(0));
-        if (!emitting) {
-            define(statement.label(), new Symbol(statement.label(), value, length),
+        Value value = Expressions.evaluate(operands.get(0).trim(), counter, symbols::get, codePage,
+                statement.line());
+        int length;
+        if (operands.size() > 1 && !operands.get(1).isBlank()) {
+            length = Expressions.absolute(operands.get(1).trim(), counter, symbols::get, codePage,
                     statement.line());
+        } else {
+            length = lengthAttributeOf(operands.get(0));
+        }
+        define(statement.label(), new Symbol(statement.label(), value, length), statement.line());
+    }
+
+    /** 前方参照の EQU を、進まなくなるまで解き直す。残ったものは最初の誤りで断る。 */
+    private void resolveDeferredEquates() {
+        boolean progress = true;
+        while (progress && !deferredEquates.isEmpty()) {
+            progress = false;
+            for (var iterator = deferredEquates.iterator(); iterator.hasNext(); ) {
+                DeferredEquate deferred = iterator.next();
+                try {
+                    defineEquate(deferred.statement(), deferred.counter());
+                    iterator.remove();
+                    progress = true;
+                } catch (AssemblyException failure) {
+                    if (!failure.getMessage().startsWith("undefined symbol")) {
+                        throw failure;
+                    }
+                }
+            }
+        }
+        if (!deferredEquates.isEmpty()) {
+            throw deferredEquates.get(0).failure();
         }
     }
 

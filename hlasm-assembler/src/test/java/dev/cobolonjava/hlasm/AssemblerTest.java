@@ -570,4 +570,66 @@ class AssemblerTest {
                 "         END");
         assertEquals("E3230FFCFF58", module.hex(0, 6));
     }
+
+    @Test
+    @DisplayName("EQU はあとで定義される記号を指せ、* は EQU を書いた位置で解く")
+    void equateMayReferToLaterSymbols() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    A(CHAIN)",
+                "FORWARD  EQU   NEXT+5",
+                "HERE     EQU   *-TEST+LATER-LATER",
+                "CHAIN    EQU   FORWARD+DELTA",
+                "SIZE     EQU   L'FIELD",
+                "NEXT     EQU   12",
+                "START1   DC    7X'00'",
+                "DELTA    EQU   *-START1",
+                "FIELD    DS    CL9",
+                "LATER    DS    0H",
+                "         END");
+        assertEquals(17, module.symbols().get("FORWARD").value().value());
+        assertEquals(24, module.symbols().get("CHAIN").value().value());
+        assertEquals(4, module.symbols().get("HERE").value().value());
+        assertEquals(9, module.symbols().get("SIZE").value().value());
+        assertEquals("00000018", module.hex(0, 4));
+    }
+
+    @Test
+    @DisplayName("どこにも定義されない記号を指す EQU は断る")
+    void rejectsAnEquateThatNeverResolves() {
+        assertFalse(attempt(
+                "TEST     CSECT",
+                "A        EQU   B+1",
+                "B        EQU   C+1",
+                "         END").succeeded());
+    }
+
+    @Test
+    @DisplayName("同じ CSECT をもう一度書くと、その節の続きから組み立てる")
+    void resumesAControlSection() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    X'01'",
+                "AREA     DSECT",
+                "FIELD    DS    CL4",
+                "TEST     CSECT",
+                "         DC    X'02'",
+                "         END");
+        assertEquals("0102", module.hex(0, 2));
+    }
+
+    @Test
+    @DisplayName("演算項のない ORG は、それまでの最高位置へ戻る (2 周目も同じ)")
+    void orgWithoutOperandReturnsToTheHighWaterMark() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "START1   DC    8X'00'",
+                "         ORG   START1",
+                "         DC    X'01020304'",
+                "         ORG",
+                "AFTER    DC    X'FF'",
+                "         END");
+        assertEquals("0102030400000000FF", module.hex(0, 9));
+        assertEquals(9, module.length());
+    }
 }
