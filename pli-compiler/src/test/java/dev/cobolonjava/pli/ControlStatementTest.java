@@ -153,4 +153,41 @@ class ControlStatementTest {
                 END;
                 """).contains("CTL.pli"));
     }
+
+    @Test
+    @DisplayName("属性の同じ変数は参照で渡り、定数・式・属性の違う変数は一時の変数 (dummy) で渡る")
+    void argumentsArePassedByReferenceOrAsDummies() throws Exception {
+        assertEquals("ABC3,1,5,7", run("""
+                DCL N FIXED BIN(31) INIT(5);
+                DCL M FIXED BIN(15) INIT(7);
+                SHOW: PROC(ID, OK);
+                  DCL ID CHAR(*), OK BIT(1);
+                  PUT SKIP EDIT(ID, LENGTH(ID))(A, F(1));
+                  PUT SKIP EDIT(OK)(A);
+                END SHOW;
+                BUMP: PROC(X);
+                  DCL X FIXED BIN(31);
+                  X = X + 1;
+                END BUMP;
+                CALL SHOW('ABC', N = 5);
+                CALL BUMP(N + 0);
+                CALL BUMP(M);
+                PUT SKIP EDIT(N)(F(1));
+                PUT SKIP EDIT(M)(F(1));
+                """));
+    }
+
+    @Test
+    @DisplayName("属性の同じ変数を渡せば、呼ばれた側の代入が呼んだ側に届く")
+    void aMatchingVariableIsTheSameStorage() throws Exception {
+        assertEquals("6", run("""
+                DCL N FIXED BIN(31) INIT(5);
+                BUMP: PROC(X);
+                  DCL X FIXED BIN(31);
+                  X = X + 1;
+                END BUMP;
+                CALL BUMP(N);
+                PUT SKIP EDIT(N)(F(1));
+                """));
+    }
 }

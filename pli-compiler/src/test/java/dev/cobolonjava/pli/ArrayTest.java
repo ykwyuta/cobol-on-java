@@ -198,4 +198,106 @@ class ArrayTest {
         assertTrue(String.valueOf(expression.getMessage()).contains("assigned to an array"),
                 expression::getMessage);
     }
+
+    @Test
+    @DisplayName("DEFINED ... POSITION(n) は基の n 字目から重なり、書けば基が変わる (string overlay)")
+    void stringOverlayDefiningSharesTheBase() throws Exception {
+        assertEquals("DEF ABC123GH\n", main("""
+                DCL S CHAR(8) INIT('ABCDEFGH');
+                DCL PART CHAR(3) DEFINED S POSITION(4);
+                PUT SKIP EDIT(PART, ' ')(A, A);
+                PART = '123';
+                PUT EDIT(S)(A);
+                """));
+    }
+
+    @Test
+    @DisplayName("iSUB defining は定義した配列の添字から基の要素を引く。対角と転置")
+    void isubDefiningMapsSubscripts() throws Exception {
+        assertEquals("11 22 33 21 13 99\n", main("""
+                DCL A(3,3) FIXED BIN(31);
+                DCL DIAG(3) FIXED BIN(31) DEFINED A(1SUB,1SUB);
+                DCL T(3,3) FIXED BIN(31) DEFINED A(2SUB,1SUB);
+                DCL (I,J) FIXED BIN(31);
+                DO I = 1 TO 3; DO J = 1 TO 3; A(I,J) = I*10+J; END; END;
+                DIAG(2) = 99;
+                PUT SKIP EDIT(DIAG(1), ' ', A(2,1) + 1, ' ', DIAG(3), ' ', T(1,2), ' ',
+                              T(3,1), ' ', A(2,2))
+                             (F(2), A, F(2), A, F(2), A, F(2), A, F(2), A, F(2));
+                """));
+    }
+
+    @Test
+    @DisplayName("属性の違う DEFINED と構造の要素の DEFINED は断る (自分の記憶域を黙って持たせない)")
+    void unsupportedDefiningIsRefused() {
+        assertThrows(RuntimeException.class, () -> main("""
+                DCL S CHAR(4);
+                DCL N FIXED BIN(31) DEFINED S;
+                N = 1;
+                """));
+        assertTrue(rejection("""
+                DCL S CHAR(4);
+                DCL 1 G, 2 X CHAR(2) DEFINED S;
+                """).contains("DEFINED"));
+    }
+
+    @Test
+    @DisplayName("UNSPEC と HEX は記憶域を見る。10 進は packed、2 進は 2 の補数、VARYING は長さの半語を含む")
+    void unspecAndHexSeeTheStorage() throws Exception {
+        assertEquals("1D 0001 FFFE C1C2 0002C1C2 00011000\n", main("""
+                DCL D FIXED DEC(1) INIT(-1);
+                DCL B FIXED BIN(15) INIT(1);
+                DCL C FIXED BIN(15) INIT(-2);
+                DCL S CHAR(2) INIT('AB');
+                DCL V CHAR(5) VARYING INIT('AB');
+                DCL X BIT(8) INIT('00011000'B);
+                PUT SKIP EDIT(HEX(UNSPEC(D)), ' ', HEX(B), ' ', HEX(C), ' ', HEX(S), ' ',
+                              HEX(UNSPEC(V)), ' ', UNSPEC(X))(A);
+                """));
+    }
+
+    @Test
+    @DisplayName("SUM は要素の和で、DEFINED の配列なら基の要素を足す")
+    void sumAddsTheElements() throws Exception {
+        assertEquals("15 7\n", main("""
+                DCL A(2,2) FIXED BIN(31) INIT(1, 2, 3, 6);
+                DCL D(2) FIXED BIN(31) DEFINED A(1SUB,1SUB);
+                PUT SKIP EDIT(SUM(A) + SUM(D) - 4, ' ', SUM(D))(F(2), A, F(1));
+                """));
+    }
+
+    @Test
+    @DisplayName("FIXED BIN(8) UNSIGNED は 1 byte で 255 を持ち、符号つきの FIXED BIN(8) は 2 byte である")
+    void unsignedBinaryHasItsOwnSize() throws Exception {
+        assertEquals("FF 255 00FF 1 2\n", main("""
+                DCL U FIXED BIN(8) UNSIGNED;
+                DCL S FIXED BIN(8) SIGNED;
+                U = 255; S = 255;
+                PUT SKIP EDIT(HEX(U), ' ', U, ' ', HEX(S), ' ', SIZE(U), ' ', SIZE(S))
+                             (A, A, F(3), A, A, A, F(1), A, F(1));
+                """));
+        assertThrows(RuntimeException.class, () -> main("""
+                DCL U FIXED BIN(8) UNSIGNED;
+                U = -1;
+                """));
+        assertTrue(rejection("DCL C CHAR(2) UNSIGNED;").contains("UNSIGNED"));
+    }
+
+    @Test
+    @DisplayName("持っていない宣言の属性 (FLOAT、LIKE、CONTROLLED ほか) は読み飛ばさずに翻訳で断る")
+    void unknownAttributesAreRefused() throws Exception {
+        for (String declaration : new String[] {
+                "DCL X FLOAT DEC(6);", "DCL 1 S, 2 A CHAR(1); DCL T LIKE S;",
+                "DCL X FIXED BIN(31) CONTROLLED;", "DCL X CHAR(4) VALUE('A');",
+                "DCL X FIXED BIN(31) LITTLEENDIAN;"}) {
+            assertTrue(rejection(declaration).contains("is not supported yet"), declaration);
+        }
+        // BUILTIN は変数を作らない。動きを変えない属性 (STATIC、AUTOMATIC) は受ける
+        assertEquals("C1 7\n", main("""
+                DCL (HEX, LENGTH) BUILTIN;
+                DCL S CHAR(1) STATIC INIT('A');
+                DCL T CHAR(7) AUTOMATIC;
+                PUT SKIP EDIT(HEX(S), ' ', LENGTH(T))(A, A, F(1));
+                """));
+    }
 }

@@ -31,16 +31,17 @@ final class PliSyntax {
     /**
      * @param main {@code OPTIONS(MAIN)} を書いたか。主手続きの POINTER の引数は、渡された記憶域の
      *             番地を値に持つ (IMS の PCB の並び)。そうでない手続きの引数は参照で渡った変数そのもの
+     * @param noexecops {@code OPTIONS(MAIN NOEXECOPS)}。PARM のすべてがプログラムの引数になる
      */
     record Program(String name, List<String> parameters, List<Stmt> body,
-                   Map<String, Procedure> procedures, boolean main) {
+                   Map<String, Procedure> procedures, boolean main, boolean noexecops) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
     }
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
-            Block, GoTo, Label, OnEndFile, FileOperation, Sql {
+            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Stop {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -56,10 +57,13 @@ final class PliSyntax {
      * @param varying {@code CHAR(n) VARYING}。記憶域は長さの半語と n byte (LRM Table 39)
      * @param dimensions 配列の次元ごとの上下限。配列でなければ空
      * @param initialItems 配列の {@code INITIAL} の並び。スカラーなら空で、{@code initial} を使う
+     * @param unsigned {@code FIXED BIN UNSIGNED}。記憶域の大きさと値の読み方が変わる
+     *                 (LRM "SIGNED and UNSIGNED attributes")
      */
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
-                List<Bound> dimensions, List<InitItem> initialItems) {
+                List<Bound> dimensions, List<InitItem> initialItems, FileAttributes file,
+                Defined defined, boolean unsigned) {
 
         /** 配列の要素の数。配列でなければ 1。 */
         int count() {
@@ -67,6 +71,35 @@ final class PliSyntax {
             for (Bound bound : dimensions) count *= bound.extent();
             return count;
         }
+    }
+
+    /**
+     * ファイルの属性 (LRM "FILE attribute"、"Merging of attributes"、"ENVIRONMENT attribute")。
+     * 宣言と {@code OPEN} の両方に書け、開くときに合わさる。書かなかったものは {@code null} である。
+     *
+     * @param transmission {@code RECORD} か {@code STREAM}
+     * @param direction    {@code INPUT}、{@code OUTPUT}、{@code UPDATE}
+     * @param format       {@code ENV} のレコード様式。いまは F の族 ({@code F}/{@code FB}/{@code FS}/
+     *                     {@code FBS}) だけを持ち、{@code "F"} にまとめる。ブロック化は 1 レコードの
+     *                     中身を変えないからである
+     * @param recordSize   {@code ENV(RECSIZE(n))} の n。書かなければ -1
+     */
+    /**
+     * {@code DEFINED} の基の参照と {@code POSITION} (LRM "DEFINED and POSITION attributes")。
+     *
+     * @param base       基の変数の名
+     * @param subscripts 基の参照の添字。iSUB ({@link ISub}) を含みうる。書かなければ空
+     * @param position   {@code POSITION(n)}。書かなければ {@code null}
+     */
+    record Defined(String base, List<Expr> subscripts, Expr position) {
+    }
+
+    /** 長さを {@code (*)} と書いた印。仮引数だけに書け、長さは渡された引数から決まる。 */
+    static final int STAR = -1;
+
+    record FileAttributes(String transmission, String direction, boolean print, String format,
+                          int recordSize) {
+        static final FileAttributes NONE = new FileAttributes(null, null, false, null, -1);
     }
 
     /** 配列の 1 つの次元の上下限 (LRM "DIMENSION attribute")。 */
@@ -139,6 +172,13 @@ final class PliSyntax {
     record Block(List<Stmt> body) implements Stmt {
     }
 
+    /**
+     * {@code STOP} と {@code EXIT}。実行単位を終える (LRM "STOP statement"、"EXIT statement")。
+     * 走脈を 1 つしか持たないので、EXIT も実行単位の終わりになる。
+     */
+    record Stop() implements Stmt {
+    }
+
     record GoTo(String label) implements Stmt {
     }
 
@@ -148,15 +188,24 @@ final class PliSyntax {
     record OnEndFile(String file, List<Stmt> handler) implements Stmt {
     }
 
-    enum FileAction { OPEN, READ, CLOSE }
+    enum FileAction { OPEN, READ, WRITE, CLOSE }
 
-    record FileOperation(FileAction action, String file, String target) implements Stmt {
+    /**
+     * レコード入出力と {@code OPEN} / {@code CLOSE} の 1 ファイル分。1 つの {@code OPEN} 文に
+     * 複数のファイルを書けば、この文の並び ({@link Block}) になる。
+     *
+     * @param record  {@code READ} の {@code INTO} か {@code WRITE} の {@code FROM} の変数。ほかは {@code null}
+     * @param options {@code OPEN} に書いた属性。ほかは {@link FileAttributes#NONE}
+     * @param title   {@code OPEN} の {@code TITLE}。書かなければ {@code null}
+     */
+    record FileOperation(FileAction action, String file, Expr record, FileAttributes options,
+                         Expr title) implements Stmt {
     }
 
     record Sql(String source) implements Stmt {
     }
 
-    sealed interface Expr permits Literal, Reference, Unary, Binary, Function {
+    sealed interface Expr permits Literal, Reference, Unary, Binary, Function, ISub {
     }
 
     record Literal(Object value) implements Expr {
@@ -212,6 +261,13 @@ final class PliSyntax {
     }
 
     record Function(String name, List<Expr> arguments) implements Expr {
+    }
+
+    /**
+     * iSUB 変数 (LRM "iSUB defining")。{@code DEFINED} の基の参照の添字にだけ書け、定義した配列の
+     * i 番目の次元の添字の値を表す。
+     */
+    record ISub(int dimension) implements Expr {
     }
 
     private enum Kind { IDENT, NUMBER, STRING, SYMBOL, EOF }
@@ -385,7 +441,8 @@ final class PliSyntax {
             }
             ProcedureBuilder main = parseProcedure();
             return new ParseResult(new Program(main.name, main.parameters,
-                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main), List.of());
+                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
+                    main.noexecops), List.of());
         }
 
         private ProcedureBuilder parseProcedure() {
@@ -412,6 +469,8 @@ final class PliSyntax {
                     int close = findClosing(attributes, i + 1);
                     result.main = attributes.subList(i + 2, close).stream()
                             .anyMatch(token -> token.is("MAIN"));
+                    result.noexecops = attributes.subList(i + 2, close).stream()
+                            .anyMatch(token -> token.is("NOEXECOPS"));
                 }
             }
             while (!check(Kind.EOF)) {
@@ -469,6 +528,10 @@ final class PliSyntax {
                 expect(";");
                 return new Return();
             }
+            if (match("STOP") || match("EXIT")) {
+                expect(";");
+                return new Stop();
+            }
             if (match("GO")) {
                 match("TO");
                 String target = expect(Kind.IDENT, "label after GO TO").text();
@@ -486,6 +549,9 @@ final class PliSyntax {
             }
             if (match("CLOSE")) {
                 return fileOperation(FileAction.CLOSE);
+            }
+            if (match("WRITE")) {
+                return fileOperation(FileAction.WRITE);
             }
             if (match("EXEC")) {
                 if (!match("SQL")) {
@@ -544,6 +610,9 @@ final class PliSyntax {
                     int close = findClosing(part, p);
                     List<String> names = part.subList(p + 1, close).stream()
                             .filter(t -> t.kind() == Kind.IDENT).map(Token::text).toList();
+                    if (builtin(part, close + 1)) {
+                        continue;
+                    }
                     List<Bound> dimensions = dimensions(part, close + 1, level);
                     TypeInfo info = typeInfo(part, close + 1, inheritedType,
                             inheritedPrecision, inheritedScale);
@@ -559,6 +628,9 @@ final class PliSyntax {
                 if (nameToken.kind() != Kind.IDENT && !nameToken.is("*")) {
                     continue;
                 }
+                if (builtin(part, p)) {
+                    continue;
+                }
                 List<Bound> dimensions = dimensions(part, p, level);
                 TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
                         inheritedPrecision, inheritedScale);
@@ -570,8 +642,85 @@ final class PliSyntax {
             return List.copyOf(out);
         }
 
+        /** 属性を読んで、動きに効くものを持つ宣言の属性。どれでもない語は断る。 */
+        private static final java.util.Set<String> ATTRIBUTES = java.util.Set.of(
+                "CHAR", "CHARACTER", "BIT", "VARYING", "VAR", "NONVARYING", "NONVAR",
+                "FIXED", "BIN", "BINARY", "DEC", "DECIMAL", "PIC", "PICTURE", "POINTER", "PTR",
+                "INIT", "INITIAL", "BASED", "POSITION", "POS", "ALIGNED", "UNALIGNED", "UNAL",
+                "SIGNED", "UNSIGNED",
+                // 記憶域の取り方と有効範囲だけを決め、1 つのプログラムの中の値は変えない
+                "STATIC", "AUTOMATIC", "AUTO", "INTERNAL", "INT", "REAL");
+
+        /**
+         * {@code BUILTIN} の宣言か。組込み関数の名であることを示すだけで、変数を作らない
+         * (LRM "BUILTIN attribute")。名で引く組込み関数はもともとその名で引けるので、宣言を置かない。
+         */
+        private static boolean builtin(List<Token> part, int from) {
+            for (int i = from; i < part.size(); i++) {
+                if (part.get(i).is("BUILTIN")) {
+                    if (part.size() - from != 1) {
+                        throw new ParseFailure(part.get(i), "BUILTIN takes no other attribute");
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * 宣言の属性に、知らない語が無いことを確かめる。以前は知らない属性を読み飛ばしていたので、
+         * DEFINED と UNSIGNED が黙って効かず、FLOAT の変数は型の無い名になっていた。ここで断れば、
+         * 持っていない属性が「翻訳できたのに値が違う」にならない。括弧の中 (次元、精度、INITIAL の値)
+         * と DEFINED の基の参照は、それぞれを読むところが確かめる。ファイルと入口の宣言は別に読む。
+         */
+        private static void checkAttributes(List<Token> part, int from, Type type) {
+            if (type == Type.FILE || type == Type.ENTRY) {
+                return;
+            }
+            for (int i = from; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.is("(")) {
+                    i = findClosing(part, i);
+                } else if (token.kind() == Kind.STRING && i > 0
+                        && (part.get(i - 1).is("PIC") || part.get(i - 1).is("PICTURE"))) {
+                    continue;
+                } else if (token.is("DEFINED") || token.is("DEF")) {
+                    i = skipReference(part, i + 1) - 1;
+                } else if (token.kind() != Kind.IDENT || !ATTRIBUTES.contains(token.text())) {
+                    throw new ParseFailure(token, "attribute " + token.text()
+                            + " is not supported yet");
+                }
+            }
+        }
+
+        /** DEFINED の基の参照 ({@code (A)}、{@code A.B(1SUB)}) の後ろの位置。 */
+        private static int skipReference(List<Token> part, int at) {
+            if (at < part.size() && part.get(at).is("(")) {
+                return findClosing(part, at) + 1;
+            }
+            int i = at;
+            if (i < part.size() && part.get(i).kind() == Kind.IDENT) i++;
+            while (i + 1 < part.size() && part.get(i).is(".")
+                    && part.get(i + 1).kind() == Kind.IDENT) {
+                i += 2;
+            }
+            if (i < part.size() && part.get(i).is("(")) {
+                i = findClosing(part, i) + 1;
+            }
+            return i;
+        }
+
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
+            int from = 0;
+            while (from < part.size() && !(part.get(from).kind() == Kind.IDENT
+                    && part.get(from).text().equals(name)) && !part.get(from).is("(")) {
+                from++;
+            }
+            if (from < part.size() && part.get(from).is("(")) {
+                from = findClosing(part, from);
+            }
+            checkAttributes(part, from + 1, info.type);
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
                 // 要素がスカラーの配列 (2 A(5) FIXED BIN) は持つ
@@ -581,7 +730,36 @@ final class PliSyntax {
             return new Decl(name, level, info.type, info.precision, info.scale,
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
-                    dimensions.isEmpty() ? List.of() : initialItems(part));
+                    dimensions.isEmpty() ? List.of() : initialItems(part),
+                    info.type == Type.FILE ? fileAttributes(part) : null,
+                    definedOutsideStructure(part, level), unsigned(part, info.type));
+        }
+
+        /**
+         * {@code UNSIGNED} を書いたか。{@code SIGNED} は既定なので書いても何も変わらない。UNSIGNED は
+         * FIXED BIN にだけ書ける (LRM "SIGNED and UNSIGNED attributes")。以前は読み飛ばしていたので、
+         * FIXED BIN(8) UNSIGNED が 2 byte の符号つきになり、255 を入れると記憶域が 00FF になっていた。
+         */
+        private static boolean unsigned(List<Token> part, Type type) {
+            boolean unsigned = false;
+            for (int i = 1; i < part.size(); i++) {
+                if (part.get(i).is("UNSIGNED")) {
+                    if (type != Type.BINARY) {
+                        throw new ParseFailure(part.get(i), "UNSIGNED is valid only for FIXED BINARY");
+                    }
+                    unsigned = true;
+                }
+            }
+            return unsigned;
+        }
+
+        /** 構造の要素は DEFINED を持てない (LRM "DEFINED and POSITION attributes")。 */
+        private Defined definedOutsideStructure(List<Token> part, int level) {
+            Defined defined = defined(part);
+            if (defined != null && level > 1) {
+                throw new ParseFailure(part.get(0), "a structure member cannot be DEFINED");
+            }
+            return defined;
         }
 
         /**
@@ -678,6 +856,115 @@ final class PliSyntax {
             return false;
         }
 
+        /**
+         * 宣言の {@code FILE} より後ろの属性を読む。動きを変えない属性 (SEQUENTIAL、BUFFERED、
+         * EXTERNAL ほか) は覚えない。鍵つき (KEYED、DIRECT) と、F の族のほかのレコード様式はまだ
+         * 持たないので断る。黙って順編成の固定長として扱うと、別のファイルを読み書きしてしまう。
+         */
+        private static FileAttributes fileAttributes(List<Token> part) {
+            int at = 0;
+            while (at < part.size() && !part.get(at).is("FILE")) at++;
+            String transmission = null;
+            String direction = null;
+            boolean print = false;
+            String format = null;
+            int recordSize = -1;
+            for (int i = at + 1; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.is("RECORD") || token.is("STREAM")) {
+                    transmission = token.text();
+                } else if (token.is("INPUT") || token.is("OUTPUT") || token.is("UPDATE")) {
+                    direction = token.text();
+                } else if (token.is("PRINT")) {
+                    print = true;
+                } else if (token.is("ENV") || token.is("ENVIRONMENT")) {
+                    if (i + 1 >= part.size() || !part.get(i + 1).is("(")) {
+                        throw new ParseFailure(token, "ENVIRONMENT needs a parenthesized list");
+                    }
+                    int close = findClosing(part, i + 1);
+                    for (int j = i + 2; j < close; j++) {
+                        Token option = part.get(j);
+                        if (List.of("F", "FB", "FS", "FBS").stream().anyMatch(option::is)) {
+                            format = "F";
+                        } else if (option.is("RECSIZE") || option.is("BLKSIZE")
+                                || option.is("BUFFERS")) {
+                            int value = parenthesizedInt(part, j + 1, -1);
+                            if (value < 1) {
+                                throw new ParseFailure(option, option.text()
+                                        + " needs a positive integer");
+                            }
+                            if (option.is("RECSIZE")) recordSize = value;
+                            j = findClosing(part, j + 1);
+                        } else if (option.is("CONSECUTIVE")) {
+                            continue;
+                        } else {
+                            throw new ParseFailure(option, "ENVIRONMENT option " + option.text()
+                                    + " is not supported yet");
+                        }
+                    }
+                    i = close;
+                } else if (List.of("SEQUENTIAL", "SEQL", "BUFFERED", "BUF", "UNBUFFERED",
+                        "UNBUF", "EXTERNAL", "EXT", "INTERNAL", "INT").stream()
+                        .anyMatch(token::is)) {
+                    continue;
+                } else {
+                    throw new ParseFailure(token, "FILE attribute " + token.text()
+                            + " is not supported yet");
+                }
+            }
+            return new FileAttributes(transmission, direction, print, format, recordSize);
+        }
+
+        /**
+         * {@code DEFINED 基の参照} と {@code POSITION(n)} を読む。基の参照は括弧に入れてもよい。
+         * 以前はどちらも読み飛ばしていたので、定義した変数が自分の記憶域を持ち、基と重ならなかった。
+         */
+        private Defined defined(List<Token> part) {
+            int at = -1;
+            for (int i = 1; i < part.size(); i++) {
+                if (part.get(i).is("DEFINED") || part.get(i).is("DEF")) {
+                    at = i;
+                    break;
+                }
+            }
+            Expr position = null;
+            for (int i = 1; i + 1 < part.size(); i++) {
+                if ((part.get(i).is("POSITION") || part.get(i).is("POS")) && part.get(i + 1).is("(")) {
+                    if (at < 0) {
+                        throw new ParseFailure(part.get(i), "POSITION needs DEFINED");
+                    }
+                    position = subParser(part, i + 2, findClosing(part, i + 1)).expression();
+                }
+            }
+            if (at < 0) {
+                return null;
+            }
+            int from = at + 1;
+            int to = part.size();
+            if (from < part.size() && part.get(from).is("(")) {
+                to = findClosing(part, from);
+                from++;
+            }
+            Parser reference = subParser(part, from, to);
+            String base = reference.qualifiedName();
+            List<Expr> subscripts = reference.check("(") ? reference.arguments() : List.of();
+            if (to < part.size() && !reference.check(Kind.EOF)
+                    && !reference.check("POSITION") && !reference.check("POS")) {
+                // 括弧に入れた基の参照の後ろに何かあれば誤り
+                throw new ParseFailure(reference.peek(), "unexpected " + reference.peek().text()
+                        + " in the DEFINED base");
+            }
+            return new Defined(base, subscripts, position);
+        }
+
+        /** 字句の並びの一部を、式を読むための別の読み手にする。 */
+        private Parser subParser(List<Token> tokens, int from, int to) {
+            List<Token> inner = new ArrayList<>(tokens.subList(from, to));
+            Token end = to < tokens.size() ? tokens.get(to) : tokens.get(tokens.size() - 1);
+            inner.add(new Token(Kind.EOF, "<EOF>", end.line(), end.column()));
+            return new Parser(fileName, inner);
+        }
+
         private static Boolean alignment(List<Token> part) {
             for (Token token : part) {
                 if (token.is("UNALIGNED") || token.is("UNAL")) return Boolean.FALSE;
@@ -690,12 +977,12 @@ final class PliSyntax {
                                          int inheritedPrecision, int inheritedScale) {
             for (int i = from; i < tokens.size(); i++) {
                 if (tokens.get(i).is("CHAR") || tokens.get(i).is("CHARACTER")) {
-                    return new TypeInfo(Type.CHAR, parenthesizedInt(tokens, i + 1, 1), 0);
+                    return new TypeInfo(Type.CHAR, length(tokens, i + 1), 0);
                 }
                 if (tokens.get(i).is("BIT")) {
-                    return new TypeInfo(Type.BIT, parenthesizedInt(tokens, i + 1, 1), 0);
+                    return new TypeInfo(Type.BIT, length(tokens, i + 1), 0);
                 }
-                if (tokens.get(i).is("POINTER")) {
+                if (tokens.get(i).is("POINTER") || tokens.get(i).is("PTR")) {
                     return new TypeInfo(Type.POINTER, 0, 0);
                 }
                 if (tokens.get(i).is("FILE")) {
@@ -940,20 +1227,66 @@ final class PliSyntax {
             return new OnEndFile(file, blockBody());
         }
 
+        /**
+         * {@code OPEN} / {@code CLOSE} / {@code READ} / {@code WRITE}。選択子は順を問わない
+         * (LRM "OPEN statement" ほか)。知らない選択子は読み飛ばさずに断る。{@code KEY} や
+         * {@code KEYFROM} の付く鍵つきの入出力と {@code SET} (位置で受ける読み方) はまだ持たない。
+         */
         private Stmt fileOperation(FileAction action) {
-            expect("FILE");
-            expect("(");
-            String file = qualifiedName();
-            expect(")");
-            String target = null;
-            if (action == FileAction.READ) {
-                expect("INTO");
-                expect("(");
-                target = qualifiedName();
-                expect(")");
-            }
+            List<Stmt> files = new ArrayList<>();
+            do {
+                files.add(oneFile(action));
+            } while ((action == FileAction.OPEN || action == FileAction.CLOSE) && match(","));
             expect(";");
-            return new FileOperation(action, file, target);
+            return files.size() == 1 ? files.get(0) : new Block(List.copyOf(files));
+        }
+
+        private FileOperation oneFile(FileAction action) {
+            String file = null;
+            Expr record = null;
+            Expr title = null;
+            String transmission = null;
+            String direction = null;
+            boolean print = false;
+            while (!check(";") && !(file != null && check(","))) {
+                Token option = next();
+                if (option.is("FILE") && file == null) {
+                    expect("(");
+                    file = qualifiedName();
+                    expect(")");
+                } else if ((action == FileAction.READ && option.is("INTO")
+                        || action == FileAction.WRITE && option.is("FROM")) && record == null) {
+                    record = parenthesizedExpression();
+                } else if (action == FileAction.OPEN && option.is("TITLE") && title == null) {
+                    title = parenthesizedExpression();
+                } else if (action == FileAction.OPEN && (option.is("RECORD") || option.is("STREAM"))
+                        && transmission == null) {
+                    transmission = option.text();
+                } else if (action == FileAction.OPEN && (option.is("INPUT") || option.is("OUTPUT")
+                        || option.is("UPDATE")) && direction == null) {
+                    direction = option.text();
+                } else if (action == FileAction.OPEN && option.is("PRINT")) {
+                    print = true;
+                } else if (action == FileAction.OPEN && (option.is("SEQUENTIAL")
+                        || option.is("SEQL") || option.is("BUFFERED") || option.is("BUF")
+                        || option.is("UNBUFFERED") || option.is("UNBUF"))) {
+                    // 順編成のファイルを前から読み書きするだけなので、どちらでも動きは変わらない
+                    continue;
+                } else {
+                    throw fail(option, action + " option " + option.text()
+                            + " is not supported yet");
+                }
+            }
+            if (file == null) {
+                throw fail(peek(), action + " needs FILE(...)");
+            }
+            if (action == FileAction.READ && record == null
+                    || action == FileAction.WRITE && record == null) {
+                throw fail(peek(), action + " needs " + (action == FileAction.READ ? "INTO" : "FROM")
+                        + "(...)");
+            }
+            return new FileOperation(action, file, record,
+                    new FileAttributes(transmission, direction, print, null, -1), title);
         }
 
         private Expr parenthesizedExpression() {
@@ -1016,6 +1349,17 @@ final class PliSyntax {
                     return new Literal(hexLiteral(literal));
                 }
                 return new Literal(value);
+            }
+            if (check(Kind.NUMBER) && token(1).is("SUB") && token(1).line() == peek().line()
+                    && token(1).column() == peek().column() + peek().text().length()
+                    && !peek().text().contains(".")) {
+                // 1SUB は数と名の 2 つの字句に分かれるが、間に空白の無いものは iSUB 変数である
+                int dimension = Integer.parseInt(next().text());
+                next();
+                if (dimension < 1) {
+                    throw fail(previous(), "iSUB must start from 1SUB");
+                }
+                return new ISub(dimension);
             }
             if (check(Kind.NUMBER)) {
                 return new Literal(FixedValue.constant(next().text()));
@@ -1125,6 +1469,18 @@ final class PliSyntax {
                 if (values.get(i).is(")") && --depth == 0) return i;
             }
             return values.size() - 1;
+        }
+
+        /**
+         * 文字列とビット列の長さ。{@code (*)} は引数から長さを受ける仮引数の印で、{@link #STAR}
+         * にする (LRM "Asterisk notation")。以前は 1 として読んでいた。
+         */
+        private static int length(List<Token> values, int at) {
+            if (at + 2 < values.size() && values.get(at).is("(") && values.get(at + 1).is("*")
+                    && values.get(at + 2).is(")")) {
+                return STAR;
+            }
+            return parenthesizedInt(values, at, 1);
         }
 
         private static int parenthesizedInt(List<Token> values, int at, int fallback) {
@@ -1254,6 +1610,7 @@ final class PliSyntax {
         final List<Stmt> body = new ArrayList<>();
         final Map<String, Procedure> procedures = new LinkedHashMap<>();
         boolean main;
+        boolean noexecops;
 
         ProcedureBuilder(String name, List<String> parameters) {
             this.name = name;

@@ -6460,3 +6460,70 @@ USING の順で作り直し (並べていない連絡節は番地を持たず、
 
 **解消条件**: z/OS で、副入口から入ったときの作業場所と、並べていない連絡節の扱い、`CANCEL` 副入口名 の効き目を採る。
 配備目録に副入口を載せるときに読み直す。
+
+## P-210 PL/I のレコード入出力は F 様式の順編成だけを持ち、RECORD / STREAM を書かないファイルはレコードのファイルとして開く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `PliSyntax.fileAttributes` / `oneFile`、`PliRuntime.Executor.open` / `read` / `write` |
+| 関連要件 | 設計 87 (ZPVS) |
+
+**いまの扱い**: `DCL f FILE RECORD INPUT|OUTPUT ENV(F|FB|FS|FBS RECSIZE(n))`、`OPEN FILE(f) INPUT|OUTPUT TITLE(...)`
+(1 文に複数)、`READ FILE(f) INTO(x)`、`WRITE FILE(f) FROM(x)`、`CLOSE` を持つ。DD 名は TITLE、無ければファイルの名で、
+作業場所の `DataSetCatalog` から引く。向きは OPEN、宣言、文が暗に求めるもの (READ は INPUT、WRITE は OUTPUT) の順に決め、
+食い違えば UNDEFINEDFILE で止める。F 様式でレコード長と FROM / INTO の長さが違えば RECORD で止める (ON RECORD はまだ無い)。
+プログラムが終われば開いたままのファイルを閉じる。KEYED / DIRECT、V / U 様式、UPDATE と REWRITE、LOCATE、READ SET は断る。
+RECORD と STREAM のどちらも書かないファイルは、LRM の既定 (STREAM) によらずレコードのファイルとして開く。
+宣言にもサイドカーにもレコード長が無い OUTPUT のファイルは、書いた長さで作らずに断る。
+
+**なぜ暫定か**: SYSPRINT のほかへの PUT / GET は翻訳で断っているので、属性を書かないファイルに届くのはレコードの文だけであり、
+いまは差が出ない。ストリームのファイルを持てば、LRM の既定どおり STREAM として扱い、READ / WRITE を UNDEFINEDFILE にする
+べきである。RECORD を ON の無いまま ERROR として止めるのは、近い長さに黙って切り詰めないためである。
+TITLE を省いたときの DD 名に 8 字を超える名をそのまま使う扱いは、実機と突き合わせていない。
+
+**どこがずれうるか**: 属性を書かないファイルへの READ / WRITE が、ホストでは UNDEFINEDFILE になるのに、ここでは動く。
+
+**解消条件**: ストリームのファイル (SYSPRINT のほかへの PUT / GET) を持ったとき、または z/OS で属性を書かないファイルへの
+READ を採ったとき。
+
+## P-211 PL/I の SUM の結果の精度 N は LIMITS の下の限りとし、UNSPEC の VARYING は今の長さまでを返す
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `PliRuntime.Executor.sum` / `storage` |
+| 関連要件 | 設計 87 (ZPVS)、P-183 |
+
+**いまの扱い**: `SUM(x)` の結果は x の要素と同じ基数・位取りで、精度は LIMITS の下の限り (既定は 10 進 15、2 進 31)、
+要素の精度がそれを超えれば上の限りとする。式の算術 (`FixedValue.Arithmetic`) と同じ決め方である。
+`UNSPEC(x)` / `HEX(x)` は、x が VARYING の文字列なら長さの半語と今の長さの字の byte を返す。
+
+**なぜ暫定か**: LRM "SUM" は精度を「その基数の最大 N」と書くが、LIMITS(FIXEDDEC(15,31)) の 2 つの値のどちらを N と読むかを
+確かめていない。精度は PUT LIST の欄の幅に出るので、違えば出力の形が変わる。LRM "UNSPEC" は VARYING の半語を含むと書くが、
+今の長さより後ろの (値でない) byte を含むかは読み取れなかった。中身の決まらない byte を返すより、値の分だけを返した。
+
+**どこがずれうるか**: SUM の結果を PUT LIST すると、欄の幅が実機と違いうる。最大の長さまでを返す実装なら、UNSPEC の長さが違う。
+
+**解消条件**: z/OS で `PUT LIST(SUM(A))` (FIXED DEC(5) の配列) と `LENGTH(UNSPEC(V))` (CHAR(5) VARYING に 'AB') を採る。
+
+## P-212 PL/I の主手続きの PARM は、最初の / より左を実行時オプションとして外す (NOEXECOPS なら外さない)
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `PliRuntime.Executor.declareScalar` (主手続きの CHAR VARYING の仮引数) |
+| 関連要件 | 設計 87 (ZPVS) |
+
+**いまの扱い**: `OPTIONS(MAIN)` の手続きが仮引数を 1 つだけ持ち、それが `CHAR(n) VARYING` (または `CHAR(*) VARYING`) なら、
+渡された PARM の最初の `/` より左を Language Environment の実行時オプションとして外し、右だけを引数にする。`/` が無ければ
+すべてが引数である。`OPTIONS(MAIN NOEXECOPS)` なら外さない。外した左の実行時オプションは解釈せず捨てる。
+
+**なぜ暫定か**: Enterprise PL/I Programming Guide の "Passing an argument to the MAIN procedure" と LE の EXECOPS の既定から
+読んだ形で、z/OS では確かめていない。PLIXOPT や翻訳時の SYSTEM オプション (SYSTEM(MVS) のほか) による違い、実行時
+オプションの中身 (RPTOPTS など) の効き目は持たない。IMS の PCB のような POINTER の仮引数には当てない。
+
+**どこがずれうるか**: SYSTEM(MVS) 以外で翻訳したプログラムや、PLIXOPT で既定を変えたプログラムでは、引数の切り方が違いうる。
+実行時オプションの綴りの誤りは、ホストなら注意のメッセージになるが、ここでは何も言わない。
+
+**解消条件**: z/OS で PARM='RUNTIME/HELLO' と 'A/B/C' を OPTIONS(MAIN) と OPTIONS(MAIN NOEXECOPS) の手続きへ渡して採る。
