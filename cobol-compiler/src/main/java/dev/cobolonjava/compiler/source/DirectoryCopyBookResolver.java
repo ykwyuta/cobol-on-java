@@ -11,14 +11,14 @@ import java.util.Optional;
 /**
  * ディレクトリからコピー句を探す (要件 FR-090)。
  *
- * <p>名前をそのまま、および決まった拡張子を付けて探す。<b>大文字と小文字は
- * ファイル体系に任せる</b> — 探索の規則を自前で持つと、環境によって見つかったり
- * 見つからなかったりする理由が増える。
+ * <p>名前をそのまま、および決まった拡張子を付けて探す。大文字と小文字は区別しない
+ * ({@link MemberFiles})。{@code .dcl} は DCLGEN の出力を置く慣習の拡張子である
+ * (CardDemo は {@code COPY DCLTRTYP.} を {@code dcl/DCLTRTYP.dcl} に置く)。
  */
 public final class DirectoryCopyBookResolver implements CopyBookResolver {
 
     /** 名前に付けて試す拡張子。 */
-    private static final List<String> SUFFIXES = List.of("", ".cpy", ".CPY", ".cbl", ".CBL");
+    private static final List<String> SUFFIXES = List.of("", ".cpy", ".cbl", ".dcl");
 
     private final Path directory;
 
@@ -29,14 +29,8 @@ public final class DirectoryCopyBookResolver implements CopyBookResolver {
     @Override
     public Optional<CopyBook> resolve(String textName, String libraryName) {
         Path base = libraryName == null ? directory : directory.resolve(libraryName);
-        for (String suffix : SUFFIXES) {
-            Path candidate = base.resolve(textName + suffix);
-            if (Files.isRegularFile(candidate)) {
-                return Optional.of(new CopyBook(candidate.getFileName().toString(),
-                        read(candidate)));
-            }
-        }
-        return Optional.empty();
+        return MemberFiles.find(base, textName, SUFFIXES)
+                .map(found -> new CopyBook(found.getFileName().toString(), read(found)));
     }
 
     private static String read(Path path) {

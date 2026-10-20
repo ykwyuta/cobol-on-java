@@ -20,7 +20,7 @@ import java.util.Optional;
  */
 public final class BmsCopyBookResolver implements CopyBookResolver {
 
-    private static final List<String> SUFFIXES = List.of(".bms", ".BMS");
+    private static final List<String> SUFFIXES = List.of(".bms");
 
     private final Path directory;
 
@@ -30,14 +30,9 @@ public final class BmsCopyBookResolver implements CopyBookResolver {
 
     @Override
     public Optional<CopyBook> resolve(String textName, String libraryName) {
+        // 大文字と小文字は区別しない (MemberFiles)。GenApp は ssmap.bms と書く
         Path base = libraryName == null ? directory : directory.resolve(libraryName);
-        for (String suffix : SUFFIXES) {
-            Path candidate = base.resolve(textName + suffix);
-            if (Files.isRegularFile(candidate)) {
-                return Optional.of(generate(candidate));
-            }
-        }
-        return Optional.empty();
+        return MemberFiles.find(base, textName, SUFFIXES).map(BmsCopyBookResolver::generate);
     }
 
     private static CopyBook generate(Path source) {
