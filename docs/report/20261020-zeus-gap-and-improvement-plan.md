@@ -169,7 +169,7 @@ BMS のブラウザ描画、Maven の標準ディレクトリ体系。Zeus は J
 | 項目 | 事例 | Zeus | cobol-on-java | 根拠 | 見立て |
 | --- | --- | --- | --- | --- | --- |
 | 不正な 10 進データとゼロ除算 | `B.01`〜`03`、`B.08` (既定・`NUMPROC(PFD)`・`SSRANGE` の各段) | 異常終了しない。`X'F1FAF3'` に `ADD 1` で 104、ゼロ除算は値を残す | データ例外 (S0C7) と 10 進除算例外 (S0CB) で止める | `AP` / `DP` の例外の条件は Hercules で裏付け済み (V2、設計 20) | **cobol-on-java**。Zeus の不具合の候補。実資産で値が化ける形なので重い |
-| `USE FOR DEBUGGING` の宣言部 | `D.P080.*` | 動かさない | 動かす | 宣言部は実行時オプション `DEBUG` で動き、既定は `NODEBUG` (Enterprise COBOL の実行時オプションの説明。P-080) | **Zeus** に分がありそう。cobol-on-java は「動かし過ぎ」の側。probe の `DBG2` / `DBG4` は実行時オプションを渡していないので、どちらの道具もまだ確かめていない |
+| `USE FOR DEBUGGING` の宣言部 | `D.P080.*` | 動かさない | 動かす | 宣言部は実行時オプション `DEBUG` で動き、既定は `NODEBUG` (Enterprise COBOL の実行時オプションの説明。85 規格の object time switch。P-192) | **Zeus** に分がありそう。cobol-on-java は「動かし過ぎ」の側。probe の `DBG2` / `DBG4` は実行時オプションを渡していないので、どちらの道具もまだ確かめていない |
 | 浮動小数点から固定小数点 (`ROUNDED` なし) | `L.P127.TWO3` | 0.66666 (切り捨て) | 0.66667 (最下位で丸め) | Enterprise COBOL Programming Guide「Conversions and precision」: rounding occurs in the low-order position of the target (P-127) | **cobol-on-java**。Zeus の不具合の候補 |
 | 符号つき数字項目への `INSPECT REPLACING` / `CONVERTING` | `I.P085.01`〜`04`、`11` | 符号を残す (`D7`) | 符号なしの像を書き戻す (`F7`) | 85 規格 6.19.4 一般規則 2c (符号なし項目へ移して見る)、NC216A (P-085) | **cobol-on-java** に規格の根拠。ただし書き戻しで符号を落とすことまでは規格に書いていない。実機で決める |
 | `SIGN SEPARATE` の符号のバイト | `I.P085.06`、`08`、`09` | `-` を数え、`+` に置き換える | 触れない | 同上 (走査する像に符号のバイトは入らない) | **cobol-on-java** |
@@ -284,7 +284,7 @@ Zeus が対象外にしているが、JVM の上では自然に作れるもの:
 
 1. 0-4 (未対応構文の一覧を直す) と 0-2 (CardDemo / GenApp を `corpus.tsv` に足す) から始める。
    どちらも機能を足さずに、測る数を増やす作業である。0-6 (Zeus との突き合わせ) は今回の測定で道具ができた
-2. §3.1 で「Zeus に分がありそう」とした 3 件 (P-018 の定数の丸め、P-083 の空行、P-080 の `USE FOR DEBUGGING`) は、暫定判断の「どこがずれうるか」に
+2. (2026-10-20 済) §3.1 で「Zeus に分がありそう」とした 3 件 (P-018 の定数の丸め、P-083 の空行、P-192 の `USE FOR DEBUGGING`) は、暫定判断の「どこがずれうるか」に
    Zeus の読みを書き足し、実機の probe の問いに印を付ける。実機を待たずに変えはしない (どちらも推測である)
 3. 0-2 の結果でいちばん大きい塊を選び、段階 1 の順番を決め直す
 4. 実機が使えるようになったら、まず 0-1 (zos-probe) を流す。§3.1 の「実機待ち」の行が最初に見る行である
