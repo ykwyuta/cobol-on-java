@@ -59,7 +59,8 @@ final class PliSyntax {
      */
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
-                List<Bound> dimensions, List<InitItem> initialItems, FileAttributes file) {
+                List<Bound> dimensions, List<InitItem> initialItems, FileAttributes file,
+                Defined defined) {
 
         /** 配列の要素の数。配列でなければ 1。 */
         int count() {
@@ -80,6 +81,16 @@ final class PliSyntax {
      *                     中身を変えないからである
      * @param recordSize   {@code ENV(RECSIZE(n))} の n。書かなければ -1
      */
+    /**
+     * {@code DEFINED} の基の参照と {@code POSITION} (LRM "DEFINED and POSITION attributes")。
+     *
+     * @param base       基の変数の名
+     * @param subscripts 基の参照の添字。iSUB ({@link ISub}) を含みうる。書かなければ空
+     * @param position   {@code POSITION(n)}。書かなければ {@code null}
+     */
+    record Defined(String base, List<Expr> subscripts, Expr position) {
+    }
+
     /** 長さを {@code (*)} と書いた印。仮引数だけに書け、長さは渡された引数から決まる。 */
     static final int STAR = -1;
 
@@ -191,7 +202,7 @@ final class PliSyntax {
     record Sql(String source) implements Stmt {
     }
 
-    sealed interface Expr permits Literal, Reference, Unary, Binary, Function {
+    sealed interface Expr permits Literal, Reference, Unary, Binary, Function, ISub {
     }
 
     record Literal(Object value) implements Expr {
@@ -247,6 +258,13 @@ final class PliSyntax {
     }
 
     record Function(String name, List<Expr> arguments) implements Expr {
+    }
+
+    /**
+     * iSUB 変数 (LRM "iSUB defining")。{@code DEFINED} の基の参照の添字にだけ書け、定義した配列の
+     * i 番目の次元の添字の値を表す。
+     */
+    record ISub(int dimension) implements Expr {
     }
 
     private enum Kind { IDENT, NUMBER, STRING, SYMBOL, EOF }
@@ -624,7 +642,17 @@ final class PliSyntax {
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
                     dimensions.isEmpty() ? List.of() : initialItems(part),
-                    info.type == Type.FILE ? fileAttributes(part) : null);
+                    info.type == Type.FILE ? fileAttributes(part) : null,
+                    definedOutsideStructure(part, level));
+        }
+
+        /** 構造の要素は DEFINED を持てない (LRM "DEFINED and POSITION attributes")。 */
+        private Defined definedOutsideStructure(List<Token> part, int level) {
+            Defined defined = defined(part);
+            if (defined != null && level > 1) {
+                throw new ParseFailure(part.get(0), "a structure member cannot be DEFINED");
+            }
+            return defined;
         }
 
         /**
@@ -778,6 +806,56 @@ final class PliSyntax {
                 }
             }
             return new FileAttributes(transmission, direction, print, format, recordSize);
+        }
+
+        /**
+         * {@code DEFINED 基の参照} と {@code POSITION(n)} を読む。基の参照は括弧に入れてもよい。
+         * 以前はどちらも読み飛ばしていたので、定義した変数が自分の記憶域を持ち、基と重ならなかった。
+         */
+        private Defined defined(List<Token> part) {
+            int at = -1;
+            for (int i = 1; i < part.size(); i++) {
+                if (part.get(i).is("DEFINED") || part.get(i).is("DEF")) {
+                    at = i;
+                    break;
+                }
+            }
+            Expr position = null;
+            for (int i = 1; i + 1 < part.size(); i++) {
+                if ((part.get(i).is("POSITION") || part.get(i).is("POS")) && part.get(i + 1).is("(")) {
+                    if (at < 0) {
+                        throw new ParseFailure(part.get(i), "POSITION needs DEFINED");
+                    }
+                    position = subParser(part, i + 2, findClosing(part, i + 1)).expression();
+                }
+            }
+            if (at < 0) {
+                return null;
+            }
+            int from = at + 1;
+            int to = part.size();
+            if (from < part.size() && part.get(from).is("(")) {
+                to = findClosing(part, from);
+                from++;
+            }
+            Parser reference = subParser(part, from, to);
+            String base = reference.qualifiedName();
+            List<Expr> subscripts = reference.check("(") ? reference.arguments() : List.of();
+            if (to < part.size() && !reference.check(Kind.EOF)
+                    && !reference.check("POSITION") && !reference.check("POS")) {
+                // 括弧に入れた基の参照の後ろに何かあれば誤り
+                throw new ParseFailure(reference.peek(), "unexpected " + reference.peek().text()
+                        + " in the DEFINED base");
+            }
+            return new Defined(base, subscripts, position);
+        }
+
+        /** 字句の並びの一部を、式を読むための別の読み手にする。 */
+        private Parser subParser(List<Token> tokens, int from, int to) {
+            List<Token> inner = new ArrayList<>(tokens.subList(from, to));
+            Token end = to < tokens.size() ? tokens.get(to) : tokens.get(tokens.size() - 1);
+            inner.add(new Token(Kind.EOF, "<EOF>", end.line(), end.column()));
+            return new Parser(fileName, inner);
         }
 
         private static Boolean alignment(List<Token> part) {
@@ -1164,6 +1242,17 @@ final class PliSyntax {
                     return new Literal(hexLiteral(literal));
                 }
                 return new Literal(value);
+            }
+            if (check(Kind.NUMBER) && token(1).is("SUB") && token(1).line() == peek().line()
+                    && token(1).column() == peek().column() + peek().text().length()
+                    && !peek().text().contains(".")) {
+                // 1SUB は数と名の 2 つの字句に分かれるが、間に空白の無いものは iSUB 変数である
+                int dimension = Integer.parseInt(next().text());
+                next();
+                if (dimension < 1) {
+                    throw fail(previous(), "iSUB must start from 1SUB");
+                }
+                return new ISub(dimension);
             }
             if (check(Kind.NUMBER)) {
                 return new Literal(FixedValue.constant(next().text()));

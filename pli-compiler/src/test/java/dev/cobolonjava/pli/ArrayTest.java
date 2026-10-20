@@ -198,4 +198,46 @@ class ArrayTest {
         assertTrue(String.valueOf(expression.getMessage()).contains("assigned to an array"),
                 expression::getMessage);
     }
+
+    @Test
+    @DisplayName("DEFINED ... POSITION(n) は基の n 字目から重なり、書けば基が変わる (string overlay)")
+    void stringOverlayDefiningSharesTheBase() throws Exception {
+        assertEquals("DEF ABC123GH\n", main("""
+                DCL S CHAR(8) INIT('ABCDEFGH');
+                DCL PART CHAR(3) DEFINED S POSITION(4);
+                PUT SKIP EDIT(PART, ' ')(A, A);
+                PART = '123';
+                PUT EDIT(S)(A);
+                """));
+    }
+
+    @Test
+    @DisplayName("iSUB defining は定義した配列の添字から基の要素を引く。対角と転置")
+    void isubDefiningMapsSubscripts() throws Exception {
+        assertEquals("11 22 33 21 13 99\n", main("""
+                DCL A(3,3) FIXED BIN(31);
+                DCL DIAG(3) FIXED BIN(31) DEFINED A(1SUB,1SUB);
+                DCL T(3,3) FIXED BIN(31) DEFINED A(2SUB,1SUB);
+                DCL (I,J) FIXED BIN(31);
+                DO I = 1 TO 3; DO J = 1 TO 3; A(I,J) = I*10+J; END; END;
+                DIAG(2) = 99;
+                PUT SKIP EDIT(DIAG(1), ' ', A(2,1) + 1, ' ', DIAG(3), ' ', T(1,2), ' ',
+                              T(3,1), ' ', A(2,2))
+                             (F(2), A, F(2), A, F(2), A, F(2), A, F(2), A, F(2));
+                """));
+    }
+
+    @Test
+    @DisplayName("属性の違う DEFINED と構造の要素の DEFINED は断る (自分の記憶域を黙って持たせない)")
+    void unsupportedDefiningIsRefused() {
+        assertThrows(RuntimeException.class, () -> main("""
+                DCL S CHAR(4);
+                DCL N FIXED BIN(31) DEFINED S;
+                N = 1;
+                """));
+        assertTrue(rejection("""
+                DCL S CHAR(4);
+                DCL 1 G, 2 X CHAR(2) DEFINED S;
+                """).contains("DEFINED"));
+    }
 }

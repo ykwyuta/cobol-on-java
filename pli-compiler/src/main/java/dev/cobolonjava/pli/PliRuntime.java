@@ -204,7 +204,9 @@ public final class PliRuntime {
                 for (List<PliSyntax.Decl> chunk : chunks) {
                     // 仮引数は呼んだ側が渡したもの (変数そのものか一時の変数) に結び付いている
                     if (env.ownParameter(chunk.get(0).name())) continue;
-                    if (chunk.get(0).basedOn() == null) declare(chunk, env);
+                    if (chunk.get(0).basedOn() == null && chunk.get(0).defined() == null) {
+                        declare(chunk, env);
+                    }
                 }
             } finally {
                 deferredInits = null;
@@ -213,6 +215,10 @@ public final class PliRuntime {
             for (List<PliSyntax.Decl> chunk : chunks) {
                 if (env.ownParameter(chunk.get(0).name())) continue;
                 if (chunk.get(0).basedOn() != null) declare(chunk, env);
+            }
+            // DEFINED は基の記憶域に重ねるので、基の宣言 (BASED を含む) のあとに置く
+            for (List<PliSyntax.Decl> chunk : chunks) {
+                if (chunk.get(0).defined() != null) declareDefined(chunk, env);
             }
         }
 
@@ -454,6 +460,123 @@ public final class PliRuntime {
             }
         }
 
+        /**
+         * {@code DEFINED} の変数を基に重ねる (LRM "DEFINED and POSITION attributes")。
+         *
+         * <ul>
+         *   <li>配列は、要素ごとに基の要素を引く。基の参照の添字が無ければ同じ添字の要素 (simple
+         *       defining)、iSUB があれば i 番目の次元の添字を iSUB に置いて添字を求める (iSUB
+         *       defining)。要素は基の要素そのものなので、読み書きは基に届く</li>
+         *   <li>スカラーの文字列 (CHAR、文字の PICTURE) を文字列に重ねるのは string overlay defining で、
+         *       {@code POSITION(n)} の n 字目から重なる</li>
+         *   <li>スカラーを同じ属性のスカラーや配列の要素に重ねるのは simple defining</li>
+         * </ul>
+         *
+         * <p>構造の DEFINED、ビット列の POSITION、属性の違う重ね方 (LRM が誤りとするもの、または
+         * 確かめていないもの) は断る。黙って自分の記憶域を持たせると、基と重ならない。
+         */
+        private void declareDefined(List<PliSyntax.Decl> chunk, Env env) {
+            PliSyntax.Decl declaration = chunk.get(0);
+            PliSyntax.Defined defined = declaration.defined();
+            String name = declaration.name();
+            if (chunk.size() > 1 || declaration.type() == PliSyntax.Type.GROUP) {
+                throw new PliExecutionException("DEFINED structures are not supported yet: " + name);
+            }
+            if (declaration.initial() != null || !declaration.initialItems().isEmpty()) {
+                throw new PliExecutionException("a DEFINED variable cannot have INITIAL: " + name);
+            }
+            Var base = env.require(defined.base());
+            if (!declaration.dimensions().isEmpty()) {
+                if (defined.position() != null) {
+                    throw new PliExecutionException("POSITION on the DEFINED array " + name
+                            + " is not supported yet");
+                }
+                if (base.dimensions == null) {
+                    throw new PliExecutionException("the array " + name + " is DEFINED on "
+                            + base.name + ", which is not an array");
+                }
+                if (base.type != declaration.type() || base.precision != declaration.precision()
+                        || base.scale != declaration.scale() || base.varying != declaration.varying()) {
+                    throw new PliExecutionException("the array " + name + " must have the attributes"
+                            + " of its base " + base.name + " (simple or iSUB defining)");
+                }
+                List<PliSyntax.Expr> subscripts = defined.subscripts();
+                if (subscripts.isEmpty()) {
+                    if (base.dimensions.size() != declaration.dimensions().size()) {
+                        throw new PliExecutionException(name + " and its base " + base.name
+                                + " have different numbers of dimensions");
+                    }
+                    subscripts = new ArrayList<>();
+                    for (int d = 1; d <= base.dimensions.size(); d++) {
+                        subscripts.add(new PliSyntax.ISub(d));
+                    }
+                }
+                Var array = new Var(name, declaration.type(), declaration.precision(),
+                        declaration.scale(), base.view);
+                array.varying = declaration.varying();
+                array.dimensions = declaration.dimensions();
+                array.defined = true;
+                int[] subscript = new int[declaration.dimensions().size()];
+                for (int k = 0; k < declaration.count(); k++) {
+                    int rest = k;
+                    for (int d = subscript.length - 1; d >= 0; d--) {
+                        PliSyntax.Bound bound = declaration.dimensions().get(d);
+                        subscript[d] = bound.low() + rest % bound.extent();
+                        rest /= bound.extent();
+                    }
+                    int[] previous = isubs;
+                    isubs = subscript;
+                    try {
+                        array.elements.add(element(base, subscripts, env));
+                    } finally {
+                        isubs = previous;
+                    }
+                }
+                env.put(array);
+                return;
+            }
+            Var target = defined.subscripts().isEmpty() ? base
+                    : element(arrayNamed(defined.base(), env) == null ? base
+                            : arrayNamed(defined.base(), env), defined.subscripts(), env);
+            if (target.dimensions != null) {
+                throw new PliExecutionException("the scalar " + name + " is DEFINED on the array "
+                        + base.name);
+            }
+            boolean strings = isCharacterString(declaration.type()) && isCharacterString(target.type);
+            DataView view;
+            int length = byteLength(declaration);
+            if (strings && !declaration.varying() && !target.varying) {
+                // string overlay defining。POSITION を省けば 1 である
+                int position = defined.position() == null ? 1
+                        : number(value(defined.position(), env)).intValue();
+                if (position < 1 || position - 1 + length > target.view.length()) {
+                    throw new PliExecutionException("DEFINED " + name + " POSITION(" + position
+                            + ") does not fit in " + target.name);
+                }
+                view = target.view.subView(position - 1, length);
+            } else if (defined.position() == null && target.type == declaration.type()
+                    && target.precision == declaration.precision()
+                    && target.scale == declaration.scale() && target.varying == declaration.varying()
+                    && target.bitShift == 0) {
+                view = target.view;
+            } else {
+                throw new PliExecutionException("DEFINED " + name + " on " + target.name
+                        + " with different attributes is not supported");
+            }
+            Var variable = new Var(name, declaration.type(), declaration.precision(),
+                    declaration.scale(), view);
+            variable.varying = declaration.varying();
+            env.put(variable);
+        }
+
+        /** 文字の並びとして重ねられる型。文字の PICTURE は CHAR として宣言している。 */
+        private static boolean isCharacterString(PliSyntax.Type type) {
+            return type == PliSyntax.Type.CHAR;
+        }
+
+        /** iSUB defining の要素を引いているときの、定義した配列の添字。そうでなければ {@code null}。 */
+        private int[] isubs;
+
         /** {@code name} が今 NULL の POINTER か。POINTER でない (BASED(ADDR(X))) なら偽。 */
         private boolean nullPointer(String name, Env env) {
             Var base = env.require(name);
@@ -519,7 +642,7 @@ public final class PliRuntime {
                 int length = declaration.varying() ? passed.length() - 2 : passed.length();
                 declareScalar(new PliSyntax.Decl(declaration.name(), declaration.level(),
                         declaration.type(), Math.max(0, length), 0, null, null,
-                        declaration.aligned(), declaration.varying(), List.of(), List.of(), null),
+                        declaration.aligned(), declaration.varying(), List.of(), List.of(), null, null),
                         env, area, offset, alias);
                 return;
             }
@@ -652,6 +775,7 @@ public final class PliRuntime {
         private boolean containsArray(PliSyntax.Expr expression, Env env) {
             return switch (expression) {
                 case PliSyntax.Literal literal -> false;
+                case PliSyntax.ISub isub -> false;
                 case PliSyntax.Reference reference -> env.contains(reference.name())
                         && env.require(reference.name()).dimensions != null;
                 case PliSyntax.Unary unary -> containsArray(unary.operand(), env);
@@ -1065,7 +1189,7 @@ public final class PliRuntime {
             }
             PliSyntax.Decl shaped = new PliSyntax.Decl(parameter.name(), 0, parameter.type(),
                     precision, parameter.scale(), null, null, parameter.aligned(),
-                    parameter.varying(), List.of(), List.of(), null);
+                    parameter.varying(), List.of(), List.of(), null, null);
             Var dummy = new Var(parameter.name(), parameter.type(), precision, parameter.scale(),
                     Storage.allocate(byteLength(shaped)).whole());
             dummy.varying = parameter.varying();
@@ -1363,6 +1487,8 @@ public final class PliRuntime {
                             ? env.require(reference.name()) : null;
                     scanVariable(variable, wide);
                 }
+                case PliSyntax.ISub isub -> {
+                }
                 case PliSyntax.Unary unary -> scan(unary.operand(), env, wide);
                 case PliSyntax.Binary binary -> {
                     scan(binary.left(), env, wide);
@@ -1397,6 +1523,13 @@ public final class PliRuntime {
                     return context.codePage().decode(hex.bytes());
                 }
                 return literal.value();
+            }
+            if (expression instanceof PliSyntax.ISub isub) {
+                if (isubs == null || isub.dimension() > isubs.length) {
+                    throw new PliExecutionException(isub.dimension() + "SUB is outside the"
+                            + " dimensions of the DEFINED array");
+                }
+                return FixedValue.binary(BigDecimal.valueOf(isubs[isub.dimension() - 1]), 31, 0);
             }
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
@@ -1550,8 +1683,13 @@ public final class PliRuntime {
                 throw new PliExecutionException("SIZE requires one data reference");
             }
             // SIZE は FIXED BIN(31) を返す。配列なら全体、要素なら要素の大きさ
-            return FixedValue.binary(BigDecimal.valueOf(
-                    dataReference(function.arguments().get(0), env, "SIZE").view.length()), 31, 0);
+            Var variable = dataReference(function.arguments().get(0), env, "SIZE");
+            if (variable.defined) {
+                // 要素を基から引いた配列は、自分の連続した記憶域を持たない
+                throw new PliExecutionException("SIZE of the DEFINED array " + variable.name
+                        + " is not supported yet");
+            }
+            return FixedValue.binary(BigDecimal.valueOf(variable.view.length()), 31, 0);
         }
 
         private Object address(PliSyntax.Function function, Env env) {
@@ -1861,6 +1999,8 @@ public final class PliRuntime {
         List<PliSyntax.Bound> dimensions;
         /** 配列の要素。行の順。 */
         final List<Var> elements = new ArrayList<>();
+        /** 要素を DEFINED の基から引いた配列なら真。{@link #view} は配列の記憶域ではない。 */
+        boolean defined;
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
             this(name, type, precision, scale, view, 0);
