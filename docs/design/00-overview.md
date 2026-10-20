@@ -30,7 +30,7 @@ Maven のマルチモジュール構成とする。
 | `cobol-job` | 内部ジョブモデルと実行機構、記述形式のフロントエンド | 内部モデルと宣言的形式を実装済 ([設計 90](90-job.md)) |
 | `cobol-verify` | 外の基準で測る。NIST CCVS85 と OSS コーパスを処理系へ流し、合格率と未対応構文を数える | 第 1 増分 実装済 ([設計 25](25-verification.md))。コーパスは同梱せず取得スクリプトで持ってくる |
 | `cobol-junit` | JUnit 5 からの COBOL 実行、fixture、プログラム・SECTION の Mock / spy | program Mock、SECTION Mock/spy、class埋込みmetadata検査、単一deploy catalog読込み、制限付き直接SECTION実行を実装 ([設計 76](76-junit-testing.md)) |
-| `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、同一sessionのLINK / XCTL / RETURN実行、版・lease付き疑似会話store、初期EIB field、RESP / RESP2を実装 ([設計 77](77-spring-cics-db2.md)) |
+| `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、同一sessionのLINK / XCTL / RETURN実行、版・lease付き疑似会話store、初期EIB field、RESP / RESP2を実装。3270 エミュレータを TN3270 / TN3270E で受ける入口を JDK だけで持つ ([設計 77](77-spring-cics-db2.md), [設計 86](86-cics-tn3270.md)) |
 | `cobol-db2` | SQL 計画、ホスト変数、SQLCA、カーソル、UOW ポートのフレームワーク非依存モデル | experimentalなprofile固定、遅延UOW、WITH HOLD方針、型付きhost variable / codec、SQLCA fidelity行列を実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection leaseとdriver-managed UOW | task専用lease、同一connectionのcommit跨ぎ、hold / 非hold資源cleanup、reset / discardを実装。native SQL executorと実Db2試験は未実装 ([ADR-0012](../decisions/0012-db2-driver-managed-uow-for-required-hold-cursors.md)) |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.1 の MVC、Session、JDBC、transaction、Actuator を中立ポートへ接続 | `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS、Actuatorは未実装 ([設計 77](77-spring-cics-db2.md)) |

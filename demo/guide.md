@@ -1,7 +1,7 @@
 # cobol-on-java デモシナリオガイド
 
 本書は、`cobol-on-java` の多彩な機能を体感するためのデモシナリオ一覧と実行ガイドです。
-メインフレーム互換機能（バッチ、ファイル入出力、JCL、システムユーティリティ、CICS）から、オープン化・近代化を支える Java 連携（相互運用、JUnit 5 単体テスト、Spring Boot & Db2 SQL 統合）まで、全 10 のデモシナリオを提供しています。
+メインフレーム互換機能（バッチ、ファイル入出力、JCL、システムユーティリティ、CICS）から、オープン化・近代化を支える Java 連携（相互運用、JUnit 5 単体テスト、Spring Boot & Db2 SQL 統合）まで、全 11 のデモシナリオを提供しています。
 
 ---
 
@@ -19,6 +19,7 @@
 | **008** | [Spring Boot & Db2 SQL 連携](file:///d:/workspace/cobol-on-java/demo/008/README.md) | Spring Boot 4.x / Spring Framework 7 との統合、COBOL ホスト変数による SQL 実行、Spring 管理トランザクション（コミット/ロールバック）との同期 | **提供中** |
 | **009** | [BMS + COBOL + H2 による Todo アプリ](file:///d:/workspace/cobol-on-java/demo/009/README.md) | BMS マップ (`DFHMSD`/`DFHMDI`/`DFHMDF`) からの記号マップ自動生成、`SEND MAP`/`RECEIVE MAP` と `RETURN TRANSID COMMAREA` による疑似会話、COBOL の `EXEC SQL`（カーソルを含む）による H2 アクセス。同じ素材を Spring Boot + Thymeleaf のブラウザ画面でも動かせる (`run_web`) | **提供中** |
 | **010** | [Maven の標準ディレクトリ体系でのビルド](file:///d:/workspace/cobol-on-java/demo/010/README.md) | `cobol-maven-plugin` による COBOL (写し句つき)・JCL (目録手続きつき)・PL/I (`%INCLUDE` つき) のビルド。`src/main/cobol` / `copybook` / `jcl` / `proclib` / `pli` / `pli-include` の標準の置き場、ビルド時の JCL 検査、ビルド結果からのジョブ実行 | **提供中** |
+| **011** | [3270 エミュレータから TN3270 で動かす疑似会話](011/README.md) | Spring を使わずに `Tn3270Main` で領域を起こし、x3270 / c3270 / s3270 から TN3270 / TN3270E で接続。空の画面に打った TRANSID で task を起こし、BMS の画面を 3270 データストリームで送り、Read Modified を `RECEIVE MAP` へ渡す | **提供中** |
 
 ---
 
@@ -162,7 +163,8 @@
   - `greet/`: PL/I の `HELLO.pli` が `%INCLUDE GREETING` を取り込みます。
 * **実行コマンド**:
   ```cmd
-  demoun_demo.bat
+  demo
+un_demo.bat
   ```
   ```sh
   demo/010/run_demo.sh          # Linux / macOS

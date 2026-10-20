@@ -6040,3 +6040,41 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 **リテラル属性**: マクロ引数 `=F'7'` は位置引数として受け取る。先に機械命令で使われたリテラルは `T'` / `L'` / `S'` / `I'` / `D'` に属性を返し、未使用リテラルの `T'` は `U`、`D'` は 0 とする。アセンブラのリテラル項の切り出しを共用し、修飾付き機械命令オペランドでも同じ綴りを記録する。
 
 **残る検証**: IBM HLASM のマクロ展開出力、属性参照時の既定値と警告、外部記号 `ESYM`、`XATTR` の program/assembler type、各種アセンブラオプション、複合文字式と複合算術式を照合する。`LOCTR` 自体が未対応のため `&SYSLOC` は制御節名までで、`ISEQ` / `ICTL` 指定時の `&SYSSEQF` も未対応。Hercules は機械命令の実行比較には使えるが、マクロ展開の期待値にはならない。
+
+## P-191 TN3270 の入口は、端末の機能の多くを取り決めずに断る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `Tn3270Connection`、`Tn3270Device`、`Tn3270Server` (`dev.cobolonjava.cics.tn3270`)、設計 86 |
+| 関連要件 | RFC 1576 (TN3270)、RFC 2355 (TN3270E)、FR-161〜FR-167 |
+
+**暫定の扱い**:
+
+- TN3270E の FUNCTIONS は 1 つも受けない。端末が求めれば空の一覧を REQUEST で求め返し、IS で同意させる。
+  BIND-IMAGE、RESPONSES、SYSREQ、SCS-CTL-CODES、DATA-STREAM-CTL は使わない
+- 拡張属性 (色、強調) を送ってよいかは、型名の末尾の `-E` だけで決める。Read Partition Query で
+  端末に聞かない。`IBM-DYNAMIC` と model 2〜5 以外の型は断る (DEVICE-TYPE REJECT INV-DEVICE-TYPE、
+  素の TN3270 では接続を切る)
+- 印刷装置の ASSOCIATE は UNSUPPORTED-REQ で断る
+- sign on が無い。task の user ID は `Options.defaultUserId` (CICS の DFLTUSER に当たる) だけ
+- 疑似会話の途中でない端末の入力は、先頭の語を TRANSID にして残りを捨てる
+- 画面を送らずに終わった task のあとは、Write の WCC でキーボードだけを開ける。CLEAR / PA で何も
+  起こさなかったときも同じ
+- 領域の通知は CICS の公開されたメッセージ (DFHAC2001 / 2008 / 2033 / 2206) の文面に合わせ、
+  書式なしの画面で警告音つきで出す。ABEND の code を持たない失敗は DFHAC の番号を使わず `COJTN001` とする
+
+**なぜ暫定か**: 外の基準は `s3270` (x3270 4.1) だけであり、z/OS の CICS の画面と byte を突き合わせて
+いない。キーボードを開けるかどうかと通知の文面は、実機で観測していない。
+
+**どこがずれうるか**:
+
+- 実機は画面を送らない task のあとキーボードを閉じたままにするかもしれない。そうなら利用者は RESET を
+  押す必要があり、ここは押さずに打てる
+- `-E` を名乗りながら色を描かない端末 (古いエミュレータ) には SFE が届く。3270 の規則では知らない
+  拡張属性は無視されるので画面は崩れないはずだが、測っていない
+- TRANSID の後ろの入力を読む資産 (`EXEC CICS RECEIVE INTO`) は、その値を受け取れない
+
+**解消条件**: z/OS の CICS (TYPETERM の既定、自動導入) に同じ台本を流して画面と WCC を比べる。
+`RECEIVE INTO` を実装し、端末の入力を task へ渡す口を `CicsTaskRequest` に足す。sign on (CESN) を
+`CicsSecurityPort` で実装する。

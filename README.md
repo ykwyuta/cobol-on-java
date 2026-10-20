@@ -26,6 +26,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: CICS 資源ポート (時間・間隔・端末・システム情報) と BMS 実行時](docs/design/79-cics-resource-ports.md)
 - [設計: BMS 画面の Web 描画 (Thymeleaf adapter) と renderer spike](docs/design/81-bms-web-renderer.md)
 - [設計: 端末へ出す START (TERMID) と一時データの trigger level による ATI](docs/design/83-cics-terminal-start-ati.md)
+- [設計: 3270 端末を TN3270 で受ける CICS の入口](docs/design/86-cics-tn3270.md) — Spring に依らず、x3270 / c3270 などの 3270 エミュレータがそのままつながる
 - [設計: デモ環境の簡易認証 (principal と CICS の user ID、transaction と START USERID の権限)](docs/design/84-cics-demo-security.md)
 - [設計: 断っていた CICS / Db2 の形の暫定仮仕様 (file control の残り、SYSID、NOSUSPEND、TD、START)](docs/design/85-cics-provisional-specs.md)
 - [設計: IMS サブシステム連携 (IMS DB / IMS TM)](docs/design/78-ims-subsystem.md)
@@ -34,7 +35,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [構文・振る舞いリファレンス](docs/syntax-and-behavior-reference.md) — サポート構文と文ごとの意味論・実行時挙動の一覧
 - [未対応構文とその理由](docs/unsupported-syntax-and-rationale.md) — 未対応の構文・オプション、設計判断の根拠、代替手段
 - [利用ガイド](docs/guide.md) — コンパイラ起動オプション、単一・複数プログラムの翻訳と実行手順
-- [デモシナリオガイド](demo/guide.md) — 動かして確かめる 10 本のデモ。#009 は BMS + COBOL + H2 の Todo アプリ ([demo/009](demo/009/README.md))、#010 は Maven の標準ディレクトリ体系 ([demo/010](demo/010/README.md))
+- [デモシナリオガイド](demo/guide.md) — 動かして確かめる 11 本のデモ。#009 は BMS + COBOL + H2 の Todo アプリ ([demo/009](demo/009/README.md))、#010 は Maven の標準ディレクトリ体系 ([demo/010](demo/010/README.md))、#011 は 3270 エミュレータから TN3270 で動かす疑似会話 ([demo/011](demo/011/README.md))
 - [アーキテクチャ決定記録 (ADR)](docs/decisions/README.md)
 - [敵対的設計レビュー: Java / JUnit / CICS / Db2 / BMS](docs/reviews/2026-09-09-interop-adversarial-review.md)
 - [IMS の概要と対応検討](docs/research/ims-overview-and-support-scope.md) — IMS (TM/DB) の仕組み、CICS/Db2 との違い、COBOL (DL/I) 連携と移行スコープ
