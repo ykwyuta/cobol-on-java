@@ -58,6 +58,7 @@ public final class Main {
             System.err.println("       verify hlasm-corpus <directory> [-o out]");
             System.err.println("       verify ims-gen    <directory> [-o out]");
             System.err.println("       verify ims-mpp    <base> -d classes -p program -s psb -m messages [-o out]");
+            System.err.println("       verify zcvs       <zeus>/zcvs [-p PROG,PROG] [-o out]");
             System.exit(2);
             return;
         }
@@ -69,6 +70,7 @@ public final class Main {
             case "pli-corpus" -> pliCorpus(Path.of(args[1]));
             case "hlasm-corpus" -> hlasmCorpus(Path.of(args[1]));
             case "ims-gen" -> imsGeneration(Path.of(args[1]));
+            case "zcvs" -> zcvs(Path.of(args[1]), java.util.Optional.ofNullable(option(args, "-p")).map(Path::toString).orElse(null));
             case "ims-mpp" -> dev.cobolonjava.verify.ims.ImsMessageRunner.run(Path.of(args[1]),
                     option(args, "-d"), word(args, "-p"), word(args, "-s"), option(args, "-m"));
             default -> null;
@@ -82,6 +84,22 @@ public final class Main {
         if (written != null) {
             Files.writeString(written, text, StandardCharsets.UTF_8);
         }
+    }
+
+    /**
+     * Zeus の COBOL 検査スイート ZCVS を流す (設計 87)。スイートは tools/verify/fetch-corpus.sh で Zeus の
+     * コミットに固定して取ってくる。
+     */
+    private static String zcvs(Path suite, String programs) {
+        if (!Files.isReadable(suite.resolve("manifest.toml"))) {
+            System.err.println("ZCVS の置き場が読めない: " + suite);
+            System.err.println("tools/verify/fetch-corpus.sh で zeus を取ってくること");
+            System.exit(1);
+        }
+        java.util.Set<String> only = programs == null ? java.util.Set.of()
+                : java.util.Set.of(programs.toUpperCase(java.util.Locale.ROOT).split(","));
+        return dev.cobolonjava.verify.suite.SuiteSummary.text("ZCVS (Zeus の COBOL 検査スイート) を動かした結果",
+                new dev.cobolonjava.verify.suite.CobolSuiteRunner(suite).run(only));
     }
 
     /** CCVS85 を流す。 */
