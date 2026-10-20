@@ -1747,6 +1747,36 @@ public final class CicsRuntimeOps {
     }
 
     /**
+     * 項目の番地から読んだ 8 byte を ABSTIME のパック 10 進として読む (暫定判断 P-196)。
+     *
+     * <p>ABSTIME の項目が PACKED-DECIMAL(15) でないとき、FORMATTIME は ASKTIME が書いた 8 byte をそのまま読む。
+     * パック 10 進として読めなければ、ホストでは 10 進データ例外になるので止める。
+     */
+    public static dev.cobolonjava.runtime.decimal.Decimal abstimeAt(DataView abstime) {
+        byte[] bytes = Objects.requireNonNull(abstime, "abstime").toByteArray();
+        if (bytes.length != ABSTIME_LENGTH) {
+            throw new IllegalArgumentException("ABSTIME must be read as exactly 8 bytes");
+        }
+        long value = 0;
+        for (int i = 0; i < bytes.length; i++) {
+            int high = (bytes[i] >> 4) & 0x0F;
+            int low = bytes[i] & 0x0F;
+            if (high > 9 || (i < bytes.length - 1 && low > 9)) {
+                throw new CicsTaskStateException("FORMATTIME ABSTIME does not hold packed decimal data");
+            }
+            value = value * 10 + high;
+            if (i < bytes.length - 1) {
+                value = value * 10 + low;
+            } else if (low < 0x0A) {
+                throw new CicsTaskStateException("FORMATTIME ABSTIME does not hold packed decimal data");
+            } else if (low == 0x0B || low == 0x0D) {
+                value = -value;
+            }
+        }
+        return dev.cobolonjava.runtime.decimal.Decimal.of(value, 0);
+    }
+
+    /**
      * FORMATTIME の初期subset (設計 79 §6.2)。
      *
      * <p>書くのは区切りの有無で決まる文字数だけであり、受取域の残りは変えない (暫定判断 P-115)。

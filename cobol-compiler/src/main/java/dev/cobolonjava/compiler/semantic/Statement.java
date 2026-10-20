@@ -315,8 +315,12 @@ public sealed interface Statement {
             Origin origin) implements Statement {
     }
 
-    /** EXEC CICS ASKTIME。受取域を省けばEIBの日時だけを更新する (設計 79 §6.1)。 */
-    record CicsAskTime(DataReference abstime, Origin origin) implements Statement {
+    /**
+     * EXEC CICS ASKTIME。受取域を省けばEIBの日時だけを更新する (設計 79 §6.1)。
+     *
+     * @param fromAddress ABSTIME が PACKED-DECIMAL(15) でなく、項目の番地から 8 byte を書くか (暫定判断 P-196)
+     */
+    record CicsAskTime(DataReference abstime, boolean fromAddress, Origin origin) implements Statement {
     }
 
     /**
@@ -324,9 +328,11 @@ public sealed interface Statement {
      *
      * @param dateSeparator 日付の区切り文字。区切らなければ null
      * @param timeSeparator 時刻の区切り文字。区切らなければ null
+     * @param fromAddress   ABSTIME が PACKED-DECIMAL(15) でなく、項目の番地から 8 byte を読むか (暫定判断 P-196)
      */
     record CicsFormatTime(
             DataReference abstime,
+            boolean fromAddress,
             CicsDateOrder dateOrder,
             DataReference date,
             String dateSeparator,

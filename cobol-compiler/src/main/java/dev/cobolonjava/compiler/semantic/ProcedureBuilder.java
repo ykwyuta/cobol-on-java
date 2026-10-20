@@ -5277,12 +5277,16 @@ public final class ProcedureBuilder {
         if (spec.abstime() != null && abstime == null) {
             return null;
         }
-        if (abstime != null && !isAbstimeArea(abstime)) {
+        // ABSTIME は PACKED-DECIMAL(15) の 8 byte である。GenApp は PIC S9(8) COMP (4 byte) を渡し、ホストでは
+        // CICS が項目の番地から 8 byte を書いて隣の記憶域を上書きしたまま動く。同じく番地から 8 byte を書き、
+        // FORMATTIME も番地から 8 byte を読む (暫定判断 P-196、P-146 と同じ形)
+        boolean fromAddress = abstime != null && !isAbstimeArea(abstime);
+        if (fromAddress && abstime.constantLength().isEmpty()) {
             throw new IllegalArgumentException(
-                    "ABSTIME must be a PACKED-DECIMAL(15) integer data area (PIC S9(15) COMP-3)");
+                    "ABSTIME must be a data area with a fixed length");
         }
         if (spec.ask()) {
-            return new Statement.CicsAskTime(abstime, origin);
+            return new Statement.CicsAskTime(abstime, fromAddress, origin);
         }
         DataReference date = timeReceiver(spec.date(), spec.dateSeparator() == null ? 8 : 10,
                 "FORMATTIME " + spec.dateOrder(), origin);
@@ -5291,7 +5295,7 @@ public final class ProcedureBuilder {
         if ((spec.date() != null && date == null) || (spec.time() != null && time == null)) {
             return null;
         }
-        return new Statement.CicsFormatTime(abstime, spec.dateOrder(), date,
+        return new Statement.CicsFormatTime(abstime, fromAddress, spec.dateOrder(), date,
                 spec.dateSeparator(), time, spec.timeSeparator(), origin);
     }
 

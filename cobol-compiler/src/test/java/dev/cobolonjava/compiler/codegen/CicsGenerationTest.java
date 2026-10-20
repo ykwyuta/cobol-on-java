@@ -1287,10 +1287,45 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("ABSTIMEが4 byteの2進項目なら、項目の番地から8 byteを書いて読む (GenApp、P-196)")
+    void abstimeInABinaryItemUsesEightBytesFromItsAddress() {
+        // GenApp の WS-ABSTIME PIC S9(8) COMP の形。WS-RESP (4 byte) の次に WS-RESP2 (4 byte) が並ぶので、
+        // ホストと同じく ASKTIME は WS-RESP2 まで書き、FORMATTIME は 8 byte を読んで正しい日時を出す
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "GENTIME", List.of(
+                "MOVE 'FAIL' TO LK-AREA",
+                "MOVE 0 TO WS-RESP2",
+                "EXEC CICS ASKTIME ABSTIME(WS-RESP) END-EXEC",
+                "EXEC CICS FORMATTIME ABSTIME(WS-RESP) MMDDYYYY(WS-DATE) TIME(WS-TIME) "
+                        + "DATESEP END-EXEC",
+                "IF WS-DATE = '09/10/2026' AND WS-TIME = 130506 AND WS-RESP2 NOT = 0 "
+                        + "MOVE 'PASS' TO LK-AREA END-IF",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("GENTIME", program)
+                .build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("GENTIME"), Duration.ofSeconds(5),
+                16, 0, 0, 0, true);
+        CicsTaskContext zoned = new CicsTaskContext(
+                new CicsTaskId("task_000000000016"), TransId.of("TX01"), "compiler-test",
+                Instant.parse("2026-09-10T00:00:00Z"), java.util.OptionalInt.empty(),
+                Optional.of(java.time.ZoneId.of("Asia/Tokyo")));
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment
+                .unconfigured().withClock(java.time.Clock.fixed(
+                        Instant.parse("2026-09-10T04:05:06Z"), java.time.ZoneOffset.UTC));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        zoned, (action, ignored) -> { });
+
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
     @DisplayName("時間命令は受取域の形を翻訳時に検査し、地方時が無ければ実行時に失敗する")
     void rejectsTimeCommandsWithoutShapeOrZone() {
-        assertRejected("EXEC CICS ASKTIME ABSTIME(WS-RESP) END-EXEC",
-                "PACKED-DECIMAL(15)");
         assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) YYDDD(WS-DATE) END-EXEC",
                 "unsupported FORMATTIME option: YYDDD");
         assertRejected("EXEC CICS FORMATTIME ABSTIME(WS-ABS) DDMMYYYY(WS-SHORT) DATESEP END-EXEC",

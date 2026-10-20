@@ -6199,3 +6199,29 @@ CICS は MDT を落としてキーボードを戻す WCC を付ける、と公�
 
 **解消条件**: z/OS の CICS で、`ERASE` あり / なし、制御文字を含むデータの SEND を TN3270 で受けて、
 WCC と画面の位置を比べる。命令を含むデータは、3270 のデータ流を解釈する画面の模型を持ってから受ける。
+
+## P-196 ASKTIME / FORMATTIME の ABSTIME が PACKED-DECIMAL(15) でなければ、項目の番地から 8 byte を書いて読む
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。利用者が「GenApp の ASKTIME ABSTIME (4 byte の 2 進項目) を暫定仕様で受ける」と決めた |
+| 場所 | `ProcedureBuilder.cicsTimeStatement`、`ProgramGenerator.planAbstimeAtAddress`、`CicsRuntimeOps.abstimeAt` |
+| 関連要件 | 設計 79 §6、P-146 |
+
+**いまの扱い**: ABSTIME の項目が PACKED-DECIMAL(15) の整数 (`PIC S9(15) COMP-3`) でなく、長さの決まった項目なら、
+ASKTIME は<b>項目の番地から 8 byte</b> にパック 10 進の ABSTIME を書き、FORMATTIME は同じ番地から 8 byte を読んで
+パック 10 進として解く。項目より長い分は、同じ記憶域に続く項目の上に書く。記憶域の端を越える分は、P-146 の
+COMMAREA と同じく binary zero を詰めた写しになり、書いた値は残らない。FORMATTIME が読んだ 8 byte がパック 10 進
+でなければ task を止める。
+
+**なぜ暫定か**: GenApp の 14 本は `WS-ABSTIME PIC S9(8) COMP` (4 byte) を ABSTIME に渡す。CICS は受取域の番地へ
+8 byte のパック 10 進を書くので、ホストでは続く項目 (GenApp では `WS-TIME` の先頭 4 byte) を上書きしたまま動き、
+FORMATTIME も同じ 8 byte を読むので日時は正しく出る。その振る舞いを、記憶域の並びがホストと同じである前提で
+写した。COBOL の文として `WS-ABSTIME` を読む (`MOVE WS-ABSTIME TO ...`) と、パック 10 進の先頭 4 byte を 2 進として
+読んだ値になるが、これもホストと同じである。
+
+**どこがずれうるか**: 続く記憶域の並びがホストと違えば、上書きされる項目が違う。記憶域の端にある項目では
+ホストは隣の記憶域を上書きする (または保護例外になる) が、ここでは書いた値が消え、FORMATTIME は止まる。
+実機とは突き合わせていない。
+
+**解消条件**: z/OS の CICS で `PIC S9(8) COMP` を ABSTIME に渡し、続く項目の byte と FORMATTIME の結果を採る。

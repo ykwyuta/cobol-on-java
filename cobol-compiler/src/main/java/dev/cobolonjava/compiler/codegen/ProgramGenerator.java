@@ -1544,7 +1544,9 @@ public final class ProgramGenerator {
     private void planCicsAskTime(Statement.CicsAskTime statement, List<Runnable> body) {
         Runnable abstime = statement.abstime() == null
                 ? () -> run.visitInsn(Opcodes.ACONST_NULL)
-                : planWholeView(statement.abstime(), statement.origin());
+                : statement.fromAddress()
+                        ? planAbstimeAtAddress(statement.abstime(), statement.origin())
+                        : planWholeView(statement.abstime(), statement.origin());
         if (abstime == null) {
             return;
         }
@@ -1556,9 +1558,38 @@ public final class ProgramGenerator {
         });
     }
 
+    /**
+     * 項目の番地から 8 byte の ABSTIME の域 (暫定判断 P-196)。項目より長い COMMAREA と同じく、記憶域に続く byte を
+     * 含めて指し、記憶域の端を越える分は binary zero を詰めた写しにする (P-146)。
+     */
+    private Runnable planAbstimeAtAddress(DataReference reference, Origin origin) {
+        Runnable address = planAddress(reference, origin);
+        OptionalInt itemLength = lengthOf(reference, origin);
+        if (address == null || itemLength.isEmpty()) {
+            return null;
+        }
+        return () -> {
+            address.run();
+            push(itemLength.getAsInt());
+            push(8);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "longCommarea",
+                    "(L" + STORAGE + ";III)L" + DATA_VIEW + ";", false);
+        };
+    }
+
     private void planCicsFormatTime(Statement.CicsFormatTime statement, List<Runnable> body) {
         Origin origin = statement.origin();
-        Runnable abstime = planSourceDecimal(new Operand.Reference(statement.abstime()), origin);
+        Runnable abstime;
+        if (statement.fromAddress()) {
+            Runnable view = planAbstimeAtAddress(statement.abstime(), origin);
+            abstime = view == null ? null : () -> {
+                view.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "abstimeAt",
+                        "(L" + DATA_VIEW + ";)" + DECIMAL, false);
+            };
+        } else {
+            abstime = planSourceDecimal(new Operand.Reference(statement.abstime()), origin);
+        }
         Runnable date = statement.date() == null
                 ? () -> run.visitInsn(Opcodes.ACONST_NULL)
                 : planWholeView(statement.date(), origin);
