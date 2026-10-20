@@ -1133,14 +1133,16 @@ class CicsGenerationTest {
                 "EIBTRNID is read-only");
         assertRejected("EXEC CICS ASSIGN ABCODE('B123') END-EXEC",
                 "unsupported or malformed EXEC CICS block");
-        assertRejected("EXEC CICS ASSIGN ABCODE(WS-ABCODE) RESP(WS-RESP) END-EXEC",
-                "unsupported ASSIGN option: RESP");
         assertRejected("EXEC CICS ASSIGN APPLID(WS-ABCODE) END-EXEC",
                 "must be a 8-byte alphanumeric data area");
         assertRejected("EXEC CICS ASSIGN PROGRAM(WS-PGM) PROGRAM(WS-APPL) END-EXEC",
                 "duplicate ASSIGN option: PROGRAM");
         assertRejected("EXEC CICS ASSIGN SYSID(WS-PGM) END-EXEC",
-                "unsupported ASSIGN option: SYSID");
+                "must be a 4-byte alphanumeric data area");
+        assertRejected("EXEC CICS ASSIGN NETNAME(WS-PGM) END-EXEC",
+                "unsupported ASSIGN option: NETNAME");
+        assertRejected("EXEC CICS ASSIGN APPLID(WS-APPL) RESP2(WS-RESP2) END-EXEC",
+                "RESP2 requires RESP");
     }
 
     @Test
@@ -1344,6 +1346,32 @@ class CicsGenerationTest {
         CicsTaskStateException failure = assertThrows(CicsTaskStateException.class,
                 () -> execute(loader, "NOZONE", program));
         assertTrue(failure.getMessage().contains("host time zone"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("ASSIGN SYSIDは自 regionとして構成した1つのSYSIDを返し、決まらなければ失敗する (GenApp)")
+    void assignSysidReturnsTheOneLocalSystem() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "SYSPGM", List.of(
+                "EXEC CICS ASSIGN SYSID(WS-ABCODE) RESP(WS-RESP) END-EXEC",
+                "MOVE WS-ABCODE TO LK-AREA",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("SYSPGM", program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("SYSPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment
+                .unconfigured().withLocalSystems(java.util.Set.of("SYS1"));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("SYS1", CodePages.DEFAULT.decode(result.payload().commarea()));
+        CicsTaskStateException failure = assertThrows(CicsTaskStateException.class,
+                () -> execute(loader, "SYSPGM", program));
+        assertTrue(failure.getMessage().contains("exactly one configured local SYSID"),
+                failure.getMessage());
     }
 
     @Test

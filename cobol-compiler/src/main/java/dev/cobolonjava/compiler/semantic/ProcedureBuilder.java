@@ -1877,8 +1877,8 @@ public final class ProcedureBuilder {
                     }
                     assigns.add(new Statement.CicsAssign(spec.option(), receiver, origin));
                 }
-                return assigns.size() == 1
-                        ? assigns.get(0) : new Statement.Sequence(assigns, origin);
+                return withCicsResponse(assigns.size() == 1
+                        ? assigns.get(0) : new Statement.Sequence(assigns, origin), parsed, origin);
             }
             if (parsed.time() != null) {
                 return cicsTimeStatement(parsed.time(), origin);

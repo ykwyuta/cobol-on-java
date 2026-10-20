@@ -1648,6 +1648,7 @@ public final class ProgramGenerator {
             case ABCODE -> "assignAbcode";
             case APPLID -> "assignApplid";
             case PROGRAM -> "assignProgram";
+            case SYSID -> "assignSysid";
         };
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);

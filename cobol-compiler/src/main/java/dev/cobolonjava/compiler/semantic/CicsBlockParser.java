@@ -145,9 +145,18 @@ final class CicsBlockParser {
         Objects.requireNonNull(source, "source");
         Matcher assign = ASSIGN_BLOCK.matcher(source);
         if (assign.matches()) {
-            return new Parsed(null, null, null, -1, null, null,
-                    false, false, false, false, false, null, List.of(), null, null, null,
-                    parseAssignments(assign.group(1)), null, null, null, null, null, null);
+            // GenApp は ASSIGN SYSID(...) RESP(WS-RESP) と書く。RESP / RESP2 / NOHANDLE は受取域の option ではない
+            ParsedOption<String> response = extractOne(RESP_OPTION, assign.group(1), Matcher::group);
+            ParsedOption<String> response2 = extractOne(RESP2_OPTION, response.remainder, Matcher::group);
+            ParsedOption<String> noHandle = extractOne(NOHANDLE_OPTION, response2.remainder, Matcher::group);
+            if (response2.value != null && response.value == null) {
+                throw new IllegalArgumentException("RESP2 requires RESP");
+            }
+            return new Parsed(null, null, null, -1,
+                    response.value == null ? null : nameIn(RESP_OPTION, response.value),
+                    response2.value == null ? null : nameIn(RESP2_OPTION, response2.value),
+                    noHandle.value != null, false, false, false, false, null, List.of(), null, null, null,
+                    parseAssignments(noHandle.remainder), null, null, null, null, null, null);
         }
         Matcher deedit = BIF_DEEDIT_BLOCK.matcher(source);
         if (deedit.matches()) {
@@ -1844,6 +1853,18 @@ final class CicsBlockParser {
         } catch (NumberFormatException invalid) {
             throw new IllegalArgumentException("LENGTH is out of range", invalid);
         }
+    }
+
+    /** ASSIGN の後ろの NOHANDLE。値を取らない。 */
+    private static final Pattern NOHANDLE_OPTION = Pattern.compile("(?is)\\bNOHANDLE\\b");
+
+    /** 見つけた option の全体から、括弧の中のデータ名を取り出す。 */
+    private static String nameIn(Pattern pattern, String option) {
+        Matcher matcher = pattern.matcher(option);
+        if (!matcher.find()) {
+            throw new IllegalStateException(option);
+        }
+        return matcher.group(1);
     }
 
     private static <T> ParsedOption<T> extractOne(

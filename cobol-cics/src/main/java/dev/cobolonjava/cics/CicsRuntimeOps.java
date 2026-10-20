@@ -2155,6 +2155,21 @@ public final class CicsRuntimeOps {
         assignText(required, target, applid, 8, "ASSIGN APPLID");
     }
 
+    /**
+     * 自 regionのSYSIDを4文字で返す。自 regionとして構成したSYSID (設計 85 §4.1) がちょうど1つのときだけ
+     * それを返す。0個や2個以上ではどれが自分の名前か決まらないので、推測せず失敗する (APPLIDと同じ扱い)。
+     */
+    public static void assignSysid(ProgramContext context, DataView target) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        java.util.Set<String> local = execution(required).environment().localSystems();
+        if (local.size() != 1) {
+            throw new CicsTaskStateException(
+                    "ASSIGN SYSID requires exactly one configured local SYSID, but " + local.size()
+                            + " are configured");
+        }
+        assignText(required, target, local.iterator().next(), 4, "ASSIGN SYSID");
+    }
+
     /** 現在のLINK levelでCICSが起動したprogramの名前を8文字で返す (設計 79 §5)。 */
     public static void assignProgram(ProgramContext context, DataView target) {
         ProgramContext required = Objects.requireNonNull(context, "context");

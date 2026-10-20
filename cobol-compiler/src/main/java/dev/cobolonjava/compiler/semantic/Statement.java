@@ -352,7 +352,8 @@ public sealed interface Statement {
     enum CicsAssignOption {
         ABCODE(4),
         APPLID(8),
-        PROGRAM(8);
+        PROGRAM(8),
+        SYSID(4);
 
         private final int length;
 
