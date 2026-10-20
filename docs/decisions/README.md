@@ -21,6 +21,7 @@
 | [ADR-0013](0013-ims-db-denormalized-raw-storage-engine.md) | 採用 | IMS DB (DL/I) の RDB バックエンドを非正規化・生バイト格納で実現する |
 | [ADR-0014](0014-ims-tm-rabbitmq-jms-neutral-queue.md) | 採用 | IMS TM のメッセージ基盤を RabbitMQ と JMS 3.0 中立アダプタで構成する |
 | [ADR-0015](0015-ims-db-locking-and-deadlock-avoidance.md) | 採用 | IMS DB の並行性制御とルートアンカーロックによるデッドロック防止 |
+| [ADR-0016](0016-porting-from-zeus.md) | 提案 | 権利者が書いた Zeus の部分を Apache-2.0 で移し、第三者の表 (ICU、Unicode) は元のライセンスに従う |
 
 ADR の状態は `提案`、`採用`、`廃止`、`置換` のいずれかとする。決定を変える場合は過去の
 記録を書き換えず、新しい ADR から置き換える ADR を参照する。
