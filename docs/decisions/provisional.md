@@ -6405,3 +6405,24 @@ READ を採ったとき。
 **どこがずれうるか**: SUM の結果を PUT LIST すると、欄の幅が実機と違いうる。最大の長さまでを返す実装なら、UNSPEC の長さが違う。
 
 **解消条件**: z/OS で `PUT LIST(SUM(A))` (FIXED DEC(5) の配列) と `LENGTH(UNSPEC(V))` (CHAR(5) VARYING に 'AB') を採る。
+
+## P-212 PL/I の主手続きの PARM は、最初の / より左を実行時オプションとして外す (NOEXECOPS なら外さない)
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `PliRuntime.Executor.declareScalar` (主手続きの CHAR VARYING の仮引数) |
+| 関連要件 | 設計 87 (ZPVS) |
+
+**いまの扱い**: `OPTIONS(MAIN)` の手続きが仮引数を 1 つだけ持ち、それが `CHAR(n) VARYING` (または `CHAR(*) VARYING`) なら、
+渡された PARM の最初の `/` より左を Language Environment の実行時オプションとして外し、右だけを引数にする。`/` が無ければ
+すべてが引数である。`OPTIONS(MAIN NOEXECOPS)` なら外さない。外した左の実行時オプションは解釈せず捨てる。
+
+**なぜ暫定か**: Enterprise PL/I Programming Guide の "Passing an argument to the MAIN procedure" と LE の EXECOPS の既定から
+読んだ形で、z/OS では確かめていない。PLIXOPT や翻訳時の SYSTEM オプション (SYSTEM(MVS) のほか) による違い、実行時
+オプションの中身 (RPTOPTS など) の効き目は持たない。IMS の PCB のような POINTER の仮引数には当てない。
+
+**どこがずれうるか**: SYSTEM(MVS) 以外で翻訳したプログラムや、PLIXOPT で既定を変えたプログラムでは、引数の切り方が違いうる。
+実行時オプションの綴りの誤りは、ホストなら注意のメッセージになるが、ここでは何も言わない。
+
+**解消条件**: z/OS で PARM='RUNTIME/HELLO' と 'A/B/C' を OPTIONS(MAIN) と OPTIONS(MAIN NOEXECOPS) の手続きへ渡して採る。

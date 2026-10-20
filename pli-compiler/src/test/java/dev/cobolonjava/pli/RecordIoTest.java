@@ -176,4 +176,36 @@ class RecordIoTest {
         assertEquals(3, context.returnCode());
         assertEquals("OK", dataSet("F"));
     }
+
+    /** 主手続きを PARM (長さの半語と字) を渡して動かし、SYSPRINT を返す。 */
+    private String runWithParm(String header, String body, String parm) throws Exception {
+        PliCompiler.Result result = PliCompiler.standard().compile("RIO.pli",
+                "RIO: " + header + ";\n" + body + "\nEND RIO;\n");
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        CobolProgram program = (CobolProgram) new GeneratedLoader()
+                .define(result.className(), result.classFile())
+                .getDeclaredConstructor().newInstance();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        context = ProgramContext.capturing(output).withCatalog(new DataSetCatalog(directory));
+        byte[] text = context.codePage().encode(parm);
+        dev.cobolonjava.runtime.storage.Storage storage =
+                dev.cobolonjava.runtime.storage.Storage.allocate(text.length + 2);
+        storage.view(0, 2).setBytes(new byte[] {(byte) (text.length >> 8), (byte) text.length});
+        storage.view(2, text.length).setBytes(text);
+        program.runFresh(context, storage.whole());
+        return output.toString(StandardCharsets.UTF_8).replace(System.lineSeparator(), "\n");
+    }
+
+    @Test
+    @DisplayName("主手続きの PARM は / の左が実行時オプションで、NOEXECOPS ならすべてが引数になる")
+    void mainParameterDropsRuntimeOptions() throws Exception {
+        String body = """
+                DCL P CHAR(*) VARYING;
+                PUT SKIP EDIT(P, LENGTH(P))(A, X(1), F(2));
+                """;
+        assertEquals("HELLO  5\n", runWithParm("PROC(P) OPTIONS(MAIN)", body, "RUNTIME/HELLO"));
+        assertEquals("RUNTIME/HELLO 13\n",
+                runWithParm("PROC(P) OPTIONS(MAIN NOEXECOPS)", body, "RUNTIME/HELLO"));
+        assertEquals("HELLO  5\n", runWithParm("PROC(P) OPTIONS(MAIN)", body, "HELLO"));
+    }
 }

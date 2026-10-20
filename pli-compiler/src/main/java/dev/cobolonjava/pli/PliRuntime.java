@@ -125,6 +125,9 @@ public final class PliRuntime {
             }
         }
 
+        /** 主手続きの PARM から実行時オプションを外したか。外すのは 1 度だけである。 */
+        private boolean parmSplit;
+
         /** 入口引数の記憶域。名は大文字。 */
         private final Map<String, DataView> parameters = new HashMap<>();
 
@@ -419,7 +422,10 @@ public final class PliRuntime {
             // BASED の構造は自分の記憶域を持たず、別のものの上に重ねる。INITIAL は ALLOCATE で
             // 記憶域を取ったときにしか効かないので、宣言で重ねた先を書き換えてはならない。
             // 以前は文字の要素を空白で埋めており、IMS から渡された DB PCB の DBD 名と PROCOPT を消していた
-            boolean based = root.basedOn() != null;
+            // 入口引数の構造も同じで、渡された記憶域は呼んだ側の値である (LRM "INITIAL attribute":
+            // 仮引数には INITIAL が効かない)
+            boolean based = root.basedOn() != null
+                    || parameters.containsKey(root.name().toUpperCase(Locale.ROOT));
             declareMembers(tree, 0, tree.size(), env, group, area, mapping, root.name(), based);
         }
 
@@ -638,6 +644,25 @@ public final class PliRuntime {
                 return;
             }
             DataView passed = parameters.get(declaration.name().toUpperCase(Locale.ROOT));
+            if (passed != null && program.main() && !program.noexecops()
+                    && program.parameters().size() == 1 && declaration.type() == PliSyntax.Type.CHAR
+                    && declaration.varying() && passed.length() >= 2 && !parmSplit) {
+                // 主手続きの PARM のうち、最初の / より左は Language Environment の実行時オプションで
+                // あり、プログラムには右だけが渡る。/ が無ければすべてが引数である。NOEXECOPS なら
+                // 分けない (Programming Guide "Passing an argument to the MAIN procedure"、暫定判断 P-212)
+                parmSplit = true;
+                int length = ((passed.get(0) & 0xFF) << 8) | (passed.get(1) & 0xFF);
+                byte[] text = passed.subView(2, Math.min(length, passed.length() - 2)).toByteArray();
+                int slash = context.codePage().decode(text).indexOf('/');
+                if (slash >= 0) {
+                    byte[] rest = java.util.Arrays.copyOfRange(text, slash + 1, text.length);
+                    Storage copy = Storage.allocate(rest.length + 2);
+                    copy.view(0, 2).setBytes(new byte[] {(byte) (rest.length >> 8), (byte) rest.length});
+                    copy.view(2, rest.length).setBytes(rest);
+                    passed = copy.whole();
+                    parameters.put(declaration.name().toUpperCase(Locale.ROOT), passed);
+                }
+            }
             if (passed != null && declaration.precision() == PliSyntax.STAR
                     && declaration.type() == PliSyntax.Type.CHAR && declaration.dimensions().isEmpty()) {
                 // 主手続きの CHAR(*) の仮引数は、渡された記憶域の長さを受ける。VARYING なら頭の半語が
@@ -692,7 +717,9 @@ public final class PliRuntime {
             }
             env.put(variable);
             if (alias != null) env.alias(alias, variable);
-            if (declaration.basedOn() == null) {
+            // 入口引数は呼んだ側の値を持つ。初期化すると、CHAR は空白に、VARYING は長さ 0 に
+            // なっていた (PARM が届かなかった)
+            if (declaration.basedOn() == null && !parameter) {
                 if (variable.dimensions == null) {
                     initialize(variable, declaration.initial(), env);
                 } else {

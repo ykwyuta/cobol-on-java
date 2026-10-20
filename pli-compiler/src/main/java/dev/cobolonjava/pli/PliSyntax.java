@@ -31,9 +31,10 @@ final class PliSyntax {
     /**
      * @param main {@code OPTIONS(MAIN)} を書いたか。主手続きの POINTER の引数は、渡された記憶域の
      *             番地を値に持つ (IMS の PCB の並び)。そうでない手続きの引数は参照で渡った変数そのもの
+     * @param noexecops {@code OPTIONS(MAIN NOEXECOPS)}。PARM のすべてがプログラムの引数になる
      */
     record Program(String name, List<String> parameters, List<Stmt> body,
-                   Map<String, Procedure> procedures, boolean main) {
+                   Map<String, Procedure> procedures, boolean main, boolean noexecops) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
@@ -440,7 +441,8 @@ final class PliSyntax {
             }
             ProcedureBuilder main = parseProcedure();
             return new ParseResult(new Program(main.name, main.parameters,
-                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main), List.of());
+                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
+                    main.noexecops), List.of());
         }
 
         private ProcedureBuilder parseProcedure() {
@@ -467,6 +469,8 @@ final class PliSyntax {
                     int close = findClosing(attributes, i + 1);
                     result.main = attributes.subList(i + 2, close).stream()
                             .anyMatch(token -> token.is("MAIN"));
+                    result.noexecops = attributes.subList(i + 2, close).stream()
+                            .anyMatch(token -> token.is("NOEXECOPS"));
                 }
             }
             while (!check(Kind.EOF)) {
@@ -1606,6 +1610,7 @@ final class PliSyntax {
         final List<Stmt> body = new ArrayList<>();
         final Map<String, Procedure> procedures = new LinkedHashMap<>();
         boolean main;
+        boolean noexecops;
 
         ProcedureBuilder(String name, List<String> parameters) {
             this.name = name;
