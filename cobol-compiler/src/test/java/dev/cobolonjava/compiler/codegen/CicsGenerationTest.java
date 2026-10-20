@@ -295,6 +295,41 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("DATASET は FILE の別名、LENGTH / KEYLENGTH に LENGTH OF、数字項目の RIDFLD (CardDemo の書き方)")
+    void acceptsCardDemoFileControlForms(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "DSETPGM", List.of(
+                "MOVE '000042' TO WS-QTIME",
+                "MOVE 42 TO WS-TIME",
+                "EXEC CICS WRITE DATASET ('CUSTFILE') FROM (WS-GRP) LENGTH (LENGTH OF WS-GRP)"
+                        + " RIDFLD (WS-TIME) END-EXEC",
+                "MOVE ZERO TO WS-QTIME",
+                "EXEC CICS READ DATASET ('CUSTFILE') INTO (WS-GRP) LENGTH (LENGTH OF WS-GRP)"
+                        + " RIDFLD (WS-TIME) KEYLENGTH (LENGTH OF WS-TIME) RESP (WS-RESP) END-EXEC",
+                "IF WS-RESP = DFHRESP(NORMAL) AND WS-QTIME = 42 MOVE 'A' TO LK-AREA(1:1) END-IF",
+                "MOVE DFHRESP(DUPKEY) TO WS-RESP",
+                "IF WS-RESP = 15 MOVE 'B' TO LK-AREA(2:1) END-IF"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("DSETPGM", program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("DSETPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withFiles(dev.cobolonjava.cics.CicsFilePort.dataSets(List.of(new dev.cobolonjava.cics.CicsFileDefinition(
+                        "CUSTFILE", directory.resolve("cust.ksds"), 0, 6, 6, CodePages.DEFAULT))));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("ABIT", CodePages.DEFAULT.decode(result.payload().commarea()));
+        assertRejected("EXEC CICS READ DATASET('CUSTFILE') FILE('CUSTFILE') INTO(WS-GRP) RIDFLD(WS-TIME)"
+                + " END-EXEC", "DATASET and FILE");
+        // READ の LENGTH は入出力兼用の域。INTO の域でない項目の長さは最大長がずれうるので断る
+        assertRejected("EXEC CICS READ DATASET('CUSTFILE') INTO(WS-GRP) LENGTH(LENGTH OF WS-ABCODE)"
+                + " RIDFLD(WS-TIME) END-EXEC", "only when x is the INTO data area");
+    }
+
+    @Test
     @DisplayName("生成COBOLがESDSへMASSINSERTで書いてRBAを受け、TOKENで更新し、自regionのSYSIDは通り、ほかはSYSIDERR")
     void runsProvisionalFileControlOptions(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
         GeneratedLoader loader = new GeneratedLoader();

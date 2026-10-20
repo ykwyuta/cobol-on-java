@@ -709,6 +709,14 @@ final class CicsBlockParser {
                     option.group(4) == null ? null : option.group(4).toUpperCase(Locale.ROOT)});
             position = option.end();
         }
+        if (options.containsKey("DATASET")) {
+            // DATASET は FILE の別名である (CICS の命令の頁が互換のために残している綴り)。
+            // CardDemo の 8 本が READ / STARTBR / WRITE DATASET (WS-...-FILE) と書く
+            if (options.containsKey("FILE")) {
+                throw new IllegalArgumentException("duplicate " + verb + " option: DATASET and FILE");
+            }
+            options.put("FILE", options.remove("DATASET"));
+        }
         if (!options.containsKey("FILE")) {
             throw new IllegalArgumentException(verb + " requires FILE; only file control " + verb + " is supported");
         }

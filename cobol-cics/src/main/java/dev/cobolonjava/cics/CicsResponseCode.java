@@ -14,6 +14,13 @@ public final class CicsResponseCode {
     public static final int FILENOTFOUND = 12;
     public static final int NOTFND = 13;
     public static final int DUPREC = 14;
+    /**
+     * 重複を許す代替索引で、同じ鍵の record がまだある。数は表の並びによる (14 DUPREC と 16 INVREQ の間)。
+     * この file control は重複を許す代替索引を持たないので返すことは無いが、{@code DFHRESP(DUPKEY)} は
+     * 比べるための定数として要る (CardDemo の 3 本)。返さない値を定義しても振る舞いは変わらない。
+     * HANDLE CONDITION の表には入れていない。
+     */
+    public static final int DUPKEY = 15;
     public static final int INVREQ = 16;
     public static final int IOERR = 17;
     public static final int NOSPACE = 18;
@@ -76,6 +83,7 @@ public final class CicsResponseCode {
             case "FILENOTFOUND" -> FILENOTFOUND;
             case "NOTFND" -> NOTFND;
             case "DUPREC" -> DUPREC;
+            case "DUPKEY" -> DUPKEY;
             case "INVREQ" -> INVREQ;
             case "IOERR" -> IOERR;
             case "NOSPACE" -> NOSPACE;

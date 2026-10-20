@@ -2302,7 +2302,11 @@ public final class ProcedureBuilder {
                             + " requires a " + width + "-byte RIDFLD");
                 }
             } else {
-                requireRecordArea(ridfld, label + " RIDFLD");
+                // 鍵は byte の並びとして渡すだけである。数字の表示形式の項目 (CardDemo の ACCT-ID PIC 9(11)) も
+                // 鍵として成り立つ。以前は英数字か集団に限って断っていた
+                if (ridfld.constantLength().isEmpty()) {
+                    throw new IllegalArgumentException(label + " RIDFLD must be a data area of fixed length");
+                }
                 if (block && ridfld.constantLength().getAsInt() < Integer.BYTES) {
                     throw new IllegalArgumentException(label + " DEBKEY and DEBREC require a RIDFLD of at least 4 bytes");
                 }
@@ -2332,6 +2336,36 @@ public final class ProcedureBuilder {
         DataReference[] numbers = new DataReference[4];
         String[] names = {spec.length(), spec.keyLength(), spec.reqid(), spec.numrec()};
         String[] options = {"LENGTH", "KEYLENGTH", "REQID", "NUMREC"};
+        int lengthLiteral = spec.lengthLiteral();
+        int keyLengthLiteral = spec.keyLengthLiteral();
+        for (int i = 0; i < 2; i++) {
+            // LENGTH(LENGTH OF x) と KEYLENGTH(LENGTH OF x)。翻訳時に決まる長さの定数である (P-123)
+            java.util.regex.Matcher lengthOf = names[i] == null ? null
+                    : java.util.regex.Pattern.compile("(?i)LENGTH\\s+OF\\s+(\\S+)").matcher(names[i]);
+            if (lengthOf == null || !lengthOf.matches() || !layout.findAll("LENGTH").isEmpty()) {
+                continue;
+            }
+            DataReference measured = resolver.resolveName(lengthOf.group(1).toUpperCase(Locale.ROOT), origin);
+            if (measured == null) {
+                return null;
+            }
+            if (measured.constantLength().isEmpty()) {
+                throw new IllegalArgumentException(label + " " + options[i] + "(LENGTH OF x) requires an item"
+                        + " with a fixed length");
+            }
+            int value = measured.constantLength().getAsInt();
+            if (i == 1) {
+                keyLengthLiteral = value;
+            } else if (!reads) {
+                lengthLiteral = value;
+            } else if (data == null || measured.item() != data.item() || measured.refMod() != null) {
+                // READ の LENGTH は入出力兼用の域である。INTO の域そのものの長さなら LENGTH を省いた形と同じだが、
+                // 別の項目の長さは最大長が INTO の域とずれうるので断る (RETURN COMMAREA と同じ扱い)
+                throw new IllegalArgumentException(label + " LENGTH(LENGTH OF x) is supported only when x is"
+                        + " the INTO data area");
+            }
+            names[i] = null;
+        }
         for (int i = 0; i < names.length; i++) {
             if (names[i] == null) {
                 continue;
@@ -2346,16 +2380,16 @@ public final class ProcedureBuilder {
                 throw new IllegalArgumentException(label + " " + options[i] + " must be a halfword binary data area");
             }
         }
-        if (data != null && spec.lengthLiteral() > data.constantLength().getAsInt()) {
-            throw new IllegalArgumentException(label + " LENGTH " + spec.lengthLiteral()
+        if (data != null && lengthLiteral > data.constantLength().getAsInt()) {
+            throw new IllegalArgumentException(label + " LENGTH " + lengthLiteral
                     + " exceeds the FROM data area of " + data.constantLength().getAsInt() + " bytes");
         }
-        if (ridfld != null && spec.keyLengthLiteral() > ridfld.constantLength().getAsInt()) {
-            throw new IllegalArgumentException(label + " KEYLENGTH " + spec.keyLengthLiteral()
+        if (ridfld != null && keyLengthLiteral > ridfld.constantLength().getAsInt()) {
+            throw new IllegalArgumentException(label + " KEYLENGTH " + keyLengthLiteral
                     + " exceeds the RIDFLD data area of " + ridfld.constantLength().getAsInt() + " bytes");
         }
         return withCicsResponse(new Statement.CicsFileCommand(kind, spec.fileLiteral(), fileData, data,
-                numbers[0], spec.lengthLiteral(), ridfld, numbers[1], spec.keyLengthLiteral(), numbers[2],
+                numbers[0], lengthLiteral, ridfld, numbers[1], keyLengthLiteral, numbers[2],
                 spec.reqidLiteral(), numbers[3], token, spec.sysidLiteral(), sysidData, spec.flags(),
                 parsed.response() != null || parsed.noHandle(), origin),
                 parsed, origin);
