@@ -238,11 +238,11 @@ CLAUDE.md の型 (外の基準を先に置く → いちばん大きい塊から
 | 端末制御の `SEND FROM` (制御文字の無いデータだけ、P-195) | `0bcee0f` | 3 本が通り、COACTVWC が「壊れた」に出た |
 | 同じ名前の段落が 2 つあると落ちる (手続きの一覧) | `b81d925` | COACTVWC が通った (24 本) |
 | 見出しに USING があっても先頭の `ENTRY 'DLITCBL'` を IMS の入口とする (P-152 を広げた) | `6c72add` | IMS の 3 本が通った (27 本) |
-| `WRITEQ TD` の `LENGTH (LENGTH OF FROM)` | (この日の後半) | CORPT00C が通った |
-| 原文のタブを空白として読む | 〃 | CBSTM03A が次の塊へ |
-| 関数の値の部分参照 `FUNCTION CURRENT-DATE(1:4)` | 〃 | CBIMPORT が次の塊 (作業場所のレコードキー) へ |
-| 文の無い終止符を警告して読み捨てる | 〃 | COADM01C が次の塊へ (29 本) |
-| 修飾した名前の `LENGTH OF X OF G` | 〃 | 2 本が次の塊 (option の添字つきデータ名) へ |
+| `WRITEQ TD` の `LENGTH (LENGTH OF FROM)` | `85185e8` | CORPT00C が通った |
+| 原文のタブを空白として読む | `5d86d18` | CBSTM03A が次の塊へ |
+| 関数の値の部分参照 `FUNCTION CURRENT-DATE(1:4)` | `f54d397` | CBIMPORT が次の塊 (作業場所のレコードキー) へ |
+| 文の無い終止符を警告して読み捨てる | `2a807ec` | COADM01C が次の塊へ (29 本) |
+| 修飾した名前の `LENGTH OF X OF G` | `3ce2d0e` | 2 本が次の塊 (option の添字つきデータ名) へ |
 
 CardDemo は 44 本中 9 → 29 本。残る塊は、`EXEC DLI` (3 本。DIB と PCB の番号と SSA の組み立て、CICS の `SCHD` が要る)、
 DB2 の VARCHAR (49 レベルの組) のホスト変数 (2 本)、MQ の写し句 (3 本。IBM の写し句は写さないので公開仕様から作る)、
