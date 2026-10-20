@@ -159,7 +159,9 @@ class CicsTerminalGenerationTest {
         "    END-EXEC",
         "END-IF",
         "IF LK-AREA = 'TEXT'",
+        // FROM 自身の長さを書いた LENGTH は、省いた形と同じである
         "    EXEC CICS SEND TEXT FROM(WS-TEXT) ERASE FREEKB",
+        "         LENGTH(LENGTH OF WS-TEXT)",
         "    END-EXEC",
         "    EXEC CICS RETURN END-EXEC",
         "END-IF",
@@ -295,6 +297,8 @@ class CicsTerminalGenerationTest {
                         "unsupported SEND MAP option: ERASEAUP"},
                 new String[] {"EXEC CICS SEND CONTROL CURSOR END-EXEC", "requires a position"},
                 new String[] {"EXEC CICS SEND TEXT ERASE END-EXEC", "SEND TEXT requires FROM"},
+                new String[] {"EXEC CICS SEND TEXT FROM(WS-TEXT) LENGTH(5) END-EXEC",
+                        "LENGTH(LENGTH OF x) where x is FROM"},
                 new String[] {"EXEC CICS SEND MAP('SCRMP') FROM(WS-RESP) END-EXEC",
                         "alphanumeric or group"},
                 // 72 桁を越えると END-EXEC が切れる。受けない option の診断は INTO の検査より先に出る

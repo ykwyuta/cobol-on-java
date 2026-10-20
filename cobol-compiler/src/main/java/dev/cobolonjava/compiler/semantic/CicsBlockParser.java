@@ -413,7 +413,8 @@ final class CicsBlockParser {
                     "FREEKB", "ALARM", "FRSET", "RESP", "RESP2", "NOHANDLE");
         } else if (options.containsKey("TEXT")) {
             kind = Statement.CicsSendKind.TEXT;
-            allowed = Set.of("TEXT", "FROM", "ERASE", "FREEKB", "ALARM", "RESP", "RESP2", "NOHANDLE");
+            allowed = Set.of("TEXT", "FROM", "LENGTH", "ERASE", "FREEKB", "ALARM",
+                    "RESP", "RESP2", "NOHANDLE");
         } else if (options.containsKey("CONTROL")) {
             kind = Statement.CicsSendKind.CONTROL;
             allowed = Set.of("CONTROL", "ERASE", "FREEKB", "ALARM", "FRSET", "CURSOR",
@@ -499,6 +500,13 @@ final class CicsBlockParser {
         if (kind == Statement.CicsSendKind.TEXT && from == null) {
             throw new IllegalArgumentException("SEND TEXT requires FROM");
         }
+        String[] lengthValue = options.get("LENGTH");
+        if (lengthValue != null && !isLengthOfFrom(lengthValue[2], from)) {
+            // FROM 自身の長さなら LENGTH を省いた形と同じである (RETURN COMMAREA と同じ規則)。
+            // 別の長さを書かれると FROM の一部か先を送ることになり、その切り方を確かめていない
+            throw new IllegalArgumentException(
+                    "SEND TEXT LENGTH is supported only as LENGTH(LENGTH OF x) where x is FROM");
+        }
         String response = sendDataName(options.get("RESP"), "RESP");
         String response2 = sendDataName(options.get("RESP2"), "RESP2");
         if (response2 != null && response == null) {
@@ -508,6 +516,17 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 flag.test("NOHANDLE"), false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, spec, null, null);
+    }
+
+    /** {@code LENGTH OF x} の x が FROM と同じ名前か。修飾の空白の数は問わない。 */
+    private static boolean isLengthOfFrom(String length, String from) {
+        if (length == null) {
+            return false;
+        }
+        String[] words = length.trim().split("\\s+", 3);
+        return words.length == 3 && words[0].equalsIgnoreCase("LENGTH")
+                && words[1].equalsIgnoreCase("OF")
+                && words[2].replaceAll("\\s+", " ").equalsIgnoreCase(from.replaceAll("\\s+", " "));
     }
 
     /**
