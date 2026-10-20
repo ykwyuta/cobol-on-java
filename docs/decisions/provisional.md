@@ -6359,3 +6359,29 @@ lgacvs01 / lgucvs01 は数字の項目 `FROM(CA-Customer-Num)` に `LENGTH(CUSTO
 入力の形は持たないので、それらの AID が端末から届くことは無い。
 
 **解消条件**: z/OS の CICS で、AID の処理と MAPFAIL の処理を両方置いた RECEIVE MAP を、各 AID で採る。
+
+## P-210 PL/I のレコード入出力は F 様式の順編成だけを持ち、RECORD / STREAM を書かないファイルはレコードのファイルとして開く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `PliSyntax.fileAttributes` / `oneFile`、`PliRuntime.Executor.open` / `read` / `write` |
+| 関連要件 | 設計 87 (ZPVS) |
+
+**いまの扱い**: `DCL f FILE RECORD INPUT|OUTPUT ENV(F|FB|FS|FBS RECSIZE(n))`、`OPEN FILE(f) INPUT|OUTPUT TITLE(...)`
+(1 文に複数)、`READ FILE(f) INTO(x)`、`WRITE FILE(f) FROM(x)`、`CLOSE` を持つ。DD 名は TITLE、無ければファイルの名で、
+作業場所の `DataSetCatalog` から引く。向きは OPEN、宣言、文が暗に求めるもの (READ は INPUT、WRITE は OUTPUT) の順に決め、
+食い違えば UNDEFINEDFILE で止める。F 様式でレコード長と FROM / INTO の長さが違えば RECORD で止める (ON RECORD はまだ無い)。
+プログラムが終われば開いたままのファイルを閉じる。KEYED / DIRECT、V / U 様式、UPDATE と REWRITE、LOCATE、READ SET は断る。
+RECORD と STREAM のどちらも書かないファイルは、LRM の既定 (STREAM) によらずレコードのファイルとして開く。
+宣言にもサイドカーにもレコード長が無い OUTPUT のファイルは、書いた長さで作らずに断る。
+
+**なぜ暫定か**: SYSPRINT のほかへの PUT / GET は翻訳で断っているので、属性を書かないファイルに届くのはレコードの文だけであり、
+いまは差が出ない。ストリームのファイルを持てば、LRM の既定どおり STREAM として扱い、READ / WRITE を UNDEFINEDFILE にする
+べきである。RECORD を ON の無いまま ERROR として止めるのは、近い長さに黙って切り詰めないためである。
+TITLE を省いたときの DD 名に 8 字を超える名をそのまま使う扱いは、実機と突き合わせていない。
+
+**どこがずれうるか**: 属性を書かないファイルへの READ / WRITE が、ホストでは UNDEFINEDFILE になるのに、ここでは動く。
+
+**解消条件**: ストリームのファイル (SYSPRINT のほかへの PUT / GET) を持ったとき、または z/OS で属性を書かないファイルへの
+READ を採ったとき。

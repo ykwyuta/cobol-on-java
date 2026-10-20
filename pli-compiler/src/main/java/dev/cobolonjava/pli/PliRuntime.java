@@ -10,6 +10,9 @@ import dev.cobolonjava.db2.SqlOperation;
 import dev.cobolonjava.runtime.interop.ProgramParameter;
 import dev.cobolonjava.runtime.interop.ProgramSignature;
 import dev.cobolonjava.runtime.file.DataSet;
+import dev.cobolonjava.runtime.file.DataSetAttributes;
+import dev.cobolonjava.runtime.file.RecordFormat;
+import dev.cobolonjava.runtime.file.SequentialDataSet;
 import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.program.AddressSpace;
 import dev.cobolonjava.runtime.program.Ops;
@@ -20,6 +23,8 @@ import dev.cobolonjava.runtime.storage.Storage;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -247,6 +252,17 @@ public final class PliRuntime {
             } catch (ReturnSignal ignored) {
                 // 主手続きの RETURN は正常終了である。
             } finally {
+                // プログラムが終わると、開いたままのファイルは閉じる (LRM "CLOSE statement")。
+                // 閉じなければ書いたレコードがデータセットへ出ない。異常で終わったときも、そこまでに
+                // 書いたものは残す
+                for (OpenFile file : List.copyOf(openFiles.values())) {
+                    try {
+                        file.dataSet().close();
+                    } catch (RuntimeException ignored) {
+                        // 終わりの後始末で、元の失敗を隠さない
+                    }
+                }
+                openFiles.clear();
                 sysprint.leave();
             }
         }
@@ -477,8 +493,14 @@ public final class PliRuntime {
 
         private void declareScalar(PliSyntax.Decl declaration, Env env, DataView area,
                                    int offset, String alias) {
-            if (declaration.type() == PliSyntax.Type.ENTRY
-                    || declaration.type() == PliSyntax.Type.FILE) {
+            if (declaration.type() == PliSyntax.Type.FILE) {
+                // ファイル定数は記憶域を持たない。属性は開くときに OPEN の指定と合わせる
+                fileDeclarations.put(declaration.name().toUpperCase(Locale.ROOT),
+                        declaration.file() == null ? PliSyntax.FileAttributes.NONE
+                                : declaration.file());
+                return;
+            }
+            if (declaration.type() == PliSyntax.Type.ENTRY) {
                 return;
             }
             DataView view;
@@ -953,34 +975,167 @@ public final class PliRuntime {
             }
         }
 
+        /** 宣言したファイル定数の属性。名は大文字。 */
+        private final Map<String, PliSyntax.FileAttributes> fileDeclarations = new HashMap<>();
+        /** 開いているファイル。名は大文字。 */
+        private final Map<String, OpenFile> openFiles = new LinkedHashMap<>();
+
+        /**
+         * 開いたファイル 1 つ。
+         *
+         * @param recordSize F 様式のレコード長。分からなければ -1
+         */
+        private record OpenFile(String name, DataSet dataSet, String direction, int recordSize) {
+        }
+
         private void file(PliSyntax.FileOperation operation, Env env) {
-            DataSet dataSet = context.file(operation.file(), operation.file());
+            String name = operation.file().toUpperCase(Locale.ROOT);
             switch (operation.action()) {
-                case OPEN -> checkFileStatus(operation.file(), dataSet.open(OpenMode.INPUT, false), false);
-                case CLOSE -> checkFileStatus(operation.file(), dataSet.close(), false);
-                case READ -> {
-                    Var target = env.require(operation.target());
-                    if (target.varying) {
-                        // VARYING へ読むとレコードの長さが今の長さになる。可変長のレコードをまだ持たない
-                        throw new PliExecutionException("READ INTO a VARYING string is not"
-                                + " supported yet: " + target.name);
-                    }
-                    byte[] record = new byte[target.view.length()];
-                    java.util.Arrays.fill(record, context.codePage().space());
-                    String status = dataSet.read(record);
-                    if ("10".equals(status)) {
-                        List<PliSyntax.Stmt> handler = env.endFile(operation.file());
-                        if (handler == null) {
-                            throw new PliExecutionException("end of file without ON ENDFILE: "
-                                    + operation.file());
-                        }
-                        execute(handler, env);
-                    } else {
-                        checkFileStatus(operation.file(), status, false);
-                        target.view.setBytes(record);
+                case OPEN -> {
+                    // 開いているファイルへの OPEN は何もしない (LRM "OPEN statement")
+                    if (!openFiles.containsKey(name)) {
+                        open(name, operation.options(), operation.title() == null ? null
+                                : display(value(operation.title(), env)).strip(), null);
                     }
                 }
+                case CLOSE -> {
+                    // 閉じているファイルへの CLOSE は何もしない (LRM "CLOSE statement")
+                    OpenFile file = openFiles.remove(name);
+                    if (file != null) {
+                        checkFileStatus(name, file.dataSet().close(), false);
+                    }
+                }
+                case READ -> read(operation, name, env);
+                case WRITE -> write(operation, name, env);
             }
+        }
+
+        /**
+         * 開く。向きは OPEN に書いたもの、宣言に書いたもの、文が暗に求めるもの (READ なら INPUT、
+         * WRITE なら OUTPUT) の順に決め、どれも無ければ INPUT である (LRM "Merging of attributes"、
+         * "Implicit opening")。DD 名は TITLE、無ければファイルの名である (LRM "TITLE option")。
+         *
+         * <p>ストリームのファイルは SYSPRINT のほかはまだ持たないので、STREAM や PRINT と書いた
+         * ファイルは断る。どちらとも書かなければ LRM の既定は STREAM だが、SYSPRINT のほかへの
+         * PUT / GET は翻訳で断っているので、そうしたファイルに届くのはレコードの文だけである。
+         */
+        private OpenFile open(String name, PliSyntax.FileAttributes options, String title,
+                              String implied) {
+            PliSyntax.FileAttributes declared = fileDeclarations.getOrDefault(name,
+                    PliSyntax.FileAttributes.NONE);
+            if (options.direction() != null && declared.direction() != null
+                    && !options.direction().equals(declared.direction())) {
+                // 合わさった属性が食い違えば UNDEFINEDFILE である (LRM "Merging of attributes")
+                throw new PliExecutionException("UNDEFINEDFILE: " + name + " is declared "
+                        + declared.direction() + " but opened " + options.direction());
+            }
+            String direction = options.direction() != null ? options.direction()
+                    : declared.direction() != null ? declared.direction()
+                    : implied != null ? implied : "INPUT";
+            String transmission = options.transmission() != null ? options.transmission()
+                    : declared.transmission();
+            if ("STREAM".equals(transmission) || options.print() || declared.print()) {
+                throw new PliExecutionException("STREAM files other than SYSPRINT are not"
+                        + " supported yet: " + name);
+            }
+            if ("UPDATE".equals(direction)) {
+                // 順編成の UPDATE は READ のあとの REWRITE で書き換える。REWRITE をまだ持たない
+                throw new PliExecutionException("UPDATE files are not supported yet: " + name);
+            }
+            String dd = title != null ? title.toUpperCase(Locale.ROOT) : name;
+            Path path = context.catalog().resolve(dd);
+            boolean described = Files.exists(DataSetAttributes.sidecarOf(path));
+            SequentialDataSet dataSet;
+            if (declared.format() != null || declared.recordSize() > 0) {
+                if (declared.recordSize() < 1) {
+                    throw new PliExecutionException("ENV(F) of " + name + " needs RECSIZE");
+                }
+                // 割当て (サイドカー) が属性を持てばそちらが勝つ。ホストでも DCB の値は DD が補う
+                dataSet = SequentialDataSet.at(path, new DataSetAttributes(RecordFormat.FIXED,
+                        declared.recordSize(), context.codePage()));
+            } else if (described || direction.equals("INPUT")) {
+                dataSet = SequentialDataSet.at(path);
+            } else {
+                // ホストなら DD の LRECL が決める。宣言にも割当てにもレコード長が無いのに、書いた
+                // 長さで黙って作ると、読み返したときに切れ目が合わない
+                throw new PliExecutionException("the record length of " + name + " is unknown:"
+                        + " give ENV(F RECSIZE(n)) or data set attributes for " + dd);
+            }
+            var catalog = context.catalog();
+            dataSet.limit(catalog.limitOf(dd));
+            dataSet.member(catalog.isMemberOfLibrary(dd));
+            dataSet.secondary(catalog.hasSecondary(dd));
+            String status = dataSet.open(direction.equals("OUTPUT") ? OpenMode.OUTPUT
+                    : OpenMode.INPUT, false);
+            if (!"00".equals(status)) {
+                throw new PliExecutionException("UNDEFINEDFILE: " + name + " (DD " + dd
+                        + ") could not be opened, status " + status);
+            }
+            int recordSize = dataSet.attributes().format() == RecordFormat.FIXED
+                    ? dataSet.attributes().recordLength() : -1;
+            OpenFile file = new OpenFile(name, dataSet, direction, recordSize);
+            openFiles.put(name, file);
+            return file;
+        }
+
+        /** 開いていなければ、文が求める向きで暗に開く (LRM "Implicit opening")。 */
+        private OpenFile opened(String name, String implied, String statement) {
+            OpenFile file = openFiles.get(name);
+            if (file == null) {
+                file = open(name, PliSyntax.FileAttributes.NONE, null, implied);
+            }
+            if (!file.direction().equals(implied)) {
+                throw new PliExecutionException("UNDEFINEDFILE: " + statement + " on " + name
+                        + ", which is open for " + file.direction());
+            }
+            return file;
+        }
+
+        private void read(PliSyntax.FileOperation operation, String name, Env env) {
+            Var target = dataReference(operation.record(), env, "READ INTO");
+            OpenFile file = opened(name, "INPUT", "READ");
+            if (target.varying) {
+                // VARYING へ読むとレコードの長さが今の長さになる。可変長のレコードをまだ持たない
+                throw new PliExecutionException("READ INTO a VARYING string is not"
+                        + " supported yet: " + target.name);
+            }
+            byte[] record = new byte[target.view.length()];
+            java.util.Arrays.fill(record, context.codePage().space());
+            String status = file.dataSet().read(record);
+            if ("10".equals(status)) {
+                List<PliSyntax.Stmt> handler = env.endFile(name);
+                if (handler == null) {
+                    throw new PliExecutionException("ENDFILE without an ON ENDFILE unit: " + name);
+                }
+                execute(handler, env);
+                return;
+            }
+            if ("04".equals(status)) {
+                // F 様式でレコードと INTO の変数の長さが違う (LRM "RECORD condition")。ON RECORD を
+                // まだ持たないので、既定の動き (ERROR) として止める
+                throw new PliExecutionException("RECORD: the record of " + name
+                        + " does not have the length of " + target.name);
+            }
+            checkFileStatus(name, status, false);
+            target.view.setBytes(record);
+        }
+
+        /**
+         * {@code WRITE FILE(f) FROM(x)}。x の記憶域をそのまま 1 レコードにする (LRM "WRITE
+         * statement")。VARYING なら今の長さの分だけである。F 様式でレコード長と違えば RECORD の
+         * 状態であり、ON RECORD をまだ持たないので既定の動き (ERROR) として止める。
+         */
+        private void write(PliSyntax.FileOperation operation, String name, Env env) {
+            Var source = dataReference(operation.record(), env, "WRITE FROM");
+            OpenFile file = opened(name, "OUTPUT", "WRITE");
+            byte[] record = source.varying
+                    ? source.view.subView(2, source.currentLength()).toByteArray()
+                    : source.view.toByteArray();
+            if (file.recordSize() > 0 && record.length != file.recordSize()) {
+                throw new PliExecutionException("RECORD: " + source.name + " has " + record.length
+                        + " bytes but the records of " + name + " have " + file.recordSize());
+            }
+            checkFileStatus(name, file.dataSet().write(record), false);
         }
 
         private void sql(String source, Env env) {

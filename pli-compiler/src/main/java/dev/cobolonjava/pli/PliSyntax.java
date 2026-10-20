@@ -59,7 +59,7 @@ final class PliSyntax {
      */
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
-                List<Bound> dimensions, List<InitItem> initialItems) {
+                List<Bound> dimensions, List<InitItem> initialItems, FileAttributes file) {
 
         /** 配列の要素の数。配列でなければ 1。 */
         int count() {
@@ -67,6 +67,22 @@ final class PliSyntax {
             for (Bound bound : dimensions) count *= bound.extent();
             return count;
         }
+    }
+
+    /**
+     * ファイルの属性 (LRM "FILE attribute"、"Merging of attributes"、"ENVIRONMENT attribute")。
+     * 宣言と {@code OPEN} の両方に書け、開くときに合わさる。書かなかったものは {@code null} である。
+     *
+     * @param transmission {@code RECORD} か {@code STREAM}
+     * @param direction    {@code INPUT}、{@code OUTPUT}、{@code UPDATE}
+     * @param format       {@code ENV} のレコード様式。いまは F の族 ({@code F}/{@code FB}/{@code FS}/
+     *                     {@code FBS}) だけを持ち、{@code "F"} にまとめる。ブロック化は 1 レコードの
+     *                     中身を変えないからである
+     * @param recordSize   {@code ENV(RECSIZE(n))} の n。書かなければ -1
+     */
+    record FileAttributes(String transmission, String direction, boolean print, String format,
+                          int recordSize) {
+        static final FileAttributes NONE = new FileAttributes(null, null, false, null, -1);
     }
 
     /** 配列の 1 つの次元の上下限 (LRM "DIMENSION attribute")。 */
@@ -148,9 +164,18 @@ final class PliSyntax {
     record OnEndFile(String file, List<Stmt> handler) implements Stmt {
     }
 
-    enum FileAction { OPEN, READ, CLOSE }
+    enum FileAction { OPEN, READ, WRITE, CLOSE }
 
-    record FileOperation(FileAction action, String file, String target) implements Stmt {
+    /**
+     * レコード入出力と {@code OPEN} / {@code CLOSE} の 1 ファイル分。1 つの {@code OPEN} 文に
+     * 複数のファイルを書けば、この文の並び ({@link Block}) になる。
+     *
+     * @param record  {@code READ} の {@code INTO} か {@code WRITE} の {@code FROM} の変数。ほかは {@code null}
+     * @param options {@code OPEN} に書いた属性。ほかは {@link FileAttributes#NONE}
+     * @param title   {@code OPEN} の {@code TITLE}。書かなければ {@code null}
+     */
+    record FileOperation(FileAction action, String file, Expr record, FileAttributes options,
+                         Expr title) implements Stmt {
     }
 
     record Sql(String source) implements Stmt {
@@ -487,6 +512,9 @@ final class PliSyntax {
             if (match("CLOSE")) {
                 return fileOperation(FileAction.CLOSE);
             }
+            if (match("WRITE")) {
+                return fileOperation(FileAction.WRITE);
+            }
             if (match("EXEC")) {
                 if (!match("SQL")) {
                     throw fail(peek(), "EXEC " + peek().text() + " is not supported yet");
@@ -581,7 +609,8 @@ final class PliSyntax {
             return new Decl(name, level, info.type, info.precision, info.scale,
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
-                    dimensions.isEmpty() ? List.of() : initialItems(part));
+                    dimensions.isEmpty() ? List.of() : initialItems(part),
+                    info.type == Type.FILE ? fileAttributes(part) : null);
         }
 
         /**
@@ -676,6 +705,65 @@ final class PliSyntax {
                 }
             }
             return false;
+        }
+
+        /**
+         * 宣言の {@code FILE} より後ろの属性を読む。動きを変えない属性 (SEQUENTIAL、BUFFERED、
+         * EXTERNAL ほか) は覚えない。鍵つき (KEYED、DIRECT) と、F の族のほかのレコード様式はまだ
+         * 持たないので断る。黙って順編成の固定長として扱うと、別のファイルを読み書きしてしまう。
+         */
+        private static FileAttributes fileAttributes(List<Token> part) {
+            int at = 0;
+            while (at < part.size() && !part.get(at).is("FILE")) at++;
+            String transmission = null;
+            String direction = null;
+            boolean print = false;
+            String format = null;
+            int recordSize = -1;
+            for (int i = at + 1; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.is("RECORD") || token.is("STREAM")) {
+                    transmission = token.text();
+                } else if (token.is("INPUT") || token.is("OUTPUT") || token.is("UPDATE")) {
+                    direction = token.text();
+                } else if (token.is("PRINT")) {
+                    print = true;
+                } else if (token.is("ENV") || token.is("ENVIRONMENT")) {
+                    if (i + 1 >= part.size() || !part.get(i + 1).is("(")) {
+                        throw new ParseFailure(token, "ENVIRONMENT needs a parenthesized list");
+                    }
+                    int close = findClosing(part, i + 1);
+                    for (int j = i + 2; j < close; j++) {
+                        Token option = part.get(j);
+                        if (List.of("F", "FB", "FS", "FBS").stream().anyMatch(option::is)) {
+                            format = "F";
+                        } else if (option.is("RECSIZE") || option.is("BLKSIZE")
+                                || option.is("BUFFERS")) {
+                            int value = parenthesizedInt(part, j + 1, -1);
+                            if (value < 1) {
+                                throw new ParseFailure(option, option.text()
+                                        + " needs a positive integer");
+                            }
+                            if (option.is("RECSIZE")) recordSize = value;
+                            j = findClosing(part, j + 1);
+                        } else if (option.is("CONSECUTIVE")) {
+                            continue;
+                        } else {
+                            throw new ParseFailure(option, "ENVIRONMENT option " + option.text()
+                                    + " is not supported yet");
+                        }
+                    }
+                    i = close;
+                } else if (List.of("SEQUENTIAL", "SEQL", "BUFFERED", "BUF", "UNBUFFERED",
+                        "UNBUF", "EXTERNAL", "EXT", "INTERNAL", "INT").stream()
+                        .anyMatch(token::is)) {
+                    continue;
+                } else {
+                    throw new ParseFailure(token, "FILE attribute " + token.text()
+                            + " is not supported yet");
+                }
+            }
+            return new FileAttributes(transmission, direction, print, format, recordSize);
         }
 
         private static Boolean alignment(List<Token> part) {
@@ -940,20 +1028,66 @@ final class PliSyntax {
             return new OnEndFile(file, blockBody());
         }
 
+        /**
+         * {@code OPEN} / {@code CLOSE} / {@code READ} / {@code WRITE}。選択子は順を問わない
+         * (LRM "OPEN statement" ほか)。知らない選択子は読み飛ばさずに断る。{@code KEY} や
+         * {@code KEYFROM} の付く鍵つきの入出力と {@code SET} (位置で受ける読み方) はまだ持たない。
+         */
         private Stmt fileOperation(FileAction action) {
-            expect("FILE");
-            expect("(");
-            String file = qualifiedName();
-            expect(")");
-            String target = null;
-            if (action == FileAction.READ) {
-                expect("INTO");
-                expect("(");
-                target = qualifiedName();
-                expect(")");
-            }
+            List<Stmt> files = new ArrayList<>();
+            do {
+                files.add(oneFile(action));
+            } while ((action == FileAction.OPEN || action == FileAction.CLOSE) && match(","));
             expect(";");
-            return new FileOperation(action, file, target);
+            return files.size() == 1 ? files.get(0) : new Block(List.copyOf(files));
+        }
+
+        private FileOperation oneFile(FileAction action) {
+            String file = null;
+            Expr record = null;
+            Expr title = null;
+            String transmission = null;
+            String direction = null;
+            boolean print = false;
+            while (!check(";") && !(file != null && check(","))) {
+                Token option = next();
+                if (option.is("FILE") && file == null) {
+                    expect("(");
+                    file = qualifiedName();
+                    expect(")");
+                } else if ((action == FileAction.READ && option.is("INTO")
+                        || action == FileAction.WRITE && option.is("FROM")) && record == null) {
+                    record = parenthesizedExpression();
+                } else if (action == FileAction.OPEN && option.is("TITLE") && title == null) {
+                    title = parenthesizedExpression();
+                } else if (action == FileAction.OPEN && (option.is("RECORD") || option.is("STREAM"))
+                        && transmission == null) {
+                    transmission = option.text();
+                } else if (action == FileAction.OPEN && (option.is("INPUT") || option.is("OUTPUT")
+                        || option.is("UPDATE")) && direction == null) {
+                    direction = option.text();
+                } else if (action == FileAction.OPEN && option.is("PRINT")) {
+                    print = true;
+                } else if (action == FileAction.OPEN && (option.is("SEQUENTIAL")
+                        || option.is("SEQL") || option.is("BUFFERED") || option.is("BUF")
+                        || option.is("UNBUFFERED") || option.is("UNBUF"))) {
+                    // 順編成のファイルを前から読み書きするだけなので、どちらでも動きは変わらない
+                    continue;
+                } else {
+                    throw fail(option, action + " option " + option.text()
+                            + " is not supported yet");
+                }
+            }
+            if (file == null) {
+                throw fail(peek(), action + " needs FILE(...)");
+            }
+            if (action == FileAction.READ && record == null
+                    || action == FileAction.WRITE && record == null) {
+                throw fail(peek(), action + " needs " + (action == FileAction.READ ? "INTO" : "FROM")
+                        + "(...)");
+            }
+            return new FileOperation(action, file, record,
+                    new FileAttributes(transmission, direction, print, null, -1), title);
         }
 
         private Expr parenthesizedExpression() {
