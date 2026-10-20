@@ -130,6 +130,18 @@ class BmsParserTest {
     }
 
     @Test
+    @DisplayName("VALIDNは値を確かめて受け、fieldの並びは変えない (GenAppのSSMAP、P-197)")
+    void acceptsValidnWithoutChangingTheFields() {
+        Mapset plain = BmsParser.parse(mapset(card("F1       DFHMDF POS=(1,2),LENGTH=3", false)));
+        Mapset validated = BmsParser.parse(mapset(
+                card("F1       DFHMDF POS=(1,2),LENGTH=3,VALIDN=(MUSTENTER)", false)));
+
+        assertEquals(plain.maps().get(0).fields(), validated.maps().get(0).fields());
+        assertRejected(mapset(card("F1       DFHMDF POS=(1,2),LENGTH=3,VALIDN=(MUSTTYPE)", false)),
+                "MUSTTYPE", 6);
+    }
+
+    @Test
     @DisplayName("知らないoperand、画面外の位置、長すぎる初期値は行番号つきで断る")
     void rejectsWhatItCannotRepresent() {
         assertRejected(mapset(card("F1       DFHMDF POS=(1,2),LENGTH=3,GRPNAME=G1", false)),

@@ -193,7 +193,7 @@ public final class BmsParser {
                 throw fail(statement, "DFHMDF outside DFHMDI");
             }
             only(statement, Set.of("POS", "LENGTH", "ATTRB", "COLOR", "HILIGHT", "INITIAL",
-                    "PICIN", "PICOUT", "JUSTIFY", "OCCURS", "SOSI"));
+                    "PICIN", "PICOUT", "JUSTIFY", "OCCURS", "SOSI", "VALIDN"));
             Optional<String> fieldName = statement.label() == null
                     ? Optional.empty() : Optional.of(name(statement, FIELD_NAME, "field"));
             int[] pos = pair(statement, "POS");
@@ -233,6 +233,10 @@ public final class BmsParser {
             // 画面位置で数えて扱えるので (BmsFieldText)、断らずに受ける。SOSI=NO は
             // SBCS だけの field であり、RECEIVE MAP が DBCS の入力を断る根拠になる
             Optional<Sosi> sosi = enumValue(statement, "SOSI", Sosi.class);
+            // VALIDN は端末の欄の検査 (field validation) の指示であり、CICS は端末がその機能を持つときにだけ
+            // 送る。こちらの端末の入口はその機能を取り決めないので (P-191)、値を確かめて送らない。
+            // EXTATT=MAPONLY でも YES でも記号マップの並びは DSATTS で決まり、VALIDN は関わらない (P-197)
+            enumList(statement, "VALIDN", Validation.class);
             fields.add(new Field(statement.line(), fieldName, position, length, attributes,
                     color, highlight, initial, pictureIn, pictureOut, justify, occurs, sosi));
         }
@@ -401,6 +405,11 @@ public final class BmsParser {
             return Optional.empty();
         }
         return Optional.of(constant(statement, key, type, text));
+    }
+
+    /** DFHMDF の VALIDN に書ける値。 */
+    private enum Validation {
+        MUSTFILL, MUSTENTER, TRIGGER, USEREXIT
     }
 
     private static <E extends Enum<E>> Set<E> enumList(
