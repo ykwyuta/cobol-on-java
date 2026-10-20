@@ -249,7 +249,14 @@ DB2 の VARCHAR (49 レベルの組) のホスト変数 (2 本)、MQ の写し�
 `EXEC CICS` の option に添字つきのデータ名を書く形 (2 本)、作業場所に置いたレコードキー (2 本。規格はレコードの中を
 求めるので断りを残す)、`RECEIVE MAP` の `INTO` の省略、可変長の部分参照などである。
 GenApp は、`ASKTIME ABSTIME` に 4 byte の 2 進項目を渡す形 (14 本) を権利者の判断で暫定の仕様 P-196 として受け、
-31 本中 0 → 14 本になった。次の塊は BMS の `VALIDN` (5 本)、`ASSIGN SYSID` (3 本) である。
+31 本中 0 → 14 本になった。続けて BMS の `VALIDN` / `XINIT` (P-197、P-198)、`ASSIGN SYSID` / `STARTCODE` / `INVOKINGPROG`
+(P-199)、`SEND MAP` の FROM と `RECEIVE MAP` の INTO の省略、端末制御の `RECEIVE INTO` (P-200)、`READQ` / `ENQ` の
+`LENGTH OF`、`SEND TEXT` の数字の LENGTH と WAIT、FROM より長い LENGTH で書く形 (P-201)、`HANDLE AID` (P-202、Zeus から
+移植した最初の増分) を直して 22 本になった。残る 9 本は 1 本ずつ別の塊 (名前つきカウンター、SQL の `FOR UPDATE` /
+`INSENSITIVE` / `SET`、TS の `DELETEQ` の古い形など) である。
+
+このうち 3 つは、既存の試験が「狭いほうの規則」を固定していたものだった (ASSIGN の RESP、SEND MAP の FROM の省略、
+見出しに USING がある ENTRY)。覚え書き 3 がまた当たった。
 
 
 ### 段階 1: 業務資産を止めている塊
