@@ -7403,13 +7403,40 @@ public final class ProgramGenerator {
         String latin1 = new String(bytes, StandardCharsets.ISO_8859_1);
         return constants.computeIfAbsent("B:" + latin1, k -> {
             String name = "B" + constants.size();
-            return new Constant(name, "[B", () -> {
-                clinit.visitLdcInsn(latin1);
-                clinit.visitMethodInsn(Opcodes.INVOKESTATIC, SUPPORT, "bytes",
-                        "(Ljava/lang/String;)[B", false);
-            });
+            return new Constant(name, "[B", () -> emitBytes(latin1));
         }).name();
     }
+
+    /**
+     * 文字列定数 1 つに入る文字数。class の文字列定数は (修正) UTF-8 で 65535 byte までであり、
+     * Latin-1 の 1 文字は最大 2 byte になる。
+     */
+    private static final int CONSTANT_CHARS = 32_000;
+
+    /**
+     * byte 列を Latin-1 の文字列定数から作る命令を clinit に積む。大きければ分けて置き、実行時につなぐ。
+     * 以前は 1 つの定数に置いていたので、作業場所が 32KB を越える (EBCDIC で 64KB を越える) プログラムは
+     * 翻訳の最後に「UTF8 string too large」で落ちた。
+     */
+    private void emitBytes(String latin1) {
+        if (latin1.length() <= CONSTANT_CHARS) {
+            clinit.visitLdcInsn(latin1);
+            clinit.visitMethodInsn(Opcodes.INVOKESTATIC, SUPPORT, "bytes", "(Ljava/lang/String;)[B", false);
+            return;
+        }
+        int parts = (latin1.length() + CONSTANT_CHARS - 1) / CONSTANT_CHARS;
+        push(clinit, parts);
+        clinit.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/String");
+        for (int i = 0; i < parts; i++) {
+            clinit.visitInsn(Opcodes.DUP);
+            push(clinit, i);
+            clinit.visitLdcInsn(latin1.substring(i * CONSTANT_CHARS,
+                    Math.min(latin1.length(), (i + 1) * CONSTANT_CHARS)));
+            clinit.visitInsn(Opcodes.AASTORE);
+        }
+        clinit.visitMethodInsn(Opcodes.INVOKESTATIC, SUPPORT, "bytes", "([Ljava/lang/String;)[B", false);
+    }
+
 
     /**
      * 照合順序を組み立てる定数 (要件 FR-054)。
@@ -7653,9 +7680,7 @@ public final class ProgramGenerator {
         clinit = writer.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
         clinit.visitCode();
 
-        clinit.visitLdcInsn(new String(initialStorageBytes, StandardCharsets.ISO_8859_1));
-        clinit.visitMethodInsn(Opcodes.INVOKESTATIC, SUPPORT, "bytes",
-                "(Ljava/lang/String;)[B", false);
+        emitBytes(new String(initialStorageBytes, StandardCharsets.ISO_8859_1));
         clinit.visitFieldInsn(Opcodes.PUTSTATIC, internal, "INITIAL", "[B");
         initAlterTables();
 

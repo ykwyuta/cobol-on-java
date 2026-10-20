@@ -21,6 +21,25 @@ public final class ProgramSupport {
     }
 
     /**
+     * 分けて置いた byte 列の定数をつなぐ。class の文字列定数は符号化して 65535 byte までなので、
+     * 大きな作業場所の初期値はそれを越える (EBCDIC の文字は 1 byte が 2 byte に膨らむ)。
+     */
+    public static byte[] bytes(String[] latin1Parts) {
+        int length = 0;
+        for (String part : latin1Parts) {
+            length += part.length();
+        }
+        byte[] out = new byte[length];
+        int at = 0;
+        for (String part : latin1Parts) {
+            byte[] chunk = part.getBytes(StandardCharsets.ISO_8859_1);
+            System.arraycopy(chunk, 0, out, at, chunk.length);
+            at += chunk.length;
+        }
+        return out;
+    }
+
+    /**
      * COBOL のプログラム名から Java のクラス名を作る。
      *
      * <p>翻訳して名前を付けるのはコンパイラだが、{@code CALL} で名前から探すのは
