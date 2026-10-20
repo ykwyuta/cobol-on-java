@@ -353,7 +353,9 @@ public sealed interface Statement {
         ABCODE(4),
         APPLID(8),
         PROGRAM(8),
-        SYSID(4);
+        SYSID(4),
+        STARTCODE(2),
+        INVOKINGPROG(8);
 
         private final int length;
 

@@ -55,6 +55,8 @@ public final class CicsExecution {
          * <p>COBOLのCALLで呼んだ副programはCICSから見えないので、ここを変えない。
          */
         private String programName;
+        /** このlevelのprogramへLINKまたはXCTLしたprogram (ASSIGN INVOKINGPROG)。taskの最初のprogramなら null。 */
+        private String invokingProgram;
         private final Map<Integer, ConditionHandler> handlers = new HashMap<>();
         private AbendHandler abendHandler;
         private final Deque<HandleSnapshot> savedHandlers = new ArrayDeque<>();
@@ -250,7 +252,17 @@ public final class CicsExecution {
 
     /** 初期programまたはXCTL先が、現在のLINK levelのprogramになる。 */
     public synchronized void startProgram(String programName) {
-        currentHandleLevel().programName = Objects.requireNonNull(programName, "programName");
+        HandleLevel level = currentHandleLevel();
+        // 2度目はXCTLである。XCTLしたのはそれまでこのlevelにいたprogramである
+        if (level.programName != null) {
+            level.invokingProgram = level.programName;
+        }
+        level.programName = Objects.requireNonNull(programName, "programName");
+    }
+
+    /** 現在のLINK levelのprogramへLINKまたはXCTLしたprogram。taskの最初のprogramなら空。 */
+    public synchronized Optional<String> invokingProgram() {
+        return Optional.ofNullable(currentHandleLevel().invokingProgram);
     }
 
     /** 現在のLINK levelでCICSが起動したprogramの名前。起動記録が無ければ失敗する。 */
@@ -283,6 +295,7 @@ public final class CicsExecution {
         if (link) {
             synchronized (this) {
                 HandleLevel level = new HandleLevel();
+                level.invokingProgram = currentHandleLevel().programName;
                 level.programName = ((LinkCommand) command).target().value();
                 handleLevels.push(level);
             }

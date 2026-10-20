@@ -1649,6 +1649,8 @@ public final class ProgramGenerator {
             case APPLID -> "assignApplid";
             case PROGRAM -> "assignProgram";
             case SYSID -> "assignSysid";
+            case STARTCODE -> "assignStartcode";
+            case INVOKINGPROG -> "assignInvokingProgram";
         };
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);

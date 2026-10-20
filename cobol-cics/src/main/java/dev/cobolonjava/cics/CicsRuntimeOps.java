@@ -2170,6 +2170,32 @@ public final class CicsRuntimeOps {
         assignText(required, target, local.iterator().next(), 4, "ASSIGN SYSID");
     }
 
+    /**
+     * taskがどう始まったかを2文字で返す (暫定判断 P-199)。STARTで始まればデータの有無で {@code SD} / {@code S}、
+     * 端末から始まれば {@code TD}、どちらでもなければ {@code D} である。最後は HTTP などの外からCOMMAREAを
+     * 渡して呼ぶ形で、CICSでは外部呼出し (ECI) の DPL に当たるとした。
+     */
+    public static void assignStartcode(ProgramContext context, DataView target) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsTaskContext task = execution(required).task();
+        String code;
+        if (task.start().isPresent()) {
+            code = task.start().get().data().isPresent() ? "SD" : "S";
+        } else if (task.terminalId().isPresent() || task.terminalInput().isPresent()) {
+            code = "TD";
+        } else {
+            code = "D";
+        }
+        assignText(required, target, code, 2, "ASSIGN STARTCODE");
+    }
+
+    /** 現在のprogramへLINKまたはXCTLしたprogramの名前を8文字で返す。taskの最初のprogramなら空白である。 */
+    public static void assignInvokingProgram(ProgramContext context, DataView target) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        assignText(required, target, execution(required).invokingProgram().orElse(""), 8,
+                "ASSIGN INVOKINGPROG");
+    }
+
     /** 現在のLINK levelでCICSが起動したprogramの名前を8文字で返す (設計 79 §5)。 */
     public static void assignProgram(ProgramContext context, DataView target) {
         ProgramContext required = Objects.requireNonNull(context, "context");

@@ -6267,3 +6267,24 @@ field の模型には残さず、画面にも TN3270 のデータ流 (SFE の検
 
 **解消条件**: BMS の模型が初期値を byte 列で持つようにする。
 
+## P-199 `ASSIGN STARTCODE` は task の始まり方から決め、外から COMMAREA を渡して呼ぶ task を `D` とする
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `CicsRuntimeOps.assignStartcode`、`CicsRuntimeOps.assignInvokingProgram`、`CicsExecution.invokingProgram` |
+| 関連要件 | 設計 79 §5 |
+
+**いまの扱い**: START で始まった task はデータ (FROM) の有無で `SD` / `S`、端末から始まった task は `TD`、どちらでも
+ない task (HTTP などで外から COMMAREA を渡して呼ぶもの) は `D` を返す。`ASSIGN INVOKINGPROG` は、現在のプログラムへ
+LINK または XCTL したプログラムの名前を返し、task の最初のプログラムなら空白を返す。
+
+**なぜ暫定か**: CICS の STARTCODE の値のうち、外から COMMAREA を渡して呼ぶ形に当たるのは、外部呼出し (ECI) で
+起こされる DPL の `D` と読んだ。GenApp の lgicvs01 は `STARTCODE(1:1) = 'D'` か INVOKINGPROG が空白でなければ
+COMMAREA を読み、そうでなければ端末から RECEIVE するので、この読みでは COMMAREA の道を通る。
+`DS` (SYNCONRETURN の DPL)、`QD` (一時データの trigger)、`U` (利用者が attach した task) は返さない。
+
+**どこがずれうるか**: こちらの HTTP の入口が実機のどの起動に当たるかは構成で違いうる (Web の入口なら `U` などに
+なりうる)。STARTCODE で道を分ける資産は、ここで分かれ方が変わる。
+
+**解消条件**: 入口 (HTTP、TN3270、START、非同期) ごとに実機の対応する起動で STARTCODE を採る。

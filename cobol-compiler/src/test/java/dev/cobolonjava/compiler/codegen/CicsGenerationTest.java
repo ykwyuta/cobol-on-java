@@ -1180,6 +1180,40 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("ASSIGN INVOKINGPROGはLINK / XCTLした側を返し、STARTCODEは外から呼んだtaskをDとする (GenApp、P-199)")
+    void assignsInvokingProgramAndStartCode() {
+        // GenApp の lgicvs01 は STARTCODE(1:1) = 'D' か INVOKINGPROG が空白でなければ COMMAREA を読む
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> main = compile(loader, "MAIN", List.of(
+                "EXEC CICS ASSIGN STARTCODE(WS-STCD) INVOKINGPROG(WS-PGM) END-EXEC",
+                "IF WS-STCD NOT = 'D ' OR WS-PGM NOT = SPACES GOBACK END-IF",
+                "EXEC CICS LINK PROGRAM('CHILD') COMMAREA(LK-AREA) END-EXEC",
+                "EXEC CICS ASSIGN INVOKINGPROG(WS-PGM) END-EXEC",
+                "IF WS-PGM NOT = SPACES OR LK-AREA NOT = 'KID ' GOBACK END-IF",
+                "EXEC CICS XCTL PROGRAM('NEXTPGM') COMMAREA(LK-AREA) END-EXEC"));
+        Supplier<CobolProgram> child = compile(loader, "CHILD", List.of(
+                "EXEC CICS ASSIGN INVOKINGPROG(WS-PGM) END-EXEC",
+                "IF WS-PGM = 'MAIN' MOVE 'KID ' TO LK-AREA END-IF",
+                "GOBACK"));
+        Supplier<CobolProgram> next = compile(loader, "NEXTPGM", List.of(
+                "EXEC CICS ASSIGN INVOKINGPROG(WS-PGM) END-EXEC",
+                "IF WS-PGM = 'MAIN' MOVE 'DONE' TO LK-AREA END-IF",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder()
+                .cobolProgram("MAIN", main)
+                .cobolProgram("CHILD", child)
+                .cobolProgram("NEXTPGM", next)
+                .build();
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 8)
+                .execute(definition(), CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("DONE", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
     @DisplayName("ASKTIMEは地方時の1900年起点ミリ秒とEIB日時を置き、FORMATTIMEは区切りの有無で書く文字数を決める")
     void asksAndFormatsTimeInHostZone() {
         long expectedAbstime = Duration.between(
@@ -2085,6 +2119,7 @@ class CicsGenerationTest {
                 "01 WS-ABCODE PIC X(4).",
                 "01 WS-SHORT PIC X(3).",
                 "01 WS-PGM PIC X(8).",
+                "01 WS-STCD PIC XX.",
                 "01 WS-APPL PIC X(8).",
                 "01 WS-ABS PIC S9(15) COMP-3.",
                 "01 WS-DATE PIC X(10).",
