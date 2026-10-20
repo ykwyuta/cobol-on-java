@@ -305,7 +305,7 @@ START の `CHANNEL` / `ATTACH` / `NOCHECK` / `SYSID`、REQID の無い `CANCEL`�
 その上に、file control / TS / TD / RETRIEVE の `SET` を置き場の番地として入れた (P-151)。
 業務アプリの資産として CardDemo (Apache-2.0) と GenApp (EPL-2.0) を `corpus.tsv` に固定し、
 `tools/verify/measure-apps.sh` で測る (範囲は同じ資産を測っている Zeus に揃えた)。
-2026-10-20 の初回は<b>CardDemo 44 本中 10 本、GenApp 31 本中 0 本</b>しか翻訳が通らなかった。同じ日に塊を直し続けて CardDemo は <b>29 本</b> (`FUNCTION TRIM`・`TEST-NUMVAL`、端末制御の `SEND FROM`、
+2026-10-20 の初回は<b>CardDemo 44 本中 10 本、GenApp 31 本中 0 本</b>しか翻訳が通らなかった。同じ日に塊を直し続けて CardDemo は <b>29 本</b>、GenApp は <b>14 本</b> (`ASKTIME ABSTIME` の 4 byte の項目を暫定の仕様 P-196 で受けた) (`FUNCTION TRIM`・`TEST-NUMVAL`、端末制御の `SEND FROM`、
 データ名の `MAP(...)`・`DATASET(...)` など。途中で翻訳系が例外で落ちる不具合を 3 つ見つけて直した)。
 Bank-of-Z の CICS 32 本が全数通るのとは大きな差で、業務資産の幅で測っていなかったことの表れである。
 止まった行で数えた塊は、GenApp の `ASKTIME ABSTIME` に 4 byte の 2 進項目を渡す形 (14 本)、
