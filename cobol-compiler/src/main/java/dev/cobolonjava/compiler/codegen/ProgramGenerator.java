@@ -834,7 +834,9 @@ public final class ProgramGenerator {
                     }
                 }
                 case RETURN -> {
-                    if (statement.target() == null) {
+                    if (programName != null) {
+                        programName.run();
+                    } else if (statement.target() == null) {
                         run.visitInsn(Opcodes.ACONST_NULL);
                     } else {
                         run.visitLdcInsn(statement.target());
@@ -915,6 +917,12 @@ public final class ProgramGenerator {
             // ABEND コードは 4 文字の域である
             if (length.getAsInt() != 4) {
                 report(statement.origin(), "EXEC CICS ABCODE data area must be exactly 4 bytes");
+                return null;
+            }
+        } else if (statement.operation() == Statement.CicsOperation.RETURN) {
+            // TRANSID も 4 文字の域である。短い域を読むと、隣の項目の byte を名前に混ぜる
+            if (length.getAsInt() != 4) {
+                report(statement.origin(), "EXEC CICS TRANSID data area must be exactly 4 bytes");
                 return null;
             }
         } else if (length.getAsInt() < 1 || length.getAsInt() > 8) {

@@ -112,6 +112,47 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("RETURN TRANSID(データ名) は実行時の値で次の取引を決める (CardDemo の RETURN TRANSID (WS-TRANID))")
+    void returnsToTransactionNamedByDataArea() {
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> main = compile(loader, "MAIN", List.of(
+                "MOVE 'NXT2' TO WS-ABCODE",
+                "EXEC CICS RETURN TRANSID (WS-ABCODE) COMMAREA(LK-AREA) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("MAIN", main).build();
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 8)
+                .execute(definition(), CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals(Optional.of(TransId.of("NXT2")), result.nextTransaction());
+        assertEquals("INIT", CodePages.DEFAULT.decode(result.payload().commarea()));
+    }
+
+    @Test
+    @DisplayName("TRANSID のデータ域はちょうど 4 byte。小文字の値は大文字に直さず実行時に断る")
+    void transidDataAreaIsFourBytesAndNotCaseFolded() {
+        assertRejected("EXEC CICS RETURN TRANSID(WS-SHORT) END-EXEC",
+                "EXEC CICS TRANSID data area must be exactly 4 bytes");
+
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> main = compile(loader, "MAIN", List.of(
+                "MOVE 'nxt2' TO WS-ABCODE",
+                "EXEC CICS RETURN TRANSID(WS-ABCODE) END-EXEC"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("MAIN", main).build();
+        CobolCicsTaskProgram program = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 8);
+
+        RuntimeException refused = org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> program.execute(definition(), CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { }));
+        assertTrue(String.valueOf(refused.getMessage()).contains("does not contain a valid transaction id")
+                        || (refused.getCause() != null && String.valueOf(refused.getCause().getMessage())
+                                .contains("does not contain a valid transaction id")),
+                () -> String.valueOf(refused));
+    }
+
+    @Test
     @DisplayName("LENGTHを省いたCOMMAREAはデータ項目の長さで渡し、SYNCONRETURNはlocal LINKで効果を持たない")
     void omittedLengthUsesTheCommareaItemLength() {
         GeneratedLoader loader = new GeneratedLoader();

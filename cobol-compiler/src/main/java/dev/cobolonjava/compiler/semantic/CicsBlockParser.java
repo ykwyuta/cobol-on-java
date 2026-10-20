@@ -114,6 +114,12 @@ final class CicsBlockParser {
     /** 引用符を外したあとに残るPROGRAM(データ名)。静的な名前はQUOTED_OPTIONが先に取る。 */
     private static final Pattern PROGRAM_DATA_OPTION = Pattern.compile(
             "(?is)\\bPROGRAM\\s*\\(\\s*([A-Z0-9][A-Z0-9-]*)\\s*\\)");
+    /**
+     * 引用符を外したあとに残る TRANSID(データ名)。RETURN だけが使う (START などは自前の読み方を持つ)。
+     * CardDemo は 9 本が RETURN TRANSID (WS-TRANID) と書き、ここで止まっていた (以前は定数だけ。P-097)。
+     */
+    private static final Pattern TRANSID_DATA_OPTION = Pattern.compile(
+            "(?is)\\bTRANSID\\s*\\(\\s*([A-Z][A-Z0-9-]*)\\s*\\)");
     /** 引用符を外したあとに残るABCODE(データ名)。 */
     private static final Pattern ABCODE_DATA_OPTION = Pattern.compile(
             "(?is)\\bABCODE\\s*\\(\\s*([A-Z][A-Z0-9-]*)\\s*\\)");
@@ -297,6 +303,12 @@ final class CicsBlockParser {
         if (abendCode != null && abcodeData.value != null) {
             throw new IllegalArgumentException("duplicate ABCODE option");
         }
+        ParsedOption<String> transidData = extractOne(
+                TRANSID_DATA_OPTION, remainder, matcher -> matcher.group(1).toUpperCase(Locale.ROOT));
+        remainder = transidData.remainder;
+        if (transId != null && transidData.value != null) {
+            throw new IllegalArgumentException("duplicate TRANSID option");
+        }
 
         ParsedOption<String> commarea = extractOne(NAME_OPTION, remainder, matcher -> matcher.group(1));
         remainder = commarea.remainder;
@@ -346,7 +358,9 @@ final class CicsBlockParser {
             throw new IllegalArgumentException(
                     "unsupported EXEC CICS option: " + remainder.strip());
         }
-        validate(operation, program != null || programData.value != null, transId,
+        // validate は TRANSID を「書いてあるか」でだけ見る。データ名でも書いてあることに変わりはない
+        validate(operation, program != null || programData.value != null,
+                transId != null ? transId : transidData.value,
                 abendCode != null ? abendCode : abcodeData.value,
                 commarea.value, length.value,
                 response.value, response2.value, rollback, cancel, noDump, immediate);
@@ -359,8 +373,12 @@ final class CicsBlockParser {
                 length.value == null ? -1 : length.value, response.value, response2.value,
                 noHandle, rollback, cancel, noDump, immediate,
                 null, List.of(), null, null, null, null,
-                // LINK / XCTL の PROGRAM と ABEND の ABCODE は、同じ「名前を持つデータ域」として渡す
-                operation == Statement.CicsOperation.ABEND ? abcodeData.value : programData.value,
+                // LINK / XCTL の PROGRAM、ABEND の ABCODE、RETURN の TRANSID は、同じ「名前を持つデータ域」として渡す
+                switch (operation) {
+                    case ABEND -> abcodeData.value;
+                    case RETURN -> transidData.value;
+                    default -> programData.value;
+                },
                 null, null, null, null, null);
     }
 

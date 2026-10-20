@@ -259,6 +259,38 @@ public final class CicsRuntimeOps {
                 suppressDefaultHandling);
     }
 
+    /** TRANSID(データ名) の RETURN [IMMEDIATE]。名前は 4 byte のデータ域から実行時に決まる。 */
+    public static int returnTaskCondition(
+            ProgramContext context, byte[] nextTransaction, DataView commarea,
+            boolean immediate, boolean suppressDefaultHandling) {
+        return returnTaskCondition(context, dynamicTransaction(context, nextTransaction), commarea, immediate,
+                suppressDefaultHandling);
+    }
+
+    /**
+     * データ域の名前を TRANSID にする。{@link #dynamicProgram} と同じく末尾の空白だけを落とし、
+     * TRANSID の形でなければ推測で直さず失敗させる。空白だけの域を「TRANSID 無し」とも読まない
+     * (RETURN の TRANSID を省くことと、空白を書いた域を渡すことは違う。実機の条件は確かめていない)。
+     */
+    static String dynamicTransaction(ProgramContext context, byte[] name) {
+        String text = Objects.requireNonNull(context, "context").codePage()
+                .decode(Objects.requireNonNull(name, "name"));
+        String candidate = text.stripTrailing();
+        try {
+            if (candidate.isEmpty() || candidate.indexOf(' ') >= 0) {
+                throw new IllegalArgumentException("blank or padded name");
+            }
+            String value = TransId.of(candidate).value();
+            if (!value.equals(candidate)) {
+                // TransId は大文字に揃える。CICS の TRANSID は大文字と小文字を区別するので、揃えると別の取引になりうる
+                throw new IllegalArgumentException("not in canonical form");
+            }
+            return value;
+        } catch (IllegalArgumentException invalid) {
+            throw new CicsTaskStateException("RETURN TRANSID data area does not contain a valid transaction id");
+        }
+    }
+
     /** RETURN [IMMEDIATE] を実行し、condition handlerへ移る場合はその段落番号を返す。 */
     public static int returnTaskCondition(
             ProgramContext context, String nextTransaction, DataView commarea,

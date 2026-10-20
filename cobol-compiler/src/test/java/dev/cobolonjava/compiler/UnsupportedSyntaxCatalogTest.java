@@ -179,7 +179,7 @@ class UnsupportedSyntaxCatalogTest {
                 Arguments.of(program("CHABP", List.of(), List.of("EXEC CICS HANDLE ABEND PROGRAM('E') END-EXEC")),
                         "initial HANDLE ABEND support accepts LABEL, CANCEL, or RESET"),
                 Arguments.of(program("CTRAN", ws("01 T PIC X(4)."), List.of("EXEC CICS RETURN TRANSID(T) END-EXEC")),
-                        "unsupported EXEC CICS option: TRANSID(T)"),
+                        ACCEPTED),
                 Arguments.of(program("CRQTS", ws("01 A PIC X(10)."),
                         List.of("EXEC CICS READQ TS QUEUE('Q') INTO(A) END-EXEC")), "READQ TS requires either ITEM or NEXT"),
                 Arguments.of(program("CSTUT", List.of(), List.of("EXEC CICS START TRANSID('TX02') USERID('U1')",

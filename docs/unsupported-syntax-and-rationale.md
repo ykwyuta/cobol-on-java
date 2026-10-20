@@ -89,7 +89,7 @@
 | `DLI` | `EXEC DLI` | `EXEC processor is not supported yet` | DL/I は `CALL 'CBLTDLI'` で扱う (設計 78) |
 | `CXFER` | `LINK ... CHANNEL(...)` | `unsupported EXEC CICS option: CHANNEL('CH')` | `PUT` / `GET CONTAINER` と `START ... CHANNEL` は実装済み。`LINK` / `XCTL` の `CHANNEL` は未実装 |
 | `CHABP` | `HANDLE ABEND PROGRAM(...)` | `accepts LABEL, CANCEL, or RESET` | 未実装 |
-| `CTRAN` | `RETURN TRANSID(データ名)` | `unsupported EXEC CICS option: TRANSID(T)` | `TRANSID` は定数だけ (P-097)。`PROGRAM(データ名)` と `ABCODE(データ名)` は扱う (P-124) |
+| `CTRAN` | `RETURN TRANSID(データ名)` | **受理** | 4 byte の英数字の域に限る。実行時に末尾の空白を落とし、TRANSID の形でなければ (小文字を含む) 推測で直さず失敗させる。`PROGRAM(データ名)` と `ABCODE(データ名)` も扱う (P-124) |
 | `CRQTS` | `ITEM` も `NEXT` も無い `READQ TS` | `READQ TS requires either ITEM or NEXT` | 文書が既定を示していない形 (P-137) |
 | `CSTUT` | `START ... USERID(...) TERMID(...)` | `START USERID with TERMID is not supported` | P-149 |
 | `CRECV` | `RECEIVE INTO` (map を使わない端末入力) | `unsupported or malformed EXEC CICS block` | 未実装。TN3270 の入口では TRANSID の後ろの入力を読めない (P-191) |
