@@ -150,6 +150,8 @@ public final class ProgramGenerator {
     private final java.time.ZonedDateTime compiledAt = java.time.ZonedDateTime.now();
     /** {@code PROCEDURE DIVISION USING} に並べた 01 レベル。連絡節の位置決めに使う。 */
     private List<DataItem> parameters = List.of();
+    /** 副入口で分けた段落の呼び名から、最後のかけらの呼び名。 */
+    private Map<String, String> extents = Map.of();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
     /** 静的初期化子で作る定数。綴りから field 名を引く。 */
@@ -326,6 +328,7 @@ public final class ProgramGenerator {
 
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
         parameters = procedure.parameters();
+        extents = procedure.extents();
         currency = specialNames.currency();
         decimalPoint = specialNames.decimalPoint();
         collating = specialNames.collatingSequence();
@@ -353,6 +356,7 @@ public final class ProgramGenerator {
         emitEmbeddedMetadata();
         declareAlterTables();
         emitRun(firstNormal, paragraphs.size());
+        emitRunEntries(procedure.entries(), paragraphs.size());
         emitMain();
         if (!paragraphs.isEmpty()) {
             emitDispatch(paragraphs.size());
@@ -4427,7 +4431,9 @@ public final class ProgramGenerator {
                 return paragraphNames.indexOf(section.last());
             }
         }
-        return fallback;
+        // 副入口で分けた段落は、最後のかけらまでが 1 つの段落である (暫定判断 P-206)
+        String extent = extents.get(name);
+        return extent == null ? fallback : paragraphNames.indexOf(extent);
     }
 
     private void planTimes(Statement.Perform statement, Runnable once, List<Runnable> body) {
@@ -5615,6 +5621,118 @@ public final class ProgramGenerator {
         run.visitInsn(Opcodes.RETURN);
         run.visitMaxs(0, 0);
         run.visitEnd();
+    }
+
+    /**
+     * 副入口から動かす {@code runEntry} (暫定判断 P-206)。
+     *
+     * <p>連絡節の枠を、その ENTRY の USING に並べた順で作り直し、ENTRY から始まる段落から最後まで動かす。
+     * 主入口から {@code run} で入ったときと同じく、終わりまで流れ落ちれば戻る。
+     */
+    private void emitRunEntries(List<ProcedureBuilder.AlternateEntry> entries, int paragraphCount) {
+        if (entries.isEmpty()) {
+            return;
+        }
+        int size = parameters.size() + unlistedLinkageRecords().size();
+        List<int[]> slots = new ArrayList<>();
+        for (ProcedureBuilder.AlternateEntry entry : entries) {
+            int[] map = new int[entry.parameters().size()];
+            for (int i = 0; i < map.length; i++) {
+                int slot = parameterIndexOf(entry.parameters().get(i));
+                if (slot < 0) {
+                    report(entry.origin(), "ENTRY USING requires a LINKAGE SECTION record: "
+                            + describe(entry.parameters().get(i)));
+                    return;
+                }
+                boolean byValue = i < entry.byValue().size() && entry.byValue().get(i);
+                map[i] = byValue ? -(slot + 1) : slot;
+            }
+            slots.add(map);
+        }
+        run = writer.visitMethod(Opcodes.ACC_PUBLIC, "runEntry", "(" + FRAME + "I)V", null, null);
+        run.visitCode();
+        for (int e = 0; e < entries.size(); e++) {
+            Label next = new Label();
+            run.visitVarInsn(Opcodes.ILOAD, ARGUMENTS_LOCAL + 1);
+            push(e);
+            run.visitJumpInsn(Opcodes.IF_ICMPNE, next);
+            run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+            int[] map = slots.get(e);
+            push(map.length);
+            run.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_INT);
+            for (int i = 0; i < map.length; i++) {
+                run.visitInsn(Opcodes.DUP);
+                push(i);
+                push(map[i]);
+                run.visitInsn(Opcodes.IASTORE);
+            }
+            push(size);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "entrySlots",
+                    "([L" + DATA_VIEW + ";[II)[L" + DATA_VIEW + ";", false);
+            run.visitVarInsn(Opcodes.ASTORE, ARGUMENTS_LOCAL);
+            emitPerformRange(entries.get(e).paragraph(), paragraphCount - 1);
+            run.visitInsn(Opcodes.RETURN);
+            run.visitLabel(next);
+        }
+        run.visitTypeInsn(Opcodes.NEW, "java/lang/IllegalArgumentException");
+        run.visitInsn(Opcodes.DUP);
+        run.visitLdcInsn("no such alternate entry");
+        run.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/IllegalArgumentException", "<init>",
+                "(Ljava/lang/String;)V", false);
+        run.visitInsn(Opcodes.ATHROW);
+        run.visitMaxs(0, 0);
+        run.visitEnd();
+    }
+
+    /**
+     * 副入口の名前で呼ばれるクラスを作る (暫定判断 P-206)。
+     *
+     * <p>ホストでは副入口はロード・モジュールの別名であり、{@code CALL '名前'} がそれを見つける。ここでは
+     * 名前からクラスを探すので、その名前のクラスを置き、持ち主のプログラムの {@code runEntry} へ渡す。
+     * 作業場所は持ち主のものを使うので、このクラス自身は記憶域を持たない。
+     */
+    public static Result generateEntry(String entryName, String ownerProgram, int entry) {
+        String className = classNameOf(entryName);
+        String internalName = className.replace('.', '/');
+        ClassWriter stub = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        stub.visit(Opcodes.V21, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER, internalName, null,
+                "java/lang/Object", new String[] {Type.getInternalName(CobolProgram.class)});
+        MethodVisitor init = stub.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        init.visitCode();
+        init.visitVarInsn(Opcodes.ALOAD, 0);
+        init.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        init.visitInsn(Opcodes.RETURN);
+        init.visitMaxs(0, 0);
+        init.visitEnd();
+        MethodVisitor storage = stub.visitMethod(Opcodes.ACC_PUBLIC, "initialStorage", "()[B", null, null);
+        storage.visitCode();
+        storage.visitInsn(Opcodes.ICONST_0);
+        storage.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_BYTE);
+        storage.visitInsn(Opcodes.ARETURN);
+        storage.visitMaxs(0, 0);
+        storage.visitEnd();
+        MethodVisitor name = stub.visitMethod(Opcodes.ACC_PUBLIC, "name", "()Ljava/lang/String;", null, null);
+        name.visitCode();
+        name.visitLdcInsn(entryName);
+        name.visitInsn(Opcodes.ARETURN);
+        name.visitMaxs(0, 0);
+        name.visitEnd();
+        MethodVisitor call = stub.visitMethod(Opcodes.ACC_PUBLIC, "run", RUN_DESCRIPTOR, null, null);
+        call.visitCode();
+        call.visitVarInsn(Opcodes.ALOAD, 2);
+        call.visitLdcInsn(ownerProgram);
+        call.visitLdcInsn(Type.getObjectType(internalName));
+        call.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getClassLoader",
+                "()Ljava/lang/ClassLoader;", false);
+        call.visitLdcInsn(entry);
+        call.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+        call.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "callEntry",
+                "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/ClassLoader;I[L" + DATA_VIEW + ";)V", false);
+        call.visitInsn(Opcodes.RETURN);
+        call.visitMaxs(0, 0);
+        call.visitEnd();
+        stub.visitEnd();
+        return new Result(className, stub.toByteArray(), List.of());
     }
 
     /**

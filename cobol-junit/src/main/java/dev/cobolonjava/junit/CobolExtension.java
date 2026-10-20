@@ -327,6 +327,9 @@ public final class CobolExtension implements BeforeEachCallback, AfterEachCallba
                             + ": " + result.diagnostics());
                 }
                 for (CobolCompiler.Compiled one : result.programs()) {
+                    for (CobolCompiler.EntryClass entry : one.entryClasses()) {
+                        loader.define(entry.className(), entry.classFile());
+                    }
                     Class<?> type = loader.define(one.className(), one.classFile());
                     Supplier<CobolProgram> factory = factory(type);
                     CobolProgram generated = factory.get();

@@ -98,6 +98,12 @@ public final class CobolBuild {
                 Files.createDirectories(target.getParent());
                 Files.write(target, program.classFile());
                 deployed.add(program);
+                // 副入口の名前で呼ばれるクラスも並べて置く (暫定判断 P-206)。配備目録には載せない
+                for (CobolCompiler.EntryClass entry : program.entryClasses()) {
+                    Path alias = request.output().resolve(entry.className().replace('.', '/') + ".class");
+                    Files.createDirectories(alias.getParent());
+                    Files.write(alias, entry.classFile());
+                }
             }
         }
         // 全件失敗でも空catalogを書き、以前の成功ビルドのcatalogを残さない。

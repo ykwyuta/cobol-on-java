@@ -63,6 +63,15 @@ public interface CobolProgram {
      *
      * <p>生成クラスの名前がそのままプログラム名である。異常終了の覚え書きに書く。
      */
+    /**
+     * 副入口から動かす (暫定判断 P-206)。{@code ENTRY '名前'} を書いたプログラムだけが持つ。
+     *
+     * @param entry 副入口の番号。書かれた順に 0 から
+     */
+    default void runEntry(Storage storage, ProgramContext context, DataView[] arguments, int entry) {
+        throw new UnsupportedOperationException(name() + " has no alternate entry " + entry);
+    }
+
     default String name() {
         return getClass().getSimpleName();
     }

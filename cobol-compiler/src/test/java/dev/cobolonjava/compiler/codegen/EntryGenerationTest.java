@@ -99,15 +99,27 @@ class EntryGenerationTest {
     }
 
     @Test
-    @DisplayName("手続き部の途中の ENTRY は副入口なので断る (P-152)")
-    void anEntryInTheMiddleIsRefused() {
+    @DisplayName("手続き部の途中の ENTRY は副入口として、その名前のクラスを作る (P-206)")
+    void anEntryInTheMiddleBecomesAnAlternateEntry() {
         // 先頭の文は DISPLAY で、ENTRY は段落 BEGIN の中にある
         CobolCompiler.Result result = compile(program("PROGRAM-ID. IMSPGM.",
                 "    DISPLAY 'START'.",
                 "    ENTRY 'ALTENTRY' USING IO-PCB."));
 
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        assertEquals(List.of("ALTENTRY"), result.programs().get(0).entryClasses().stream()
+                .map(CobolCompiler.EntryClass::entryName).toList());
+    }
+
+    @Test
+    @DisplayName("文の途中の ENTRY は段落を分けられないので断る (P-206)")
+    void anEntryInsideASentenceIsRefused() {
+        CobolCompiler.Result result = compile(program("PROGRAM-ID. IMSPGM.",
+                "    DISPLAY 'START'.",
+                "    CONTINUE ENTRY 'ALTENTRY' USING IO-PCB."));
+
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().toString().contains("alternate entry points are not supported yet"),
+        assertTrue(result.diagnostics().toString().contains("must be the first statement of a sentence"),
                 () -> result.diagnostics().toString());
     }
 
@@ -137,9 +149,9 @@ class EntryGenerationTest {
     }
 
     @Test
-    @DisplayName("見出しに USING があるプログラムの DLITCBL でない ENTRY は副入口なので断る (P-152)")
-    void anEntryAfterProcedureDivisionUsingIsRefused() {
-        // 主入口と副入口のどちらで呼ばれるか、名前からは決まらない
+    @DisplayName("見出しに USING があるプログラムの DLITCBL でない ENTRY は副入口になる (P-206)")
+    void anEntryAfterProcedureDivisionUsingIsAnAlternateEntry() {
+        // 主入口は見出しの USING で、ALTENTRY の名前で呼べば ENTRY の USING で入る
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. IMSPGM.",
@@ -150,9 +162,9 @@ class EntryGenerationTest {
                 "    ENTRY 'ALTENTRY' USING IO-PCB.",
                 "    GOBACK."));
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().toString().contains("alternate entry points are not supported yet"),
-                () -> result.diagnostics().toString());
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        assertEquals(List.of("ALTENTRY"), result.programs().get(0).entryClasses().stream()
+                .map(CobolCompiler.EntryClass::entryName).toList());
     }
 
     @Test

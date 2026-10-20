@@ -14,6 +14,8 @@ import dev.cobolonjava.runtime.file.OpenMode;
 import dev.cobolonjava.runtime.interop.ProgramId;
 import dev.cobolonjava.runtime.item.Usage;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +42,15 @@ public final class ProcedureBuilder {
     private final Map<String, FileDescription> files;
     /** 通常の流れが始まる段落の番号。宣言部分はそれより前にある。 */
     private int firstNormal;
+
+    /** IMS が呼ぶ入口の ENTRY。主入口の USING の代わりになるので副入口として扱わない。 */
+    private CobolParser.EntryStatementContext programEntry;
+    /** 副入口。段落を分けたところで積む。 */
+    private final List<AlternateEntry> entries = new ArrayList<>();
+    /** 副入口の ENTRY のうち、段落を分けて受けたもの。ほかの位置の ENTRY は断る。 */
+    private final Set<CobolParser.EntryStatementContext> acceptedEntries = new HashSet<>();
+    /** 副入口で分けた段落の呼び名から、最後のかけらの呼び名。 */
+    private final Map<String, String> extents = new HashMap<>();
 
     /** 報告書の記述。{@code INITIATE} / {@code GENERATE} / {@code TERMINATE} が引く。 */
     private final List<ReportDescription> reports;
@@ -190,10 +201,25 @@ public final class ProcedureBuilder {
      * 組み立ての結果。
      *
      * @param parameters {@code PROCEDURE DIVISION USING} に並べた 01 レベル。書かれた順
+     * @param entries    副入口 ({@code ENTRY '名前' USING ...})。書かれた順
+     * @param extents    副入口で分けた段落の、最後のかけらの呼び名。{@code PERFORM} がそこまで動かす
      */
     public record Result(List<Paragraph> paragraphs, List<Section> sections,
                          List<Declarative> declaratives, int firstNormalParagraph,
-                         List<DataItem> parameters, List<Diagnostic> diagnostics) {
+                         List<DataItem> parameters, List<Diagnostic> diagnostics,
+                         List<AlternateEntry> entries, Map<String, String> extents) {
+
+        public Result {
+            entries = List.copyOf(entries);
+            extents = Map.copyOf(extents);
+        }
+
+        public Result(List<Paragraph> paragraphs, List<Section> sections,
+                      List<Declarative> declaratives, int firstNormalParagraph,
+                      List<DataItem> parameters, List<Diagnostic> diagnostics) {
+            this(paragraphs, sections, declaratives, firstNormalParagraph, parameters, diagnostics,
+                    List.of(), Map.of());
+        }
 
         public boolean succeeded() {
             return !Diagnostic.blocking(diagnostics);
@@ -206,6 +232,26 @@ public final class ProcedureBuilder {
                 all.addAll(paragraph.statements());
             }
             return List.copyOf(all);
+        }
+    }
+
+    /**
+     * 副入口 1 つ (暫定判断 P-206)。
+     *
+     * <p>{@code CALL '名前'} で呼ばれると、作業場所を主入口と共有したまま、{@code ENTRY} の文から動く。
+     * 連絡節は、その {@code ENTRY} の USING に並べた項目だけが番地を持つ。
+     *
+     * @param name      入口の名前
+     * @param paragraph {@code ENTRY} の文から始まる段落の番号
+     * @param parameters USING に並べた連絡節の 01。書かれた順
+     * @param byValue   それぞれを BY VALUE で受けるかどうか
+     */
+    public record AlternateEntry(String name, int paragraph, List<DataItem> parameters, List<Boolean> byValue,
+                                 Origin origin) {
+
+        public AlternateEntry {
+            parameters = List.copyOf(parameters);
+            byValue = List.copyOf(byValue);
         }
     }
 
@@ -241,6 +287,7 @@ public final class ProcedureBuilder {
             builder.declareSqlInDataDivision(unit);
             builder.checkProgramId(unit);
             if (unit.procedureDivision() != null) {
+                builder.programEntry = programEntryOf(unit.procedureDivision());
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
                 if (implicitUsing(unit.procedureDivision())) {
                     // CICS translator は USING を書かない program に USING DFHEIBLK DFHCOMMAREA を補う。
@@ -252,13 +299,14 @@ public final class ProcedureBuilder {
                 }
                 builder.addBody(unit.procedureDivision().procedureBody(), paragraphs, sections,
                         declaratives);
+                builder.addProgramEntryName(parameters);
             }
         }
         builder.checkProcedureTargets(paragraphs);
         builder.checkDeclaratives(declaratives);
         return new Result(List.copyOf(paragraphs), List.copyOf(sections),
                 List.copyOf(declaratives), builder.firstNormal, List.copyOf(parameters),
-                List.copyOf(diagnostics));
+                List.copyOf(diagnostics), builder.entries, builder.extents);
     }
 
     /**
@@ -268,8 +316,20 @@ public final class ProcedureBuilder {
      * 渡される先がなく、01 レベル以外を並べても渡された領域の切り出し方が決まらない。
      */
     private List<DataItem> parametersOf(CobolParser.ProcedureDivisionContext context) {
+        List<DataItem> parameters = usingItems(usingOf(context));
+        DataItem returning = returningOf(context);
+        if (returning != null) {
+            // RETURNING の項目は USING の最後のうしろの引数として受ける。呼ぶ側の CALL ... RETURNING が
+            // 受取側をそこへ置く (設計 85、暫定判断 P-203)
+            parameters.add(returning);
+        }
+        return parameters;
+    }
+
+    /** USING に並べた連絡節の 01。手続き部の見出しにも ENTRY にも使う。 */
+    private List<DataItem> usingItems(List<CobolParser.ProcedureParameterContext> using) {
         List<DataItem> parameters = new ArrayList<>();
-        for (CobolParser.ProcedureParameterContext parameter : usingOf(context)) {
+        for (CobolParser.ProcedureParameterContext parameter : using) {
             DataReference reference = resolver.resolve(parameter.identifier());
             if (reference == null) {
                 continue;
@@ -287,12 +347,6 @@ public final class ProcedureBuilder {
                 continue;
             }
             parameters.add(item);
-        }
-        DataItem returning = returningOf(context);
-        if (returning != null) {
-            // RETURNING の項目は USING の最後のうしろの引数として受ける。呼ぶ側の CALL ... RETURNING が
-            // 受取側をそこへ置く (設計 85、暫定判断 P-203)
-            parameters.add(returning);
         }
         return parameters;
     }
@@ -394,8 +448,13 @@ public final class ProcedureBuilder {
         if (division == null) {
             return modes;
         }
+        return byValueOf(usingOf(division));
+    }
+
+    private static List<Boolean> byValueOf(List<CobolParser.ProcedureParameterContext> using) {
+        List<Boolean> modes = new ArrayList<>();
         boolean value = false;
-        for (CobolParser.ProcedureParameterContext parameter : usingOf(division)) {
+        for (CobolParser.ProcedureParameterContext parameter : using) {
             if (parameter.VALUE() != null) {
                 value = true;
             } else if (parameter.REFERENCE() != null) {
@@ -423,11 +482,13 @@ public final class ProcedureBuilder {
         while (parent != null && !(parent instanceof CobolParser.ProcedureDivisionContext)) {
             parent = parent.getParent();
         }
-        if (programEntryOf((CobolParser.ProcedureDivisionContext) parent) != context) {
-            report(origin, "ENTRY is supported only as the first statement of a procedure division"
-                    + " without USING (the entry IMS calls); alternate entry points are not supported yet");
+        if (programEntryOf((CobolParser.ProcedureDivisionContext) parent) != context
+                && !acceptedEntries.contains(context)) {
+            report(origin, "an alternate ENTRY must be the first statement of a sentence"
+                    + " directly in a paragraph or section");
             return null;
         }
+        // 流れの中で達した ENTRY は何もしない
         return new Statement.Continue(origin);
     }
 
@@ -794,10 +855,12 @@ public final class ProcedureBuilder {
             }
         }
         firstNormal = paragraphs.size();
-        List<Statement> leading = statementsOf(body.sentence());
+        List<List<CobolParser.SentenceContext>> pieces = splitAtEntries(body.sentence());
+        List<Statement> leading = statementsOf(pieces.get(0));
         if (!leading.isEmpty()) {
             paragraphs.add(new Paragraph(null, leading, leading.get(0).origin()));
         }
+        addEntryPieces(null, pieces, 0, paragraphs);
         for (CobolParser.ParagraphContext paragraph : body.paragraph()) {
             addParagraph(paragraph, paragraphs);
         }
@@ -812,8 +875,82 @@ public final class ProcedureBuilder {
         String simple = wordOf(paragraph.paragraphName());
         Origin origin = ReferenceResolver.originOf(paragraph);
         List<Statement> entry = inDebugSection ? List.of() : debugEntry(simple, origin);
-        paragraphs.add(new Paragraph(keyOf(simple, section), statementsOf(paragraph.sentence()),
+        List<List<CobolParser.SentenceContext>> pieces = splitAtEntries(paragraph.sentence());
+        paragraphs.add(new Paragraph(keyOf(simple, section), statementsOf(pieces.get(0)),
                 segment, entry, origin));
+        addEntryPieces(keyOf(simple, section), pieces, segment, paragraphs);
+    }
+
+    /**
+     * 手続き部の先頭の {@code ENTRY '名前' USING ...} は、その USING が主入口の引数になる (IMS の DLITCBL)。
+     * 名前が DLITCBL でなければ、その名前でも呼べるよう副入口として控える。動き始めも引数も主入口と同じである
+     * (暫定判断 P-206)。
+     */
+    private void addProgramEntryName(List<DataItem> parameters) {
+        if (programEntry == null) {
+            return;
+        }
+        String name = programEntry.LITERAL().getText().replaceAll("^['\"]|['\"]$", "").trim()
+                .toUpperCase(java.util.Locale.ROOT);
+        if (name.equals(IMS_ENTRY)) {
+            return;
+        }
+        entries.add(new AlternateEntry(name, firstNormal, parameters, byValueOf(programEntry.procedureParameter()),
+                ReferenceResolver.originOf(programEntry)));
+    }
+
+    /**
+     * 文の並びを、副入口の {@code ENTRY} で始まる文の前で切る (暫定判断 P-206)。
+     *
+     * <p>生成クラスは段落ごとにメソッドを持ち、段落の頭からしか入れない。副入口から動かすには、
+     * {@code ENTRY} から先を別の段落にするほかない。
+     *
+     * @return 最初のかけらは ENTRY の前の文 (空でもよい)。2 つ目からは ENTRY で始まる
+     */
+    private List<List<CobolParser.SentenceContext>> splitAtEntries(List<CobolParser.SentenceContext> sentences) {
+        List<List<CobolParser.SentenceContext>> pieces = new ArrayList<>();
+        List<CobolParser.SentenceContext> current = new ArrayList<>();
+        for (CobolParser.SentenceContext sentence : sentences) {
+            CobolParser.EntryStatementContext entry = sentence.statement().isEmpty()
+                    ? null : sentence.statement(0).entryStatement();
+            if (entry != null && entry != programEntry) {
+                pieces.add(current);
+                current = new ArrayList<>();
+            }
+            current.add(sentence);
+        }
+        pieces.add(current);
+        return pieces;
+    }
+
+    /**
+     * 2 つ目からのかけらを段落として足し、副入口を控える。
+     *
+     * <p>かけらの段落は利用者が名指せない呼び名を持つ。{@code GO TO 元の段落} は元の段落から入って
+     * かけらへ流れ落ちる。{@code PERFORM 元の段落} は最後のかけらまで動かす ({@link #extents})。
+     */
+    private void addEntryPieces(String key, List<List<CobolParser.SentenceContext>> pieces, int segment,
+                                List<Paragraph> paragraphs) {
+        String last = key;
+        for (int i = 1; i < pieces.size(); i++) {
+            CobolParser.EntryStatementContext entry = pieces.get(i).get(0).statement(0).entryStatement();
+            String name = entry.LITERAL().getText().replaceAll("^['\"]|['\"]$", "").trim()
+                    .toUpperCase(java.util.Locale.ROOT);
+            Origin origin = ReferenceResolver.originOf(entry);
+            acceptedEntries.add(entry);
+            last = (key == null ? "" : key) + "#ENTRY " + name;
+            int index = paragraphs.size();
+            paragraphs.add(new Paragraph(last, statementsOf(pieces.get(i)), segment, List.of(), origin));
+            if (entries.stream().anyMatch(other -> other.name().equals(name))) {
+                report(origin, "duplicate ENTRY name: " + name);
+                continue;
+            }
+            entries.add(new AlternateEntry(name, index, usingItems(entry.procedureParameter()),
+                    byValueOf(entry.procedureParameter()), origin));
+        }
+        if (key != null && !last.equals(key)) {
+            extents.put(key, last);
+        }
     }
 
     private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
@@ -828,8 +965,10 @@ public final class ProcedureBuilder {
         Origin at = ReferenceResolver.originOf(unit.sectionHeader());
         // 章へ入ると、章の名前と最初の段落の名前で<b>2 度</b>デバッグの節が動く。
         // 章の見出しそのものが 1 つの段落になっているので、そのまま 2 度になる
-        paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(unit.sentence()), segment,
+        List<List<CobolParser.SentenceContext>> pieces = splitAtEntries(unit.sentence());
+        paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(pieces.get(0)), segment,
                 debugEntry(name, at), at));
+        addEntryPieces(keyOf(name, name), pieces, segment, paragraphs);
         for (CobolParser.ParagraphContext paragraph : unit.paragraph()) {
             addParagraph(paragraph, paragraphs, segment, name);
         }

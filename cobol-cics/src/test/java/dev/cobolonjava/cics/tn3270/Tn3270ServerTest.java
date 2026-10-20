@@ -198,8 +198,15 @@ class Tn3270ServerTest {
         negotiatePlain();
         record();
         String terminal = registered();
-        var lease = terminals.lease(terminal, terminals.find(terminal, java.time.Instant.now()).orElseThrow().owner(),
-                Duration.ofSeconds(5), java.time.Instant.now()).orElseThrow();
+        // 接続の側が入力を待つ前の短い間は、接続が端末を借りている。借りられるまで待つ (負荷が高いと空振りした)
+        var owner = terminals.find(terminal, java.time.Instant.now()).orElseThrow().owner();
+        var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        var attempt = terminals.lease(terminal, owner, Duration.ofSeconds(5), java.time.Instant.now());
+        while (attempt.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+            attempt = terminals.lease(terminal, owner, Duration.ofSeconds(5), java.time.Instant.now());
+        }
+        var lease = attempt.orElseThrow();
         terminals.setScreen(lease, new CicsTerminalScreen.TextScreen("STARTED", true, false),
                 java.time.Instant.now());
         terminals.release(lease, java.time.Instant.now());

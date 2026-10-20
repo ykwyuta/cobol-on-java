@@ -135,13 +135,29 @@ public final class CobolCompiler {
      */
     public record Compiled(String className, byte[] classFile, DataLayout layout,
                            ProgramSignature programSignature,
-                           ProcedureManifest procedureManifest) {
+                           ProcedureManifest procedureManifest, List<EntryClass> entryClasses) {
+
+        public Compiled {
+            entryClasses = entryClasses == null ? List.of() : List.copyOf(entryClasses);
+        }
+
+        public Compiled(String className, byte[] classFile, DataLayout layout,
+                        ProgramSignature programSignature, ProcedureManifest procedureManifest) {
+            this(className, classFile, layout, programSignature, procedureManifest, List.of());
+        }
 
         /** ABI署名導入前の呼出側向け互換入口。 */
         public Compiled(String className, byte[] classFile, DataLayout layout,
                         ProcedureManifest procedureManifest) {
             this(className, classFile, layout, null, procedureManifest);
         }
+    }
+
+    /**
+     * 副入口 ({@code ENTRY '名前'}) の名前で呼ばれるクラス (暫定判断 P-206)。持ち主のプログラムへ渡すだけで、
+     * 記憶域も手続きも持たない。持ち主のクラスと同じところへ置く。
+     */
+    public record EntryClass(String entryName, String className, byte[] classFile) {
     }
 
     /**
@@ -180,8 +196,7 @@ public final class CobolCompiler {
                 return one;
             }
             warnings.addAll(one.diagnostics());
-            programs.add(new Compiled(one.className(), one.classFile(), one.layout(),
-                    one.programSignature(), one.procedureManifest()));
+            programs.add(one.programs().get(0));
         }
         if (programs.isEmpty()) {
             return failed(null, List.of(new Diagnostic(null, "no program unit in " + fileName)));
@@ -535,8 +550,15 @@ public final class CobolCompiler {
             return failed(data.layout(), generated.diagnostics());
         }
         warnings.addAll(generated.diagnostics());
+        List<EntryClass> entries = new ArrayList<>();
+        for (int i = 0; i < procedure.entries().size(); i++) {
+            String entryName = procedure.entries().get(i).name();
+            ProgramGenerator.Result stub = ProgramGenerator.generateEntry(entryName, programNameOf(program), i);
+            entries.add(new EntryClass(entryName, stub.className(), stub.classFile()));
+        }
         return new Result(generated.className(), generated.classFile(), data.layout(), signature,
-                manifest, List.copyOf(warnings));
+                manifest, List.copyOf(warnings), List.of(new Compiled(generated.className(),
+                        generated.classFile(), data.layout(), signature, manifest, entries)));
     }
 
     private static Result failed(DataLayout layout, List<Diagnostic> diagnostics) {

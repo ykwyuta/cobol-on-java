@@ -1541,6 +1541,45 @@ public final class Ops {
     }
 
     /**
+     * 副入口へ入る (暫定判断 P-206)。副入口の名前で作ったクラスが、持ち主のプログラムへ渡す。
+     *
+     * <p>持ち主は主入口と同じものを使うので、作業場所は主入口から呼ばれたときと共有する。ホストで副入口は
+     * 同じロード・モジュールの別名 (ALIAS) であり、作業場所は 1 つだからである。
+     */
+    public static void callEntry(ProgramContext context, String owner, ClassLoader loader, int entry,
+                                 DataView[] arguments) {
+        ProgramContext.Loaded target = context.resolve(owner, loader);
+        context.enterCall(owner, target.storage(), target.program().storageMap(), target.program());
+        try {
+            target.program().runEntry(target.storage(), context, arguments, entry);
+        } catch (ProgramReturn returned) {
+            // 呼ばれた側が戻っただけである
+        } catch (ProgramControlTransfer transfer) {
+            context.leave();
+            throw transfer;
+        }
+        context.leave();
+    }
+
+    /**
+     * 副入口の連絡節の枠を作る。{@code slots[i]} は i 番目の引数を置く枠であり、負なら BY VALUE で
+     * {@code -(枠 + 1)} に写しを置く。並べていない連絡節の枠は空で、触れれば S0C4 になる。
+     */
+    public static DataView[] entrySlots(DataView[] arguments, int[] slots, int size) {
+        DataView[] frame = new DataView[size];
+        int passed = arguments == null ? 0 : arguments.length;
+        for (int i = 0; i < Math.min(passed, slots.length); i++) {
+            DataView argument = arguments[i];
+            if (slots[i] < 0) {
+                frame[-slots[i] - 1] = argument == null ? null : Storage.copyOf(argument.toByteArray()).whole();
+            } else {
+                frame[slots[i]] = argument;
+            }
+        }
+        return frame;
+    }
+
+    /**
      * {@code CALL ... RETURNING}。受取側は {@code arguments} の最後に置いてある。
      *
      * <p>Enterprise COBOL の言語解説書は、RETURNING を書いた CALL では呼ばれた側の戻り値が受取側に入り、

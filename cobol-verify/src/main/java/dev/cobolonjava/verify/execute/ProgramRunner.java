@@ -154,6 +154,9 @@ public final class ProgramRunner {
                         // 最初の部品の 1 本目が主プログラムである
                         found = type;
                     }
+                    for (CobolCompiler.EntryClass entry : program.entryClasses()) {
+                        loader.define(entry.className(), entry.classFile());
+                    }
                 }
             }
             first = found;

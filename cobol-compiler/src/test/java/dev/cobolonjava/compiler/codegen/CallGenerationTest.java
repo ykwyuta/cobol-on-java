@@ -67,6 +67,9 @@ class CallGenerationTest {
             // 1 本のソースにプログラムが何本あってもよい。ぜんぶ読み込む
             for (CobolCompiler.Compiled program : result.programs()) {
                 try {
+                    for (CobolCompiler.EntryClass entry : program.entryClasses()) {
+                        loader.define(entry.className(), entry.classFile());
+                    }
                     Class<?> type = loader.define(program.className(), program.classFile());
                     loaded.add((CobolProgram) type.getDeclaredConstructor().newInstance());
                 } catch (ReflectiveOperationException e) {
@@ -680,6 +683,63 @@ class CallGenerationTest {
         String out = run(List.of(callingSubr(
                 "CALL 'NOSUCH' RETURNING WS-ANS|ON EXCEPTION MOVE 'X' TO WS-STAT END-CALL")));
         assertEquals("0       34 X 0007", out.trim());
+    }
+
+    /** 主入口と 2 つの副入口を持つ。作業場所の WS-COUNT はどの入口から入っても同じものである。 */
+    private static final List<String> SUB_ENTRIES = List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. SUBE.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01 WS-COUNT PIC 9 VALUE 0.",
+            "LINKAGE SECTION.",
+            "01 LK-A PIC 9(3).",
+            "01 LK-B PIC 9(3).",
+            "01 LK-R PIC 9(3).",
+            "PROCEDURE DIVISION USING LK-A LK-B LK-R.",
+            "    ADD 1 TO WS-COUNT",
+            "    COMPUTE LK-R = 100 + LK-A + LK-B",
+            "    GOBACK.",
+            "ENTRY 'SUBE2' USING LK-A LK-R.",
+            "    ADD 1 TO WS-COUNT",
+            "    COMPUTE LK-R = 200 + LK-A + WS-COUNT",
+            "    GOBACK.",
+            "SECOND-PART.",
+            "    ENTRY 'SUBE3' USING BY VALUE LK-B BY REFERENCE LK-R.",
+            "    COMPUTE LK-R = 300 + LK-B",
+            "    MOVE 999 TO LK-B.",
+            "    PERFORM BUMP.",
+            "    GOBACK.",
+            "BUMP.",
+            "    ADD 1 TO WS-COUNT.",
+            "    ENTRY 'SUBE4'.",
+            "    ADD 1 TO WS-COUNT.");
+
+    @Test
+    @DisplayName("副入口は ENTRY の次の文から、その USING の並びで動き、作業場所を主入口と共有する (P-206)")
+    void anAlternateEntryRunsFromItsEntryStatement() {
+        String out = run(List.of(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 A PIC 9(3) VALUE 5.",
+                "01 B PIC 9(3) VALUE 7.",
+                "01 R PIC 9(3).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    CALL 'SUBE' USING A B R",
+                "    DISPLAY R",
+                "    CALL 'SUBE2' USING A R",
+                "    DISPLAY R",
+                "    CALL 'SUBE3' USING BY VALUE B BY REFERENCE R",
+                "    DISPLAY R ' ' B",
+                "    CALL 'SUBE2' USING A R",
+                "    DISPLAY R",
+                "    STOP RUN."), SUB_ENTRIES));
+        // 1 回目の SUBE2 は WS-COUNT が 2。SUBE3 は B を写しで受け、PERFORM BUMP は SUBE4 の後ろまで
+        // 動かすので WS-COUNT は 2 増える。2 回目の SUBE2 は 4 + 1 = 5
+        assertEquals("112\n207\n307 007\n210", out.trim());
     }
 
     @Test

@@ -75,8 +75,13 @@ public interface SuiteLanguage {
                 return new Translation(List.of(), null, result.diagnostics().stream()
                         .filter(diagnostic -> !diagnostic.isWarning()).map(Object::toString).toList());
             }
+            // 副入口の名前で呼ばれるクラスも同じところへ置く (暫定判断 P-206)
             return new Translation(result.programs().stream()
-                    .map(compiled -> new Unit(compiled.className(), compiled.classFile())).toList(),
+                    .flatMap(compiled -> java.util.stream.Stream.concat(
+                            java.util.stream.Stream.of(new Unit(compiled.className(), compiled.classFile())),
+                            compiled.entryClasses().stream()
+                                    .map(entry -> new Unit(entry.className(), entry.classFile()))))
+                    .toList(),
                     result.programs().get(0).programSignature(), List.of());
         }
     };
