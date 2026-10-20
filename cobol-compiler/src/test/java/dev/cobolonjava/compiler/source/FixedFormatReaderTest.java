@@ -32,6 +32,18 @@ class FixedFormatReaderTest {
     }
 
     @Test
+    @DisplayName("タブは桁を変えずに空白として読む。終止符の直後のタブも区切りになる")
+    void tabsAreReadAsSpaces() {
+        // CardDemo の CUSTREC.cpy の形。タブを文字として残すと「X(5).」が PICTURE の一部になる
+        String text = normalize("\t\t     05 A PIC X(5).\t\t   ", "\t\t     05 B PIC X.");
+        assertEquals("05 A PIC X(5). 05 B PIC X.", text);
+        assertEquals(
+                FixedFormatReader.standard().split(FILE, "\t\t     05 A.").get(0).content(),
+                FixedFormatReader.standard().split(FILE, "       05 A.").get(0).content(),
+                "タブは 1 桁のままである");
+    }
+
+    @Test
     @DisplayName("注釈行と改ページ行は取り除かれる (FR-003)")
     void commentAndEjectLinesAreRemoved() {
         assertEquals("MOVE A TO B.", normalize(

@@ -106,7 +106,10 @@ public final class FixedFormatReader implements SourceReader {
 
         int from = Math.min(raw.length(), SourceLine.CONTENT_START_COLUMN - 1);
         int to = Math.min(raw.length(), SourceLine.MARGIN_COLUMN);
-        String content = from < to ? raw.substring(from, to) : "";
+        // 参照形式にタブは無い。PC の道具を通った資産 (CardDemo の CUSTREC.cpy) にだけ現れ、
+        // 「X(50).」の直後がタブだと終止符が区切りと読まれない。桁を変えずに空白として読む。
+        // ホストへ転送したときにタブがどう変わるかは確かめていない
+        String content = from < to ? raw.substring(from, to).replace('\t', ' ') : "";
         return new SourceLine(fileName, lineNumber, raw, indicator, content);
     }
 
