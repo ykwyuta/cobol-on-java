@@ -144,6 +144,20 @@ class ArithExtendGenerationTest {
     }
 
     @Test
+    @DisplayName("数字だけの手続き名は 19 桁以上でも定数として数えない (NC107A)")
+    void digitOnlyProcedureNamesAreNotLiterals() {
+        // 手続き名は数字だけで 30 文字まで書ける。NC107A は 27 桁の名前の節を PERFORM する。
+        // 定数の桁数の検査がこれを数え、COMPAT で断っていた
+        CobolCompiler.Result result = compile(null,
+                List.of("01 Z PIC 9 VALUE 0."),
+                "    PERFORM 000000000000000000000000001.",
+                "    STOP RUN.",
+                "000000000000000000000000001.",
+                "    ADD 1 TO Z.");
+        assertTrue(run(result).startsWith("1"), () -> result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("EXTEND では 31 桁の数字定数を足せる")
     void addsThirtyOneDigitLiterals() {
         String stored = run(compile("ARITH(EXTEND)",

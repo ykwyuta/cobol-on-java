@@ -418,6 +418,12 @@ public final class CobolCompiler {
 
     private static void collectLiteralLimits(org.antlr.v4.runtime.tree.ParseTree tree, int limit,
                                              String arith, List<Diagnostic> diagnostics) {
+        if (tree instanceof CobolParser.ProcedureWordContext) {
+            // 数字だけの手続き名 (30 文字まで) は定数ではない。NC107A は
+            // 「000000000000000000000000001 SECTION.」と書き、PERFORM でそれを呼ぶ。
+            // 以前はこれも数えて断り、CCVS85 の 1 本を失っていた
+            return;
+        }
         if (tree instanceof org.antlr.v4.runtime.tree.TerminalNode terminal) {
             var token = terminal.getSymbol();
             String text = token.getText();

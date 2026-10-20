@@ -9,3 +9,5 @@ infra/postgres/.env
 reference/
 # デモの翻訳結果。run_demo が作り直すので、古い配備カタログを残さない
 demo/*/bin/
+# CCVS85 などの取得物 (tools/verify/fetch-*.sh の既定の置き場)
+build/
