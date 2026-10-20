@@ -143,9 +143,10 @@ class CicsTerminalGenerationTest {
     }
 
     private static final String[] PROCEDURE = {
+        // INTO を省けば map 名 + I の SCRMPI に入る
         "IF LK-AREA = 'RECV'",
         "    EXEC CICS RECEIVE MAP('SCRMP') MAPSET('SCRSET')",
-        "         INTO(SCRMPI) RESP(WS-RESP)",
+        "         RESP(WS-RESP)",
         "    END-EXEC",
         "    MOVE 'FAIL' TO LK-AREA",
         "    IF WS-RESP = DFHRESP(MAPFAIL)",
@@ -175,8 +176,9 @@ class CicsTerminalGenerationTest {
         "MOVE LOW-VALUES TO SCRMPO",
         "MOVE -1 TO CUSTNOL",
         "MOVE 'HELLO' TO MESSAGEO",
+        // FROM を省けば map 名 + O の SCRMPO から送る
         "EXEC CICS SEND MAP('SCRMP') MAPSET('SCRSET')",
-        "     FROM(SCRMPO) ERASE CURSOR FREEKB",
+        "     ERASE CURSOR FREEKB",
         "     RESP(WS-RESP)",
         "END-EXEC",
         "IF WS-RESP = 0",
@@ -264,7 +266,7 @@ class CicsTerminalGenerationTest {
         CobolCompiler compiler = compiler();
         CobolCompiler.Result plain = compiler.compile("SCREEN1.cbl", program(PROCEDURE));
         String[] asisProcedure = java.util.Arrays.stream(PROCEDURE)
-                .map(line -> line.replace("INTO(SCRMPI) RESP(WS-RESP)", "INTO(SCRMPI) ASIS RESP(WS-RESP)"))
+                .map(line -> line.equals("         RESP(WS-RESP)") ? "         ASIS RESP(WS-RESP)" : line)
                 .toArray(String[]::new);
         CobolCompiler.Result asis = compiler.compile("SCREEN1.cbl", program(asisProcedure));
         BmsScreenSnapshot sent = ((CicsTerminalScreen.MapScreen) run(plain, "MAP ").screen()
@@ -307,7 +309,8 @@ class CicsTerminalGenerationTest {
     void rejectsUnsupportedSendForms() throws IOException {
         CobolCompiler compiler = compiler();
         for (String[] rejected : List.of(
-                new String[] {"EXEC CICS SEND MAP('SCRMP') ERASE END-EXEC", "requires FROM"},
+                new String[] {"EXEC CICS SEND MAP(WS-MAPN) MAPSET('SCRSET') END-EXEC",
+                        "MAP data name requires FROM"},
                 new String[] {"EXEC CICS SEND MAP('SCRMP') MAPONLY DATAONLY END-EXEC",
                         "mutually exclusive"},
                 new String[] {"EXEC CICS SEND MAP('SCRMP') FROM(SCRMPO) ERASEAUP END-EXEC",
@@ -323,8 +326,8 @@ class CicsTerminalGenerationTest {
                 // 72 桁を越えると END-EXEC が切れる。受けない option の診断は INTO の検査より先に出る
                 new String[] {"EXEC CICS RECEIVE MAP('SCRMP') FROM(SCRMPI) END-EXEC",
                         "unsupported RECEIVE MAP option: FROM"},
-                new String[] {"EXEC CICS RECEIVE MAP('SCRMP') END-EXEC",
-                        "RECEIVE MAP requires INTO"})) {
+                new String[] {"EXEC CICS RECEIVE MAP(WS-MAPN) MAPSET('SCRSET') END-EXEC",
+                        "MAP data name requires INTO"})) {
             CobolCompiler.Result result = compiler.compile("SCREEN1.cbl",
                     program(rejected[0], "GOBACK."));
 

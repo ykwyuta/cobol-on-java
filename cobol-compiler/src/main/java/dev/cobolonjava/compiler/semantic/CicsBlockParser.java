@@ -503,9 +503,15 @@ final class CicsBlockParser {
             from = fromValue[2];
         }
         boolean mapOnly = (flags & dev.cobolonjava.cics.CicsRuntimeOps.SEND_MAPONLY) != 0;
+        if (kind == Statement.CicsSendKind.MAP && from == null && !mapOnly && map != null) {
+            // FROM を省けば、map 名に O を付けた記号マップの域である (SEND MAP の FROM の説明)。
+            // 以前は「確かめていない」として断っていたが、命令の説明に書いてある (CLAUDE.md §5)
+            from = map + "O";
+        }
         if (kind == Statement.CicsSendKind.MAP && from == null && !mapOnly) {
-            // 省いた FROM を map 名 + "O" で補う規則は確かめていないので、書くことを求める
-            throw new IllegalArgumentException("SEND MAP requires FROM unless MAPONLY is specified");
+            // map をデータ名で書けば、翻訳時に名前が決まらないので補えない
+            throw new IllegalArgumentException(
+                    "SEND MAP with a MAP data name requires FROM unless MAPONLY is specified");
         }
         if (kind == Statement.CicsSendKind.MAP && from != null && mapOnly) {
             throw new IllegalArgumentException("SEND MAP MAPONLY does not accept FROM");
@@ -546,8 +552,8 @@ final class CicsBlockParser {
     /**
      * RECEIVE MAP を読む (設計 79 §8.4)。
      *
-     * <p>{@code INTO} は書くことを求める。省いた INTO を map 名 + "I" で補う規則と、
-     * {@code SET} による番地渡しは確かめていない。{@code ASIS} 等は名前をつけて断る。
+     * <p>{@code INTO} を省けば map 名 + "I" の記号マップに入れる。map をデータ名で書けば名前が翻訳時に
+     * 決まらないので INTO を求める。{@code SET} による番地渡しはまだ受けない。
      */
     private static Parsed parseReceive(String source) {
         java.util.Map<String, String[]> options = new java.util.LinkedHashMap<>();
@@ -590,8 +596,12 @@ final class CicsBlockParser {
             mapset = mapsetData == null ? bmsName("MAPSET", options.get("MAPSET")) : null;
         }
         String into = sendDataName(options.get("INTO"), "INTO");
+        if (into == null && map != null) {
+            // INTO を省けば、map 名に I を付けた記号マップの域である (RECEIVE MAP の INTO の説明)
+            into = map + "I";
+        }
         if (into == null) {
-            throw new IllegalArgumentException("RECEIVE MAP requires INTO");
+            throw new IllegalArgumentException("RECEIVE MAP with a MAP data name requires INTO");
         }
         String[] noHandle = options.get("NOHANDLE");
         if (noHandle != null && (noHandle[0] != null || noHandle[1] != null || noHandle[2] != null)) {
