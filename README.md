@@ -37,6 +37,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [利用ガイド](docs/guide.md) — コンパイラ起動オプション、単一・複数プログラムの翻訳と実行手順
 - [デモシナリオガイド](demo/guide.md) — 動かして確かめる 11 本のデモ。#009 は BMS + COBOL + H2 の Todo アプリ ([demo/009](demo/009/README.md))、#010 は Maven の標準ディレクトリ体系 ([demo/010](demo/010/README.md))、#011 は 3270 エミュレータから TN3270 で動かす疑似会話 ([demo/011](demo/011/README.md))
 - [アーキテクチャ決定記録 (ADR)](docs/decisions/README.md)
+- [Zeus との機能差、z/OS 互換性の確認状況、改善計画 (2026-10-20)](docs/report/20261020-zeus-gap-and-improvement-plan.md)
 - [敵対的設計レビュー: Java / JUnit / CICS / Db2 / BMS](docs/reviews/2026-09-09-interop-adversarial-review.md)
 - [IMS の概要と対応検討](docs/research/ims-overview-and-support-scope.md) — IMS (TM/DB) の仕組み、CICS/Db2 との違い、COBOL (DL/I) 連携と移行スコープ
 - [IMS TM と IBM MQ のアーキテクチャ関係解説](docs/research/ims-tm-and-mq-architecture.md) — メッセージキュー駆動モデル、OTMA 連携、MPP プログラムの仕組み
