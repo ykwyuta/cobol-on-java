@@ -198,7 +198,8 @@ public final class Assembler implements Constants.Scope {
                     throw new AssemblyException(statement.line(),
                             "the macro and conditional assembly language is not supported yet: "
                                     + statement.operation());
-            case "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT", "CNOP", "COPY", "ICTL", "OPSYN" ->
+            case "CNOP" -> conditionalNop(statement);
+            case "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT", "COPY", "ICTL", "OPSYN" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
@@ -391,6 +392,36 @@ public final class Assembler implements Constants.Scope {
         }
         int pad = (alignment - section.location % alignment) % alignment;
         section.advance(pad);
+    }
+
+    /**
+     * {@code CNOP b,w}。所在カウンタを w バイト境界から b バイトの位置まで進め、間を {@code BCR 0,0}
+     * (X'0700') で埋める (HLASM Language Reference "CNOP instruction")。命令の流れの中に置かれるので、
+     * 埋めたものは何もしない命令として実行される。
+     */
+    private void conditionalNop(Statement statement) {
+        Section section = requireSection(statement.line());
+        List<String> operands = statement.operandList();
+        require(operands, 2, statement);
+        int byteOffset = absolute(operands.get(0), statement.line());
+        int boundary = absolute(operands.get(1), statement.line());
+        if ((boundary != 4 && boundary != 8) || byteOffset < 0 || byteOffset >= boundary || byteOffset % 2 != 0) {
+            throw new AssemblyException(statement.line(),
+                    "CNOP requires an even byte offset below a boundary of 4 or 8: " + statement.operands());
+        }
+        align(section, 2);
+        defineLabel(statement, 1);
+        int start = section.location;
+        while (section.location % boundary != byteOffset) {
+            if (emitting && !section.dummy) {
+                write(section.location, new byte[] {0x07, 0x00});
+            }
+            section.advance(2);
+        }
+        if (emitting && !section.dummy) {
+            listing.add(new ObjectModule.Line(statement.line(), start,
+                    Arrays.copyOfRange(text, start, section.location)));
+        }
     }
 
     // --- EQU / ORG / END ---
@@ -867,7 +898,7 @@ public final class Assembler implements Constants.Scope {
                 : literal.length() < text.length() ? literal.length() : -1;
         if (open < 0) {
             Value value = evaluate(text, line);
-            return resolve(value, 0, null, high, line, text);
+            return resolve(value, 0, null, low, high, line, text);
         }
         if (!text.endsWith(")")) {
             throw new AssemblyException(line, "unexpected text after the address: " + operand);
@@ -895,12 +926,12 @@ public final class Assembler implements Constants.Scope {
         if (allowLength) {
             // S(L) — 長さだけを明示した暗黙形
             Value value = evaluate(head, line);
-            return resolve(value, 0, absolute(only, line), high, line, head);
+            return resolve(value, 0, absolute(only, line), low, high, line, head);
         }
         if (allowIndex) {
             // S(X) — 指標だけを明示した暗黙形。変位が絶対値ならベースは 0 になる
             Value value = evaluate(head, line);
-            return resolve(value, register(only, line), null, high, line, head);
+            return resolve(value, register(only, line), null, low, high, line, head);
         }
         // D(B) — ベースだけを明示した形
         int displacement = checkRange(absolute(head, line), low, high, line,
@@ -929,9 +960,10 @@ public final class Assembler implements Constants.Scope {
      * 届くものを探す。届くものが 2 つ以上あれば変位の小さいほうを選び、同じなら番号の大きい
      * レジスタを選ぶ。これは HLASM の選び方である。
      */
-    private Addr resolve(Value value, int index, Integer length, int high, int line, String text) {
+    private Addr resolve(Value value, int index, Integer length, int low, int high, int line, String text) {
         if (value.isAbsolute()) {
-            return new Addr(checkRange(value.value(), 0, high, line,
+            // 絶対値はベース 0 の変位である。長い変位 (RXY / RSY) なら負も書ける (LY 2,-4(3))
+            return new Addr(checkRange(value.value(), low, high, line,
                     "the displacement"), 0, index, length);
         }
         int bestRegister = -1;

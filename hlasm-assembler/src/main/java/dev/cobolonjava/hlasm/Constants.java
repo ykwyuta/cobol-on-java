@@ -110,6 +110,13 @@ public final class Constants {
             extension = Character.toUpperCase(operand.charAt(at));
             at++;
         }
+        if (type == 'F' && at < operand.length() && Character.toUpperCase(operand.charAt(at)) == 'D') {
+            // FD は 8 バイトの固定小数点 (HLASM Language Reference "Fixed-point constants -- F and H":
+            // 型の拡張 D は doubleword で、境界も 8)
+            extension = 'D';
+            rule = new TypeRule(8, 8, false);
+            at++;
+        }
 
         Integer explicitLength = null;
         if (at < operand.length() && (operand.charAt(at) == 'L' || operand.charAt(at) == 'l')) {

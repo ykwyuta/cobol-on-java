@@ -534,4 +534,40 @@ class AssemblerTest {
                 "         END");
         assertEquals(3, result.diagnostics().get(0).line());
     }
+
+    @Test
+    @DisplayName("FD は 8 バイト境界に置く 8 バイトの固定小数点である")
+    void encodesDoublewordFixedPoint() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    X'01'",
+                "         DC    FD'-3'",
+                "         DC    FD'4294967298'",
+                "         END");
+        assertEquals("FFFFFFFFFFFFFFFD", module.hex(8, 8));
+        assertEquals("0000000100000002", module.hex(16, 8));
+    }
+
+    @Test
+    @DisplayName("CNOP は境界まで BCR 0,0 で埋める")
+    void conditionalNoOperationPadsWithBranchNever() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         LR    1,2",
+                "         CNOP  0,8",
+                "NEXT     LR    3,4",
+                "         END");
+        assertEquals("1812070007000700" + "1834", module.hex(0, 10));
+        assertEquals(8, module.symbols().get("NEXT").value().value());
+    }
+
+    @Test
+    @DisplayName("長い変位の命令は、ベースのない負の変位を書ける")
+    void longDisplacementAcceptsANegativeAbsoluteDisplacement() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         LY    2,-4(3)",
+                "         END");
+        assertEquals("E3230FFCFF58", module.hex(0, 6));
+    }
 }
