@@ -452,6 +452,12 @@ public final class ReferenceResolver {
         return true;
     }
 
+    /** 関数の値に書いた部分参照。位置の読み方は項目の部分参照と同じである。 */
+    DataReference.RefMod resolveFunctionRefMod(CobolParser.ReferenceModifierContext context,
+                                               Origin origin) {
+        return resolveRefMod(context, origin);
+    }
+
     private DataReference.RefMod resolveRefMod(CobolParser.ReferenceModifierContext context,
                                                Origin origin) {
         DataReference.Subscript leftmost = resolvePosition(context.refModPosition(0), origin);

@@ -4613,7 +4613,39 @@ public final class ProcedureBuilder {
                     + " takes an item or a literal, not an arithmetic expression");
             return null;
         }
-        return new Operand.Function(intrinsic, arguments, returns, origin);
+        if (context.referenceModifier() == null) {
+            return new Operand.Function(intrinsic, arguments, returns, origin);
+        }
+        if (returns.isNumeric()) {
+            report(origin, "FUNCTION " + intrinsic.spelling()
+                    + " returns a numeric value, which cannot be reference-modified");
+            return null;
+        }
+        if (returns == Intrinsic.Result.NATIONAL) {
+            // 国字の位置は文字 (2 バイト) で数える。バイトの切り出しと取り違えないよう、まだ受けない
+            report(origin, "a reference modification of a national function value"
+                    + " is not supported yet");
+            return null;
+        }
+        DataReference.RefMod refMod = resolver.resolveFunctionRefMod(context.referenceModifier(), origin);
+        if (refMod == null) {
+            return null;
+        }
+        if (!(refMod.leftmost() instanceof DataReference.Subscript.Constant start)
+                || (refMod.length() != null
+                        && !(refMod.length() instanceof DataReference.Subscript.Constant))) {
+            report(origin, "a reference modification of a function value"
+                    + " whose position is not a constant is not supported yet");
+            return null;
+        }
+        int length = refMod.length() == null ? -1
+                : ((DataReference.Subscript.Constant) refMod.length()).value();
+        if (start.value() < 1 || (refMod.length() != null && length < 1)) {
+            report(origin, "the leftmost position and the length of a reference modification"
+                    + " must be at least 1");
+            return null;
+        }
+        return new Operand.Function(intrinsic, arguments, returns, origin, start.value(), length);
     }
 
     /**

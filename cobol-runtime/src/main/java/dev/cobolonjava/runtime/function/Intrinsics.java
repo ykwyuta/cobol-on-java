@@ -574,6 +574,23 @@ public final class Intrinsics {
         return Arrays.copyOfRange(value, start, end);
     }
 
+    /**
+     * 関数の値の部分参照 {@code FUNCTION X(開始:長さ)}。
+     *
+     * <p>値の外を指せば止める。項目の部分参照と違い、関数の値の外には読める記憶域が無い。
+     *
+     * @param length 長さ。終わりまでなら {@code -1}
+     */
+    public static byte[] referenceModify(byte[] value, int start, int length) {
+        int end = length < 0 ? value.length : start - 1 + length;
+        if (start < 1 || start > value.length || end > value.length) {
+            throw new IllegalArgumentException("reference modification (" + start + ":"
+                    + (length < 0 ? "" : String.valueOf(length)) + ") is outside the function value of "
+                    + value.length + " characters");
+        }
+        return Arrays.copyOfRange(value, start - 1, end);
+    }
+
     /** 実行時に長さが決まるバイト列の長さ。{@code FUNCTION LENGTH(FUNCTION TRIM(x))} が使う。 */
     public static Decimal byteLength(byte[] value) {
         return Decimal.of(value.length, 0);

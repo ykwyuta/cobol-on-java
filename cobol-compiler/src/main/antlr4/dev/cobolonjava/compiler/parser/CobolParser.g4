@@ -1574,9 +1574,11 @@ arithmeticOperand
 // 「11, -5」は 2 個、「11 - 5」は 1 個の引数になる。
 //
 // LEADING / TRAILING は TRIM だけが書ける。ほかの関数に書かれたら意味解析が断る。
+// 値には部分参照を書ける (FUNCTION CURRENT-DATE(1:4))。引数の括弧とはコロンで見分ける
 functionCall
     : FUNCTION functionName
       (LPAREN expression (COMMA? expression)* (LEADING | TRAILING)? RPAREN)?
+      referenceModifier?
     ;
 
 // 予約語と綴りが同じ関数名は、ここに並べて拾う

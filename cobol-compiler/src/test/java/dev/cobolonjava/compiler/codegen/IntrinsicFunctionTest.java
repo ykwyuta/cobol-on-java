@@ -210,6 +210,28 @@ class IntrinsicFunctionTest {
     }
 
     @Test
+    @DisplayName("関数の値に部分参照を書ける (FR-070)")
+    void aFunctionValueCanBeReferenceModified() {
+        // CardDemo の CBIMPORT の形。時計は 2026-09-04 に固定してある
+        assertEquals("2026    ", moved("FUNCTION CURRENT-DATE(1:4)"));
+        assertEquals("BCD     ", moved("FUNCTION UPPER-CASE(\"abcdef\")(2:3)"));
+        assertEquals("ef      ", moved("FUNCTION REVERSE(\"fe\")(1:)"));
+        assertEquals("+00000400", computed("FUNCTION LENGTH(FUNCTION CURRENT-DATE(1:4))"));
+        // TRIM の値は実行時に長さが決まる。終わりまでの部分参照も実行時に数える
+        assertEquals("+00000200", computed("FUNCTION LENGTH(FUNCTION TRIM(\" abc \")(2:))"));
+    }
+
+    @Test
+    @DisplayName("数値を返す関数の値には部分参照を書けない (FR-070)")
+    void aNumericFunctionValueCannotBeReferenceModified() {
+        CobolCompiler.Result result = compile(List.of("01 WS-A PIC X(8) VALUE SPACES."),
+                "MOVE FUNCTION LENGTH(WS-A)(1:1) TO WS-A.");
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("cannot be reference-modified"),
+                () -> result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("CHAR と ORD は照合順序の位置で対になる (FR-070)")
     void charAndOrdAreInverses() {
         // EBCDIC の "A" は 0xC1 なので、照合順序では 194 番目である

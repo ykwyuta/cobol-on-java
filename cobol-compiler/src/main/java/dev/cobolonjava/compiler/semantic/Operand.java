@@ -23,8 +23,20 @@ public sealed interface Operand {
      *
      * @param returns 戻り値の分類。{@code MAX} のように引数を見て決まるものがあるので、
      *                関数そのものではなく<b>この呼び出し</b>が持つ
+     * @param start   値の部分参照の開始位置 (1 起点)。部分参照が無ければ {@code 0}
+     * @param length  値の部分参照の長さ。終わりまでなら {@code -1}
      */
     record Function(Intrinsic intrinsic, List<Expression> arguments, Intrinsic.Result returns,
-                    Origin origin) implements Operand {
+                    Origin origin, int start, int length) implements Operand {
+
+        public Function(Intrinsic intrinsic, List<Expression> arguments, Intrinsic.Result returns,
+                        Origin origin) {
+            this(intrinsic, arguments, returns, origin, 0, -1);
+        }
+
+        /** 値に部分参照を書いたか。 */
+        public boolean referenceModified() {
+            return start > 0;
+        }
     }
 }

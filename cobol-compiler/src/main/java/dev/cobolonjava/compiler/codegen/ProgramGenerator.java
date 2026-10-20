@@ -4879,6 +4879,17 @@ public final class ProgramGenerator {
      * @return 数値を返す関数なら {@code 0}
      */
     private static int functionLength(Operand.Function function) {
+        if (function.referenceModified()) {
+            if (function.length() > 0) {
+                return function.length();
+            }
+            return Math.max(unmodifiedLength(function) - function.start() + 1, 0);
+        }
+        return unmodifiedLength(function);
+    }
+
+    /** 部分参照を書く前の、関数の値そのものの長さ。 */
+    private static int unmodifiedLength(Operand.Function function) {
         return switch (function.returns()) {
             case ONE_CHARACTER -> 1;
             case TIMESTAMP -> Intrinsics.TIMESTAMP_LENGTH;
@@ -4919,8 +4930,25 @@ public final class ProgramGenerator {
 
     /**
      * 組み込み関数の呼び出しを積む命令 (要件 FR-070)。バイト列を返すもの。
+     *
+     * <p>値に部分参照を書いていれば、値を作ってから切り出す。値の長さは TRIM のように実行時に
+     * 決まることがあるので、範囲の検査も実行時にする。
      */
     private Runnable planFunctionBytes(Operand.Function function) {
+        Runnable value = planFunctionValue(function);
+        if (value == null || !function.referenceModified()) {
+            return value;
+        }
+        return () -> {
+            value.run();
+            push(function.start());
+            push(function.length());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "referenceModify",
+                    "([BII)[B", false);
+        };
+    }
+
+    private Runnable planFunctionValue(Operand.Function function) {
         Origin origin = function.origin();
         return switch (function.intrinsic()) {
             case UPPER_CASE -> planLetterMap(function, "upperCase");
@@ -5051,6 +5079,9 @@ public final class ProgramGenerator {
      */
     private static boolean hasVariableLength(Operand operand) {
         if (!(operand instanceof Operand.Function function)) {
+            return false;
+        }
+        if (function.referenceModified() && function.length() > 0) {
             return false;
         }
         return switch (function.returns()) {
