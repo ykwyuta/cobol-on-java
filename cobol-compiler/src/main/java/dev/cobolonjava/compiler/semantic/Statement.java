@@ -803,9 +803,10 @@ public sealed interface Statement {
      * @param target    呼び先。文字定数なら静的、データ項目なら実行時に名前が決まる
      * @param arguments 渡す引数。{@code USING} に並べた順
      * @param exception {@code ON EXCEPTION} の指定。なければ {@code null}
+     * @param returning {@code RETURNING} の受取側。なければ {@code null}
      */
-    record Call(Operand target, List<Argument> arguments, Overflow exception, Origin origin)
-            implements Statement {
+    record Call(Operand target, List<Argument> arguments, Overflow exception, Operand.Reference returning,
+                Origin origin) implements Statement {
 
         public Call {
             arguments = List.copyOf(arguments);
@@ -814,9 +815,14 @@ public sealed interface Statement {
         /**
          * 引数 1 個。
          *
+         * @param value     渡す値。{@code OMITTED} なら {@code null}
          * @param byContent 写しを渡すかどうか。{@code false} なら領域そのものを渡す
          */
         public record Argument(Operand value, boolean byContent) {
+
+            public boolean omitted() {
+                return value == null;
+            }
         }
     }
 

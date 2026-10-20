@@ -62,7 +62,7 @@
 | `FLTDIV` | `COMPUTE` の浮動小数点の除算・べき乗 | `supports only +, - and *` | 中間結果の精度が 10 進と食い違うので、近い値を返さず断る (P-127) |
 | `FLTADD` | 浮動小数点項目への `ADD` など | `with floating-point items is not supported yet` | 同上。`COMPUTE` で書けば `+ - *` は通る |
 | `FLTDSP` | 浮動小数点項目の `DISPLAY` | `DISPLAY of a floating-point item is not supported yet` | 外部浮動小数点の表示形式が未実装 |
-| `BYVAL` | `CALL ... BY VALUE` | `CALL ... BY VALUE is not supported yet` | 未実装 |
+| `BYVAL` | `CALL ... BY VALUE` | **受理** | COBOL どうしの写しとして渡す (暫定判断 P-204)。定数の BY VALUE はまだ断る |
 | `CANCL` | `CANCEL 'SUB'` | **受理** | 次の呼び出しで作業場所を初期状態に戻す。JVM の class そのものは捨てない |
 | `SORTRET` | 特殊レジスタ `SORT-RETURN` | `undefined data item: SORT-RETURN` | 整列の特殊レジスタ (`SORT-RETURN`、`SORT-CONTROL` など) は未実装 |
 | `XMLP` / `JSONG` | `XML PARSE` / `JSON GENERATE` | 構文誤り | 未実装 |

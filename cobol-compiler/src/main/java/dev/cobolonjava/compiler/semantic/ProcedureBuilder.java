@@ -270,11 +270,6 @@ public final class ProcedureBuilder {
     private List<DataItem> parametersOf(CobolParser.ProcedureDivisionContext context) {
         List<DataItem> parameters = new ArrayList<>();
         for (CobolParser.ProcedureParameterContext parameter : usingOf(context)) {
-            if (parameter.VALUE() != null) {
-                report(ReferenceResolver.originOf(parameter),
-                        "BY VALUE is not supported yet");
-                continue;
-            }
             DataReference reference = resolver.resolve(parameter.identifier());
             if (reference == null) {
                 continue;
@@ -293,7 +288,32 @@ public final class ProcedureBuilder {
             }
             parameters.add(item);
         }
+        DataItem returning = returningOf(context);
+        if (returning != null) {
+            // RETURNING の項目は USING の最後のうしろの引数として受ける。呼ぶ側の CALL ... RETURNING が
+            // 受取側をそこへ置く (設計 85、暫定判断 P-203)
+            parameters.add(returning);
+        }
         return parameters;
+    }
+
+    /** {@code PROCEDURE DIVISION RETURNING} の項目。連絡節の 01 か 77 でなければならない。 */
+    private DataItem returningOf(CobolParser.ProcedureDivisionContext context) {
+        if (context.identifier() == null) {
+            return null;
+        }
+        DataReference reference = resolver.resolve(context.identifier());
+        if (reference == null) {
+            return null;
+        }
+        DataItem item = reference.item();
+        Origin origin = ReferenceResolver.originOf(context.identifier());
+        if (item.section() != DataSection.LINKAGE || item != item.record()) {
+            report(origin, "PROCEDURE DIVISION RETURNING requires an 01 or 77 level item in the LINKAGE SECTION: "
+                    + describe(reference));
+            return null;
+        }
+        return item;
     }
 
     /**
@@ -365,9 +385,30 @@ public final class ProcedureBuilder {
         }
     }
 
+    /**
+     * USING に並べた項目ごとに、{@code BY VALUE} で受けるかどうか。{@code BY} の指定は次の指定が
+     * 現れるまで後ろの項目すべてに効く。
+     */
+    public static List<Boolean> byValue(CobolParser.ProcedureDivisionContext division) {
+        List<Boolean> modes = new ArrayList<>();
+        if (division == null) {
+            return modes;
+        }
+        boolean value = false;
+        for (CobolParser.ProcedureParameterContext parameter : usingOf(division)) {
+            if (parameter.VALUE() != null) {
+                value = true;
+            } else if (parameter.REFERENCE() != null) {
+                value = false;
+            }
+            modes.add(value);
+        }
+        return modes;
+    }
+
     /** USING をどこにも書いていない。CICS translator が DFHCOMMAREA を補う形である。 */
     public static boolean implicitUsing(CobolParser.ProcedureDivisionContext division) {
-        return division != null && usingOf(division).isEmpty();
+        return division != null && usingOf(division).isEmpty() && division.identifier() == null;
     }
 
     /**
@@ -1098,6 +1139,9 @@ public final class ProcedureBuilder {
                     .filter(Operand.Reference.class::isInstance)
                     .map(Operand.Reference.class::cast)
                     .forEach(reference -> out.add(reference.reference()));
+            if (call.returning() != null) {
+                out.add(call.returning().reference());
+            }
         } else if (statement instanceof Statement.Cics cics
                 && cics.operation() == Statement.CicsOperation.LINK
                 && cics.commarea() != null) {
@@ -3838,22 +3882,37 @@ public final class ProcedureBuilder {
         }
 
         boolean byContent = false;
+        boolean byValue = false;
         List<Statement.Call.Argument> arguments = new ArrayList<>();
         for (CobolParser.CallArgumentContext argument : context.callArgument()) {
             if (argument.VALUE() != null) {
-                report(origin, "CALL ... BY VALUE is not supported yet");
-                return null;
+                // COBOL どうしでは、BY VALUE は呼ばれた側が書き換えても呼ぶ側に届かない写しである。
+                // 渡すバイト列は項目の内部表現のままとし、定数の BY VALUE (2 進に直して渡す) はまだ受けない (暫定判断 P-204)
+                byContent = true;
+                byValue = true;
+                continue;
             }
             if (argument.REFERENCE() != null) {
                 byContent = false;
+                byValue = false;
                 continue;
             }
             if (argument.CONTENT() != null) {
                 byContent = true;
+                byValue = false;
+                continue;
+            }
+            if (argument.OMITTED() != null) {
+                // 渡さないことを、呼ばれた側は「番地が無い」として見る
+                arguments.add(new Statement.Call.Argument(null, false));
                 continue;
             }
             Operand value = argumentOf(argument, origin);
             if (value == null) {
+                return null;
+            }
+            if (byValue && value instanceof Operand.Literal) {
+                report(origin, "CALL ... BY VALUE of a literal is not supported yet");
                 return null;
             }
             // 定数は渡す先の領域を持たない。写しを渡すほかない
@@ -3861,8 +3920,16 @@ public final class ProcedureBuilder {
             arguments.add(new Statement.Call.Argument(value, copied));
         }
 
+        Operand.Reference returning = null;
+        if (context.identifier() != null) {
+            DataReference reference = resolver.resolve(context.identifier());
+            if (reference == null) {
+                return null;
+            }
+            returning = new Operand.Reference(reference);
+        }
         Statement.Overflow exception = exceptionOf(context.callExceptionPhrases());
-        return new Statement.Call(target, arguments, exception, origin);
+        return new Statement.Call(target, arguments, exception, returning, origin);
     }
 
     private Operand argumentOf(CobolParser.CallArgumentContext context, Origin origin) {

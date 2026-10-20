@@ -55,10 +55,6 @@ public record ProgramSignature(
         Objects.requireNonNull(arguments, "arguments");
         int required = 0;
         for (ProgramParameter parameter : parameters) {
-            if (parameter.passingMode() == ProgramParameter.PassingMode.VALUE) {
-                throw mismatch("parameter " + parameter.name()
-                        + " uses BY VALUE, which is not supported by the DataView ABI");
-            }
             if (parameter.presence() == ProgramParameter.Presence.REQUIRED) {
                 required++;
             }
@@ -71,8 +67,8 @@ public record ProgramSignature(
         for (int i = 0; i < arguments.length; i++) {
             DataView argument = arguments[i];
             if (argument == null) {
-                throw mismatch("argument " + (i + 1) + " (" + parameters.get(i).name()
-                        + ") is null; OMITTED is not supported by this ABI yet");
+                // OMITTED。呼ばれた側の項目は番地を持たない。長さは比べようがない
+                continue;
             }
             ProgramParameter parameter = parameters.get(i);
             int length = argument.length();
@@ -84,6 +80,24 @@ public record ProgramSignature(
                         + ") expected " + expected + " byte(s), but got " + length);
             }
         }
+    }
+
+    /**
+     * {@code BY VALUE} で受ける引数を写しに替えた並びを返す。呼ばれた側が書き換えても呼ぶ側に届かない。
+     * 呼ぶ側が BY REFERENCE で渡していても、受ける側の宣言に従って写す。
+     */
+    public DataView[] privateCopies(DataView[] arguments) {
+        DataView[] copied = null;
+        for (int i = 0; i < Math.min(arguments.length, parameters.size()); i++) {
+            if (arguments[i] != null
+                    && parameters.get(i).passingMode() == ProgramParameter.PassingMode.VALUE) {
+                if (copied == null) {
+                    copied = arguments.clone();
+                }
+                copied[i] = dev.cobolonjava.runtime.storage.Storage.copyOf(arguments[i].toByteArray()).whole();
+            }
+        }
+        return copied == null ? arguments : copied;
     }
 
     private ProgramSignatureMismatchException mismatch(String detail) {

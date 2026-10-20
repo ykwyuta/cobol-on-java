@@ -524,7 +524,9 @@ public final class CobolCompiler {
                 globalDeclarativesOf(programNameOf(program), procedure));
 
         ProgramSignature signature = programSignature(programNameOf(program), procedure,
-                ProcedureBuilder.implicitUsing(program.procedureDivision()));
+                ProcedureBuilder.implicitUsing(program.procedureDivision()),
+                program.procedureDivision() != null && program.procedureDivision().identifier() != null,
+                ProcedureBuilder.byValue(program.procedureDivision()));
         ProcedureManifest manifest = procedureManifest(programNameOf(program), procedure);
         ProgramGenerator.Result generated = ProgramGenerator.generate(
                 programNameOf(program), fileName, procedure, image, data.layout(),
@@ -543,10 +545,13 @@ public final class CobolCompiler {
 
     /**
      * @param implicitUsing USING を書いていない。引数は CICS translator が補う DFHCOMMAREA だけである
+     * @param returning     最後の引数は RETURNING の項目である
+     * @param byValue       USING の項目ごとに BY VALUE で受けるかどうか
      */
     private static ProgramSignature programSignature(
-            String program, ProcedureBuilder.Result procedure, boolean implicitUsing) {
-        List<ProgramParameter> parameters = procedure.parameters().stream()
+            String program, ProcedureBuilder.Result procedure, boolean implicitUsing, boolean returning,
+            List<Boolean> byValue) {
+        List<ProgramParameter> parameters = new ArrayList<>(procedure.parameters().stream()
                 .map(item -> implicitUsing
                         // CICS は COMMAREA を渡さないこと (EIBCALEN=0) も、宣言と違う長さで渡すこともある。
                         // 範囲外を読んだときに失敗させ、入口では断らない (暫定判断 P-122)
@@ -555,7 +560,23 @@ public final class CobolCompiler {
                                 ProgramParameter.Direction.INOUT, dataItemHash(item))
                         : ProgramParameter.fixedReference(
                                 item.name(), item.totalLength(), dataItemHash(item)))
-                .toList();
+                .toList());
+        for (int i = 0; i < Math.min(byValue.size(), parameters.size()); i++) {
+            if (byValue.get(i)) {
+                // 呼ばれた側は自分だけの写しを持つ。入口でランタイムが写す (暫定判断 P-204)
+                ProgramParameter reference = parameters.get(i);
+                parameters.set(i, new ProgramParameter(reference.name(), reference.minimumBytes(),
+                        reference.maximumBytes(), reference.presence(), ProgramParameter.PassingMode.VALUE,
+                        ProgramParameter.Direction.IN, reference.layoutHash()));
+            }
+        }
+        if (returning && !parameters.isEmpty()) {
+            // RETURNING を書かない CALL でも呼べる。そのとき項目は番地を持たず、触れれば S0C4 で止まる (暫定判断 P-203)
+            ProgramParameter last = parameters.remove(parameters.size() - 1);
+            parameters.add(new ProgramParameter(last.name(), last.minimumBytes(), last.maximumBytes(),
+                    ProgramParameter.Presence.OPTIONAL, ProgramParameter.PassingMode.REFERENCE,
+                    ProgramParameter.Direction.OUT, last.layoutHash()));
+        }
         return ProgramSignature.of(program, parameters);
     }
 

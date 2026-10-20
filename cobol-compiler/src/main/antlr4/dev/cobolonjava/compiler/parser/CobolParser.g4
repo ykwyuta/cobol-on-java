@@ -151,7 +151,7 @@ tokens {
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING, USING, REFERENCE, CONTENT, LINES, PAGE,
-    CALL, END_CALL, CANCEL, EXCEPTION,
+    CALL, END_CALL, CANCEL, EXCEPTION, RETURNING,
     INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
     NUMERIC_EDITED, ALPHABETIC_LOWER, ALPHABETIC_UPPER, CLASS, SYMBOLIC,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
@@ -783,8 +783,9 @@ relativeOffset
 // ---- 手続き部 ----
 
 // USING に並べた項目が、呼ぶ側から渡される領域に対応する
+// RETURNING の項目は呼ぶ側の CALL ... RETURNING の受取側に対応する
 procedureDivision
-    : PROCEDURE DIVISION (USING procedureParameter+)? PERIOD procedureBody
+    : PROCEDURE DIVISION (USING procedureParameter+)? (RETURNING identifier)? PERIOD procedureBody
     ;
 
 procedureParameter
@@ -1415,7 +1416,7 @@ switchSetting
 
 // 呼び先は文字定数か、実行時に名前が決まるデータ項目である
 callStatement
-    : CALL callTarget (USING callArgument+)? callExceptionPhrases END_CALL?
+    : CALL callTarget (USING callArgument+)? (RETURNING identifier)? callExceptionPhrases END_CALL?
     ;
 
 callTarget
@@ -1424,8 +1425,10 @@ callTarget
     ;
 
 // BY REFERENCE / BY CONTENT は、次の指定が現れるまで後ろの引数すべてに効く
+// OMITTED は BY REFERENCE の引数の位置に「渡さない」を置く
 callArgument
     : BY? (REFERENCE | CONTENT | VALUE)
+    | OMITTED
     | identifier
     | literal
     ;

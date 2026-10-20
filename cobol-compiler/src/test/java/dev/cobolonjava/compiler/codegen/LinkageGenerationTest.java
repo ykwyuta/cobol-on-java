@@ -345,20 +345,24 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("BY VALUE はまだ書けないと報告する (FR-027)")
-    void byValueIsReportedAsUnsupported() {
+    @DisplayName("BY VALUE で受ける引数は、引数の形で VALUE と記録する (P-204)")
+    void byValueIsRecordedInTheSignature() {
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. SUB.",
                 "DATA DIVISION.",
                 "LINKAGE SECTION.",
                 "01 LK-A PIC X(3).",
-                "PROCEDURE DIVISION USING BY VALUE LK-A.",
+                "01 LK-B PIC X(2).",
+                "PROCEDURE DIVISION USING BY VALUE LK-A BY REFERENCE LK-B.",
                 "MAIN-START.",
                 "    CONTINUE."));
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("BY VALUE"),
-                result.diagnostics().toString());
+        assertTrue(result.succeeded(), result.diagnostics()::toString);
+        var parameters = result.programs().get(0).programSignature().parameters();
+        assertEquals(dev.cobolonjava.runtime.interop.ProgramParameter.PassingMode.VALUE,
+                parameters.get(0).passingMode());
+        assertEquals(dev.cobolonjava.runtime.interop.ProgramParameter.PassingMode.REFERENCE,
+                parameters.get(1).passingMode());
     }
 }

@@ -1519,9 +1519,10 @@ public final class Ops {
                             DataView[] arguments) {
         ProgramContext.Loaded target = context.resolve(name, loader);
         target.validateArguments(arguments);
+        DataView[] passed = target.signature() == null ? arguments : target.signature().privateCopies(arguments);
         context.enterCall(name, target.storage(), target.program().storageMap(), target.program());
         try {
-            target.program().run(target.storage(), context, arguments);
+            target.program().run(target.storage(), context, passed);
         } catch (ProgramReturn returned) {
             // 呼ばれた側が戻っただけである
         } catch (ProgramControlTransfer transfer) {
@@ -1537,6 +1538,29 @@ public final class Ops {
     public static void call(ProgramContext context, byte[] name, ClassLoader loader,
                             DataView[] arguments) {
         call(context, context.codePage().decode(name).trim(), loader, arguments);
+    }
+
+    /**
+     * {@code CALL ... RETURNING}。受取側は {@code arguments} の最後に置いてある。
+     *
+     * <p>Enterprise COBOL の言語解説書は、RETURNING を書いた CALL では呼ばれた側の戻り値が受取側に入り、
+     * {@code RETURN-CODE} 特殊レジスタは設定されないとしている。呼ばれた側が RETURN-CODE を書いても、
+     * 呼ぶ側には呼ぶ前の値が残るようにした。実機とは突き合わせていない (暫定判断 P-203)。
+     *
+     * <p>呼び先が見つからなければ何も動かないので、受取側も RETURN-CODE も変わらない。
+     */
+    public static void callReturning(ProgramContext context, String name, ClassLoader loader,
+                                     DataView[] arguments) {
+        int saved = context.returnCode();
+        // 戻ったときだけ元へ戻す。STOP RUN や異常終了で抜けたときは、その RETURN-CODE が実行単位の終わりの値になる
+        call(context, name, loader, arguments);
+        context.setReturnCode(saved);
+    }
+
+    /** 動的な {@code CALL ... RETURNING}。 */
+    public static void callReturning(ProgramContext context, byte[] name, ClassLoader loader,
+                                     DataView[] arguments) {
+        callReturning(context, context.codePage().decode(name).trim(), loader, arguments);
     }
 
     /**
@@ -1639,6 +1663,11 @@ public final class Ops {
             System.arraycopy(arguments, 0, slots, 0, passed);
         }
         return slots;
+    }
+
+    /** 番地を持たない項目の {@code ADDRESS OF}。POINTER の NULL は 4 byte の 0 である。 */
+    public static void setNullPointer(Storage target, int targetOffset) {
+        target.view(targetOffset, 4).setBytes(new byte[4]);
     }
 
     /** {@code SET ptr TO ADDRESS OF 項目}。項目の記憶域と位置に振った番号を POINTER の 4 byte に置く。 */

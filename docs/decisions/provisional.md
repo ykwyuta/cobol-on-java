@@ -6359,3 +6359,53 @@ lgacvs01 / lgucvs01 は数字の項目 `FROM(CA-Customer-Num)` に `LENGTH(CUSTO
 入力の形は持たないので、それらの AID が端末から届くことは無い。
 
 **解消条件**: z/OS の CICS で、AID の処理と MAPFAIL の処理を両方置いた RECEIVE MAP を、各 AID で採る。
+
+## P-203 `CALL ... RETURNING` は受取側を USING の最後のうしろの引数として渡し、RETURN-CODE は呼ぶ前の値に戻す
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `ProcedureBuilder.callOf` / `returningOf`、`ProgramGenerator.planCall`、`Ops.callReturning`、`CobolCompiler.programSignature` |
+| 関連要件 | FR-080, FR-081、設計 87 (ZCVS ZP103A) |
+
+**いまの扱い**: `PROCEDURE DIVISION [USING ...] RETURNING 項目` の項目 (連絡節の 01 / 77) を、USING の最後のうしろの引数として
+受ける。引数の形 (`ProgramSignature`) では省略できる (OPTIONAL) 出力の引数になる。`CALL ... RETURNING 受取側` は受取側の領域
+そのものをそこへ渡すので、呼ばれた側が項目へ置いた値がそのまま受取側に入る。呼び先から正常に戻ったら、RETURN-CODE を CALL の
+前の値へ戻す。STOP RUN や異常終了で抜けたときは戻さない。呼び先が見つからなければ何も動かないので、受取側も RETURN-CODE も
+変わらない。RETURNING を書かない CALL で RETURNING を持つプログラムを呼ぶと、項目は番地を持たず、触れれば S0C4 で止まる。
+
+**なぜ暫定か**: Enterprise COBOL の言語解説書は、RETURNING を書いた CALL では呼ばれた側の戻り値が受取側に入り、RETURN-CODE
+特殊レジスタは設定されないとしている。それを「呼ぶ側の RETURN-CODE は変わらない」と読んだ。受取側と RETURNING の項目は
+同じ定義であることを求められるので、写さずに領域を渡した。実機とは突き合わせていない。ZCVS ZP103A も同じ読み方をしているが、
+ZCVS は z/OS で期待値を確かめたものではない (設計 87 §1.1)。
+
+**どこがずれうるか**: 受取側と RETURNING の項目の長さが違うと、ホストでは定まらない動きになるが、ここでは引数の形の検査で
+止まる。呼ばれた側が受取側と同じ領域を USING でも受けていると、書き込みの順で値が違って見えうる。呼ばれた側が RETURN-CODE を
+読む値 (CALL の前の値か 0 か) は確かめていない。
+
+**解消条件**: z/OS で、RETURNING を書いた CALL の前後の RETURN-CODE と、呼ばれた側が読む RETURN-CODE を採る。
+
+## P-204 `BY VALUE` は COBOL どうしの写しとして渡し、受ける側の入口でも写す。定数の BY VALUE は断る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `ProcedureBuilder.callOf` / `byValue`、`ProgramSignature.privateCopies`、`Ops.call` |
+| 関連要件 | FR-081、設計 87 (ZCVS ZP104A / ZP107A) |
+
+**いまの扱い**: `CALL ... USING BY VALUE 項目` は項目の内部表現のバイト列の写しを渡す (BY CONTENT と同じ)。`PROCEDURE DIVISION
+USING BY VALUE 項目` で受ける引数は、入口でランタイムがもう 1 度写すので、呼ぶ側が BY REFERENCE で渡していても呼ばれた側の
+書き換えは呼ぶ側に届かない。BY の指定は次の指定まで後ろの項目すべてに効く。`OMITTED` はどの指定のあとでも書け、呼ばれた側の
+項目は番地を持たない (`ADDRESS OF` が NULL、触れれば S0C4)。`BY VALUE 定数` は「まだ書けない」と断る。
+
+**なぜ暫定か**: 言語解説書は BY VALUE を「呼ばれた側は値の写しを受け、書き換えても呼ぶ側に届かない」とし、受けられる項目を
+2 進・浮動小数点・番地・1 文字の英数字などに限っている。COBOL どうしで宣言が同じなら、内部表現の写しを渡せば観測できる
+振る舞いは同じである。ホストの BY VALUE は値をレジスタ相当のパラメータ・リストに直に置く呼び出し規約であり、COBOL 以外
+(C、PL/I、アセンブラ) との境界ではバイト列の並びや長さ (例: 2 byte の 2 進を 4 byte に広げるか) が問題になるが、それは持たない。
+受けられる項目の種類の制限もまだ検査しない。
+
+**どこがずれうるか**: 呼ぶ側と受ける側の長さが違う BY VALUE は、ホストでは広げる・切るが起きうるが、ここでは引数の形の検査で
+止まる。定数の BY VALUE (数字定数を 2 進にして渡す) を書いた資産は翻訳で止まる。
+
+**解消条件**: z/OS で、長さの違う BY VALUE (2 byte の 2 進を 4 byte で受ける等) と、定数の BY VALUE の受け取り値を採る。
+COBOL 以外との BY VALUE を支えるときに読み直す。

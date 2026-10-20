@@ -144,7 +144,7 @@ class UnsupportedSyntaxCatalogTest {
                 Arguments.of(program("FLTDSP", ws("01 F COMP-1 VALUE 1."), List.of("DISPLAY F")),
                         "DISPLAY of a floating-point item is not supported yet"),
                 Arguments.of(program("BYVAL", ws("01 A PIC S9(9) COMP-5."), List.of("CALL 'SUB' USING BY VALUE A")),
-                        "CALL ... BY VALUE is not supported yet"),
+                        ACCEPTED),
                 Arguments.of(program("CANCL", List.of(), List.of("CANCEL 'SUB'")), ACCEPTED),
                 Arguments.of(program("SORTRET", ws("01 A PIC S9(4) COMP."), List.of("MOVE SORT-RETURN TO A")),
                         "undefined data item: SORT-RETURN"),

@@ -3799,6 +3799,16 @@ public final class ProgramGenerator {
             }
             arguments.add(planned);
         }
+        if (statement.returning() != null) {
+            // 受取側は USING の最後のうしろに領域そのものを渡す。呼ばれた側の RETURNING の項目がそこを指す
+            Runnable planned = planCallArgument(
+                    new Statement.Call.Argument(statement.returning(), false), statement.origin());
+            if (planned == null) {
+                return;
+            }
+            arguments.add(planned);
+        }
+        String method = statement.returning() == null ? "call" : "callReturning";
         String descriptor = "(" + Type.getDescriptor(ProgramContext.class)
                 + (statement.target() instanceof Operand.Literal
                         ? "Ljava/lang/String;" : "[B")
@@ -3809,7 +3819,7 @@ public final class ProgramGenerator {
             target.run();
             emitClassLoader();
             emitArray(arguments, DATA_VIEW);
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "call", descriptor, false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, method, descriptor, false);
         };
 
         Runnable transferAware = planCallTransfer(invoke);
@@ -3927,6 +3937,10 @@ public final class ProgramGenerator {
      * 写しを渡す。この違いが、呼ばれた側の書き換えが呼ぶ側に届くかどうかを決める。
      */
     private Runnable planCallArgument(Statement.Call.Argument argument, Origin origin) {
+        if (argument.omitted()) {
+            // 呼ばれた側の連絡節は番地を持たない。触れれば S0C4、ADDRESS OF は NULL と比べられる
+            return () -> run.visitInsn(Opcodes.ACONST_NULL);
+        }
         if (argument.value() instanceof Operand.Literal literal) {
             if (literal.value() instanceof LiteralValue.Figure
                     || literal.value() instanceof LiteralValue.Repeated) {
@@ -7023,12 +7037,30 @@ public final class ProgramGenerator {
             if (target == null) {
                 return;
             }
+            DataItem record = statement.addressOf().item().record();
+            int slot = record.section() == DataSection.LINKAGE ? parameterIndexOf(record) : -1;
             body.add(() -> {
+                Label present = new Label();
+                Label done = new Label();
+                if (slot >= 0) {
+                    // OMITTED で渡された (あるいは番地を置いていない) 連絡節の番地は NULL である。
+                    // 呼ばれた側はこれで省かれた引数を見分ける (Enterprise COBOL の CALL 文 OMITTED の記述)
+                    run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+                    push(slot);
+                    run.visitInsn(Opcodes.AALOAD);
+                    run.visitJumpInsn(Opcodes.IFNONNULL, present);
+                    target.run();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "setNullPointer",
+                            "(L" + STORAGE + ";I)V", false);
+                    run.visitJumpInsn(Opcodes.GOTO, done);
+                }
+                run.visitLabel(present);
                 target.run();
                 run.visitVarInsn(Opcodes.ALOAD, 2);
                 source.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "setAddressOf",
                         "(L" + STORAGE + ";I" + CONTEXT + "L" + STORAGE + ";I)V", false);
+                run.visitLabel(done);
             });
         }
     }

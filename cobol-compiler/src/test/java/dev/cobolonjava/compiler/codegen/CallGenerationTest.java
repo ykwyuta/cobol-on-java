@@ -590,18 +590,107 @@ class CallGenerationTest {
                         "    CALL 'NOSUCH'."))));
     }
 
-    @Test
-    @DisplayName("BY VALUE はまだ書けないと報告する (FR-081)")
-    void byValueIsReportedAsUnsupported() {
-        CobolCompiler.Result result = compile(List.of(
+    /** BY VALUE で受け、受けた値を書き換えて足し算の結果を RETURNING で返す副プログラム。 */
+    private static final List<String> SUB_RETURNING = List.of(
+            "IDENTIFICATION DIVISION.",
+            "PROGRAM-ID. SUBR.",
+            "DATA DIVISION.",
+            "WORKING-STORAGE SECTION.",
+            "01 WS-PTR USAGE POINTER.",
+            "LINKAGE SECTION.",
+            "01 LK-REF PIC S9(4) COMP.",
+            "01 LK-VAL PIC S9(9) COMP-5.",
+            "01 LK-OPT PIC X(4).",
+            "01 LK-STAT PIC X.",
+            "01 LK-RESULT PIC S9(9) COMP-5.",
+            "PROCEDURE DIVISION USING BY REFERENCE LK-REF BY VALUE LK-VAL",
+            "        BY REFERENCE LK-OPT LK-STAT RETURNING LK-RESULT.",
+            "MAIN-START.",
+            "    COMPUTE LK-RESULT = LK-REF * 100 + LK-VAL",
+            "    MOVE -1 TO LK-VAL",
+            "    SET WS-PTR TO ADDRESS OF LK-OPT",
+            "    IF WS-PTR = NULL MOVE 'O' TO LK-STAT ELSE MOVE 'P' TO LK-STAT END-IF",
+            "    MOVE 99 TO RETURN-CODE",
+            "    GOBACK.");
+
+    /** {@code call} は 72 桁に収めるため「|」で行を分ける。 */
+    private static List<String> callingSubr(String call) {
+        List<String> lines = new ArrayList<>(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. MAIN.",
                 "DATA DIVISION.",
                 "WORKING-STORAGE SECTION.",
-                "01 WS-A PIC X(3).",
+                "01 WS-REF PIC S9(4) COMP VALUE 12.",
+                "01 WS-VAL PIC S9(9) COMP-5 VALUE 34.",
+                "01 WS-OPT PIC X(4) VALUE 'ABCD'.",
+                "01 WS-STAT PIC X VALUE SPACE.",
+                "01 WS-ANS PIC S9(9) COMP-5 VALUE 0.",
+                "01 WS-RC PIC 9(4).",
+                "01 WS-ANS-E PIC -(8)9.",
+                "01 WS-VAL-E PIC -(8)9.",
                 "PROCEDURE DIVISION.",
                 "MAIN-START.",
-                "    CALL 'SUBA' USING BY VALUE WS-A."));
+                "    MOVE 7 TO RETURN-CODE"));
+        for (String part : call.split("\\|")) {
+            lines.add("    " + part);
+        }
+        lines.addAll(List.of(
+                "    MOVE RETURN-CODE TO WS-RC",
+                "    MOVE WS-ANS TO WS-ANS-E",
+                "    MOVE WS-VAL TO WS-VAL-E",
+                "    DISPLAY WS-ANS-E WS-VAL-E ' ' WS-STAT ' ' WS-RC",
+                "    MOVE 0 TO RETURN-CODE",
+                "    STOP RUN."));
+        return lines;
+    }
+
+    @Test
+    @DisplayName("RETURNING は呼ばれた側の項目を受取側に置き、RETURN-CODE は呼ぶ前のままにする (P-203)")
+    void returningPlacesTheResultAndKeepsTheReturnCode() {
+        String out = run(List.of(callingSubr(
+                "CALL 'SUBR' USING WS-REF BY VALUE WS-VAL|BY REFERENCE WS-OPT WS-STAT RETURNING WS-ANS"),
+                SUB_RETURNING));
+        // 12 * 100 + 34。BY VALUE の WS-VAL は呼ばれた側が -1 を置いても 34 のまま。
+        // RETURN-CODE は呼ばれた側が 99 を置いても 7 のまま
+        assertEquals("1234       34 P 0007", out.trim());
+    }
+
+    @Test
+    @DisplayName("RETURNING を書かない CALL では、呼ばれた側の RETURN-CODE が呼ぶ側に届く")
+    void withoutReturningTheReturnCodeComesBack() {
+        List<String> sub = new ArrayList<>(SUB_RETURNING);
+        sub.set(sub.indexOf("    COMPUTE LK-RESULT = LK-REF * 100 + LK-VAL"), "    CONTINUE");
+        String out = run(List.of(callingSubr(
+                "CALL 'SUBR' USING WS-REF BY VALUE WS-VAL|BY REFERENCE WS-OPT WS-STAT"), sub));
+        assertEquals("0       34 P 0099", out.trim());
+    }
+
+    @Test
+    @DisplayName("OMITTED で省いた引数は、呼ばれた側で ADDRESS OF が NULL になる")
+    void anOmittedArgumentHasANullAddress() {
+        String out = run(List.of(callingSubr(
+                "CALL 'SUBR' USING WS-REF BY VALUE WS-VAL OMITTED|BY REFERENCE WS-STAT RETURNING WS-ANS"),
+                SUB_RETURNING));
+        assertEquals("1234       34 O 0007", out.trim());
+    }
+
+    @Test
+    @DisplayName("RETURNING つきでも、呼び先が無ければ受取側も RETURN-CODE も変わらない")
+    void aMissingProgramLeavesTheReturningTargetAlone() {
+        String out = run(List.of(callingSubr(
+                "CALL 'NOSUCH' RETURNING WS-ANS|ON EXCEPTION MOVE 'X' TO WS-STAT END-CALL")));
+        assertEquals("0       34 X 0007", out.trim());
+    }
+
+    @Test
+    @DisplayName("BY VALUE の定数はまだ書けないと報告する (P-204)")
+    void byValueOfALiteralIsReportedAsUnsupported() {
+        CobolCompiler.Result result = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    CALL 'SUBA' USING BY VALUE 5."));
 
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().get(0).message().contains("BY VALUE"),

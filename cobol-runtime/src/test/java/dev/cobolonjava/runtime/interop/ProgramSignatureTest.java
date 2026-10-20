@@ -54,18 +54,30 @@ class ProgramSignatureTest {
     }
 
     @Test
-    void doesNotPretendThatDataViewImplementsByValue() {
+    void byValueParametersReceiveAPrivateCopy() {
         ProgramParameter byValue = new ProgramParameter("NUMBER", 4, 4,
                 ProgramParameter.Presence.REQUIRED,
                 ProgramParameter.PassingMode.VALUE,
                 ProgramParameter.Direction.IN, "binary-int-v1");
-        ProgramSignature signature = ProgramSignature.of("SUB", List.of(byValue));
+        ProgramSignature signature = ProgramSignature.of("SUB",
+                List.of(byValue, ProgramParameter.fixedReference("OUT", 1, "out-v1")));
+        Storage caller = Storage.allocate(4);
+        dev.cobolonjava.runtime.storage.DataView[] passed = {caller.whole(), Storage.allocate(1).whole()};
 
-        ProgramSignatureMismatchException failure = assertThrows(
-                ProgramSignatureMismatchException.class,
-                () -> signature.validate(new dev.cobolonjava.runtime.storage.DataView[] {
-                        Storage.allocate(4).whole()}));
+        signature.validate(passed);
+        dev.cobolonjava.runtime.storage.DataView[] received = signature.privateCopies(passed);
 
-        assertTrue(failure.getMessage().contains("BY VALUE"));
+        // P-204: 呼ぶ側が領域そのものを渡しても、受ける側の書き換えは届かない。BY REFERENCE の引数はそのまま
+        received[0].setBytes(new byte[] {1, 2, 3, 4});
+        assertEquals(0, caller.array()[0]);
+        assertTrue(received[1] == passed[1]);
+    }
+
+    @Test
+    void anOmittedArgumentIsNotMeasured() {
+        ProgramSignature signature = ProgramSignature.of("SUB",
+                List.of(ProgramParameter.fixedReference("OPT", 4, "opt-v1")));
+
+        signature.validate(new dev.cobolonjava.runtime.storage.DataView[] {null});
     }
 }
