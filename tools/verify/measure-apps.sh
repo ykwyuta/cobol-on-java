@@ -22,7 +22,7 @@ cd "$here"
 if [ ! -s "$work/../measure-apps.classpath" ]; then
   mvn -o -q -pl cobol-verify dependency:build-classpath -Dmdep.outputFile="$work/../measure-apps.classpath"
 fi
-cp="cobol-verify/target/classes:cobol-compiler/target/classes:$(cat "$work/../measure-apps.classpath")"
+cp="cobol-verify/target/classes:cobol-compiler/target/classes:cobol-cics/target/classes:cobol-runtime/target/classes:$(cat "$work/../measure-apps.classpath")"
 
 measure() { # 名前 原文の置き場 写し句の置き場...
   name=$1; sources=$2; shift 2
