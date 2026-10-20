@@ -118,6 +118,60 @@ class IntrinsicFunctionTest {
         assertEquals("erugif  ", moved("FUNCTION REVERSE(\"figure\")"));
     }
 
+    /** 前後に空白を持つ 6 バイトの項目を TRIM して、区切りの "|" と並べる。 */
+    private static String strung(String trim) {
+        return run(List.of("01 WS-X PIC X(6) VALUE \"  ab  \".",
+                        "01 WS-A PIC X(8) VALUE SPACES."),
+                "STRING " + trim + " DELIMITED BY SIZE",
+                "    \"|\" DELIMITED BY SIZE INTO WS-A.");
+    }
+
+    @Test
+    @DisplayName("TRIM は前後の空白を落とし、LEADING と TRAILING で片側だけにできる (FR-070)")
+    void trimDropsTheSpacesOnEitherSide() {
+        // MOVE では受取側が空白で埋めるので、落としたかどうかは STRING でしか見えない
+        assertEquals("  ab  ab|     ", strung("FUNCTION TRIM(WS-X)"));
+        assertEquals("  ab  ab  |   ", strung("FUNCTION TRIM(WS-X LEADING)"));
+        assertEquals("  ab    ab|   ", strung("FUNCTION TRIM(WS-X TRAILING)"));
+    }
+
+    @Test
+    @DisplayName("TRIM の長さは実行時に数え、空白だけなら 0 である (FR-070, P-193)")
+    void theLengthOfTrimIsCountedAtRunTime() {
+        List<String> storage = List.of("01 WS-X PIC X(6) VALUE \"  ab  \".",
+                "01 WS-B PIC X(6) VALUE SPACES.",
+                "01 WS-N PIC 9(2) VALUE 99.",
+                "01 WS-M PIC 9(2) VALUE 99.",
+                "01 WS-U PIC 9(2) VALUE 99.");
+        assertEquals("  ab        020002", run(storage,
+                "COMPUTE WS-N = FUNCTION LENGTH(FUNCTION TRIM(WS-X)).",
+                "COMPUTE WS-M = FUNCTION LENGTH(FUNCTION TRIM(WS-B)).",
+                "COMPUTE WS-U = FUNCTION LENGTH(",
+                "    FUNCTION UPPER-CASE(FUNCTION TRIM(WS-X)))."));
+    }
+
+    @Test
+    @DisplayName("TRIM の値は比べるときに空白で埋める (FR-070)")
+    void aTrimmedValueIsComparedWithSpacePadding() {
+        assertEquals("  ab  Y", run(List.of("01 WS-X PIC X(6) VALUE \"  ab  \".",
+                        "01 WS-F PIC X VALUE \"N\"."),
+                "IF FUNCTION UPPER-CASE(FUNCTION TRIM(WS-X)) = \"AB\"",
+                "    MOVE \"Y\" TO WS-F."));
+    }
+
+    @Test
+    @DisplayName("LEADING と TRAILING は TRIM にしか書けない (FR-070)")
+    void onlyTrimTakesLeadingOrTrailing() {
+        CobolCompiler.Result result = compile(List.of("01 WS-A PIC X(8) VALUE SPACES."),
+                "MOVE FUNCTION UPPER-CASE(WS-A LEADING) TO WS-A.");
+        assertFalse(result.succeeded());
+        assertTrue(result.diagnostics().toString().contains("only in FUNCTION TRIM"),
+                () -> result.diagnostics().toString());
+        CobolCompiler.Result spelled = compile(List.of("01 WS-A PIC X(8) VALUE SPACES."),
+                "MOVE FUNCTION TRIM-LEADING(WS-A) TO WS-A.");
+        assertFalse(spelled.succeeded(), "TRIM-LEADING という関数は無い");
+    }
+
     @Test
     @DisplayName("CHAR と ORD は照合順序の位置で対になる (FR-070)")
     void charAndOrdAreInverses() {

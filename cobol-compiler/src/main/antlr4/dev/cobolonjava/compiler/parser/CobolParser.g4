@@ -1572,8 +1572,11 @@ arithmeticOperand
 // 区切っているのは空白のほうである。COBOL では 2 項の演算子は前後に空白を置き、
 // 単項の符号は後ろに空白を置かない。したがって字句の切れ目に差が残り、
 // 「11, -5」は 2 個、「11 - 5」は 1 個の引数になる。
+//
+// LEADING / TRAILING は TRIM だけが書ける。ほかの関数に書かれたら意味解析が断る。
 functionCall
-    : FUNCTION functionName (LPAREN expression (COMMA? expression)* RPAREN)?
+    : FUNCTION functionName
+      (LPAREN expression (COMMA? expression)* (LEADING | TRAILING)? RPAREN)?
     ;
 
 // 予約語と綴りが同じ関数名は、ここに並べて拾う

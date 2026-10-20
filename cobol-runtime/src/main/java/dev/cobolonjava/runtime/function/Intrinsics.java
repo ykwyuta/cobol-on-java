@@ -546,6 +546,39 @@ public final class Intrinsics {
         return result;
     }
 
+    /**
+     * {@code FUNCTION TRIM}。前後の空白を落とす。
+     *
+     * <p><b>空白だけなら長さ 0</b> を返す。2002 年の規格がそう決めており、CardDemo は
+     * {@code FUNCTION LENGTH(FUNCTION TRIM(x)) = 0} で空欄を見分けている。実機とは
+     * 突き合わせていない (暫定判断 P-193)。
+     *
+     * @param leading 前の空白を落とすか
+     * @param trailing 後ろの空白を落とすか
+     */
+    public static byte[] trim(byte[] value, CodePage codePage, boolean leading,
+                              boolean trailing) {
+        byte space = codePage.space();
+        int start = 0;
+        int end = value.length;
+        if (leading) {
+            while (start < end && value[start] == space) {
+                start++;
+            }
+        }
+        if (trailing) {
+            while (end > start && value[end - 1] == space) {
+                end--;
+            }
+        }
+        return Arrays.copyOfRange(value, start, end);
+    }
+
+    /** 実行時に長さが決まるバイト列の長さ。{@code FUNCTION LENGTH(FUNCTION TRIM(x))} が使う。 */
+    public static Decimal byteLength(byte[] value) {
+        return Decimal.of(value.length, 0);
+    }
+
     /** {@code FUNCTION REVERSE}。バイトの並びを逆にする。 */
     public static byte[] reverse(byte[] value) {
         byte[] result = new byte[value.length];

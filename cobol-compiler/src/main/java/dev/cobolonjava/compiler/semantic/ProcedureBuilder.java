@@ -4548,6 +4548,14 @@ public final class ProcedureBuilder {
             report(origin, "FUNCTION " + spelling + " is not supported yet");
             return null;
         }
+        if (context.LEADING() != null || context.TRAILING() != null) {
+            if (intrinsic != Intrinsic.TRIM) {
+                report(origin, "LEADING and TRAILING can be written only in FUNCTION TRIM");
+                return null;
+            }
+            intrinsic = context.LEADING() != null
+                    ? Intrinsic.TRIM_LEADING : Intrinsic.TRIM_TRAILING;
+        }
         List<Expression> arguments = new ArrayList<>();
         for (CobolParser.ExpressionContext argument : context.expression()) {
             List<Expression> expanded = argumentsOf(argument, origin);
@@ -5625,7 +5633,7 @@ public final class ProcedureBuilder {
             return switch (function.returns()) {
                 case INTEGER -> DataCategory.NUMERIC_INTEGER;
                 case NUMERIC -> DataCategory.NUMERIC_NONINTEGER;
-                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP, WIDEST, FROM_NATIONAL ->
+                case SAME_LENGTH, TRIMMED, ONE_CHARACTER, TIMESTAMP, WIDEST, FROM_NATIONAL ->
                         DataCategory.ALPHANUMERIC;
                 case NATIONAL -> DataCategory.NATIONAL;
             };

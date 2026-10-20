@@ -4098,6 +4098,10 @@ public final class ProgramGenerator {
             String field = bytesConstant(bytes);
             return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
         }
+        if (operand instanceof Operand.Function function) {
+            // 関数の値はそのままの長さで用いる。TRIM の値は実行時に長さが決まる
+            return planFunctionBytes(function);
+        }
         DataReference reference = ((Operand.Reference) operand).reference();
         return planSourceBytes(operand, origin,
                 reference.constantLength().orElse(0));
@@ -4878,6 +4882,8 @@ public final class ProgramGenerator {
             case ONE_CHARACTER -> 1;
             case TIMESTAMP -> Intrinsics.TIMESTAMP_LENGTH;
             case SAME_LENGTH -> alphanumericLength(argument(function, 0));
+            // 実行時に決まる。ここで返すのは上限であり、図形定数を広げる長さに使う
+            case TRIMMED -> alphanumericLength(argument(function, 0));
             case WIDEST -> widestArgument(function);
             case NATIONAL -> 2 * alphanumericLength(argument(function, 0));
             case FROM_NATIONAL -> lengthOf(argument(function, 0)) / 2;
@@ -4918,6 +4924,9 @@ public final class ProgramGenerator {
         return switch (function.intrinsic()) {
             case UPPER_CASE -> planLetterMap(function, "upperCase");
             case LOWER_CASE -> planLetterMap(function, "lowerCase");
+            case TRIM -> planTrim(function, true, true);
+            case TRIM_LEADING -> planTrim(function, true, false);
+            case TRIM_TRAILING -> planTrim(function, false, true);
             case REVERSE -> {
                 Runnable value = planAlphanumericArgument(function, 0);
                 yield value == null ? null : () -> {
@@ -5015,6 +5024,41 @@ public final class ProgramGenerator {
         };
     }
 
+    private Runnable planTrim(Operand.Function function, boolean leading, boolean trailing) {
+        if (categoryOfArgument(argument(function, 0)) == DataCategory.NATIONAL) {
+            // 国字の空白は 2 バイトである。1 バイトの空白で落とすと文字を割る
+            report(function.origin(), "FUNCTION TRIM of a national item is not supported yet");
+            return null;
+        }
+        Runnable value = planAlphanumericArgument(function, 0);
+        if (value == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            loadCodePage();
+            push(leading ? 1 : 0);
+            push(trailing ? 1 : 0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "trim",
+                    "([B" + CODE_PAGE + "ZZ)[B", false);
+        };
+    }
+
+    /**
+     * 長さが実行時に決まる関数の値か。{@code TRIM} と、それを引数に取って同じ長さを返す
+     * {@code UPPER-CASE} などである。
+     */
+    private static boolean hasVariableLength(Operand operand) {
+        if (!(operand instanceof Operand.Function function)) {
+            return false;
+        }
+        return switch (function.returns()) {
+            case TRIMMED -> true;
+            case SAME_LENGTH -> hasVariableLength(argument(function, 0));
+            default -> false;
+        };
+    }
+
     private Runnable planLetterMap(Operand.Function function, String method) {
         Runnable value = planAlphanumericArgument(function, 0);
         if (value == null) {
@@ -5098,6 +5142,15 @@ public final class ProgramGenerator {
             return bytes == null ? null : () -> {
                 bytes.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "characters",
+                        "([B)" + DECIMAL, false);
+            };
+        }
+        if (hasVariableLength(operand)) {
+            // TRIM の長さは値を作ってみるまで分からない
+            Runnable bytes = planFunctionBytes((Operand.Function) operand);
+            return bytes == null ? null : () -> {
+                bytes.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "byteLength",
                         "([B)" + DECIMAL, false);
             };
         }

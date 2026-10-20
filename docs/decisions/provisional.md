@@ -6115,3 +6115,27 @@ CCVS85 の DB 区分はスイッチを入れた前提で書かれているので
 
 **解消条件**: 実行時オプション `DEBUG` に当たる指定 (実行時の引数か環境) を設け、既定を `NODEBUG` にする。
 CCVS85 の DB 区分は道具の側でスイッチを入れて流す。実機の probe の `DBG1` (既定) と `DBG2` (`DEBUG`) で確かめる。
+
+## P-193 `FUNCTION TRIM` は、空白だけの値に長さ 0 を返す
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `Intrinsics.trim`, `ProgramGenerator.planTrim`, `ProgramGenerator.hasVariableLength` |
+| 関連要件 | FR-070 |
+
+**いまの扱い**: `TRIM(x)`、`TRIM(x LEADING)`、`TRIM(x TRAILING)` は空白を落としたバイト列を返し、
+<b>空白だけなら長さ 0</b> である。`FUNCTION LENGTH(FUNCTION TRIM(x))` は実行時に数える。
+`UPPER-CASE` などが `TRIM` の値を引数に取れば、その長さも実行時に決まるものとして数える。
+国字の引数は断る (国字の空白は 2 バイトであり、1 バイトの空白で落とすと文字を割る)。
+
+**なぜ暫定か**: 2002 年の規格は「空白だけなら長さ 0」と読める。CardDemo は
+`IF FUNCTION LENGTH(FUNCTION TRIM(x)) = 0` で空欄を見分けており、長さ 1 (空白 1 文字) を返す
+処理系ではこの判定が働かない。同じ権利者の別の処理系 Zeus も同じ根拠で長さ 0 にしている。
+ただし Enterprise COBOL の実機とは突き合わせていない。
+
+**どこがずれうるか**: 実機が空白 1 文字を返すなら、`LENGTH(TRIM(x))` が 1 違い、
+`STRING ... TRIM(x) DELIMITED BY SIZE` が空白 1 文字ぶん違う。
+
+**解消条件**: z/OS probe に、空白だけの項目の `LENGTH(TRIM(x))` と、`STRING` で区切り文字と並べた
+結果を出すプログラムを足し、実機で流す。

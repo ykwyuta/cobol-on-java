@@ -23,6 +23,12 @@ public enum Intrinsic {
     LOWER_CASE(1, Argument.ALPHANUMERIC, Result.SAME_LENGTH),
     /** バイトの並びを逆にする。 */
     REVERSE(1, Argument.ALPHANUMERIC, Result.SAME_LENGTH),
+    /** 前後の空白を落とす。空白だけなら空白 1 文字を返す。 */
+    TRIM(1, Argument.ALPHANUMERIC, Result.TRIMMED),
+    /** {@code TRIM(x LEADING)}。前の空白だけを落とす。綴りは {@code TRIM} である。 */
+    TRIM_LEADING(1, Argument.ALPHANUMERIC, Result.TRIMMED),
+    /** {@code TRIM(x TRAILING)}。後ろの空白だけを落とす。 */
+    TRIM_TRAILING(1, Argument.ALPHANUMERIC, Result.TRIMMED),
     /** 照合順序の何番目かから文字を得る。 */
     CHAR(1, Argument.NUMERIC, Result.ONE_CHARACTER),
     /** 文字が照合順序の何番目か。 */
@@ -131,6 +137,11 @@ public enum Intrinsic {
         NUMERIC,
         /** 引数と同じ長さのバイト列。 */
         SAME_LENGTH,
+        /**
+         * 引数の長さを上限とし、<b>実行時に長さが決まる</b>バイト列。
+         * 図形定数を広げる長さには上限を使えるが、{@code FUNCTION LENGTH} は実行時に数える。
+         */
+        TRIMMED,
         /** 1 バイト。 */
         ONE_CHARACTER,
         /** {@code YYYYMMDDhhmmsscc±hhmm} の 21 文字。 */
@@ -190,7 +201,12 @@ public enum Intrinsic {
 
     /** ソースに書かれた綴り。ハイフンで綴る。 */
     public String spelling() {
-        return name().replace('_', '-');
+        return isTrim() ? "TRIM" : name().replace('_', '-');
+    }
+
+    /** {@code TRIM} の 3 つの形のどれかか。 */
+    public boolean isTrim() {
+        return this == TRIM || this == TRIM_LEADING || this == TRIM_TRAILING;
     }
 
     /**
@@ -212,6 +228,10 @@ public enum Intrinsic {
     public static Intrinsic of(String spelling) {
         String name = spelling.toUpperCase(Locale.ROOT).replace('-', '_');
         for (Intrinsic candidate : values()) {
+            // TRIM-LEADING という関数は無い。LEADING は引数のうしろに書く
+            if (candidate == TRIM_LEADING || candidate == TRIM_TRAILING) {
+                continue;
+            }
             if (candidate.name().equals(name)) {
                 return candidate;
             }
