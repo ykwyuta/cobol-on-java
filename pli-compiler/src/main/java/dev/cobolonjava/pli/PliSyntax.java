@@ -80,6 +80,9 @@ final class PliSyntax {
      *                     中身を変えないからである
      * @param recordSize   {@code ENV(RECSIZE(n))} の n。書かなければ -1
      */
+    /** 長さを {@code (*)} と書いた印。仮引数だけに書け、長さは渡された引数から決まる。 */
+    static final int STAR = -1;
+
     record FileAttributes(String transmission, String direction, boolean print, String format,
                           int recordSize) {
         static final FileAttributes NONE = new FileAttributes(null, null, false, null, -1);
@@ -789,10 +792,10 @@ final class PliSyntax {
                                          int inheritedPrecision, int inheritedScale) {
             for (int i = from; i < tokens.size(); i++) {
                 if (tokens.get(i).is("CHAR") || tokens.get(i).is("CHARACTER")) {
-                    return new TypeInfo(Type.CHAR, parenthesizedInt(tokens, i + 1, 1), 0);
+                    return new TypeInfo(Type.CHAR, length(tokens, i + 1), 0);
                 }
                 if (tokens.get(i).is("BIT")) {
-                    return new TypeInfo(Type.BIT, parenthesizedInt(tokens, i + 1, 1), 0);
+                    return new TypeInfo(Type.BIT, length(tokens, i + 1), 0);
                 }
                 if (tokens.get(i).is("POINTER")) {
                     return new TypeInfo(Type.POINTER, 0, 0);
@@ -1270,6 +1273,18 @@ final class PliSyntax {
                 if (values.get(i).is(")") && --depth == 0) return i;
             }
             return values.size() - 1;
+        }
+
+        /**
+         * 文字列とビット列の長さ。{@code (*)} は引数から長さを受ける仮引数の印で、{@link #STAR}
+         * にする (LRM "Asterisk notation")。以前は 1 として読んでいた。
+         */
+        private static int length(List<Token> values, int at) {
+            if (at + 2 < values.size() && values.get(at).is("(") && values.get(at + 1).is("*")
+                    && values.get(at + 2).is(")")) {
+                return STAR;
+            }
+            return parenthesizedInt(values, at, 1);
         }
 
         private static int parenthesizedInt(List<Token> values, int at, int fallback) {

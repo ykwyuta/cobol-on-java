@@ -202,6 +202,8 @@ public final class PliRuntime {
             deferredInits = inits;
             try {
                 for (List<PliSyntax.Decl> chunk : chunks) {
+                    // 仮引数は呼んだ側が渡したもの (変数そのものか一時の変数) に結び付いている
+                    if (env.ownParameter(chunk.get(0).name())) continue;
                     if (chunk.get(0).basedOn() == null) declare(chunk, env);
                 }
             } finally {
@@ -209,6 +211,7 @@ public final class PliRuntime {
             }
             inits.forEach(Runnable::run);
             for (List<PliSyntax.Decl> chunk : chunks) {
+                if (env.ownParameter(chunk.get(0).name())) continue;
                 if (chunk.get(0).basedOn() != null) declare(chunk, env);
             }
         }
@@ -507,6 +510,25 @@ public final class PliRuntime {
             }
             if (declaration.type() == PliSyntax.Type.ENTRY) {
                 return;
+            }
+            DataView passed = parameters.get(declaration.name().toUpperCase(Locale.ROOT));
+            if (passed != null && declaration.precision() == PliSyntax.STAR
+                    && declaration.type() == PliSyntax.Type.CHAR && declaration.dimensions().isEmpty()) {
+                // 主手続きの CHAR(*) の仮引数は、渡された記憶域の長さを受ける。VARYING なら頭の半語が
+                // 今の長さで、残りが最大の長さである。PARM はこの形 (長さの半語と字) で渡る
+                int length = declaration.varying() ? passed.length() - 2 : passed.length();
+                declareScalar(new PliSyntax.Decl(declaration.name(), declaration.level(),
+                        declaration.type(), Math.max(0, length), 0, null, null,
+                        declaration.aligned(), declaration.varying(), List.of(), List.of(), null),
+                        env, area, offset, alias);
+                return;
+            }
+            if (declaration.precision() == PliSyntax.STAR
+                    && (declaration.type() == PliSyntax.Type.CHAR
+                            || declaration.type() == PliSyntax.Type.BIT)) {
+                // (*) は引数から長さを受ける仮引数にだけ書ける (LRM "Asterisk notation")
+                throw new PliExecutionException("only a parameter can have the length (*): "
+                        + declaration.name());
             }
             DataView view;
             boolean parameter = parameters.containsKey(
@@ -942,12 +964,16 @@ public final class PliRuntime {
             }
             if (procedure != null) {
                 Env local = new Env(env, context);
+                if (call.arguments().size() != procedure.parameters().size()) {
+                    throw new PliExecutionException(procedure.name() + " has "
+                            + procedure.parameters().size() + " parameter(s), but "
+                            + call.arguments().size() + " argument(s) were given");
+                }
+                Map<String, PliSyntax.Decl> declared = parameterDeclarations(procedure);
                 for (int i = 0; i < procedure.parameters().size(); i++) {
-                    if (i >= call.arguments().size()
-                            || !(call.arguments().get(i) instanceof PliSyntax.Reference reference)) {
-                        throw new PliExecutionException("internal procedure arguments must be references");
-                    }
-                    local.alias(procedure.parameters().get(i), env.require(reference.name()));
+                    String parameter = procedure.parameters().get(i).toUpperCase(Locale.ROOT);
+                    local.bindParameter(parameter, argument(call.arguments().get(i),
+                            declared.get(parameter), env));
                 }
                 try {
                     declareAll(procedure.body(), local);
@@ -980,6 +1006,92 @@ public final class PliRuntime {
                     }
                 }
             }
+        }
+
+        /** 手続きの仮引数の宣言。名は大文字。宣言の無い仮引数は入らない。 */
+        private static Map<String, PliSyntax.Decl> parameterDeclarations(
+                PliSyntax.Procedure procedure) {
+            List<List<PliSyntax.Decl>> chunks = new ArrayList<>();
+            collectDeclarations(procedure.body(), chunks);
+            Map<String, PliSyntax.Decl> result = new HashMap<>();
+            for (List<PliSyntax.Decl> chunk : chunks) {
+                String name = chunk.get(0).name().toUpperCase(Locale.ROOT);
+                if (procedure.parameters().stream().anyMatch(name::equalsIgnoreCase)) {
+                    result.put(name, chunk.get(0));
+                }
+            }
+            return result;
+        }
+
+        /**
+         * 引数を仮引数へ渡す (LRM "Passing arguments to procedures"、"Dummy arguments")。
+         *
+         * <p>変数 (配列の要素を含む) で属性が仮引数と同じなら、その変数そのものを渡す (参照渡し)。
+         * 定数・式・属性の違う変数なら、仮引数の属性の一時の変数 (dummy argument) を作り、値を
+         * 代入して渡す。呼ばれた側がそれへ代入しても、呼んだ側の変数は変わらない。長さを
+         * {@code (*)} と書いた仮引数は、渡した値の長さを受ける。
+         *
+         * <p>以前は変数の名だけを受け、{@code CALL ZCHECK('名前', A = B)} を断っていた。
+         */
+        private Var argument(PliSyntax.Expr expression, PliSyntax.Decl parameter, Env env) {
+            Var variable = null;
+            if (expression instanceof PliSyntax.Reference reference && env.contains(reference.name())) {
+                variable = env.require(reference.name());
+            } else if (expression instanceof PliSyntax.Function function
+                    && arrayNamed(function.name(), env) != null) {
+                variable = element(arrayNamed(function.name(), env), function.arguments(), env);
+            }
+            if (variable != null && (parameter == null || sameAttributes(variable, parameter))) {
+                return variable;
+            }
+            if (parameter == null) {
+                // 宣言の無い仮引数の属性は既定 (LRM "Defaults for data attributes") で決まるが、
+                // まだ持たない。変数でない引数を、属性を知らずに渡すことはできない
+                throw new PliExecutionException("an expression cannot be passed to the undeclared"
+                        + " parameter of an internal procedure yet");
+            }
+            if (!parameter.dimensions().isEmpty() || parameter.type() == PliSyntax.Type.GROUP
+                    || parameter.type() == PliSyntax.Type.FILE
+                    || parameter.type() == PliSyntax.Type.ENTRY) {
+                throw new PliExecutionException("a dummy argument for the parameter "
+                        + parameter.name() + " (" + parameter.type() + ", array or structure)"
+                        + " is not supported yet");
+            }
+            Object value = value(expression, env);
+            int precision = parameter.precision();
+            if (precision == PliSyntax.STAR) {
+                precision = parameter.type() == PliSyntax.Type.BIT ? bitText(value).length()
+                        : display(value).length();
+            }
+            PliSyntax.Decl shaped = new PliSyntax.Decl(parameter.name(), 0, parameter.type(),
+                    precision, parameter.scale(), null, null, parameter.aligned(),
+                    parameter.varying(), List.of(), List.of(), null);
+            Var dummy = new Var(parameter.name(), parameter.type(), precision, parameter.scale(),
+                    Storage.allocate(byteLength(shaped)).whole());
+            dummy.varying = parameter.varying();
+            initializeNow(dummy, null, env);
+            dummy.write(value, context);
+            return dummy;
+        }
+
+        /** 変数の属性が仮引数と同じか。同じなら参照で渡せる。 */
+        private static boolean sameAttributes(Var variable, PliSyntax.Decl parameter) {
+            if (variable.type != parameter.type()) {
+                return false;
+            }
+            boolean array = !parameter.dimensions().isEmpty();
+            if (array != (variable.dimensions != null)
+                    || array && !variable.dimensions.equals(parameter.dimensions())) {
+                return false;
+            }
+            return switch (parameter.type()) {
+                case GROUP, POINTER, FILE, ENTRY -> true;
+                case CHAR, BIT -> variable.varying == parameter.varying()
+                        && (parameter.precision() == PliSyntax.STAR
+                                || variable.precision == parameter.precision());
+                default -> variable.precision == parameter.precision()
+                        && variable.scale == parameter.scale();
+            };
         }
 
         /** POINTER に重ねた BASED の変数を、今の値で宣言し直す。 */
@@ -1701,6 +1813,18 @@ public final class PliRuntime {
                         + ", which is a null pointer: " + name);
             }
             return value;
+        }
+
+        /** この手続きの仮引数の名。宣言は呼んだ側が渡したものに置き換わっている。 */
+        private final java.util.Set<String> parameterNames = new java.util.HashSet<>();
+
+        void bindParameter(String name, Var argument) {
+            parameterNames.add(name.toUpperCase(Locale.ROOT));
+            alias(name, argument);
+        }
+
+        boolean ownParameter(String name) {
+            return parameterNames.contains(name.toUpperCase(Locale.ROOT));
         }
 
         void onEndFile(String file, List<PliSyntax.Stmt> handler) {
