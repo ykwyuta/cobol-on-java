@@ -226,6 +226,12 @@ java -cp <classpath> dev.cobolonjava.verify.Main hlasm-corpus <置き場> [-o �
 以前は `ED` / `EDMK` / `TRT` / `MVO` / `SRP` / `SLDA` / `SRDA` も同じだったが、2026-09-24 に
 Principles of Operation の記述から実装した (暫定判断 P-173)。
 
+### 64 ビットのレジスタ (P-232)
+
+汎用レジスタは上位 32 ビットを下位と別の配列で持つ。z/Architecture の 32 ビットの命令は上位を変えないので、下位だけを
+読み書きする以前からの命令は書き直さずにその規則を守る。64 ビットの命令と RXY / RSY / RI / RIL / RRE / RIE / RSL 形式は
+ZHVS が使うものから入れた。戻り番地には番地方式の印を置く (31 ビットならビット 32 が 1)。
+
 ### プログラムマスク
 
 PSW のプログラムマスクを持つ。`SPM` で置き、`IPM` で読む。固定小数点のあふれは条件コード 3、

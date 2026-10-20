@@ -6408,3 +6408,29 @@ COBOL・PL/I の `CALL` と同じプログラムの解決で名前を引き、HL
 実機の振る舞いは確かめていない。
 
 **解消条件**: 入力や可変長を使う資産が来たとき。z/OS で DCB の欄を OPEN の前後でダンプし、資産が読む欄の並びを確かめる。
+
+## P-232 HLASM の汎用レジスタは 64 ビットで持ち、偶数・奇数の対の命令の奇数レジスタは組み立てで断る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `Cpu` (`high`、`g` / `setG`、`link`)、`Assembler.evenRegister`、`Instructions` |
+| 関連要件 | 設計 27 §5、§6.1 |
+
+**いまの扱い**: 汎用レジスタの上位 32 ビットを下位と別に持つ。32 ビットの命令は下位だけを読み書きし、上位を変えない
+(Principles of Operation)。64 ビットの命令 (LG / STG / LGHI / AGHI / ALGR / ALCGR / SLLG / RISBG / FLOGR / POPCNT など)、
+RXY / RSY 形式の符号付き 20 ビットの変位、ICM / ICMH / STCM / CLM、CS、LAAG、TP、SAM24 / SAM31 を足した。BASR / BAS / BALR / BAL
+が置く戻り番地は、31 ビットの番地方式ではビット 32 に 1 を立て、24 ビットでは上 8 ビットを 0 にする。`MR` / `M` / `DR` / `D` /
+`SLDL` / `SRDL` / `SLDA` / `SRDA` / `FLOGR` の第 1 演算項が奇数なら組み立てで断る。
+
+**なぜ暫定か**: 命令の意味は Principles of Operation の説明から書いた。この環境に Hercules が無く、実行の突き合わせはしていない
+(P-175)。奇数レジスタを組み立てで断るのは HLASM の診断 ASMA029E (Incorrect register specification) の説明に従ったが、IBM の
+HLASM で確かめていない。以前は組み立てを通して実行時の仕様例外 (S0C6) にしていた。実行時の確かめは機械語 (`DC X'1C12'`) で残した。
+24 ビットの BALR / BAL が置く ILC・条件コード・プログラムマスクは持たない。POPCNT の M3 の全体の数は
+miscellaneous-instruction-extensions facility 3 の形である。
+
+**どこがずれうるか**: 64 ビットの番地方式 (SAM64) は持たない。上位 32 ビットを読む 32 ビットの命令 (高位の語の命令) は無い。
+24 ビットの BALR / BAL の戻り番地の上 8 ビットは実機と違う。
+
+**解消条件**: Hercules (z/Architecture モード) で、追加した命令ごとに上位 32 ビットと条件コードを採って `HerculesExecutionOracleTest`
+に足す。IBM の HLASM で `MR 3,4` を組み立てて診断を採る。

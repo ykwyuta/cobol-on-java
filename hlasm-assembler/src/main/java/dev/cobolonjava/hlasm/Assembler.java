@@ -24,6 +24,9 @@ public final class Assembler implements Constants.Scope {
 
     /** 変位の上限。ベース + 変位で表せる範囲である。 */
     private static final int MAX_DISPLACEMENT = 0xFFF;
+    /** 長い変位 (符号付き 20 ビット) の範囲。 */
+    private static final int MIN_LONG_DISPLACEMENT = -0x80000;
+    private static final int MAX_LONG_DISPLACEMENT = 0x7FFFF;
 
     private final String fileName;
     private final CodePage codePage;
@@ -568,6 +571,9 @@ public final class Assembler implements Constants.Scope {
     private byte[] encode(Instructions.Definition definition, Statement statement) {
         List<String> operands = statement.operandList();
         int line = statement.line();
+        if (PAIRED.contains(definition.mnemonic()) && !operands.isEmpty()) {
+            evenRegister(register(operands.get(0), line), statement);
+        }
         return switch (definition.format()) {
             case I -> {
                 require(operands, 1, statement);
@@ -663,7 +669,131 @@ public final class Assembler implements Constants.Scope {
                 int packed = (checkRange(l1, 1, 16, line, "the first length") - 1) << 4 | i3;
                 yield ss(definition.opcode(), packed, first, second);
             }
+            case E -> {
+                require(operands, 0, statement);
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode()};
+            }
+            case RS_MASK -> {
+                require(operands, 3, statement);
+                Addr address = address(operands.get(2), false, false, line);
+                yield rs(definition.opcode(), register(operands.get(0), line), mask(operands.get(1), line),
+                        address);
+            }
+            case RI -> {
+                require(operands, 2, statement);
+                int immediate = checkRange(absolute(operands.get(1), line), Short.MIN_VALUE, Short.MAX_VALUE,
+                        line, "the immediate operand");
+                yield new byte[] {(byte) (definition.opcode() >> 4),
+                        (byte) (register(operands.get(0), line) << 4 | definition.opcode() & 0xF),
+                        (byte) (immediate >> 8), (byte) immediate};
+            }
+            case RIL -> {
+                require(operands, 2, statement);
+                // 32 ビットの即値は、符号付きでも符号なしでも書ける (IILF X'FFFFFFFF' と IILF -1 は同じ)
+                long immediate = immediate32(operands.get(1), line);
+                yield new byte[] {(byte) (definition.opcode() >> 4),
+                        (byte) (register(operands.get(0), line) << 4 | definition.opcode() & 0xF),
+                        (byte) (immediate >> 24), (byte) (immediate >> 16), (byte) (immediate >> 8),
+                        (byte) immediate};
+            }
+            case RRE -> {
+                require(operands, 2, statement);
+                int r1 = register(operands.get(0), line);
+                if (definition.mnemonic().equals("FLOGR")) {
+                    evenRegister(r1, statement);
+                }
+                yield rre(definition.opcode(), 0, r1, register(operands.get(1), line));
+            }
+            case RRF_M3 -> {
+                if (operands.size() != 2) {
+                    require(operands, 3, statement);
+                }
+                int m3 = operands.size() == 3 ? mask(operands.get(2), line) : 0;
+                yield rre(definition.opcode(), m3 << 4, register(operands.get(0), line),
+                        register(operands.get(1), line));
+            }
+            case RRF_R3 -> {
+                require(operands, 3, statement);
+                yield rre(definition.opcode(), register(operands.get(2), line) << 4,
+                        register(operands.get(0), line), register(operands.get(1), line));
+            }
+            case RXY -> {
+                require(operands, 2, statement);
+                Addr address = address(operands.get(1), true, false, true, line);
+                yield longForm(definition.opcode(), register(operands.get(0), line), address.index(), address);
+            }
+            case RSY, RSY_MASK -> {
+                require(operands, 3, statement);
+                Addr address = address(operands.get(2), false, false, true, line);
+                int third = definition.format() == Instructions.Format.RSY_MASK
+                        ? mask(operands.get(1), line) : register(operands.get(1), line);
+                yield longForm(definition.opcode(), register(operands.get(0), line), third, address);
+            }
+            case RIE_F -> {
+                if (operands.size() != 4) {
+                    require(operands, 5, statement);
+                }
+                int i3 = checkRange(absolute(operands.get(2), line), 0, 255, line, "the third operand");
+                int i4 = checkRange(absolute(operands.get(3), line), 0, 255, line, "the fourth operand");
+                int i5 = operands.size() == 5
+                        ? checkRange(absolute(operands.get(4), line), 0, 255, line, "the fifth operand") : 0;
+                yield new byte[] {(byte) (definition.opcode() >> 8),
+                        (byte) (register(operands.get(0), line) << 4 | register(operands.get(1), line)),
+                        (byte) i3, (byte) i4, (byte) i5, (byte) definition.opcode()};
+            }
+            case RSL -> {
+                require(operands, 1, statement);
+                Addr first = address(operands.get(0), false, true, line);
+                int l1 = first.length() == null ? lengthAttributeOf(operands.get(0)) : first.length();
+                int length = checkRange(l1, 1, 16, line, "the length");
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) ((length - 1) << 4),
+                        (byte) (first.base() << 4 | first.displacement() >> 8), (byte) first.displacement(),
+                        0, (byte) definition.opcode()};
+            }
         };
+    }
+
+    /** 第 1 演算項が偶数・奇数のレジスタの対を指す命令 (Principles of Operation)。 */
+    private static final java.util.Set<String> PAIRED = java.util.Set.of(
+            "MR", "M", "DR", "D", "SLDL", "SRDL", "SLDA", "SRDA");
+
+    /** 4 ビットのマスク。 */
+    private int mask(String operand, int line) {
+        return checkRange(absolute(operand, line), 0, 15, line, "the mask");
+    }
+
+    /**
+     * 偶数・奇数の対を使う命令の第 1 演算項。
+     *
+     * <p>HLASM は奇数のレジスタを組み立ての時点で誤りにする (HLASM Language Reference の診断 ASMA029E
+     * "Incorrect register specification")。以前は組み立てを通し、実行時に仕様例外としていた。
+     */
+    private static void evenRegister(int register, Statement statement) {
+        if (register % 2 != 0) {
+            throw new AssemblyException(statement.line(), statement.operation()
+                    + " requires an even register for the register pair but R" + register + " was given");
+        }
+    }
+
+    private long immediate32(String operand, int line) {
+        String text = operand.trim();
+        Value value = evaluate(text, line);
+        if (!value.isAbsolute()) {
+            throw new AssemblyException(line, "an absolute expression is required here: " + operand);
+        }
+        return value.value() & 0xFFFFFFFFL;
+    }
+
+    private static byte[] rre(int opcode, int third, int first, int second) {
+        return new byte[] {(byte) (opcode >> 8), (byte) opcode, (byte) third, (byte) (first << 4 | second)};
+    }
+
+    /** RXY / RSY 形式。変位は下位 12 ビット (DL) と上位 8 ビット (DH) に分けて置く。 */
+    private static byte[] longForm(int opcode, int first, int second, Addr address) {
+        int displacement = address.displacement();
+        return new byte[] {(byte) (opcode >> 8), (byte) (first << 4 | second),
+                (byte) (address.base() << 4 | (displacement >> 8) & 0xF), (byte) displacement,
+                (byte) (displacement >> 12), (byte) opcode};
     }
 
     private static byte[] rr(int opcode, int first, int second) {
@@ -720,6 +850,16 @@ public final class Assembler implements Constants.Scope {
      * {@code S(L)})、無ければ暗黙形であり {@code USING} から解く。
      */
     private Addr address(String operand, boolean allowIndex, boolean allowLength, int line) {
+        return address(operand, allowIndex, allowLength, false, line);
+    }
+
+    /**
+     * @param longDisplacement 変位が符号付き 20 ビット (RXY / RSY 形式) なら真
+     */
+    private Addr address(String operand, boolean allowIndex, boolean allowLength, boolean longDisplacement,
+                         int line) {
+        int low = longDisplacement ? MIN_LONG_DISPLACEMENT : 0;
+        int high = longDisplacement ? MAX_LONG_DISPLACEMENT : MAX_DISPLACEMENT;
         String text = operand.trim();
         String literal = literalTermOf(text);
         // リテラルの値の括弧 (=V(X)) を指標の括弧と読まない
@@ -727,7 +867,7 @@ public final class Assembler implements Constants.Scope {
                 : literal.length() < text.length() ? literal.length() : -1;
         if (open < 0) {
             Value value = evaluate(text, line);
-            return resolve(value, 0, null, line, text);
+            return resolve(value, 0, null, high, line, text);
         }
         if (!text.endsWith(")")) {
             throw new AssemblyException(line, "unexpected text after the address: " + operand);
@@ -736,7 +876,7 @@ public final class Assembler implements Constants.Scope {
         List<String> inside = Statement.split(text.substring(open + 1, text.length() - 1), line);
         if (inside.size() == 2) {
             // 明示形。変位は絶対値でなければならない
-            int displacement = checkRange(absolute(head, line), 0, MAX_DISPLACEMENT, line,
+            int displacement = checkRange(absolute(head, line), low, high, line,
                     "the displacement");
             int base = register(inside.get(1), line);
             if (allowLength) {
@@ -755,15 +895,15 @@ public final class Assembler implements Constants.Scope {
         if (allowLength) {
             // S(L) — 長さだけを明示した暗黙形
             Value value = evaluate(head, line);
-            return resolve(value, 0, absolute(only, line), line, head);
+            return resolve(value, 0, absolute(only, line), high, line, head);
         }
         if (allowIndex) {
             // S(X) — 指標だけを明示した暗黙形。変位が絶対値ならベースは 0 になる
             Value value = evaluate(head, line);
-            return resolve(value, register(only, line), null, line, head);
+            return resolve(value, register(only, line), null, high, line, head);
         }
         // D(B) — ベースだけを明示した形
-        int displacement = checkRange(absolute(head, line), 0, MAX_DISPLACEMENT, line,
+        int displacement = checkRange(absolute(head, line), low, high, line,
                 "the displacement");
         return new Addr(displacement, register(only, line), 0, null);
     }
@@ -789,9 +929,9 @@ public final class Assembler implements Constants.Scope {
      * 届くものを探す。届くものが 2 つ以上あれば変位の小さいほうを選び、同じなら番号の大きい
      * レジスタを選ぶ。これは HLASM の選び方である。
      */
-    private Addr resolve(Value value, int index, Integer length, int line, String text) {
+    private Addr resolve(Value value, int index, Integer length, int high, int line, String text) {
         if (value.isAbsolute()) {
-            return new Addr(checkRange(value.value(), 0, MAX_DISPLACEMENT, line,
+            return new Addr(checkRange(value.value(), 0, high, line,
                     "the displacement"), 0, index, length);
         }
         int bestRegister = -1;
@@ -802,7 +942,7 @@ public final class Assembler implements Constants.Scope {
                 continue;
             }
             int displacement = value.value() - using.offset();
-            if (displacement < 0 || displacement > MAX_DISPLACEMENT) {
+            if (displacement < 0 || displacement > high) {
                 continue;
             }
             if (displacement < bestDisplacement

@@ -41,7 +41,18 @@ public final class Cpu {
     private static final long DEFAULT_STEP_LIMIT = 50_000_000L;
 
     private final AddressSpace memory;
+    /** 汎用レジスタの下位 32 ビット (ビット 32〜63)。32 ビットの命令はここだけを読み書きする。 */
     private final int[] gpr = new int[REGISTERS];
+    /**
+     * 汎用レジスタの上位 32 ビット (ビット 0〜31)。
+     *
+     * <p>z/Architecture の 32 ビットの命令は上位を変えない (Principles of Operation)。下位と分けて持てば、
+     * 以前からの 32 ビットの命令は書き直さずにその規則を守る。64 ビットの命令は {@link #g} と {@link #setG}
+     * で両方を読み書きする。
+     */
+    private final int[] high = new int[REGISTERS];
+    /** 番地の幅。SAM24 / SAM31 が切り替える。実効番地はこのマスクで切る。 */
+    private int addressMask = 0x7FFFFFFF;
     private final long stepLimit;
     private int conditionCode;
     /**
@@ -96,6 +107,29 @@ public final class Cpu {
         gpr[index] = value;
     }
 
+    /** 64 ビットのレジスタの値。 */
+    public long register64(int index) {
+        return g(index);
+    }
+
+    private long g(int r) {
+        return (long) high[r] << 32 | Integer.toUnsignedLong(gpr[r]);
+    }
+
+    private void setG(int r, long value) {
+        high[r] = (int) (value >>> 32);
+        gpr[r] = (int) value;
+    }
+
+    /**
+     * 分岐して戻る命令が R1 に置く戻り番地。31 ビットの番地方式ではビット 32 に 1 を立て、24 ビットでは
+     * ビット 32〜39 を 0 にする (Principles of Operation の BRANCH AND SAVE)。BALR / BAL の 24 ビットの形
+     * (ILC と条件コードを置く) は持たず、BASR と同じにしている。
+     */
+    private int link() {
+        return addressMask == 0x7FFFFFFF ? instructionAddress | 0x80000000 : instructionAddress & 0x00FFFFFF;
+    }
+
     public int conditionCode() {
         return conditionCode;
     }
@@ -118,7 +152,7 @@ public final class Cpu {
 
     /** 次に実行する番地を置く。サービスが呼んだ側へ戻すのに使う。 */
     public void branchTo(int address) {
-        instructionAddress = address & 0x7FFFFFFF;
+        instructionAddress = address & addressMask;
     }
 
     /** 入口から実行し、{@link #RETURN_SENTINEL} へ戻るまで回す。戻り値は R15 である。 */
@@ -175,18 +209,18 @@ public final class Cpu {
                 int r1 = r1(insn);
                 int r2 = r2(insn);
                 int target = gpr[r2];
-                gpr[r1] = instructionAddress;
+                gpr[r1] = link();
                 if (r2 != 0) {
-                    instructionAddress = target & 0x7FFFFFFF;
+                    instructionAddress = target & addressMask;
                 }
             }
             case 0x0D -> { // BASR
                 int r1 = r1(insn);
                 int r2 = r2(insn);
                 int target = gpr[r2];
-                gpr[r1] = instructionAddress;
+                gpr[r1] = link();
                 if (r2 != 0) {
-                    instructionAddress = target & 0x7FFFFFFF;
+                    instructionAddress = target & addressMask;
                 }
             }
             case 0x06 -> { // BCTR
@@ -194,14 +228,14 @@ public final class Cpu {
                 int r2 = r2(insn);
                 gpr[r1] = gpr[r1] - 1;
                 if (gpr[r1] != 0 && r2 != 0) {
-                    instructionAddress = gpr[r2] & 0x7FFFFFFF;
+                    instructionAddress = gpr[r2] & addressMask;
                 }
             }
             case 0x07 -> { // BCR
                 int mask = r1(insn);
                 int r2 = r2(insn);
                 if (r2 != 0 && selected(mask)) {
-                    instructionAddress = gpr[r2] & 0x7FFFFFFF;
+                    instructionAddress = gpr[r2] & addressMask;
                 }
             }
             case 0x10 -> { // LPR
@@ -283,12 +317,12 @@ public final class Cpu {
             }
             case 0x45 -> { // BAL
                 int target = effective(insn);
-                gpr[r1(insn)] = instructionAddress;
+                gpr[r1(insn)] = link();
                 instructionAddress = target;
             }
             case 0x4D -> { // BAS
                 int target = effective(insn);
-                gpr[r1(insn)] = instructionAddress;
+                gpr[r1(insn)] = link();
                 instructionAddress = target;
             }
             case 0x46 -> { // BCT
@@ -370,10 +404,413 @@ public final class Cpu {
                 gpr[r1] = (gpr[r1] & 0x00FFFFFF) | (conditionCode << 28) | (programMask << 24);
             }
 
+            case 0x01 -> setAddressingMode(insn); // SAM24 / SAM31
+            case 0xBF -> insertCharacters(r1(insn), insn[1] & 0x0F, effectiveSi(insn), false); // ICM
+            case 0xBE -> storeCharacters(insn); // STCM
+            case 0xBD -> compareCharactersUnderMask(insn); // CLM
+            case 0xBA -> compareAndSwap(insn); // CS
+            case 0xA7 -> immediate16(insn);
+            case 0xC0 -> immediate32(insn);
+            case 0xB9 -> registerExtended(insn);
+            case 0xE3 -> longIndexed(insn);
+            case 0xEB -> longShiftAndMask(insn);
+            case 0xEC -> rotateThenInsert(insn);
+
             default -> throw new MachineException(MachineException.OPERATION,
                     String.format("operation code %02X is not implemented", opcode));
         }
     }
+
+    // --- z/Architecture の追加の命令 (Principles of Operation) ---
+
+    private static MachineException unknown(byte[] insn, int second) {
+        return new MachineException(MachineException.OPERATION,
+                String.format("operation code %02X%02X is not implemented", insn[0] & 0xFF, second));
+    }
+
+    private void setAddressingMode(byte[] insn) {
+        switch (insn[1] & 0xFF) {
+            case 0x0C -> {
+                // 24 ビットへ移るとき、次の命令の番地が 16M を超えていれば仕様例外である
+                if ((instructionAddress & ~0x00FFFFFF) != 0) {
+                    throw new MachineException(MachineException.SPECIFICATION,
+                            "SAM24 at an address above 16M");
+                }
+                addressMask = 0x00FFFFFF;
+            }
+            case 0x0D -> addressMask = 0x7FFFFFFF;
+            default -> throw unknown(insn, insn[1] & 0xFF);
+        }
+    }
+
+    private static int compare64(long left, long right) {
+        return left == right ? 0 : left < right ? 1 : 2;
+    }
+
+    private static int compareToZero64(long value) {
+        return value == 0 ? 0 : value < 0 ? 1 : 2;
+    }
+
+    /** 64 ビットの符号付き加算。あふれたら条件コード 3。 */
+    private void add64(int r1, long value) {
+        long left = g(r1);
+        long result = left + value;
+        boolean overflow = ((left ^ result) & (value ^ result)) < 0;
+        setG(r1, result);
+        conditionCode = overflow ? 3 : compareToZero64(result);
+        fixedOverflow();
+    }
+
+    private void subtract64(int r1, long value) {
+        long left = g(r1);
+        long result = left - value;
+        boolean overflow = ((left ^ value) & (left ^ result)) < 0;
+        setG(r1, result);
+        conditionCode = overflow ? 3 : compareToZero64(result);
+        fixedOverflow();
+    }
+
+    /**
+     * 64 ビットの論理加算 (桁上がりを足す形を含む)。条件コードは結果が 0 か (ビット 1) と
+     * 桁上がりがあったか (ビット 2) で決まる。
+     */
+    private void addLogical64(int r1, long value, int carryIn) {
+        long left = g(r1);
+        long partial = left + value;
+        boolean carry = Long.compareUnsigned(partial, left) < 0;
+        long result = partial + carryIn;
+        carry |= carryIn == 1 && result == 0 && partial == -1L;
+        setG(r1, result);
+        conditionCode = (result == 0 ? 0 : 1) | (carry ? 2 : 0);
+    }
+
+    private void immediate16(byte[] insn) {
+        int r1 = r1(insn);
+        int immediate = (short) (((insn[2] & 0xFF) << 8) | (insn[3] & 0xFF));
+        switch (insn[1] & 0x0F) {
+            case 0x8 -> gpr[r1] = immediate; // LHI
+            case 0x9 -> setG(r1, immediate); // LGHI
+            case 0xA -> add(r1, immediate); // AHI
+            case 0xB -> add64(r1, immediate); // AGHI
+            case 0xC -> gpr[r1] = gpr[r1] * immediate; // MHI
+            case 0xD -> setG(r1, g(r1) * immediate); // MGHI
+            case 0xE -> conditionCode = compare(gpr[r1], immediate); // CHI
+            case 0xF -> conditionCode = compare64(g(r1), immediate); // CGHI
+            default -> throw unknown(insn, insn[1] & 0x0F);
+        }
+    }
+
+    private void immediate32(byte[] insn) {
+        int r1 = r1(insn);
+        int immediate = ((insn[2] & 0xFF) << 24) | ((insn[3] & 0xFF) << 16) | ((insn[4] & 0xFF) << 8)
+                | (insn[5] & 0xFF);
+        switch (insn[1] & 0x0F) {
+            case 0x8 -> high[r1] = immediate; // IIHF
+            case 0x9 -> gpr[r1] = immediate; // IILF
+            default -> throw unknown(insn, insn[1] & 0x0F);
+        }
+    }
+
+    private void registerExtended(byte[] insn) {
+        int r1 = (insn[3] >> 4) & 0x0F;
+        int r2 = insn[3] & 0x0F;
+        int third = (insn[2] >> 4) & 0x0F;
+        long value = g(r2);
+        switch (insn[1] & 0xFF) {
+            case 0x00 -> { // LPGR
+                setG(r1, value == Long.MIN_VALUE ? value : Math.abs(value));
+                conditionCode = value == Long.MIN_VALUE ? 3 : value == 0 ? 0 : 2;
+                fixedOverflow();
+            }
+            case 0x01 -> { // LNGR
+                long result = value > 0 ? -value : value;
+                setG(r1, result);
+                conditionCode = result == 0 ? 0 : 1;
+            }
+            case 0x02 -> { // LTGR
+                setG(r1, value);
+                conditionCode = compareToZero64(value);
+            }
+            case 0x03 -> { // LCGR
+                setG(r1, -value);
+                conditionCode = value == Long.MIN_VALUE ? 3 : compareToZero64(-value);
+                fixedOverflow();
+            }
+            case 0x04 -> setG(r1, value); // LGR
+            case 0x08 -> add64(r1, value); // AGR
+            case 0x09 -> subtract64(r1, value); // SGR
+            case 0x0A -> addLogical64(r1, value, 0); // ALGR
+            // SLGR: 1 の補数と 1 を足す。桁上がりは「借りがない」ことを表す
+            case 0x0B -> addLogical64(r1, ~value, 1);
+            case 0x14 -> setG(r1, gpr[r2]); // LGFR
+            case 0x16 -> setG(r1, Integer.toUnsignedLong(gpr[r2])); // LLGFR
+            case 0x18 -> add64(r1, gpr[r2]); // AGFR
+            case 0x19 -> subtract64(r1, gpr[r2]); // SGFR
+            case 0x20 -> conditionCode = compare64(g(r1), value); // CGR
+            case 0x21 -> { // CLGR
+                int c = Long.compareUnsigned(g(r1), value);
+                conditionCode = c == 0 ? 0 : c < 0 ? 1 : 2;
+            }
+            case 0x80 -> logical64(r1, g(r1) & value); // NGR
+            case 0x81 -> logical64(r1, g(r1) | value); // OGR
+            case 0x82 -> logical64(r1, g(r1) ^ value); // XGR
+            case 0x83 -> { // FLOGR: 最も左の 1 のビットの位置と、そのビットを落とした値を対に置く
+                requireEven(r1, "FLOGR");
+                if (value == 0) {
+                    setG(r1, 64);
+                    setG(r1 + 1, 0);
+                    conditionCode = 0;
+                } else {
+                    int position = Long.numberOfLeadingZeros(value);
+                    setG(r1, position);
+                    setG(r1 + 1, value & ~(Long.MIN_VALUE >>> position));
+                    conditionCode = 2;
+                }
+            }
+            case 0x88 -> addLogical64(r1, value, (conditionCode & 2) != 0 ? 1 : 0); // ALCGR
+            case 0xE1 -> { // POPCNT
+                long result = 0;
+                if ((third & 0x8) != 0) {
+                    // M3 の左端のビットは全体の数 (miscellaneous-instruction-extensions facility 3)
+                    result = Long.bitCount(value);
+                } else {
+                    for (int k = 0; k < 8; k++) {
+                        result |= (long) Long.bitCount((value >>> (k * 8)) & 0xFF) << (k * 8);
+                    }
+                }
+                setG(r1, result);
+                conditionCode = result == 0 ? 0 : 1;
+            }
+            case 0xE7 -> logical64(r1, value ^ g(third)); // XGRK
+            default -> throw unknown(insn, insn[1] & 0xFF);
+        }
+    }
+
+    private void logical64(int r1, long result) {
+        setG(r1, result);
+        conditionCode = result == 0 ? 0 : 1;
+    }
+
+    /** RXY / RSY の変位は符号付き 20 ビットである (DH が上位 8 ビット)。 */
+    private static int longDisplacement(byte[] insn) {
+        int low = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
+        return (insn[4] << 12) | low;
+    }
+
+    private int longEffective(byte[] insn, boolean indexed) {
+        int index = indexed ? insn[1] & 0x0F : 0;
+        int base = (insn[2] >> 4) & 0x0F;
+        int address = longDisplacement(insn);
+        if (base != 0) {
+            address += gpr[base];
+        }
+        if (index != 0) {
+            address += gpr[index];
+        }
+        return address & addressMask;
+    }
+
+    private long getLong(int address) {
+        return (long) memory.getInt(address) << 32 | Integer.toUnsignedLong(memory.getInt(address + 4));
+    }
+
+    private void putLong(int address, long value) {
+        memory.putInt(address, (int) (value >>> 32));
+        memory.putInt(address + 4, (int) value);
+    }
+
+    private void longIndexed(byte[] insn) {
+        int r1 = r1(insn);
+        int address = longEffective(insn, true);
+        switch (insn[5] & 0xFF) {
+            case 0x04 -> setG(r1, getLong(address)); // LG
+            case 0x08 -> add64(r1, getLong(address)); // AG
+            case 0x09 -> subtract64(r1, getLong(address)); // SG
+            case 0x0F -> setG(r1, Long.reverseBytes(getLong(address))); // LRVG
+            case 0x14 -> setG(r1, memory.getInt(address)); // LGF
+            case 0x15 -> setG(r1, memory.getShort(address)); // LGH
+            case 0x16 -> setG(r1, Integer.toUnsignedLong(memory.getInt(address))); // LLGF
+            case 0x18 -> add64(r1, memory.getInt(address)); // AGF
+            case 0x19 -> subtract64(r1, memory.getInt(address)); // SGF
+            case 0x20 -> conditionCode = compare64(g(r1), getLong(address)); // CG
+            case 0x24 -> putLong(address, g(r1)); // STG
+            case 0x2F -> putLong(address, Long.reverseBytes(g(r1))); // STRVG
+            case 0x50 -> memory.putInt(address, gpr[r1]); // STY
+            case 0x58 -> gpr[r1] = memory.getInt(address); // LY
+            case 0x90 -> setG(r1, memory.get(address) & 0xFF); // LLGC
+            case 0x91 -> setG(r1, memory.getShort(address) & 0xFFFF); // LLGH
+            default -> throw unknown(insn, insn[5] & 0xFF);
+        }
+    }
+
+    private void longShiftAndMask(byte[] insn) {
+        int second = insn[5] & 0xFF;
+        if (second == 0xC0) { // TP
+            testPacked(insn);
+            return;
+        }
+        int r1 = r1(insn);
+        int r3 = insn[1] & 0x0F;
+        int address = longEffective(insn, false);
+        int amount = address & 0x3F;
+        switch (second) {
+            case 0x0C -> setG(r1, g(r3) >>> amount); // SRLG
+            case 0x0D -> setG(r1, g(r3) << amount); // SLLG
+            case 0x1C -> setG(r1, Long.rotateLeft(g(r3), amount)); // RLLG
+            case 0x0A -> { // SRAG
+                long result = g(r3) >> amount;
+                setG(r1, result);
+                conditionCode = compareToZero64(result);
+            }
+            case 0x0B -> { // SLAG: 符号ビットは動かさず、符号と違うビットが押し出されたらあふれ
+                long value = g(r3);
+                long shifted = value << amount;
+                boolean overflow = (shifted >> amount) != value;
+                long result = (shifted & Long.MAX_VALUE) | (value & Long.MIN_VALUE);
+                setG(r1, result);
+                conditionCode = overflow ? 3 : compareToZero64(result);
+                fixedOverflow();
+            }
+            case 0x80 -> insertCharacters(r1, r3, address, true); // ICMH
+            case 0xE8 -> { // LAAG: 古い値を R1 へ、足した値を記憶域へ。8 バイト境界でなければ仕様例外
+                if ((address & 7) != 0) {
+                    throw new MachineException(MachineException.SPECIFICATION,
+                            "LAAG requires a doubleword-aligned operand");
+                }
+                long old = getLong(address);
+                long addend = g(r3);
+                long result = old + addend;
+                boolean overflow = ((old ^ result) & (addend ^ result)) < 0;
+                putLong(address, result);
+                setG(r1, old);
+                conditionCode = overflow ? 3 : compareToZero64(result);
+                fixedOverflow();
+            }
+            default -> throw unknown(insn, second);
+        }
+    }
+
+    /**
+     * マスクで選んだバイトの位置へ、記憶域の続くバイトを入れる。条件コードは入れたビットで決まる
+     * (すべて 0 かマスクが 0 なら 0、左端が 1 なら 1、そのほかは 2)。
+     */
+    private void insertCharacters(int r1, int mask, int address, boolean upper) {
+        int value = upper ? high[r1] : gpr[r1];
+        long inserted = 0;
+        int count = 0;
+        for (int k = 0; k < 4; k++) {
+            if ((mask & (8 >> k)) != 0) {
+                int b = memory.get(address + count) & 0xFF;
+                int shift = (3 - k) * 8;
+                value = (value & ~(0xFF << shift)) | (b << shift);
+                inserted = (inserted << 8) | b;
+                count++;
+            }
+        }
+        if (upper) {
+            high[r1] = value;
+        } else {
+            gpr[r1] = value;
+        }
+        if (count == 0 || inserted == 0) {
+            conditionCode = 0;
+        } else {
+            conditionCode = (inserted >>> (count * 8 - 1)) != 0 ? 1 : 2;
+        }
+    }
+
+    private void storeCharacters(byte[] insn) {
+        int value = gpr[r1(insn)];
+        int mask = insn[1] & 0x0F;
+        int address = effectiveSi(insn);
+        for (int k = 0; k < 4; k++) {
+            if ((mask & (8 >> k)) != 0) {
+                memory.set(address++, (byte) (value >>> ((3 - k) * 8)));
+            }
+        }
+    }
+
+    private void compareCharactersUnderMask(byte[] insn) {
+        int value = gpr[r1(insn)];
+        int mask = insn[1] & 0x0F;
+        int address = effectiveSi(insn);
+        conditionCode = 0;
+        for (int k = 0; k < 4; k++) {
+            if ((mask & (8 >> k)) != 0) {
+                int left = (value >>> ((3 - k) * 8)) & 0xFF;
+                int right = memory.get(address++) & 0xFF;
+                if (left != right) {
+                    conditionCode = left < right ? 1 : 2;
+                    return;
+                }
+            }
+        }
+    }
+
+    /** 等しければ R3 を記憶域へ置いて 0、違えば記憶域の値を R1 へ入れて 1。4 バイト境界でなければ仕様例外。 */
+    private void compareAndSwap(byte[] insn) {
+        int address = effectiveSi(insn);
+        if ((address & 3) != 0) {
+            throw new MachineException(MachineException.SPECIFICATION,
+                    "CS requires a word-aligned operand");
+        }
+        int r1 = r1(insn);
+        int current = memory.getInt(address);
+        if (current == gpr[r1]) {
+            memory.putInt(address, gpr[r3(insn)]);
+            conditionCode = 0;
+        } else {
+            gpr[r1] = current;
+            conditionCode = 1;
+        }
+    }
+
+    /**
+     * R2 を I5 だけ左へ回し、I3 から I4 までのビットを R1 へ入れる。I4 の X'80' (zero) が立っていれば、
+     * 選ばなかったビットを 0 にする。条件コードは R1 の 64 ビットの符号で決まる (RISBG)。
+     */
+    private void rotateThenInsert(byte[] insn) {
+        if ((insn[5] & 0xFF) != 0x55) {
+            throw unknown(insn, insn[5] & 0xFF);
+        }
+        int r1 = r1(insn);
+        int r2 = r2(insn);
+        int start = insn[2] & 0x3F;
+        int end = insn[3] & 0x3F;
+        boolean zero = (insn[3] & 0x80) != 0;
+        long rotated = Long.rotateLeft(g(r2), insn[4] & 0x3F);
+        long mask = 0;
+        for (int bit = start; ; bit = (bit + 1) & 0x3F) {
+            mask |= Long.MIN_VALUE >>> bit;
+            if (bit == end) {
+                break;
+            }
+        }
+        long result = (rotated & mask) | (zero ? 0 : g(r1) & ~mask);
+        setG(r1, result);
+        conditionCode = compareToZero64(result);
+    }
+
+    /**
+     * 10 進数として正しいかを調べる (TP)。符号のニブルが A〜F で、ほかのニブルが 0〜9 なら 0。
+     * 符号だけが誤りなら 1、数字だけが誤りなら 2、両方なら 3。
+     */
+    private void testPacked(byte[] insn) {
+        int length = ((insn[1] >> 4) & 0x0F) + 1;
+        int base = (insn[2] >> 4) & 0x0F;
+        int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
+        int address = (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
+        byte[] bytes = memory.read(address, length);
+        boolean digitsValid = true;
+        for (int k = 0; k < length; k++) {
+            int left = (bytes[k] >> 4) & 0x0F;
+            int right = bytes[k] & 0x0F;
+            digitsValid &= left <= 9 && (k == length - 1 || right <= 9);
+        }
+        boolean signValid = (bytes[length - 1] & 0x0F) >= 0x0A;
+        conditionCode = (signValid ? 0 : 1) | (digitsValid ? 0 : 2);
+    }
+
 
     // --- 命令語の欄 ---
 
@@ -401,28 +838,28 @@ public final class Cpu {
         if (index != 0) {
             address += gpr[index];
         }
-        return address & 0x7FFFFFFF;
+        return address & addressMask;
     }
 
     /** RS / SI 形式の実効番地 (指標を持たない)。 */
     private int effectiveSi(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** SS 形式の第 1 演算項の番地。 */
     private int ssFirst(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** SS 形式の第 2 演算項の番地。 */
     private int ssSecond(byte[] insn) {
         int base = (insn[4] >> 4) & 0x0F;
         int displacement = ((insn[4] & 0x0F) << 8) | (insn[5] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** シフト量は実効番地の下位 6 ビットである。 */
