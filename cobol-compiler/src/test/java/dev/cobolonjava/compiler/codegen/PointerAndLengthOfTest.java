@@ -103,6 +103,33 @@ class PointerAndLengthOfTest {
     }
 
     @Test
+    @DisplayName("LENGTH OF の名前は修飾できる (CardDemo の LENGTH OF OPTIONI OF COMEN1AI)")
+    void lengthOfAQualifiedName() throws ReflectiveOperationException {
+        // 同じ名前 X が 2 つの群にあり、修飾しなければ曖昧である。長さの違いで取り違えが見える
+        CobolCompiler.Result result = CobolCompiler.standard().compile("PTRLEN.cbl", source(List.of(
+                        "01  G1.",
+                        "    03  X PIC X(3).",
+                        "01  G2.",
+                        "    03  X PIC X(5).",
+                        "01  SRC PIC X(6) VALUE 'ABCDEF'.",
+                        "01  DST PIC X(6) VALUE ALL '.'.",
+                        "01  N PIC S9(4) COMP."),
+                "MOVE LENGTH OF X OF G2 TO N",
+                "MOVE SRC (1:LENGTH OF X OF G1) TO DST",
+                "GOBACK."));
+        assertTrue(result.succeeded(), result.diagnostics().toString());
+
+        CobolProgram program = (CobolProgram) new Loader().define(result.className(), result.classFile())
+                .getDeclaredConstructor().newInstance();
+        byte[] storage = program.runFresh().array();
+
+        // G1 (3) / G2 (5) / SRC (6) / DST (6) / N (2)
+        assertArrayEquals(dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.encode("ABC   "),
+                Arrays.copyOfRange(storage, 14, 20));
+        assertArrayEquals(new byte[] {0, 5}, Arrays.copyOfRange(storage, 20, 22));
+    }
+
+    @Test
     @DisplayName("PICTURE つき POINTER、NULL 以外の SET、POINTER の MOVE、長さの決まらない LENGTH OF は断る")
     void rejectsUnsupportedForms() {
         for (String[] rejected : List.of(

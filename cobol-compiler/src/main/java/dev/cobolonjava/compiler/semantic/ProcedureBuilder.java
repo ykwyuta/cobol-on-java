@@ -5462,11 +5462,7 @@ public final class ProcedureBuilder {
     }
 
     private Operand lengthOfOperand(CobolParser.IdentifierContext context, Origin origin) {
-        if (context.qualifiedDataName().dataName().size() != 2) {
-            report(origin, "LENGTH OF a qualified name is not supported yet");
-            return null;
-        }
-        String name = context.qualifiedDataName().dataName(1).getText().toUpperCase(Locale.ROOT);
+        String name = ReferenceResolver.lengthOfName(context.qualifiedDataName());
         DataReference reference = resolver.resolveName(name, origin);
         if (reference == null) {
             return null;

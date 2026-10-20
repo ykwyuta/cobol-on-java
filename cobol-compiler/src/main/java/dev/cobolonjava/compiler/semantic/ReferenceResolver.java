@@ -354,6 +354,21 @@ public final class ReferenceResolver {
         return name.dataName().size() >= 2 && name.dataName(0).getText().equalsIgnoreCase("LENGTH");
     }
 
+    /**
+     * {@code LENGTH OF} の測る名前。構文解析は {@code LENGTH OF X OF G} を修飾名 1 つとして読むので、
+     * 2 つ目からを {@code OF} でつなぎ直す (CardDemo の {@code LENGTH OF OPTIONI OF COMEN1AI})。
+     */
+    static String lengthOfName(CobolParser.QualifiedDataNameContext name) {
+        StringBuilder measured = new StringBuilder();
+        for (int i = 1; i < name.dataName().size(); i++) {
+            if (i > 1) {
+                measured.append(" OF ");
+            }
+            measured.append(name.dataName(i).getText().toUpperCase(java.util.Locale.ROOT));
+        }
+        return measured.toString();
+    }
+
     private DataReference.Subscript lengthOf(CobolParser.SubscriptContext context, Origin origin) {
         CobolParser.QualifiedDataNameContext name = context.qualifiedDataName();
         if (!layout.findAll("LENGTH").isEmpty()) {
@@ -366,16 +381,13 @@ public final class ReferenceResolver {
             return offset == null ? null
                     : new DataReference.Subscript.Variable(new DataReference(item, List.of(), null, origin), offset);
         }
-        if (name.dataName().size() != 2) {
-            report(origin, "LENGTH OF a qualified name is not supported yet");
-            return null;
-        }
-        DataReference target = resolveName(name.dataName(1).getText().toUpperCase(java.util.Locale.ROOT), origin);
+        String measured = lengthOfName(name);
+        DataReference target = resolveName(measured, origin);
         if (target == null) {
             return null;
         }
         if (target.constantLength().isEmpty()) {
-            report(origin, "LENGTH OF requires an item with a fixed length: " + name.dataName(1).getText());
+            report(origin, "LENGTH OF requires an item with a fixed length: " + measured);
             return null;
         }
         Integer offset = offsetOf(context.relativeOffset(), origin);
