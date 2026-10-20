@@ -193,7 +193,7 @@ public final class BmsParser {
                 throw fail(statement, "DFHMDF outside DFHMDI");
             }
             only(statement, Set.of("POS", "LENGTH", "ATTRB", "COLOR", "HILIGHT", "INITIAL",
-                    "PICIN", "PICOUT", "JUSTIFY", "OCCURS", "SOSI", "VALIDN"));
+                    "PICIN", "PICOUT", "JUSTIFY", "OCCURS", "SOSI", "VALIDN", "XINIT"));
             Optional<String> fieldName = statement.label() == null
                     ? Optional.empty() : Optional.of(name(statement, FIELD_NAME, "field"));
             int[] pos = pair(statement, "POS");
@@ -222,6 +222,12 @@ public final class BmsParser {
             // LENGTHより長いINITIALも、hostで組み立てて動いている資産にある (BNK1MAI)。
             // 断らずに書かれたとおり保持し、画面へ出すときにLENGTHで切る (暫定判断 P-112)
             Optional<String> initial = quoted(statement, "INITIAL");
+            if (statement.keywords().containsKey("XINIT")) {
+                if (initial.isPresent()) {
+                    throw fail(statement, "INITIAL and XINIT are mutually exclusive");
+                }
+                initial = Optional.of(hexInitial(statement));
+            }
             Optional<String> pictureIn = picture(statement, "PICIN");
             Optional<String> pictureOut = picture(statement, "PICOUT");
             Optional<Color> color = enumValue(statement, "COLOR", Color.class)
@@ -405,6 +411,23 @@ public final class BmsParser {
             return Optional.empty();
         }
         return Optional.of(constant(statement, key, type, text));
+    }
+
+    /**
+     * {@code XINIT='hh...'} の初期値。16 進の byte を既定のコードページ (EBCDIC) の文字として読み、INITIAL と同じ
+     * 文字列にする。BMS の原文はホストで EBCDIC として組み立てられるからである。プログラムのコードページが既定と
+     * 違えば、画面へ出すときの byte が XINIT と違いうる (暫定判断 P-198)。
+     */
+    private static String hexInitial(Statement statement) {
+        String hex = quoted(statement, "XINIT").orElseThrow();
+        if (hex.isEmpty() || hex.length() % 2 != 0 || !hex.matches("[0-9A-Fa-f]+")) {
+            throw fail(statement, "XINIT must be an even number of hexadecimal digits");
+        }
+        byte[] bytes = new byte[hex.length() / 2];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
+        }
+        return dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.decode(bytes);
     }
 
     /** DFHMDF の VALIDN に書ける値。 */

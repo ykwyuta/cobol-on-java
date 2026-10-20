@@ -130,6 +130,20 @@ class BmsParserTest {
     }
 
     @Test
+    @DisplayName("XINITは16進のbyteを初期値にする (GenAppのSSMAP、P-198)")
+    void xinitGivesTheInitialValueInHexadecimal() {
+        Mapset parsed = BmsParser.parse(mapset(
+                card("F1       DFHMDF POS=(1,2),LENGTH=3,XINIT='00C1F1'", false)));
+
+        // X'00' はヌル、X'C1' は EBCDIC の A、X'F1' は 1
+        assertEquals(java.util.Optional.of("\u0000A1"), parsed.maps().get(0).fields().get(0).initial());
+        assertRejected(mapset(card("F1       DFHMDF POS=(1,2),LENGTH=3,XINIT='0C1'", false)),
+                "even number of hexadecimal digits", 6);
+        assertRejected(mapset(card("F1       DFHMDF POS=(1,2),LENGTH=3,XINIT='00',INITIAL='A'", false)),
+                "mutually exclusive", 6);
+    }
+
+    @Test
     @DisplayName("VALIDNは値を確かめて受け、fieldの並びは変えない (GenAppのSSMAP、P-197)")
     void acceptsValidnWithoutChangingTheFields() {
         Mapset plain = BmsParser.parse(mapset(card("F1       DFHMDF POS=(1,2),LENGTH=3", false)));
