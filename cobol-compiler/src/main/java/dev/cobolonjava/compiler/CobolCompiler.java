@@ -629,6 +629,13 @@ public final class CobolCompiler {
             if (paragraph.name() == null || paragraph.name().isBlank()) {
                 continue;
             }
+            // 段落名は SECTION ごとに決まればよく、参照しなければ同じ SECTION の中で重ねてもよい
+            // (CardDemo の COACTVWC は 0000-MAIN-EXIT を 2 度書く)。名前だけでは 1 つに決まらない
+            // 段落は、外から指せる ID にしない
+            if (paragraphNames.indexOf(paragraph.name())
+                    != paragraphNames.lastIndexOf(paragraph.name())) {
+                continue;
+            }
             dev.cobolonjava.compiler.source.Origin origin = paragraph.origin();
             descriptors.add(new ProcedureDescriptor(new ProcedureId(programId,
                     ProcedureKind.PARAGRAPH, paragraph.name()),

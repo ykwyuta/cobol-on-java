@@ -74,6 +74,37 @@ class ProcedureManifestGenerationTest {
     }
 
     @Test
+    void leavesOutParagraphNamesThatDoNotIdentifyOneParagraph() {
+        // 参照しなければ段落名は重ねてよい (CardDemo の COACTVWC)。別の SECTION なら参照もできる。
+        // 名前だけの ID では 1 つに決まらないので、一覧に載せずに翻訳を続ける
+        String source = String.join("\n",
+                "       IDENTIFICATION DIVISION.",
+                "       PROGRAM-ID. DUP-PGM.",
+                "       PROCEDURE DIVISION.",
+                "       MAIN-START.",
+                "           GOBACK.",
+                "       MAIN-EXIT.",
+                "           EXIT.",
+                "       MAIN-EXIT.",
+                "           EXIT.",
+                "       ONLY-ONCE.",
+                "           EXIT.");
+
+        CobolCompiler.Result result = CobolCompiler.standard().compile("DUP.cbl", source);
+
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        ProgramId program = ProgramId.of("DUP-PGM");
+        assertFalse(result.procedureManifest().contains(
+                new ProcedureId(program, ProcedureKind.PARAGRAPH, "MAIN-EXIT")));
+        assertTrue(result.procedureManifest().contains(
+                new ProcedureId(program, ProcedureKind.PARAGRAPH, "ONLY-ONCE")));
+
+        CobolCompiler.Result referenced = CobolCompiler.standard().compile("DUP.cbl",
+                source.replace("GOBACK.", "PERFORM MAIN-EXIT."));
+        assertFalse(referenced.succeeded(), "参照すれば曖昧として断る");
+    }
+
+    @Test
     void emitsSectionsParagraphsAndAContentHash() {
         CobolCompiler.Result result = compile("CONTINUE");
 
