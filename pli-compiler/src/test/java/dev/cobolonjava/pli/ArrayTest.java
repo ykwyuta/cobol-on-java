@@ -282,4 +282,22 @@ class ArrayTest {
                 """));
         assertTrue(rejection("DCL C CHAR(2) UNSIGNED;").contains("UNSIGNED"));
     }
+
+    @Test
+    @DisplayName("持っていない宣言の属性 (FLOAT、LIKE、CONTROLLED ほか) は読み飛ばさずに翻訳で断る")
+    void unknownAttributesAreRefused() throws Exception {
+        for (String declaration : new String[] {
+                "DCL X FLOAT DEC(6);", "DCL 1 S, 2 A CHAR(1); DCL T LIKE S;",
+                "DCL X FIXED BIN(31) CONTROLLED;", "DCL X CHAR(4) VALUE('A');",
+                "DCL X FIXED BIN(31) LITTLEENDIAN;"}) {
+            assertTrue(rejection(declaration).contains("is not supported yet"), declaration);
+        }
+        // BUILTIN は変数を作らない。動きを変えない属性 (STATIC、AUTOMATIC) は受ける
+        assertEquals("C1 7\n", main("""
+                DCL (HEX, LENGTH) BUILTIN;
+                DCL S CHAR(1) STATIC INIT('A');
+                DCL T CHAR(7) AUTOMATIC;
+                PUT SKIP EDIT(HEX(S), ' ', LENGTH(T))(A, A, F(1));
+                """));
+    }
 }

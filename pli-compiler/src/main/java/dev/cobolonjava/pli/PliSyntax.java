@@ -606,6 +606,9 @@ final class PliSyntax {
                     int close = findClosing(part, p);
                     List<String> names = part.subList(p + 1, close).stream()
                             .filter(t -> t.kind() == Kind.IDENT).map(Token::text).toList();
+                    if (builtin(part, close + 1)) {
+                        continue;
+                    }
                     List<Bound> dimensions = dimensions(part, close + 1, level);
                     TypeInfo info = typeInfo(part, close + 1, inheritedType,
                             inheritedPrecision, inheritedScale);
@@ -621,6 +624,9 @@ final class PliSyntax {
                 if (nameToken.kind() != Kind.IDENT && !nameToken.is("*")) {
                     continue;
                 }
+                if (builtin(part, p)) {
+                    continue;
+                }
                 List<Bound> dimensions = dimensions(part, p, level);
                 TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
                         inheritedPrecision, inheritedScale);
@@ -632,8 +638,85 @@ final class PliSyntax {
             return List.copyOf(out);
         }
 
+        /** 属性を読んで、動きに効くものを持つ宣言の属性。どれでもない語は断る。 */
+        private static final java.util.Set<String> ATTRIBUTES = java.util.Set.of(
+                "CHAR", "CHARACTER", "BIT", "VARYING", "VAR", "NONVARYING", "NONVAR",
+                "FIXED", "BIN", "BINARY", "DEC", "DECIMAL", "PIC", "PICTURE", "POINTER", "PTR",
+                "INIT", "INITIAL", "BASED", "POSITION", "POS", "ALIGNED", "UNALIGNED", "UNAL",
+                "SIGNED", "UNSIGNED",
+                // 記憶域の取り方と有効範囲だけを決め、1 つのプログラムの中の値は変えない
+                "STATIC", "AUTOMATIC", "AUTO", "INTERNAL", "INT", "REAL");
+
+        /**
+         * {@code BUILTIN} の宣言か。組込み関数の名であることを示すだけで、変数を作らない
+         * (LRM "BUILTIN attribute")。名で引く組込み関数はもともとその名で引けるので、宣言を置かない。
+         */
+        private static boolean builtin(List<Token> part, int from) {
+            for (int i = from; i < part.size(); i++) {
+                if (part.get(i).is("BUILTIN")) {
+                    if (part.size() - from != 1) {
+                        throw new ParseFailure(part.get(i), "BUILTIN takes no other attribute");
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * 宣言の属性に、知らない語が無いことを確かめる。以前は知らない属性を読み飛ばしていたので、
+         * DEFINED と UNSIGNED が黙って効かず、FLOAT の変数は型の無い名になっていた。ここで断れば、
+         * 持っていない属性が「翻訳できたのに値が違う」にならない。括弧の中 (次元、精度、INITIAL の値)
+         * と DEFINED の基の参照は、それぞれを読むところが確かめる。ファイルと入口の宣言は別に読む。
+         */
+        private static void checkAttributes(List<Token> part, int from, Type type) {
+            if (type == Type.FILE || type == Type.ENTRY) {
+                return;
+            }
+            for (int i = from; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.is("(")) {
+                    i = findClosing(part, i);
+                } else if (token.kind() == Kind.STRING && i > 0
+                        && (part.get(i - 1).is("PIC") || part.get(i - 1).is("PICTURE"))) {
+                    continue;
+                } else if (token.is("DEFINED") || token.is("DEF")) {
+                    i = skipReference(part, i + 1) - 1;
+                } else if (token.kind() != Kind.IDENT || !ATTRIBUTES.contains(token.text())) {
+                    throw new ParseFailure(token, "attribute " + token.text()
+                            + " is not supported yet");
+                }
+            }
+        }
+
+        /** DEFINED の基の参照 ({@code (A)}、{@code A.B(1SUB)}) の後ろの位置。 */
+        private static int skipReference(List<Token> part, int at) {
+            if (at < part.size() && part.get(at).is("(")) {
+                return findClosing(part, at) + 1;
+            }
+            int i = at;
+            if (i < part.size() && part.get(i).kind() == Kind.IDENT) i++;
+            while (i + 1 < part.size() && part.get(i).is(".")
+                    && part.get(i + 1).kind() == Kind.IDENT) {
+                i += 2;
+            }
+            if (i < part.size() && part.get(i).is("(")) {
+                i = findClosing(part, i) + 1;
+            }
+            return i;
+        }
+
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
+            int from = 0;
+            while (from < part.size() && !(part.get(from).kind() == Kind.IDENT
+                    && part.get(from).text().equals(name)) && !part.get(from).is("(")) {
+                from++;
+            }
+            if (from < part.size() && part.get(from).is("(")) {
+                from = findClosing(part, from);
+            }
+            checkAttributes(part, from + 1, info.type);
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
                 // 要素がスカラーの配列 (2 A(5) FIXED BIN) は持つ
@@ -895,7 +978,7 @@ final class PliSyntax {
                 if (tokens.get(i).is("BIT")) {
                     return new TypeInfo(Type.BIT, length(tokens, i + 1), 0);
                 }
-                if (tokens.get(i).is("POINTER")) {
+                if (tokens.get(i).is("POINTER") || tokens.get(i).is("PTR")) {
                     return new TypeInfo(Type.POINTER, 0, 0);
                 }
                 if (tokens.get(i).is("FILE")) {
