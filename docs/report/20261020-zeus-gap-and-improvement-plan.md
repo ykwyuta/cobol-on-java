@@ -229,10 +229,20 @@ CLAUDE.md の型 (外の基準を先に置く → いちばん大きい塊から
 | 略記した比較の先読みが次の文の `=` を拾う | `7a18513` | 3 本が次の塊へ |
 | 数字だけの手続き名を桁数の検査から外す | `8979467` | CCVS85 の NC107A が戻り、README の記録 (444 / 346) に一致 |
 | `RETURN TRANSID(データ名)` | `846a8f2` | 塊が消えた |
+| file control の `DATASET`、`LENGTH OF`、数字項目の `RIDFLD`、`DFHRESP(DUPKEY)` | `3bbaf1a` | 8 本が次の塊へ |
+| `SEND MAP` / `RECEIVE MAP` の `MAP` と `MAPSET` をデータ名で | `e2ab918` | 7 本が次の塊へ |
+| 32KB を越える作業場所で翻訳が落ちる (定数を 32,000 文字ずつに分ける) | `104dc8f` | 「壊れた」が消えた。CardDemo 19 本 |
+| `FUNCTION TRIM` (空白だけなら長さ 0、P-193)。`STRING` の送り側の関数で落ちる不具合 | `a136b79` | 3 本が次の塊へ |
+| `SEND TEXT` の `LENGTH(LENGTH OF FROM)` | `29d87b1` | COCRDLIC が通った (20 本)。残りは端末制御の `SEND FROM` |
+| `FUNCTION TEST-NUMVAL` / `TEST-NUMVAL-C` (P-194) | `0b07a4e` | 2 本が次の塊へ |
+| 端末制御の `SEND FROM` (制御文字の無いデータだけ、P-195) | `0bcee0f` | 3 本が通り、COACTVWC が「壊れた」に出た |
+| 同じ名前の段落が 2 つあると落ちる (手続きの一覧) | `b81d925` | COACTVWC が通った (24 本) |
 
-CardDemo は 44 本中 9 → 11 本。奥に出た塊は、データ名の `MAP(...)` (7 本)、`READ` / `STARTBR` / `WRITE` の
-`DATASET(...)` (`FILE` の古い同義語、8 本)、入口の別名の `ENTRY` (3 本)、`EXEC` の未知の処理系 (3 本) である。
-GenApp は 0 本のままで、`ASKTIME ABSTIME` に 4 byte の 2 進項目を渡す形 (14 本) が先頭にある。
+CardDemo は 44 本中 9 → 24 本。残る塊は、入口の別名の `ENTRY` (3 本)、`EXEC` の未知の処理系 (3 本)、
+DB2 の VARCHAR (49 レベルの組) のホスト変数 (2 本)、MQ の写し句 (3 本)、`RECEIVE MAP` の `INTO` の省略、
+修飾した名前の `LENGTH OF` などである。
+GenApp は 0 本のままで、`ASKTIME ABSTIME` に 4 byte の 2 進項目を渡す形 (14 本) が先頭にある
+(暫定の仕様を置くかどうかは権利者の判断待ち)。
 
 
 ### 段階 1: 業務資産を止めている塊
