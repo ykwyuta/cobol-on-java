@@ -352,6 +352,8 @@ public final class CicsRuntimeOps {
         } else {
             execution.environment().transientData().commitUnitOfWork(execution.task().taskId());
         }
+        // 実行単位の作業単位に加わった資源 (MQ の接続など) も同期点で確定するか取り消す (設計 88 §4.3)
+        dev.cobolonjava.runtime.program.RecoverableResources.of(context).syncpoint(!rollback);
         return NO_CONDITION_TRANSFER;
     }
 

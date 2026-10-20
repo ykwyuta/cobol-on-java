@@ -98,11 +98,27 @@ class MqiTest {
                         "    MOVE 'LATE' TO BUF PERFORM PUT-MSG",
                         "    PERFORM SHOW")))).run(qm);
         assertEquals(List.of("0000 0000", "0000 0000 LATE"), lines);
-        // LATE は確約されないまま実行単位が終わった。見えないが深さには入る
-        assertEquals(List.of("KEEP"), qm.messages("APP.OUT").stream().map(m -> m.text(CP)).toList());
-        assertEquals(2, qm.depth("APP.OUT"));
-        qm.endConnections(true);
+        // LATE は確約されないまま実行単位が正常に終わった。終わりの暗黙の同期点で確約される
         assertEquals(List.of("KEEP", "LATE"), qm.messages("APP.OUT").stream().map(m -> m.text(CP)).toList());
+    }
+
+    @Test
+    @DisplayName("実行単位が異常に終われば、同期点の下の PUT と GET は取り消される")
+    void abnormalEndBacksOut() {
+        MqQueueManager qm = manager();
+        qm.put("APP.IN", MqMessage.builder(CP).text("REQUEST").build());
+        MqProgram program = MqProgram.compile("ABEND", concat(List.of(
+                open("APP.IN", "MQOO-INPUT-SHARED + MQOO-OUTPUT"),
+                List.of(
+                        "    PERFORM GET-MSG",
+                        "    MOVE 5 TO BUFLEN",
+                        "    MOVE 'REPLY' TO BUF PERFORM PUT-MSG",
+                        "    CALL 'NOSUCHPG'"))));
+        assertThrows(RuntimeException.class, () -> program.run(qm));
+        List<MqMessage> left = qm.messages("APP.IN");
+        assertEquals(List.of("REQUEST"), left.stream().map(m -> m.text(CP)).toList());
+        assertEquals(1, left.get(0).backoutCount());
+        assertEquals(1, qm.depth("APP.IN"), "取り消した PUT は深さにも残らない");
     }
 
     @Test

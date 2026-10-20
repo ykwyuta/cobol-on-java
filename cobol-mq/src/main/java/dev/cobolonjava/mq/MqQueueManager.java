@@ -23,9 +23,9 @@ import java.util.regex.Pattern;
  * 再始動をまたいで電文を残すことはしない (暫定判断 P-251)。将来 JMS のブローカへ写すときは、IMS の電文を
  * JMS へ写す {@code cobol-ims-jms} の形に倣い、この型の待ち行列の部分を差し替える。
  *
- * <p>接続は実行単位ごとに 1 つ持つ ({@link #connection})。実行単位の鍵は弱い参照で持つので、終わった実行単位の
- * 接続は表から消える。ただし<b>その接続の確約されていない作業は確約も取り消しもされない</b>。実行単位の終わりで
- * 確約するには、持ち主が {@link #endConnections} を呼ぶ (暫定判断 P-252)。
+ * <p>接続は実行単位ごとに 1 つ持つ ({@link #connection})。接続は実行単位の作業単位に加わり
+ * ({@code RecoverableResources})、CICS の SYNCPOINT で確約・取り消しされ、実行単位の終わり (session を閉じるとき) に
+ * 正常なら確約、異常なら取り消しで終わる (設計 88 §4.3、暫定判断 P-252、P-254)。
  */
 public final class MqQueueManager {
 
@@ -177,9 +177,8 @@ public final class MqQueueManager {
     }
 
     /**
-     * いま開いている接続をすべて終える: 作業単位を確約するか取り消し、handle を閉じる。実行単位や region の終わりに
-     * 持ち主が呼ぶ。z/OS では、実行単位が正常に終われば暗黙に確約、異常に終われば取り消しである (公開文書の
-     * 「作業単位」の説明)。
+     * いま開いている接続をすべて終える: 作業単位を確約するか取り消し、handle を閉じる。実行単位の終わりは session が
+     * 閉じるときに済む (設計 88 §4.3) ので、これは region を止めるときに持ち主が呼ぶ。
      */
     public void endConnections(boolean commit) {
         lock.lock();
@@ -211,10 +210,9 @@ public final class MqQueueManager {
         return c != null && c.handle() == hconn ? c : null;
     }
 
-    void forget(Object runUnit, MqConnection connection) {
-        if (connections.get(runUnit) == connection) {
-            connections.remove(runUnit);
-        }
+    /** 終えた接続を表から外す。次の呼び出しは新しい接続になる。 */
+    void forget(MqConnection connection) {
+        connections.values().removeIf(c -> c == connection);
     }
 
     // ---- 待ち行列 ------------------------------------------------------------

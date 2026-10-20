@@ -1,5 +1,6 @@
 package dev.cobolonjava.mq;
 
+import dev.cobolonjava.runtime.program.RecoverableResource;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -36,6 +37,43 @@ final class MqConnection {
     private int nextObject = 1;
     private final List<Staged> puts = new ArrayList<>();
     private final List<Staged> gets = new ArrayList<>();
+
+    /**
+     * 実行単位の作業単位に加える口 (設計 88 §4.3)。CICS の SYNCPOINT がここで確約・取り消しし、実行単位の終わりで
+     * 接続を終える。runtime は待ち行列管理者の錠を知らないので、ここで取る。
+     */
+    final RecoverableResource resource = new RecoverableResource() {
+        @Override
+        public void commit() {
+            manager.lock.lock();
+            try {
+                MqConnection.this.commit();
+            } finally {
+                manager.lock.unlock();
+            }
+        }
+
+        @Override
+        public void backout() {
+            manager.lock.lock();
+            try {
+                MqConnection.this.backout();
+            } finally {
+                manager.lock.unlock();
+            }
+        }
+
+        @Override
+        public void end(boolean commit) {
+            manager.lock.lock();
+            try {
+                MqConnection.this.end(commit);
+                manager.forget(MqConnection.this);
+            } finally {
+                manager.lock.unlock();
+            }
+        }
+    };
 
     MqConnection(MqQueueManager manager, int handle) {
         this.manager = manager;

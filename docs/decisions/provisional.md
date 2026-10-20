@@ -6411,7 +6411,7 @@ MQHO_UNUSABLE_HOBJ を置く)。CICS の下で MQCMIT / MQBACK を呼んだと�
 **解消条件**: IBM MQ for z/OS (または MQ Advanced for Developers の待ち行列管理者を z/OS の既定に寄せたもの) で、
 設計 88 §5 の各場合と、誤りを 2 つ重ねた呼び出しを流し、完了コード・理由コード・記述子の byte 列を採って比べる。
 
-## P-252 MQ の接続は実行単位ごとに 1 つ。MQHC_DEF_HCONN は暗黙の接続、MQDISC は確約、実行単位の終わりは持ち主が閉じる
+## P-252 MQ の接続は実行単位ごとに 1 つ。MQHC_DEF_HCONN は暗黙の接続、MQDISC は確約
 
 | 項目 | 内容 |
 | --- | --- |
@@ -6423,17 +6423,15 @@ MQHO_UNUSABLE_HOBJ を置く)。CICS の下で MQCMIT / MQBACK を呼んだと�
 (CICS の下と同じく MQCONN が要らない)。MQCONN / MQCONNX は同じ接続を明示のものにして handle を返し、2 度目は
 MQCC_WARNING / MQRC_ALREADY_CONNECTED。待ち行列管理者の名前が空白でも自分の名前でもなければ 2058。MQCONNX の
 接続の選択 (MQCNO) は見ない。MQDISC は作業単位を確約し、handle を閉じ、Hconn に MQHC_UNUSABLE_HCONN を置く。
-<b>実行単位が終わっても作業単位は確約も取り消しもされない</b>。持ち主が `MqQueueManager.endConnections(commit)` を呼ぶ。
+実行単位の終わりの扱いは P-254。
 
 **なぜ暫定か**: z/OS の batch で MQCONN を呼ばずに handle 0 を使えるかは、batch の adapter と CICS の adapter で違う。
 資産 (CardDemo) はどれも CICS の下で 0 を使うので、0 を受けるほうに倒した。batch の MQDISC が確約するか取り消すかは
-RRS の有無で変わる。実行単位の終わりで確約する仕組み (CICS の task の終わり、batch の正常終了) はまだ持たない。
+RRS の有無で変わる。
 
 **どこがずれうるか**: batch の資産が MQCONN を忘れたときに、実機は MQRC_HCONN_ERROR で止まるのにここでは動く。
-MQDISC を呼ばずに終わった batch の作業単位 (実機は正常終了で確約、異常終了で取り消し)。
 
-**解消条件**: CICS の SYNCPOINT と task の終わりに作業単位を合わせ (設計 88 §7)、batch の実行単位の終わりにも
-同じ口を作る。実機の batch で MQCONN なしの 0 と、MQDISC の前後の電文を採って比べる。
+**解消条件**: 実機の batch で MQCONN なしの 0 と、MQDISC の前後の電文を採って比べる。
 
 ## P-253 MQ の MsgId は 'CSQ ' と管理者の名前で始めて一意にするだけ。文脈の利用者・応用の名前は空白
 
@@ -6454,3 +6452,26 @@ AccountingToken は 0 にする。MQPMO_NO_CONTEXT ではどれも空け、PutAp
 **どこがずれうるか**: MsgId の中身を解いたり、PutApplName で送り手を見分けたりする資産。
 
 **解消条件**: 実機で置いた電文の MsgId と文脈の欄を採る。CICS の task から利用者 ID と transaction を MQI へ渡す口を作る。
+
+## P-254 MQ の作業単位は実行単位の終わりで確約・取り消し、CICS の同期点に加わるが、2 相の確約ではない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `RecoverableResource`、`RecoverableResources`、`CobolSession.close` / `backOutResources`、`CicsRuntimeOps.syncpointCondition`、`CobolCicsTaskProgram` |
+| 関連要件 | 設計 88 §4.3 |
+
+**いまの扱い**: MQ の接続は実行単位の作業単位に加わる。`EXEC CICS SYNCPOINT` は一時データの変更と同じ場所で
+確約し、`SYNCPOINT ROLLBACK` は取り消す。session を閉じるとき、実行単位が異常に終わっていなければ確約、終わって
+いれば取り消す。CICS の task はプログラムが返っても task として正常に終わらなければ (STOP RUN、COMMAREA の上限越え
+など)、session を閉じる前に取り消す。資源の確約は加わった順に行い、1 つが失敗しても残りを諦めない。
+
+**なぜ暫定か**: z/OS では CICS の同期点は CICS が調整役になって MQ と Db2 を 2 相で確約し、batch は RRS か MQ 単独の
+作業単位になる。ここには調整役が無い。CICS の task の終わりでは、MQ は session を閉じるときに確約し、そのあと task の
+境界が Db2 の UOW を、続いて一時データを確定する。この順は既存の task の終わりの形に合わせただけで、根拠は無い。
+
+**どこがずれうるか**: task の終わりで Db2 の確定が失敗したとき、MQ の確約は戻らない (実機は両方取り消す)。
+EXEC CICS SYNCPOINT の中で MQ の確約が失敗したときの RESP (実機は ROLLEDBACK) は作らず、例外がそのまま返る。
+
+**解消条件**: Db2 の UOW と MQ を同じ調整役 (2 相、または最後の資源を 1 相で) で確約する口を作り、CICS の同期点の
+失敗の RESP を公開文書の SYNCPOINT の頁に合わせる。実機で Db2 と MQ を同じ task で更新し、片方を失敗させて採る。

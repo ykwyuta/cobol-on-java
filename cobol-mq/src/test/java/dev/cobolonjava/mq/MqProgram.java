@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * 試験のための COBOL プログラム: 処理系が用意する MQ の写し句を写し、{@code CALL 'MQxxx'} を呼ぶ段落を持つ。
@@ -80,6 +81,15 @@ final class MqProgram {
     }
 
     static MqProgram compile(String name, List<String> data, List<String> main) {
+        CobolCompiler.Result result = CobolCompiler.with(new MqSystemCopyBookResolver())
+                .compile(name + ".cbl", source(name, data, main));
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        GeneratedLoader loader = new GeneratedLoader();
+        return new MqProgram(name, loader.define(result.className(), result.classFile()), loader);
+    }
+
+    /** 固定形式の原文。MQ の写し句の項目と段落の部品を持つ。 */
+    static String source(String name, List<String> data, List<String> main) {
         List<String> lines = new ArrayList<>(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. " + name + ".",
@@ -100,8 +110,25 @@ final class MqProgram {
             }
             source.append(card).append('\n');
         }
-        CobolCompiler.Result result = CobolCompiler.with(new MqSystemCopyBookResolver())
-                .compile(name + ".cbl", source.toString());
+        return source.toString();
+    }
+
+    /** 翻訳したクラスを作る。CICS の task から呼ぶ試験が使う。 */
+    Supplier<CobolProgram> factory() {
+        return () -> {
+            try {
+                return (CobolProgram) type.getDeclaredConstructor().newInstance();
+            } catch (ReflectiveOperationException failure) {
+                throw new IllegalStateException(failure);
+            }
+        };
+    }
+
+    ClassLoader loader() {
+        return loader;
+    }
+
+    static MqProgram of(String name, CobolCompiler.Result result) {
         assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
         GeneratedLoader loader = new GeneratedLoader();
         return new MqProgram(name, loader.define(result.className(), result.classFile()), loader);

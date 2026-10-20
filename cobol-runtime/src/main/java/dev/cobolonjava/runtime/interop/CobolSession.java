@@ -215,6 +215,17 @@ public final class CobolSession implements AutoCloseable {
                     "COBOL session must be closed by its owner thread " + owner.getName());
         }
         context.closeFiles();
+        // 実行単位の終わりの暗黙の同期点: 異常に終わっていなければ確定、終わっていれば取り消す (設計 88 §4.3)。
+        // CICS の task は異常の扱いを task の側で先に済ませる (CobolCicsTaskProgram)
+        dev.cobolonjava.runtime.program.RecoverableResources.of(context).end(!failed);
         closed = true;
+    }
+
+    /**
+     * 作業単位に加わった資源を、実行単位の終わりを待たずに取り消して終える。session の外で失敗を知った持ち主
+     * (例えば CICS の task で、プログラムは返ったが task としては異常に終わったとき) が、閉じる前に呼ぶ。
+     */
+    public synchronized void backOutResources() {
+        dev.cobolonjava.runtime.program.RecoverableResources.of(context).end(false);
     }
 }

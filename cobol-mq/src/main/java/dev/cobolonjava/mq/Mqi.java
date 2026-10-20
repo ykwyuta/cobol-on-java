@@ -134,6 +134,8 @@ public final class Mqi {
             MqConnection c = manager.connection(context.runUnit(), integer(i));
             if (c == null) {
                 failed(MQRC_HCONN_ERROR);
+            } else {
+                context.enlist(c.resource);
             }
             return c;
         }
@@ -165,6 +167,7 @@ public final class Mqi {
                 return;
             }
             MqConnection c = manager.connection(call.context.runUnit(), MQHC_DEF_HCONN);
+            call.context.enlist(c.resource);
             call.setInteger(hconnArg, c.handle());
             if (c.explicit) {
                 call.done(MQCC_WARNING, MQRC_ALREADY_CONNECTED);
@@ -190,7 +193,8 @@ public final class Mqi {
                 return;
             }
             c.end(true);
-            manager.forget(context.runUnit(), c);
+            manager.forget(c);
+            context.delist(c.resource);
             call.setInteger(0, MQHC_UNUSABLE_HCONN);
             call.ok();
         } finally {

@@ -59,6 +59,19 @@ public final class JavaCallContext {
         return context.registers();
     }
 
+    /**
+     * 実行単位の作業単位に資源を加える (設計 88 §4.3)。CICS の SYNCPOINT で確定・取り消しされ、実行単位の終わり
+     * (session を閉じるとき) に正常なら確定、異常なら取り消しで終える。
+     */
+    public void enlist(dev.cobolonjava.runtime.program.RecoverableResource resource) {
+        dev.cobolonjava.runtime.program.RecoverableResources.of(context).enlist(resource);
+    }
+
+    /** 作業単位から資源を外す。 */
+    public void delist(dev.cobolonjava.runtime.program.RecoverableResource resource) {
+        dev.cobolonjava.runtime.program.RecoverableResources.of(context).delist(resource);
+    }
+
     /** 同じ実行単位から、登録済み COBOL または Java プログラムへ再入する。 */
     public void call(String name, DataView... arguments) {
         Ops.call(context, ProgramId.of(name).value(), loader, arguments);
