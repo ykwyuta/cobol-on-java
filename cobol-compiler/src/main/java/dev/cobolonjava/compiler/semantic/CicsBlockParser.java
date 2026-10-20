@@ -463,9 +463,18 @@ final class CicsBlockParser {
         }
         String map = null;
         String mapset = null;
+        String mapData = null;
+        String mapsetData = null;
         if (kind == Statement.CicsSendKind.MAP) {
-            map = bmsName("MAP", options.get("MAP"));
-            mapset = options.containsKey("MAPSET") ? bmsName("MAPSET", options.get("MAPSET")) : map;
+            mapData = bmsData(options.get("MAP"));
+            map = mapData == null ? bmsName("MAP", options.get("MAP")) : null;
+            if (options.containsKey("MAPSET")) {
+                mapsetData = bmsData(options.get("MAPSET"));
+                mapset = mapsetData == null ? bmsName("MAPSET", options.get("MAPSET")) : null;
+            } else {
+                mapset = map;
+                mapsetData = mapData;
+            }
         } else if (kind == Statement.CicsSendKind.TEXT && !flag.test("TEXT")) {
             throw new IllegalArgumentException("TEXT does not take a value");
         } else if (kind == Statement.CicsSendKind.CONTROL && !flag.test("CONTROL")) {
@@ -495,7 +504,7 @@ final class CicsBlockParser {
         if (response2 != null && response == null) {
             throw new IllegalArgumentException("RESP2 requires RESP");
         }
-        SendSpec spec = new SendSpec(kind, map, mapset, from, flags, cursor);
+        SendSpec spec = new SendSpec(kind, map, mapset, mapData, mapsetData, from, flags, cursor);
         return new Parsed(null, null, null, -1, response, response2,
                 flag.test("NOHANDLE"), false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, spec, null, null);
@@ -539,8 +548,14 @@ final class CicsBlockParser {
                 throw new IllegalArgumentException(flag + " does not take a value");
             }
         }
-        String map = bmsName("MAP", options.get("MAP"));
-        String mapset = options.containsKey("MAPSET") ? bmsName("MAPSET", options.get("MAPSET")) : map;
+        String mapData = bmsData(options.get("MAP"));
+        String map = mapData == null ? bmsName("MAP", options.get("MAP")) : null;
+        String mapset = map;
+        String mapsetData = mapData;
+        if (options.containsKey("MAPSET")) {
+            mapsetData = bmsData(options.get("MAPSET"));
+            mapset = mapsetData == null ? bmsName("MAPSET", options.get("MAPSET")) : null;
+        }
         String into = sendDataName(options.get("INTO"), "INTO");
         if (into == null) {
             throw new IllegalArgumentException("RECEIVE MAP requires INTO");
@@ -557,7 +572,7 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
-                new ReceiveSpec(map, mapset, into, options.containsKey("ASIS")), null);
+                new ReceiveSpec(map, mapset, mapData, mapsetData, into, options.containsKey("ASIS")), null);
     }
 
     /**
@@ -1457,6 +1472,14 @@ final class CicsBlockParser {
         return name;
     }
 
+    /**
+     * MAP / MAPSET をデータ名で書いたなら、その名前。名前は実行時に域から読む (CicsRuntimeOps.bmsName)。
+     * CardDemo は MAP(LIT-THISMAP) MAPSET(LIT-THISMAPSET) と書き、7 本がここで止まっていた。
+     */
+    private static String bmsData(String[] value) {
+        return value == null || value[0] != null ? null : value[2];
+    }
+
     private static String bmsName(String option, String[] value) {
         if (value[0] == null) {
             throw new IllegalArgumentException(option + " requires a quoted name");
@@ -1970,12 +1993,12 @@ final class CicsBlockParser {
     }
 
     /** RECEIVE MAPの、データ名を解決する前の形。 */
-    record ReceiveSpec(String map, String mapset, String into, boolean asis) {
+    record ReceiveSpec(String map, String mapset, String mapData, String mapsetData, String into, boolean asis) {
     }
 
     /** SEND命令の、データ名を解決する前の形。 */
-    record SendSpec(Statement.CicsSendKind kind, String map, String mapset, String from,
-                    int flags, int cursor) {
+    record SendSpec(Statement.CicsSendKind kind, String map, String mapset, String mapData, String mapsetData,
+                    String from, int flags, int cursor) {
     }
 
     /** DELAYの各値。数字だけなら整数定数、そうでなければデータ名。書かなければ null。 */

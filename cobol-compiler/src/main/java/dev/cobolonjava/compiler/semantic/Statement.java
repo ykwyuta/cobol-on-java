@@ -62,6 +62,9 @@ public sealed interface Statement {
             CicsSendKind kind,
             String map,
             String mapset,
+            /* MAP / MAPSET をデータ名で書いたときの域。書いていれば map / mapset は null */
+            DataReference mapData,
+            DataReference mapsetData,
             DataReference from,
             int flags,
             int cursor,
@@ -280,6 +283,8 @@ public sealed interface Statement {
     record CicsReceiveMap(
             String map,
             String mapset,
+            DataReference mapData,
+            DataReference mapsetData,
             DataReference into,
             /* ASIS: 端末が UCTRAN でも入力を大文字にしない */
             boolean asis,

@@ -92,6 +92,9 @@ class CicsTerminalGenerationTest {
                 "COPY DFHAID.",
                 "01  WS-RESP PIC S9(8) COMP.",
                 "01  WS-TEXT PIC X(13) VALUE 'Session ended'.",
+                "01  WS-MAPN PIC X(7) VALUE 'SCRMP'.",
+                "01  WS-SETN PIC X(8) VALUE 'SCRSET'.",
+                "01  WS-BADN PIC X(7) VALUE 'scrmp'.",
                 "LINKAGE SECTION.",
                 "01  LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.")) {
@@ -187,6 +190,40 @@ class CicsTerminalGenerationTest {
         assertTrue(screen.keyboardRestored());
         assertTrue(screen.alarm());
         assertEquals(Optional.of(TransId.of("NXT1")), result.nextTransaction());
+    }
+
+    @Test
+    @DisplayName("MAP / MAPSET をデータ名で書けば、実行時の値の map を送る (CardDemo の MAP(LIT-THISMAP))")
+    void sendsMapNamedByDataArea() throws IOException {
+        TaskCompletion result = run(compiler().compile("SCREEN1.cbl", program(
+                "MOVE LOW-VALUES TO SCRMPO",
+                "MOVE 'BY NAME' TO MESSAGEO",
+                "EXEC CICS SEND MAP(WS-MAPN) MAPSET(WS-SETN)",
+                "     FROM(SCRMPO) ERASE END-EXEC",
+                "EXEC CICS RETURN END-EXEC.")), "MAP ");
+
+        BmsScreenSnapshot screen = ((CicsTerminalScreen.MapScreen) result.screen().orElseThrow()).snapshot();
+        assertEquals("SCRMP", screen.map());
+        assertEquals(String.format("%-20s", "BY NAME"), screen.field("MESSAGE", 1).orElseThrow().data());
+    }
+
+    @Test
+    @DisplayName("MAP のデータ域が名前の形でなければ (小文字を含む) 推測で直さず実行時に断る")
+    void refusesMapDataAreasThatAreNotNames() throws IOException {
+        CobolCompiler.Result compiled = compiler().compile("SCREEN1.cbl", program(
+                "MOVE LOW-VALUES TO SCRMPO",
+                "EXEC CICS SEND MAP(WS-BADN) MAPSET(WS-SETN)",
+                "     FROM(SCRMPO) ERASE END-EXEC",
+                "EXEC CICS RETURN END-EXEC."));
+
+        RuntimeException refused = org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> run(compiled, "MAP "));
+        Throwable cause = refused;
+        while (cause.getCause() != null && !String.valueOf(cause.getMessage()).contains("MAP data area")) {
+            cause = cause.getCause();
+        }
+        assertTrue(String.valueOf(cause.getMessage()).contains("MAP data area does not contain a valid name"),
+                () -> String.valueOf(refused));
     }
 
     @Test

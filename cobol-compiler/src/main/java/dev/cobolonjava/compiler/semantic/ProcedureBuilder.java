@@ -1969,7 +1969,12 @@ public final class ProcedureBuilder {
                     throw new IllegalArgumentException(
                             "RECEIVE MAP INTO must be an alphanumeric or group data area");
                 }
-                return withCicsResponse(new Statement.CicsReceiveMap(spec.map(), spec.mapset(), into, spec.asis(),
+                DataReference[] names = bmsNameAreas(spec.mapData(), spec.mapsetData(), origin);
+                if (names == null) {
+                    return null;
+                }
+                return withCicsResponse(new Statement.CicsReceiveMap(spec.map(), spec.mapset(), names[0], names[1],
+                        into, spec.asis(),
                         parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
             }
             if (parsed.send() != null) {
@@ -1987,8 +1992,12 @@ public final class ProcedureBuilder {
                                 "SEND FROM must be an alphanumeric or group data area");
                     }
                 }
+                DataReference[] names = bmsNameAreas(spec.mapData(), spec.mapsetData(), origin);
+                if (names == null) {
+                    return null;
+                }
                 return withCicsResponse(new Statement.CicsSend(spec.kind(), spec.map(),
-                        spec.mapset(), from, spec.flags(), spec.cursor(),
+                        spec.mapset(), names[0], names[1], from, spec.flags(), spec.cursor(),
                         parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
             }
             if (parsed.handleStackAction() != null) {
@@ -2393,6 +2402,30 @@ public final class ProcedureBuilder {
                 spec.reqidLiteral(), numbers[3], token, spec.sysidLiteral(), sysidData, spec.flags(),
                 parsed.response() != null || parsed.noHandle(), origin),
                 parsed, origin);
+    }
+
+    /**
+     * MAP / MAPSET の名前を置いたデータ域を解決する。英数字で長さ 1〜8 byte に限る (map と mapset の名前は
+     * 7 文字まで。CardDemo は MAPSET を PIC X(8) に置く)。どちらも書いていなければ {null, null}。
+     */
+    private DataReference[] bmsNameAreas(String mapData, String mapsetData, Origin origin) {
+        DataReference[] out = new DataReference[2];
+        String[] names = {mapData, mapsetData};
+        for (int i = 0; i < 2; i++) {
+            if (names[i] == null) {
+                continue;
+            }
+            out[i] = resolver.resolveName(names[i].toUpperCase(Locale.ROOT), origin);
+            if (out[i] == null) {
+                return null;
+            }
+            if (DataCategory.of(out[i]) != DataCategory.ALPHANUMERIC || out[i].constantLength().isEmpty()
+                    || out[i].constantLength().getAsInt() > 8) {
+                throw new IllegalArgumentException((i == 0 ? "MAP" : "MAPSET")
+                        + " data area must be an alphanumeric item of 1 to 8 bytes");
+            }
+        }
+        return out;
     }
 
     /** 2 進の整数か、文字・集団の域で、長さが width byte のもの (RRN、RBA、TOKEN など)。 */

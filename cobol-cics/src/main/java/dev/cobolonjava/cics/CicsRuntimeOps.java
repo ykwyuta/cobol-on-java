@@ -1802,6 +1802,19 @@ public final class CicsRuntimeOps {
     private static final int TEXT_SCREEN_SIZE = 24 * 80;
 
     /**
+     * MAP / MAPSET をデータ名で書いたときの名前 (1〜7 文字)。{@link #dynamicProgram} と同じく末尾の空白だけを落とし、
+     * 名前の形でなければ推測で直さず失敗させる (大文字にも揃えない)。
+     */
+    public static String bmsName(ProgramContext context, byte[] name, String option) {
+        String text = Objects.requireNonNull(context, "context").codePage()
+                .decode(Objects.requireNonNull(name, "name")).stripTrailing();
+        if (!text.matches("[A-Z@#$][A-Z0-9@#$]{0,6}")) {
+            throw new CicsTaskStateException(option + " data area does not contain a valid name");
+        }
+        return text;
+    }
+
+    /**
      * SEND MAP (設計 79 §8.3)。
      *
      * @param from 記号マップ。MAPONLY なら null

@@ -1427,15 +1427,41 @@ public final class ProgramGenerator {
         };
     }
 
+    /**
+     * map か mapset の名前を積む。定数ならそのまま、データ名なら実行時に域を読んで名前にする
+     * ({@code CicsRuntimeOps.bmsName})。
+     */
+    private Runnable planBmsName(String literal, DataReference data, String option, Origin origin) {
+        if (data == null) {
+            return () -> run.visitLdcInsn(literal);
+        }
+        OptionalInt length = lengthOf(data, origin);
+        Runnable address = planAddress(data, origin);
+        if (address == null || length.isEmpty()) {
+            return null;
+        }
+        return () -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            address.run();
+            push(length.getAsInt());
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "read", "(L" + STORAGE + ";II)[B", false);
+            run.visitLdcInsn(option);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "bmsName",
+                    "(" + CONTEXT + "[BLjava/lang/String;)Ljava/lang/String;", false);
+        };
+    }
+
     private void planCicsReceiveMap(Statement.CicsReceiveMap statement, List<Runnable> body) {
         Runnable into = planWholeView(statement.into(), statement.origin());
-        if (into == null) {
+        Runnable mapset = planBmsName(statement.mapset(), statement.mapsetData(), "MAPSET", statement.origin());
+        Runnable map = planBmsName(statement.map(), statement.mapData(), "MAP", statement.origin());
+        if (into == null || mapset == null || map == null) {
             return;
         }
         body.add(() -> {
             run.visitVarInsn(Opcodes.ALOAD, 2);
-            run.visitLdcInsn(statement.mapset());
-            run.visitLdcInsn(statement.map());
+            mapset.run();
+            map.run();
             into.run();
             run.visitInsn(statement.asis() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
             run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
@@ -1449,7 +1475,11 @@ public final class ProgramGenerator {
         Runnable from = statement.from() == null
                 ? () -> run.visitInsn(Opcodes.ACONST_NULL)
                 : planWholeView(statement.from(), statement.origin());
-        if (from == null) {
+        Runnable mapset = statement.kind() != Statement.CicsSendKind.MAP ? () -> { }
+                : planBmsName(statement.mapset(), statement.mapsetData(), "MAPSET", statement.origin());
+        Runnable map = statement.kind() != Statement.CicsSendKind.MAP ? () -> { }
+                : planBmsName(statement.map(), statement.mapData(), "MAP", statement.origin());
+        if (from == null || mapset == null || map == null) {
             return;
         }
         body.add(() -> {
@@ -1458,8 +1488,8 @@ public final class ProgramGenerator {
             String method;
             switch (statement.kind()) {
                 case MAP -> {
-                    run.visitLdcInsn(statement.mapset());
-                    run.visitLdcInsn(statement.map());
+                    mapset.run();
+                    map.run();
                     from.run();
                     push(statement.flags());
                     push(statement.cursor());
