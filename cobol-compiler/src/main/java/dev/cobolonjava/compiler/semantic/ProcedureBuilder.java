@@ -2912,16 +2912,17 @@ public final class ProcedureBuilder {
         List<Statement.StringStatement.StringSource> sources = new ArrayList<>();
         for (CobolParser.StringSourceContext source : context.stringSource()) {
             List<CobolParser.ArithmeticOperandContext> operands = source.arithmeticOperand();
-            // DELIMITED BY SIZE でなければ、最後の被演算子が区切りである
-            int valueCount = source.SIZE() != null ? operands.size() : operands.size() - 1;
+            // DELIMITED BY SIZE でなければ、最後の被演算子が区切りである。DELIMITED を省けば SIZE とみなす
+            boolean bySize = source.SIZE() != null || source.DELIMITED() == null;
+            int valueCount = bySize ? operands.size() : operands.size() - 1;
             List<Operand> values = new ArrayList<>();
             for (int i = 0; i < valueCount; i++) {
                 values.add(operandOf(operands.get(i), origin));
             }
-            Operand delimiter = source.SIZE() != null
+            Operand delimiter = bySize
                     ? null
                     : operandOf(operands.get(operands.size() - 1), origin);
-            if (values.contains(null) || (source.SIZE() == null && delimiter == null)) {
+            if (values.contains(null) || (!bySize && delimiter == null)) {
                 return null;
             }
             sources.add(new Statement.StringStatement.StringSource(values, delimiter));

@@ -1074,8 +1074,9 @@ stringStatement
       overflowPhrases END_STRING?
     ;
 
+// DELIMITED を省いた送出項目は DELIMITED BY SIZE とみなす (ISO 2002 以降。暫定判断 P-205)
 stringSource
-    : arithmeticOperand+ DELIMITED BY? (SIZE | arithmeticOperand)
+    : arithmeticOperand+ (DELIMITED BY? (SIZE | arithmeticOperand))?
     ;
 
 // UNSTRING は送出項目を区切って複数の受取項目へ配る

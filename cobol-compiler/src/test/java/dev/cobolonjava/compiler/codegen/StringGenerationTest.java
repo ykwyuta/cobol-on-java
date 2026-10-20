@@ -96,6 +96,17 @@ class StringGenerationTest {
     }
 
     @Test
+    @DisplayName("DELIMITED を省いた送出項目は DELIMITED BY SIZE とみなす (P-205)")
+    void anOmittedDelimiterMeansSize() {
+        // 最後の組だけ DELIMITED を省く。前の組の ' ' は前の組にだけ効き、WS-B は空白も含めて全部書かれる
+        assertEquals("AB CD" + "E F" + "ABE F-----", run(
+                List.of("01 WS-A PIC X(5) VALUE 'AB CD'.",
+                        "01 WS-B PIC X(3) VALUE 'E F'.",
+                        "01 WS-T PIC X(10) VALUE ALL '-'."),
+                "STRING WS-A DELIMITED BY ' ' WS-B INTO WS-T."));
+    }
+
+    @Test
     @DisplayName("定数もつなげる (FR-065)")
     void aLiteralCanBeJoined() {
         assertEquals("1" + "A=1-------", run(

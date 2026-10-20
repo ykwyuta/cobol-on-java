@@ -6409,3 +6409,22 @@ USING BY VALUE 項目` で受ける引数は、入口でランタイムがもう
 
 **解消条件**: z/OS で、長さの違う BY VALUE (2 byte の 2 進を 4 byte で受ける等) と、定数の BY VALUE の受け取り値を採る。
 COBOL 以外との BY VALUE を支えるときに読み直す。
+
+## P-205 `STRING` で DELIMITED を省いた送出項目は DELIMITED BY SIZE とみなす
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `CobolParser.g4` の `stringSource`、`ProcedureBuilder` の STRING |
+| 関連要件 | FR-065、設計 87 (ZCVS ZP の副プログラム ZPS09A) |
+
+**いまの扱い**: `STRING A DELIMITED BY ' ' B INTO T` のように DELIMITED を省いた組は、SIZE で区切ったものとして全部書く。
+DELIMITED は書いた組にだけ効き、前の組から持ち越さない。
+
+**なぜ暫定か**: ISO/IEC 1989:2002 以降の規格は STRING の DELIMITED 句を省けるとし、省けば SIZE とみなす。1985 年の規格では
+必須だったので、CCVS85 には現れない。Enterprise COBOL がこの省略を受けるかは、言語解説書の版ごとの構文図とも実機とも
+突き合わせていない。ZCVS の ZPS09A は省いた形で書いているが、ZCVS は z/OS で確かめたものではない (設計 87 §1.1)。
+
+**どこがずれうるか**: Enterprise COBOL が省略を誤りとするなら、ホストで翻訳できない原文をこちらは通す (広い側に倒している)。
+
+**解消条件**: z/OS の Enterprise COBOL で、DELIMITED を省いた STRING を翻訳して結果を採る。
