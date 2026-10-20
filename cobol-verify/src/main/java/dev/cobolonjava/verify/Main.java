@@ -239,6 +239,7 @@ public final class Main {
                 // CICS 提供の写し句は最後に引く。資産が自前のものを置いていればそちらを使う
                 java.util.stream.Stream.of(new CicsSystemCopyBookResolver(),
                         new dev.cobolonjava.compiler.source.Db2SystemCopyBookResolver(),
+                        new dev.cobolonjava.compiler.source.MqSystemCopyBookResolver(),
                         new dev.cobolonjava.compiler.source.LanguageEnvironmentCopyBookResolver()))
                 .toList();
         return (textName, libraryName) -> chain.stream()

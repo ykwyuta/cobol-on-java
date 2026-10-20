@@ -6359,3 +6359,27 @@ lgacvs01 / lgucvs01 は数字の項目 `FROM(CA-Customer-Num)` に `LENGTH(CUSTO
 入力の形は持たないので、それらの AID が端末から届くことは無い。
 
 **解消条件**: z/OS の CICS で、AID の処理と MAPFAIL の処理を両方置いた RECEIVE MAP を、各 AID で採る。
+
+## P-250 MQ の写し句 (CMQV、CMQODV など) は処理系が公開文書の欄の説明から作り、IBM の原文と突き合わせていない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。Zeus (`d2f1cfc` の `crates/zeus-cobol/src/front/syslib_mq.rs`) の読み方を移した (ADR-0016) |
+| 場所 | `MqSystemCopyBookResolver` |
+| 関連要件 | 設計 88 §2 |
+
+**いまの扱い**: `CMQV` (定数)、`CMQODV` / `CMQMDV` / `CMQPMOV` / `CMQGMOV` / `CMQTMV` (初期値つき) と、それぞれの `...L`
+(初期値なし) を、IBM MQ の公開文書にある構造体の欄の説明 (名前・型・長さ・初期値) から作る。構造体は 10 段から始め、
+現行版 (MQOD 4、MQMD 2、MQPMO 3、MQGMO 4、MQTM 1) の欄まで全部を置く。`VERSION` の既定値は 1。整数は `S9(9) BINARY`、
+番地は 4 byte の `POINTER` (P-123)、MQCHARV は 5 つの欄に開く。`CMQV` は公開文書の定数のうち MQI の実装が
+使うものと CardDemo が引くものを中心に置く。publish/subscribe と message handle の構造体 (MQSD、MQCMHO など) は置かない。
+
+**なぜ暫定か**: IBM の写し句の原文は参照しない決まりである (CLAUDE.md「出典」)。欄の並びと長さは公開文書の表から読み、
+Zeus の読みと揃えた。z/OS で翻訳した `LENGTH OF` と突き合わせていない。
+
+**どこがずれうるか**: IBM の写し句には、ここに無い定数 (数千ある) や、版ごとの長さの定数 (`MQOD-LENGTH-1` など)、
+`MQCHARV` の欄の名前の付け方がある。資産が置いていない定数を引くと、翻訳が「未定義」で止まる (近い値を黙って
+使うことはない)。2 進項目を `BINARY` としたので、TRUNC(STD) の下では 9 桁を超える値を MOVE すると桁で切れる。
+IBM の写し句がどちらを使うかは確かめていない (Db2 の SQLCA は COMP-5 にした。P-120)。
+
+**解消条件**: z/OS の COBOL で各写し句を写したプログラムを翻訳し、`LENGTH OF` と各欄の位置、既定値の byte 列を採って比べる。
