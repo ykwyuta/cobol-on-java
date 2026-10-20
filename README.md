@@ -303,6 +303,13 @@ TD の区画外のキューは順編成のデータセットに置き、回復�
 START の `CHANNEL` / `ATTACH` / `NOCHECK` / `SYSID`、REQID の無い `CANCEL`、TS / TD の `SYSID` / `NOSUSPEND` も暫定の仕様で変換する (P-149)。
 `SET ptr TO ADDRESS OF` と `SET ADDRESS OF` は、POINTER に実行単位の中で振った番号を置いて扱う (P-150)。
 その上に、file control / TS / TD / RETRIEVE の `SET` を置き場の番地として入れた (P-151)。
+業務アプリの資産として CardDemo (Apache-2.0) と GenApp (EPL-2.0) を `corpus.tsv` に固定し、
+`tools/verify/measure-apps.sh` で測る (範囲は同じ資産を測っている Zeus に揃えた)。
+2026-10-20 の初回は<b>CardDemo 44 本中 10 本、GenApp 31 本中 0 本</b>しか翻訳が通らない。
+Bank-of-Z の CICS 32 本が全数通るのとは大きな差で、業務資産の幅で測っていなかったことの表れである。
+止まった行で数えた塊は、GenApp の `ASKTIME ABSTIME` に 4 byte の 2 進項目を渡す形 (14 本)、
+`RETURN TRANSID(データ名)` (9 本)、部分参照の中の `LENGTH OF` (7 本)、略記した複合条件 (3 本)、
+`ACCEPT ... FROM SYSIN` (2 本) などである (改善計画 §4 段階 0-2)。
 IMS は、同じ Bank-of-Z の IMS の COBOL 11 本を `verify corpus <cobol> -I <copy>` で流して測っている。
 <b>翻訳が通るのは 10 本</b>である (測り始めは 0 本)。手続き部の先頭の `ENTRY "DLITCBL" USING` をプログラムの引数とし (P-152)、
 `PROGRAM-ID` の終止符の欠落と、演算子に空白を置かない `<=1` を受ける。残る IBTRAN は OO COBOL の `REPOSITORY` と JNI で止まる。

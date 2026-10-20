@@ -195,7 +195,7 @@ CLAUDE.md の型 (外の基準を先に置く → いちばん大きい塊から
 | # | 規模 | 項目 | 外の基準 | 完了の目安 |
 | --- | --- | --- | --- | --- |
 | 0-1 | S | **z/OS の実機で `tools/zos-probe` を流す** (`docs/zos-probe/runbook.md`) | 実機 | 約 40 の暫定判断が「決着」か「直す」に分かれる |
-| 0-2 | M | **CardDemo と GenApp を `corpus.tsv` に足す** (ライセンスと sha256 を確かめて固定する。NFR-042)。翻訳できる本数を数える | Zeus と同じ資産。比べられる数になる | 翻訳の率と、止まった行の上位 10 塊の一覧 |
+| 0-2 | M | **CardDemo と GenApp を `corpus.tsv` に足す** (ライセンスと sha256 を確かめて固定する。NFR-042)。翻訳できる本数を数える | Zeus と同じ資産。比べられる数になる | **測った** (2026-10-20、`tools/verify/measure-apps.sh`)。CardDemo 44 本中 10 本、GenApp 31 本中 0 本 (Zeus は 41 / 41、31 / 31。Zeus は CardDemo の `app-*/cbl/*.CBL` を数えていない)。下の表 |
 | 0-3 | M | Bank-of-Z の CICS の場面 (顧客・口座の照会・作成・更新・削除、入出金、振替) を **TN3270 の入口と s3270 の台本で通しに流す** | 資産の意図どおりの画面 | 場面ごとの成否が README に載る |
 | 0-4 | S | `docs/unsupported-syntax-and-rationale.md` を今の状態に直す (BMS、コンテナ、`RENAMES` などは既に実装済みなのに「未対応」のまま) | 翻訳器 | **済** (2026-10-20)。表の 41 行を `UnsupportedSyntaxCatalogTest` の事例にした。旧構文の「専用の診断」は実装されていなかったので文書を直した |
 | 0-5 | S | Zeus の追加コーパス (zfam、zecs、cobol-check など、Zeus 0022) のうち Apache-2.0 と両立するものを `corpus.tsv` に足す | 資産 | 翻訳の率 |
@@ -205,6 +205,20 @@ CLAUDE.md の型 (外の基準を先に置く → いちばん大きい塊から
 | 0-8 | S | §3.1 で cobol-on-java に根拠があった食い違い (不正な 10 進データとゼロ除算で止まらない、`TWO3` の丸め、`INSPECT` の符号、`SIGN SEPARATE`) と、Zeus が断った `EXP`・`MVO`・浮動小数点の `DC` を、Zeus の改善として Zeus 側に残す | — | **起票した** (2026-10-20): Zeus #24 (10 進データとゼロ除算)、#25 (浮動小数点から固定小数点の丸め)、#26 (`INSPECT` の符号)、#27 (`EXP`)、#28 (HLASM の `MVO` と `D` 形式の `DC` の注記) |
 
 0-2 と 0-3 の結果で段階 1 の順番を入れ替える。下の順番は<b>今の見込み</b>である。
+
+**0-2 の初回の測定で止まった行の塊** (CLAUDE.md §4。理由の文面ではなく止まった原文の行で数えた):
+
+| 塊 | 本数 | 止まった行の例 | 扱い |
+| --- | --- | --- | --- |
+| `ASKTIME ABSTIME(項目)` の項目が `PIC S9(8) COMP` | GenApp 14 | `lgacdb02` 196 行 | CICS は 8 byte のパック 10 進を書く。ホストでは隣の記憶域を上書きして通る。P-146 (領域より長い `LENGTH`) と同じ形の暫定の仕様が要る |
+| `RETURN TRANSID(データ名)` | CardDemo 9 | `COMEN01C` 107 行 | P-097 で定数だけにしていた |
+| 部分参照の中の `LENGTH OF` | CardDemo 7 | `MOVE DFHCOMMAREA (1:LENGTH OF CARDDEMO-COMMAREA) TO ...` | 部分参照の長さに `LENGTH OF` を書けない |
+| 略記した複合条件 | CardDemo 3 | `NOT = SPACES AND LOW-VALUES`、`WS-IDX > 5 OR AUTHS-EOF OR ERR-FLG-ON` | 表意定数を略記の目的語にできない。条件名を略記の目的語と読む |
+| `ACCEPT ... FROM SYSIN` | CardDemo 2 | `ACCEPT PRM-INFO FROM SYSIN` | 環境名を `SPECIAL-NAMES` 無しで書く形。IBM は許す (CLAUDE.md §3 の「狭く決めていた」形) |
+| BMS の `VALIDN` | GenApp 5 | `ssmap.bms` | DFHMDF の `VALIDN` を読まない |
+| `ASSIGN SYSID` | GenApp 3 | — | 未実装 |
+| MQ の写し句 (`CMQGMOV`、`CMQODV`) | CardDemo 3 | — | MQ (2-4) |
+
 
 ### 段階 1: 業務資産を止めている塊
 

@@ -16,3 +16,5 @@
 #
 # 例 (実際の値ではない):
 # acme-payroll	https://github.com/acme/payroll.git	0123456789abcdef0123456789abcdef01234567	Apache-2.0
+carddemo	https://github.com/aws-samples/aws-mainframe-modernization-carddemo.git	59cc6c2fd7ebd7ef7925cad552a01a4b8b6e4d5e	Apache-2.0
+genapp	https://github.com/cicsdev/cics-genapp.git	f6f3f4b2580d31b7d8dcc31ce3e3676f4cceaaaa	EPL-2.0
