@@ -240,4 +240,29 @@ class ArrayTest {
                 DCL 1 G, 2 X CHAR(2) DEFINED S;
                 """).contains("DEFINED"));
     }
+
+    @Test
+    @DisplayName("UNSPEC と HEX は記憶域を見る。10 進は packed、2 進は 2 の補数、VARYING は長さの半語を含む")
+    void unspecAndHexSeeTheStorage() throws Exception {
+        assertEquals("1D 0001 FFFE C1C2 0002C1C2 00011000\n", main("""
+                DCL D FIXED DEC(1) INIT(-1);
+                DCL B FIXED BIN(15) INIT(1);
+                DCL C FIXED BIN(15) INIT(-2);
+                DCL S CHAR(2) INIT('AB');
+                DCL V CHAR(5) VARYING INIT('AB');
+                DCL X BIT(8) INIT('00011000'B);
+                PUT SKIP EDIT(HEX(UNSPEC(D)), ' ', HEX(B), ' ', HEX(C), ' ', HEX(S), ' ',
+                              HEX(UNSPEC(V)), ' ', UNSPEC(X))(A);
+                """));
+    }
+
+    @Test
+    @DisplayName("SUM は要素の和で、DEFINED の配列なら基の要素を足す")
+    void sumAddsTheElements() throws Exception {
+        assertEquals("15 7\n", main("""
+                DCL A(2,2) FIXED BIN(31) INIT(1, 2, 3, 6);
+                DCL D(2) FIXED BIN(31) DEFINED A(1SUB,1SUB);
+                PUT SKIP EDIT(SUM(A) + SUM(D) - 4, ' ', SUM(D))(F(2), A, F(1));
+                """));
+    }
 }

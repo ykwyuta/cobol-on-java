@@ -783,7 +783,8 @@ public final class PliRuntime {
                         || containsArray(binary.right(), env);
                 case PliSyntax.Function function -> {
                     String name = function.name().toUpperCase(Locale.ROOT);
-                    if (List.of("SIZE", "STORAGE", "STG", "ADDR").contains(name)) {
+                    if (List.of("SIZE", "STORAGE", "STG", "ADDR", "UNSPEC", "HEX", "SUM")
+                            .contains(name)) {
                         yield false;
                     }
                     boolean any = false;
@@ -1612,12 +1613,25 @@ public final class PliRuntime {
                 case "ADDR" -> {
                     return address(function, env);
                 }
+                case "UNSPEC" -> {
+                    return new PliSyntax.BitString(storage(one(function), env));
+                }
+                case "HEX" -> {
+                    // 記憶域の各 byte を 16 進の 2 字にする (LRM "HEX")。区切りの字を取る 2 つ目の
+                    // 引数はまだ持たない
+                    return hexOf(storage(one(function), env));
+                }
+                case "SUM" -> {
+                    return sum(arrayArgument(function, env));
+                }
                 default -> {
                 }
             }
             List<Object> arguments = function.arguments().stream().map(e -> value(e, env)).toList();
             return switch (name) {
                 case "TRIM" -> display(arguments.get(0)).strip();
+                // 実行単位の今の復帰コード (LRM "PLIRETV")。FIXED BIN(31) である
+                case "PLIRETV" -> FixedValue.binary(BigDecimal.valueOf(context.returnCode()), 31, 0);
                 case "SUBSTR" -> substring(arguments);
                 case "DATETIME" -> ZonedDateTime.now(context.clock()).format(DATETIME);
                 case "CHAR" -> display(arguments.get(0));
@@ -1665,6 +1679,117 @@ public final class PliRuntime {
                 case "-" -> a.subtract(b);
                 case "*" -> a.multiply(b);
                 default -> a.divide(b, MathContext.DECIMAL128);
+            };
+        }
+
+        /** 引数を 1 つ取る組込み関数の、その引数。 */
+        private static PliSyntax.Expr one(PliSyntax.Function function) {
+            if (function.arguments().size() != 1) {
+                throw new PliExecutionException(function.name() + " needs one argument"
+                        + (function.name().equals("HEX") ? " (the second argument is not"
+                                + " supported yet)" : ""));
+            }
+            return function.arguments().get(0);
+        }
+
+        /**
+         * UNSPEC と HEX が見る記憶域の並び。ビット単位で持つのは、UNALIGNED のビット列が byte の
+         * 途中から始まるからである。
+         *
+         * <p>変数 (配列の要素を含む) ならその記憶域で、VARYING なら長さの半語も含む (LRM "UNSPEC":
+         * "If x is a varying-length string, its two-byte prefix is included")。式なら、その値の属性の
+         * 変数に代入したときの記憶域である。属性の分からない値 (P-183) は断る。
+         */
+        private String storage(PliSyntax.Expr expression, Env env) {
+            Var variable = null;
+            if (expression instanceof PliSyntax.Reference reference && env.contains(reference.name())) {
+                variable = env.require(reference.name());
+            } else if (expression instanceof PliSyntax.Function function
+                    && arrayNamed(function.name(), env) != null) {
+                variable = element(arrayNamed(function.name(), env), function.arguments(), env);
+            }
+            if (variable != null) {
+                if (variable.defined) {
+                    throw new PliExecutionException("the DEFINED array " + variable.name
+                            + " has no storage of its own");
+                }
+                if (variable.type == PliSyntax.Type.BIT) {
+                    return variable.read(context) instanceof PliSyntax.BitString bits
+                            ? bits.bits() : "";
+                }
+                if (variable.varying) {
+                    // 今の長さより後ろの byte は値ではない (中身は決まっていない) ので含めない
+                    return bitsOf(variable.view.subView(0, 2 + variable.currentLength())
+                            .toByteArray());
+                }
+                return bitsOf(variable.view.toByteArray());
+            }
+            Object value = value(expression, env);
+            if (value instanceof PliSyntax.BitString || value instanceof Boolean) {
+                return bitText(value);
+            }
+            if (value instanceof FixedValue fixed) {
+                PliSyntax.Type type = fixed.binary() ? PliSyntax.Type.BINARY : PliSyntax.Type.DECIMAL;
+                Var temporary = new Var("UNSPEC", type, fixed.precision(), fixed.scale(),
+                        Storage.allocate(fixed.binary() ? StructureMapping.binaryLength(
+                                fixed.precision()) : PackedDecimal.byteLength(fixed.precision()))
+                                .whole());
+                temporary.write(fixed, context);
+                return bitsOf(temporary.view.toByteArray());
+            }
+            if (value instanceof String || value instanceof NumericPicture) {
+                return bitsOf(context.codePage().encode(display(value)));
+            }
+            throw new PliExecutionException("the storage of " + value + " is not known (P-183)");
+        }
+
+        private static String bitsOf(byte[] bytes) {
+            StringBuilder bits = new StringBuilder(bytes.length * 8);
+            for (byte b : bytes) {
+                for (int i = 7; i >= 0; i--) bits.append((b >> i & 1) == 1 ? '1' : '0');
+            }
+            return bits.toString();
+        }
+
+        /** ビットの並びを 16 進の字にする。8 の倍数でなければ右を 0 で埋めて byte にする。 */
+        private static String hexOf(String bits) {
+            String padded = bits + "0".repeat((8 - bits.length() % 8) % 8);
+            StringBuilder hex = new StringBuilder(padded.length() / 4);
+            for (int i = 0; i < padded.length(); i += 4) {
+                hex.append("0123456789ABCDEF".charAt(Integer.parseInt(padded.substring(i, i + 4), 2)));
+            }
+            return hex.toString();
+        }
+
+        /** 配列そのものを取る組込み関数の、その配列。 */
+        private Var arrayArgument(PliSyntax.Function function, Env env) {
+            PliSyntax.Expr argument = one(function);
+            Var array = argument instanceof PliSyntax.Reference reference
+                    ? arrayNamed(reference.name(), env) : null;
+            if (array == null) {
+                throw new PliExecutionException(function.name() + " needs an array");
+            }
+            return array;
+        }
+
+        /**
+         * 配列の要素の和 (LRM "SUM")。FIXED の要素なら、結果は要素と同じ基数と位取りで、精度はその
+         * 基数の最大 N である。N は LIMITS の下の限りとし、要素の精度がそれを超えれば上の限りとする
+         * (式の算術と同じ決め方。暫定判断 P-211)。
+         */
+        private Object sum(Var array) {
+            FixedValue.Arithmetic rules = new FixedValue.Arithmetic(options, false, false);
+            BigDecimal total = BigDecimal.ZERO;
+            for (Var element : array.elements) {
+                total = total.add(number(element.read(context)));
+            }
+            return switch (array.type) {
+                case BINARY -> FixedValue.binary(total,
+                        rules.binaryLimit(array.precision, array.precision), array.scale);
+                case DECIMAL, PICTURE -> FixedValue.decimal(total,
+                        rules.decimalLimit(array.precision, array.precision), array.scale);
+                default -> throw new PliExecutionException("SUM of " + array.type
+                        + " elements is not supported yet: " + array.name);
             };
         }
 
