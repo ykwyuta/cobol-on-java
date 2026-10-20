@@ -44,20 +44,67 @@ public final class HlasmRuntime {
     /** 生成クラスに固定した機械語を実行する。翻訳元のライブラリは実行時に不要。 */
     public static int executeEncoded(String name, String encodedText, int entryOffset,
                                      ProgramContext context, DataView[] arguments) {
+        return execute(decodeModule(name, encodedText, entryOffset, ""), context, arguments);
+    }
+
+    /**
+     * 生成クラスに固定した機械語を、番地定数の直し方と一緒に実行する。
+     *
+     * @param relocations {@link #encodeRelocations} の綴り
+     * @param loader      生成クラスを読み込んだもの。{@code V(名前)} の呼び先は同じところから引く
+     */
+    public static int executeEncoded(String name, String encodedText, int entryOffset, String relocations,
+                                     ProgramContext context, DataView[] arguments, ClassLoader loader) {
+        return execute(decodeModule(name, encodedText, entryOffset, relocations), context, arguments,
+                loader);
+    }
+
+    /** 生成クラスが持つ綴りから制御節を作り直す。 */
+    public static ObjectModule decodeModule(String name, String encodedText, int entryOffset,
+                                            String relocations) {
         byte[] text = java.util.Base64.getDecoder().decode(encodedText);
-        ObjectModule module = new ObjectModule(name, text, entryOffset,
-                java.util.Map.of(), java.util.Map.of(), List.of());
-        return execute(module, context, arguments);
+        List<ObjectModule.Relocation> list = new ArrayList<>();
+        for (String entry : relocations.isEmpty() ? new String[0] : relocations.split(";")) {
+            String[] parts = entry.split(",", -1);
+            list.add(new ObjectModule.Relocation(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]),
+                    parts[2].isEmpty() ? null : parts[2]));
+        }
+        return new ObjectModule(name, text, entryOffset, java.util.Map.of(), java.util.Map.of(), List.of(),
+                list);
+    }
+
+    /** 番地定数の直し方を生成クラスへ持たせる綴り。{@code 変位,長さ,外部の名前;...} である。 */
+    static String encodeRelocations(ObjectModule module) {
+        StringBuilder out = new StringBuilder();
+        for (ObjectModule.Relocation relocation : module.relocations()) {
+            if (out.length() > 0) {
+                out.append(';');
+            }
+            out.append(relocation.offset()).append(',').append(relocation.length()).append(',')
+                    .append(relocation.external() == null ? "" : relocation.external());
+        }
+        return out.toString();
     }
 
     public static int execute(ObjectModule module, ProgramContext context, DataView[] arguments) {
-        // context は増分 3 (OS のサービス) で使う。今はどの命令も外へ触れない
-        byte[] text = module.text();
+        return execute(module, context, arguments, null);
+    }
+
+    /**
+     * 実行する。{@code V(名前)} の呼び先は {@code loader} から引いて同じ番地空間に載せる
+     * ({@link ModuleLinker})。
+     */
+    public static int execute(ObjectModule module, ProgramContext context, DataView[] arguments,
+                              ClassLoader loader) {
         byte[] saveArea = new byte[SAVE_AREA_BYTES];
         byte[] parameterList = new byte[Math.max(4, arguments.length * 4)];
 
         AddressSpace.Builder builder = AddressSpace.builder();
-        int textBase = builder.place(module.name(), text);
+        ModuleLinker.Placed main = new ModuleLinker(context, loader, builder).link(module);
+        int textBase = main.base();
+        // OS のサービスの入口として取っておく番地。ここへ分岐すると DataManagement が受ける
+        int serviceBase = builder.place("SERVICES", new byte[16]);
+        DataManagement services = new DataManagement(context, serviceBase);
         int saveBase = builder.place("SAVEAREA", saveArea);
         int listBase = builder.place("PARMLIST", parameterList);
         // 引数は呼ぶ側の記憶域そのものを指す。同じ記憶域を指す引数が 2 つあれば、
@@ -80,6 +127,7 @@ public final class HlasmRuntime {
         }
 
         Cpu cpu = new Cpu(memory);
+        cpu.setSupervisor(services);
         cpu.setRegister(1, listBase);
         cpu.setRegister(13, saveBase);
         cpu.setRegister(14, Cpu.RETURN_SENTINEL);
@@ -90,6 +138,9 @@ public final class HlasmRuntime {
             // 割込みは観測できる結果なので、実行時の例外として包む。
             // RunawayProgramException は包まずに通す。測る側がそれと分かる必要がある
             throw new HlasmExecutionException(module.name() + ": " + failure.getMessage(), failure);
+        } finally {
+            // タスクの終わりに開いたままの DCB を閉じる。番地空間はここで消えるので、残しておけない
+            services.closeAll();
         }
     }
 

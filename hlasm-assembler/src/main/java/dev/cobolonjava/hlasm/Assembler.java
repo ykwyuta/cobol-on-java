@@ -24,6 +24,9 @@ public final class Assembler implements Constants.Scope {
 
     /** 変位の上限。ベース + 変位で表せる範囲である。 */
     private static final int MAX_DISPLACEMENT = 0xFFF;
+    /** 長い変位 (符号付き 20 ビット) の範囲。 */
+    private static final int MIN_LONG_DISPLACEMENT = -0x80000;
+    private static final int MAX_LONG_DISPLACEMENT = 0x7FFFF;
 
     private final String fileName;
     private final CodePage codePage;
@@ -39,6 +42,8 @@ public final class Assembler implements Constants.Scope {
     private final List<List<String>> pools = new ArrayList<>();
     private int poolIndex;
     private final List<ObjectModule.Line> listing = new ArrayList<>();
+    /** 載せる側が直す番地定数。2 周目で集める。 */
+    private final List<ObjectModule.Relocation> relocations = new ArrayList<>();
 
     private Section current;
     private Section mainSection;
@@ -111,8 +116,10 @@ public final class Assembler implements Constants.Scope {
             MacroProcessor.Expansion expansion = MacroProcessor.expand(
                     HlasmReader.read(source), codePage, fileName, library);
             assembler.diagnostics.addAll(expansion.diagnostics());
-            List<Statement> statements = expansion.statements();
+            // DCB / OPEN / PUT / CLOSE はライブラリのマクロが無ければ組み込みの展開を使う
+            List<Statement> statements = SystemMacros.expand(OperationSynonyms.apply(expansion.statements()));
             assembler.pass(statements, false);
+            assembler.resolveDeferredEquates();
             assembler.prepareText();
             assembler.pass(statements, true);
         } catch (AssemblyException failure) {
@@ -130,7 +137,7 @@ public final class Assembler implements Constants.Scope {
         sections.values().stream().filter(s -> s.dummy)
                 .forEach(s -> dummies.put(s.name, s.highWater));
         return new ObjectModule(mainSection == null ? fileName : mainSection.name, text,
-                entryOffset, symbols, dummies, listing);
+                entryOffset, symbols, dummies, listing, relocations);
     }
 
     private void prepareText() {
@@ -140,11 +147,16 @@ public final class Assembler implements Constants.Scope {
         text = new byte[mainSection.highWater];
         // 2 周目は状態を作り直す。USING は翻訳時の状態であり、1 周目の残りを持ち越してはならない
         Arrays.fill(usings, null);
-        sections.values().forEach(section -> section.location = 0);
+        // 最高位置も戻す。戻さないと 2 周目の「ORG」(演算項なし) が節の最後まで飛び、1 周目と番地がずれる
+        sections.values().forEach(section -> {
+            section.location = 0;
+            section.highWater = 0;
+        });
         pendingLiterals.clear();
         // 置き場は 1 周目で決まっている。2 周目はそれを使うので消さない
         poolIndex = 0;
         listing.clear();
+        relocations.clear();
         current = null;
         ended = false;
     }
@@ -191,7 +203,8 @@ public final class Assembler implements Constants.Scope {
                     throw new AssemblyException(statement.line(),
                             "the macro and conditional assembly language is not supported yet: "
                                     + statement.operation());
-            case "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT", "CNOP", "COPY", "ICTL", "OPSYN" ->
+            case "CNOP" -> conditionalNop(statement);
+            case "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT", "COPY", "ICTL" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
@@ -212,6 +225,7 @@ public final class Assembler implements Constants.Scope {
             throw new AssemblyException(statement.line(),
                     "START with a nonzero origin is not supported; the loader decides the address");
         }
+        boolean resumed = sections.containsKey(name);
         Section section = sections.computeIfAbsent(name, key -> new Section(key, dummy));
         if (section.dummy != dummy) {
             throw new AssemblyException(statement.line(),
@@ -225,7 +239,8 @@ public final class Assembler implements Constants.Scope {
             throw new AssemblyException(statement.line(),
                     "more than one control section is not supported yet: " + name);
         }
-        if (!emitting) {
+        if (!emitting && !resumed) {
+            // 同じ名前の CSECT をもう一度書くと、その節の続きから組み立てる (節の再開)。記号は最初の 1 度だけ
             define(name, new Symbol(name, Value.in(name, 0), 1), statement.line());
         }
     }
@@ -314,18 +329,60 @@ public final class Assembler implements Constants.Scope {
     }
 
     private void emitRepeated(Section section, Constants.Piece piece, Statement statement) {
+        int start = emitPiece(section, piece, statement.line());
+        listing.add(new ObjectModule.Line(statement.line(), start,
+                Arrays.copyOfRange(text, start, section.location)));
+    }
+
+    /**
+     * 定数 1 つを反復係数の数だけ置き、番地定数の値を入れる。置いた先頭の変位を返す。
+     *
+     * <p>番地定数は節の先頭からの変位で組み立て、載せる側が直す場所として {@link #relocations} に
+     * 残す。以前は変位のまま置くだけで、実行時に {@code DC A(X)} を番地として使うと、節を置いた番地を
+     * 足していない値を読んでいた。
+     */
+    private int emitPiece(Section section, Constants.Piece piece, int line) {
         byte[] unit = piece.bytes();
         int start = section.location;
         for (int repeat = 0; repeat < piece.duplication(); repeat++) {
             for (Constants.AddressReference reference : piece.references()) {
-                Value value = evaluate(reference.expression(), statement.line());
+                int at = section.location + reference.offset();
+                if (reference.external()) {
+                    writeInt(unit, reference.offset(), reference.length(), 0);
+                    relocations.add(new ObjectModule.Relocation(at, reference.length(),
+                            reference.expression()));
+                    continue;
+                }
+                Value value = evaluate(reference.expression(), line);
+                if (value.isRelocatable()) {
+                    relocatable(value, reference, line);
+                    relocations.add(new ObjectModule.Relocation(at, reference.length(), null));
+                }
                 writeInt(unit, reference.offset(), reference.length(), value.value());
             }
             write(section.location, unit);
             section.advance(unit.length);
         }
-        listing.add(new ObjectModule.Line(statement.line(), start,
-                Arrays.copyOfRange(text, start, section.location)));
+        return start;
+    }
+
+    /**
+     * 番地を持つ値を番地定数に置けるかを確かめる。
+     *
+     * <p>ダミー節の記号は番地ではなく、節の先頭からの変位でしかない (載せる側が置く節がない)。
+     * 3 バイトより短い定数は、載せた番地が入りきらない。どちらも黙って変位のまま置くと、組み立ては
+     * 通って実行時に違う番地を読むので断る。
+     */
+    private void relocatable(Value value, Constants.AddressReference reference, int line) {
+        Section target = sections.get(value.section());
+        if (target != null && target.dummy) {
+            throw new AssemblyException(line, "an address constant cannot point into the dummy section "
+                    + value.section() + ": " + reference.expression());
+        }
+        if (reference.length() < 3) {
+            throw new AssemblyException(line, "a relocatable address needs a constant of 3 or 4 bytes: "
+                    + reference.expression());
+        }
     }
 
     private static void writeInt(byte[] target, int offset, int length, int value) {
@@ -344,6 +401,36 @@ public final class Assembler implements Constants.Scope {
         section.advance(pad);
     }
 
+    /**
+     * {@code CNOP b,w}。所在カウンタを w バイト境界から b バイトの位置まで進め、間を {@code BCR 0,0}
+     * (X'0700') で埋める (HLASM Language Reference "CNOP instruction")。命令の流れの中に置かれるので、
+     * 埋めたものは何もしない命令として実行される。
+     */
+    private void conditionalNop(Statement statement) {
+        Section section = requireSection(statement.line());
+        List<String> operands = statement.operandList();
+        require(operands, 2, statement);
+        int byteOffset = absolute(operands.get(0), statement.line());
+        int boundary = absolute(operands.get(1), statement.line());
+        if ((boundary != 4 && boundary != 8) || byteOffset < 0 || byteOffset >= boundary || byteOffset % 2 != 0) {
+            throw new AssemblyException(statement.line(),
+                    "CNOP requires an even byte offset below a boundary of 4 or 8: " + statement.operands());
+        }
+        align(section, 2);
+        defineLabel(statement, 1);
+        int start = section.location;
+        while (section.location % boundary != byteOffset) {
+            if (emitting && !section.dummy) {
+                write(section.location, new byte[] {0x07, 0x00});
+            }
+            section.advance(2);
+        }
+        if (emitting && !section.dummy) {
+            listing.add(new ObjectModule.Line(statement.line(), start,
+                    Arrays.copyOfRange(text, start, section.location)));
+        }
+    }
+
     // --- EQU / ORG / END ---
 
     private void equate(Statement statement) {
@@ -353,14 +440,63 @@ public final class Assembler implements Constants.Scope {
         if (!statement.hasOperands()) {
             throw new AssemblyException(statement.line(), "EQU requires a value");
         }
+        if (emitting) {
+            return;
+        }
+        Value counter = current == null ? null : Value.in(current.name, current.location);
+        try {
+            defineEquate(statement, counter);
+        } catch (AssemblyException failure) {
+            if (!failure.getMessage().startsWith("undefined symbol")) {
+                throw failure;
+            }
+            // あとで定義される記号を指す EQU (FORWARD EQU NEXT+5 / NEXT EQU 12) は、1 周目の終わりに
+            // 解き直す (HLASM Language Reference "EQU instruction": 前方参照は許される)。所在カウンタ * は
+            // EQU を書いた位置の値で解く
+            deferredEquates.add(new DeferredEquate(statement, counter, failure));
+        }
+    }
+
+    /** 1 周目で値が決まらなかった EQU と、そのときの所在カウンタ。 */
+    private record DeferredEquate(Statement statement, Value counter, AssemblyException failure) {
+    }
+
+    private final List<DeferredEquate> deferredEquates = new ArrayList<>();
+
+    private void defineEquate(Statement statement, Value counter) {
         List<String> operands = statement.operandList();
-        Value value = evaluate(operands.get(0), statement.line());
-        int length = operands.size() > 1 && !operands.get(1).isBlank()
-                ? absolute(operands.get(1), statement.line())
-                : lengthAttributeOf(operands.get(0));
-        if (!emitting) {
-            define(statement.label(), new Symbol(statement.label(), value, length),
+        Value value = Expressions.evaluate(operands.get(0).trim(), counter, symbols::get, codePage,
+                statement.line());
+        int length;
+        if (operands.size() > 1 && !operands.get(1).isBlank()) {
+            length = Expressions.absolute(operands.get(1).trim(), counter, symbols::get, codePage,
                     statement.line());
+        } else {
+            length = lengthAttributeOf(operands.get(0));
+        }
+        define(statement.label(), new Symbol(statement.label(), value, length), statement.line());
+    }
+
+    /** 前方参照の EQU を、進まなくなるまで解き直す。残ったものは最初の誤りで断る。 */
+    private void resolveDeferredEquates() {
+        boolean progress = true;
+        while (progress && !deferredEquates.isEmpty()) {
+            progress = false;
+            for (var iterator = deferredEquates.iterator(); iterator.hasNext(); ) {
+                DeferredEquate deferred = iterator.next();
+                try {
+                    defineEquate(deferred.statement(), deferred.counter());
+                    iterator.remove();
+                    progress = true;
+                } catch (AssemblyException failure) {
+                    if (!failure.getMessage().startsWith("undefined symbol")) {
+                        throw failure;
+                    }
+                }
+            }
+        }
+        if (!deferredEquates.isEmpty()) {
+            throw deferredEquates.get(0).failure();
         }
     }
 
@@ -421,12 +557,8 @@ public final class Assembler implements Constants.Scope {
                 section.advance(piece.totalLength());
                 continue;
             }
-            byte[] unit = piece.bytes();
-            int start = section.location;
-            for (int repeat = 0; repeat < piece.duplication(); repeat++) {
-                write(section.location, unit);
-                section.advance(unit.length);
-            }
+            // リテラルの番地定数 (=A(X)、=V(Y)) も値を入れる。以前は 0 のまま置いていた
+            int start = emitPiece(section, piece, line);
             listing.add(new ObjectModule.Line(line, start,
                     Arrays.copyOfRange(text, start, section.location)));
         }
@@ -443,7 +575,30 @@ public final class Assembler implements Constants.Scope {
             return null;
         }
         int open = topLevelParen(text);
+        if (open >= 0 && text.substring(0, open).toUpperCase(Locale.ROOT).matches("=\\d*[AVY](L\\d+)?")) {
+            // =A(X) / =V(X) の括弧は定数の値である。指標の括弧はその後ろにしか来ない
+            int close = closingParen(text, open);
+            int next = close < 0 ? -1 : topLevelParen(text.substring(close + 1));
+            return next < 0 ? text : text.substring(0, close + 1 + next);
+        }
         return open < 0 ? text : text.substring(0, open);
+    }
+
+    /** {@code open} の括弧に対応する閉じ括弧。引用符の中は数えない。無ければ -1。 */
+    private static int closingParen(String text, int open) {
+        boolean quoted = false;
+        int depth = 0;
+        for (int k = open; k < text.length(); k++) {
+            char c = text.charAt(k);
+            if (c == '\'' && Quotes.isDelimiter(text, k, quoted)) {
+                quoted = !quoted;
+            } else if (!quoted && c == '(') {
+                depth++;
+            } else if (!quoted && c == ')' && --depth == 0) {
+                return k;
+            }
+        }
+        return -1;
     }
 
     /** リテラルの綴りを記録し、その場所を指す値を返す。 */
@@ -503,6 +658,9 @@ public final class Assembler implements Constants.Scope {
     private byte[] encode(Instructions.Definition definition, Statement statement) {
         List<String> operands = statement.operandList();
         int line = statement.line();
+        if (PAIRED.contains(definition.mnemonic()) && !operands.isEmpty()) {
+            evenRegister(register(operands.get(0), line), statement);
+        }
         return switch (definition.format()) {
             case I -> {
                 require(operands, 1, statement);
@@ -598,7 +756,131 @@ public final class Assembler implements Constants.Scope {
                 int packed = (checkRange(l1, 1, 16, line, "the first length") - 1) << 4 | i3;
                 yield ss(definition.opcode(), packed, first, second);
             }
+            case E -> {
+                require(operands, 0, statement);
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode()};
+            }
+            case RS_MASK -> {
+                require(operands, 3, statement);
+                Addr address = address(operands.get(2), false, false, line);
+                yield rs(definition.opcode(), register(operands.get(0), line), mask(operands.get(1), line),
+                        address);
+            }
+            case RI -> {
+                require(operands, 2, statement);
+                int immediate = checkRange(absolute(operands.get(1), line), Short.MIN_VALUE, Short.MAX_VALUE,
+                        line, "the immediate operand");
+                yield new byte[] {(byte) (definition.opcode() >> 4),
+                        (byte) (register(operands.get(0), line) << 4 | definition.opcode() & 0xF),
+                        (byte) (immediate >> 8), (byte) immediate};
+            }
+            case RIL -> {
+                require(operands, 2, statement);
+                // 32 ビットの即値は、符号付きでも符号なしでも書ける (IILF X'FFFFFFFF' と IILF -1 は同じ)
+                long immediate = immediate32(operands.get(1), line);
+                yield new byte[] {(byte) (definition.opcode() >> 4),
+                        (byte) (register(operands.get(0), line) << 4 | definition.opcode() & 0xF),
+                        (byte) (immediate >> 24), (byte) (immediate >> 16), (byte) (immediate >> 8),
+                        (byte) immediate};
+            }
+            case RRE -> {
+                require(operands, 2, statement);
+                int r1 = register(operands.get(0), line);
+                if (definition.mnemonic().equals("FLOGR")) {
+                    evenRegister(r1, statement);
+                }
+                yield rre(definition.opcode(), 0, r1, register(operands.get(1), line));
+            }
+            case RRF_M3 -> {
+                if (operands.size() != 2) {
+                    require(operands, 3, statement);
+                }
+                int m3 = operands.size() == 3 ? mask(operands.get(2), line) : 0;
+                yield rre(definition.opcode(), m3 << 4, register(operands.get(0), line),
+                        register(operands.get(1), line));
+            }
+            case RRF_R3 -> {
+                require(operands, 3, statement);
+                yield rre(definition.opcode(), register(operands.get(2), line) << 4,
+                        register(operands.get(0), line), register(operands.get(1), line));
+            }
+            case RXY -> {
+                require(operands, 2, statement);
+                Addr address = address(operands.get(1), true, false, true, line);
+                yield longForm(definition.opcode(), register(operands.get(0), line), address.index(), address);
+            }
+            case RSY, RSY_MASK -> {
+                require(operands, 3, statement);
+                Addr address = address(operands.get(2), false, false, true, line);
+                int third = definition.format() == Instructions.Format.RSY_MASK
+                        ? mask(operands.get(1), line) : register(operands.get(1), line);
+                yield longForm(definition.opcode(), register(operands.get(0), line), third, address);
+            }
+            case RIE_F -> {
+                if (operands.size() != 4) {
+                    require(operands, 5, statement);
+                }
+                int i3 = checkRange(absolute(operands.get(2), line), 0, 255, line, "the third operand");
+                int i4 = checkRange(absolute(operands.get(3), line), 0, 255, line, "the fourth operand");
+                int i5 = operands.size() == 5
+                        ? checkRange(absolute(operands.get(4), line), 0, 255, line, "the fifth operand") : 0;
+                yield new byte[] {(byte) (definition.opcode() >> 8),
+                        (byte) (register(operands.get(0), line) << 4 | register(operands.get(1), line)),
+                        (byte) i3, (byte) i4, (byte) i5, (byte) definition.opcode()};
+            }
+            case RSL -> {
+                require(operands, 1, statement);
+                Addr first = address(operands.get(0), false, true, line);
+                int l1 = first.length() == null ? lengthAttributeOf(operands.get(0)) : first.length();
+                int length = checkRange(l1, 1, 16, line, "the length");
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) ((length - 1) << 4),
+                        (byte) (first.base() << 4 | first.displacement() >> 8), (byte) first.displacement(),
+                        0, (byte) definition.opcode()};
+            }
         };
+    }
+
+    /** 第 1 演算項が偶数・奇数のレジスタの対を指す命令 (Principles of Operation)。 */
+    private static final java.util.Set<String> PAIRED = java.util.Set.of(
+            "MR", "M", "DR", "D", "SLDL", "SRDL", "SLDA", "SRDA");
+
+    /** 4 ビットのマスク。 */
+    private int mask(String operand, int line) {
+        return checkRange(absolute(operand, line), 0, 15, line, "the mask");
+    }
+
+    /**
+     * 偶数・奇数の対を使う命令の第 1 演算項。
+     *
+     * <p>HLASM は奇数のレジスタを組み立ての時点で誤りにする (HLASM Language Reference の診断 ASMA029E
+     * "Incorrect register specification")。以前は組み立てを通し、実行時に仕様例外としていた。
+     */
+    private static void evenRegister(int register, Statement statement) {
+        if (register % 2 != 0) {
+            throw new AssemblyException(statement.line(), statement.operation()
+                    + " requires an even register for the register pair but R" + register + " was given");
+        }
+    }
+
+    private long immediate32(String operand, int line) {
+        String text = operand.trim();
+        Value value = evaluate(text, line);
+        if (!value.isAbsolute()) {
+            throw new AssemblyException(line, "an absolute expression is required here: " + operand);
+        }
+        return value.value() & 0xFFFFFFFFL;
+    }
+
+    private static byte[] rre(int opcode, int third, int first, int second) {
+        return new byte[] {(byte) (opcode >> 8), (byte) opcode, (byte) third, (byte) (first << 4 | second)};
+    }
+
+    /** RXY / RSY 形式。変位は下位 12 ビット (DL) と上位 8 ビット (DH) に分けて置く。 */
+    private static byte[] longForm(int opcode, int first, int second, Addr address) {
+        int displacement = address.displacement();
+        return new byte[] {(byte) (opcode >> 8), (byte) (first << 4 | second),
+                (byte) (address.base() << 4 | (displacement >> 8) & 0xF), (byte) displacement,
+                (byte) (displacement >> 12), (byte) opcode};
     }
 
     private static byte[] rr(int opcode, int first, int second) {
@@ -655,11 +937,24 @@ public final class Assembler implements Constants.Scope {
      * {@code S(L)})、無ければ暗黙形であり {@code USING} から解く。
      */
     private Addr address(String operand, boolean allowIndex, boolean allowLength, int line) {
+        return address(operand, allowIndex, allowLength, false, line);
+    }
+
+    /**
+     * @param longDisplacement 変位が符号付き 20 ビット (RXY / RSY 形式) なら真
+     */
+    private Addr address(String operand, boolean allowIndex, boolean allowLength, boolean longDisplacement,
+                         int line) {
+        int low = longDisplacement ? MIN_LONG_DISPLACEMENT : 0;
+        int high = longDisplacement ? MAX_LONG_DISPLACEMENT : MAX_DISPLACEMENT;
         String text = operand.trim();
-        int open = topLevelParen(text);
+        String literal = literalTermOf(text);
+        // リテラルの値の括弧 (=V(X)) を指標の括弧と読まない
+        int open = literal == null ? topLevelParen(text)
+                : literal.length() < text.length() ? literal.length() : -1;
         if (open < 0) {
             Value value = evaluate(text, line);
-            return resolve(value, 0, null, line, text);
+            return resolve(value, 0, null, low, high, line, text);
         }
         if (!text.endsWith(")")) {
             throw new AssemblyException(line, "unexpected text after the address: " + operand);
@@ -668,7 +963,7 @@ public final class Assembler implements Constants.Scope {
         List<String> inside = Statement.split(text.substring(open + 1, text.length() - 1), line);
         if (inside.size() == 2) {
             // 明示形。変位は絶対値でなければならない
-            int displacement = checkRange(absolute(head, line), 0, MAX_DISPLACEMENT, line,
+            int displacement = checkRange(absolute(head, line), low, high, line,
                     "the displacement");
             int base = register(inside.get(1), line);
             if (allowLength) {
@@ -687,15 +982,15 @@ public final class Assembler implements Constants.Scope {
         if (allowLength) {
             // S(L) — 長さだけを明示した暗黙形
             Value value = evaluate(head, line);
-            return resolve(value, 0, absolute(only, line), line, head);
+            return resolve(value, 0, absolute(only, line), low, high, line, head);
         }
         if (allowIndex) {
             // S(X) — 指標だけを明示した暗黙形。変位が絶対値ならベースは 0 になる
             Value value = evaluate(head, line);
-            return resolve(value, register(only, line), null, line, head);
+            return resolve(value, register(only, line), null, low, high, line, head);
         }
         // D(B) — ベースだけを明示した形
-        int displacement = checkRange(absolute(head, line), 0, MAX_DISPLACEMENT, line,
+        int displacement = checkRange(absolute(head, line), low, high, line,
                 "the displacement");
         return new Addr(displacement, register(only, line), 0, null);
     }
@@ -721,9 +1016,10 @@ public final class Assembler implements Constants.Scope {
      * 届くものを探す。届くものが 2 つ以上あれば変位の小さいほうを選び、同じなら番号の大きい
      * レジスタを選ぶ。これは HLASM の選び方である。
      */
-    private Addr resolve(Value value, int index, Integer length, int line, String text) {
+    private Addr resolve(Value value, int index, Integer length, int low, int high, int line, String text) {
         if (value.isAbsolute()) {
-            return new Addr(checkRange(value.value(), 0, MAX_DISPLACEMENT, line,
+            // 絶対値はベース 0 の変位である。長い変位 (RXY / RSY) なら負も書ける (LY 2,-4(3))
+            return new Addr(checkRange(value.value(), low, high, line,
                     "the displacement"), 0, index, length);
         }
         int bestRegister = -1;
@@ -734,7 +1030,7 @@ public final class Assembler implements Constants.Scope {
                 continue;
             }
             int displacement = value.value() - using.offset();
-            if (displacement < 0 || displacement > MAX_DISPLACEMENT) {
+            if (displacement < 0 || displacement > high) {
                 continue;
             }
             if (displacement < bestDisplacement

@@ -30,11 +30,13 @@ final class HlasmClassGenerator implements Opcodes {
         String owner = className.replace('.', '/');
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         writer.visit(V21, ACC_PUBLIC | ACC_FINAL | ACC_SUPER, owner, null,
-                "java/lang/Object", new String[] {Type.getInternalName(CobolProgram.class)});
+                "java/lang/Object", new String[] {Type.getInternalName(CobolProgram.class),
+                        Type.getInternalName(HlasmModuleProvider.class)});
         constructor(writer);
         initialStorage(writer);
         name(writer, module.name());
         run(writer, module);
+        hlasmModule(writer, module);
         metadata(writer, "programSignature", ProgramSignature.class, "signatureForModule",
                 module.name());
         metadata(writer, "procedureManifest", ProcedureManifest.class,
@@ -81,6 +83,29 @@ final class HlasmClassGenerator implements Opcodes {
                 Type.getType(DataView[].class));
         MethodVisitor method = writer.visitMethod(ACC_PUBLIC, "run", descriptor, null, null);
         method.visitCode();
+        pushModule(method, module);
+        method.visitVarInsn(ALOAD, 2);
+        method.visitVarInsn(ALOAD, 3);
+        // V(名前) の呼び先は、このクラスを読み込んだところから引く (COBOL の CALL と同じ)
+        method.visitVarInsn(ALOAD, 0);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;", false);
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Class", "getClassLoader",
+                "()Ljava/lang/ClassLoader;", false);
+        method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(HlasmRuntime.class), "executeEncoded",
+                Type.getMethodDescriptor(Type.INT_TYPE, Type.getType(String.class),
+                        Type.getType(String.class), Type.INT_TYPE, Type.getType(String.class),
+                        Type.getType(ProgramContext.class), Type.getType(DataView[].class),
+                        Type.getType(ClassLoader.class)), false);
+        // R15 の戻りコードは副プログラムとして呼ばれたときには捨てる。
+        // 受け取るのは主プログラムとして動かしたとき (main) だけである
+        method.visitInsn(POP);
+        method.visitInsn(RETURN);
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+    }
+
+    /** 名前、機械語、入口、番地定数の直し方をこの順に積む。 */
+    private static void pushModule(MethodVisitor method, ObjectModule module) {
         method.visitLdcInsn(module.name());
         String encoded = java.util.Base64.getEncoder().encodeToString(module.text());
         method.visitTypeInsn(NEW, "java/lang/StringBuilder");
@@ -94,16 +119,19 @@ final class HlasmClassGenerator implements Opcodes {
         method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
                 "()Ljava/lang/String;", false);
         method.visitLdcInsn(module.entryOffset());
-        method.visitVarInsn(ALOAD, 2);
-        method.visitVarInsn(ALOAD, 3);
-        method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(HlasmRuntime.class), "executeEncoded",
-                Type.getMethodDescriptor(Type.INT_TYPE, Type.getType(String.class),
-                        Type.getType(String.class), Type.INT_TYPE, Type.getType(ProgramContext.class),
-                        Type.getType(DataView[].class)), false);
-        // R15 の戻りコードは副プログラムとして呼ばれたときには捨てる。
-        // 受け取るのは主プログラムとして動かしたとき (main) だけである
-        method.visitInsn(POP);
-        method.visitInsn(RETURN);
+        method.visitLdcInsn(HlasmRuntime.encodeRelocations(module));
+    }
+
+    /** 同じ番地空間へ載せるために機械語を渡す ({@link HlasmModuleProvider})。 */
+    private static void hlasmModule(ClassWriter writer, ObjectModule module) {
+        MethodVisitor method = writer.visitMethod(ACC_PUBLIC, "hlasmModule",
+                Type.getMethodDescriptor(Type.getType(ObjectModule.class)), null, null);
+        method.visitCode();
+        pushModule(method, module);
+        method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(HlasmRuntime.class), "decodeModule",
+                Type.getMethodDescriptor(Type.getType(ObjectModule.class), Type.getType(String.class),
+                        Type.getType(String.class), Type.INT_TYPE, Type.getType(String.class)), false);
+        method.visitInsn(ARETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();
     }

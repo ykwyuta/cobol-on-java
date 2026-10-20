@@ -235,10 +235,25 @@ class CpuTest {
                 HlasmRuntime.HlasmExecutionException.class,
                 () -> returnCode(
                         "TEST     CSECT",
-                        "         MR    5,6",
+                        "         DC    X'1C56'          MR 5,6 (組み立てでは断るので機械語で置く)",
                         "         BR    14",
                         "         END"));
         assertTrue(failure.getMessage().contains("S0C6"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("奇数のレジスタの MR / D は組み立ての時点で断る")
+    void rejectsOddRegisterPairsAtAssembly() {
+        for (String operation : new String[] {"MR    5,6", "D     3,=F'2'", "SRDL  1,4", "FLOGR 3,4"}) {
+            Assembler.Result result = Assembler.assemble("T.asm", String.join("\n",
+                    "TEST     CSECT",
+                    "         USING TEST,15",
+                    "         " + operation,
+                    "         BR    14",
+                    "         END"));
+            assertTrue(!result.succeeded() && result.diagnostics().get(0).message().contains("even register"),
+                    operation + ": " + result.diagnostics());
+        }
     }
 
     @Test

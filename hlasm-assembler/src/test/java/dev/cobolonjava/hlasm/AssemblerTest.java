@@ -534,4 +534,125 @@ class AssemblerTest {
                 "         END");
         assertEquals(3, result.diagnostics().get(0).line());
     }
+
+    @Test
+    @DisplayName("FD は 8 バイト境界に置く 8 バイトの固定小数点である")
+    void encodesDoublewordFixedPoint() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    X'01'",
+                "         DC    FD'-3'",
+                "         DC    FD'4294967298'",
+                "         END");
+        assertEquals("FFFFFFFFFFFFFFFD", module.hex(8, 8));
+        assertEquals("0000000100000002", module.hex(16, 8));
+    }
+
+    @Test
+    @DisplayName("CNOP は境界まで BCR 0,0 で埋める")
+    void conditionalNoOperationPadsWithBranchNever() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         LR    1,2",
+                "         CNOP  0,8",
+                "NEXT     LR    3,4",
+                "         END");
+        assertEquals("1812070007000700" + "1834", module.hex(0, 10));
+        assertEquals(8, module.symbols().get("NEXT").value().value());
+    }
+
+    @Test
+    @DisplayName("長い変位の命令は、ベースのない負の変位を書ける")
+    void longDisplacementAcceptsANegativeAbsoluteDisplacement() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         LY    2,-4(3)",
+                "         END");
+        assertEquals("E3230FFCFF58", module.hex(0, 6));
+    }
+
+    @Test
+    @DisplayName("EQU はあとで定義される記号を指せ、* は EQU を書いた位置で解く")
+    void equateMayReferToLaterSymbols() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    A(CHAIN)",
+                "FORWARD  EQU   NEXT+5",
+                "HERE     EQU   *-TEST+LATER-LATER",
+                "CHAIN    EQU   FORWARD+DELTA",
+                "SIZE     EQU   L'FIELD",
+                "NEXT     EQU   12",
+                "START1   DC    7X'00'",
+                "DELTA    EQU   *-START1",
+                "FIELD    DS    CL9",
+                "LATER    DS    0H",
+                "         END");
+        assertEquals(17, module.symbols().get("FORWARD").value().value());
+        assertEquals(24, module.symbols().get("CHAIN").value().value());
+        assertEquals(4, module.symbols().get("HERE").value().value());
+        assertEquals(9, module.symbols().get("SIZE").value().value());
+        assertEquals("00000018", module.hex(0, 4));
+    }
+
+    @Test
+    @DisplayName("どこにも定義されない記号を指す EQU は断る")
+    void rejectsAnEquateThatNeverResolves() {
+        assertFalse(attempt(
+                "TEST     CSECT",
+                "A        EQU   B+1",
+                "B        EQU   C+1",
+                "         END").succeeded());
+    }
+
+    @Test
+    @DisplayName("同じ CSECT をもう一度書くと、その節の続きから組み立てる")
+    void resumesAControlSection() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "         DC    X'01'",
+                "AREA     DSECT",
+                "FIELD    DS    CL4",
+                "TEST     CSECT",
+                "         DC    X'02'",
+                "         END");
+        assertEquals("0102", module.hex(0, 2));
+    }
+
+    @Test
+    @DisplayName("演算項のない ORG は、それまでの最高位置へ戻る (2 周目も同じ)")
+    void orgWithoutOperandReturnsToTheHighWaterMark() {
+        ObjectModule module = assemble(
+                "TEST     CSECT",
+                "START1   DC    8X'00'",
+                "         ORG   START1",
+                "         DC    X'01020304'",
+                "         ORG",
+                "AFTER    DC    X'FF'",
+                "         END");
+        assertEquals("0102030400000000FF", module.hex(0, 9));
+        assertEquals(9, module.length());
+    }
+
+    @Test
+    @DisplayName("OPSYN はその時点の意味の写しを作り、あとの付け替えに引きずられない")
+    void opsynCopiesTheMeaningAtThatPoint() {
+        ObjectModule module = assemble(
+                "OLDADD   OPSYN AHI",
+                "AHI      OPSYN SR",
+                "TEST     CSECT",
+                "         OLDADD 2,7",
+                "         AHI   2,3",
+                "         END");
+        assertEquals("A72A0007" + "1B23", module.hex(0, 6));
+    }
+
+    @Test
+    @DisplayName("演算項のない OPSYN は命令を消し、以後の使用を断る")
+    void opsynWithoutOperandDeletesTheOperation() {
+        assertFalse(attempt(
+                "LR       OPSYN",
+                "TEST     CSECT",
+                "         LR    1,2",
+                "         END").succeeded());
+    }
 }

@@ -184,7 +184,8 @@ class HerculesExecutionOracleTest {
     @Test
     void specificationExceptionCode() throws Exception {
         byte[] data = new byte[DATA_LENGTH];
-        compareInterrupt("mr-odd-register", data, "MR    1,2");
+        // HLASM は奇数のレジスタの MR を組み立てで断る (P-232)。実行時の仕様例外を測るため機械語で置く
+        compareInterrupt("mr-odd-register", data, "DC    X'1C12'          MR 1,2");
     }
 
     @Test

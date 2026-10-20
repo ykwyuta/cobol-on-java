@@ -41,6 +41,9 @@ public final class Constants {
             case 'H' -> new TypeRule(2, 2, false);
             case 'A' -> new TypeRule(4, 4, false);
             case 'Y' -> new TypeRule(2, 2, false);
+            // V は外部の名前の番地。長さと境界は A と同じである (HLASM Language Reference
+            // "Address constants -- V")
+            case 'V' -> new TypeRule(4, 4, false);
             case 'P' -> new TypeRule(1, 1, true);
             case 'Z' -> new TypeRule(1, 1, true);
             case 'E' -> new TypeRule(4, 4, false);
@@ -70,8 +73,12 @@ public final class Constants {
         }
     }
 
-    /** {@code A(label)} のように、2 周目でなければ値が決まらない番地定数。 */
-    public record AddressReference(int offset, int length, String expression) {
+    /**
+     * {@code A(label)} のように、2 周目でなければ値が決まらない番地定数。
+     *
+     * @param external {@code V(名前)} なら真。式ではなく外部の名前であり、値は載せる側が決める
+     */
+    public record AddressReference(int offset, int length, String expression, boolean external) {
     }
 
     /**
@@ -101,6 +108,13 @@ public final class Constants {
         if ((type == 'E' || type == 'D' || type == 'L') && at < operand.length()
                 && "HBD".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0) {
             extension = Character.toUpperCase(operand.charAt(at));
+            at++;
+        }
+        if (type == 'F' && at < operand.length() && Character.toUpperCase(operand.charAt(at)) == 'D') {
+            // FD は 8 バイトの固定小数点 (HLASM Language Reference "Fixed-point constants -- F and H":
+            // 型の拡張 D は doubleword で、境界も 8)
+            extension = 'D';
+            rule = new TypeRule(8, 8, false);
             at++;
         }
 
@@ -185,12 +199,14 @@ public final class Constants {
                 case 'Z' -> zoned(item, explicitLength, scope.codePage(), line);
                 case 'A', 'Y' -> new byte[explicitLength == null
                         ? rule.defaultLength() : explicitLength];
+                case 'V' -> external(item, explicitLength, line);
                 case 'E', 'D', 'L' -> FloatingConstants.encode(type, extension, item, line);
                 default -> throw new AssemblyException(line, "unsupported constant type: " + type);
             };
-            if (type == 'A' || type == 'Y') {
+            if (type == 'A' || type == 'Y' || type == 'V') {
                 references.add(new AddressReference(
-                        encoded.stream().mapToInt(b -> b.length).sum(), bytes.length, item));
+                        encoded.stream().mapToInt(b -> b.length).sum(), bytes.length,
+                        type == 'V' ? item.trim().toUpperCase(java.util.Locale.ROOT) : item, type == 'V'));
             }
             if (rule.lengthFromValue() && explicitLength == null) {
                 unit = bytes.length;
@@ -265,6 +281,26 @@ public final class Constants {
             raw[k] = (byte) Integer.parseInt(padded.substring(k * 8, k * 8 + 8), 2);
         }
         return explicitLength == null ? raw : rightJustify(raw, explicitLength);
+    }
+
+    /**
+     * {@code V} の値は 1 つの名前である。式は書けない。長さは 3 か 4 (HLASM Language Reference
+     * "V-type address constant": 8 は 64 ビットの番地で、この処理系は 31 ビットで載せるので断る)。
+     * 組み立てる値は 0 で、載せる側が入口の番地を入れる。
+     */
+    private static byte[] external(String item, Integer explicitLength, int line) {
+        String name = item.trim();
+        boolean symbol = !name.isEmpty() && Expressions.isNameStart(name.charAt(0))
+                && name.chars().allMatch(c -> Expressions.isNamePart((char) c));
+        if (!symbol) {
+            throw new AssemblyException(line, "a V-type constant requires an external name: " + item);
+        }
+        int length = explicitLength == null ? 4 : explicitLength;
+        if (length != 3 && length != 4) {
+            throw new AssemblyException(line,
+                    "a V-type constant must be 3 or 4 bytes long but is " + length);
+        }
+        return new byte[length];
     }
 
     /** {@code F} と {@code H} は 2 の補数の big endian である。 */
