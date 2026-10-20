@@ -114,6 +114,23 @@ class AbbreviatedRelationTest {
     }
 
     @Test
+    @DisplayName("値だけを並べた比較のあとに = を含む文 (COMPUTE) が続いても読める")
+    void anAbbreviationFollowedByAStatementWithAnEqualSign() {
+        // 先読みが文の境目を越えて COMPUTE の = を拾うと、「OR 98」を省略した比較と読めず構文誤りになっていた
+        // (CardDemo の「WHEN X NOT = SPACES AND LOW-VALUES」のあとの COMPUTE)
+        String[] then = {
+            "    IF WS-A = 1 OR 98",
+            "        COMPUTE WS-B = 3 - 1",
+            "        DISPLAY 'HIT' WS-B",
+            "    ELSE",
+            "        DISPLAY 'MISS'",
+            "    END-IF."};
+
+        assertEquals("HIT0002", runWith(98, 0, then));
+        assertEquals("MISS", runWith(2, 0, then));
+    }
+
+    @Test
     @DisplayName("書き直した演算子は、そこから先へも引き継がれる (FR-046)")
     void arewrittenOperatorCarriesOnward() {
         // 「= 5 OR < 3 OR 200」の最後は「< 200」である。= には戻らない

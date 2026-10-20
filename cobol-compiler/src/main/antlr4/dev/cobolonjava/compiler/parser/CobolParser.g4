@@ -48,6 +48,18 @@ parser grammar CobolParser;
                 case AND: case OR: case PERIOD: case THEN: case ELSE: case END_IF:
                 case WHEN: case UNTIL: case ALSO:
                     return false;
+                // 文の始まりの動詞。条件の中には現れないので、ここで条件は終わっている。
+                // 以前はこれを越えて読み、「IF A = 1 AND 2」のあとの「COMPUTE X = 3 - 1」の = を拾って
+                // 「普通の関係条件が続く」と判断し、略記の選択肢を閉じていた。CardDemo の 3 本
+                // (WHEN ... NOT = SPACES AND LOW-VALUES のあとに COMPUTE がある) がこれで止まっていた
+                case EXEC_BLOCK: case INITIATE: case GENERATE: case TERMINATE: case MOVE: case ADD:
+                case SUBTRACT: case MULTIPLY: case DIVIDE: case COMPUTE: case IF: case CONTINUE: case GO:
+                case EXIT: case PERFORM: case CALL: case CANCEL: case INITIALIZE: case SET: case ACCEPT:
+                case SEARCH: case OPEN: case CLOSE: case READ: case WRITE: case REWRITE: case DELETE:
+                case START: case SORT: case MERGE: case RELEASE: case RETURN: case EVALUATE: case STOP:
+                case GOBACK: case INSPECT: case STRING: case UNSTRING: case ALTER: case ENABLE:
+                case DISABLE: case SEND: case RECEIVE: case PURGE: case DISPLAY: case NEXT:
+                    return false;
                 case EQUAL_SIGN: case GREATER_SIGN: case LESS_SIGN:
                 case GREATER_EQUAL_SIGN: case LESS_EQUAL_SIGN: case NOT_EQUAL_SIGN:
                 case GREATER: case LESS: case EQUAL: case IS:
