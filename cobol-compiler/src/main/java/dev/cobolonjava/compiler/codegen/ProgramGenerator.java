@@ -1497,10 +1497,11 @@ public final class ProgramGenerator {
                     descriptor = "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;L"
                             + DATA_VIEW + ";IIZ)I";
                 }
-                case TEXT -> {
+                case TEXT, DATA -> {
                     from.run();
                     push(statement.flags());
-                    method = "sendTextCondition";
+                    method = statement.kind() == Statement.CicsSendKind.TEXT
+                            ? "sendTextCondition" : "sendDataCondition";
                     descriptor = "(" + CONTEXT + "L" + DATA_VIEW + ";IZ)I";
                 }
                 default -> {

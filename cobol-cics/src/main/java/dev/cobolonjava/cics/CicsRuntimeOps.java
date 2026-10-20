@@ -128,6 +128,8 @@ public final class CicsRuntimeOps {
     private static final int SEND_MAP_FUNCTION = 0x1804;
     private static final int SEND_TEXT_FUNCTION = 0x1806;
     private static final int SEND_CONTROL_FUNCTION = 0x1812;
+    /** 端末制御の SEND。実機の EIBFN とは突き合わせていない (暫定判断 P-195)。 */
+    private static final int SEND_DATA_FUNCTION = 0x0404;
     /** CICS TS 5.6「Function codes of EXEC CICS commands」の表で X'4A04'。X'104A' と取り違えていた。 */
     private static final int FORMATTIME_FUNCTION = 0x4A04;
     private static final int LINK_FUNCTION = 0x0E02;
@@ -1935,6 +1937,34 @@ public final class CicsRuntimeOps {
         execution.showScreen(new CicsTerminalScreen.TextScreen(text,
                 (flags & SEND_FREEKB) != 0, (flags & SEND_ALARM) != 0));
         completeLocalCommand(required, SEND_TEXT_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    /**
+     * MAP も TEXT も書かない端末制御の SEND (暫定判断 P-195)。
+     *
+     * <p>FROM は 3270 のデータ流として端末へそのまま届く。CTLCHAR を書かなければ、CICS は MDT を
+     * 落としてキーボードを戻す WCC を付けると説明されている。データに 3270 の命令 (SBA 等の制御
+     * 文字) が無ければ、画面の先頭から文字を並べることになり、SEND TEXT が作る画面と同じである。
+     * 命令を含むデータは、画面の模型で表せないので断る。
+     */
+    public static int sendDataCondition(
+            ProgramContext context, DataView from, int flags, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        if (Objects.requireNonNull(from, "from").length() > TEXT_SCREEN_SIZE) {
+            throw new CicsTaskStateException("SEND longer than one 24x80 screen is not supported yet");
+        }
+        if (execution.terminalScreen().isPresent() && (flags & SEND_ERASE) == 0) {
+            throw new CicsTaskStateException("SEND over an existing screen requires ERASE");
+        }
+        String text = required.codePage().decode(from.toByteArray());
+        if (text.chars().anyMatch(Character::isISOControl)) {
+            throw new CicsTaskStateException(
+                    "SEND data containing 3270 orders or control characters is not supported yet");
+        }
+        execution.showScreen(new CicsTerminalScreen.TextScreen(text, true, false));
+        completeLocalCommand(required, SEND_DATA_FUNCTION);
         return NO_CONDITION_TRANSFER;
     }
 

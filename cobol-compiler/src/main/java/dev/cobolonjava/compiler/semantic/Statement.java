@@ -295,7 +295,9 @@ public sealed interface Statement {
     enum CicsSendKind {
         MAP,
         TEXT,
-        CONTROL
+        CONTROL,
+        /** MAP も TEXT も書かない端末制御の SEND。FROM をデータ流としてそのまま送る。 */
+        DATA
     }
 
     /**

@@ -419,6 +419,10 @@ final class CicsBlockParser {
             kind = Statement.CicsSendKind.CONTROL;
             allowed = Set.of("CONTROL", "ERASE", "FREEKB", "ALARM", "FRSET", "CURSOR",
                     "RESP", "RESP2", "NOHANDLE");
+        } else if (options.containsKey("FROM")) {
+            // 端末制御の SEND。CTLCHAR、WAIT、STRFIELD 等は送り方の規則を持たないので断る
+            kind = Statement.CicsSendKind.DATA;
+            allowed = Set.of("FROM", "LENGTH", "ERASE", "RESP", "RESP2", "NOHANDLE");
         } else {
             throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
         }
@@ -497,7 +501,8 @@ final class CicsBlockParser {
         if (kind == Statement.CicsSendKind.MAP && from != null && mapOnly) {
             throw new IllegalArgumentException("SEND MAP MAPONLY does not accept FROM");
         }
-        if (kind == Statement.CicsSendKind.TEXT && from == null) {
+        if ((kind == Statement.CicsSendKind.TEXT || kind == Statement.CicsSendKind.DATA)
+                && from == null) {
             throw new IllegalArgumentException("SEND TEXT requires FROM");
         }
         String[] lengthValue = options.get("LENGTH");
@@ -505,7 +510,7 @@ final class CicsBlockParser {
             // FROM 自身の長さなら LENGTH を省いた形と同じである (RETURN COMMAREA と同じ規則)。
             // 別の長さを書かれると FROM の一部か先を送ることになり、その切り方を確かめていない
             throw new IllegalArgumentException(
-                    "SEND TEXT LENGTH is supported only as LENGTH(LENGTH OF x) where x is FROM");
+                    "SEND LENGTH is supported only as LENGTH(LENGTH OF x) where x is FROM");
         }
         String response = sendDataName(options.get("RESP"), "RESP");
         String response2 = sendDataName(options.get("RESP2"), "RESP2");

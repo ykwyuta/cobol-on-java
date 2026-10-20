@@ -158,6 +158,13 @@ class CicsTerminalGenerationTest {
         "    EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA)",
         "    END-EXEC",
         "END-IF",
+        // 端末制御の SEND。MAP も TEXT も書かない
+        "IF LK-AREA = 'DATA'",
+        "    EXEC CICS SEND FROM(WS-TEXT) LENGTH(LENGTH OF WS-TEXT)",
+        "         NOHANDLE ERASE",
+        "    END-EXEC",
+        "    EXEC CICS RETURN END-EXEC",
+        "END-IF",
         "IF LK-AREA = 'TEXT'",
         // FROM 自身の長さを書いた LENGTH は、省いた形と同じである
         "    EXEC CICS SEND TEXT FROM(WS-TEXT) ERASE FREEKB",
@@ -286,6 +293,16 @@ class CicsTerminalGenerationTest {
     }
 
     @Test
+    @DisplayName("端末制御のSENDはFROMを画面の先頭から並べ、キーボードを戻す (P-195)")
+    void sendsTerminalData() throws IOException {
+        TaskCompletion result = run(compiler().compile("SCREEN1.cbl", program(PROCEDURE)), "DATA");
+
+        // SEND TEXT FREEKB と同じ画面になる。CTLCHAR を省いた WCC はキーボードを戻す
+        assertEquals(Optional.of(new CicsTerminalScreen.TextScreen("Session ended", true, false)),
+                result.screen());
+    }
+
+    @Test
     @DisplayName("SEND命令は合成規則を持たないoptionと、書き方の誤りを翻訳時に断る")
     void rejectsUnsupportedSendForms() throws IOException {
         CobolCompiler compiler = compiler();
@@ -299,6 +316,8 @@ class CicsTerminalGenerationTest {
                 new String[] {"EXEC CICS SEND TEXT ERASE END-EXEC", "SEND TEXT requires FROM"},
                 new String[] {"EXEC CICS SEND TEXT FROM(WS-TEXT) LENGTH(5) END-EXEC",
                         "LENGTH(LENGTH OF x) where x is FROM"},
+                new String[] {"EXEC CICS SEND FROM(WS-TEXT) CTLCHAR(WS-RESP) END-EXEC",
+                        "unsupported SEND DATA option: CTLCHAR"},
                 new String[] {"EXEC CICS SEND MAP('SCRMP') FROM(WS-RESP) END-EXEC",
                         "alphanumeric or group"},
                 // 72 桁を越えると END-EXEC が切れる。受けない option の診断は INTO の検査より先に出る
