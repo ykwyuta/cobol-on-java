@@ -632,4 +632,27 @@ class AssemblerTest {
         assertEquals("0102030400000000FF", module.hex(0, 9));
         assertEquals(9, module.length());
     }
+
+    @Test
+    @DisplayName("OPSYN はその時点の意味の写しを作り、あとの付け替えに引きずられない")
+    void opsynCopiesTheMeaningAtThatPoint() {
+        ObjectModule module = assemble(
+                "OLDADD   OPSYN AHI",
+                "AHI      OPSYN SR",
+                "TEST     CSECT",
+                "         OLDADD 2,7",
+                "         AHI   2,3",
+                "         END");
+        assertEquals("A72A0007" + "1B23", module.hex(0, 6));
+    }
+
+    @Test
+    @DisplayName("演算項のない OPSYN は命令を消し、以後の使用を断る")
+    void opsynWithoutOperandDeletesTheOperation() {
+        assertFalse(attempt(
+                "LR       OPSYN",
+                "TEST     CSECT",
+                "         LR    1,2",
+                "         END").succeeded());
+    }
 }

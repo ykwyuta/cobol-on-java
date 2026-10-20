@@ -117,7 +117,7 @@ public final class Assembler implements Constants.Scope {
                     HlasmReader.read(source), codePage, fileName, library);
             assembler.diagnostics.addAll(expansion.diagnostics());
             // DCB / OPEN / PUT / CLOSE はライブラリのマクロが無ければ組み込みの展開を使う
-            List<Statement> statements = SystemMacros.expand(expansion.statements());
+            List<Statement> statements = SystemMacros.expand(OperationSynonyms.apply(expansion.statements()));
             assembler.pass(statements, false);
             assembler.resolveDeferredEquates();
             assembler.prepareText();
@@ -204,7 +204,7 @@ public final class Assembler implements Constants.Scope {
                             "the macro and conditional assembly language is not supported yet: "
                                     + statement.operation());
             case "CNOP" -> conditionalNop(statement);
-            case "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT", "COPY", "ICTL", "OPSYN" ->
+            case "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT", "COPY", "ICTL" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
