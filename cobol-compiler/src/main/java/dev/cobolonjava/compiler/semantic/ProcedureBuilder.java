@@ -2048,6 +2048,20 @@ public final class ProcedureBuilder {
                         throw new IllegalArgumentException(
                                 "SEND FROM must be an alphanumeric or group data area");
                     }
+                    if (spec.length() >= 0) {
+                        int available = from.constantLength().getAsInt();
+                        if (spec.length() < 1 || spec.length() > available) {
+                            // FROM の先にある記憶域まで送る形は、送る相手が端末なので受けない
+                            throw new IllegalArgumentException("SEND LENGTH " + spec.length()
+                                    + " must be 1 to the FROM data area of " + available + " bytes");
+                        }
+                        if (spec.length() < available) {
+                            // 先頭から LENGTH の分だけを送る。部分参照 (1:LENGTH) と同じである
+                            from = new DataReference(from.item(), from.subscripts(),
+                                    new DataReference.RefMod(new DataReference.Subscript.Constant(1),
+                                            new DataReference.Subscript.Constant(spec.length())), origin);
+                        }
+                    }
                 }
                 DataReference[] names = bmsNameAreas(spec.mapData(), spec.mapsetData(), origin);
                 if (names == null) {

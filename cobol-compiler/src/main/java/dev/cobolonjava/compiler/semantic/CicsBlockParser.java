@@ -422,7 +422,7 @@ final class CicsBlockParser {
                     "FREEKB", "ALARM", "FRSET", "RESP", "RESP2", "NOHANDLE");
         } else if (options.containsKey("TEXT")) {
             kind = Statement.CicsSendKind.TEXT;
-            allowed = Set.of("TEXT", "FROM", "LENGTH", "ERASE", "FREEKB", "ALARM",
+            allowed = Set.of("TEXT", "FROM", "LENGTH", "ERASE", "FREEKB", "ALARM", "WAIT",
                     "RESP", "RESP2", "NOHANDLE");
         } else if (options.containsKey("CONTROL")) {
             kind = Statement.CicsSendKind.CONTROL;
@@ -431,7 +431,7 @@ final class CicsBlockParser {
         } else if (options.containsKey("FROM")) {
             // 端末制御の SEND。CTLCHAR、WAIT、STRFIELD 等は送り方の規則を持たないので断る
             kind = Statement.CicsSendKind.DATA;
-            allowed = Set.of("FROM", "LENGTH", "ERASE", "RESP", "RESP2", "NOHANDLE");
+            allowed = Set.of("FROM", "LENGTH", "ERASE", "WAIT", "RESP", "RESP2", "NOHANDLE");
         } else {
             throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
         }
@@ -520,19 +520,24 @@ final class CicsBlockParser {
                 && from == null) {
             throw new IllegalArgumentException("SEND TEXT requires FROM");
         }
+        // WAIT は送り終わるまで待つ指定である。こちらの送り方は task の中で同期なので何も変えない
+        flag.test("WAIT");
         String[] lengthValue = options.get("LENGTH");
-        if (lengthValue != null && !isLengthOfFrom(lengthValue[2], from)) {
-            // FROM 自身の長さなら LENGTH を省いた形と同じである (RETURN COMMAREA と同じ規則)。
-            // 別の長さを書かれると FROM の一部か先を送ることになり、その切り方を確かめていない
+        int length = -1;
+        if (lengthValue != null && lengthValue[1] != null) {
+            // 数字の LENGTH は FROM の先頭から送る長さである。FROM を越えるかは名前を解決してから見る
+            length = Integer.parseInt(lengthValue[1]);
+        } else if (lengthValue != null && !isLengthOfFrom(lengthValue[2], from)) {
+            // FROM 自身の長さなら LENGTH を省いた形と同じである (RETURN COMMAREA と同じ規則)
             throw new IllegalArgumentException(
-                    "SEND LENGTH is supported only as LENGTH(LENGTH OF x) where x is FROM");
+                    "SEND LENGTH is supported only as an integer or LENGTH(LENGTH OF x) where x is FROM");
         }
         String response = sendDataName(options.get("RESP"), "RESP");
         String response2 = sendDataName(options.get("RESP2"), "RESP2");
         if (response2 != null && response == null) {
             throw new IllegalArgumentException("RESP2 requires RESP");
         }
-        SendSpec spec = new SendSpec(kind, map, mapset, mapData, mapsetData, from, flags, cursor);
+        SendSpec spec = new SendSpec(kind, map, mapset, mapData, mapsetData, from, flags, cursor, length);
         return new Parsed(null, null, null, -1, response, response2,
                 flag.test("NOHANDLE"), false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, spec, null, null);
@@ -2123,8 +2128,9 @@ final class CicsBlockParser {
     }
 
     /** SEND命令の、データ名を解決する前の形。 */
+    /** @param length 数字で書いた LENGTH。書かないか FROM 自身の長さなら -1 */
     record SendSpec(Statement.CicsSendKind kind, String map, String mapset, String mapData, String mapsetData,
-                    String from, int flags, int cursor) {
+                    String from, int flags, int cursor, int length) {
     }
 
     /** DELAYの各値。数字だけなら整数定数、そうでなければデータ名。書かなければ null。 */

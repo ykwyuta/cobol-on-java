@@ -182,6 +182,12 @@ class CicsTerminalGenerationTest {
         "    EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA)",
         "    END-EXEC",
         "END-IF",
+        // 数字の LENGTH は FROM の先頭から送る長さ。WAIT は何も変えない (GenApp の lgipvs01)
+        "IF LK-AREA = 'TXT5'",
+        "    EXEC CICS SEND TEXT FROM(WS-TEXT) WAIT ERASE LENGTH(5)",
+        "    END-EXEC",
+        "    EXEC CICS RETURN END-EXEC",
+        "END-IF",
         // 端末制御の SEND。MAP も TEXT も書かない
         "IF LK-AREA = 'DATA'",
         "    EXEC CICS SEND FROM(WS-TEXT) LENGTH(LENGTH OF WS-TEXT)",
@@ -339,6 +345,14 @@ class CicsTerminalGenerationTest {
     }
 
     @Test
+    @DisplayName("SEND TEXTの数字のLENGTHはFROMの先頭からその長さだけを送る")
+    void sendsTheLeadingPartOfFromForANumericLength() throws IOException {
+        TaskCompletion result = run(compiler().compile("SCREEN1.cbl", program(PROCEDURE)), "TXT5");
+
+        assertEquals(Optional.of(new CicsTerminalScreen.TextScreen("Sessi", false, false)), result.screen());
+    }
+
+    @Test
     @DisplayName("端末制御のSENDはFROMを画面の先頭から並べ、キーボードを戻す (P-195)")
     void sendsTerminalData() throws IOException {
         TaskCompletion result = run(compiler().compile("SCREEN1.cbl", program(PROCEDURE)), "DATA");
@@ -361,8 +375,10 @@ class CicsTerminalGenerationTest {
                         "unsupported SEND MAP option: ERASEAUP"},
                 new String[] {"EXEC CICS SEND CONTROL CURSOR END-EXEC", "requires a position"},
                 new String[] {"EXEC CICS SEND TEXT ERASE END-EXEC", "SEND TEXT requires FROM"},
-                new String[] {"EXEC CICS SEND TEXT FROM(WS-TEXT) LENGTH(5) END-EXEC",
-                        "LENGTH(LENGTH OF x) where x is FROM"},
+                new String[] {"EXEC CICS SEND TEXT FROM(WS-TEXT) LENGTH(14) END-EXEC",
+                        "must be 1 to the FROM data area of 13 bytes"},
+                new String[] {"EXEC CICS SEND TEXT FROM(WS-TEXT) LENGTH(WS-RLEN) END-EXEC",
+                        "an integer or LENGTH(LENGTH OF x)"},
                 new String[] {"EXEC CICS SEND FROM(WS-TEXT) CTLCHAR(WS-RESP) END-EXEC",
                         "unsupported SEND DATA option: CTLCHAR"},
                 new String[] {"EXEC CICS SEND MAP('SCRMP') FROM(WS-RESP) END-EXEC",
