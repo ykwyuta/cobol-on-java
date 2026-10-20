@@ -2639,13 +2639,38 @@ public final class ProcedureBuilder {
     }
 
     /**
+     * {@code ACCEPT ... FROM} と {@code DISPLAY ... UPON} に書いた名前の装置。
+     *
+     * <p>{@code SPECIAL-NAMES} で結んだ呼び名を先に引き、無ければ<b>環境名</b>として読む。Enterprise COBOL は
+     * {@code ACCEPT x FROM SYSIN} や {@code DISPLAY x UPON SYSOUT} のように環境名を直接書くことを許している。
+     * 以前は呼び名しか引かず、CardDemo の 2 本 ({@code ACCEPT PRM-INFO FROM SYSIN}) を「呼び名が無い」と断っていた。
+     * 自分で狭く決めていた規則である (CLAUDE.md §3)。
+     */
+    private SpecialNames.FunctionName deviceOf(String name) {
+        SpecialNames.FunctionName declared = specialNames.mnemonic(name);
+        if (declared != null) {
+            return declared;
+        }
+        String upper = name.toUpperCase(Locale.ROOT);
+        return ENVIRONMENT_NAMES.contains(upper) ? SpecialNames.FunctionName.of(upper) : null;
+    }
+
+    /**
+     * 呼び名を宣言せずに直接書ける環境名 (Enterprise COBOL の ACCEPT / DISPLAY の説明)。
+     * {@code SPECIAL-NAMES} の機能名の表はこれより広い ({@code SYSERR}、{@code TERMINAL} などを持つ) が、
+     * それらは宣言してはじめて使える。
+     */
+    private static final java.util.Set<String> ENVIRONMENT_NAMES =
+            java.util.Set.of("CONSOLE", "SYSIN", "SYSIPT", "SYSOUT", "SYSLIST", "SYSLST");
+
+    /**
      * {@code DISPLAY ... UPON 呼び名} の行き先 (要件 FR-135)。
      *
      * <p>呼び名は環境部の {@code SPECIAL-NAMES} で機能名と結び付ける。読み取る側の機能名を
      * 書いていれば誤りである。
      */
     private SpecialNames.FunctionName outputOf(String mnemonic, Origin origin) {
-        SpecialNames.FunctionName function = specialNames.mnemonic(mnemonic);
+        SpecialNames.FunctionName function = deviceOf(mnemonic);
         if (function == null) {
             report(origin, "undefined mnemonic name: " + mnemonic
                     + "; declare it in SPECIAL-NAMES");
@@ -3238,7 +3263,7 @@ public final class ProcedureBuilder {
         if (from != null) {
             if (from.identifier() != null) {
                 String mnemonic = from.identifier().getText();
-                SpecialNames.FunctionName function = specialNames.mnemonic(mnemonic);
+                SpecialNames.FunctionName function = deviceOf(mnemonic);
                 if (function == null) {
                     report(origin, "undefined mnemonic name: " + mnemonic
                             + "; declare it in SPECIAL-NAMES");

@@ -153,6 +153,14 @@ class DisplayGenerationTest {
     }
 
     @Test
+    @DisplayName("環境名 (SYSOUT、CONSOLE) は呼び名を宣言せずに直接書ける")
+    void environmentNamesNeedNoMnemonic() {
+        assertEquals("X|Y|", output(List.of("01 WS-A PIC X."),
+                "DISPLAY 'X' UPON SYSOUT",
+                "DISPLAY 'Y' UPON CONSOLE."));
+    }
+
+    @Test
     @DisplayName("宣言していない呼び名を書いたら誤りとして報告する (FR-135)")
     void anUndeclaredMnemonicIsReported() {
         // 呼び名は環境部の SPECIAL-NAMES で機能名と結び付ける

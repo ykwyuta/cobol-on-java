@@ -166,6 +166,23 @@ class AcceptGenerationTest {
     }
 
     @Test
+    @DisplayName("FROM に環境名 SYSIN / SYSIPT を直接書ける (CardDemo の ACCEPT PRM-INFO FROM SYSIN)")
+    void acceptsFromEnvironmentNames() {
+        assertEquals("one  two  ", withInput(List.of("one", "two"),
+                List.of("01 WS-A PIC X(5).", "01 WS-B PIC X(5)."),
+                "ACCEPT WS-A FROM SYSIN.", "ACCEPT WS-B FROM SYSIPT."));
+    }
+
+    @Test
+    @DisplayName("環境名でも呼び名でもない名前は断る")
+    void refusesUnknownSources() {
+        CobolCompiler.Result result = compile(List.of("01 WS-A PIC X(5)."), "ACCEPT WS-A FROM SYSERR.");
+        org.junit.jupiter.api.Assertions.assertFalse(result.succeeded());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.diagnostics().toString().contains("undefined mnemonic name"), result.diagnostics().toString());
+    }
+
+    @Test
     @DisplayName("読むたびに次の行へ進む (FR-060)")
     void eachAcceptReadsTheNextLine() {
         assertEquals("one  " + "two  ", withInput(List.of("one", "two"),
