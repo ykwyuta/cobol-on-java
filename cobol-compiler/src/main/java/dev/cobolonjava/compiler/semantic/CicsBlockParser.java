@@ -1533,11 +1533,17 @@ final class CicsBlockParser {
             throw new IllegalArgumentException(command
                     + " requires LENGTH; a resource named by its address is not supported");
         }
-        if (length[1] == null) {
-            throw new IllegalArgumentException(command + " LENGTH requires an integer literal");
+        int bytes;
+        if (isLengthOfFrom(length[2], resource)) {
+            // RESOURCE 自身の長さ (GenApp の Length(Length Of STSQ-NAME))。値は名前を解決してから決まる
+            bytes = -1;
+        } else if (length[1] == null) {
+            throw new IllegalArgumentException(command
+                    + " LENGTH requires an integer literal or LENGTH OF the RESOURCE data area");
+        } else {
+            bytes = Integer.parseInt(length[1]);
         }
-        int bytes = Integer.parseInt(length[1]);
-        if (bytes < 1 || bytes > 255) {
+        if (bytes != -1 && (bytes < 1 || bytes > 255)) {
             throw new IllegalArgumentException(command + " LENGTH must be 1 to 255: " + bytes);
         }
         String response = sendDataName(options.get("RESP"), "RESP");

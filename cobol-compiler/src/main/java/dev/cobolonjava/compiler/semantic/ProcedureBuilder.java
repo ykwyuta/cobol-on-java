@@ -1986,11 +1986,15 @@ public final class ProcedureBuilder {
                     throw new IllegalArgumentException(command
                             + " RESOURCE must be an alphanumeric or group data area of fixed length");
                 }
-                if (spec.length() > resource.constantLength().getAsInt()) {
-                    throw new IllegalArgumentException(command + " LENGTH " + spec.length()
+                int length = spec.length() < 0 ? resource.constantLength().getAsInt() : spec.length();
+                if (length > resource.constantLength().getAsInt()) {
+                    throw new IllegalArgumentException(command + " LENGTH " + length
                             + " exceeds the RESOURCE data area of " + resource.constantLength().getAsInt() + " bytes");
                 }
-                return withCicsResponse(new Statement.CicsEnqueue(spec.enqueue(), resource, spec.length(),
+                if (length > 255) {
+                    throw new IllegalArgumentException(command + " LENGTH must be 1 to 255: " + length);
+                }
+                return withCicsResponse(new Statement.CicsEnqueue(spec.enqueue(), resource, length,
                         spec.noSuspend(), spec.taskScope(), parsed.response() != null || parsed.noHandle(),
                         origin), parsed, origin);
             }

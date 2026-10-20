@@ -845,13 +845,16 @@ class CicsGenerationTest {
                 "EXEC CICS ENQ RESOURCE(WS-CHAN) LENGTH(16) RESP(WS-RESP) END-EXEC",
                 "IF WS-RESP = DFHRESP(NORMAL) MOVE 'E' TO LK-AREA(1:1) END-IF",
                 "EXEC CICS ENQ RESOURCE(WS-CHAN) LENGTH(16) NOSUSPEND RESP(WS-RESP) END-EXEC",
-                "EXEC CICS DEQ RESOURCE(WS-CHAN) LENGTH(16) RESP(WS-RESP) END-EXEC",
+                // GenApp の Length(Length Of STSQ-NAME) の形。RESOURCE 自身の長さ 16 になる
+                "EXEC CICS DEQ RESOURCE(WS-CHAN) LENGTH(LENGTH OF WS-CHAN) RESP(WS-RESP) END-EXEC",
                 "IF WS-RESP = DFHRESP(NORMAL) MOVE 'D' TO LK-AREA(2:1) END-IF"));
 
         TaskCompletion result = execute(loader, "ENQDEQ", program);
 
         assertEquals("EDIT", CodePages.DEFAULT.decode(result.payload().commarea()));
         assertRejected("EXEC CICS ENQ RESOURCE(WS-CHAN) END-EXEC", "ENQ requires LENGTH");
+        assertRejected("EXEC CICS ENQ RESOURCE(WS-CHAN) LENGTH(LENGTH OF WS-PGM) END-EXEC",
+                "LENGTH OF the RESOURCE data area");
         assertRejected("EXEC CICS ENQ RESOURCE(WS-CHAN) LENGTH(17) END-EXEC",
                 "ENQ LENGTH 17 exceeds the RESOURCE data area of 16 bytes");
         assertRejected("EXEC CICS DEQ RESOURCE(WS-CHAN) LENGTH(16) LUW END-EXEC",
