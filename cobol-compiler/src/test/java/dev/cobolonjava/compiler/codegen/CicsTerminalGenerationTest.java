@@ -95,6 +95,8 @@ class CicsTerminalGenerationTest {
                 "01  WS-MAPN PIC X(7) VALUE 'SCRMP'.",
                 "01  WS-SETN PIC X(8) VALUE 'SCRSET'.",
                 "01  WS-BADN PIC X(7) VALUE 'scrmp'.",
+                "01  WS-RECV PIC X(10) VALUE ALL '.'.",
+                "01  WS-RLEN PIC S9(4) COMP.",
                 "LINKAGE SECTION.",
                 "01  LK-AREA PIC X(4).",
                 "PROCEDURE DIVISION USING LK-AREA.")) {
@@ -155,6 +157,27 @@ class CicsTerminalGenerationTest {
         "    IF WS-RESP = 0 AND EIBAID = DFHENTER AND CUSTNOL = 3",
         "       AND CUSTNOI = '042'",
         "        MOVE 'GOT ' TO LK-AREA",
+        "    END-IF",
+        "    EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA)",
+        "    END-EXEC",
+        "END-IF",
+        // 端末制御の RECEIVE。書式の無い画面で打たれた入力を transaction ID から読む
+        "IF LK-AREA = 'RAW ' OR 'RAW2'",
+        "    MOVE 10 TO WS-RLEN",
+        "    IF LK-AREA = 'RAW '",
+        "        EXEC CICS RECEIVE INTO(WS-RECV) LENGTH(WS-RLEN)",
+        "             RESP(WS-RESP) END-EXEC",
+        "    ELSE",
+        "        EXEC CICS RECEIVE INTO(WS-RECV) LENGTH(WS-RLEN)",
+        "             MAXLENGTH(6) RESP(WS-RESP) END-EXEC",
+        "    END-IF",
+        "    MOVE 'FAIL' TO LK-AREA",
+        "    IF WS-RESP = 0 AND WS-RLEN = 8 AND WS-RECV = 'TX01 ABC..'",
+        "        MOVE 'GOT ' TO LK-AREA",
+        "    END-IF",
+        "    IF WS-RESP = DFHRESP(LENGERR) AND WS-RLEN = 8",
+        "       AND WS-RECV = 'TX01 a....'",
+        "        MOVE 'LERR' TO LK-AREA",
         "    END-IF",
         "    EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA)",
         "    END-EXEC",
@@ -292,6 +315,27 @@ class CicsTerminalGenerationTest {
 
         assertEquals(Optional.of(new CicsTerminalScreen.TextScreen("Session ended", true, false)),
                 result.screen());
+    }
+
+    @Test
+    @DisplayName("端末制御のRECEIVEは書式の無い画面の入力を読み、長ければ切ってLENGERRにする (GenApp、P-200)")
+    void receivesTypedInputFromAnUnformattedScreen() throws IOException {
+        CobolCompiler.Result result = compiler().compile("SCREEN1.cbl", program(PROCEDURE));
+        CicsEnvironment environment = environment();
+        environment.terminals().setUppercaseTranslation("T001", dev.cobolonjava.cics.CicsCvda.UCTRAN);
+        CicsTaskContext typed = new CicsTaskContext(new CicsTaskId("task_terminal_raw"),
+                TransId.of("TX01"), "terminal-test", Instant.parse("2026-09-10T03:00:03Z"))
+                .withTerminalId(Optional.of("T001"))
+                .withTerminal(Optional.of(new BmsTerminalInput(BmsAid.ENTER, -1, List.of(),
+                        Optional.of("TX01 abc"))), Optional.empty());
+
+        // UCTRAN の端末なので大文字になる。INTO の残り 2 byte は元の '.' のまま
+        assertEquals("GOT ", CodePages.DEFAULT.decode(
+                run(result, "RAW ", typed, environment).payload().commarea()));
+        environment.terminals().setUppercaseTranslation("T001", dev.cobolonjava.cics.CicsCvda.NOUCTRAN);
+        // MAXLENGTH(6) で切り、LENGTH には元の長さ 8 を置く
+        assertEquals("LERR", CodePages.DEFAULT.decode(
+                run(result, "RAW2", typed, environment).payload().commarea()));
     }
 
     @Test

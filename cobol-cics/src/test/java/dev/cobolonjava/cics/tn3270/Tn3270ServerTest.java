@@ -169,6 +169,8 @@ class Tn3270ServerTest {
         CicsTaskContext first = tasks.poll(10, TimeUnit.SECONDS);
         assertEquals(TransId.of("TST1"), first.transactionId());
         assertEquals(BmsAid.ENTER, first.terminalInput().orElseThrow().aid());
+        // 端末制御の RECEIVE が読む、打たれたとおりの文字 (P-200)
+        assertEquals(Optional.of("  tst1 extra"), first.terminalInput().orElseThrow().text());
         String terminal = first.terminalId().orElseThrow();
         byte[] screen = record();
         assertEquals(0xF5, screen[0] & 0xFF);
@@ -182,6 +184,7 @@ class Tn3270ServerTest {
         CicsTaskContext second = tasks.poll(10, TimeUnit.SECONDS);
         BmsTerminalInput input = second.terminalInput().orElseThrow();
         assertEquals(List.of(new BmsTerminalInput.FieldInput("NAME", 1, "BOB")), input.fields());
+        assertEquals(Optional.empty(), input.text(), "map の画面からの入力は書式の無い文字として渡さない");
         assertEquals(9, input.cursorOffset());
         assertEquals(Optional.of(terminal), second.terminalId());
         // 直前の画面は会話から RECEIVE MAP へ渡る

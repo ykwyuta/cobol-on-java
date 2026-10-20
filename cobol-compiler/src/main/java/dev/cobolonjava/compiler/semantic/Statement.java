@@ -280,6 +280,16 @@ public sealed interface Statement {
     }
 
     /** EXEC CICS RECEIVE MAP (設計 79 §8.4)。INTO は入力側の記号マップ。 */
+    /**
+     * MAP を書かない端末制御の EXEC CICS RECEIVE (暫定判断 P-200)。
+     *
+     * @param length    入口で受け取れる長さ (MAXLENGTH を書かなければ)、出口で届いた長さを置く半語の 2 進の域
+     * @param maxLength MAXLENGTH。書かなければ -1
+     */
+    record CicsReceive(DataReference into, DataReference length, int maxLength, boolean asis,
+                       boolean suppressDefaultHandling, Origin origin) implements Statement {
+    }
+
     record CicsReceiveMap(
             String map,
             String mapset,

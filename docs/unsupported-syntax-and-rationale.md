@@ -92,7 +92,7 @@
 | `CTRAN` | `RETURN TRANSID(データ名)` | **受理** | 4 byte の英数字の域に限る。実行時に末尾の空白を落とし、TRANSID の形でなければ (小文字を含む) 推測で直さず失敗させる。`PROGRAM(データ名)` と `ABCODE(データ名)` も扱う (P-124) |
 | `CRQTS` | `ITEM` も `NEXT` も無い `READQ TS` | `READQ TS requires either ITEM or NEXT` | 文書が既定を示していない形 (P-137) |
 | `CSTUT` | `START ... USERID(...) TERMID(...)` | `START USERID with TERMID is not supported` | P-149 |
-| `CRECV` | `RECEIVE INTO` (map を使わない端末入力) | `unsupported or malformed EXEC CICS block` | 未実装。TN3270 の入口では TRANSID の後ろの入力を読めない (P-191) |
+| `CRECV` | `RECEIVE INTO` (map を使わない端末入力) | 受理 | 2026-10-20 に実装。書式の無い画面で打たれた文字だけを読む。map の画面からの入力と `NOTRUNCATE` / `SET` は断る (P-200) |
 | `MQ` | `CALL 'MQOPEN'` | **受理するが、実行で program が見つからない** | MQI は未実装 (改善計画 2-4) |
 
 BMS (`SEND MAP` / `RECEIVE MAP`) は実装済みで、ブラウザ (設計 81) と TN3270 (設計 86) の端末から使える。

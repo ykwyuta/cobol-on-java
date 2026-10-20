@@ -186,7 +186,9 @@ public final class CicsEib {
             java.util.Map.entry(CicsResponseCode.ILLOGIC, java.util.Set.of(0x0600)),
             java.util.Map.entry(CicsResponseCode.RECORDBUSY, java.util.Set.of(0x0600)),
             java.util.Map.entry(CicsResponseCode.SYSIDERR, java.util.Set.of(0x0600, 0x0800, 0x0A00, 0x1000)),
-            java.util.Map.entry(CicsResponseCode.LENGERR, java.util.Set.of(0x0600, 0x0800, 0x0A00, 0x1000, 0x3400)),
+            // 0x0400 は端末制御の RECEIVE (暫定判断 P-200)
+            java.util.Map.entry(CicsResponseCode.LENGERR,
+                    java.util.Set.of(0x0400, 0x0600, 0x0800, 0x0A00, 0x1000, 0x3400)),
             java.util.Map.entry(CicsResponseCode.ENQBUSY, java.util.Set.of(0x1200)),
             java.util.Map.entry(CicsResponseCode.CONTAINERERR, java.util.Set.of(0x3400)),
             java.util.Map.entry(CicsResponseCode.CHANNELERR, java.util.Set.of(0x1000, 0x3400)));

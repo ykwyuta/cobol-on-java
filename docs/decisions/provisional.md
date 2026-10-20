@@ -6095,6 +6095,7 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 - `-E` を名乗りながら色を描かない端末 (古いエミュレータ) には SFE が届く。3270 の規則では知らない
   拡張属性は無視されるので画面は崩れないはずだが、測っていない
 - TRANSID の後ろの入力を読む資産 (`EXEC CICS RECEIVE INTO`) は、その値を受け取れない
+  (2026-10-20 に P-200 で受け取れるようにした。書式の無い画面で打たれた文字を task へ渡す)
 
 **解消条件**: z/OS の CICS (TYPETERM の既定、自動導入) に同じ台本を流して画面と WCC を比べる。
 `RECEIVE INTO` を実装し、端末の入力を task へ渡す口を `CicsTaskRequest` に足す。sign on (CESN) を
@@ -6288,3 +6289,28 @@ COMMAREA を読み、そうでなければ端末から RECEIVE するので、�
 なりうる)。STARTCODE で道を分ける資産は、ここで分かれ方が変わる。
 
 **解消条件**: 入口 (HTTP、TN3270、START、非同期) ごとに実機の対応する起動で STARTCODE を採る。
+
+## P-200 端末制御の `RECEIVE INTO` は、書式の無い画面で打たれて task を起こした文字だけを読む
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `CicsBlockParser.parseTerminalReceive`、`CicsRuntimeOps.receiveCondition`、`BmsTerminalInput.text`、`Tn3270Server` |
+| 関連要件 | 設計 79 §8、P-191 |
+
+**いまの扱い**: MAP を書かない `RECEIVE INTO(x) LENGTH(n) [MAXLENGTH(m)] [ASIS]` を受ける。TN3270 の入口は、書式の無い画面
+(消去した画面、SEND TEXT の画面) で打たれた文字を、null を落として task へ渡す。RECEIVE はそれを transaction ID から読む。
+受け取れる長さは MAXLENGTH、書かなければ LENGTH の入口の値である。長ければその長さで切って LENGERR とし、LENGTH には元の
+長さを置く。INTO の残りは変えない。端末が UCTRAN なら大文字にする (ASIS なら変えない)。EIBFN は X'0402'、LENGERR の
+EIBRCODE は他の群と同じく binary zero とする。
+
+**なぜ暫定か**: GenApp の lgsetup、lgicvs01、lgstsq は、`SSC1 nnnn` のように transaction ID の後ろに打った値を RECEIVE で
+読み、長さから 5 を引いて値を取り出す。CICS の RECEIVE の説明 (MAXLENGTH と LENGTH の関係、LENGERR で切ること) に従った。
+
+**どこがずれうるか**: map の画面から送られた入力 (SBA の命令を含む 3270 のデータ流) は読めず、task を失敗させる。同じ task の
+2 度目の RECEIVE は、実機なら次の入力を待つが、ここでは同じ文字をもう一度読む。`NOTRUNCATE` (残りを次の RECEIVE で読む) と
+`SET` は断る。HTTP の入口から起こした task は端末の文字を持たないので失敗する (実機の DPL では INVREQ になりうる)。
+EIBFN、EIBRCODE、LENGERR のときの LENGTH の値は実機と突き合わせていない。
+
+**解消条件**: z/OS の CICS で、書式の無い画面からの RECEIVE と、MAXLENGTH を越える入力の LENGTH / EIBRCODE を TN3270 で採る。
+map の画面からの RECEIVE は、3270 のデータ流をそのまま渡す形を設計してから受ける。

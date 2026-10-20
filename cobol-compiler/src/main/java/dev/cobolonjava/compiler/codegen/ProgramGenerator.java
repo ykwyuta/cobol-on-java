@@ -775,6 +775,8 @@ public final class ProgramGenerator {
                 planCicsSend(send, body);
             } else if (statement instanceof Statement.CicsReceiveMap receive) {
                 planCicsReceiveMap(receive, body);
+            } else if (statement instanceof Statement.CicsReceive receive) {
+                planCicsReceive(receive, body);
             } else if (statement instanceof Statement.CicsContainer container) {
                 planCicsContainer(container, body);
             } else if (statement instanceof Statement.CicsEnqueue enqueue) {
@@ -1449,6 +1451,25 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "bmsName",
                     "(" + CONTEXT + "[BLjava/lang/String;)Ljava/lang/String;", false);
         };
+    }
+
+    private void planCicsReceive(Statement.CicsReceive statement, List<Runnable> body) {
+        Runnable into = planWholeView(statement.into(), statement.origin());
+        Runnable length = planWholeView(statement.length(), statement.origin());
+        if (into == null || length == null) {
+            return;
+        }
+        body.add(() -> {
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            into.run();
+            length.run();
+            push(statement.maxLength());
+            run.visitInsn(statement.asis() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitInsn(statement.suppressDefaultHandling() ? Opcodes.ICONST_1 : Opcodes.ICONST_0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "receiveCondition",
+                    "(" + CONTEXT + "L" + DATA_VIEW + ";L" + DATA_VIEW + ";IZZ)I", false);
+            emitCicsConditionTransfer();
+        });
     }
 
     private void planCicsReceiveMap(Statement.CicsReceiveMap statement, List<Runnable> body) {

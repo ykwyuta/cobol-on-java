@@ -468,7 +468,13 @@ public final class Tn3270Server implements AutoCloseable {
          */
         private BmsTerminalInput input(BmsAid aid, Tn3270DataStream.Inbound inbound) {
             if (onScreen.isEmpty()) {
-                return new BmsTerminalInput(aid, -1, List.of());
+                // 書式の無い画面 (消去した画面、SEND TEXT の画面) で打たれた文字。端末制御の RECEIVE が読む
+                ByteArrayOutputStream typed = new ByteArrayOutputStream();
+                for (Tn3270DataStream.InboundField field : inbound.fields()) {
+                    typed.writeBytes(withoutNulls(field.data()));
+                }
+                return new BmsTerminalInput(aid, -1, List.of(),
+                        Optional.of(codePage.decode(typed.toByteArray())));
             }
             BmsScreenSnapshot snapshot = onScreen.orElseThrow();
             // 画面を送ったときと同じ規則 (Tn3270DataStream) で、既定か代替の大きさかを選ぶ

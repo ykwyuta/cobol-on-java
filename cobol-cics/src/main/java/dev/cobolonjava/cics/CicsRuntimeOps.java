@@ -128,6 +128,8 @@ public final class CicsRuntimeOps {
     private static final int SEND_MAP_FUNCTION = 0x1804;
     private static final int SEND_TEXT_FUNCTION = 0x1806;
     private static final int SEND_CONTROL_FUNCTION = 0x1812;
+    /** 端末制御の RECEIVE。実機の EIBFN とは突き合わせていない (暫定判断 P-200)。 */
+    private static final int RECEIVE_FUNCTION = 0x0402;
     /** 端末制御の SEND。実機の EIBFN とは突き合わせていない (暫定判断 P-195)。 */
     private static final int SEND_DATA_FUNCTION = 0x0404;
     /** CICS TS 5.6「Function codes of EXEC CICS commands」の表で X'4A04'。X'104A' と取り違えていた。 */
@@ -1949,6 +1951,49 @@ public final class CicsRuntimeOps {
         into.setBytes(symbolic);
         execution.showScreen(new CicsTerminalScreen.MapScreen(received.screen()));
         completeLocalCommand(required, RECEIVE_MAP_FUNCTION);
+        return NO_CONDITION_TRANSFER;
+    }
+
+    /**
+     * MAP を書かない端末制御の RECEIVE (暫定判断 P-200)。
+     *
+     * <p>読むのは、書式の無い画面で打たれて task を起こした入力である。transaction ID から始まる。受け取れる長さは
+     * MAXLENGTH、書かなければ LENGTH の入口の値である。長ければその長さで切って LENGERR とし、LENGTH には元の
+     * 長さを置く。INTO の残りは変えない。map の画面からの入力 (3270 の命令を含むデータ流) は読めないので失敗させる。
+     */
+    public static int receiveCondition(ProgramContext context, DataView into, DataView length, int maxLength,
+                                       boolean asis, boolean suppressDefaultHandling) {
+        ProgramContext required = Objects.requireNonNull(context, "context");
+        CicsExecution execution = execution(required);
+        dev.cobolonjava.cics.bms.BmsTerminalInput input = execution.task().terminalInput()
+                .filter(carried -> carried.text().isPresent())
+                .orElseThrow(() -> new CicsTaskStateException(
+                        "RECEIVE requires input typed on an unformatted screen;"
+                                + " input from a map screen or a task without a terminal cannot be read"));
+        boolean uppercase = !asis && execution.task().terminalId()
+                .map(terminal -> execution.environment().terminals().uppercaseTranslation(terminal)
+                        == CicsCvda.UCTRAN)
+                .orElse(false);
+        String text = (uppercase ? input.uppercased() : input).text().orElseThrow();
+        byte[] data = required.codePage().encode(text);
+        int limit = maxLength >= 0 ? maxLength : halfword(Objects.requireNonNull(length, "length"));
+        if (limit < 0) {
+            throw new CicsTaskStateException("RECEIVE LENGTH must not be negative: " + limit);
+        }
+        int moved = Math.min(data.length, limit);
+        if (moved > Objects.requireNonNull(into, "into").length()) {
+            throw new CicsTaskStateException("RECEIVE would move " + moved + " bytes into an INTO area of "
+                    + into.length() + " bytes");
+        }
+        into.subView(0, moved).setBytes(java.util.Arrays.copyOf(data, moved));
+        setHalfword(length, data.length);
+        if (data.length > limit) {
+            CicsCommandOutcome outcome = new CicsCommandOutcome(
+                    CicsResponseCode.LENGERR, 0, new ContinueControl(CicsPayload.empty()));
+            execution.eib(required.codePage()).completeCommand(RECEIVE_FUNCTION, CicsResponseCode.LENGERR, 0);
+            return conditionTarget(required, outcome, suppressDefaultHandling, "RECEIVE");
+        }
+        completeLocalCommand(required, RECEIVE_FUNCTION);
         return NO_CONDITION_TRANSFER;
     }
 

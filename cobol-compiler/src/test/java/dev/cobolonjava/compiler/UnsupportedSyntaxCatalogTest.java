@@ -185,7 +185,7 @@ class UnsupportedSyntaxCatalogTest {
                 Arguments.of(program("CSTUT", List.of(), List.of("EXEC CICS START TRANSID('TX02') USERID('U1')",
                         "    TERMID('T001') END-EXEC")), "START USERID with TERMID is not supported"),
                 Arguments.of(program("CRECV", ws("01 A PIC X(10).", "01 L PIC S9(4) COMP."),
-                        List.of("EXEC CICS RECEIVE INTO(A) LENGTH(L) END-EXEC")), "unsupported or malformed EXEC CICS block"),
+                        List.of("EXEC CICS RECEIVE INTO(A) LENGTH(L) END-EXEC")), ACCEPTED),
                 // MQ は CALL 'MQOPEN' が翻訳では普通の動的 CALL として通り、実行で見つからない
                 Arguments.of(program("MQ", ws("01 H PIC S9(9) BINARY."), List.of("CALL 'MQOPEN' USING H")), ACCEPTED),
                 // 2.7 削除済み旧構文。断るが、旧構文であることを示す専用の文言は持たない

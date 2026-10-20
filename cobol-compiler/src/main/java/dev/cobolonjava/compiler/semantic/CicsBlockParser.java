@@ -573,7 +573,7 @@ final class CicsBlockParser {
             position = option.end();
         }
         if (!options.containsKey("MAP")) {
-            throw new IllegalArgumentException("unsupported or malformed EXEC CICS block");
+            return parseTerminalReceive(options);
         }
         for (String name : options.keySet()) {
             if (!Set.of("MAP", "MAPSET", "INTO", "TERMINAL", "ASIS", "RESP", "RESP2", "NOHANDLE").contains(name)) {
@@ -615,7 +615,50 @@ final class CicsBlockParser {
         return new Parsed(null, null, null, -1, response, response2,
                 noHandle != null, false, false, false, false,
                 null, List.of(), null, null, null, List.of(), null, null, null, null,
-                new ReceiveSpec(map, mapset, mapData, mapsetData, into, options.containsKey("ASIS")), null);
+                new ReceiveSpec(map, mapset, mapData, mapsetData, into, options.containsKey("ASIS"),
+                        null, -1), null);
+    }
+
+    /**
+     * MAP を書かない端末制御の RECEIVE (暫定判断 P-200)。{@code INTO} と {@code LENGTH} を求める。
+     *
+     * <p>{@code SET} (番地渡し) と {@code NOTRUNCATE} (残りを次の RECEIVE で読む) は、入力を持ち越す仕組みが無いので断る。
+     */
+    private static Parsed parseTerminalReceive(java.util.Map<String, String[]> options) {
+        for (String name : options.keySet()) {
+            if (!Set.of("INTO", "LENGTH", "MAXLENGTH", "ASIS", "RESP", "RESP2", "NOHANDLE").contains(name)) {
+                throw new IllegalArgumentException("unsupported RECEIVE option: " + name);
+            }
+        }
+        String into = sendDataName(options.get("INTO"), "INTO");
+        String length = sendDataName(options.get("LENGTH"), "LENGTH");
+        if (into == null || length == null) {
+            throw new IllegalArgumentException("RECEIVE requires INTO and LENGTH");
+        }
+        int maxLength = -1;
+        String[] max = options.get("MAXLENGTH");
+        if (max != null) {
+            if (max[1] == null) {
+                throw new IllegalArgumentException("RECEIVE MAXLENGTH accepts only an integer literal");
+            }
+            maxLength = Integer.parseInt(max[1]);
+        }
+        String[] asis = options.get("ASIS");
+        String[] noHandle = options.get("NOHANDLE");
+        for (String[] flag : java.util.Arrays.asList(asis, noHandle)) {
+            if (flag != null && (flag[0] != null || flag[1] != null || flag[2] != null)) {
+                throw new IllegalArgumentException("ASIS and NOHANDLE do not take a value");
+            }
+        }
+        String response = sendDataName(options.get("RESP"), "RESP");
+        String response2 = sendDataName(options.get("RESP2"), "RESP2");
+        if (response2 != null && response == null) {
+            throw new IllegalArgumentException("RESP2 requires RESP");
+        }
+        return new Parsed(null, null, null, -1, response, response2,
+                noHandle != null, false, false, false, false,
+                null, List.of(), null, null, null, List.of(), null, null, null, null,
+                new ReceiveSpec(null, null, null, null, into, asis != null, length, maxLength), null);
     }
 
     /**
@@ -2058,7 +2101,19 @@ final class CicsBlockParser {
     }
 
     /** RECEIVE MAPの、データ名を解決する前の形。 */
-    record ReceiveSpec(String map, String mapset, String mapData, String mapsetData, String into, boolean asis) {
+    /**
+     * RECEIVE の、データ名を解決する前の形。
+     *
+     * @param length    端末制御の RECEIVE の LENGTH の域。RECEIVE MAP なら null
+     * @param maxLength 端末制御の RECEIVE の MAXLENGTH。書かなければ -1
+     */
+    record ReceiveSpec(String map, String mapset, String mapData, String mapsetData, String into, boolean asis,
+                       String length, int maxLength) {
+
+        /** MAP を書かない端末制御の RECEIVE か。 */
+        boolean terminal() {
+            return map == null && mapData == null;
+        }
     }
 
     /** SEND命令の、データ名を解決する前の形。 */

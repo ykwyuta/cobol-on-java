@@ -2000,6 +2000,22 @@ public final class ProcedureBuilder {
                 if (into == null) {
                     return null;
                 }
+                if (spec.terminal()) {
+                    if (into.constantLength().isEmpty()) {
+                        throw new IllegalArgumentException("RECEIVE INTO must be a data area with a fixed length");
+                    }
+                    DataReference length = resolver.resolveName(spec.length(), origin);
+                    if (length == null) {
+                        return null;
+                    }
+                    Usage usage = length.item().usage() == null ? Usage.DISPLAY : length.item().usage();
+                    if ((usage != Usage.COMP && usage != Usage.COMP_5) || length.item().length() != Short.BYTES
+                            || !DataCategory.of(length).isNumeric()) {
+                        throw new IllegalArgumentException("RECEIVE LENGTH must be a halfword binary data area");
+                    }
+                    return withCicsResponse(new Statement.CicsReceive(into, length, spec.maxLength(), spec.asis(),
+                            parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
+                }
                 if (into.constantLength().isEmpty()
                         || !(DataCategory.of(into).isAlphanumericLike()
                                 || DataCategory.of(into) == DataCategory.GROUP)) {
