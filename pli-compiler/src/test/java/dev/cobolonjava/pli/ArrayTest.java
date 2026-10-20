@@ -265,4 +265,21 @@ class ArrayTest {
                 PUT SKIP EDIT(SUM(A) + SUM(D) - 4, ' ', SUM(D))(F(2), A, F(1));
                 """));
     }
+
+    @Test
+    @DisplayName("FIXED BIN(8) UNSIGNED は 1 byte で 255 を持ち、符号つきの FIXED BIN(8) は 2 byte である")
+    void unsignedBinaryHasItsOwnSize() throws Exception {
+        assertEquals("FF 255 00FF 1 2\n", main("""
+                DCL U FIXED BIN(8) UNSIGNED;
+                DCL S FIXED BIN(8) SIGNED;
+                U = 255; S = 255;
+                PUT SKIP EDIT(HEX(U), ' ', U, ' ', HEX(S), ' ', SIZE(U), ' ', SIZE(S))
+                             (A, A, F(3), A, A, A, F(1), A, F(1));
+                """));
+        assertThrows(RuntimeException.class, () -> main("""
+                DCL U FIXED BIN(8) UNSIGNED;
+                U = -1;
+                """));
+        assertTrue(rejection("DCL C CHAR(2) UNSIGNED;").contains("UNSIGNED"));
+    }
 }

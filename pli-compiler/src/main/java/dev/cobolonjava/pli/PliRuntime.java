@@ -436,6 +436,7 @@ public final class PliRuntime {
                 Var variable = new Var(child.name(), child.type(), child.precision(),
                         child.scale(), view, mapping.bitShift(i));
                 variable.varying = child.varying();
+                variable.unsigned = child.unsigned();
                 env.put(variable);
                 env.alias(tree.get(index).name() + "." + child.name(), variable);
                 if (index > 0) {
@@ -496,7 +497,8 @@ public final class PliRuntime {
                             + base.name + ", which is not an array");
                 }
                 if (base.type != declaration.type() || base.precision != declaration.precision()
-                        || base.scale != declaration.scale() || base.varying != declaration.varying()) {
+                        || base.scale != declaration.scale() || base.varying != declaration.varying()
+                        || base.unsigned != declaration.unsigned()) {
                     throw new PliExecutionException("the array " + name + " must have the attributes"
                             + " of its base " + base.name + " (simple or iSUB defining)");
                 }
@@ -557,6 +559,7 @@ public final class PliRuntime {
             } else if (defined.position() == null && target.type == declaration.type()
                     && target.precision == declaration.precision()
                     && target.scale == declaration.scale() && target.varying == declaration.varying()
+                    && target.unsigned == declaration.unsigned()
                     && target.bitShift == 0) {
                 view = target.view;
             } else {
@@ -642,7 +645,7 @@ public final class PliRuntime {
                 int length = declaration.varying() ? passed.length() - 2 : passed.length();
                 declareScalar(new PliSyntax.Decl(declaration.name(), declaration.level(),
                         declaration.type(), Math.max(0, length), 0, null, null,
-                        declaration.aligned(), declaration.varying(), List.of(), List.of(), null, null),
+                        declaration.aligned(), declaration.varying(), List.of(), List.of(), null, null, false),
                         env, area, offset, alias);
                 return;
             }
@@ -682,6 +685,7 @@ public final class PliRuntime {
             Var variable = new Var(declaration.name(), declaration.type(),
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
+            variable.unsigned = declaration.unsigned();
             if (!declaration.dimensions().isEmpty()) {
                 declareElements(variable, declaration,
                         StructureMapping.unaligned(List.of(declaration), 0), 0);
@@ -715,6 +719,7 @@ public final class PliRuntime {
                         declaration.precision(), declaration.scale(),
                         array.view.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
                 element.varying = declaration.varying();
+                element.unsigned = declaration.unsigned();
                 array.elements.add(element);
             }
         }
@@ -1190,10 +1195,12 @@ public final class PliRuntime {
             }
             PliSyntax.Decl shaped = new PliSyntax.Decl(parameter.name(), 0, parameter.type(),
                     precision, parameter.scale(), null, null, parameter.aligned(),
-                    parameter.varying(), List.of(), List.of(), null, null);
+                    parameter.varying(), List.of(), List.of(), null, null,
+                    parameter.unsigned());
             Var dummy = new Var(parameter.name(), parameter.type(), precision, parameter.scale(),
                     Storage.allocate(byteLength(shaped)).whole());
             dummy.varying = parameter.varying();
+            dummy.unsigned = parameter.unsigned();
             initializeNow(dummy, null, env);
             dummy.write(value, context);
             return dummy;
@@ -1215,7 +1222,8 @@ public final class PliRuntime {
                         && (parameter.precision() == PliSyntax.STAR
                                 || variable.precision == parameter.precision());
                 default -> variable.precision == parameter.precision()
-                        && variable.scale == parameter.scale();
+                        && variable.scale == parameter.scale()
+                        && variable.unsigned == parameter.unsigned();
             };
         }
 
@@ -2124,6 +2132,8 @@ public final class PliRuntime {
         List<PliSyntax.Bound> dimensions;
         /** 配列の要素。行の順。 */
         final List<Var> elements = new ArrayList<>();
+        /** {@code FIXED BIN UNSIGNED} なら真。記憶域を符号なしの整数として読み書きする。 */
+        boolean unsigned;
         /** 要素を DEFINED の基から引いた配列なら真。{@link #view} は配列の記憶域ではない。 */
         boolean defined;
 
@@ -2156,8 +2166,9 @@ public final class PliRuntime {
                 case PICTURE -> new NumericPicture(
                         context.codePage().decode(view.toByteArray()), precision, scale);
                 // FIXED BIN(p,q) の記憶域は 2 の補数の整数で、値はそれを 2 の q 乗で割ったもの
-                case BINARY -> FixedValue.binary(new BigDecimal(
-                        new java.math.BigInteger(view.toByteArray()))
+                case BINARY -> FixedValue.binary(new BigDecimal(unsigned
+                        ? new java.math.BigInteger(1, view.toByteArray())
+                        : new java.math.BigInteger(view.toByteArray()))
                         .divide(BigDecimal.valueOf(2).pow(Math.max(0, scale)))
                         .multiply(BigDecimal.valueOf(2).pow(Math.max(0, -scale))),
                         precision, scale);
@@ -2266,8 +2277,15 @@ public final class PliRuntime {
             BigDecimal scaled = scale >= 0
                     ? value.multiply(BigDecimal.valueOf(2).pow(scale))
                     : value.divide(BigDecimal.valueOf(2).pow(-scale));
-            byte[] full = scaled.setScale(0, java.math.RoundingMode.DOWN).toBigInteger()
-                    .toByteArray();
+            java.math.BigInteger whole = scaled.setScale(0, java.math.RoundingMode.DOWN)
+                    .toBigInteger();
+            if (unsigned && whole.signum() < 0) {
+                // 符号なしの変数に負の値は表せない。SIZE は既定で無効で、結果は決まっていない
+                // (LRM "SIZE condition")。決まらない値を黙って置くより止める
+                throw new PliExecutionException("SIZE: " + value + " cannot be stored in the"
+                        + " UNSIGNED " + name);
+            }
+            byte[] full = whole.toByteArray();
             byte[] bytes = new byte[view.length()];
             byte fill = full.length > 0 && full[0] < 0 ? (byte) 0xFF : 0;
             for (int i = 0; i < bytes.length; i++) {

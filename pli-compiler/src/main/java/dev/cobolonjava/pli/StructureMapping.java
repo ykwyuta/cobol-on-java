@@ -217,7 +217,7 @@ final class StructureMapping {
             case PICTURE -> Math.max(1, decl.precision());
             // ALIGNED のビット列は 8 ビットごとに 1 byte
             case BIT -> Math.max(1, (decl.precision() + 7) / 8);
-            case BINARY -> binaryLength(decl.precision());
+            case BINARY -> binaryLength(decl.precision(), decl.unsigned());
             case DECIMAL -> PackedDecimal.byteLength(Math.max(1, decl.precision()));
             case POINTER -> 4;
             case GROUP, FILE, ENTRY -> 0;
@@ -226,13 +226,22 @@ final class StructureMapping {
 
     /** FIXED BINARY(p) の大きさ。p ≦ 7 は 1 byte、≦ 15 は半語、≦ 31 は全語、それを超えれば倍語。 */
     static int binaryLength(int precision) {
-        return precision <= 7 ? 1 : precision <= 15 ? 2 : precision <= 31 ? 4 : 8;
+        return binaryLength(precision, false);
+    }
+
+    /**
+     * FIXED BIN(p) の byte 数 (LRM Table 39)。符号つきは符号のビットを足すので p ≤ 7 が 1 byte、
+     * UNSIGNED は p ≤ 8 が 1 byte であり、以下 16、32 で分かれる。
+     */
+    static int binaryLength(int precision, boolean unsigned) {
+        int bits = unsigned ? precision : precision + 1;
+        return bits <= 8 ? 1 : bits <= 16 ? 2 : bits <= 32 ? 4 : 8;
     }
 
     /** ALIGNED のときの境界合わせ (byte、LRM Table 39)。文字・PICTURE・10 進・ビット列は byte。 */
     static int alignment(PliSyntax.Decl decl) {
         return switch (decl.type()) {
-            case BINARY -> binaryLength(decl.precision());
+            case BINARY -> binaryLength(decl.precision(), decl.unsigned());
             case POINTER -> 4;
             // ALIGNED の VARYING は長さの半語の境界に置く
             case CHAR -> decl.varying() ? 2 : 1;

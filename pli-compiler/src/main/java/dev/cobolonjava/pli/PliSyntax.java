@@ -56,11 +56,13 @@ final class PliSyntax {
      * @param varying {@code CHAR(n) VARYING}。記憶域は長さの半語と n byte (LRM Table 39)
      * @param dimensions 配列の次元ごとの上下限。配列でなければ空
      * @param initialItems 配列の {@code INITIAL} の並び。スカラーなら空で、{@code initial} を使う
+     * @param unsigned {@code FIXED BIN UNSIGNED}。記憶域の大きさと値の読み方が変わる
+     *                 (LRM "SIGNED and UNSIGNED attributes")
      */
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
                 List<Bound> dimensions, List<InitItem> initialItems, FileAttributes file,
-                Defined defined) {
+                Defined defined, boolean unsigned) {
 
         /** 配列の要素の数。配列でなければ 1。 */
         int count() {
@@ -643,7 +645,25 @@ final class PliSyntax {
                     varying(part), dimensions,
                     dimensions.isEmpty() ? List.of() : initialItems(part),
                     info.type == Type.FILE ? fileAttributes(part) : null,
-                    definedOutsideStructure(part, level));
+                    definedOutsideStructure(part, level), unsigned(part, info.type));
+        }
+
+        /**
+         * {@code UNSIGNED} を書いたか。{@code SIGNED} は既定なので書いても何も変わらない。UNSIGNED は
+         * FIXED BIN にだけ書ける (LRM "SIGNED and UNSIGNED attributes")。以前は読み飛ばしていたので、
+         * FIXED BIN(8) UNSIGNED が 2 byte の符号つきになり、255 を入れると記憶域が 00FF になっていた。
+         */
+        private static boolean unsigned(List<Token> part, Type type) {
+            boolean unsigned = false;
+            for (int i = 1; i < part.size(); i++) {
+                if (part.get(i).is("UNSIGNED")) {
+                    if (type != Type.BINARY) {
+                        throw new ParseFailure(part.get(i), "UNSIGNED is valid only for FIXED BINARY");
+                    }
+                    unsigned = true;
+                }
+            }
+            return unsigned;
         }
 
         /** 構造の要素は DEFINED を持てない (LRM "DEFINED and POSITION attributes")。 */
