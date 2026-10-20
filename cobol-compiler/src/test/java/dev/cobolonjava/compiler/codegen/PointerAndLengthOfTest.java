@@ -73,6 +73,36 @@ class PointerAndLengthOfTest {
     }
 
     @Test
+    @DisplayName("部分参照と添字の位置にも LENGTH OF を書ける (CardDemo の DFHCOMMAREA (1:LENGTH OF CA))")
+    void lengthOfInReferenceModificationAndSubscripts() throws ReflectiveOperationException {
+        CobolCompiler.Result result = CobolCompiler.standard().compile("PTRLEN.cbl", source(List.of(
+                        "01  SRC PIC X(6) VALUE 'ABCDEF'.",
+                        "01  CA.",
+                        "    03  CA-A PIC X(3).",
+                        "01  DST PIC X(6) VALUE ALL '.'.",
+                        "01  T.",
+                        "    03  E PIC X OCCURS 5.",
+                        "01  ONE PIC X."),
+                "MOVE 'VWXYZ' TO T",
+                "MOVE SRC (1:LENGTH OF CA) TO DST",
+                "MOVE SRC (LENGTH OF CA + 1:2) TO DST (4:2)",
+                "MOVE E (LENGTH OF CA) TO ONE",
+                "GOBACK."));
+        assertTrue(result.succeeded(), result.diagnostics().toString());
+
+        CobolProgram program = (CobolProgram) new Loader().define(result.className(), result.classFile())
+                .getDeclaredConstructor().newInstance();
+        byte[] storage = program.runFresh().array();
+
+        // SRC (6) / CA (3) / DST (6) / T (5) / ONE (1)。DST は ABC (3 byte、残りは空白) のあと 4 桁目から DE
+        assertArrayEquals(dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.encode("ABCDE "),
+                Arrays.copyOfRange(storage, 9, 15));
+        // E (3) は 3 つ目の要素 X
+        assertArrayEquals(dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.encode("X"),
+                Arrays.copyOfRange(storage, 20, 21));
+    }
+
+    @Test
     @DisplayName("PICTURE つき POINTER、NULL 以外の SET、POINTER の MOVE、長さの決まらない LENGTH OF は断る")
     void rejectsUnsupportedForms() {
         for (String[] rejected : List.of(

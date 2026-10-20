@@ -327,6 +327,9 @@ public final class ReferenceResolver {
             Integer value = foldedConstant(context, origin);
             return value == null ? null : new DataReference.Subscript.Constant(value);
         }
+        if (isLengthOf(context.qualifiedDataName())) {
+            return lengthOf(context, origin);
+        }
         DataItem item = resolveName(context.qualifiedDataName(), origin);
         if (item == null) {
             return null;
@@ -337,6 +340,47 @@ public final class ReferenceResolver {
         }
         return new DataReference.Subscript.Variable(
                 new DataReference(item, List.of(), null, origin), offset);
+    }
+
+    /**
+     * 添字と部分参照の位置に書いた {@code LENGTH OF 項目} (暫定判断 P-123)。
+     *
+     * <p>文の被演算子の {@code LENGTH OF} と同じく、構文解析は修飾名として読むので、{@code LENGTH} という
+     * 名前の項目が無いときだけ特殊レジスタとして扱う。長さが翻訳時に決まる項目なら定数になる。
+     * CardDemo は {@code MOVE DFHCOMMAREA (1:LENGTH OF CARDDEMO-COMMAREA) TO ...} と書き、7 本がここで
+     * 止まっていた。被演算子の道 ({@code ProcedureBuilder.lengthOfOperand}) だけが読み替えていた。
+     */
+    private static boolean isLengthOf(CobolParser.QualifiedDataNameContext name) {
+        return name.dataName().size() >= 2 && name.dataName(0).getText().equalsIgnoreCase("LENGTH");
+    }
+
+    private DataReference.Subscript lengthOf(CobolParser.SubscriptContext context, Origin origin) {
+        CobolParser.QualifiedDataNameContext name = context.qualifiedDataName();
+        if (!layout.findAll("LENGTH").isEmpty()) {
+            // LENGTH という名前の項目があれば、規格どおり修飾名として読む
+            DataItem item = resolveName(name, origin);
+            if (item == null) {
+                return null;
+            }
+            Integer offset = offsetOf(context.relativeOffset(), origin);
+            return offset == null ? null
+                    : new DataReference.Subscript.Variable(new DataReference(item, List.of(), null, origin), offset);
+        }
+        if (name.dataName().size() != 2) {
+            report(origin, "LENGTH OF a qualified name is not supported yet");
+            return null;
+        }
+        DataReference target = resolveName(name.dataName(1).getText().toUpperCase(java.util.Locale.ROOT), origin);
+        if (target == null) {
+            return null;
+        }
+        if (target.constantLength().isEmpty()) {
+            report(origin, "LENGTH OF requires an item with a fixed length: " + name.dataName(1).getText());
+            return null;
+        }
+        Integer offset = offsetOf(context.relativeOffset(), origin);
+        return offset == null ? null
+                : new DataReference.Subscript.Constant(target.constantLength().getAsInt() + offset);
     }
 
     /**
