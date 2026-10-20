@@ -172,6 +172,43 @@ class IntrinsicFunctionTest {
         assertFalse(spelled.succeeded(), "TRIM-LEADING という関数は無い");
     }
 
+    /** TEST-NUMVAL の答え。0 なら読める綴りである。 */
+    private static String tested(String function, String text) {
+        return computed("FUNCTION " + function + "(\"" + text + "\")");
+    }
+
+    @Test
+    @DisplayName("TEST-NUMVAL は NUMVAL が読める綴りに 0 を返す (FR-070)")
+    void testNumvalAcceptsWhatNumvalReads() {
+        for (String text : List.of(" -12.5 ", "12.5CR", "12.5 db", ".5", "7.", "+ 3")) {
+            assertEquals("+00000000", tested("TEST-NUMVAL", text), text);
+        }
+    }
+
+    @Test
+    @DisplayName("TEST-NUMVAL は誤っている文字の位置を返し、途中で終われば長さ + 1 (FR-070, P-194)")
+    void testNumvalPointsAtTheFirstError() {
+        assertEquals("+00000300", tested("TEST-NUMVAL", "1 2"), "数字のあとの空白に数字は続かない");
+        assertEquals("+00000400", tested("TEST-NUMVAL", "+12-"), "符号は前か後ろの片方だけ");
+        assertEquals("+00000100", tested("TEST-NUMVAL", "ABC"));
+        assertEquals("+00000200", tested("TEST-NUMVAL", "1,234"), "NUMVAL は桁区切りを読まない");
+        assertEquals("+00000400", tested("TEST-NUMVAL", "   "), "空白だけ");
+        assertEquals("+00000200", tested("TEST-NUMVAL", "-"), "数字が無い");
+        assertEquals("+00000400", tested("TEST-NUMVAL", "12C"), "CR の途中で終わった");
+    }
+
+    @Test
+    @DisplayName("TEST-NUMVAL-C は通貨記号と桁区切りを受ける (FR-070)")
+    void testNumvalCAcceptsCurrencyAndGrouping() {
+        assertEquals("+00000000", tested("TEST-NUMVAL-C", "$1,234.50"));
+        assertEquals("+00000000", tested("TEST-NUMVAL-C", "-$12"));
+        assertEquals("+00000000", tested("TEST-NUMVAL-C", "$ 12 CR"));
+        assertEquals("+00000300", tested("TEST-NUMVAL-C", "1,,2"));
+        assertEquals("+00000200", tested("TEST-NUMVAL-C", "$-12"), "符号は通貨記号の前に書く");
+        assertEquals("+00000000",
+                computed("FUNCTION TEST-NUMVAL-C(\"EUR 12\", \"EUR\")"));
+    }
+
     @Test
     @DisplayName("CHAR と ORD は照合順序の位置で対になる (FR-070)")
     void charAndOrdAreInverses() {

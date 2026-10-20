@@ -5118,7 +5118,11 @@ public final class ProgramGenerator {
             case RANDOM -> planRandom(function, origin);
             case ORD -> planOrd(function);
             case NUMVAL -> planReading(function, "numval");
-            case NUMVAL_C -> planNumvalC(function);
+            case NUMVAL_C -> planNumvalC(function, "numvalC", new byte[0]);
+            case TEST_NUMVAL -> planReading(function, "testNumval");
+            // 省かれた通貨記号はプログラムの通貨記号である。書式を厳しく見るので、空にはできない
+            case TEST_NUMVAL_C -> planNumvalC(function, "testNumvalC",
+                    new byte[] {codePage.ch(currency)});
             default -> {
                 report(origin, "FUNCTION " + function.intrinsic().spelling()
                         + " does not return a numeric value");
@@ -5245,13 +5249,17 @@ public final class ProgramGenerator {
         };
     }
 
-    /** {@code FUNCTION NUMVAL-C}。第 2 引数の通貨記号は省ける。 */
-    private Runnable planNumvalC(Operand.Function function) {
+    /**
+     * {@code FUNCTION NUMVAL-C} と {@code TEST-NUMVAL-C}。第 2 引数の通貨記号は省ける。
+     *
+     * @param omitted 省かれたときに渡す通貨記号
+     */
+    private Runnable planNumvalC(Operand.Function function, String method, byte[] omitted) {
         Runnable value = planAlphanumericArgument(function, 0);
         Runnable currency = function.arguments().size() > 1
                 ? planAlphanumericArgument(function, 1)
                 : () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal,
-                        bytesConstant(new byte[0]), "[B");
+                        bytesConstant(omitted), "[B");
         if (value == null || currency == null) {
             return null;
         }
@@ -5259,7 +5267,7 @@ public final class ProgramGenerator {
             value.run();
             currency.run();
             loadCodePage();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "numvalC",
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
                     "([B[B" + CODE_PAGE + ")" + DECIMAL, false);
         };
     }

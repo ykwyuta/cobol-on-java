@@ -59,6 +59,10 @@ public enum Intrinsic {
     NUMVAL(1, Argument.ALPHANUMERIC, Result.NUMERIC),
     /** 通貨記号つきの綴りを数値として読む。第 2 引数は落とす記号である。 */
     NUMVAL_C(-2, Argument.ALPHANUMERIC, Result.NUMERIC),
+    /** NUMVAL が読める綴りなら 0、読めなければ誤っている文字の位置。 */
+    TEST_NUMVAL(1, Argument.ALPHANUMERIC, Result.INTEGER),
+    /** NUMVAL-C が読める綴りなら 0。第 2 引数は通貨記号である。 */
+    TEST_NUMVAL_C(-2, Argument.ALPHANUMERIC, Result.INTEGER),
     /** 並べ替えた真ん中。 */
     MEDIAN(-1, Argument.NUMERIC, Result.NUMERIC),
     /** 最大と最小の平均。 */

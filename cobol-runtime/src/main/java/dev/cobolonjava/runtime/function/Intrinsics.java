@@ -649,6 +649,102 @@ public final class Intrinsics {
         return sign < 0 ? parsed.negate() : parsed;
     }
 
+    /**
+     * {@code FUNCTION TEST-NUMVAL}。{@code NUMVAL} が読める綴りなら 0、読めなければ
+     * <b>最初に誤っている文字の位置</b> (1 から数える) を返す。空白だけや、途中で終わって
+     * いる綴りは「長さ + 1」である。
+     *
+     * <p>{@code NUMVAL} そのものは誤りを読み飛ばす。この関数は書式の規則を<b>厳しく</b>見る。
+     * 位置の数え方は規格の書式から決めたものであり、実機とは突き合わせていない (暫定判断 P-194)。
+     */
+    public static Decimal testNumval(byte[] value, CodePage codePage) {
+        return Decimal.of(firstError(codePage.decode(value), null), 0);
+    }
+
+    /**
+     * {@code FUNCTION TEST-NUMVAL-C}。通貨記号と、整数部の桁区切りのコンマも受ける。
+     *
+     * @param currency 通貨記号。呼ぶ側が省かれた引数をプログラムの通貨記号で埋めて渡す
+     */
+    public static Decimal testNumvalC(byte[] value, byte[] currency, CodePage codePage) {
+        String symbol = codePage.decode(currency).trim();
+        return Decimal.of(firstError(codePage.decode(value), symbol.isEmpty() ? "$" : symbol), 0);
+    }
+
+    /**
+     * 書式を確かめる。受ける形は次の 2 つである ({@code cs} は NUMVAL-C だけ)。
+     * <pre>
+     * [空白][+|-][空白][cs][空白]{数字[.[数字]] | .数字}[空白]
+     * [空白][cs][空白]{数字[.[数字]] | .数字}[空白][+|-|CR|DB][空白]
+     * </pre>
+     *
+     * @param currency 通貨記号。{@code null} なら NUMVAL の書式である
+     * @return 0、誤りの位置、または長さ + 1
+     */
+    private static int firstError(String text, String currency) {
+        int length = text.length();
+        int i = skipSpaces(text, 0);
+        boolean leadingSign = i < length && (text.charAt(i) == '+' || text.charAt(i) == '-');
+        if (leadingSign) {
+            i = skipSpaces(text, i + 1);
+        }
+        if (currency != null && text.startsWith(currency, i)) {
+            i = skipSpaces(text, i + currency.length());
+        }
+        boolean digit = false;
+        while (i < length && (isDigit(text.charAt(i))
+                || (currency != null && text.charAt(i) == ',' && digit))) {
+            if (text.charAt(i) == ',' && (i + 1 >= length || !isDigit(text.charAt(i + 1)))) {
+                // 桁区切りは数字と数字のあいだにしか書けない
+                return i + 2 > length ? length + 1 : i + 2;
+            }
+            digit |= isDigit(text.charAt(i));
+            i++;
+        }
+        if (i < length && text.charAt(i) == '.') {
+            i++;
+            while (i < length && isDigit(text.charAt(i))) {
+                digit = true;
+                i++;
+            }
+        }
+        if (!digit) {
+            return i >= length ? length + 1 : i + 1;
+        }
+        i = skipSpaces(text, i);
+        if (i >= length) {
+            return 0;
+        }
+        if (leadingSign) {
+            return i + 1;
+        }
+        char c = text.charAt(i);
+        if (c == '+' || c == '-') {
+            i++;
+        } else if (matches(text, i, "CR") || matches(text, i, "DB")) {
+            i += 2;
+        } else if ((c == 'C' || c == 'c' || c == 'D' || c == 'd') && i + 1 == length) {
+            // CR / DB の 1 文字目で終わっている。途中で終わった綴りである
+            return length + 1;
+        } else {
+            return i + 1;
+        }
+        i = skipSpaces(text, i);
+        return i >= length ? 0 : i + 1;
+    }
+
+    private static int skipSpaces(String text, int from) {
+        int i = from;
+        while (i < text.length() && text.charAt(i) == ' ') {
+            i++;
+        }
+        return i;
+    }
+
+    private static boolean isDigit(char c) {
+        return c >= '0' && c <= '9';
+    }
+
     private static boolean matches(String text, int at, String word) {
         return text.regionMatches(true, at, word, 0, word.length());
     }
