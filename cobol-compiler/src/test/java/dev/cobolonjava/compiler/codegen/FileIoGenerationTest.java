@@ -365,6 +365,13 @@ class FileIoGenerationTest {
     }
 
     @Test
+    @DisplayName("予約語と同じ綴りの DD 名を ASSIGN に書ける (Zeus の ZCVS の ASSIGN TO REPORT)")
+    void anAssignmentNameMayBeSpelledLikeAReservedWord(@TempDir Path directory) {
+        assertEquals("00|00|", run(directory, WRITER.replace("ASSIGN TO OUTDD", "ASSIGN TO REPORT")));
+        assertArrayEquals(ebcdic("ALPHA123BETA 007"), bytesOf(directory.resolve("REPORT")));
+    }
+
+    @Test
     @DisplayName("書いたファイルには属性のサイドカーが残る (FR-110)")
     void theSidecarRecordsTheAttributes(@TempDir Path directory) {
         run(directory, WRITER);

@@ -310,10 +310,12 @@ public record FileDescription(String name, String ddName, Organization organizat
             if (assign == null) {
                 continue;
             }
-            if (!assign.LITERAL().isEmpty()) {
-                return unquote(assign.LITERAL(0).getText());
+            for (CobolParser.AssignmentNameContext assigned : assign.assignmentName()) {
+                if (assigned.LITERAL() != null) {
+                    return unquote(assigned.LITERAL().getText());
+                }
             }
-            return assign.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
+            return assign.assignmentName(0).getText().toUpperCase(Locale.ROOT);
         }
         diagnostics.add(new Diagnostic(origin, "SELECT " + name + " has no ASSIGN clause"));
         return null;

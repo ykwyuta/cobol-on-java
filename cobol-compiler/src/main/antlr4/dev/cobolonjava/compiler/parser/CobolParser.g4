@@ -305,7 +305,17 @@ selectClause
     ;
 
 assignClause
-    : ASSIGN TO? (IDENTIFIER | LITERAL)+
+    : ASSIGN TO? assignmentName+
+    ;
+
+// assignment-name は「データ項目の名前ではなく、ただの文字の並び」である (Enterprise COBOL の ASSIGN 句)。
+// 予約語と同じ綴りの DD 名も書ける。Zeus の検査スイート ZCVS は全本が ASSIGN TO REPORT と書く。
+// 後ろに続く句の頭の語 (ORGANIZATION、ACCESS、FILE STATUS、RECORD など) と取り違えないよう、
+// 予約語は句の頭にならないものだけを並べる
+assignmentName
+    : IDENTIFIER
+    | LITERAL
+    | REPORT
     ;
 
 // ORGANIZATION IS は省いてよい
