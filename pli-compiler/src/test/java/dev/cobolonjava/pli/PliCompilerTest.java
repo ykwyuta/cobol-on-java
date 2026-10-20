@@ -35,6 +35,7 @@ import java.time.Duration;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Test;
 
@@ -114,6 +115,8 @@ class PliCompilerTest {
     @Test
     void bankOfZPliAssetsAreAcceptedWithoutSourceChanges() throws Exception {
         Path root = Path.of("..", "reference", "Bank-of-Z-main", "src", "base");
+        // 資産は同梱しない (要件 NFR-042)。取ってきていない環境では落とさずに飛ばす
+        Assumptions.assumeTrue(Files.isDirectory(root), "Bank-of-Z is not checked out");
         for (Path source : new Path[] {
                 root.resolve(Path.of("batch", "pli", "BNKSTMT.pli")),
                 root.resolve(Path.of("ims", "pli", "IBLOGIN.pli"))}) {
