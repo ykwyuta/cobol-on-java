@@ -78,6 +78,13 @@ public final class CobolCicsTaskProgram implements CicsTaskProgramPort {
                      environment.transientData().rollbackUnitOfWork(task.taskId());
                  }
              };
+             // 正常に返らなかった task の MQ などの作業単位は、session を閉じる前に取り消す (設計 88 §4.3)。
+             // 正常なら session を閉じるときに確定する
+             Release recoverable = () -> {
+                 if (!completedNormally[0]) {
+                     session.backOutResources();
+                 }
+             };
              Release ignored = () -> environment.enqueues().releaseTask(task.taskId());
              Release files = () -> environment.files().releaseTask(task.taskId());
              Release children = () -> environment.async().releaseTask(task.taskId())) {

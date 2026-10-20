@@ -33,6 +33,7 @@ Maven のマルチモジュール構成とする。
 | `cobol-cics` | CICS コマンド、EIB、BMS、疑似会話、資源ポートのフレームワーク非依存モデル | experimentalなTRANSID registry、入力上限、command/control、同一sessionのLINK / XCTL / RETURN実行、版・lease付き疑似会話store、初期EIB field、RESP / RESP2を実装。3270 エミュレータを TN3270 / TN3270E で受ける入口を JDK だけで持つ ([設計 77](77-spring-cics-db2.md), [設計 86](86-cics-tn3270.md)) |
 | `cobol-db2` | SQL 計画、ホスト変数、SQLCA、カーソル、UOW ポートのフレームワーク非依存モデル | experimentalなprofile固定、遅延UOW、WITH HOLD方針、型付きhost variable / codec、SQLCA fidelity行列を実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-db2-jdbc` | Spring管理外のDb2 JDBC connection leaseとdriver-managed UOW | task専用lease、同一connectionのcommit跨ぎ、hold / 非hold資源cleanup、reset / discardを実装。native SQL executorと実Db2試験は未実装 ([ADR-0012](../decisions/0012-db2-driver-managed-uow-for-required-hold-cursors.md)) |
+| `cobol-mq` | IBM MQ の MQI (`MQOPEN` / `MQPUT` / `MQGET` ...) を region の中の待ち行列管理者で動かす。`cobol-runtime` だけに依る | experimental。局所待ち行列、同期点、待ち、優先度、MQINQ を実装。写し句 (`CMQV` など) は `cobol-compiler` が用意する ([設計 88](88-mq.md)) |
 | `cobol-spring-boot-4-autoconfigure` | Spring Boot 4.1 の MVC、Session、JDBC、transaction、Actuator を中立ポートへ接続 | `SPRING_MANAGED` Db2 UOW、初期SQL executor、非hold cursorを実装。CICS、Actuatorは未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-starter` | 利用者向け依存関係と標準設定メタデータ | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |
 | `cobol-spring-boot-4-bms-thymeleaf` | BMS 中立画面を Thymeleaf、terminal JavaScript、固定セル CSS で 3270 互換表示する任意 UI adapter | 設計済み、未実装 ([設計 77](77-spring-cics-db2.md)) |

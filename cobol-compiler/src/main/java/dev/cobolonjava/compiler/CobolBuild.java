@@ -6,6 +6,7 @@ import dev.cobolonjava.compiler.source.CicsSystemCopyBookResolver;
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.Db2SystemCopyBookResolver;
+import dev.cobolonjava.compiler.source.MqSystemCopyBookResolver;
 import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
 import dev.cobolonjava.compiler.source.FixedFormatReader;
 import dev.cobolonjava.compiler.source.FreeFormatReader;
@@ -119,7 +120,7 @@ public final class CobolBuild {
     /**
      * 書かれた順に探し、先に見つかったものを使う。ホストの連結ライブラリと同じである。
      *
-     * <p>CICS・Db2・Language Environment が配る写し句は<b>最後に</b>引く。資産が自前の
+     * <p>CICS・Db2・MQ・Language Environment が配る写し句は<b>最後に</b>引く。資産が自前の
      * {@code DFHAID} や {@code SQLCA} を置いていれば、そちらを使う。
      */
     private static CopyBookResolver resolver(List<Path> copybooks) {
@@ -130,6 +131,7 @@ public final class CobolBuild {
         }
         chain.add(new CicsSystemCopyBookResolver());
         chain.add(new Db2SystemCopyBookResolver());
+        chain.add(new MqSystemCopyBookResolver());
         chain.add(new LanguageEnvironmentCopyBookResolver());
         List<CopyBookResolver> fixed = List.copyOf(chain);
         return (textName, libraryName) -> fixed.stream()

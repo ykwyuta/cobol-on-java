@@ -49,6 +49,29 @@ public final class JavaCallContext {
         return dev.cobolonjava.runtime.program.AddressSpace.of(context).locate(address);
     }
 
+    /**
+     * 呼んだ側の実行単位を区別する鍵。中身に意味は無く、同じ実行単位なら同じもの ({@code ==}) を返す。
+     *
+     * <p>MQ の接続 (設計 88) のように、呼び出しをまたいで実行単位ごとに持つ状態を、Java の側で引くのに使う。
+     * 実行単位が終われば参照されなくなるので、持つ側は弱い参照の表に置けば後始末が要らない。
+     */
+    public Object runUnit() {
+        return context.registers();
+    }
+
+    /**
+     * 実行単位の作業単位に資源を加える (設計 88 §4.3)。CICS の SYNCPOINT で確定・取り消しされ、実行単位の終わり
+     * (session を閉じるとき) に正常なら確定、異常なら取り消しで終える。
+     */
+    public void enlist(dev.cobolonjava.runtime.program.RecoverableResource resource) {
+        dev.cobolonjava.runtime.program.RecoverableResources.of(context).enlist(resource);
+    }
+
+    /** 作業単位から資源を外す。 */
+    public void delist(dev.cobolonjava.runtime.program.RecoverableResource resource) {
+        dev.cobolonjava.runtime.program.RecoverableResources.of(context).delist(resource);
+    }
+
     /** 同じ実行単位から、登録済み COBOL または Java プログラムへ再入する。 */
     public void call(String name, DataView... arguments) {
         Ops.call(context, ProgramId.of(name).value(), loader, arguments);

@@ -6644,3 +6644,143 @@ INITIAL のプログラムが開いたままのファイルや、INITIAL のプ�
 覚え書きは局所記憶の中身を出さない (作業場所の像の中の古い値は出さないようにした)。
 
 **解消条件**: z/OS で、VALUE の無い局所記憶の初期の中身と、INITIAL のプログラムのファイル・含まれるプログラムの扱いを採る。
+
+## P-250 MQ の写し句 (CMQV、CMQODV など) は処理系が公開文書の欄の説明から作り、IBM の原文と突き合わせていない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。Zeus (`d2f1cfc` の `crates/zeus-cobol/src/front/syslib_mq.rs`) の読み方を移した (ADR-0016) |
+| 場所 | `MqSystemCopyBookResolver` |
+| 関連要件 | 設計 88 §2 |
+
+**いまの扱い**: `CMQV` (定数)、`CMQODV` / `CMQMDV` / `CMQPMOV` / `CMQGMOV` / `CMQTMV` (初期値つき) と、それぞれの `...L`
+(初期値なし) を、IBM MQ の公開文書にある構造体の欄の説明 (名前・型・長さ・初期値) から作る。構造体は 10 段から始め、
+現行版 (MQOD 4、MQMD 2、MQPMO 3、MQGMO 4、MQTM 1) の欄まで全部を置く。`VERSION` の既定値は 1。整数は `S9(9) BINARY`、
+番地は 4 byte の `POINTER` (P-123)、MQCHARV は 5 つの欄に開く。`CMQV` は公開文書の定数のうち MQI の実装が
+使うものと CardDemo が引くものを中心に置く。publish/subscribe と message handle の構造体 (MQSD、MQCMHO など) は置かない。
+
+**なぜ暫定か**: IBM の写し句の原文は参照しない決まりである (CLAUDE.md「出典」)。欄の並びと長さは公開文書の表から読み、
+Zeus の読みと揃えた。z/OS で翻訳した `LENGTH OF` と突き合わせていない。
+
+**どこがずれうるか**: IBM の写し句には、ここに無い定数 (数千ある) や、版ごとの長さの定数 (`MQOD-LENGTH-1` など)、
+`MQCHARV` の欄の名前の付け方がある。資産が置いていない定数を引くと、翻訳が「未定義」で止まる (近い値を黙って
+使うことはない)。2 進項目を `BINARY` としたので、TRUNC(STD) の下では 9 桁を超える値を MOVE すると桁で切れる。
+IBM の写し句がどちらを使うかは確かめていない (Db2 の SQLCA は COMP-5 にした。P-120)。
+
+**解消条件**: z/OS の COBOL で各写し句を写したプログラムを翻訳し、`LENGTH OF` と各欄の位置、既定値の byte 列を採って比べる。
+
+## P-251 MQ の待ち行列は region の記憶域にあり、振る舞いは公開文書から書いて実機と突き合わせていない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。引数の読み方は Zeus (`d2f1cfc` の `crates/zeus-mq/src/mqi.rs`) から移した (ADR-0016)。待ち行列の振る舞いは Zeus が IBM MQ の client library に任せているので、公開文書から書いた |
+| 場所 | `MqQueueManager`、`LocalQueue`、`QueueDefinition`、`Mqi` |
+| 関連要件 | 設計 88 §3・§4 |
+
+**いまの扱い**: 局所待ち行列だけを持ち、電文は JVM の記憶域にある (再始動で消える。永続性は記述子に残すだけ)。
+定義の既定値は MAXDEPTH 999999999、MAXMSGL 4194304、DEFPRTY 0、DEFPSIST NO。渡す順は優先度、同じなら置いた順。
+PUT / GET の同期点の指定が無ければ同期点の下 (z/OS の既定)。作業単位の中の電文も深さに数える。
+MQGMO_WAIT は壁時計で待つ。切り詰めは既定で電文を残して 2080、ACCEPT_TRUNCATED_MSG で 2079。確かめる順は
+構造体 (目印・版・長さ) → 選択 → 長さ → 記述子の値 → 待ち行列の状態 (禁止・長さの上限・満杯)。
+持たない選択 (browse、文脈の受け渡し、報告電文、グループ、変換など) は理由コードを作らず
+`UnsupportedOperationException` で止める。
+
+**なぜ暫定か**: IBM MQ for z/OS の実機と、同じ呼び出しの完了コード・理由コード・返る記述子を突き合わせていない。
+誤りが重なったときにどの理由コードが先に出るかは、公開文書に順の定めが無く、ここで決めた。
+
+**どこがずれうるか**: 実機の既定値の定義 (SYSTEM.DEFAULT.LOCAL.QUEUE) を変えている環境。MSGDLVSQ(FIFO) の待ち行列
+(優先度を見ない)。誤りが 2 つ以上ある呼び出しの理由コード。MQOPEN が失敗したときの Hobj (ここでは
+MQHO_UNUSABLE_HOBJ を置く)。CICS の下で MQCMIT / MQBACK を呼んだとき (実機は MQRC_ENVIRONMENT_ERROR を返すはず
+だが、ここでは区別しない)。
+
+**解消条件**: IBM MQ for z/OS (または MQ Advanced for Developers の待ち行列管理者を z/OS の既定に寄せたもの) で、
+設計 88 §5 の各場合と、誤りを 2 つ重ねた呼び出しを流し、完了コード・理由コード・記述子の byte 列を採って比べる。
+
+## P-252 MQ の接続は実行単位ごとに 1 つ。MQHC_DEF_HCONN は暗黙の接続、MQDISC は確約
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。暗黙の接続は Zeus (`d2f1cfc` の `crates/zeus-mq/src/mqi.rs` の `hconn`) の読み方を移した |
+| 場所 | `MqQueueManager.connection`、`Mqi.connect` / `mqdisc`、`JavaCallContext.runUnit` |
+| 関連要件 | 設計 88 §4.1 |
+
+**いまの扱い**: 接続は実行単位の鍵 (`JavaCallContext.runUnit()`) で引く。handle が 0 なら、無ければ作る
+(CICS の下と同じく MQCONN が要らない)。MQCONN / MQCONNX は同じ接続を明示のものにして handle を返し、2 度目は
+MQCC_WARNING / MQRC_ALREADY_CONNECTED。待ち行列管理者の名前が空白でも自分の名前でもなければ 2058。MQCONNX の
+接続の選択 (MQCNO) は見ない。MQDISC は作業単位を確約し、handle を閉じ、Hconn に MQHC_UNUSABLE_HCONN を置く。
+実行単位の終わりの扱いは P-254。
+
+**なぜ暫定か**: z/OS の batch で MQCONN を呼ばずに handle 0 を使えるかは、batch の adapter と CICS の adapter で違う。
+資産 (CardDemo) はどれも CICS の下で 0 を使うので、0 を受けるほうに倒した。batch の MQDISC が確約するか取り消すかは
+RRS の有無で変わる。
+
+**どこがずれうるか**: batch の資産が MQCONN を忘れたときに、実機は MQRC_HCONN_ERROR で止まるのにここでは動く。
+
+**解消条件**: 実機の batch で MQCONN なしの 0 と、MQDISC の前後の電文を採って比べる。
+
+## P-253 MQ の MsgId は 'CSQ ' と管理者の名前で始めて一意にするだけ。文脈の利用者・応用の名前は空白
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `MqQueueManager.newMessageId`、`MqQueueManager.setPutTime`、`Mqi.context` |
+| 関連要件 | 設計 88 §4.2 |
+
+**いまの扱い**: MsgId は 'CSQ ' と待ち行列管理者の名前の先頭 4 文字 (code page の文字) に、ミリ秒の時刻 8 byte と
+通し番号 8 byte を続ける。既定の文脈では PutApplType (既定 MQAT_ZOS、構築時に選ぶ)、PutDate (YYYYMMDD)、
+PutTime (HHMMSSTH) を UTC で置き、UserIdentifier・PutApplName・ApplIdentityData・ApplOriginData は空白、
+AccountingToken は 0 にする。MQPMO_NO_CONTEXT ではどれも空け、PutApplType を MQAT_NO_CONTEXT にする。
+
+**なぜ暫定か**: z/OS の MsgId の後ろ 16 byte の作り方は公開文書に無い。利用者の名前と応用の名前は task の
+利用者 ID と program の名前が入るはずだが、region がそれを MQI へ渡す口をまだ持たない。
+
+**どこがずれうるか**: MsgId の中身を解いたり、PutApplName で送り手を見分けたりする資産。
+
+**解消条件**: 実機で置いた電文の MsgId と文脈の欄を採る。CICS の task から利用者 ID と transaction を MQI へ渡す口を作る。
+
+## P-254 MQ の作業単位は実行単位の終わりで確約・取り消し、CICS の同期点に加わるが、2 相の確約ではない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20) |
+| 場所 | `RecoverableResource`、`RecoverableResources`、`CobolSession.close` / `backOutResources`、`CicsRuntimeOps.syncpointCondition`、`CobolCicsTaskProgram` |
+| 関連要件 | 設計 88 §4.3 |
+
+**いまの扱い**: MQ の接続は実行単位の作業単位に加わる。`EXEC CICS SYNCPOINT` は一時データの変更と同じ場所で
+確約し、`SYNCPOINT ROLLBACK` は取り消す。session を閉じるとき、実行単位が異常に終わっていなければ確約、終わって
+いれば取り消す。CICS の task はプログラムが返っても task として正常に終わらなければ (STOP RUN、COMMAREA の上限越え
+など)、session を閉じる前に取り消す。資源の確約は加わった順に行い、1 つが失敗しても残りを諦めない。
+
+**なぜ暫定か**: z/OS では CICS の同期点は CICS が調整役になって MQ と Db2 を 2 相で確約し、batch は RRS か MQ 単独の
+作業単位になる。ここには調整役が無い。CICS の task の終わりでは、MQ は session を閉じるときに確約し、そのあと task の
+境界が Db2 の UOW を、続いて一時データを確定する。この順は既存の task の終わりの形に合わせただけで、根拠は無い。
+
+**どこがずれうるか**: task の終わりで Db2 の確定が失敗したとき、MQ の確約は戻らない (実機は両方取り消す)。
+EXEC CICS SYNCPOINT の中で MQ の確約が失敗したときの RESP (実機は ROLLEDBACK) は作らず、例外がそのまま返る。
+
+**解消条件**: Db2 の UOW と MQ を同じ調整役 (2 相、または最後の資源を 1 相で) で確約する口を作り、CICS の同期点の
+失敗の RESP を公開文書の SYNCPOINT の頁に合わせる。実機で Db2 と MQ を同じ task で更新し、片方を失敗させて採る。
+
+## P-255 MQ の起動 (trigger) の条件は公開文書の読みで、TRIGINT と MQBACK で戻った電文の起動を持たない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。起動電文から transaction を読む形は Zeus (`d2f1cfc` の `crates/zeus-mq/src/monitor.rs`) から移した (ADR-0016)。Zeus は起動電文を IBM MQ の待ち行列管理者に作らせているので、条件はここで公開文書から書いた |
+| 場所 | `MqQueueManager.arrive` / `trigger`、`MqTriggerMonitor`、`TriggerMessage`、`TriggerDefinition`、`ProcessDefinition` |
+| 関連要件 | 設計 88 §4.5 |
+
+**いまの扱い**: 電文が見えるようになったとき (同期点の外の PUT、確約、Java の側の put) だけ条件を見る。条件は設計 88
+§4.5 の表のとおり。FIRST と DEPTH の「数えた電文」は見えている電文 (確約済み) のうち TRIGMPRI 以上のもので、作業単位の
+中の電文は数えない。起動電文は同期点の外で、非永続、Format `MQTRIG`、MQMD 1 版の既定値で置く。transaction は ApplId の
+先頭の語の 4 文字まで。条件を満たさなければ何もしない (console への知らせは出さない)。
+
+**なぜ暫定か**: 実機の待ち行列管理者と、同じ順の PUT / GET / OPEN / CLOSE で起動電文が何通置かれるかを突き合わせていない。
+z/OS の CICS の trigger monitor が ApplId をどう読むか (4 文字を超える名前、空白の ApplId のとき TRIGDATA を使うか) は
+確かめていない。
+
+**どこがずれうるか**: TRIGINT (FIRST で、待ち行列が空にならないまま一定の時間が過ぎたら再び起動する)。MQBACK で
+戻った電文や、待ち行列を入力で閉じたときに電文が残っていれば起動する場合 (公開文書は閉じたときの起動にも触れている)。
+作業単位の中の電文を数えるかどうか。z/OS の共有待ち行列の扱い。
+
+**解消条件**: 実機で TRIGTYPE ごとに PUT / GET / OPEN / CLOSE / MQBACK を並べ、開始待ち行列に置かれた起動電文を数え、
+MQTM の byte 列を採って比べる。
