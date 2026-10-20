@@ -40,7 +40,7 @@ final class PliSyntax {
     }
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
-            Block, GoTo, Label, OnEndFile, FileOperation, Sql {
+            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Stop {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -153,6 +153,13 @@ final class PliSyntax {
     }
 
     record Block(List<Stmt> body) implements Stmt {
+    }
+
+    /**
+     * {@code STOP} と {@code EXIT}。実行単位を終える (LRM "STOP statement"、"EXIT statement")。
+     * 走脈を 1 つしか持たないので、EXIT も実行単位の終わりになる。
+     */
+    record Stop() implements Stmt {
     }
 
     record GoTo(String label) implements Stmt {
@@ -493,6 +500,10 @@ final class PliSyntax {
                 }
                 expect(";");
                 return new Return();
+            }
+            if (match("STOP") || match("EXIT")) {
+                expect(";");
+                return new Stop();
             }
             if (match("GO")) {
                 match("TO");

@@ -320,6 +320,11 @@ public final class PliRuntime {
                 call(call, env);
             } else if (statement instanceof PliSyntax.Return) {
                 throw ReturnSignal.INSTANCE;
+            } else if (statement instanceof PliSyntax.Stop) {
+                // FINISH の ON をまだ持たないので、その既定の動き (何もしない) のあと実行単位を終える。
+                // 呼ばれた PL/I のプログラムの中の STOP も呼んだ側まで抜ける。開いたファイルは run の
+                // finally が閉じる。復帰コードは PLIRETC で置いた値のままである
+                Ops.stopRun();
             } else if (statement instanceof PliSyntax.Block block) {
                 execute(block.body(), env);
             } else if (statement instanceof PliSyntax.GoTo goTo) {
@@ -922,6 +927,19 @@ public final class PliRuntime {
 
         private void call(PliSyntax.Call call, Env env) {
             PliSyntax.Procedure procedure = program.procedures().get(call.name());
+            if (procedure == null && call.name().equals("PLIRETC")) {
+                // 組込みの手続き。実行単位の復帰コードを置く (LRM "PLIRETC")。値は FIXED BIN(31) に
+                // 直す。ホストの復帰コードの上限 (4095) を超える値の扱いは確かめていないので断る
+                if (call.arguments().size() != 1) {
+                    throw new PliExecutionException("PLIRETC needs one argument");
+                }
+                int code = number(value(call.arguments().get(0), env)).intValue();
+                if (code < 0 || code > 4095) {
+                    throw new PliExecutionException("PLIRETC(" + code + ") is outside 0 to 4095");
+                }
+                context.setReturnCode(code);
+                return;
+            }
             if (procedure != null) {
                 Env local = new Env(env, context);
                 for (int i = 0; i < procedure.parameters().size(); i++) {

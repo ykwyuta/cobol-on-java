@@ -157,4 +157,23 @@ class RecordIoTest {
             assertFalse(result.succeeded(), declaration);
         }
     }
+
+    @Test
+    @DisplayName("内部手続きの中の STOP も実行単位を終え、PLIRETC の値が復帰コードになり、開いたファイルは閉じる")
+    void stopInsideAProcedureEndsTheRunAndKeepsTheReturnCode() throws Exception {
+        String printed = run("""
+                DCL F FILE RECORD OUTPUT ENV(F RECSIZE(2));
+                DCL X CHAR(2) INIT('OK');
+                FIN: PROC;
+                  CALL PLIRETC(3);
+                  STOP;
+                END FIN;
+                WRITE FILE(F) FROM(X);
+                CALL FIN;
+                PUT SKIP LIST('NOT REACHED');
+                """);
+        assertEquals("", printed);
+        assertEquals(3, context.returnCode());
+        assertEquals("OK", dataSet("F"));
+    }
 }
