@@ -58,7 +58,7 @@ BMS のブラウザ描画、Maven の標準ディレクトリ体系。Zeus は J
 | 翻訳リスト (`SOURCE` / `MAP` / `LIST` / `OFFSET` / `XREF` / `VBREF`)、`FLAG` | ○ | × 名前を受けて出さない | `OptionSupport` | M |
 | `SORT-RETURN` / `SORT-CONTROL` などの整列の特殊レジスタ、DFSORT の制御文の上書き | ○ `vm/sort.rs` | × | 翻訳器にも実行時にも無い | S |
 | `THREAD`、`LP(64)` | ○ (Zeus 独自の仮想 ABI) | × | — | M |
-| 入れ子プログラム | ○ | △ 並べる形だけ (入れ子の文法は無い) | `CobolCompiler` の説明 | M |
+| 入れ子プログラム | ○ | △ 受理して動く (並んだプログラムとして読む)。`COMMON` / `GLOBAL` の見え方は確かめていない | `UnsupportedSyntaxCatalogTest` と同じ形で翻訳して確かめた | S |
 | OO COBOL (`REPOSITORY`、`INVOKE`) | × 対象外 | × IBTRAN で止まる | README | — (下の §5 で機会として扱う) |
 | XML / JSON (`XML PARSE` / `GENERATE`、`JSON`) | × 対象外 (ZCVS の任意モジュール ZX はある) | × | — | — |
 
@@ -197,7 +197,7 @@ CLAUDE.md の型 (外の基準を先に置く → いちばん大きい塊から
 | 0-1 | S | **z/OS の実機で `tools/zos-probe` を流す** (`docs/zos-probe/runbook.md`) | 実機 | 約 40 の暫定判断が「決着」か「直す」に分かれる |
 | 0-2 | M | **CardDemo と GenApp を `corpus.tsv` に足す** (ライセンスと sha256 を確かめて固定する。NFR-042)。翻訳できる本数を数える | Zeus と同じ資産。比べられる数になる | 翻訳の率と、止まった行の上位 10 塊の一覧 |
 | 0-3 | M | Bank-of-Z の CICS の場面 (顧客・口座の照会・作成・更新・削除、入出金、振替) を **TN3270 の入口と s3270 の台本で通しに流す** | 資産の意図どおりの画面 | 場面ごとの成否が README に載る |
-| 0-4 | S | `docs/unsupported-syntax-and-rationale.md` を今の状態に直す (BMS、コンテナ、`RENAMES` などは既に実装済みなのに「未対応」のまま) | — | 一覧と翻訳器の診断が食い違わない |
+| 0-4 | S | `docs/unsupported-syntax-and-rationale.md` を今の状態に直す (BMS、コンテナ、`RENAMES` などは既に実装済みなのに「未対応」のまま) | 翻訳器 | **済** (2026-10-20)。表の 41 行を `UnsupportedSyntaxCatalogTest` の事例にした。旧構文の「専用の診断」は実装されていなかったので文書を直した |
 | 0-5 | S | Zeus の追加コーパス (zfam、zecs、cobol-check など、Zeus 0022) のうち Apache-2.0 と両立するものを `corpus.tsv` に足す | 資産 | 翻訳の率 |
 
 | 0-6 | S | **Zeus との突き合わせを測定に加える** (`run-zeus.sh`)。直すたびに一致と食い違いの数を README に残す | 2 つ目の独立した実装 | 食い違い 75 行の各項目に、決着か「実機待ち」が付く |

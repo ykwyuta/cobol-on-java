@@ -20,77 +20,101 @@
 
 ## 2. カテゴリ別未対応構文一覧
 
-### 2.1 見出し部・環境部 (IDENTIFICATION & ENVIRONMENT DIVISION)
+<b>この章の各行は `UnsupportedSyntaxCatalogTest` (cobol-compiler) の同じ名前の事例である。</b>
+行ごとに小さな原文を翻訳器にかけ、「通る」か「この文言で断る」かを確かめている。実装が変われば
+試験が落ちるので、この表を直してから試験の期待を変えること。以前この一覧は文書だけで持っており、
+実装済みの BMS やチャネルを「未対応」と書いたまま、本当に断る `WHENEVER` などを載せていなかった
+(2026-10-20 に試験と突き合わせて直した)。
 
-| 未対応構文 / 項目 | 構文例 | 未対応の理由・設計判断 | 今後の方針・暫定対応 |
+診断の欄は翻訳器の文言の一部である。「受理」は翻訳が通ることだけを言い、振る舞いの正しさは
+各機能の試験と暫定判断が受け持つ。
+
+### 2.1 見出し部・環境部
+
+| 事例 | 構文 | 翻訳器の扱い | 理由・方針 |
 | --- | --- | --- | --- |
-| **複数の通貨記号 (`PICTURE SYMBOL`)** | `CURRENCY SIGN IS '€' WITH PICTURE SYMBOL 'E'` | 単一の `CURRENCY SIGN IS '文字'` にのみ対応。複数種類の通貨記号を同時にテーブル管理する字句解析・PICTURE 解析器が未実装（P-010）。 | 表形式で複数の通貨記号を保持・マッピングする拡張を予定。 |
-| **`OPEN INPUT ... REVERSED`** | `OPEN INPUT F REVERSED` | 磁気テープ等のファイルを末尾から逆順に読み出す指定。現代のディスクストレージやオブジェクトストレージでは物理的意味をなさず、黙って順読みすると誤った結果となるため、安全のため明示的に拒否（P-081, C-11）。 | サポート予定なし（拒否診断を維持）。 |
-| **通信節 (`COMMUNICATION SECTION`)** | `COMMUNICATION SECTION.` | ホストの TCAM 等と連携する古い通信機能。現代の Web/REST/メッセージキュー環境では使用されず、Enterprise COBOL 6.x でも廃要素（C-5, 要件定義 11 章）。 | L0（恒久的に非対応。コンパイル時エラー）。 |
+| `CUR2` | `CURRENCY SIGN IS 'EUR' WITH PICTURE SYMBOL 'E'` | 構文誤り (`extraneous input 'WITH'`) | 単一の `CURRENCY SIGN IS '文字'` だけを持つ (P-010) |
+| `REVR` | `OPEN INPUT F REVERSED` | `OPEN ... REVERSED is not supported` | テープを逆に読む指定。順に読むと黙って違う結果になるので断る (P-081)。仮想テープを入れるときに見直す |
+| `COMM` | `COMMUNICATION SECTION` | `COMMUNICATION SECTION is not supported` | 通信機能は廃要素。恒久的に断る |
+| `RERUNT` | `RERUN ON ... EVERY n RECORDS OF F` | **受理するが効かない** | 文法の注記どおり読み飛ばす。普通に流す結果は変わらないが、<b>検査点を取らず、再始動もできない</b> |
 
----
+### 2.2 データ部
 
-### 2.2 データ部 (DATA DIVISION)
-
-| 未対応構文 / 項目 | 構文例 | 未対応の理由・設計判断 | 今後の方針・暫定対応 |
+| 事例 | 構文 | 翻訳器の扱い | 理由・方針 |
 | --- | --- | --- | --- |
-| **19〜31 桁の 2 進項目 (16 バイトバイナリ)** | `PIC S9(20) COMP-4`, `COMP-5` | 現在の 2 進整数（`COMP`, `COMP-4`, `COMP-5`）は 2, 4, 8 バイト（最大 18 桁 / `long` 範囲）まで対応。16 バイト整数の算術・ビット操作は JVM 上で 128 ビット整数型が存在しないため未対応（P-005）。 | `BigInteger` または独自 128 ビット整数演算器を導入して対応予定。 |
-| **POINTER の算術・比較、`FUNCTION-POINTER` / `PROCEDURE-POINTER`** | `SET PTR UP BY 4` | `USAGE POINTER` の基本項目、`SET ... TO NULL`、`SET ptr TO ADDRESS OF 項目`、`SET ADDRESS OF 連絡節 TO ptr` は実装済み（P-123、設計 85 §6、P-150）。POINTER には実行単位の中で振った番号を置くので、番地の算術、条件式での `ADDRESS OF`、`FUNCTION-POINTER` / `PROCEDURE-POINTER` は意味のある値を作れず断る。 | POINTER を数として使う資産が見つかれば、記憶域を 1 つの番地空間に並べる設計を検討する。 |
-| **`USAGE NATIONAL` / `DISPLAY-1` (UTF-16 / DBCS 項目)** | `01 N-DATA PIC N(10) USAGE NATIONAL.`<br>`01 G-DATA PIC G(10) USAGE DISPLAY-1.` | ホスト固有の DBCS（シフトアウト `0x0E` / シフトイン `0x0F` を伴う固定長バイト列）および UTF-16項目のアライメントとコード変換が未実装（P-006, FR-031）。 | 日本語コードページ拡張（P-002: IBM-1390/1399）とあわせてフェーズ 2 以降で対応予定。**`PIC X` にバイトとして入れた日本語は現在も扱える**（16 進定数・ファイル・`CALL` の引数から入る経路）。その範囲は `docs/design/28-japanese-verification.md` で不変量として固定してある。 |
-| **66 レベル (`RENAMES` 句)** | `66 NEW-NAME RENAMES A THRU B.` | 既存項目の開始位置から終了位置までをまたいで別名定義する構文。記憶域の割り付け規則が通常の階層ツリーと異なり、参照解決器で未実装（設計 50, P-006）。 | `DataLayout` におけるクロス階層オフセット計算の拡張により対応予定。 |
-| **入れ子プログラム (`NESTED PROGRAM`)** | `IDENTIFICATION DIVISION.` ... `PROGRAM-ID. INNER.` ... `END PROGRAM INNER.` | 単一ソース内にプログラムが並ぶ並列配置（`PROGRAM A ... END PROGRAM A. PROGRAM B ...`）には対応しているが、プログラムの内部に別のプログラムを入れ子定義する構文はスコープ解決が未実装（P-070）。 | 静的親プログラムのシンボル探索チェーンを実装して対応予定。 |
+| `BIN20` | `PIC S9(20) COMP-5` | `binary items of 20 digits are not supported` | 2 進は 18 桁まで。`ARITH(EXTEND)` の説明が 31 桁へ広げるものに 2 進を挙げていない (P-005) |
+| `PTRUP` | `SET ptr UP BY 4` | `SET of a POINTER item supports only TO NULL or another POINTER` | POINTER は実行単位の中で振った番号であり、番地の算術は持たない (P-123、P-150) |
+| `FPTR` / `PPTR` | `USAGE FUNCTION-POINTER` / `PROCEDURE-POINTER` | 構文誤り | 未実装 |
+| `NATL` | `PIC N USAGE NATIONAL` の転記 | **受理** | 設計 28 |
+| `NATNUM` | `PIC 9(5) USAGE NATIONAL` (国字の数字) | `USAGE NATIONAL is supported only with PICTURE N` | 国字の 10 進と国字の編集は未実装 |
+| `DBCS` | `PIC G USAGE DISPLAY-1` | `USAGE DISPLAY-1 is not supported yet` | DBCS 項目は未実装 (P-006) |
+| `RENM` | `66 ... RENAMES A THRU B` | **受理** | 実装済み |
 
----
+入れ子プログラム (`END PROGRAM` で閉じる内側のプログラム) も受理する。文法は入れ子を持たず、並んだ
+プログラムとして読む (`CobolCompiler`)。`COMMON` や `GLOBAL` の見え方の規則は確かめていない。
 
-### 2.3 手続き部 (PROCEDURE DIVISION) - 一般文
+### 2.3 手続き部
 
-| 未対応構文 / 項目 | 構文例 | 未対応の理由・設計判断 | 今後の方針・暫定対応 |
+| 事例 | 構文 | 翻訳器の扱い | 理由・方針 |
 | --- | --- | --- | --- |
-| **`INITIALIZE ... REPLACING` にデータ項目を指定する形** | `INITIALIZE WS-GRP REPLACING NUMERIC BY WS-VAL` | `INITIALIZE ... REPLACING ... BY 定数`（リテラル）はコンパイル時に初期化バイトイメージを事前生成して高速展開できるが、受取値が実行時変数の場合は静的イメージ展開が使えないため未対応（P-033）。 | 実行時に型ごとのループ転記を行うランタイムヘルパーを生成する方式へ拡張予定。 |
-| **多次元表に対する `SEARCH ALL`** | `SEARCH ALL TAB(WS-I, WS-J)` | `SEARCH ALL` は 2 分探索を行うため、探索キーの位置を自身で計算する必要がある。外側の表の添字（多次元）を受け取って内側を探索するコード生成経路が未実装（設計 60）。 | 外側添字をキャプチャして 2 分探索のインデックス計算を行う機構を追加予定。 |
-| **浮動小数点項目 (`COMP-1` / `COMP-2`) の除算・べき乗・`ADD` 等の文・`ON SIZE ERROR`** | `COMPUTE WS-F = WS-F / 3` | 実機は式を浮動小数点で評価する。除算とべき乗の中間結果の精度は 10 進の厳密計算と食い違うため、近い値を返さず断る（P-127）。転記・比較・`+ - *` の `COMPUTE` は対応済み。 | 実機の結果を取り、`HexFloatArithmetic` で浮動小数点の演算として入れる。 |
-| **浮動小数点項目 (`COMP-1` / `COMP-2`) の `DISPLAY`** | `DISPLAY WS-FLOAT-COMP1` | HFP (IBM 16進浮動小数点) および IEEE 浮動小数の内部バイナリから、ホスト互換の表示形式文字列（指数表記・仮数部フォーマット）への変換整形器が未実装（`ProgramGenerator.java` で診断）。 | 浮動小数点フォーマッタをランタイムに追加して対応予定。 |
-| **`CALL ... BY VALUE` (COBOL 呼出)** | `CALL 'SUB' USING BY VALUE WS-ARG` | 現在の `CALL` は `BY REFERENCE`（参照渡し）および `BY CONTENT`（値コピー渡し）に対応。C 言語等のネイティブ呼出を想定したプリミティブスタック渡し（`BY VALUE`）は COBOL 相互呼出としては未対応（P-090）。 | Java 相互運用層（設計 75）の ABI 拡張にて対応予定。 |
-| **動的呼出の `CANCEL` 文におけるクラスアンロード** | `CANCEL 'SUBPGM'` | `CANCEL` はプログラムの `WORKING-STORAGE` を次回呼出時に初期状態へリセットするセマンティクスを実装しているが、JVM の仕様上ロード済み `.class` を個別にアンロードすることはできないため、クラスの完全破棄・再ロードは行われない（L2 観測等価として実装）。 | 業務観測上の結果は等価であるため、現在のメモリ再初期化方式を維持。 |
+| `INITV` | `INITIALIZE ... REPLACING NUMERIC DATA BY データ項目` | **受理** | 実装済み |
+| `SRCH2` | 表の中の表への `SEARCH ALL` | **受理** | 内側の指標を動かすだけなので扱える (CLAUDE.md §3) |
+| `FLTDIV` | `COMPUTE` の浮動小数点の除算・べき乗 | `supports only +, - and *` | 中間結果の精度が 10 進と食い違うので、近い値を返さず断る (P-127) |
+| `FLTADD` | 浮動小数点項目への `ADD` など | `with floating-point items is not supported yet` | 同上。`COMPUTE` で書けば `+ - *` は通る |
+| `FLTDSP` | 浮動小数点項目の `DISPLAY` | `DISPLAY of a floating-point item is not supported yet` | 外部浮動小数点の表示形式が未実装 |
+| `BYVAL` | `CALL ... BY VALUE` | `CALL ... BY VALUE is not supported yet` | 未実装 |
+| `CANCL` | `CANCEL 'SUB'` | **受理** | 次の呼び出しで作業場所を初期状態に戻す。JVM の class そのものは捨てない |
+| `SORTRET` | 特殊レジスタ `SORT-RETURN` | `undefined data item: SORT-RETURN` | 整列の特殊レジスタ (`SORT-RETURN`、`SORT-CONTROL` など) は未実装 |
+| `XMLP` / `JSONG` | `XML PARSE` / `JSON GENERATE` | 構文誤り | 未実装 |
 
----
+### 2.4 ファイル
 
-### 2.4 報告書作成機能 (REPORT WRITER)
-
-| 未対応構文 / 項目 | 構文例 | 未対応の理由・設計判断 | 今後の方針・暫定対応 |
+| 事例 | 構文 | 翻訳器の扱い | 理由・方針 |
 | --- | --- | --- | --- |
-| **報告書の制御の切れ目 (`CONTROL` / `CONTROL HEADING` / `CONTROL FOOTING`)** | `CONTROLS ARE FINAL DEPT-CD`<br>`TYPE IS CONTROL FOOTING DEPT-CD` | 報告書作成機能のうち、固定の頁制御（`PAGE LIMIT`, `HEADING`, `FIRST/LAST DETAIL`, `FOOTING`, `INITIATE`, `GENERATE DETAIL`, `TERMINATE`）は通常レコード入出力へ展開して実装済み（L1 / FR-214）。しかし、ブレークキー（`CONTROL` 項目）の変化を検知して小計・合計行を自動出力する制御ステートマシンは未実装（P-078, C-4）。 | キー値の直前比較とブレーク時フッター処理のコード生成を追加予定。 |
-| **自動集計句 (`SUM` 句)** | `05 LINE PLUS 1. 10 COLUMN 20 SUM AMOUNT.` | 明細出力時に値を累積し、コントロールブレーク時に集計値を印字する自動累計機能（P-078）。 | 上記の `CONTROL` ブレーク制御とセットで段階的にサポート予定。 |
-| **報告書全体の一括出力 (`GENERATE 報告書名`)** | `GENERATE RPT-SUMMARY` | `GENERATE 明細グループ名` は対応済みだが、報告書名そのものを指定して明細を出力せず集計のみを行う形式（サマリーレポート）は制御ブレークが必須となるため未対応（`ProcedureBuilder.java`）。 | 制御ブレーク実装後に対応予定。 |
+| `RECU` / `RECS` | `RECORDING MODE U` / `S` | `RECORDING MODE U is not supported yet` | 不定長と区分 (スパン) のレコードは未実装。`F` / `V` は扱う |
+| `BLKC` | `BLOCK CONTAINS 10 RECORDS` | **受理するが効かない** | ブロックを物理的に作らない。ホストのブロック化したデータセットをそのまま読むには、物理ブロック (BDW / RDW) の実装が要る |
 
----
+### 2.5 報告書作成
 
-### 2.5 サブシステム連携 (`EXEC CICS` / `EXEC SQL`)
-
-| 未対応構文 / 項目 | 構文例 | 未対応の理由・設計判断 | 今後の方針・暫定対応 |
+| 事例 | 構文 | 翻訳器の扱い | 理由・方針 |
 | --- | --- | --- | --- |
-| **CICS BMS (Basic Mapping Support) 画面入出力** | `EXEC CICS SEND MAP('...') END-EXEC`<br>`EXEC CICS RECEIVE MAP('...') END-EXEC` | 3270 端末プロトコルおよび BMS データストリームは再現しない設計（C-7, ADR-0010）。BMS マクロ (DFHMSD / DFHMDI / DFHMDF) の中立モデル `BmsModel` への解析、`COPY mapset` による記号マップ写し句の生成、`DFHAID` は実装済み（P-112）。`SEND MAP` / `RECEIVE MAP` / `SEND TEXT` / `SEND CONTROL` の初期 subset は中立な画面 snapshot として実装済み（設計 79 §8、P-117〜P-119）。`DFHBMSCA`、`ERASEAUP` / `ACCUM` / `PAGING`、会話型の RECEIVE、Thymeleaf 画面は未実装。 | Web 画面アダプタとして段階実装中。 |
-| **CICS file control の、文書が条件を示さない形** | `EXEC CICS REWRITE FILE('F') FROM(A) END-EXEC` (鍵を変える) | KSDS / RRDS / ESDS / BDAM の READ / WRITE / REWRITE / DELETE / UNLOCK と browse、`RBA` / `XRBA`、`TOKEN`、`NOSUSPEND`、`CONSISTENT` / `REPEATABLE`、`MASSINSERT`、`DEBKEY` / `DEBREC`、構成した自 region の `SYSID`、`SET` は暫定の仕様で実装済み（設計 82 §3、設計 85 §4・§5、P-136、P-147、P-151）。鍵を変える REWRITE、EQUAL で始めた browse の位置づけ直しなど、文書が条件を示さない形は実行時に失敗させる。 | 実機の振る舞いを採ってから足す。 |
-| **CICS キューの一部 (`ITEM` も `NEXT` も無い `READQ TS`)** | `EXEC CICS READQ TS QUEUE('Q') INTO(A) END-EXEC` | `WRITEQ` / `READQ` / `DELETEQ` の `TS` / `TD` は 1 つの JVM の中のキューとして実装済み（設計 82 §4・§5、P-137）。trigger level による task の開始は設計 83 (P-144)、区画外の TD (順編成のデータセット) と回復可能なキュー (STRICT の UOW に入る) は設計 85 §7 (P-148)、構成した自 region の `SYSID` と `NOSUSPEND` は設計 85 §4 (P-149) で実装済み。`SET` は設計 85 §5.5 (P-151) で実装済み。`ITEM` も `NEXT` も無い `READQ TS` は、頁が既定を示さないので断る。 | 既定を公開文書か実機で確かめてから足す。 |
-| **CICS START の一部 (`USERID` と `TERMID` の併記)** | `EXEC CICS START TRANSID('TX02') USERID('U1') TERMID('T001') END-EXEC` | 端末を持たない task を起こす `START` と、`RETRIEVE`、`CANCEL REQID` は実装済み（設計 82 §6、P-138）。`PROTECT` も実装済み（P-141）。端末へ出す `TERMID` は `JdbcCicsStarts` の構成で実装済み（設計 83 §5、P-144）。`RETRIEVE WAIT` も端末へ出す task で実装済み。別の利用者で動かす `USERID` は代理の権限を確かめて実装済み（設計 84、P-145）。`CHANNEL` / `ATTACH` / `NOCHECK` / `SYSID`、REQID の無い `CANCEL` (POST を持たないので NOTFND) は暫定の仕様で実装済み（設計 85 §8、P-149）。`RETRIEVE SET` は設計 85 §5.5 (P-151) で実装済み。`USERID` と `TERMID` の併記は、どちらの user ID で動くかを確かめていないので断る。 | 併記は実機の振る舞いを確かめて設計する。 |
-| **動的 CICS オプション (`TRANSID(項目名)` 等)** | `EXEC CICS RETURN TRANSID(WS-TRN) END-EXEC` | `LINK` / `XCTL` の `PROGRAM(項目名)` は 1〜8 byte の英数字項目、`ABEND ABCODE(項目名)` は 4 byte の英数字項目に限って対応済み（設計 79 §4、P-124）。`TRANSID` / `LENGTH` のデータ名は未対応で、静的定数に限定して受理（P-097）。 | 設計 79 の順序で拡張する。 |
-| **CICS チャネル・コンテナ (`CHANNEL` / `CONTAINER`)** | `EXEC CICS LINK PROGRAM('...') CHANNEL('...') END-EXEC` | 32KB を超える大容量データ受け渡し用のチャネル・コンテナ機構は初期サブセットに含まれず未対応。 | COMMAREA（32KB 上限）の検証完了後、次期マイルストーンで対応予定。 |
-| **`HANDLE ABEND PROGRAM(...)`** | `EXEC CICS HANDLE ABEND PROGRAM('ERRPRG') END-EXEC` | `HANDLE ABEND LABEL(段落名)`, `CANCEL`, `RESET` は実装済みだが、異常終了時に別プログラムを起動して回復を試みる形式は未対応（設計 77）。 | CICS タスク境界でのプログラム起動回復フックを追加予定。 |
-| **Db2 動的 SQL (`PREPARE`, `EXECUTE`, `DESCRIBE`)** | `EXEC SQL PREPARE STMT FROM :SQL-STR END-EXEC` | 現在の `cobol-db2` は静的 SQL（単一行 `SELECT`, `INSERT`, `UPDATE`, `DELETE`, 静的カーソル `OPEN`/`FETCH`/`CLOSE`）および Spring トランザクション連携に対応。実行時に SQL 文を組み立てる動的 SQL は未対応（設計 77）。 | 動的 SQL 実行器および SQLDA バッファの対応を検討予定。 |
+| `RWC` | `CONTROLS ARE ...`、`TYPE CONTROL FOOTING`、`SUM` | `a report with CONTROL breaks is not supported yet` | 固定の頁制御 (`PAGE LIMIT`、`HEADING`、`FOOTING`、`INITIATE` / `GENERATE 明細` / `TERMINATE`) は実装済み。制御の切れ目、`SUM`、`GENERATE 報告書名` は未実装 (P-078) |
 
----
+### 2.6 サブシステム (`EXEC SQL` / `EXEC CICS` / `EXEC DLI` / MQ)
 
-### 2.6 削除済み旧構文 (Enterprise COBOL 6.x で廃止された構文 / 制約 C-11)
+| 事例 | 構文 | 翻訳器の扱い | 理由・方針 |
+| --- | --- | --- | --- |
+| `WHENEV` | `EXEC SQL WHENEVER` | `unsupported EXEC SQL statement: WHENEVER` | 未実装。Db2 の資産で多いので優先 (改善計画 1-1) |
+| `PREP` | `EXEC SQL PREPARE` (動的 SQL) | `unsupported EXEC SQL statement: PREPARE` | 動的 SQL (`PREPARE` / `EXECUTE` / `DESCRIBE`、SQLDA) は未実装 (改善計画 1-1) |
+| `DLI` | `EXEC DLI` | `EXEC processor is not supported yet` | DL/I は `CALL 'CBLTDLI'` で扱う (設計 78) |
+| `CXFER` | `LINK ... CHANNEL(...)` | `unsupported EXEC CICS option: CHANNEL('CH')` | `PUT` / `GET CONTAINER` と `START ... CHANNEL` は実装済み。`LINK` / `XCTL` の `CHANNEL` は未実装 |
+| `CHABP` | `HANDLE ABEND PROGRAM(...)` | `accepts LABEL, CANCEL, or RESET` | 未実装 |
+| `CTRAN` | `RETURN TRANSID(データ名)` | `unsupported EXEC CICS option: TRANSID(T)` | `TRANSID` は定数だけ (P-097)。`PROGRAM(データ名)` と `ABCODE(データ名)` は扱う (P-124) |
+| `CRQTS` | `ITEM` も `NEXT` も無い `READQ TS` | `READQ TS requires either ITEM or NEXT` | 文書が既定を示していない形 (P-137) |
+| `CSTUT` | `START ... USERID(...) TERMID(...)` | `START USERID with TERMID is not supported` | P-149 |
+| `CRECV` | `RECEIVE INTO` (map を使わない端末入力) | `unsupported or malformed EXEC CICS block` | 未実装。TN3270 の入口では TRANSID の後ろの入力を読めない (P-191) |
+| `MQ` | `CALL 'MQOPEN'` | **受理するが、実行で program が見つからない** | MQI は未実装 (改善計画 2-4) |
 
-以下の構文は、IBM Enterprise COBOL for z/OS 6.x で既に言語仕様から完全に削除されています。本処理系でもこれらを受理せず、**旧世代の廃止構文であることを明示した診断メッセージを出してコンパイルをエラー停止**させます。
+BMS (`SEND MAP` / `RECEIVE MAP`) は実装済みで、ブラウザ (設計 81) と TN3270 (設計 86) の端末から使える。
+CICS の file control、一時記憶・一時データ、`START`、非同期 API、`ENQ` / `DEQ` の詳細は README の
+「現在のステータス」と設計 82〜85 にある。
 
-| 削除された構文 | 代替となる現代の COBOL 構文 | 処理系の振る舞い・診断 |
-| --- | --- | --- |
-| **`EXAMINE` 文** | `INSPECT` 文 | `EXAMINE is obsolete and removed in Enterprise COBOL 6.x. Use INSPECT instead.` |
-| **`TRANSFORM` 文** | `INSPECT ... CONVERTING` 文 | `TRANSFORM is obsolete and removed. Use INSPECT ... CONVERTING.` |
-| **`NOTE` 文** | `*` 注釈行、または `*>` 行内注釈 | 文法レベルで拒否。注釈行への書き換えを促す診断。 |
-| **`ON` 文 (条件付き実行)** | カウンタ変数と `IF` 文 | `ON count AND EVERY count` などの古い構文は受理せず診断。 |
-| **特殊レジスタ `CURRENT-DAY`** | 組み込み関数 `FUNCTION CURRENT-DATE` | `CURRENT-DAY is obsolete. Use FUNCTION CURRENT-DATE or ACCEPT.` |
+### 2.7 削除済み旧構文 (Enterprise COBOL 6.x で廃止された構文 / 制約 C-11)
+
+以下の構文は IBM Enterprise COBOL for z/OS 6.x で言語仕様から削除されている。本処理系でも受理しない。
+
+<b>2026-10-20 の訂正</b>: 以前この表は「`EXAMINE is obsolete ... Use INSPECT instead.` のような旧構文であることを
+示す診断を出す」と書いていたが、<b>そういう文言は実装されていなかった</b>。どれも断るが、診断は一般の構文誤りか
+未定義の名前である。下の「翻訳器の扱い」は試験 (`UnsupportedSyntaxCatalogTest`) で確かめた実際の文言である。
+置き換え先を示す専用の診断は、移行の手間を減らす改善の候補である。
+
+| 事例 | 削除された構文 | 代わりの構文 | 翻訳器の扱い |
+| --- | --- | --- | --- |
+| `EXAM` | `EXAMINE` 文 | `INSPECT` 文 | 構文誤り (`no viable alternative at input 'EXAMINE...'`) |
+| `TRAN` | `TRANSFORM` 文 | `INSPECT ... CONVERTING` 文 | 構文誤り |
+| `NOTEST` | `NOTE` 文 | `*` 注釈行、または `*>` 行内注釈 | 構文誤り |
+| `ONST` | `ON` 文 (条件付き実行) | カウンタ変数と `IF` 文 | 構文誤り |
+| `CDAY` | 特殊レジスタ `CURRENT-DAY` | `FUNCTION CURRENT-DATE` | `undefined data item: CURRENT-DAY` |
 
 ---
 
@@ -99,8 +123,8 @@
 移行対象の既存 COBOL 資産を本コンパイラで翻訳した際に未対応エラーが発生した場合は、以下のガイドラインに従って対処してください。
 
 1. **削除済み旧構文 (`EXAMINE`, `TRANSFORM` 等) の場合**:
-   - 上記 2.6 節の対応表に従い、Enterprise COBOL 6.x 準拠の標準構文（`INSPECT` 等）へ書き換えてください。
-2. **未対応 USAGE (`POINTER`, `NATIONAL` 等) の場合**:
+   - 上記 2.7 節の対応表に従い、Enterprise COBOL 6.x 準拠の標準構文（`INSPECT` 等）へ書き換えてください。
+2. **未対応 USAGE (`FUNCTION-POINTER`、`DISPLAY-1`、国字の数字項目など) の場合**:
    - 英数字項目（`PIC X`）や 4 バイトバイナリ（`COMP-5`）など、現在サポートされている表現で代替可能か検討してください。
 3. **報告書の制御ブレーク (`CONTROL` 句) の場合**:
    - `REPORT SECTION` を使わず、手続き部内で手動のブレーク判定（キー項目の前回値比較と合計計算・改ページ `WRITE ... AFTER ADVANCING PAGE`）を行う標準的なバッチ集計ロジックへのリファクタリングを推奨します。
