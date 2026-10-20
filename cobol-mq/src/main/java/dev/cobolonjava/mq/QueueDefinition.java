@@ -16,10 +16,11 @@ import java.util.Objects;
  * @param defaultPersistence MQPER_PERSISTENCE_AS_Q_DEF で置かれた電文の永続性
  * @param getInhibited       GET を禁じる
  * @param putInhibited       PUT を禁じる
+ * @param trigger            起動の定義 (TRIGGER、TRIGTYPE、INITQ、PROCESS など)。起動しない待ち行列なら null
  */
 public record QueueDefinition(String name, String description, int maxDepth, int maxMessageLength,
                               int defaultPriority, int defaultPersistence,
-                              boolean getInhibited, boolean putInhibited) {
+                              boolean getInhibited, boolean putInhibited, TriggerDefinition trigger) {
 
     public QueueDefinition {
         Objects.requireNonNull(name, "name");
@@ -37,31 +38,38 @@ public record QueueDefinition(String name, String description, int maxDepth, int
 
     /** 既定値の局所待ち行列。 */
     public static QueueDefinition local(String name) {
-        return new QueueDefinition(name, "", 999_999_999, 4_194_304, 0, MqConstants.MQPER_NOT_PERSISTENT, false, false);
+        return new QueueDefinition(name, "", 999_999_999, 4_194_304, 0, MqConstants.MQPER_NOT_PERSISTENT, false, false,
+                null);
     }
 
     public QueueDefinition withMaxDepth(int value) {
         return new QueueDefinition(name, description, value, maxMessageLength, defaultPriority, defaultPersistence,
-                getInhibited, putInhibited);
+                getInhibited, putInhibited, trigger);
     }
 
     public QueueDefinition withMaxMessageLength(int value) {
         return new QueueDefinition(name, description, maxDepth, value, defaultPriority, defaultPersistence,
-                getInhibited, putInhibited);
+                getInhibited, putInhibited, trigger);
     }
 
     public QueueDefinition withDescription(String value) {
         return new QueueDefinition(name, value, maxDepth, maxMessageLength, defaultPriority, defaultPersistence,
-                getInhibited, putInhibited);
+                getInhibited, putInhibited, trigger);
     }
 
     public QueueDefinition withDefaultPersistence(int value) {
         return new QueueDefinition(name, description, maxDepth, maxMessageLength, defaultPriority, value,
-                getInhibited, putInhibited);
+                getInhibited, putInhibited, trigger);
+    }
+
+    /** 起動の定義を付ける (MQSC の {@code TRIGGER TRIGTYPE(...) INITQ(...) PROCESS(...)})。 */
+    public QueueDefinition withTrigger(TriggerDefinition value) {
+        return new QueueDefinition(name, description, maxDepth, maxMessageLength, defaultPriority, defaultPersistence,
+                getInhibited, putInhibited, value);
     }
 
     public QueueDefinition withInhibited(boolean get, boolean put) {
         return new QueueDefinition(name, description, maxDepth, maxMessageLength, defaultPriority, defaultPersistence,
-                get, put);
+                get, put, trigger);
     }
 }

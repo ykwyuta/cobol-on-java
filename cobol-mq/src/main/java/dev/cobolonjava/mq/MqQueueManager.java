@@ -41,6 +41,7 @@ public final class MqQueueManager {
     /** 電文が見えるようになったとき (PUT の確約、取り消しで戻った電文) に起こす。待っている MQGET が見る。 */
     final Condition arrived = lock.newCondition();
     private final Map<String, LocalQueue> queues = new LinkedHashMap<>();
+    private final Map<String, ProcessDefinition> processes = new LinkedHashMap<>();
     private final Map<Object, MqConnection> connections = new WeakHashMap<>();
     private long sequence;
     private int nextConnection = 1;
@@ -111,6 +112,33 @@ public final class MqQueueManager {
         }
     }
 
+    /** 処理を定義する。同じ名前を 2 度定義すると断る。 */
+    public MqQueueManager define(ProcessDefinition definition) {
+        lock.lock();
+        try {
+            if (processes.putIfAbsent(definition.name(), definition) != null) {
+                throw new IllegalArgumentException("process is already defined: " + definition.name());
+            }
+            return this;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** TRIGGER / NOTRIGGER (MQSC の {@code ALTER QLOCAL TRIGGER})。DEPTH の起動で切れたものを戻すのに使う。 */
+    public void setTriggerControl(String queueName, boolean on) {
+        lock.lock();
+        try {
+            LocalQueue q = require(queueName);
+            if (on && q.definition.trigger() == null) {
+                throw new IllegalArgumentException("queue has no trigger definition: " + queueName);
+            }
+            q.triggerControl = on;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public MqQueueManager defineLocalQueue(String queueName) {
         return define(QueueDefinition.local(queueName));
     }
@@ -141,8 +169,7 @@ public final class MqQueueManager {
             }
             setPutTime(d);
             LocalQueue.Entry entry = entry(q, new MqMessage(d, message.data()));
-            q.insert(entry);
-            arrived.signalAll();
+            arrive(q, entry);
             return entry.message();
         } finally {
             lock.unlock();
@@ -275,6 +302,81 @@ public final class MqQueueManager {
                 t.getNano() / 10_000_000);
         System.arraycopy(codePage.encode(date), 0, descriptor, Structure.MD_PUT_DATE, 8);
         System.arraycopy(codePage.encode(time), 0, descriptor, Structure.MD_PUT_TIME, 8);
+    }
+
+    /**
+     * 電文が見えるようになった: 待ち行列に入れ、起動の条件を見て、待っている MQGET を起こす。錠を持って呼ぶ。
+     * 同期点の外の PUT、作業単位の確約、Java の側の {@link #put} がここを通る。MQBACK で戻った電文は通らない
+     * (戻しでは起動しない。暫定判断 P-255)。
+     */
+    void arrive(LocalQueue q, LocalQueue.Entry entry) {
+        TriggerDefinition t = q.definition.trigger();
+        int before = t == null ? 0 : q.count(t.messagePriority());
+        q.insert(entry);
+        if (t != null) {
+            trigger(q, t, entry, before);
+        }
+        arrived.signalAll();
+    }
+
+    /**
+     * 起動の条件 (公開文書「Conditions for a trigger event」の読み、暫定判断 P-255) を満たせば、開始待ち行列へ
+     * 起動電文 (MQTM 1 版) を置く。
+     *
+     * <ul>
+     * <li>TRIGGER が入っていて、GET が禁じられていない
+     * <li>電文の優先度が TRIGMPRI 以上
+     * <li>FIRST は数えた電文が 0 から 1 に、DEPTH は TRIGDPTH に達した。どちらも待ち行列を入力で開いている
+     *     ものが無い (OPPROCS が 0)。EVERY は毎回
+     * <li>開始待ち行列があり、入力で開いているもの (trigger monitor) があり、PUT が禁じられていない
+     * <li>処理の定義がある
+     * </ul>
+     * DEPTH で起動したら TRIGGER を切る。条件を満たさないときは何も置かない (実機は一部の場合に console へ
+     * 知らせを出すが、ここでは出さない)。
+     */
+    private void trigger(LocalQueue q, TriggerDefinition t, LocalQueue.Entry entry, int before) {
+        if (!q.triggerControl || q.getInhibited || entry.priority() < t.messagePriority()) {
+            return;
+        }
+        boolean fire = switch (t.type()) {
+            case FIRST -> before == 0 && q.openInput == 0;
+            case EVERY -> true;
+            case DEPTH -> before + 1 >= t.depth() && q.openInput == 0;
+        };
+        if (!fire) {
+            return;
+        }
+        LocalQueue init = queues.get(t.initiationQueue());
+        ProcessDefinition process = processes.get(t.processName());
+        if (init == null || init == q || init.openInput == 0 || init.putInhibited || process == null) {
+            return;
+        }
+        if (t.type() == TriggerDefinition.Type.DEPTH) {
+            q.triggerControl = false;
+        }
+        byte[] d = MqMessage.defaultDescriptor(codePage);
+        Structure.writeInteger(d, 4, 1);
+        System.arraycopy(Structure.padded(codePage, "MQTRIG", 8), 0, d, Structure.MD_FORMAT, 8);
+        Structure.writeInteger(d, Structure.MD_PERSISTENCE, MqConstants.MQPER_NOT_PERSISTENT);
+        System.arraycopy(newMessageId(), 0, d, Structure.MD_MSG_ID, Structure.ID_LENGTH);
+        setPutTime(d);
+        LocalQueue.Entry message = entry(init, new MqMessage(d, triggerMessage(q, t, process)));
+        init.insert(message);
+    }
+
+    /** 起動電文 MQTM 1 版 (684 byte)。欄の並びは公開文書の MQTM の説明と写し句 CMQTMV (P-250) による。 */
+    private byte[] triggerMessage(LocalQueue q, TriggerDefinition t, ProcessDefinition process) {
+        ByteBuffer tm = ByteBuffer.allocate(TriggerMessage.LENGTH);
+        tm.put(Structure.padded(codePage, "TM", 4));
+        tm.putInt(1);
+        tm.put(Structure.padded(codePage, q.name(), Structure.NAME_LENGTH));
+        tm.put(Structure.padded(codePage, process.name(), Structure.NAME_LENGTH));
+        tm.put(Structure.padded(codePage, t.data(), 64));
+        tm.putInt(process.applicationType());
+        tm.put(Structure.padded(codePage, process.applicationId(), 256));
+        tm.put(Structure.padded(codePage, process.environmentData(), 128));
+        tm.put(Structure.padded(codePage, process.userData(), 128));
+        return tm.array();
     }
 
     /** 待つ。錠を持って呼ぶ。待てる時間が残っていれば true。 */

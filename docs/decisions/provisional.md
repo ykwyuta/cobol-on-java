@@ -6475,3 +6475,27 @@ EXEC CICS SYNCPOINT の中で MQ の確約が失敗したときの RESP (実機�
 
 **解消条件**: Db2 の UOW と MQ を同じ調整役 (2 相、または最後の資源を 1 相で) で確約する口を作り、CICS の同期点の
 失敗の RESP を公開文書の SYNCPOINT の頁に合わせる。実機で Db2 と MQ を同じ task で更新し、片方を失敗させて採る。
+
+## P-255 MQ の起動 (trigger) の条件は公開文書の読みで、TRIGINT と MQBACK で戻った電文の起動を持たない
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。起動電文から transaction を読む形は Zeus (`d2f1cfc` の `crates/zeus-mq/src/monitor.rs`) から移した (ADR-0016)。Zeus は起動電文を IBM MQ の待ち行列管理者に作らせているので、条件はここで公開文書から書いた |
+| 場所 | `MqQueueManager.arrive` / `trigger`、`MqTriggerMonitor`、`TriggerMessage`、`TriggerDefinition`、`ProcessDefinition` |
+| 関連要件 | 設計 88 §4.5 |
+
+**いまの扱い**: 電文が見えるようになったとき (同期点の外の PUT、確約、Java の側の put) だけ条件を見る。条件は設計 88
+§4.5 の表のとおり。FIRST と DEPTH の「数えた電文」は見えている電文 (確約済み) のうち TRIGMPRI 以上のもので、作業単位の
+中の電文は数えない。起動電文は同期点の外で、非永続、Format `MQTRIG`、MQMD 1 版の既定値で置く。transaction は ApplId の
+先頭の語の 4 文字まで。条件を満たさなければ何もしない (console への知らせは出さない)。
+
+**なぜ暫定か**: 実機の待ち行列管理者と、同じ順の PUT / GET / OPEN / CLOSE で起動電文が何通置かれるかを突き合わせていない。
+z/OS の CICS の trigger monitor が ApplId をどう読むか (4 文字を超える名前、空白の ApplId のとき TRIGDATA を使うか) は
+確かめていない。
+
+**どこがずれうるか**: TRIGINT (FIRST で、待ち行列が空にならないまま一定の時間が過ぎたら再び起動する)。MQBACK で
+戻った電文や、待ち行列を入力で閉じたときに電文が残っていれば起動する場合 (公開文書は閉じたときの起動にも触れている)。
+作業単位の中の電文を数えるかどうか。z/OS の共有待ち行列の扱い。
+
+**解消条件**: 実機で TRIGTYPE ごとに PUT / GET / OPEN / CLOSE / MQBACK を並べ、開始待ち行列に置かれた起動電文を数え、
+MQTM の byte 列を採って比べる。

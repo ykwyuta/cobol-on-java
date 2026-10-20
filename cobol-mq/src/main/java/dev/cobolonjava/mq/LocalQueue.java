@@ -26,9 +26,12 @@ final class LocalQueue {
     boolean exclusive;
     boolean getInhibited;
     boolean putInhibited;
+    /** TRIGGER / NOTRIGGER。DEPTH の起動のあと切れる。 */
+    boolean triggerControl;
 
     LocalQueue(QueueDefinition definition) {
         this.definition = definition;
+        this.triggerControl = definition.trigger() != null;
         this.getInhibited = definition.getInhibited();
         this.putInhibited = definition.putInhibited();
     }
@@ -65,6 +68,17 @@ final class LocalQueue {
             }
         }
         return best;
+    }
+
+    /** 優先度が {@code priority} 以上の見えている電文の数。起動の条件が数える (TRIGMPRI)。 */
+    int count(int priority) {
+        int n = 0;
+        for (Entry e : visible) {
+            if (e.priority() >= priority) {
+                n++;
+            }
+        }
+        return n;
     }
 
     void insert(Entry entry) {

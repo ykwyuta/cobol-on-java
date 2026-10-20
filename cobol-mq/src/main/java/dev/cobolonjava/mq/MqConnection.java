@@ -122,8 +122,7 @@ final class MqConnection {
             queue.uncommitted++;
             puts.add(new Staged(queue, entry));
         } else {
-            queue.insert(entry);
-            manager.arrived.signalAll();
+            manager.arrive(queue, entry);
         }
     }
 
@@ -138,19 +137,15 @@ final class MqConnection {
 
     /** MQCMIT。置いた電文が見えるようになり、取った電文は消える。 */
     void commit() {
-        for (Staged s : puts) {
-            s.queue().uncommitted--;
-            s.queue().insert(s.entry());
-        }
         for (Staged s : gets) {
             s.queue().uncommitted--;
         }
-        boolean any = !puts.isEmpty();
+        for (Staged s : puts) {
+            s.queue().uncommitted--;
+            manager.arrive(s.queue(), s.entry());
+        }
         puts.clear();
         gets.clear();
-        if (any) {
-            manager.arrived.signalAll();
-        }
     }
 
     /**

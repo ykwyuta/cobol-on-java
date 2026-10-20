@@ -105,6 +105,10 @@ class MqCicsTaskTest {
     }
 
     private static void runTask(MqQueueManager qm) {
+        runTask(qm, "MQEC", triggerMessage("APP.IN"));
+    }
+
+    private static void runTask(MqQueueManager qm, String transaction, byte[] mqtm) {
         CopyBookResolver mq = new MqSystemCopyBookResolver();
         CopyBookResolver cics = new CicsSystemCopyBookResolver();
         CopyBookResolver both = (text, library) -> mq.resolve(text, library).or(() -> cics.resolve(text, library));
@@ -112,13 +116,13 @@ class MqCicsTaskTest {
                 .compile("MQECHO.cbl", MqProgram.source("MQECHO", DATA, MAIN)));
         ProgramCatalog catalog = Mqi.register(ProgramCatalog.builder()
                 .cobolProgram("MQECHO", program.factory()), qm).build();
-        CicsStartData start = new CicsStartData("TRIG0001", TransId.of("MQEC"), triggerMessage("APP.IN"),
+        CicsStartData start = new CicsStartData("TRIG0001", TransId.of(transaction), mqtm,
                 Optional.empty(), Optional.empty(), Optional.empty(), "trigger-monitor", Optional.empty());
         new CobolCicsTaskProgram(CobolRuntime.builder(catalog).classLoader(program.loader()).build(), 2)
-                .execute(new CicsTransactionDefinition(TransId.of("MQEC"), ProgramId.of("MQECHO"),
+                .execute(new CicsTransactionDefinition(TransId.of(transaction), ProgramId.of("MQECHO"),
                                 Duration.ofSeconds(10), 16, 0, 0, 0, true),
                         CicsPayload.ofCommarea(new byte[0]),
-                        new CicsTaskContext(new CicsTaskId("task_mq"), TransId.of("MQEC"), "mq-test",
+                        new CicsTaskContext(new CicsTaskId("task_mq"), TransId.of(transaction), "mq-test",
                                 Instant.now()).withStart(Optional.of(start)),
                         (action, ignored) -> { });
     }
@@ -161,5 +165,33 @@ class MqCicsTaskTest {
         assertEquals(List.of("BOOM"), left.stream().map(m -> m.text(CP)).toList());
         assertEquals(1, left.get(0).backoutCount());
         assertEquals(1, qm.depth("APP.OUT"), "取り消した応答は深さにも残らない");
+    }
+
+    @Test
+    @DisplayName("要求が届くと起動電文が開始待ち行列に置かれ、trigger monitor が読んだ MQTM で起こした task が応答する")
+    void triggeredByTheMonitor() {
+        MqQueueManager qm = new MqQueueManager("QM01", CP, 1047, java.time.Clock.systemUTC(), MqConstants.MQAT_CICS)
+                .defineLocalQueue("CICS.INITQ")
+                .define(ProcessDefinition.cics("ECHO.PROCESS", "MQEC"))
+                .define(QueueDefinition.local("APP.IN").withTrigger(TriggerDefinition.of(
+                        TriggerDefinition.Type.FIRST, "CICS.INITQ", "ECHO.PROCESS")))
+                .defineLocalQueue("APP.OUT");
+        try (MqTriggerMonitor monitor = new MqTriggerMonitor(qm, "CICS.INITQ")) {
+            qm.put("APP.IN", MqMessage.builder(CP).text("ONE").build());
+            qm.put("APP.IN", MqMessage.builder(CP).text("TWO").build());
+            List<TriggerMessage> triggers = monitor.poll();
+            assertEquals(1, triggers.size(), "FIRST は 0 から 1 になったときだけ");
+            TriggerMessage trigger = triggers.get(0);
+            assertEquals("MQEC", trigger.transactionId());
+            assertEquals("APP.IN", trigger.queueName());
+
+            runTask(qm, trigger.transactionId(), trigger.bytes());
+
+            assertEquals(List.of("ECHO ONE", "ECHO TWO"),
+                    qm.messages("APP.OUT").stream().map(m -> m.text(CP)).toList());
+            // task が待ち行列を空にしたので、次の要求でまた起動する
+            qm.put("APP.IN", MqMessage.builder(CP).text("THREE").build());
+            assertEquals(1, monitor.poll().size());
+        }
     }
 }
