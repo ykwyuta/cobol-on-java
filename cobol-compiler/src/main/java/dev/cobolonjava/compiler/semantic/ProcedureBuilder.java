@@ -2303,8 +2303,10 @@ public final class ProcedureBuilder {
             }
             if ((spec.flags() & dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_SET) != 0) {
                 requirePointer(data, label + " SET");
+            } else if (reads) {
+                requireRecordArea(data, label + " INTO");
             } else {
-                requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+                requireFromArea(data, label);
             }
         }
         DataReference[] numbers = new DataReference[3];
@@ -2324,10 +2326,7 @@ public final class ProcedureBuilder {
                 throw new IllegalArgumentException(label + " " + options[i] + " must be a halfword binary data area");
             }
         }
-        if (data != null && spec.lengthLiteral() > data.constantLength().getAsInt()) {
-            throw new IllegalArgumentException(label + " LENGTH " + spec.lengthLiteral()
-                    + " exceeds the FROM data area of " + data.constantLength().getAsInt() + " bytes");
-        }
+        // 書く命令の LENGTH が FROM より長ければ、FROM の番地から続く記憶域も書く (暫定判断 P-201)
         return withCicsResponse(new Statement.CicsQueueCommand(kind, spec.nameLiteral(), nameData, spec.nameLength(),
                 data, numbers[0], spec.lengthLiteral(), numbers[1], spec.itemLiteral(), numbers[2], spec.sysidLiteral(),
                 sysidData, spec.flags(), parsed.response() != null || parsed.noHandle(), origin), parsed, origin);
@@ -2361,8 +2360,10 @@ public final class ProcedureBuilder {
             }
             if ((spec.flags() & dev.cobolonjava.cics.CicsRuntimeOps.FILE_SET) != 0) {
                 requirePointer(data, label + " SET");
+            } else if (reads) {
+                requireRecordArea(data, label + " INTO");
             } else {
-                requireRecordArea(data, label + (reads ? " INTO" : " FROM"));
+                requireFromArea(data, label);
             }
         }
         DataReference ridfld = null;
@@ -2460,10 +2461,7 @@ public final class ProcedureBuilder {
                 throw new IllegalArgumentException(label + " " + options[i] + " must be a halfword binary data area");
             }
         }
-        if (data != null && lengthLiteral > data.constantLength().getAsInt()) {
-            throw new IllegalArgumentException(label + " LENGTH " + lengthLiteral
-                    + " exceeds the FROM data area of " + data.constantLength().getAsInt() + " bytes");
-        }
+        // WRITE / REWRITE の LENGTH が FROM より長ければ、FROM の番地から続く記憶域も書く (暫定判断 P-201)
         if (ridfld != null && keyLengthLiteral > ridfld.constantLength().getAsInt()) {
             throw new IllegalArgumentException(label + " KEYLENGTH " + keyLengthLiteral
                     + " exceeds the RIDFLD data area of " + ridfld.constantLength().getAsInt() + " bytes");
@@ -2511,6 +2509,16 @@ public final class ProcedureBuilder {
     private static void requirePointer(DataReference area, String option) {
         if (!area.item().isPointer()) {
             throw new IllegalArgumentException(option + " must be a POINTER data area");
+        }
+    }
+
+    /**
+     * 書く命令の FROM。CICS にとって FROM は番地であり、項目の種類は問わない (GenApp は数字の項目
+     * CA-Customer-Num を FROM に置き、LENGTH でその後ろのレコードまで書く)。長さだけは決まっていなければならない。
+     */
+    private static void requireFromArea(DataReference area, String command) {
+        if (area.constantLength().isEmpty() || area.item().isIndex() || area.item().isPointer()) {
+            throw new IllegalArgumentException(command + " FROM must be a data area of fixed length");
         }
     }
 

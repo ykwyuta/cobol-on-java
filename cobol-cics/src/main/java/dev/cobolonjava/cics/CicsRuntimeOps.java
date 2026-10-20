@@ -1109,6 +1109,11 @@ public final class CicsRuntimeOps {
      * @param itemLength COMMAREA に書いた項目の長さ
      * @param length     LENGTH の値
      */
+    /** 項目の番地から記憶域の終わりまで (暫定判断 P-201)。書く命令の LENGTH が FROM を越える形に使う。 */
+    public static DataView areaToEnd(dev.cobolonjava.runtime.storage.Storage storage, int offset) {
+        return Objects.requireNonNull(storage, "storage").view(offset, storage.size() - offset);
+    }
+
     public static DataView longCommarea(dev.cobolonjava.runtime.storage.Storage storage, int offset, int itemLength,
                                         int length) {
         Objects.requireNonNull(storage, "storage");

@@ -1290,11 +1290,16 @@ public final class ProgramGenerator {
             return;
         }
         // 並びは data、LENGTH、ITEM、NUMITEMS
+        boolean writes = statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_WRITEQ_TS
+                || statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.QUEUE_WRITEQ_TD;
         List<Runnable> views = new ArrayList<>();
         for (DataReference area : java.util.Arrays.asList(statement.data(), statement.lengthArea(),
                 statement.itemArea(), statement.numItems())) {
             Runnable view = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
-                    : planWholeView(area, statement.origin());
+                    : writes && area == statement.data()
+                            && mayWriteBeyond(area, statement.lengthArea(), statement.lengthLiteral())
+                            ? planAreaToEnd(area, statement.origin())
+                            : planWholeView(area, statement.origin());
             if (view == null) {
                 return;
             }
@@ -1324,6 +1329,28 @@ public final class ProgramGenerator {
         });
     }
 
+    /** 書く命令の LENGTH が FROM の項目を越えうるか。データ名の LENGTH は実行時まで分からない (暫定判断 P-201)。 */
+    private static boolean mayWriteBeyond(DataReference from, DataReference lengthArea, int lengthLiteral) {
+        return lengthArea != null
+                || (from.constantLength().isPresent() && lengthLiteral > from.constantLength().getAsInt());
+    }
+
+    /**
+     * FROM の番地から記憶域の終わりまでの域 (暫定判断 P-201)。ホストは FROM の番地から LENGTH の byte を書くので、
+     * 続く項目も書かれる。どこまで使うかは実行時に LENGTH で決まり、記憶域の終わりを越えれば実行時に止まる。
+     */
+    private Runnable planAreaToEnd(DataReference reference, Origin origin) {
+        Runnable address = planAddress(reference, origin);
+        if (address == null) {
+            return null;
+        }
+        return () -> {
+            address.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, CICS_OPS, "areaToEnd",
+                    "(L" + STORAGE + ";I)L" + DATA_VIEW + ";", false);
+        };
+    }
+
     private void planCicsFileCommand(Statement.CicsFileCommand statement, List<Runnable> body) {
         Runnable file = planAreaBytes(statement.fileData(), statement.origin());
         if (file == null) {
@@ -1334,11 +1361,16 @@ public final class ProgramGenerator {
             return;
         }
         // 並びは data、LENGTH、RIDFLD、KEYLENGTH、REQID、NUMREC、TOKEN
+        boolean writes = statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.FILE_WRITE
+                || statement.kind() == dev.cobolonjava.cics.CicsRuntimeOps.FILE_REWRITE;
         List<Runnable> views = new ArrayList<>();
         for (DataReference area : java.util.Arrays.asList(statement.data(), statement.lengthArea(), statement.ridfld(),
                 statement.keyLengthArea(), statement.reqidArea(), statement.numrec(), statement.tokenArea())) {
             Runnable view = area == null ? () -> run.visitInsn(Opcodes.ACONST_NULL)
-                    : planWholeView(area, statement.origin());
+                    : writes && area == statement.data()
+                            && mayWriteBeyond(area, statement.lengthArea(), statement.lengthLiteral())
+                            ? planAreaToEnd(area, statement.origin())
+                            : planWholeView(area, statement.origin());
             if (view == null) {
                 return;
             }

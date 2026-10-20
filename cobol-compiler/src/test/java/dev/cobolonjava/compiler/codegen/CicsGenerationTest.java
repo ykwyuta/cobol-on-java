@@ -246,8 +246,6 @@ class CicsGenerationTest {
         assertEquals("FNIT", CodePages.DEFAULT.decode(execute(loader, "WRFILE", program).payload().commarea()));
         assertRejected("EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) SET(WS-FLEN) END-EXEC",
                 "unsupported WRITE FILE option: SET");
-        assertRejected("EXEC CICS WRITE FILE('ABNDFILE') FROM(WS-GRP) RIDFLD(WS-GRP) LENGTH(7) END-EXEC",
-                "WRITE FILE LENGTH 7 exceeds the FROM data area of 6 bytes");
         assertRejected("EXEC CICS WRITE OPERATOR TEXT(WS-DATE) END-EXEC",
                 "WRITE requires FILE");
     }
@@ -834,6 +832,40 @@ class CicsGenerationTest {
         assertRejected("EXEC CICS DELETE FILE('F') NUMREC(WS-LEN) END-EXEC",
                 "without RIDFLD takes no KEYLENGTH");
         assertRejected("EXEC CICS STARTBR FILE('F') END-EXEC", "STARTBR FILE requires RIDFLD");
+    }
+
+    @Test
+    @DisplayName("書く命令のLENGTHがFROMより長ければ、FROMの番地から続く記憶域も書く (GenApp、P-201)")
+    void writesBeyondTheFromAreaWhenLengthIsLonger(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
+        // WS-ABCODE (4 byte) の次に WS-SHORT (3 byte) が並ぶ。GenApp の lgsetup は FROM(WRITE-MSG-L) LENGTH(23)、
+        // lgacvs01 は数字の項目 FROM(CA-Customer-Num) に LENGTH(CUSTOMER-RECORD-SIZE) を書く
+        GeneratedLoader loader = new GeneratedLoader();
+        Supplier<CobolProgram> program = compile(loader, "LONGPGM", List.of(
+                "MOVE 'FAIL' TO LK-AREA",
+                "MOVE 'K001' TO WS-ABCODE",
+                "MOVE 'XYZ' TO WS-SHORT",
+                "MOVE 7 TO WS-LEN",
+                "EXEC CICS WRITE FILE('CUSTFILE') FROM(WS-ABCODE) LENGTH(WS-LEN) RIDFLD(WS-ABCODE) END-EXEC",
+                "EXEC CICS WRITEQ TS QUEUE('LONGQ') FROM(WS-ABCODE) LENGTH(7) END-EXEC",
+                "MOVE SPACES TO WS-SEVEN",
+                "EXEC CICS READ FILE('CUSTFILE') INTO(WS-SEVEN) RIDFLD(WS-ABCODE) END-EXEC",
+                "MOVE WS-SEVEN TO WS-PGM",
+                "MOVE SPACES TO WS-SEVEN",
+                "EXEC CICS READQ TS QUEUE('LONGQ') INTO(WS-SEVEN) NEXT END-EXEC",
+                "IF WS-PGM = 'K001XYZ' AND WS-SEVEN = 'K001XYZ' MOVE 'PASS' TO LK-AREA END-IF"));
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram("LONGPGM", program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of("LONGPGM"), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        dev.cobolonjava.cics.CicsEnvironment environment = dev.cobolonjava.cics.CicsEnvironment.unconfigured()
+                .withFiles(dev.cobolonjava.cics.CicsFilePort.dataSets(List.of(new dev.cobolonjava.cics.CicsFileDefinition(
+                        "CUSTFILE", directory.resolve("long.ksds"), 0, 4, 7, CodePages.DEFAULT))));
+
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2, environment)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        task(), (action, ignored) -> { });
+
+        assertEquals("PASS", CodePages.DEFAULT.decode(result.payload().commarea()));
     }
 
     @Test
@@ -2123,6 +2155,7 @@ class CicsGenerationTest {
                 "01 WS-SHORT PIC X(3).",
                 "01 WS-PGM PIC X(8).",
                 "01 WS-STCD PIC XX.",
+                "01 WS-SEVEN PIC X(7).",
                 "01 WS-APPL PIC X(8).",
                 "01 WS-ABS PIC S9(15) COMP-3.",
                 "01 WS-DATE PIC X(10).",

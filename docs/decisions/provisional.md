@@ -6314,3 +6314,26 @@ EIBFN、EIBRCODE、LENGERR のときの LENGTH の値は実機と突き合わせ
 
 **解消条件**: z/OS の CICS で、書式の無い画面からの RECEIVE と、MAXLENGTH を越える入力の LENGTH / EIBRCODE を TN3270 で採る。
 map の画面からの RECEIVE は、3270 のデータ流をそのまま渡す形を設計してから受ける。
+
+## P-201 WRITEQ / WRITE FILE / REWRITE FILE の LENGTH が FROM より長ければ、FROM の番地から続く記憶域も書く
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。P-146 (項目より長い COMMAREA) と同じ形 |
+| 場所 | `ProcedureBuilder.requireFromArea`、`ProgramGenerator.mayWriteBeyond` / `planAreaToEnd`、`CicsRuntimeOps.areaToEnd` |
+| 関連要件 | 設計 85、P-146 |
+
+**いまの扱い**: WRITEQ TS / TD、WRITE FILE、REWRITE FILE で、LENGTH (数字、またはデータ名) が FROM の項目より長くなりうるとき、
+FROM の番地から記憶域の終わりまでを域として渡し、実行時に LENGTH の分を書く。続く項目の値も書かれる。記憶域の終わりを越える
+LENGTH は実行時に止める。FROM は番地として使うので、項目の種類 (数字の項目など) は問わない。長さの決まらない項目、指標名、
+POINTER は断る。
+
+**なぜ暫定か**: GenApp の lgsetup は `WRITEQ TS FROM(WRITE-MSG-L) LENGTH(23)` で 13 byte の項目とそれに続く 10 byte を書き、
+lgacvs01 / lgucvs01 は数字の項目 `FROM(CA-Customer-Num)` に `LENGTH(CUSTOMER-RECORD-SIZE)` を書いて、COMMAREA の中で
+続くレコード全体を書く。CICS は FROM を番地として扱うので、ホストではそのとおりに動く。記憶域の並びがホストと同じである
+前提で写した。
+
+**どこがずれうるか**: 記憶域の並びがホストと違えば、書かれる byte が違う。記憶域の終わりを越える分は、ホストなら隣の記憶域を
+書く (または保護例外になる) が、ここでは止める。読む命令 (READ、READQ) の INTO より長い LENGTH はまだ断る。
+
+**解消条件**: z/OS の CICS で、FROM より長い LENGTH の WRITEQ TS が書く byte を採る。
