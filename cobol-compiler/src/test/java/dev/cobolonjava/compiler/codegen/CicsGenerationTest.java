@@ -436,7 +436,8 @@ class CicsGenerationTest {
                 "IF WS-QTIME = 42 MOVE 'R' TO LK-AREA(2:1) END-IF",
                 "EXEC CICS READQ TS QUEUE('SCRATCH') INTO(WS-GRP) NEXT RESP(WS-RESP) END-EXEC",
                 "IF WS-RESP = DFHRESP(ITEMERR) MOVE 'E' TO LK-AREA(3:1) END-IF",
-                "EXEC CICS WRITEQ TD QUEUE('CSMT') FROM(WS-GRP) END-EXEC",
+                // FROM 自身の長さを書いた LENGTH は省いた形と同じ。括弧の前の空白も書ける (CardDemo の CORPT00C)
+                "EXEC CICS WRITEQ TD QUEUE('CSMT') FROM(WS-GRP) LENGTH (LENGTH OF WS-GRP) END-EXEC",
                 "EXEC CICS READQ TD QUEUE('CSMT') INTO(WS-GRP) END-EXEC",
                 "EXEC CICS READQ TD QUEUE('CSMT') INTO(WS-GRP) RESP(WS-RESP) END-EXEC",
                 "IF WS-RESP = DFHRESP(QZERO) MOVE 'Z' TO LK-AREA(4:1) END-IF",
@@ -455,6 +456,8 @@ class CicsGenerationTest {
 
         assertEquals("WREZ", CodePages.DEFAULT.decode(result.payload().commarea()));
         assertRejected("EXEC CICS READQ TS QUEUE('Q') INTO(WS-GRP) END-EXEC", "requires either ITEM or NEXT");
+        assertRejected("EXEC CICS WRITEQ TD QUEUE('Q') FROM(WS-GRP) LENGTH(LENGTH OF WS-LEN) END-EXEC",
+                "only when x is the FROM data area");
         assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') FROM(WS-GRP) REWRITE END-EXEC", "REWRITE requires ITEM");
         assertRejected("EXEC CICS WRITEQ TS QUEUE('Q') QNAME('Q') FROM(WS-GRP) END-EXEC",
                 "QUEUE and QNAME are mutually exclusive");

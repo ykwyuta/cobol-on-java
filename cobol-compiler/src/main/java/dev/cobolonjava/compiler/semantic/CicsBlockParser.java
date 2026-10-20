@@ -525,7 +525,7 @@ final class CicsBlockParser {
 
     /** {@code LENGTH OF x} の x が FROM と同じ名前か。修飾の空白の数は問わない。 */
     private static boolean isLengthOfFrom(String length, String from) {
-        if (length == null) {
+        if (length == null || from == null) {
             return false;
         }
         String[] words = length.trim().split("\\s+", 3);
@@ -972,7 +972,15 @@ final class CicsBlockParser {
         String[] length = options.get("LENGTH");
         String lengthName = null;
         int lengthLiteral = -1;
+        if (length != null && !reads && isLengthOfFrom(length[2], data)) {
+            // FROM 自身の長さは、LENGTH を省いて翻訳系が補う長さと同じである (SEND TEXT と同じ規則)
+            length = null;
+        }
         if (length != null) {
+            if (length[2] != null && length[2].matches("(?i)LENGTH\\s+OF\\s+.*")) {
+                throw new IllegalArgumentException(command
+                        + " LENGTH(LENGTH OF x) is supported only when x is the FROM data area");
+            }
             if (length[2] != null) {
                 lengthName = length[2];
             } else if (length[1] != null && !reads) {
