@@ -743,6 +743,104 @@ class CallGenerationTest {
     }
 
     @Test
+    @DisplayName("局所記憶は呼ばれるたびに初期値になり、作業場所は残る (P-207)")
+    void localStorageStartsOverOnEveryCall() {
+        List<String> sub = List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SUBL.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-N PIC 9 VALUE 1.",
+                "LOCAL-STORAGE SECTION.",
+                "01 LS-N PIC 9 VALUE 5.",
+                "LINKAGE SECTION.",
+                "01 LK-OUT PIC X(2).",
+                "PROCEDURE DIVISION USING LK-OUT.",
+                "    STRING WS-N LS-N DELIMITED BY SIZE INTO LK-OUT",
+                "    ADD 1 TO WS-N LS-N",
+                "    GOBACK.");
+        String out = run(List.of(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 R PIC X(2).",
+                "PROCEDURE DIVISION.",
+                "    CALL 'SUBL' USING R DISPLAY R",
+                "    CALL 'SUBL' USING R DISPLAY R",
+                "    STOP RUN."), sub));
+        assertEquals("15\n25", out.trim());
+    }
+
+    @Test
+    @DisplayName("再帰で呼ばれると、局所記憶は呼び出しごとに別のものになる (P-207)")
+    void recursionKeepsALocalStorageForEachCall() {
+        // 局所記憶の LS-SUB-N / LS-SUB-RES を自分自身へ BY REFERENCE で渡す。1 つを使い回すと引数が壊れる
+        List<String> fact = List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. FACT IS RECURSIVE.",
+                "DATA DIVISION.",
+                "LOCAL-STORAGE SECTION.",
+                "01 LS-N PIC S9(4) COMP.",
+                "01 LS-SUB-N PIC S9(4) COMP.",
+                "01 LS-SUB-RES PIC S9(4) COMP.",
+                "LINKAGE SECTION.",
+                "01 LK-N PIC S9(4) COMP.",
+                "01 LK-RES PIC S9(4) COMP.",
+                "PROCEDURE DIVISION USING LK-N LK-RES.",
+                "    MOVE LK-N TO LS-N",
+                "    IF LS-N <= 1",
+                "        MOVE 1 TO LK-RES",
+                "    ELSE",
+                "        COMPUTE LS-SUB-N = LS-N - 1",
+                "        CALL 'FACT' USING LS-SUB-N LS-SUB-RES",
+                "        COMPUTE LK-RES = LS-N * LS-SUB-RES",
+                "    END-IF",
+                "    GOBACK.");
+        String out = run(List.of(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 N PIC S9(4) COMP VALUE 6.",
+                "01 R PIC S9(4) COMP.",
+                "01 E PIC 9(4).",
+                "PROCEDURE DIVISION.",
+                "    CALL 'FACT' USING N R",
+                "    MOVE R TO E DISPLAY E",
+                "    STOP RUN."), fact));
+        assertEquals("0720", out.trim());
+    }
+
+    @Test
+    @DisplayName("IS INITIAL のプログラムは、呼ばれるたびに作業場所が初期値になる (P-207)")
+    void anInitialProgramStartsOverOnEveryCall() {
+        List<String> sub = List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SUBI IS INITIAL.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-N PIC 9 VALUE 1.",
+                "LINKAGE SECTION.",
+                "01 LK-OUT PIC 9.",
+                "PROCEDURE DIVISION USING LK-OUT.",
+                "    MOVE WS-N TO LK-OUT",
+                "    ADD 1 TO WS-N",
+                "    GOBACK.");
+        String out = run(List.of(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 R PIC 9.",
+                "PROCEDURE DIVISION.",
+                "    CALL 'SUBI' USING R DISPLAY R",
+                "    CALL 'SUBI' USING R DISPLAY R",
+                "    STOP RUN."), sub));
+        assertEquals("1\n1", out.trim());
+    }
+
+    @Test
     @DisplayName("BY VALUE の定数はまだ書けないと報告する (P-204)")
     void byValueOfALiteralIsReportedAsUnsupported() {
         CobolCompiler.Result result = compile(List.of(

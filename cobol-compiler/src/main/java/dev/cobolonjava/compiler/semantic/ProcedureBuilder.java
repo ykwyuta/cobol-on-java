@@ -207,7 +207,7 @@ public final class ProcedureBuilder {
     public record Result(List<Paragraph> paragraphs, List<Section> sections,
                          List<Declarative> declaratives, int firstNormalParagraph,
                          List<DataItem> parameters, List<Diagnostic> diagnostics,
-                         List<AlternateEntry> entries, Map<String, String> extents) {
+                         List<AlternateEntry> entries, Map<String, String> extents, boolean initial) {
 
         public Result {
             entries = List.copyOf(entries);
@@ -218,7 +218,7 @@ public final class ProcedureBuilder {
                       List<Declarative> declaratives, int firstNormalParagraph,
                       List<DataItem> parameters, List<Diagnostic> diagnostics) {
             this(paragraphs, sections, declaratives, firstNormalParagraph, parameters, diagnostics,
-                    List.of(), Map.of());
+                    List.of(), Map.of(), false);
         }
 
         public boolean succeeded() {
@@ -306,7 +306,7 @@ public final class ProcedureBuilder {
         builder.checkDeclaratives(declaratives);
         return new Result(List.copyOf(paragraphs), List.copyOf(sections),
                 List.copyOf(declaratives), builder.firstNormal, List.copyOf(parameters),
-                List.copyOf(diagnostics), builder.entries, builder.extents);
+                List.copyOf(diagnostics), builder.entries, builder.extents, isInitial(program));
     }
 
     /**
@@ -400,6 +400,14 @@ public final class ProcedureBuilder {
             return null;
         }
         return entry;
+    }
+
+    /**
+     * {@code PROGRAM-ID. 名前 IS INITIAL.} か。呼ばれるたびに作業場所が初期状態になる (暫定判断 P-207)。
+     */
+    private static boolean isInitial(CobolParser.ProgramUnitContext program) {
+        CobolParser.ProgramIdParagraphContext id = program.identificationDivision().programIdParagraph();
+        return id.programAttribute() != null && id.programAttribute().INITIAL() != null;
     }
 
     /** IMS が COBOL のプログラムを呼ぶ入口の名前。 */

@@ -152,6 +152,8 @@ public final class ProgramGenerator {
     private List<DataItem> parameters = List.of();
     /** 副入口で分けた段落の呼び名から、最後のかけらの呼び名。 */
     private Map<String, String> extents = Map.of();
+    /** {@code IS INITIAL} のプログラムか。 */
+    private boolean initialProgram;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
     /** 静的初期化子で作る定数。綴りから field 名を引く。 */
@@ -329,6 +331,7 @@ public final class ProgramGenerator {
     private Result emit(ProcedureBuilder.Result procedure, InitialImage.Result image) {
         parameters = procedure.parameters();
         extents = procedure.extents();
+        initialProgram = procedure.initial();
         currency = specialNames.currency();
         decimalPoint = specialNames.decimalPoint();
         collating = specialNames.collatingSequence();
@@ -5604,14 +5607,15 @@ public final class ProgramGenerator {
     private void emitRun(int from, int paragraphCount) {
         run = writer.visitMethod(Opcodes.ACC_PUBLIC, "run", RUN_DESCRIPTOR, null, null);
         run.visitCode();
-        List<DataItem> unlisted = unlistedLinkageRecords();
-        if (!unlisted.isEmpty() || !parameters.isEmpty()) {
+        emitInitialState();
+        if (frameSize() > 0) {
             // SET ADDRESS OF が枠を書き換えるので、呼ぶ側の配列を写してから持ち回る (設計 85 §6、暫定判断 P-150)
             run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
-            push(parameters.size() + unlisted.size());
+            push(frameSize());
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "linkageSlots",
                     "([L" + DATA_VIEW + ";I)[L" + DATA_VIEW + ";", false);
             run.visitVarInsn(Opcodes.ASTORE, ARGUMENTS_LOCAL);
+            emitLocalStorage();
         }
         if (paragraphCount > from) {
             // いちばん最初に入る手続きの DEBUG-CONTENTS である (要件 FR-193)
@@ -5633,7 +5637,7 @@ public final class ProgramGenerator {
         if (entries.isEmpty()) {
             return;
         }
-        int size = parameters.size() + unlistedLinkageRecords().size();
+        int size = frameSize();
         List<int[]> slots = new ArrayList<>();
         for (ProcedureBuilder.AlternateEntry entry : entries) {
             int[] map = new int[entry.parameters().size()];
@@ -5651,6 +5655,7 @@ public final class ProgramGenerator {
         }
         run = writer.visitMethod(Opcodes.ACC_PUBLIC, "runEntry", "(" + FRAME + "I)V", null, null);
         run.visitCode();
+        emitInitialState();
         for (int e = 0; e < entries.size(); e++) {
             Label next = new Label();
             run.visitVarInsn(Opcodes.ILOAD, ARGUMENTS_LOCAL + 1);
@@ -5670,6 +5675,7 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "entrySlots",
                     "([L" + DATA_VIEW + ";[II)[L" + DATA_VIEW + ";", false);
             run.visitVarInsn(Opcodes.ASTORE, ARGUMENTS_LOCAL);
+            emitLocalStorage();
             emitPerformRange(entries.get(e).paragraph(), paragraphCount - 1);
             run.visitInsn(Opcodes.RETURN);
             run.visitLabel(next);
@@ -7067,6 +7073,15 @@ public final class ProgramGenerator {
      * @return 見つからなければ {@code -1}
      */
     private int parameterIndexOf(DataItem record) {
+        if (record.section() == DataSection.LOCAL_STORAGE) {
+            // 局所記憶は呼び出しごとの枠に置く (暫定判断 P-207)。REDEFINES は重ねる先の枠を使う
+            DataItem base = record;
+            for (DataItem current = redefined(record); current != null; current = redefined(current)) {
+                base = current;
+            }
+            int local = localStorageRecords().indexOf(base);
+            return local < 0 ? -1 : parameters.size() + unlistedLinkageRecords().size() + local;
+        }
         DataItem base = record;
         for (DataItem current = record; current != null; current = redefined(current)) {
             int index = parameters.indexOf(current);
@@ -7079,6 +7094,105 @@ public final class ProgramGenerator {
         // 番地を置かずに参照すれば枠が空なので、実行時に S0C4 で止まる
         int unlisted = unlistedLinkageRecords().indexOf(base);
         return unlisted < 0 ? -1 : parameters.size() + unlisted;
+    }
+
+    /** 局所記憶 (LOCAL-STORAGE) の 01。REDEFINES は重ねる先の枠を使うので数えない。 */
+    private List<DataItem> localStorageRecords() {
+        if (layout == null) {
+            return List.of();
+        }
+        List<DataItem> local = new ArrayList<>();
+        for (DataItem record : layout.records()) {
+            if (record.section() == DataSection.LOCAL_STORAGE && record.redefinesName() == null) {
+                local.add(record);
+            }
+        }
+        return local;
+    }
+
+    /** 枠の数。USING の引数、USING に並ばない連絡節、局所記憶の順に並ぶ。 */
+    private int frameSize() {
+        return parameters.size() + unlistedLinkageRecords().size() + localStorageRecords().size();
+    }
+
+    /**
+     * 局所記憶の枠に、初期値の写しを置く (暫定判断 P-207)。
+     *
+     * <p>局所記憶は呼び出しのたびに割り当てられて初期値になり、再帰で呼ばれれば呼び出しごとに別のものを持つ。
+     * 初期値は作業場所と一緒に組み立てた像の、その 01 の位置から写す。重ねた 01 (REDEFINES) が長ければ、その長さまで取る。
+     */
+    private void emitLocalStorage() {
+        List<DataItem> local = localStorageRecords();
+        if (local.isEmpty()) {
+            return;
+        }
+        int first = parameters.size() + unlistedLinkageRecords().size();
+        run.visitVarInsn(Opcodes.ALOAD, ARGUMENTS_LOCAL);
+        run.visitVarInsn(Opcodes.ALOAD, 0);
+        run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, internal, "initialStorage", "()[B", false);
+        push(first);
+        push(local.size() * 2);
+        run.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_INT);
+        for (int i = 0; i < local.size(); i++) {
+            DataItem record = local.get(i);
+            int length = record.totalLength();
+            for (DataItem other : layout.records()) {
+                if (other.section() == DataSection.LOCAL_STORAGE && other.redefinesName() != null) {
+                    DataItem base = other;
+                    for (DataItem current = redefined(other); current != null; current = redefined(current)) {
+                        base = current;
+                    }
+                    if (base == record) {
+                        length = Math.max(length, other.totalLength());
+                    }
+                }
+            }
+            run.visitInsn(Opcodes.DUP);
+            push(2 * i);
+            push(record.base());
+            run.visitInsn(Opcodes.IASTORE);
+            run.visitInsn(Opcodes.DUP);
+            push(2 * i + 1);
+            push(length);
+            run.visitInsn(Opcodes.IASTORE);
+        }
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "localStorage",
+                "([L" + DATA_VIEW + ";[BI[I)V", false);
+    }
+
+    /**
+     * {@code IS INITIAL} のプログラムは、呼ばれるたびに作業場所を初期値へ戻す (暫定判断 P-207)。
+     *
+     * <p>EXTERNAL の 01 は実行単位で 1 つの領域なので戻さない。
+     */
+    private void emitInitialState() {
+        if (!initialProgram || layout == null) {
+            return;
+        }
+        List<int[]> spans = new ArrayList<>();
+        for (DataItem record : layout.records()) {
+            if (record.section() == DataSection.WORKING_STORAGE && !record.external()
+                    && record.redefinesName() == null) {
+                spans.add(new int[] {record.base(), record.totalLength()});
+            }
+        }
+        if (spans.isEmpty()) {
+            return;
+        }
+        run.visitVarInsn(Opcodes.ALOAD, 1);
+        run.visitVarInsn(Opcodes.ALOAD, 0);
+        run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, internal, "initialStorage", "()[B", false);
+        push(spans.size() * 2);
+        run.visitIntInsn(Opcodes.NEWARRAY, Opcodes.T_INT);
+        for (int i = 0; i < spans.size(); i++) {
+            for (int j = 0; j < 2; j++) {
+                run.visitInsn(Opcodes.DUP);
+                push(2 * i + j);
+                push(spans.get(i)[j]);
+                run.visitInsn(Opcodes.IASTORE);
+            }
+        }
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "restoreInitial", "(L" + STORAGE + ";[B[I)V", false);
     }
 
     /** USING に並ばない連絡節の 01。REDEFINES は重ねる先の枠を使うので数えない。 */
@@ -7226,12 +7340,14 @@ public final class ProgramGenerator {
                 offset.run();
             };
         }
-        if (record.section() != DataSection.LINKAGE) {
+        if (record.section() != DataSection.LINKAGE && record.section() != DataSection.LOCAL_STORAGE) {
             return () -> {
                 run.visitVarInsn(Opcodes.ALOAD, 1);
                 offset.run();
             };
         }
+        // 局所記憶の位置は作業場所の像の中で振ってある。枠の領域はその 01 の頭から始まるので差し引く
+        int rebase = record.section() == DataSection.LOCAL_STORAGE ? record.base() : 0;
         int index = parameterIndexOf(record);
         if (index < 0) {
             report(origin, "a LINKAGE SECTION item is not listed in PROCEDURE DIVISION USING: "
@@ -7248,6 +7364,10 @@ public final class ProgramGenerator {
             run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, DATA_VIEW, "offset", "()I", false);
             offset.run();
             run.visitInsn(Opcodes.IADD);
+            if (rebase != 0) {
+                push(rebase);
+                run.visitInsn(Opcodes.ISUB);
+            }
         };
     }
 
@@ -7830,6 +7950,7 @@ public final class ProgramGenerator {
         List<StorageMap.Entry> entries = new ArrayList<>();
         for (DataItem record : layout.records()) {
             if (record.section() == DataSection.LINKAGE
+                    || record.section() == DataSection.LOCAL_STORAGE
                     || record.section() == DataSection.SPECIAL_REGISTER) {
                 // 連絡節の実体は呼ぶ側にある。特殊レジスタは実行の全体で 1 つである
                 continue;

@@ -1704,6 +1704,27 @@ public final class Ops {
         return slots;
     }
 
+    /**
+     * 局所記憶 (LOCAL-STORAGE) の枠に、初期値の写しを置く (暫定判断 P-207)。
+     *
+     * @param first  局所記憶の最初の枠
+     * @param spans  01 ごとに、初期値の像の中の位置と長さを並べたもの
+     */
+    public static void localStorage(DataView[] frame, byte[] image, int first, int[] spans) {
+        for (int i = 0; i < spans.length / 2; i++) {
+            int offset = spans[2 * i];
+            int length = spans[2 * i + 1];
+            frame[first + i] = Storage.copyOf(Arrays.copyOfRange(image, offset, offset + length)).whole();
+        }
+    }
+
+    /** {@code IS INITIAL} のプログラムの作業場所を、像の位置と長さの組ごとに初期値へ戻す (暫定判断 P-207)。 */
+    public static void restoreInitial(Storage storage, byte[] image, int[] spans) {
+        for (int i = 0; i < spans.length / 2; i++) {
+            System.arraycopy(image, spans[2 * i], storage.array(), spans[2 * i], spans[2 * i + 1]);
+        }
+    }
+
     /** 番地を持たない項目の {@code ADDRESS OF}。POINTER の NULL は 4 byte の 0 である。 */
     public static void setNullPointer(Storage target, int targetOffset) {
         target.view(targetOffset, 4).setBytes(new byte[4]);
