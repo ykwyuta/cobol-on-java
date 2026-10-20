@@ -113,7 +113,8 @@ public final class Assembler implements Constants.Scope {
             MacroProcessor.Expansion expansion = MacroProcessor.expand(
                     HlasmReader.read(source), codePage, fileName, library);
             assembler.diagnostics.addAll(expansion.diagnostics());
-            List<Statement> statements = expansion.statements();
+            // DCB / OPEN / PUT / CLOSE はライブラリのマクロが無ければ組み込みの展開を使う
+            List<Statement> statements = SystemMacros.expand(expansion.statements());
             assembler.pass(statements, false);
             assembler.prepareText();
             assembler.pass(statements, true);

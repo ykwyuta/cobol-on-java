@@ -56,6 +56,24 @@ public final class Cpu {
     private int programMask = DEFAULT_PROGRAM_MASK;
     private int instructionAddress;
     private long steps;
+    /** OS のサービス。無ければ SVC は演算例外として断る。 */
+    private Supervisor supervisor;
+
+    /**
+     * OS のサービスの入口。
+     *
+     * <p>{@code SVC} と、サービスの入口として取っておいた番地への分岐 ({@link #gate}) を受ける。
+     * 入出力のマクロの多くは SVC ではなく、{@code OPEN} が制御ブロックに置いた番地へ {@code BALR} で
+     * 入る形をとるため、2 つの入口が要る。
+     */
+    public interface Supervisor {
+
+        /** {@code SVC n}。扱わない番号なら {@code false}。 */
+        boolean call(int number, Cpu cpu);
+
+        /** その番地がサービスの入口なら実行して {@code true}。分岐元へ戻すのはサービスの側である。 */
+        boolean gate(int address, Cpu cpu);
+    }
 
     public Cpu(AddressSpace memory) {
         this(memory, DEFAULT_STEP_LIMIT);
@@ -94,6 +112,15 @@ public final class Cpu {
         return steps;
     }
 
+    public void setSupervisor(Supervisor value) {
+        supervisor = value;
+    }
+
+    /** 次に実行する番地を置く。サービスが呼んだ側へ戻すのに使う。 */
+    public void branchTo(int address) {
+        instructionAddress = address & 0x7FFFFFFF;
+    }
+
     /** 入口から実行し、{@link #RETURN_SENTINEL} へ戻るまで回す。戻り値は R15 である。 */
     public int run(int entry) {
         instructionAddress = entry;
@@ -105,6 +132,9 @@ public final class Cpu {
             }
             int at = instructionAddress;
             try {
+                if (supervisor != null && supervisor.gate(at, this)) {
+                    continue;
+                }
                 step();
             } catch (MachineException failure) {
                 failure.at(at);
@@ -212,9 +242,12 @@ public final class Cpu {
             case 0x1F -> subtractLogical(r1(insn), gpr[r2(insn)]); // SLR
 
             // --- I 形式 ---
-            case 0x0A -> throw new MachineException(MachineException.OPERATION,
-                    "SVC " + (insn[1] & 0xFF) + " is not supported yet;"
-                            + " operating system services come in a later increment");
+            case 0x0A -> {
+                if (supervisor == null || !supervisor.call(insn[1] & 0xFF, this)) {
+                    throw new MachineException(MachineException.OPERATION,
+                            "SVC " + (insn[1] & 0xFF) + " is not supported yet");
+                }
+            }
 
             // --- RX 形式 ---
             case 0x41 -> gpr[r1(insn)] = effective(insn); // LA

@@ -102,6 +102,9 @@ public final class HlasmRuntime {
         AddressSpace.Builder builder = AddressSpace.builder();
         ModuleLinker.Placed main = new ModuleLinker(context, loader, builder).link(module);
         int textBase = main.base();
+        // OS のサービスの入口として取っておく番地。ここへ分岐すると DataManagement が受ける
+        int serviceBase = builder.place("SERVICES", new byte[16]);
+        DataManagement services = new DataManagement(context, serviceBase);
         int saveBase = builder.place("SAVEAREA", saveArea);
         int listBase = builder.place("PARMLIST", parameterList);
         // 引数は呼ぶ側の記憶域そのものを指す。同じ記憶域を指す引数が 2 つあれば、
@@ -124,6 +127,7 @@ public final class HlasmRuntime {
         }
 
         Cpu cpu = new Cpu(memory);
+        cpu.setSupervisor(services);
         cpu.setRegister(1, listBase);
         cpu.setRegister(13, saveBase);
         cpu.setRegister(14, Cpu.RETURN_SENTINEL);
@@ -134,6 +138,9 @@ public final class HlasmRuntime {
             // 割込みは観測できる結果なので、実行時の例外として包む。
             // RunawayProgramException は包まずに通す。測る側がそれと分かる必要がある
             throw new HlasmExecutionException(module.name() + ": " + failure.getMessage(), failure);
+        } finally {
+            // タスクの終わりに開いたままの DCB を閉じる。番地空間はここで消えるので、残しておけない
+            services.closeAll();
         }
     }
 

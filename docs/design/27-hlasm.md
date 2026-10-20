@@ -146,7 +146,7 @@ IBM の条件付き処理との一致をまだ検証していない暫定範囲�
 | 1 後半 | 線形アドレス空間と 16 本のレジスタ、命令インタプリタ、`CobolProgram` ABI への着地、COBOL からの `CALL` | **実装済** |
 | 0 | `hlasm-corpus` の実行器 (6 状態) | **実装済**。Hercules との合成 26 ケースの実行比較も実施。実資産コーパスと残る命令の比較は未了 (P-175) |
 | 2 | マクロと条件付きアセンブリ | **一部実装**。ソース内・ライブラリマクロ、`COPY`、副リスト、添字付き SET 記号、`&SYSLIST`、部分文字列、文字・算術関数、静的な前方属性、システム変数、`ACTR` と `MNOTE` を扱う。動的な先読み、`LOCTR` / `ISEQ` に依存するシステム値、z/OS 固有値と診断の再現は P-190 に残す |
-| 3 | OS サービス (`WTO` / `GETMAIN` / `OPEN` / `GET` / `PUT` / `DCB`) と ABEND | 未実装 |
+| 3 | OS サービス (`WTO` / `GETMAIN` / `OPEN` / `GET` / `PUT` / `DCB`) と ABEND | **一部実装**。固定長の移動方式の出力 (`DCB MACRF=PM` / `OPEN` / `PUT` / `CLOSE`) を組み込みの展開で受ける (P-231)。SVC 19 / 20 と、OPEN が DCB に置いた入口への分岐を `Cpu.Supervisor` が受ける。入力、`WTO`、`GETMAIN`、ABEND は未実装 |
 | 4 | CICS / IMS のスタブ (`DFHEIENT` / `DFHECALL`、`ASMTDLI`) | 未実装 |
 | 5 | 主プログラムとしての実行 (`EXEC PGM=`) | **実装済**。設計 91 §6 の共通名前空間と `MixedLanguageJobTest` |
 
