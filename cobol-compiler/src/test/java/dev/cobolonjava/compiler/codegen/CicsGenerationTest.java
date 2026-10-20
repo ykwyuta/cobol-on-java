@@ -1714,6 +1714,58 @@ class CicsGenerationTest {
     }
 
     @Test
+    @DisplayName("HANDLE AIDはRECEIVEの前に端末のAIDで段落へ移り、ANYKEYはENTER以外、RESPを書けば移らない (P-202)")
+    void transfersOnHandledAidsBeforeReceive() {
+        GeneratedLoader loader = new GeneratedLoader();
+        List<String> handlers = List.of(
+                "MOVE 'RECV' TO LK-AREA",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC",
+                "ON-PF3",
+                "MOVE 'PF3 ' TO LK-AREA",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC",
+                "ON-ANY",
+                "MOVE 'ANY ' TO LK-AREA",
+                "EXEC CICS RETURN TRANSID('NXT1') COMMAREA(LK-AREA) END-EXEC");
+        List<String> handled = new ArrayList<>(List.of(
+                "EXEC CICS HANDLE AID PF3(ON-PF3) ANYKEY(ON-ANY) CLEAR END-EXEC",
+                "MOVE 8 TO WS-LEN",
+                "EXEC CICS RECEIVE INTO(WS-PGM) LENGTH(WS-LEN) END-EXEC"));
+        handled.addAll(handlers);
+        List<String> withResp = new ArrayList<>(List.of(
+                "EXEC CICS HANDLE AID PF3(ON-PF3) ANYKEY(ON-ANY) END-EXEC",
+                "MOVE 8 TO WS-LEN",
+                "EXEC CICS RECEIVE INTO(WS-PGM) LENGTH(WS-LEN) RESP(WS-RESP) END-EXEC"));
+        withResp.addAll(handlers);
+        Supplier<CobolProgram> plain = compile(loader, "AIDPGM", handled);
+        Supplier<CobolProgram> resp = compile(loader, "AIDRESP", withResp);
+
+        assertEquals("PF3 ", aidRun(loader, "AIDPGM", plain, dev.cobolonjava.cics.bms.BmsAid.PF3));
+        assertEquals("ANY ", aidRun(loader, "AIDPGM", plain, dev.cobolonjava.cics.bms.BmsAid.PF5));
+        assertEquals("RECV", aidRun(loader, "AIDPGM", plain, dev.cobolonjava.cics.bms.BmsAid.ENTER),
+                "ANYKEY は ENTER に当たらない");
+        // CLEAR を段落名なしで書くと、その AID の処理は無い。ANYKEY に落ちる
+        assertEquals("ANY ", aidRun(loader, "AIDPGM", plain, dev.cobolonjava.cics.bms.BmsAid.CLEAR));
+        assertEquals("RECV", aidRun(loader, "AIDRESP", resp, dev.cobolonjava.cics.bms.BmsAid.PF3),
+                "RESP を書いた RECEIVE は HANDLE AID で移らない");
+        assertRejected("EXEC CICS HANDLE AID PF25(X) END-EXEC", "unsupported HANDLE AID option: PF25");
+    }
+
+    private static String aidRun(GeneratedLoader loader, String programId, Supplier<CobolProgram> program,
+                                 dev.cobolonjava.cics.bms.BmsAid aid) {
+        ProgramCatalog catalog = ProgramCatalog.builder().cobolProgram(programId, program).build();
+        CicsTransactionDefinition definition = new CicsTransactionDefinition(
+                TransId.of("TX01"), ProgramId.of(programId), Duration.ofSeconds(5), 16, 0, 0, 0, true);
+        CicsTaskContext terminal = task().withTerminalId(Optional.of("T001"))
+                .withTerminal(Optional.of(new dev.cobolonjava.cics.bms.BmsTerminalInput(aid, -1, List.of(),
+                        Optional.of("TX01"))), Optional.empty());
+        TaskCompletion result = new CobolCicsTaskProgram(
+                CobolRuntime.builder(catalog).classLoader(loader).build(), 2)
+                .execute(definition, CicsPayload.ofCommarea(CodePages.DEFAULT.encode("INIT")),
+                        terminal, (action, ignored) -> { });
+        return CodePages.DEFAULT.decode(result.payload().commarea());
+    }
+
+    @Test
     @DisplayName("未登録XCTL先のPGMIDERRは移送元programのhandlerで処理する")
     void handlesMissingXctlTargetBeforeProgramTransfer() {
         GeneratedLoader loader = new GeneratedLoader();

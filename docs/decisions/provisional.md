@@ -6337,3 +6337,25 @@ lgacvs01 / lgucvs01 は数字の項目 `FROM(CA-Customer-Num)` に `LENGTH(CUSTO
 書く (または保護例外になる) が、ここでは止める。読む命令 (READ、READQ) の INTO より長い LENGTH はまだ断る。
 
 **解消条件**: z/OS の CICS で、FROM より長い LENGTH の WRITEQ TS が書く byte を採る。
+
+## P-202 `HANDLE AID` は RECEIVE / RECEIVE MAP が入力を読む前に見て、MAPFAIL より先に移る
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未解決 (2026-10-20)。Zeus (`crates/zeus-cics/src/task.rs` の RECEIVE、`106fdc8`) の読み方を移した (ADR-0016) |
+| 場所 | `CicsBlockParser` の `HANDLE_AID_BLOCK`、`CicsExecution.aidHandler`、`CicsRuntimeOps.aidTarget` |
+| 関連要件 | 設計 79 §8 |
+
+**いまの扱い**: `HANDLE AID PF3(段落) ANYKEY(段落) CLEAR ...` を受け、HANDLE CONDITION と同じ表 (LINK level ごと、PUSH / POP HANDLE で
+退避) に AID ごとの鍵で置く。RECEIVE と RECEIVE MAP は、RESP も NOHANDLE も書いていなければ、入力を読む前に端末が送った AID の
+処理を探し、あればそこへ移る。その AID の処理が無ければ、ENTER 以外は ANYKEY の処理を使う。段落名を省いた AID は処理が無い
+ものとする。移るときは入力を読まないので、MAPFAIL などの条件より先である。EIBFN は HANDLE AID が X'0206' である。
+
+**なぜ暫定か**: HANDLE AID の説明 (ANYKEY は PA・PF・CLEAR のどれかで ENTER を含まない、RESP / NOHANDLE の命令では効かない) と、
+同じ権利者の Zeus の実装の読み方に従った。GenApp の lgtestc1、lgtestp1〜4 が `HANDLE AID CLEAR(CLEARIT) PF3(ENDIT)` を使う。
+実機とは突き合わせていない。
+
+**どこがずれうるか**: 段落名を省いて取り消した AID に ANYKEY が当たるかは確かめていない。CONVERSE、LIGHTPEN、OPERID、TRIGGER の
+入力の形は持たないので、それらの AID が端末から届くことは無い。
+
+**解消条件**: z/OS の CICS で、AID の処理と MAPFAIL の処理を両方置いた RECEIVE MAP を、各 AID で採る。

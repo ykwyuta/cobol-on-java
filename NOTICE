@@ -13,3 +13,10 @@ by International Business Machines Corporation.
 This project uses the Hercules System/370, ESA/390 and z/Architecture
 emulator solely as an external behavioral oracle during testing. No Hercules
 source code is incorporated into or copied by this product.
+
+This product includes portions derived from Zeus, another project by the
+same copyright holder, which the copyright holder has chosen to also make
+available under the Apache License, Version 2.0 for inclusion here
+(docs/decisions/0016-porting-from-zeus.md). Zeus itself remains licensed
+under its own terms. Third-party data in Zeus (ICU code page tables and
+Unicode data) is not covered by this grant.

@@ -17,6 +17,15 @@ final class CicsBlockParser {
     private static final Pattern CONDITION_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(HANDLE|IGNORE)\\s+CONDITION\\b"
                     + "(.*?)END-EXEC\\s*$");
+    private static final Pattern HANDLE_AID_BLOCK = Pattern.compile(
+            "(?is)^\\s*EXEC\\s+CICS\\s+HANDLE\\s+AID\\b(.*?)END-EXEC\\s*$");
+    /** HANDLE AID に書ける AID の名前。 */
+    static final Set<String> AID_OPTIONS = Set.of("ANYKEY", "CLEAR", "CLRPARTN", "ENTER", "LIGHTPEN", "OPERID",
+            "TRIGGER", "PA1", "PA2", "PA3", "PF1", "PF2", "PF3", "PF4", "PF5", "PF6", "PF7", "PF8", "PF9", "PF10",
+            "PF11", "PF12", "PF13", "PF14", "PF15", "PF16", "PF17", "PF18", "PF19", "PF20", "PF21", "PF22", "PF23",
+            "PF24");
+    /** HANDLE AID の処理を HANDLE CONDITION の並びで運ぶときの名前の頭。 */
+    static final String AID_PREFIX = "AID:";
     private static final Pattern HANDLE_STACK_BLOCK = Pattern.compile(
             "(?is)^\\s*EXEC\\s+CICS\\s+(PUSH|POP)\\s+HANDLE\\s*END-EXEC\\s*$");
     private static final Pattern HANDLE_ABEND_BLOCK = Pattern.compile(
@@ -245,6 +254,20 @@ final class CicsBlockParser {
             return new Parsed(null, null, null, -1, null, null,
                     false, false, false, false, false, null, List.of(), null, action, target, null, null,
                     null, null, null, null, null);
+        }
+        Matcher aid = HANDLE_AID_BLOCK.matcher(source);
+        if (aid.matches()) {
+            // HANDLE CONDITION と同じ形 (名前と省ける段落名) であり、同じ表に入るので同じ並びで運ぶ
+            List<ConditionSpec> aids = new ArrayList<>();
+            for (ConditionSpec spec : parseConditions(Statement.CicsConditionAction.HANDLE, aid.group(1))) {
+                if (!AID_OPTIONS.contains(spec.name())) {
+                    throw new IllegalArgumentException("unsupported HANDLE AID option: " + spec.name());
+                }
+                aids.add(new ConditionSpec(AID_PREFIX + spec.name(), spec.target()));
+            }
+            return new Parsed(null, null, null, -1, null, null,
+                    false, false, false, false, false, Statement.CicsConditionAction.HANDLE, aids, null, null,
+                    null, null, null, null, null, null, null, null);
         }
         Matcher condition = CONDITION_BLOCK.matcher(source);
         if (condition.matches()) {

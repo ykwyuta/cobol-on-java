@@ -16,6 +16,7 @@ public final class CicsRuntimeOps {
     /** condition handlerへ移らず、次のCOBOL文へ進む。 */
     public static final int NO_CONDITION_TRANSFER = -1;
     private static final int HANDLE_CONDITION_FUNCTION = 0x0204;
+    private static final int HANDLE_AID_FUNCTION = 0x0206;
     private static final int ASSIGN_FUNCTION = 0x0208;
     private static final int IGNORE_CONDITION_FUNCTION = 0x020A;
     private static final int PUSH_HANDLE_FUNCTION = 0x020C;
@@ -1456,7 +1457,8 @@ public final class CicsRuntimeOps {
         ProgramContext required = Objects.requireNonNull(context, "context");
         execution(required).handleCondition(
                 required.currentInvocationToken(), responseCode, target);
-        completeLocalCommand(required, HANDLE_CONDITION_FUNCTION);
+        completeLocalCommand(required, CicsExecution.isAidHandlerKey(responseCode)
+                ? HANDLE_AID_FUNCTION : HANDLE_CONDITION_FUNCTION);
     }
 
     /** 現在のCICS LINK levelで指定conditionを無視する。 */
@@ -1470,7 +1472,8 @@ public final class CicsRuntimeOps {
     public static void resetCondition(ProgramContext context, int responseCode) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         execution(required).resetCondition(responseCode);
-        completeLocalCommand(required, HANDLE_CONDITION_FUNCTION);
+        completeLocalCommand(required, CicsExecution.isAidHandlerKey(responseCode)
+                ? HANDLE_AID_FUNCTION : HANDLE_CONDITION_FUNCTION);
     }
 
     /** 現在のCICS LINK levelのcondition処置一式を退避して一時停止する。 */
@@ -1912,6 +1915,11 @@ public final class CicsRuntimeOps {
             boolean asis, boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
+        int aid = aidTarget(required, suppressDefaultHandling);
+        if (aid != NO_CONDITION_TRANSFER) {
+            completeLocalCommand(required, RECEIVE_MAP_FUNCTION);
+            return aid;
+        }
         dev.cobolonjava.cics.bms.BmsMapsetCatalog catalog = execution.environment().mapsets()
                 .orElseThrow(() -> new CicsTaskStateException(
                         "RECEIVE MAP requires a configured BMS mapset catalog"));
@@ -1970,6 +1978,11 @@ public final class CicsRuntimeOps {
                                        boolean asis, boolean suppressDefaultHandling) {
         ProgramContext required = Objects.requireNonNull(context, "context");
         CicsExecution execution = execution(required);
+        int aid = aidTarget(required, suppressDefaultHandling);
+        if (aid != NO_CONDITION_TRANSFER) {
+            completeLocalCommand(required, RECEIVE_FUNCTION);
+            return aid;
+        }
         dev.cobolonjava.cics.bms.BmsTerminalInput input = execution.task().terminalInput()
                 .filter(carried -> carried.text().isPresent())
                 .orElseThrow(() -> new CicsTaskStateException(
@@ -2329,6 +2342,27 @@ public final class CicsRuntimeOps {
             return selected.target();
         }
         throw defaultCondition(command, outcome);
+    }
+
+    /**
+     * HANDLE AID の移り先 (暫定判断 P-202)。RECEIVE と RECEIVE MAP が入力を読む前に見る。RESP か NOHANDLE を
+     * 書いた命令では見ない。移るときは MAPFAIL などの条件より先である。
+     */
+    private static int aidTarget(ProgramContext context, boolean suppressDefaultHandling) {
+        if (suppressDefaultHandling) {
+            return NO_CONDITION_TRANSFER;
+        }
+        CicsExecution execution = execution(context);
+        Optional<CicsExecution.ConditionHandler> handler = execution.task().terminalInput()
+                .flatMap(input -> execution.aidHandler(input.aid().value()));
+        if (handler.isEmpty()) {
+            return NO_CONDITION_TRANSFER;
+        }
+        CicsExecution.ConditionHandler selected = handler.orElseThrow();
+        if (selected.owner() != context.currentInvocationToken()) {
+            throw new ProgramTargetTransfer(selected.owner(), selected.target(), "CICS HANDLE AID transfer");
+        }
+        return selected.target();
     }
 
     private static CicsTaskStateException defaultCondition(

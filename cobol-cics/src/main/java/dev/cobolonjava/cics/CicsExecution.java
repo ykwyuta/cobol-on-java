@@ -445,6 +445,39 @@ public final class CicsExecution {
                 ? exact : handlers.get(CicsResponseCode.ERROR_HANDLER_KEY));
     }
 
+    /** HANDLE AID ANYKEY の鍵。条件の応答の値と重ならないよう負の数にする。 */
+    public static final int ANYKEY_HANDLER_KEY = -2000;
+
+    /** HANDLE AID の処理を、HANDLE CONDITION と同じ表に置くときの鍵。PUSH / POP HANDLE で一緒に退避される。 */
+    public static int aidHandlerKey(int aid) {
+        if (aid < 0 || aid > 0xFF) {
+            throw new IllegalArgumentException("an AID is one byte: " + aid);
+        }
+        return -(1000 + aid);
+    }
+
+    /** HANDLE AID の鍵か。 */
+    public static boolean isAidHandlerKey(int key) {
+        return key <= -1000;
+    }
+
+    /**
+     * 端末が送った AID の処理。その AID の処理が無ければ、ENTER 以外は ANYKEY の処理を使う (HANDLE AID の説明)。
+     * 段落名を省いて取り消した処理は無いものとする。
+     */
+    public synchronized Optional<ConditionHandler> aidHandler(int aid) {
+        Map<Integer, ConditionHandler> handlers = currentHandleLevel().handlers;
+        ConditionHandler exact = handlers.get(aidHandlerKey(aid));
+        if (exact != null && exact.target() >= 0) {
+            return Optional.of(exact);
+        }
+        ConditionHandler any = handlers.get(ANYKEY_HANDLER_KEY);
+        if (aid != 0x7D && any != null && any.target() >= 0) {
+            return Optional.of(any);
+        }
+        return Optional.empty();
+    }
+
     private HandleLevel currentHandleLevel() {
         HandleLevel current = handleLevels.peek();
         if (current == null) {

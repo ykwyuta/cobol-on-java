@@ -2082,6 +2082,9 @@ public final class ProcedureBuilder {
             }
             if (parsed.conditionAction() != null) {
                 for (CicsBlockParser.ConditionSpec condition : parsed.conditions()) {
+                    if (condition.name().startsWith(CicsBlockParser.AID_PREFIX)) {
+                        continue;
+                    }
                     if (!"PGMIDERR".equals(condition.name())
                             && !"MAPFAIL".equals(condition.name())
                             && !"ERROR".equals(condition.name())) {
@@ -2091,7 +2094,9 @@ public final class ProcedureBuilder {
                 }
                 List<Statement> conditions = new ArrayList<>();
                 for (CicsBlockParser.ConditionSpec condition : parsed.conditions()) {
-                    int responseCode = CicsResponseCode.handlerKey(condition.name());
+                    int responseCode = condition.name().startsWith(CicsBlockParser.AID_PREFIX)
+                            ? aidHandlerKey(condition.name().substring(CicsBlockParser.AID_PREFIX.length()))
+                            : CicsResponseCode.handlerKey(condition.name());
                     String handler = condition.target() == null
                             ? null : procedureNameOf(condition.target(), origin);
                     conditions.add(new Statement.CicsCondition(
@@ -2520,6 +2525,20 @@ public final class ProcedureBuilder {
         if (area.constantLength().isEmpty() || area.item().isIndex() || area.item().isPointer()) {
             throw new IllegalArgumentException(command + " FROM must be a data area of fixed length");
         }
+    }
+
+    /** HANDLE AID の名前から、処理の表の鍵を作る。名前は BMS の AID の名前と一部違う。 */
+    private static int aidHandlerKey(String name) {
+        if (name.equals("ANYKEY")) {
+            return dev.cobolonjava.cics.CicsExecution.ANYKEY_HANDLER_KEY;
+        }
+        dev.cobolonjava.cics.bms.BmsAid aid = switch (name) {
+            case "CLRPARTN" -> dev.cobolonjava.cics.bms.BmsAid.CLEAR_PARTITION;
+            case "LIGHTPEN" -> dev.cobolonjava.cics.bms.BmsAid.PEN;
+            case "OPERID" -> dev.cobolonjava.cics.bms.BmsAid.OPERATOR_ID;
+            default -> dev.cobolonjava.cics.bms.BmsAid.valueOf(name);
+        };
+        return dev.cobolonjava.cics.CicsExecution.aidHandlerKey(aid.value());
     }
 
     private static void requireRecordArea(DataReference area, String option) {
