@@ -204,7 +204,13 @@ public final class Main {
             System.err.println("https://github.com/ykwyuta/Zeus の zcvs を指すこと");
             System.exit(1);
         }
-        return dev.cobolonjava.verify.zcvs.ZcvsRunner.text(
+        // 同じ入口で ZPVS (PL/I) と ZHVS (HLASM) も流す。言語は manifest.toml に書いてある
+        String name = switch (dev.cobolonjava.verify.zcvs.ZcvsRunner.Language.of(root)) {
+            case COBOL -> "ZCVS";
+            case PLI -> "ZPVS";
+            case HLASM -> "ZHVS";
+        };
+        return dev.cobolonjava.verify.zcvs.ZcvsRunner.text(name,
                 new dev.cobolonjava.verify.zcvs.ZcvsRunner(root)
                         .run(new java.util.LinkedHashSet<>(only)));
     }

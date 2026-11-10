@@ -94,12 +94,58 @@ public final class ZcvsRunner {
                           String reason, List<String> failures) {
     }
 
+    /**
+     * スイートの言語。Zeus は同じ形のスイートを 3 つ持っている。
+     *
+     * <p>違うのは区分の名前の頭文字、原文の拡張子、報告の行の形だけである。COBOL の報告は
+     * 行の頭に空白 2 つを置き、最後に {@code END OF TEST-2} を書く。PL/I と HLASM の報告は
+     * 行の頭から {@code PASS} / {@code FAIL*} を書き、集計の行で終わる。
+     */
+    public enum Language {
+        /** ZCVS。 */
+        COBOL("Z", ".CBL"),
+        /** ZPVS。 */
+        PLI("P", ".PLI"),
+        /** ZHVS。 */
+        HLASM("H", ".ASM");
+
+        private final String module;
+        private final String suffix;
+
+        Language(String module, String suffix) {
+            this.module = module;
+            this.suffix = suffix;
+        }
+
+        /** {@code manifest.toml} の {@code language} の綴りから引く。書かれていなければ COBOL。 */
+        public static Language of(Path suite) {
+            try {
+                String text = Files.readString(suite.resolve("manifest.toml"),
+                        StandardCharsets.UTF_8);
+                return text.contains("language = \"pli\"") ? PLI
+                        : text.contains("language = \"hlasm\"") ? HLASM : COBOL;
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+    }
+
+    /** 翻訳してできたクラス 1 つ。 */
+    private record Generatable(String className, byte[] classFile) {
+    }
+
     private final Path suite;
+    private final Language language;
     private final ZcvsManifest manifest;
     private final CopyBookResolver resolver;
 
     public ZcvsRunner(Path suite) {
+        this(suite, Language.of(suite));
+    }
+
+    public ZcvsRunner(Path suite, Language language) {
         this.suite = suite;
+        this.language = language;
         this.manifest = ZcvsManifest.read(suite.resolve("manifest.toml"));
         CopyBookResolver copy = new DirectoryCopyBookResolver(suite.resolve("copy"));
         // COPY ... OF COPYALT は別のライブラリを指す。置き場の名前は小文字である
@@ -115,12 +161,17 @@ public final class ZcvsRunner {
         List<Outcome> outcomes = new ArrayList<>();
         for (Path module : directories(suite)) {
             String name = module.getFileName().toString();
-            if (!name.matches("Z[A-Z]")) {
+            if (!name.matches(language.module + "[A-Z]")) {
                 continue;
             }
-            List<Path> helpers = Files.isDirectory(module.resolve("lib"))
-                    ? sources(module.resolve("lib")) : List.of();
-            for (Path source : sources(module)) {
+            // 副プログラムは区分の lib と、スイート共通の lib にある。言語は混ざっている
+            List<Path> helpers = new ArrayList<>();
+            for (Path lib : List.of(module.resolve("lib"), suite.resolve("lib"))) {
+                if (Files.isDirectory(lib)) {
+                    helpers.addAll(sources(lib, List.of(".CBL", ".PLI", ".ASM")));
+                }
+            }
+            for (Path source : sources(module, List.of(language.suffix))) {
                 String program = stem(source);
                 if (only.isEmpty() || only.contains(program)) {
                     outcomes.add(run(name, program, source, helpers));
@@ -132,12 +183,7 @@ public final class ZcvsRunner {
 
     private Outcome run(String module, String program, Path source, List<Path> helpers) {
         ZcvsManifest.Entry entry = manifest.of(program);
-        CobolCompiler compiler = new CobolCompiler(Preprocessor.with(resolver));
-        if (entry.ccsid() != 0) {
-            compiler = compiler.withOptions(new CompilerOptions(
-                    Map.of("CODEPAGE", String.valueOf(entry.ccsid()))));
-        }
-        List<CobolCompiler.Result> compiled = new ArrayList<>();
+        List<Generatable> compiled = new ArrayList<>();
         List<Path> parts = new ArrayList<>();
         parts.add(source);
         if (entry.expect() == ZcvsManifest.Expect.RUN) {
@@ -145,7 +191,7 @@ public final class ZcvsRunner {
             parts.addAll(helpers);
         }
         for (Path part : parts) {
-            String refusal = compile(compiler, part, compiled);
+            String refusal = compile(part, entry, compiled);
             if (refusal == null) {
                 continue;
             }
@@ -184,13 +230,23 @@ public final class ZcvsRunner {
     private static final String TIMEOUT = "\u0000timeout";
     private static final String THROWN = "threw ";
 
-    /** @return 翻訳できなかった理由。できたら {@code null} */
-    private static String compile(CobolCompiler compiler, Path source,
-                                  List<CobolCompiler.Result> into) {
+    /**
+     * 1 本を、その拡張子の言語で翻訳する。
+     *
+     * @return 翻訳できなかった理由。できたら {@code null}
+     */
+    private String compile(Path source, ZcvsManifest.Entry entry, List<Generatable> into) {
+        String name = source.getFileName().toString();
         Object result = limited("compile-" + stem(source), () -> {
             try {
-                return compiler.compile(source.getFileName().toString(),
-                        Files.readString(source, StandardCharsets.UTF_8));
+                String text = Files.readString(source, StandardCharsets.UTF_8);
+                if (name.endsWith(".PLI")) {
+                    return pli(name, text);
+                }
+                if (name.endsWith(".ASM")) {
+                    return hlasm(name, text);
+                }
+                return cobol(name, text, entry);
             } catch (RuntimeException | StackOverflowError | AssertionError thrown) {
                 return thrown;
             }
@@ -201,13 +257,71 @@ public final class ZcvsRunner {
         if (result instanceof Throwable thrown) {
             return THROWN + describe(thrown);
         }
-        CobolCompiler.Result compiled = (CobolCompiler.Result) result;
+        if (result instanceof String refusal) {
+            return refusal;
+        }
+        @SuppressWarnings("unchecked")
+        List<Generatable> classes = (List<Generatable>) result;
+        into.addAll(classes);
+        return null;
+    }
+
+    /** @return できたクラスの並び。断ったなら理由の文字列 */
+    private Object cobol(String name, String text, ZcvsManifest.Entry entry) {
+        CobolCompiler compiler = new CobolCompiler(Preprocessor.with(resolver));
+        if (entry.ccsid() != 0) {
+            compiler = compiler.withOptions(new CompilerOptions(
+                    Map.of("CODEPAGE", String.valueOf(entry.ccsid()))));
+        }
+        CobolCompiler.Result compiled = compiler.compile(name, text);
         if (!compiled.succeeded()) {
             return compiled.diagnostics().stream().filter(d -> !d.isWarning()).findFirst()
                     .map(Object::toString).orElse("(no diagnostic)");
         }
-        into.add(compiled);
-        return null;
+        List<Generatable> classes = new ArrayList<>();
+        for (CobolCompiler.Compiled part : compiled.programs()) {
+            classes.add(new Generatable(part.className(), part.classFile()));
+        }
+        return classes;
+    }
+
+    private Object pli(String name, String text) {
+        // %INCLUDE のメンバは置き場の copy にある
+        dev.cobolonjava.pli.PliCompiler compiler = new dev.cobolonjava.pli.PliCompiler(
+                new dev.cobolonjava.pli.PliPreprocessor(member -> member(member, ".PLI")));
+        dev.cobolonjava.pli.PliCompiler.Result compiled = compiler.compile(name, text);
+        if (!compiled.succeeded()) {
+            return compiled.diagnostics().isEmpty() ? "(no diagnostic)"
+                    : compiled.diagnostics().get(0).toString();
+        }
+        return List.of(new Generatable(compiled.className(), compiled.classFile()));
+    }
+
+    private Object hlasm(String name, String text) {
+        // マクロのメンバは置き場の copy に .mac で置いてある
+        dev.cobolonjava.hlasm.HlasmCompiler compiler = dev.cobolonjava.hlasm.HlasmCompiler
+                .withLibrary(member -> member(member, ".mac").orElse(null));
+        dev.cobolonjava.hlasm.HlasmCompiler.Result compiled = compiler.compile(name, text);
+        if (!compiled.succeeded()) {
+            return compiled.diagnostics().stream()
+                    .filter(d -> d.severity()
+                            == dev.cobolonjava.hlasm.Diagnostic.Severity.ERROR)
+                    .findFirst().map(Object::toString).orElse("(no diagnostic)");
+        }
+        return List.of(new Generatable(compiled.className(), compiled.classFile()));
+    }
+
+    /** 置き場の copy からメンバを引く。 */
+    private Optional<String> member(String member, String suffix) {
+        Path file = suite.resolve("copy").resolve(member.toUpperCase(Locale.ROOT) + suffix);
+        if (!Files.isRegularFile(file)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Files.readString(file, StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /** 翻訳したクラスを入れる読み込み器。1 本につき 1 つ作る。 */
@@ -223,7 +337,7 @@ public final class ZcvsRunner {
     }
 
     private Outcome execute(String module, String program, ZcvsManifest.Entry entry,
-                            List<CobolCompiler.Result> compiled, Path directory) {
+                            List<Generatable> compiled, Path directory) {
         CodePage codePage = entry.ccsid() == 0 ? CodePages.DEFAULT
                 : CodePages.forName(String.valueOf(entry.ccsid()));
         ProgramContext context = ProgramContext.standard()
@@ -236,11 +350,9 @@ public final class ZcvsRunner {
             try {
                 Generated loader = new Generated();
                 Class<?> first = null;
-                for (CobolCompiler.Result result : compiled) {
-                    for (CobolCompiler.Compiled part : result.programs()) {
-                        Class<?> type = loader.define(part.className(), part.classFile());
-                        first = first == null ? type : first;
-                    }
+                for (Generatable part : compiled) {
+                    Class<?> type = loader.define(part.className(), part.classFile());
+                    first = first == null ? type : first;
                 }
                 ((CobolProgram) first.getDeclaredConstructor().newInstance())
                         .runFresh(context, parm(entry.parm(), codePage));
@@ -260,7 +372,10 @@ public final class ZcvsRunner {
         }
         List<String> failures = failures(report);
         Matcher counts = EXECUTED.matcher(report);
-        if (!report.contains("END OF TEST-2") || !counts.find()) {
+        // COBOL の報告は END OF TEST-2 で終わる。PL/I と HLASM の報告は集計の行で終わる
+        boolean finished = language == Language.COBOL
+                ? report.contains("END OF TEST-2") : report.contains("NO TEST(S) DELETED");
+        if (!finished || !counts.find()) {
             // 途中で止まったものを「落ちた検査が 0 だから合格」と数えない
             return new Outcome(program, module, Kind.CRASHED, passes(report),
                     passes(report) + failures.size(),
@@ -297,7 +412,7 @@ public final class ZcvsRunner {
     }
 
     private static final Pattern EXECUTED =
-            Pattern.compile("(\\d+) OF (\\d+) TESTS WERE EXECUTED SUCCESSFULLY");
+            Pattern.compile("(\\d+) OF\\s+(\\d+) TESTS WERE EXECUTED SUCCESSFULLY");
 
     /** 報告は 120 バイトの固定長レコードの並びであり、改行を持たない。 */
     private static final int RECORD = 120;
@@ -318,7 +433,7 @@ public final class ZcvsRunner {
     private static int passes(String report) {
         int count = 0;
         for (int at = 0; at + RECORD <= report.length(); at += RECORD) {
-            if (report.startsWith("  PASS ", at)) {
+            if (report.startsWith("  PASS ", at) || report.startsWith("PASS ", at)) {
                 count++;
             }
         }
@@ -332,6 +447,9 @@ public final class ZcvsRunner {
             if (report.startsWith("  FAIL*", at)) {
                 found.add(report.substring(at + 12, at + 32).strip() + "  "
                         + report.substring(at + 34, at + RECORD).strip());
+            } else if (report.startsWith("FAIL*", at)) {
+                // PL/I と HLASM の報告は、合否のすぐあとに判定名だけを書く
+                found.add(report.substring(at + 5, at + RECORD).strip());
             }
         }
         return List.copyOf(found);
@@ -396,10 +514,11 @@ public final class ZcvsRunner {
         }
     }
 
-    private static List<Path> sources(Path directory) {
+    private static List<Path> sources(Path directory, List<String> suffixes) {
         try (Stream<Path> list = Files.list(directory)) {
             return list.filter(Files::isRegularFile)
-                    .filter(file -> file.getFileName().toString().endsWith(".CBL"))
+                    .filter(file -> suffixes.stream()
+                            .anyMatch(file.getFileName().toString()::endsWith))
                     .sorted().toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -427,7 +546,12 @@ public final class ZcvsRunner {
 
     /** 数と、落ちたところの一覧。 */
     public static String text(List<Outcome> outcomes) {
-        StringBuilder out = new StringBuilder("ZCVS を流した結果\n");
+        return text("ZCVS", outcomes);
+    }
+
+    /** スイートの名前を見出しに置いた、数と落ちたところの一覧。 */
+    public static String text(String suiteName, List<Outcome> outcomes) {
+        StringBuilder out = new StringBuilder(suiteName + " を流した結果\n");
         Map<String, int[]> modules = new TreeMap<>();
         int passedPrograms = 0;
         int passed = 0;
