@@ -14,6 +14,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: cobol-oracle (V2 期待値の採取)](docs/design/20-oracle.md)
 - [設計: 検証基盤 (CCVS85 と OSS コーパス)](docs/design/25-verification.md)
 - [設計: 日本語の検証 (オラクルが無いところをどう固定するか)](docs/design/28-japanese-verification.md) — バイト透明性を不変量に置く理由、既存テストとの対応、化けていた箇所
+- [設計: ZCVS で z/OS の決めごとを測る](docs/design/29-zcvs.md) — CCVS85 が測らない内部表現・翻訳オプション・副プログラムの連絡を、Zeus の検査スイートで測る。翻訳できて値が違っていたものの一覧
 - [設計: cobol-compiler のプリプロセッサ (P0-b)](docs/design/30-compiler-preprocessor.md)
 - [設計: cobol-compiler の構文解析 (P0-b)](docs/design/40-parser.md)
 - [設計: データ部の記憶域割り付け (P0-b)](docs/design/50-data-layout.md)
@@ -236,6 +237,15 @@ NIST の COBOL-85 検証スイート (CCVS85) を処理系へ流し、モジュ�
 通らなかった理由を多い順に出す。コーパス本体はリポジトリに<b>同梱しない</b>
 (要件 NFR-042)。取得スクリプトが URL とコミットハッシュで固定して持ってくる。
 指定が無ければ、失敗ではなくスキップされる。Hercules と同じ構えである。
+
+z/OS の決めごと (内部表現、`TRUNC`、副プログラムの連絡、入出力状態) は
+[Zeus](https://github.com/ykwyuta/Zeus) の検査スイート ZCVS で測る。これも同梱しない
+(GPL-3.0-or-later)。置き場を指して流す。いまは 158 本のうち 115 本、判定 992 / 1,005 である
+([設計 29](docs/design/29-zcvs.md))。
+
+```
+java -cp <classpath> dev.cobolonjava.verify.Main zcvs path/to/Zeus/zcvs -o zcvs-report.txt
+```
 
 数だけを見るなら、道具を直に呼べる。
 
