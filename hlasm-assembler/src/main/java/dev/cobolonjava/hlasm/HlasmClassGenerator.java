@@ -32,9 +32,9 @@ final class HlasmClassGenerator implements Opcodes {
         writer.visit(V21, ACC_PUBLIC | ACC_FINAL | ACC_SUPER, owner, null,
                 "java/lang/Object", new String[] {Type.getInternalName(CobolProgram.class)});
         constructor(writer);
-        initialStorage(writer);
+        initialStorage(writer, module);
         name(writer, module.name());
-        run(writer, module);
+        run(writer, module, owner);
         metadata(writer, "programSignature", ProgramSignature.class, "signatureForModule",
                 module.name());
         metadata(writer, "procedureManifest", ProcedureManifest.class,
@@ -55,11 +55,33 @@ final class HlasmClassGenerator implements Opcodes {
     }
 
     /** HLASM は作業場所を自分の制御節に持つので、呼ぶ側の記憶域は要らない。 */
-    private static void initialStorage(ClassWriter writer) {
+    /** 機械語を Base64 の文字列として積む。長い文字列は定数プールに入らないので切って継ぐ。 */
+    private static void pushEncodedText(MethodVisitor method, ObjectModule module) {
+        String encoded = java.util.Base64.getEncoder().encodeToString(module.text());
+        method.visitTypeInsn(NEW, "java/lang/StringBuilder");
+        method.visitInsn(DUP);
+        method.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+        for (int offset = 0; offset < encoded.length(); offset += 16_000) {
+            method.visitLdcInsn(encoded.substring(offset, Math.min(encoded.length(), offset + 16_000)));
+            method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
+                    "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        }
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
+                "()Ljava/lang/String;", false);
+    }
+
+    /**
+     * プログラムの記憶域は<b>機械語そのもの</b>である。
+     *
+     * <p>HLASM のモジュールは命令と作業域を同じ節に持つ。ランタイムが副プログラムの記憶域を
+     * 呼び出しをまたいで持ち続けるので、ここに置けばモジュールの中の値も残る。
+     */
+    private static void initialStorage(ClassWriter writer, ObjectModule module) {
         MethodVisitor method = writer.visitMethod(ACC_PUBLIC, "initialStorage", "()[B", null, null);
         method.visitCode();
-        method.visitInsn(ICONST_0);
-        method.visitIntInsn(NEWARRAY, T_BYTE);
+        pushEncodedText(method, module);
+        method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(HlasmRuntime.class), "decode",
+                "(Ljava/lang/String;)[B", false);
         method.visitInsn(ARETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();
@@ -75,34 +97,39 @@ final class HlasmClassGenerator implements Opcodes {
         method.visitEnd();
     }
 
-    private static void run(ClassWriter writer, ObjectModule module) {
+    private static void run(ClassWriter writer, ObjectModule module, String owner) {
         String descriptor = Type.getMethodDescriptor(Type.VOID_TYPE,
                 Type.getType(Storage.class), Type.getType(ProgramContext.class),
                 Type.getType(DataView[].class));
         MethodVisitor method = writer.visitMethod(ACC_PUBLIC, "run", descriptor, null, null);
         method.visitCode();
         method.visitLdcInsn(module.name());
-        String encoded = java.util.Base64.getEncoder().encodeToString(module.text());
-        method.visitTypeInsn(NEW, "java/lang/StringBuilder");
-        method.visitInsn(DUP);
-        method.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
-        for (int offset = 0; offset < encoded.length(); offset += 16_000) {
-            method.visitLdcInsn(encoded.substring(offset, Math.min(encoded.length(), offset + 16_000)));
-            method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                    "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
-        }
-        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
-                "()Ljava/lang/String;", false);
+        method.visitVarInsn(ALOAD, 1);
+        pushEncodedText(method, module);
         method.visitLdcInsn(module.entryOffset());
+        StringBuilder relocations = new StringBuilder();
+        for (ObjectModule.Relocation field : module.relocations()) {
+            relocations.append(field.offset()).append(':').append(field.length()).append(';');
+        }
+        StringBuilder externals = new StringBuilder();
+        for (ObjectModule.External field : module.externals()) {
+            externals.append(field.offset()).append(':').append(field.length()).append(':')
+                    .append(field.name()).append(';');
+        }
+        method.visitLdcInsn(relocations.toString());
+        method.visitLdcInsn(externals.toString());
         method.visitVarInsn(ALOAD, 2);
         method.visitVarInsn(ALOAD, 3);
-        method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(HlasmRuntime.class), "executeEncoded",
-                Type.getMethodDescriptor(Type.INT_TYPE, Type.getType(String.class),
-                        Type.getType(String.class), Type.INT_TYPE, Type.getType(ProgramContext.class),
-                        Type.getType(DataView[].class)), false);
-        // R15 の戻りコードは副プログラムとして呼ばれたときには捨てる。
-        // 受け取るのは主プログラムとして動かしたとき (main) だけである
-        method.visitInsn(POP);
+        method.visitLdcInsn(Type.getObjectType(owner));
+        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Class", "getClassLoader",
+                "()Ljava/lang/ClassLoader;", false);
+        method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(HlasmRuntime.class),
+                "executeLoaded",
+                Type.getMethodDescriptor(Type.VOID_TYPE, Type.getType(String.class),
+                        Type.getType(Storage.class), Type.getType(String.class), Type.INT_TYPE,
+                        Type.getType(String.class), Type.getType(String.class),
+                        Type.getType(ProgramContext.class), Type.getType(DataView[].class),
+                        Type.getType(ClassLoader.class)), false);
         method.visitInsn(RETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();

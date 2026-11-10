@@ -40,6 +40,8 @@ public final class Constants {
             case 'F' -> new TypeRule(4, 4, false);
             case 'H' -> new TypeRule(2, 2, false);
             case 'A' -> new TypeRule(4, 4, false);
+            // V は外の記号の番地。値は載せる側が入れるので、組み立てでは 0 である
+            case 'V' -> new TypeRule(4, 4, false);
             case 'Y' -> new TypeRule(2, 2, false);
             case 'P' -> new TypeRule(1, 1, true);
             case 'Z' -> new TypeRule(1, 1, true);
@@ -71,7 +73,11 @@ public final class Constants {
     }
 
     /** {@code A(label)} のように、2 周目でなければ値が決まらない番地定数。 */
-    public record AddressReference(int offset, int length, String expression) {
+    public record AddressReference(int offset, int length, String expression, boolean external) {
+
+        public AddressReference(int offset, int length, String expression) {
+            this(offset, length, expression, false);
+        }
     }
 
     /**
@@ -183,14 +189,15 @@ public final class Constants {
                         ? rule.defaultLength() : explicitLength, line);
                 case 'P' -> packed(item, explicitLength, line);
                 case 'Z' -> zoned(item, explicitLength, scope.codePage(), line);
-                case 'A', 'Y' -> new byte[explicitLength == null
+                case 'A', 'Y', 'V' -> new byte[explicitLength == null
                         ? rule.defaultLength() : explicitLength];
                 case 'E', 'D', 'L' -> FloatingConstants.encode(type, extension, item, line);
                 default -> throw new AssemblyException(line, "unsupported constant type: " + type);
             };
-            if (type == 'A' || type == 'Y') {
+            if (type == 'A' || type == 'Y' || type == 'V') {
                 references.add(new AddressReference(
-                        encoded.stream().mapToInt(b -> b.length).sum(), bytes.length, item));
+                        encoded.stream().mapToInt(b -> b.length).sum(), bytes.length, item,
+                        type == 'V'));
             }
             if (rule.lengthFromValue() && explicitLength == null) {
                 unit = bytes.length;

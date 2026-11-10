@@ -45,9 +45,121 @@ public final class AddressSpace {
     }
 
     private final List<Region> regions;
+    /** 次に置く場所。置くたびに伸びる。 */
+    private int next;
+    /** 外の記号の入口。番地は {@link #EXTERNAL_ORIGIN} から 8 byte ごとに振る。 */
+    private final List<String> externalNames = new ArrayList<>();
+    /** すでに番地を足した原文。同じ原文を 2 度直さない。 */
+    private final java.util.Set<byte[]> relocated =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    /**
+     * 外の記号の入口を並べる場所。31 ビットの番地の上の端に取り、記憶域とは重ねない。
+     * ここへ分岐したら、機械語を実行するのではなく名前でプログラムを呼ぶ。
+     */
+    public static final int EXTERNAL_ORIGIN = 0x7F000000;
 
     private AddressSpace(List<Region> regions) {
-        this.regions = List.copyOf(regions);
+        this.regions = new ArrayList<>(regions);
+        int end = ORIGIN;
+        for (Region region : regions) {
+            end = Math.max(end, region.base()
+                    + Math.max(PAGE, (region.length() + PAGE - 1) / PAGE * PAGE));
+        }
+        this.next = end;
+    }
+
+    /** 空の番地空間。あとから {@link #place} で置いていく。 */
+    public static AddressSpace empty() {
+        return new AddressSpace(List.of());
+    }
+
+    /**
+     * 記憶域を置く。同じ配列をもう置いてあれば、その番地を返す。
+     *
+     * <p>実行単位で 1 つの番地空間を使い回すので、<b>同じ記憶域はいつも同じ番地</b>に見える。
+     * 以前は呼び出しのたびに番地空間を作り直していたので、呼ぶ側が記憶域に入れた番地を
+     * 呼ばれた側がたどれなかった。
+     */
+    public synchronized int place(String name, byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        for (Region region : regions) {
+            if (region.bytes() == bytes) {
+                return region.base();
+            }
+        }
+        int base = next;
+        regions.add(new Region(name, base, bytes));
+        next = base + Math.max(PAGE, (bytes.length + PAGE - 1) / PAGE * PAGE);
+        return base;
+    }
+
+    /**
+     * 呼び出しのあいだだけ置いた記憶域 (保管域、引数の表) を外す。
+     * 最後に置いたものなら、番地も返して次に使い回す。
+     */
+    public synchronized void release(byte[] bytes) {
+        for (int k = regions.size() - 1; k >= 0; k--) {
+            if (regions.get(k).bytes() == bytes) {
+                Region region = regions.remove(k);
+                if (k == regions.size()) {
+                    next = region.base();
+                }
+                return;
+            }
+        }
+    }
+
+    /** 外の記号の入口の番地。同じ名前には同じ番地を返す。 */
+    public synchronized int externalAddress(String name) {
+        int index = externalNames.indexOf(name);
+        if (index < 0) {
+            index = externalNames.size();
+            externalNames.add(name);
+        }
+        return EXTERNAL_ORIGIN + index * 8;
+    }
+
+    /** その番地が外の記号の入口なら名前。そうでなければ {@code null}。 */
+    public synchronized String externalAt(int address) {
+        int offset = (address & 0x7FFFFFFF) - EXTERNAL_ORIGIN;
+        if (offset < 0 || offset % 8 != 0 || offset / 8 >= externalNames.size()) {
+            return null;
+        }
+        return externalNames.get(offset / 8);
+    }
+
+    /** この原文を初めて直すなら {@code true}。2 度目からは {@code false}。 */
+    public synchronized boolean firstRelocation(byte[] text) {
+        return relocated.add(text);
+    }
+
+    public long getLong(int address) {
+        byte[] b = read(address, 8);
+        long value = 0;
+        for (byte one : b) {
+            value = value << 8 | (one & 0xFF);
+        }
+        return value;
+    }
+
+    public void putLong(int address, long value) {
+        byte[] b = new byte[8];
+        for (int k = 7; k >= 0; k--) {
+            b[k] = (byte) value;
+            value >>= 8;
+        }
+        write(address, b);
+    }
+
+    /** その番地を含む記憶域。無ければ {@code null}。 */
+    public Region regionAt(int address) {
+        for (Region region : regions) {
+            if (region.contains(address, 1)) {
+                return region;
+            }
+        }
+        return null;
     }
 
     public List<Region> regions() {

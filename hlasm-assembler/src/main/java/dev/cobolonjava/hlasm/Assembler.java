@@ -39,6 +39,11 @@ public final class Assembler implements Constants.Scope {
     private final List<List<String>> pools = new ArrayList<>();
     private int poolIndex;
     private final List<ObjectModule.Line> listing = new ArrayList<>();
+    /** 載せた番地を足す欄と、外の記号の番地を入れる欄。2 周目で集める。 */
+    private final List<ObjectModule.Relocation> relocations = new ArrayList<>();
+    private final List<ObjectModule.External> externals = new ArrayList<>();
+    /** 20 ビットの符号つき変位を持つ命令 (RXY / RSY) を組み立てているあいだだけ立つ。 */
+    private boolean longDisplacement;
 
     private Section current;
     private Section mainSection;
@@ -130,7 +135,7 @@ public final class Assembler implements Constants.Scope {
         sections.values().stream().filter(s -> s.dummy)
                 .forEach(s -> dummies.put(s.name, s.highWater));
         return new ObjectModule(mainSection == null ? fileName : mainSection.name, text,
-                entryOffset, symbols, dummies, listing);
+                entryOffset, symbols, dummies, listing, relocations, externals);
     }
 
     private void prepareText() {
@@ -145,6 +150,8 @@ public final class Assembler implements Constants.Scope {
         // 置き場は 1 周目で決まっている。2 周目はそれを使うので消さない
         poolIndex = 0;
         listing.clear();
+        relocations.clear();
+        externals.clear();
         current = null;
         ended = false;
     }
@@ -191,7 +198,15 @@ public final class Assembler implements Constants.Scope {
                     throw new AssemblyException(statement.line(),
                             "the macro and conditional assembly language is not supported yet: "
                                     + statement.operation());
-            case "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT", "CNOP", "COPY", "ICTL", "OPSYN" ->
+            // 外の記号の宣言。V 型の定数が名前で引くので、宣言そのものは何も置かない
+            case "ENTRY", "EXTRN", "WXTRN" -> { }
+            case "CNOP" -> cnop(statement);
+            case "DCB" -> dataControlBlock(statement);
+            case "OPEN" -> openClose(statement, true);
+            case "CLOSE" -> openClose(statement, false);
+            case "PUT" -> getPut(statement, SVC_PUT);
+            case "GET" -> getPut(statement, SVC_GET);
+            case "COM", "RSECT", "COPY", "ICTL", "OPSYN" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
@@ -317,15 +332,38 @@ public final class Assembler implements Constants.Scope {
         byte[] unit = piece.bytes();
         int start = section.location;
         for (int repeat = 0; repeat < piece.duplication(); repeat++) {
-            for (Constants.AddressReference reference : piece.references()) {
-                Value value = evaluate(reference.expression(), statement.line());
-                writeInt(unit, reference.offset(), reference.length(), value.value());
-            }
+            resolveReferences(unit, piece, section.location, statement.line());
             write(section.location, unit);
             section.advance(unit.length);
         }
         listing.add(new ObjectModule.Line(statement.line(), start,
                 Arrays.copyOfRange(text, start, section.location)));
+    }
+
+    /**
+     * 番地定数の値を入れ、載せる側が直す欄を控える。
+     *
+     * <p>{@code A(記号)} の値は節の先頭からの変位であり、載せた番地を足して初めて番地になる。
+     * {@code V(名前)} は外の記号で、値は載せる側が入れる。どちらも<b>欄の位置を控えて</b>
+     * 載せる側へ渡す。以前は控えていなかったので、番地定数を通した分岐や引数表は
+     * 変位のまま使われていた (ZHVS の報告のマクロが {@code A(ZCMD+X'80000000')} と
+     * {@code =V(ZHVRPT)} を使っており、最初の 1 本目で見つかった)。
+     */
+    private void resolveReferences(byte[] unit, Constants.Piece piece, int location, int line) {
+        for (Constants.AddressReference reference : piece.references()) {
+            if (reference.external()) {
+                externals.add(new ObjectModule.External(location + reference.offset(),
+                        reference.length(), reference.expression().trim()
+                                .toUpperCase(Locale.ROOT)));
+                continue;
+            }
+            Value value = evaluate(reference.expression(), line);
+            writeInt(unit, reference.offset(), reference.length(), value.value());
+            if (value.isRelocatable() && reference.length() >= 3) {
+                relocations.add(new ObjectModule.Relocation(location + reference.offset(),
+                        reference.length()));
+            }
+        }
     }
 
     private static void writeInt(byte[] target, int offset, int length, int value) {
@@ -342,6 +380,177 @@ public final class Assembler implements Constants.Scope {
         }
         int pad = (alignment - section.location % alignment) % alignment;
         section.advance(pad);
+    }
+
+    /**
+     * {@code CNOP b,w}。所在カウンタが {@code w} の境界から {@code b} のところへ来るまで、
+     * 何もしない命令 ({@code NOPR 0} = X'0700') で埋める。
+     */
+    private void cnop(Statement statement) {
+        List<String> operands = statement.operandList();
+        require(operands, 2, statement);
+        Section section = requireSection(statement.line());
+        int offset = absolute(operands.get(0), statement.line());
+        int boundary = absolute(operands.get(1), statement.line());
+        if (boundary <= 0 || offset < 0 || offset >= boundary || offset % 2 != 0) {
+            throw new AssemblyException(statement.line(), "bad CNOP operands: "
+                    + statement.operands());
+        }
+        align(section, 2);
+        defineLabel(statement, 2);
+        while (section.location % boundary != offset) {
+            if (emitting) {
+                write(section.location, new byte[] {0x07, 0x00});
+            }
+            section.advance(2);
+        }
+    }
+
+    // --- QSAM のマクロ (DCB / OPEN / CLOSE / GET / PUT) ---
+
+    /**
+     * {@code GET} と {@code PUT} が出す SVC の番号。
+     *
+     * <p>IBM の展開は SVC ではなく、DCB に入っているアクセス方式のルーチンへ分岐する。
+     * この処理系はそのルーチンを持たないので、<b>自分で決めた SVC の番号</b>で実行時の
+     * サービスへ渡す。だからこの 2 つのマクロが出す機械語は IBM のものと一致しない。
+     * 一致させるのは振る舞いである。{@code OPEN} (SVC 19) と {@code CLOSE} (SVC 20) は
+     * IBM と同じ番号を使う。
+     */
+    static final int SVC_GET = 250;
+    static final int SVC_PUT = 251;
+
+    /** DCB の長さ。実機の QSAM の DCB (96 byte) と同じ場所に、同じ欄を置く。 */
+    static final int DCB_LENGTH = 96;
+
+    /**
+     * {@code DCB DDNAME=,MACRF=,RECFM=,LRECL=,BLKSIZE=,EODAD=,SYNAD=}。
+     *
+     * <p>欄の置き場は Zeus (同じ権利者の処理系) の {@code data_management.rs} から移した。
+     * DSORG は +26、RECFM は +36、DDNAME は +40、MACRF は +50 / +51、BLKSIZE は +62、
+     * LRECL は +82、EODAD は +33 (3 byte)、SYNAD は +57 (3 byte) である。DSECT IHADCB の
+     * 公開されている配置と同じである。
+     */
+    private void dataControlBlock(Statement statement) {
+        Section section = requireSection(statement.line());
+        align(section, 4);
+        defineLabel(statement, DCB_LENGTH);
+        int start = section.location;
+        if (!emitting) {
+            section.advance(DCB_LENGTH);
+            return;
+        }
+        byte[] block = new byte[DCB_LENGTH];
+        block[26] = 0x40;
+        Arrays.fill(block, 40, 48, codePage.space());
+        for (String operand : statement.operandList()) {
+            int equals = operand.indexOf('=');
+            if (equals < 0) {
+                throw new AssemblyException(statement.line(), "DCB takes keyword operands: "
+                        + operand);
+            }
+            String keyword = operand.substring(0, equals).trim().toUpperCase(Locale.ROOT);
+            String value = operand.substring(equals + 1).trim();
+            switch (keyword) {
+                case "DDNAME" -> {
+                    byte[] name = value.toUpperCase(Locale.ROOT).getBytes(codePage.charset());
+                    System.arraycopy(name, 0, block, 40, Math.min(8, name.length));
+                }
+                case "RECFM" -> {
+                    String format = value.toUpperCase(Locale.ROOT);
+                    block[36] = (byte) ((format.startsWith("V") ? 0x40 : 0x80)
+                            | (format.contains("B") ? 0x10 : 0));
+                }
+                case "LRECL" -> writeInt(block, 82, 2, absolute(value, statement.line()));
+                case "BLKSIZE" -> writeInt(block, 62, 2, absolute(value, statement.line()));
+                case "MACRF" -> {
+                    String macro = value.replace("(", "").replace(")", "")
+                            .toUpperCase(Locale.ROOT);
+                    for (String part : macro.split(",")) {
+                        // G / P の次の字が M なら移動モード、L なら位置づけモード
+                        int mode = 0x20 | (part.contains("L") ? 0x08 : 0x10);
+                        if (part.startsWith("G")) {
+                            block[50] = (byte) mode;
+                        } else if (part.startsWith("P")) {
+                            block[51] = (byte) mode;
+                        }
+                    }
+                }
+                case "EODAD", "SYNAD" -> {
+                    int field = keyword.equals("EODAD") ? 33 : 57;
+                    Value exit = evaluate(value, statement.line());
+                    writeInt(block, field, 3, exit.value());
+                    if (exit.isRelocatable()) {
+                        relocations.add(new ObjectModule.Relocation(start + field, 3));
+                    }
+                }
+                // 配置と編成の指定。順編成しか持たないので、読むだけである
+                case "DSORG", "BUFNO", "OPTCD", "EROPT", "BFTEK", "BFALN" -> { }
+                default -> throw new AssemblyException(statement.line(),
+                        "DCB keyword " + keyword + " is not supported yet");
+            }
+        }
+        write(start, block);
+        section.advance(DCB_LENGTH);
+        listing.add(new ObjectModule.Line(statement.line(), start, block));
+    }
+
+    /**
+     * {@code OPEN (dcb,OUTPUT),...} と {@code CLOSE (dcb),...}。
+     *
+     * <p>DCB ごとに {@code LA 0,開き方} / {@code LA 1,dcb} / {@code SVC 19} を出す。開き方は
+     * 0 が INPUT、1 が OUTPUT、2 が EXTEND である。{@code CLOSE} は {@code LA 1,dcb} /
+     * {@code SVC 20}。IBM の展開は引数表を命令の並びに挟むが、ここでは挟まない。
+     */
+    private void openClose(Statement statement, boolean open) {
+        String label = statement.label();
+        List<String> operands = statement.operandList();
+        if (operands.isEmpty()) {
+            throw new AssemblyException(statement.line(),
+                    statement.operation() + " requires a DCB");
+        }
+        for (String operand : operands) {
+            String text = operand.trim();
+            if (text.startsWith("(") && text.endsWith(")")) {
+                text = text.substring(1, text.length() - 1);
+            }
+            List<String> parts = Statement.split(text, statement.line());
+            for (int k = 0; k < parts.size(); k += open ? 2 : 1) {
+                String dcb = parts.get(k).trim();
+                if (open) {
+                    String option = k + 1 < parts.size()
+                            ? parts.get(k + 1).replace("(", "").replace(")", "").trim()
+                                    .toUpperCase(Locale.ROOT) : "INPUT";
+                    int mode = switch (option) {
+                        case "", "INPUT" -> 0;
+                        case "OUTPUT" -> 1;
+                        case "EXTEND" -> 2;
+                        default -> throw new AssemblyException(statement.line(),
+                                "OPEN option " + option + " is not supported yet");
+                    };
+                    machine(new Statement(label, "LA", "0," + mode, statement.line()));
+                    label = null;
+                }
+                machine(new Statement(label, "LA", "1," + dcb, statement.line()));
+                label = null;
+                machine(new Statement(null, "SVC", open ? "19" : "20", statement.line()));
+            }
+        }
+    }
+
+    /** {@code GET dcb,area} と {@code PUT dcb,area}。{@code LA 1,dcb} / {@code LA 0,area} / SVC。 */
+    private void getPut(Statement statement, int svc) {
+        List<String> operands = statement.operandList();
+        if (operands.isEmpty() || operands.size() > 2) {
+            throw new AssemblyException(statement.line(),
+                    statement.operation() + " takes a DCB and an optional area");
+        }
+        machine(new Statement(statement.label(), "LA", "1," + operands.get(0).trim(),
+                statement.line()));
+        // 領域を書かないのは位置づけモードである。番地 0 で伝える
+        machine(new Statement(null, "LA", "0," + (operands.size() == 2
+                ? operands.get(1).trim() : "0"), statement.line()));
+        machine(new Statement(null, "SVC", String.valueOf(svc), statement.line()));
     }
 
     // --- EQU / ORG / END ---
@@ -424,6 +633,8 @@ public final class Assembler implements Constants.Scope {
             byte[] unit = piece.bytes();
             int start = section.location;
             for (int repeat = 0; repeat < piece.duplication(); repeat++) {
+                // リテラルの番地定数 (=A(X)、=V(X)) も、DC と同じに値を入れて欄を控える
+                resolveReferences(unit, piece, section.location, line);
                 write(section.location, unit);
                 section.advance(unit.length);
             }
@@ -441,6 +652,31 @@ public final class Assembler implements Constants.Scope {
         String text = operand.trim();
         if (!text.startsWith("=")) {
             return null;
+        }
+        // 番地定数 (=A(X)、=V(X)、=Y(X)) の括弧は値である。指標ではない。
+        // 以前はここで切っていたので、=V(ZHVRPT) が「=V」になり、値の無い定数として断っていた
+        int at = 1;
+        while (at < text.length() && Character.isDigit(text.charAt(at))) {
+            at++;
+        }
+        if (at < text.length() && "AVY".indexOf(Character.toUpperCase(text.charAt(at))) >= 0) {
+            int value = at + 1;
+            if (value < text.length() && Character.toUpperCase(text.charAt(value)) == 'L') {
+                value++;
+                while (value < text.length() && Character.isDigit(text.charAt(value))) {
+                    value++;
+                }
+            }
+            if (value < text.length() && text.charAt(value) == '(') {
+                int depth = 0;
+                for (int k = value; k < text.length(); k++) {
+                    if (text.charAt(k) == '(') {
+                        depth++;
+                    } else if (text.charAt(k) == ')' && --depth == 0) {
+                        return text.substring(0, k + 1);
+                    }
+                }
+            }
         }
         int open = topLevelParen(text);
         return open < 0 ? text : text.substring(0, open);
@@ -588,6 +824,86 @@ public final class Assembler implements Constants.Scope {
                         | (checkRange(l2, 1, 16, line, "the second length") - 1);
                 yield ss(definition.opcode(), packed, first, second);
             }
+            case RRE -> {
+                require(operands, 2, statement);
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode(), 0,
+                        (byte) (register(operands.get(0), line) << 4
+                                | register(operands.get(1), line))};
+            }
+            case RRF -> {
+                require(operands, 3, statement);
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode(),
+                        (byte) (register(operands.get(2), line) << 4),
+                        (byte) (register(operands.get(0), line) << 4
+                                | register(operands.get(1), line))};
+            }
+            case RI -> {
+                require(operands, 2, statement);
+                int immediate = checkRange(absolute(operands.get(1), line), -32768, 65535, line,
+                        "the immediate operand");
+                yield new byte[] {(byte) (definition.opcode() >> 8),
+                        (byte) (register(operands.get(0), line) << 4
+                                | (definition.opcode() & 0x0F)),
+                        (byte) (immediate >> 8), (byte) immediate};
+            }
+            case RIL -> {
+                require(operands, 2, statement);
+                int immediate = absolute(operands.get(1), line);
+                yield new byte[] {(byte) (definition.opcode() >> 8),
+                        (byte) (register(operands.get(0), line) << 4
+                                | (definition.opcode() & 0x0F)),
+                        (byte) (immediate >> 24), (byte) (immediate >> 16),
+                        (byte) (immediate >> 8), (byte) immediate};
+            }
+            case RXY -> {
+                require(operands, 2, statement);
+                yield longForm(definition.opcode(), register(operands.get(0), line),
+                        operands.get(1), true, line, -1);
+            }
+            case RSY -> {
+                // シフトは「R1,R3,D2(B2)」。ICMH は「R1,M3,D2(B2)」で、2 つ目がマスクである
+                require(operands, 3, statement);
+                yield longForm(definition.opcode(), register(operands.get(0), line),
+                        operands.get(2), false, line, register(operands.get(1), line));
+            }
+            case RIE_F -> {
+                if (operands.size() != 4 && operands.size() != 5) {
+                    throw new AssemblyException(line, statement.operation()
+                            + " takes four or five operands");
+                }
+                int i5 = operands.size() == 5
+                        ? checkRange(absolute(operands.get(4), line), 0, 255, line,
+                                "the rotate amount") : 0;
+                yield new byte[] {(byte) (definition.opcode() >> 8),
+                        (byte) (register(operands.get(0), line) << 4
+                                | register(operands.get(1), line)),
+                        (byte) checkRange(absolute(operands.get(2), line), 0, 255, line,
+                                "the start bit"),
+                        (byte) checkRange(absolute(operands.get(3), line), 0, 255, line,
+                                "the end bit"),
+                        (byte) i5, (byte) definition.opcode()};
+            }
+            case RSL -> {
+                require(operands, 1, statement);
+                Addr first = address(operands.get(0), false, true, line);
+                int length = first.length() == null ? lengthAttributeOf(operands.get(0))
+                        : first.length();
+                yield new byte[] {(byte) (definition.opcode() >> 8),
+                        (byte) ((checkRange(length, 1, 16, line, "the length") - 1) << 4),
+                        (byte) (first.base() << 4 | first.displacement() >> 8),
+                        (byte) first.displacement(), 0, (byte) definition.opcode()};
+            }
+            case S -> {
+                require(operands, 1, statement);
+                Addr address = address(operands.get(0), false, false, line);
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode(),
+                        (byte) (address.base() << 4 | address.displacement() >> 8),
+                        (byte) address.displacement()};
+            }
+            case E -> {
+                require(operands, 0, statement);
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode()};
+            }
             case SS_C -> {
                 require(operands, 3, statement);
                 Addr first = address(operands.get(0), false, true, line);
@@ -599,6 +915,30 @@ public final class Assembler implements Constants.Scope {
                 yield ss(definition.opcode(), packed, first, second);
             }
         };
+    }
+
+    /**
+     * 20 ビットの符号つき変位を持つ 6 バイトの命令 (RXY / RSY)。
+     *
+     * <p>変位の下位 12 ビットは 12 ビット変位の命令と同じ場所に、上位 8 ビットは 5 バイト目に
+     * 入る。USING から解くときも、届く範囲が -524288〜524287 に広がる。
+     *
+     * @param third RSY の 2 つ目の欄 (R3 か M3)。RXY なら -1 で、その場所には指標が入る
+     */
+    private byte[] longForm(int opcode, int first, String operand, boolean indexed, int line,
+                            int third) {
+        Addr address;
+        longDisplacement = true;
+        try {
+            address = address(operand, indexed, false, line);
+        } finally {
+            longDisplacement = false;
+        }
+        int displacement = address.displacement() & 0xFFFFF;
+        return new byte[] {(byte) (opcode >> 8),
+                (byte) (first << 4 | (third >= 0 ? third : address.index())),
+                (byte) (address.base() << 4 | (displacement >> 8 & 0x0F)),
+                (byte) displacement, (byte) (displacement >> 12), (byte) opcode};
     }
 
     private static byte[] rr(int opcode, int first, int second) {
@@ -657,6 +997,19 @@ public final class Assembler implements Constants.Scope {
     private Addr address(String operand, boolean allowIndex, boolean allowLength, int line) {
         String text = operand.trim();
         int open = topLevelParen(text);
+        String term = literalTermOf(text);
+        if (term != null && term.length() > open && open >= 0) {
+            // 番地定数のリテラル。括弧は値であり、そのうしろに指標が付くことがある
+            Value value = evaluate(term, line);
+            String rest = text.substring(term.length()).trim();
+            int index = 0;
+            if (rest.startsWith("(") && rest.endsWith(")") && allowIndex) {
+                index = register(rest.substring(1, rest.length() - 1), line);
+            } else if (!rest.isEmpty()) {
+                throw new AssemblyException(line, "unexpected text after the literal: " + operand);
+            }
+            return resolve(value, index, null, line, term);
+        }
         if (open < 0) {
             Value value = evaluate(text, line);
             return resolve(value, 0, null, line, text);
@@ -668,7 +1021,8 @@ public final class Assembler implements Constants.Scope {
         List<String> inside = Statement.split(text.substring(open + 1, text.length() - 1), line);
         if (inside.size() == 2) {
             // 明示形。変位は絶対値でなければならない
-            int displacement = checkRange(absolute(head, line), 0, MAX_DISPLACEMENT, line,
+            int displacement = checkRange(absolute(head, line), minimumDisplacement(),
+                    maximumDisplacement(), line,
                     "the displacement");
             int base = register(inside.get(1), line);
             if (allowLength) {
@@ -695,7 +1049,8 @@ public final class Assembler implements Constants.Scope {
             return resolve(value, register(only, line), null, line, head);
         }
         // D(B) — ベースだけを明示した形
-        int displacement = checkRange(absolute(head, line), 0, MAX_DISPLACEMENT, line,
+        int displacement = checkRange(absolute(head, line), minimumDisplacement(),
+                    maximumDisplacement(), line,
                 "the displacement");
         return new Addr(displacement, register(only, line), 0, null);
     }
@@ -723,7 +1078,8 @@ public final class Assembler implements Constants.Scope {
      */
     private Addr resolve(Value value, int index, Integer length, int line, String text) {
         if (value.isAbsolute()) {
-            return new Addr(checkRange(value.value(), 0, MAX_DISPLACEMENT, line,
+            return new Addr(checkRange(value.value(), minimumDisplacement(),
+                    maximumDisplacement(), line,
                     "the displacement"), 0, index, length);
         }
         int bestRegister = -1;
@@ -734,8 +1090,15 @@ public final class Assembler implements Constants.Scope {
                 continue;
             }
             int displacement = value.value() - using.offset();
-            if (displacement < 0 || displacement > MAX_DISPLACEMENT) {
+            if (displacement < minimumDisplacement() || displacement > maximumDisplacement()) {
                 continue;
+            }
+            if (displacement < 0 && bestRegister >= 0) {
+                // 負の変位で届くのは 20 ビット変位の命令だけ。正で届くものがあればそちらを使う
+                continue;
+            }
+            if (displacement >= 0 && bestDisplacement < 0) {
+                bestDisplacement = Integer.MAX_VALUE;
             }
             if (displacement < bestDisplacement
                     || (displacement == bestDisplacement && register > bestRegister)) {
@@ -748,6 +1111,14 @@ public final class Assembler implements Constants.Scope {
                     "no USING register covers " + text + " in section " + value.section());
         }
         return new Addr(bestDisplacement, bestRegister, index, length);
+    }
+
+    private int minimumDisplacement() {
+        return longDisplacement ? -0x80000 : 0;
+    }
+
+    private int maximumDisplacement() {
+        return longDisplacement ? 0x7FFFF : MAX_DISPLACEMENT;
     }
 
     private int register(String operand, int line) {

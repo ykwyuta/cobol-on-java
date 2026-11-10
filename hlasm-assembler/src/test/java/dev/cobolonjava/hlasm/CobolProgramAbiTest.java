@@ -101,13 +101,16 @@ class CobolProgramAbiTest {
     }
 
     @Test
-    @DisplayName("作業場所は制御節が持つので、呼ぶ側の記憶域は要らない")
-    void needsNoCallerStorage() throws ReflectiveOperationException {
+    @DisplayName("プログラムの記憶域は制御節そのものである")
+    void theControlSectionIsTheProgramStorage() throws ReflectiveOperationException {
+        // 以前は「記憶域は空」を検査していた。そのあいだ、モジュールの中の作業域は
+        // 呼ばれるたびに初期値へ戻っていた。ランタイムが持ち続ける記憶域に制御節を置けば、
+        // 載せたままのモジュールと同じに、値が呼び出しをまたいで残る
         CobolProgram program = load(
                 "BUMP     CSECT",
                 "         BR    14",
                 "         END");
-        assertEquals(0, program.initialStorage().length);
+        assertEquals(2, program.initialStorage().length);
     }
 
     private static final class GeneratedLoader extends ClassLoader {

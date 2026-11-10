@@ -5,6 +5,11 @@ This product includes software developed as an independent, clean-room
 implementation based solely on publicly available specifications and on
 externally observable behavior.
 
+Portions of this product are ported from Zeus (https://github.com/ykwyuta/Zeus),
+a separate implementation by the same copyright holder, and are contributed
+to this product by that copyright holder under the Apache License 2.0. Zeus is
+itself written from publicly available specifications.
+
 IBM, z/OS, z/Architecture, CICS, Db2, IMS, MVS, and Enterprise COBOL are
 trademarks or registered trademarks of International Business Machines
 Corporation. This project is not affiliated with, endorsed by, or sponsored
