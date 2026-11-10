@@ -211,16 +211,10 @@ public final class CopyExpander {
         if (i < words.size() && words.get(i).isWord("REPLACING")) {
             i++;
             while (i < words.size() && !words.get(i).isSeparator('.')) {
-                TextReplacements.Operand from = TextReplacements.readOperand(words, i, origin);
-                i = from.endIndex() + 1;
-                if (i >= words.size() || !words.get(i).isWord("BY")) {
-                    throw new SourceFormatException(origin,
-                            "REPLACING requires BY after an operand");
-                }
-                i++;
-                TextReplacements.Operand to = TextReplacements.readOperand(words, i, origin);
-                i = to.endIndex() + 1;
-                replacements.add(new TextReplacement(from.words(), to.words()));
+                TextReplacements.Pair pair =
+                        TextReplacements.readPair(words, i, origin, "REPLACING", false);
+                replacements.add(pair.replacement());
+                i = pair.endIndex() + 1;
             }
         }
 

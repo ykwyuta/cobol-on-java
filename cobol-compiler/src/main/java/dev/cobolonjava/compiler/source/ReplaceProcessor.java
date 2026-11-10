@@ -55,27 +55,8 @@ public final class ReplaceProcessor {
                 continue;
             }
 
-            TextReplacement matched = null;
-            int length = -1;
-            for (TextReplacement replacement : active) {
-                length = TextReplacements.matchLength(words, i, replacement.from());
-                if (length >= 0) {
-                    matched = replacement;
-                    break;
-                }
-            }
-            if (matched == null) {
-                out.add(words.get(i));
-                i++;
-                continue;
-            }
-            List<TextWord> to = matched.to();
-            for (int k = 0; k < to.size(); k++) {
-                TextWord word = to.get(k);
-                out.add(k == 0 ? word.withPrecededBySpace(words.get(i).precededBySpace()) : word);
-            }
             // 読み飛ばした区切りのぶん、擬似テキストより長く消費することがある
-            i += length;
+            i += TextReplacements.replaceAt(words, i, active, out);
         }
         return out;
     }
@@ -95,21 +76,10 @@ public final class ReplaceProcessor {
 
         List<TextReplacement> replacements = new ArrayList<>();
         while (i < words.size() && !words.get(i).isSeparator('.')) {
-            TextReplacements.Operand from = TextReplacements.readOperand(words, i, origin);
-            if (words.get(i).kind() != TextWordKind.PSEUDO_DELIMITER) {
-                // REPLACE の被演算子は擬似テキストでなければならない。
-                // COPY ... REPLACING が 1 語の指定も許すのとは違う
-                throw new SourceFormatException(origin,
-                        "REPLACE operands must be pseudo-text enclosed in ==");
-            }
-            i = from.endIndex() + 1;
-            if (i >= words.size() || !words.get(i).isWord("BY")) {
-                throw new SourceFormatException(origin, "REPLACE requires BY after an operand");
-            }
-            i++;
-            TextReplacements.Operand to = TextReplacements.readOperand(words, i, origin);
-            i = to.endIndex() + 1;
-            replacements.add(new TextReplacement(from.words(), to.words()));
+            TextReplacements.Pair pair =
+                    TextReplacements.readPair(words, i, origin, "REPLACE", true);
+            replacements.add(pair.replacement());
+            i = pair.endIndex() + 1;
         }
 
         if (replacements.isEmpty()) {

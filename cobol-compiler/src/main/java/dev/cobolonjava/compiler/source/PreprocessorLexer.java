@@ -13,7 +13,13 @@ import java.util.List;
 public final class PreprocessorLexer {
 
     /** それ自体が 1 個の字句になる区切り文字。 */
-    private static final String SEPARATOR_CHARS = ".,;()";
+    /**
+     * コロンも区切りである。写し句の {@code :TAG:-WEEK} を {@code ==:TAG:==} で置き換える
+     * 書き方 (IBM の言語解説書が COPY の例に挙げている) は、コロンが語を切るから成り立つ。
+     * 1 語のままにすると {@code :TAG:-WEEK} は {@code :TAG:} に当たらない。
+     * 書き戻すときは前の語と空白なしで続けるので、部分参照 {@code A(1:2)} は変わらない。
+     */
+    private static final String SEPARATOR_CHARS = ".,;():";
 
     private PreprocessorLexer() {
     }
