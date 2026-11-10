@@ -176,9 +176,11 @@ class IndexedDataSetTest {
 
         file.open(OpenMode.INPUT, false);
         byte[] record = area();
-        assertEquals(FileStatus.OK, file.readKey(1, key("x1"), record));
+        // 同じ副鍵のレコードがまだ続くあいだは 02 である (85 規格 VII-3, 1.3.5(1)B)。
+        // 以前は 00 を期待していた。並びだけを見るつもりの検査が、状態も固定していた
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE, file.readKey(1, key("x1"), record));
         assertEquals("AAAx1one", decode(record));
-        // 同じ副鍵の続きは、主鍵の順にたどる
+        // 同じ副鍵の続きは、主鍵の順にたどる。並びの最後は 00 である
         assertEquals(FileStatus.OK, file.read(record));
         assertEquals("CCCx1thr", decode(record));
         // 副鍵を読み切れば次の副鍵へ移る
@@ -197,11 +199,13 @@ class IndexedDataSetTest {
         file.open(OpenMode.IO, false);
         byte[] record = area();
         // BBB の副鍵を y1 から x1 へ変える。x1 の並びはすでに AAA / CCC である
-        assertEquals(FileStatus.OK, file.rewriteKey(record("BBB", "x1", "two")));
+        // 書き換えが副鍵の重複を作ったので 02 である
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE,
+                file.rewriteKey(record("BBB", "x1", "two")));
 
-        assertEquals(FileStatus.OK, file.readKey(1, key("x1"), record));
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE, file.readKey(1, key("x1"), record));
         assertEquals("AAAx1one", decode(record));
-        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE, file.read(record));
         assertEquals("CCCx1thr", decode(record));
         // 主鍵の順なら BBB が CCC より先に来る。書き換えた順だから末尾である
         assertEquals(FileStatus.OK, file.read(record));
@@ -216,9 +220,10 @@ class IndexedDataSetTest {
 
         file.open(OpenMode.IO, false);
         byte[] record = area();
-        assertEquals(FileStatus.OK, file.rewriteKey(record("AAA", "x1", "ONE")));
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE,
+                file.rewriteKey(record("AAA", "x1", "ONE")));
 
-        assertEquals(FileStatus.OK, file.readKey(1, key("x1"), record));
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE, file.readKey(1, key("x1"), record));
         assertEquals("AAAx1ONE", decode(record));
         assertEquals(FileStatus.OK, file.read(record));
         assertEquals("CCCx1thr", decode(record));
@@ -380,5 +385,28 @@ class IndexedDataSetTest {
         IndexedDataSet file = at("K.LIB");
 
         assertThrows(DataSetOpenException.class, () -> file.open(OpenMode.INPUT, false));
+    }
+
+    @Test
+    @DisplayName("同じ副鍵の並びは、閉じて開き直しても入った順のままである (P-087)")
+    void duplicateChainsKeepArrivalOrderAcrossClose() {
+        IndexedDataSet.Key alternate = new IndexedDataSet.Key(3, 2, true);
+        IndexedDataSet file = at("ARRIVE.DAT", alternate);
+
+        file.open(OpenMode.OUTPUT, false);
+        file.close();
+        file.open(OpenMode.IO, false);
+        // 主鍵の順とは逆に入れる。CCC が先、AAA があと
+        assertEquals(FileStatus.OK, file.writeKey(record("CCC", "x1", "thr")));
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE, file.writeKey(record("AAA", "x1", "one")));
+        file.close();
+
+        file.open(OpenMode.INPUT, false);
+        byte[] record = area();
+        // 開き直して主鍵の順に戻っていれば、AAA が先に返る
+        assertEquals(FileStatus.DUPLICATE_ALTERNATE, file.readKey(1, key("x1"), record));
+        assertEquals("CCCx1thr", decode(record));
+        assertEquals(FileStatus.OK, file.read(record));
+        assertEquals("AAAx1one", decode(record));
     }
 }

@@ -3497,11 +3497,12 @@ public final class ProgramGenerator {
                         "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
                 if (extended != null && vsam) {
                     // VSAM のファイルだけが 2 つ目の項目を持つ。QSAM では触らない
+                    emitFileName(file);
                     run.visitVarInsn(Opcodes.ALOAD, slot);
                     extended.run();
-                    loadCodePage();
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "vsamStatus",
-                            "([BL" + STORAGE + ";I" + CODE_PAGE + ")V", false);
+                            "(" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;[BL"
+                                    + STORAGE + ";I)V", false);
                 }
             };
         }

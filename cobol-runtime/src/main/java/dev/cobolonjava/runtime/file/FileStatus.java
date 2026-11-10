@@ -13,6 +13,14 @@ public final class FileStatus {
 
     /** 成功。 */
     public static final String OK = "00";
+    /**
+     * うまくいったが、重複を許す副鍵に同じ値がある。
+     *
+     * <p>{@code READ} では、いま読んだレコードの次も同じ副鍵を持つとき。{@code WRITE} と
+     * {@code REWRITE} では、書いたレコードが副鍵の重複を作ったときである
+     * (85 規格 VII-3, 1.3.5(1)B)。誤りではない。続けて読めば同じ鍵がまだある、という知らせである。
+     */
+    public static final String DUPLICATE_ALTERNATE = "02";
     /** 省略可能なファイルがなかったので作った。 */
     public static final String OPTIONAL_CREATED = "05";
     /** レコード長が記述と合わない。 */

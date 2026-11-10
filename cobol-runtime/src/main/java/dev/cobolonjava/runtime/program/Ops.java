@@ -393,11 +393,10 @@ public final class Ops {
      * 「論理エラーのフィードバックコード」) から、入出力状態に対応するものを置く。
      * この処理系は VSAM そのものを持たないので、<b>状態から逆に引いている</b>。
      */
-    public static void vsamStatus(byte[] status, Storage target, int offset, CodePage codePage) {
-        String code = codePage.decode(status);
+    public static void vsamStatus(ProgramContext context, String name, String ddName,
+                                  byte[] status, Storage target, int offset) {
+        String code = context.codePage().decode(status);
         int feedback = switch (code) {
-            // 重複した副鍵。要求はうまくいっているので、戻りコードは 0 のままである
-            case "02" -> 8;
             case "10" -> 4;
             case "21" -> 12;
             case "22" -> 8;
@@ -409,8 +408,12 @@ public final class Ops {
             case "10", "21", "22", "23", "24" -> 8;
             default -> 0;
         };
+        // 機能コードは、断られた要求が副索引を通っていたときだけ 2 になる
+        int function = returnCode != 0 && !context.neverOpened(name)
+                && context.file(name, ddName) instanceof IndexedDataSet indexed
+                ? indexed.vsamFunction() : 0;
         target.view(offset, 6).setBytes(new byte[] {
-            0, (byte) returnCode, 0, 0, 0, (byte) feedback});
+            0, (byte) returnCode, 0, (byte) function, 0, (byte) feedback});
     }
 
     /** 今年。2 桁の年を 4 桁にする関数の窓がこれを基準にする。 */

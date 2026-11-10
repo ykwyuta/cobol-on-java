@@ -2803,7 +2803,7 @@ SM206A が試しているのは写し句のほうだけである。
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未解決 |
+| 状態 | 解消 (2026-11-10)。並びだけを `<データ>.aix` に残す。ZCVS の ZF108A・ZF112A が、開き直したあとの並びを確かめていた。索引そのものは今も本体から組み直すので、このファイルが本体と食い違っても壊れない (`IndexedDataSet.saveArrivalOrder` / `restoreArrivalOrder`)。以下は解消前の記録 |
 | 場所 | `IndexedDataSet.rebuildIndexes` |
 | 関連要件 | FR-100, FR-102 |
 
