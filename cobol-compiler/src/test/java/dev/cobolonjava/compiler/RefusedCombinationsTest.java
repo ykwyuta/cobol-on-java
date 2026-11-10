@@ -153,4 +153,18 @@ class RefusedCombinationsTest {
                 "    PERFORM WITH TEST AFTER UNTIL EXIT", "        CONTINUE",
                 "    END-PERFORM.", "    STOP RUN."), "UNTIL EXIT");
     }
+
+    @Test
+    @DisplayName("数字だけの手続き名は数字定数ではないので、18 桁の上限に掛からない")
+    void allDigitProcedureNamesAreNotNumericLiterals() {
+        // CCVS85 の NC107A の書き方。定数の桁数の検査が手続き名まで数えて断っていた
+        accepted(List.of("IDENTIFICATION DIVISION.", "PROGRAM-ID. PGM.",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    PERFORM 0000000000000000000000000001.",
+                "    STOP RUN.",
+                "0000000000000000000000000001.",
+                "    CONTINUE."));
+        refused(withItem(WS, "01 ITEM-A PIC 9 VALUE 1234567890123456789."), "the maximum is");
+    }
 }

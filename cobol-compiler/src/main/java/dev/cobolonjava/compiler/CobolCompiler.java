@@ -475,7 +475,12 @@ public final class CobolCompiler {
         if (tree instanceof org.antlr.v4.runtime.tree.TerminalNode terminal) {
             var token = terminal.getSymbol();
             String text = token.getText();
-            if (token.getType() == CobolParser.NUMBER && text.indexOf('E') < 0
+            // 数字だけの手続き名は数字定数ではない。30 文字まで書ける。CCVS85 の NC107A が
+            // 「PERFORM 0000000000000000000000000001」と書いており、桁数の検査を入れた
+            // 増分のあと測り直していなかったので、断っていることに気付かなかった
+            boolean procedureName = terminal.getParent() instanceof CobolParser.ParagraphNameContext
+                    || terminal.getParent() instanceof CobolParser.ProcedureWordContext;
+            if (token.getType() == CobolParser.NUMBER && !procedureName && text.indexOf('E') < 0
                     && text.indexOf('e') < 0) {
                 long digits = text.chars().filter(Character::isDigit).count();
                 if (digits > limit) {
