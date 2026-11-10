@@ -104,6 +104,13 @@ public final class Constants {
         TypeRule rule = ruleOf(type, line);
         // 浮動小数点の型の拡張 (H: 16 進、B: 2 進、D: 10 進)。書かなければ 16 進である
         char extension = 'H';
+        if (type == 'F' && at < operand.length()
+                && Character.toUpperCase(operand.charAt(at)) == 'D') {
+            // FD は 8 バイトの固定小数点である (HLASM Language Reference "Fixed-point
+            // constants": 型の拡張 D は doubleword)
+            rule = new TypeRule(8, 8, false);
+            at++;
+        }
         if ((type == 'E' || type == 'D' || type == 'L') && at < operand.length()
                 && "HBD".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0) {
             extension = Character.toUpperCase(operand.charAt(at));

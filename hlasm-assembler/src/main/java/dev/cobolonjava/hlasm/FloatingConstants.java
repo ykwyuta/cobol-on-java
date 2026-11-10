@@ -50,6 +50,10 @@ final class FloatingConstants {
      */
     static byte[] encode(char type, char extension, String text, int line) {
         String trimmed = text.trim();
+        byte[] special = special(type, extension, trimmed.toUpperCase(java.util.Locale.ROOT), line);
+        if (special != null) {
+            return special;
+        }
         if (!NUMBER.matcher(trimmed).matches()) {
             throw new AssemblyException(line, "this floating-point value is not supported "
                     + "(rounding suffixes and special values are not supported): " + text);
@@ -62,6 +66,49 @@ final class FloatingConstants {
             case 'D' -> decimal(magnitude, negative, length, line);
             default -> hexadecimal(magnitude, negative, length, line);
         };
+    }
+
+    /**
+     * 括弧で書く特別な値。BFP と DFP の {@code (INF)}・{@code (NAN)}・{@code (QNAN)}・
+     * {@code (SNAN)} だけを持つ (HLASM Language Reference "Floating-point constants" の
+     * 特別な値)。{@code (MAX)}・{@code (MIN)}・{@code (DMIN)} と HFP のものは断る。
+     * ビットの並びは Zeus の {@code hlasm/float.rs} と同じにした。実機と突き合わせていない。
+     */
+    private static byte[] special(char type, char extension, String text, int line) {
+        boolean negative = text.startsWith("-");
+        String name = text.startsWith("-") || text.startsWith("+") ? text.substring(1) : text;
+        if (!name.startsWith("(") || !name.endsWith(")") || extension == 'H') {
+            return null;
+        }
+        int length = lengthOf(type);
+        int bits = length * 8;
+        BigInteger sign = negative ? BigInteger.ONE.shiftLeft(bits - 1) : BigInteger.ZERO;
+        BigInteger magnitude;
+        if (extension == 'B') {
+            int fraction = FloatingPoint.binaryFraction(length);
+            BigInteger all = FloatingPoint.binaryInfinity(false, length);
+            magnitude = switch (name) {
+                case "(INF)" -> all;
+                case "(NAN)" -> all.or(BigInteger.ONE.shiftLeft(fraction - 1));
+                case "(QNAN)" -> all.or(BigInteger.valueOf(3).shiftLeft(fraction - 2));
+                case "(SNAN)" -> all.or(BigInteger.ONE.shiftLeft(fraction - 2));
+                default -> null;
+            };
+        } else {
+            magnitude = switch (name) {
+                case "(INF)" -> BigInteger.valueOf(30).shiftLeft(bits - 6);
+                case "(NAN)", "(QNAN)" -> BigInteger.valueOf(31).shiftLeft(bits - 6);
+                case "(SNAN)" -> BigInteger.valueOf(63).shiftLeft(bits - 7);
+                default -> null;
+            };
+        }
+        if (magnitude == null) {
+            throw new AssemblyException(line,
+                    "this floating-point special value is not supported: " + text);
+        }
+        byte[] out = new byte[length];
+        put(out, 0, length, sign.or(magnitude));
+        return out;
     }
 
     // --- HFP ---

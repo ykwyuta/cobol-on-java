@@ -50,6 +50,8 @@ public final class Cpu {
      * こうしておけば、Hercules で裏づけた 32 ビットの命令の実装に手を入れずに済む。
      */
     private final int[] high = new int[REGISTERS];
+    /** 浮動小数点のレジスターと FPC。 */
+    private final FloatingUnit floating = new FloatingUnit(this);
 
     /** この CPU から外へ出る口 (外の記号への呼び出しと SVC)。無ければ {@code null}。 */
     private Services services;
@@ -275,6 +277,18 @@ public final class Cpu {
                 services.supervisorCall(insn[1] & 0xFF, this);
             }
             case 0xB9 -> registerRegister64(insn);
+            // --- 浮動小数点 ---
+            case 0x28, 0x38, 0x29, 0x2A, 0x2B, 0x2C, 0x2D -> floating.registerRegister(insn);
+            case 0x68, 0x78, 0x60, 0x70, 0x69, 0x6A, 0x6B, 0x6C, 0x6D ->
+                    floating.registerStorage(insn, effective(insn));
+            case 0xB3 -> floating.extended(insn);
+            case 0x01 -> {
+                if ((insn[1] & 0xFF) != 0x0A) {
+                    throw new MachineException(MachineException.OPERATION, String.format(
+                            "operation code 01%02X is not implemented", insn[1] & 0xFF));
+                }
+                floating.performOperation(); // PFPO
+            }
             case 0xA7 -> registerImmediate(insn);
             case 0xC0 -> registerImmediateLong(insn);
             case 0xE3 -> registerStorage64(insn);
@@ -424,7 +438,10 @@ public final class Cpu {
                 conditionCode = (value >>> 28) & 0x3;
                 programMask = (value >>> 24) & 0xF;
             }
-            case 0xB2 -> { // 2 バイトの命令コードの族。持つのは IPM だけである
+            case 0xB2 -> { // 2 バイトの命令コードの族
+                if (floating.control(insn, effectiveSi(insn))) {
+                    return;
+                }
                 if ((insn[1] & 0xFF) != 0x22) {
                     throw new MachineException(MachineException.OPERATION, String.format(
                             "operation code B2%02X is not implemented", insn[1] & 0xFF));

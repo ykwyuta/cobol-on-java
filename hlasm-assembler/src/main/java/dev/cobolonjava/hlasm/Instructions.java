@@ -219,6 +219,40 @@ public final class Instructions {
         // 命令コードは「1 バイト目 << 8 | 残りの命令コード」で持つ。RI と RIL は残りが
         // 4 ビット (1 バイト目の次のバイトの下位)、ほかは 1 バイトである。
         // ZHVS (Zeus の HLASM 検査スイート) の HA / HM / HI / HD の区分が使うものを入れた
+        // 浮動小数点。HFP は長形式だけを持つ (短形式と拡張形式の演算は Cpu が断る)
+        define("LDR", 0x28, Format.RR);
+        define("LER", 0x38, Format.RR);
+        define("CDR", 0x29, Format.RR);
+        define("ADR", 0x2A, Format.RR);
+        define("SDR", 0x2B, Format.RR);
+        define("MDR", 0x2C, Format.RR);
+        define("DDR", 0x2D, Format.RR);
+        define("LD", 0x68, Format.RX);
+        define("LE", 0x78, Format.RX);
+        define("STD", 0x60, Format.RX);
+        define("STE", 0x70, Format.RX);
+        define("CD", 0x69, Format.RX);
+        define("AD", 0x6A, Format.RX);
+        define("SD", 0x6B, Format.RX);
+        define("MD", 0x6C, Format.RX);
+        define("DD", 0x6D, Format.RX);
+        define("SQDR", 0xB244, Format.RRE);
+        define("SQDBR", 0xB315, Format.RRE);
+        define("CDBR", 0xB319, Format.RRE);
+        define("ADBR", 0xB31A, Format.RRE);
+        define("SDBR", 0xB31B, Format.RRE);
+        define("MDBR", 0xB31C, Format.RRE);
+        define("DDBR", 0xB31D, Format.RRE);
+        define("MDTR", 0xB3D0, Format.RRF);
+        define("DDTR", 0xB3D1, Format.RRF);
+        define("ADTR", 0xB3D2, Format.RRF);
+        define("SDTR", 0xB3D3, Format.RRF);
+        define("CDTR", 0xB3E4, Format.RRE);
+        define("SFPC", 0xB384, Format.RRE_R1);
+        define("EFPC", 0xB38C, Format.RRE_R1);
+        define("STFPC", 0xB29C, Format.S);
+        define("LFPC", 0xB29D, Format.S);
+        define("PFPO", 0x010A, Format.E);
         define("LGR", 0xB904, Format.RRE);
         define("LTGR", 0xB902, Format.RRE);
         define("LCGR", 0xB903, Format.RRE);
