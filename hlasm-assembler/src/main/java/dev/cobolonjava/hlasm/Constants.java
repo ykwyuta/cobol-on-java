@@ -54,7 +54,12 @@ public final class Constants {
 
     /** 組み立てた 1 演算項。 */
     public record Piece(int alignment, int length, int duplication, byte[] bytes,
-                        List<AddressReference> references) {
+                        List<AddressReference> references, Integer scale) {
+
+        public Piece(int alignment, int length, int duplication, byte[] bytes,
+                     List<AddressReference> references) {
+            this(alignment, length, duplication, bytes, references, null);
+        }
 
         public Piece {
             bytes = bytes == null ? null : bytes.clone();
@@ -132,6 +137,19 @@ public final class Constants {
                 throw new AssemblyException(line, "the length modifier must be positive: " + operand);
             }
         }
+        // 固定小数点の位取り (S)。値に 2 の S 乗を掛けて整数にする
+        // (HLASM Language Reference "Scale modifier")。S' と I' の属性もここから決まる
+        Integer scale = type == 'F' || type == 'H' ? Integer.valueOf(0) : null;
+        if (scale != null && at + 1 < operand.length()
+                && Character.toUpperCase(operand.charAt(at)) == 'S'
+                && isModifierDigit(operand, at + 1)) {
+            int start = ++at;
+            at++;
+            while (at < operand.length() && Character.isDigit(operand.charAt(at))) {
+                at++;
+            }
+            scale = Integer.parseInt(operand.substring(start, at));
+        }
         if (at < operand.length() && "SEP".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0
                 && at + 1 < operand.length() && isModifierDigit(operand, at + 1)) {
             throw new AssemblyException(line, "the scale and exponent modifiers are not supported: "
@@ -168,10 +186,12 @@ public final class Constants {
         int alignment = explicitLength == null ? rule.alignment() : 1;
         if (nominal == null) {
             int length = explicitLength != null ? explicitLength : rule.defaultLength();
-            return new Piece(alignment, length, duplication, null, List.of());
+            return new Piece(alignment, length, duplication, null, List.of(), scale);
         }
-        return build(type, extension, rule, explicitLength, alignment, duplication, nominal, values,
-                scope, line);
+        Piece built = build(type, extension, rule, explicitLength, alignment, duplication, nominal,
+                values, scope, line, scale == null ? 0 : scale);
+        return new Piece(built.alignment(), built.length(), built.duplication(), built.bytes(),
+                built.references(), scale);
     }
 
     private static boolean isModifierDigit(String operand, int at) {
@@ -181,7 +201,7 @@ public final class Constants {
 
     private static Piece build(char type, char extension, TypeRule rule, Integer explicitLength,
                                int alignment, int duplication, String nominal, boolean values, Scope scope,
-                               int line) {
+                               int line, int scale) {
         List<AddressReference> references = new ArrayList<>();
         List<byte[]> encoded = new ArrayList<>();
         // 1 つの定数に値を複数書ける。F'1,2,3' は 3 つの語であり、反復係数とは別に並ぶ
@@ -193,7 +213,7 @@ public final class Constants {
                 case 'X' -> hex(item, explicitLength, line);
                 case 'B' -> binary(item, explicitLength, line);
                 case 'F', 'H' -> integer(item, explicitLength == null
-                        ? rule.defaultLength() : explicitLength, line);
+                        ? rule.defaultLength() : explicitLength, scale, line);
                 case 'P' -> packed(item, explicitLength, line);
                 case 'Z' -> zoned(item, explicitLength, scope.codePage(), line);
                 case 'A', 'Y', 'V' -> new byte[explicitLength == null
@@ -282,11 +302,21 @@ public final class Constants {
     }
 
     /** {@code F} と {@code H} は 2 の補数の big endian である。 */
-    private static byte[] integer(String text, int length, int line) {
+    private static byte[] integer(String text, int length, int scale, int line) {
         long value;
         try {
-            value = Long.parseLong(text.trim());
-        } catch (NumberFormatException failure) {
+            if (scale == 0) {
+                value = Long.parseLong(text.trim());
+            } else {
+                // 位取りつき。2 の scale 乗を掛け、半分は 0 から遠いほうへ丸める。
+                // 丸めの向きは実機と突き合わせていない
+                java.math.BigDecimal scaled = new java.math.BigDecimal(text.trim());
+                scaled = scale > 0
+                        ? scaled.multiply(java.math.BigDecimal.valueOf(2).pow(scale))
+                        : scaled.divide(java.math.BigDecimal.valueOf(2).pow(-scale));
+                value = scaled.setScale(0, java.math.RoundingMode.HALF_UP).longValueExact();
+            }
+        } catch (ArithmeticException | NumberFormatException failure) {
             throw new AssemblyException(line, "not an integer constant: " + text);
         }
         byte[] out = new byte[length];

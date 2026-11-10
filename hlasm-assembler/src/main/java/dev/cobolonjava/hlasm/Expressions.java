@@ -162,6 +162,9 @@ public final class Expressions {
                     case "L" -> {
                         return Value.absolute(lengthAttribute());
                     }
+                    case "S", "I" -> {
+                        return Value.absolute(scaleAttribute(word.equals("I")));
+                    }
                     default -> throw new AssemblyException(line,
                             "unknown self-defining term: " + word + "'");
                 }
@@ -173,6 +176,29 @@ public final class Expressions {
             return symbol.value();
         }
         throw new AssemblyException(line, "unexpected character in expression: " + c);
+    }
+
+    /**
+     * {@code S'記号} (位取り) と {@code I'記号} (整数部のビット数)。固定小数点の定数では
+     * {@code I' = 8 × L' − S' − 1} である (HLASM Language Reference "Integer attribute")。
+     * 浮動小数点と 10 進の定数の属性は持たないので断る。
+     */
+    private int scaleAttribute(boolean integer) {
+        at++;
+        int start = at;
+        while (at < text.length() && isNamePart(text.charAt(at))) {
+            at++;
+        }
+        String name = text.substring(start, at).toUpperCase(Locale.ROOT);
+        Symbol symbol = lookup.find(name);
+        if (symbol == null) {
+            throw new AssemblyException(line, "undefined symbol in attribute reference: " + name);
+        }
+        if (symbol.scale() == null) {
+            throw new AssemblyException(line,
+                    "the scale and integer attributes of " + name + " are not supported yet");
+        }
+        return integer ? 8 * symbol.length() - symbol.scale() - 1 : symbol.scale();
     }
 
     /** {@code L'記号} と {@code L'*}。 */

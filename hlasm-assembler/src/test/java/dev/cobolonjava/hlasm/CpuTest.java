@@ -235,7 +235,9 @@ class CpuTest {
                 HlasmRuntime.HlasmExecutionException.class,
                 () -> returnCode(
                         "TEST     CSECT",
-                        "         MR    5,6",
+                        // アセンブラーは奇数のレジスターを断る (ASMA029E) ので、機械語で置く。
+                        // 機械語として現れたときに CPU が仕様例外にすることを、ここで見ている
+                        "         DC    X'1C56'          MR 5,6",
                         "         BR    14",
                         "         END"));
         assertTrue(failure.getMessage().contains("S0C6"), failure.getMessage());

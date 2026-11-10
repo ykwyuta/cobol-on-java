@@ -50,6 +50,12 @@ public final class Cpu {
      * こうしておけば、Hercules で裏づけた 32 ビットの命令の実装に手を入れずに済む。
      */
     private final int[] high = new int[REGISTERS];
+    /**
+     * 番地の幅。SAM24 で 24 ビット、SAM31 で 31 ビットになる。実効番地と分岐先をこれで切る。
+     * 24 ビットのときの BAL / BALR の連絡情報 (上位バイトに命令長・条件コード・マスクを置く) は
+     * 持たない。番地だけを置く。実機と突き合わせていない。
+     */
+    private int addressMask = 0x7FFFFFFF;
     /** 浮動小数点のレジスターと FPC。 */
     private final FloatingUnit floating = new FloatingUnit(this);
 
@@ -203,7 +209,7 @@ public final class Cpu {
                 int target = gpr[r2];
                 gpr[r1] = instructionAddress;
                 if (r2 != 0) {
-                    instructionAddress = target & 0x7FFFFFFF;
+                    instructionAddress = target & addressMask;
                 }
             }
             case 0x0D -> { // BASR
@@ -212,7 +218,7 @@ public final class Cpu {
                 int target = gpr[r2];
                 gpr[r1] = instructionAddress;
                 if (r2 != 0) {
-                    instructionAddress = target & 0x7FFFFFFF;
+                    instructionAddress = target & addressMask;
                 }
             }
             case 0x06 -> { // BCTR
@@ -220,14 +226,14 @@ public final class Cpu {
                 int r2 = r2(insn);
                 gpr[r1] = gpr[r1] - 1;
                 if (gpr[r1] != 0 && r2 != 0) {
-                    instructionAddress = gpr[r2] & 0x7FFFFFFF;
+                    instructionAddress = gpr[r2] & addressMask;
                 }
             }
             case 0x07 -> { // BCR
                 int mask = r1(insn);
                 int r2 = r2(insn);
                 if (r2 != 0 && selected(mask)) {
-                    instructionAddress = gpr[r2] & 0x7FFFFFFF;
+                    instructionAddress = gpr[r2] & addressMask;
                 }
             }
             case 0x10 -> { // LPR
@@ -283,11 +289,15 @@ public final class Cpu {
                     floating.registerStorage(insn, effective(insn));
             case 0xB3 -> floating.extended(insn);
             case 0x01 -> {
-                if ((insn[1] & 0xFF) != 0x0A) {
-                    throw new MachineException(MachineException.OPERATION, String.format(
-                            "operation code 01%02X is not implemented", insn[1] & 0xFF));
+                switch (insn[1] & 0xFF) {
+                    case 0x0A -> floating.performOperation(); // PFPO
+                    case 0x0C -> addressMask = 0x00FFFFFF; // SAM24
+                    case 0x0D -> addressMask = 0x7FFFFFFF; // SAM31
+                    // SAM64 は断る。番地空間が 31 ビットまでしか無い
+                    default -> throw new MachineException(MachineException.OPERATION,
+                            String.format("operation code 01%02X is not implemented",
+                                    insn[1] & 0xFF));
                 }
-                floating.performOperation(); // PFPO
             }
             case 0xA7 -> registerImmediate(insn);
             case 0xC0 -> registerImmediateLong(insn);
@@ -563,6 +573,11 @@ public final class Cpu {
             case 0x88 -> addLogical64(r1, a, b, conditionCode >= 2 ? 1 : 0); // ALCGR
             case 0x89 -> addLogical64(r1, a, ~b, conditionCode >= 2 ? 1 : 0); // SLBGR
             case 0xE1 -> { // POPCNT: バイトごとに 1 の数を数え、そのバイトに置く
+                if ((insn[2] & 0x80) != 0) {
+                    // M3 の 8 のビットが立っていれば、64 ビット全体の 1 の数である
+                    logical64(r1, Long.bitCount(b));
+                    return;
+                }
                 long result = 0;
                 for (int k = 0; k < 8; k++) {
                     result |= (long) Long.bitCount(b >>> (8 * k) & 0xFF) << (8 * k);
@@ -624,7 +639,7 @@ public final class Cpu {
         if (indexed && index != 0) {
             address += gpr[index];
         }
-        return address & 0x7FFFFFFF;
+        return address & addressMask;
     }
 
     /** E3xx。レジスタと記憶域。 */
@@ -799,7 +814,7 @@ public final class Cpu {
         int length = ((insn[1] >> 4) & 0x0F) + 1;
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        int address = (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        int address = (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
         byte[] field = memory.read(address, length);
         boolean badDigit = false;
         for (int k = 0; k < length; k++) {
@@ -840,28 +855,28 @@ public final class Cpu {
         if (index != 0) {
             address += gpr[index];
         }
-        return address & 0x7FFFFFFF;
+        return address & addressMask;
     }
 
     /** RS / SI 形式の実効番地 (指標を持たない)。 */
     private int effectiveSi(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** SS 形式の第 1 演算項の番地。 */
     private int ssFirst(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** SS 形式の第 2 演算項の番地。 */
     private int ssSecond(byte[] insn) {
         int base = (insn[4] >> 4) & 0x0F;
         int displacement = ((insn[4] & 0x0F) << 8) | (insn[5] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** シフト量は実効番地の下位 6 ビットである。 */

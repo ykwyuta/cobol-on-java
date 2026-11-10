@@ -118,6 +118,7 @@ public final class Assembler implements Constants.Scope {
             assembler.diagnostics.addAll(expansion.diagnostics());
             List<Statement> statements = expansion.statements();
             assembler.pass(statements, false);
+            assembler.resolveDeferredEquates();
             assembler.prepareText();
             assembler.pass(statements, true);
         } catch (AssemblyException failure) {
@@ -145,7 +146,13 @@ public final class Assembler implements Constants.Scope {
         text = new byte[mainSection.highWater];
         // 2 周目は状態を作り直す。USING は翻訳時の状態であり、1 周目の残りを持ち越してはならない
         Arrays.fill(usings, null);
-        sections.values().forEach(section -> section.location = 0);
+        synonyms.clear();
+        // 最高位置も戻す。残すと、2 周目の演算項なしの ORG が節の末尾 (1 周目の最高位置) へ
+        // 飛んでしまい、そのあとの定数が節の外へ出る
+        sections.values().forEach(section -> {
+            section.location = 0;
+            section.highWater = 0;
+        });
         pendingLiterals.clear();
         // 置き場は 1 周目で決まっている。2 周目はそれを使うので消さない
         poolIndex = 0;
@@ -174,8 +181,27 @@ public final class Assembler implements Constants.Scope {
         return statements.isEmpty() ? 1 : statements.get(statements.size() - 1).line();
     }
 
-    private void assemble(Statement statement) {
+    /**
+     * OPSYN で付け替えた命令の名前。値は<b>付け替えた時点での</b>もとの命令である。
+     * {@code OLDADD OPSYN AHI} のあとで {@code AHI OPSYN SR} としても、OLDADD は加算のままである
+     * (HLASM Language Reference "OPSYN instruction")。
+     */
+    private final Map<String, String> synonyms = new java.util.HashMap<>();
+
+    private void assemble(Statement original) {
+        String operation = synonyms.getOrDefault(original.operation(), original.operation());
+        Statement statement = operation.equals(original.operation()) ? original
+                : original.withOperation(operation);
         switch (statement.operation()) {
+            case "OPSYN" -> {
+                if (statement.label() == null || !statement.hasOperands()) {
+                    throw new AssemblyException(statement.line(),
+                            "OPSYN requires a name and an operation code");
+                }
+                String target = statement.operands().trim().toUpperCase(Locale.ROOT);
+                synonyms.put(statement.label().toUpperCase(Locale.ROOT),
+                        synonyms.getOrDefault(target, target));
+            }
             case "CSECT", "START" -> startSection(statement, false);
             case "DSECT" -> startSection(statement, true);
             case "USING" -> using(statement);
@@ -205,8 +231,12 @@ public final class Assembler implements Constants.Scope {
             case "OPEN" -> openClose(statement, true);
             case "CLOSE" -> openClose(statement, false);
             case "PUT" -> getPut(statement, SVC_PUT);
+            case "GETMAIN" -> storage(statement, true);
+            case "FREEMAIN" -> storage(statement, false);
+            case "POST" -> post(statement);
+            case "LINK" -> link(statement);
             case "GET" -> getPut(statement, SVC_GET);
-            case "COM", "RSECT", "COPY", "ICTL", "OPSYN" ->
+            case "COM", "RSECT", "COPY", "ICTL" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
@@ -227,6 +257,9 @@ public final class Assembler implements Constants.Scope {
             throw new AssemblyException(statement.line(),
                     "START with a nonzero origin is not supported; the loader decides the address");
         }
+        // 同じ名前の CSECT / DSECT をもう一度書くと、その節の続きに戻る
+        // (HLASM Language Reference "CSECT instruction")。名前を定義するのは最初の 1 回だけである
+        boolean resumed = sections.containsKey(name);
         Section section = sections.computeIfAbsent(name, key -> new Section(key, dummy));
         if (section.dummy != dummy) {
             throw new AssemblyException(statement.line(),
@@ -240,7 +273,7 @@ public final class Assembler implements Constants.Scope {
             throw new AssemblyException(statement.line(),
                     "more than one control section is not supported yet: " + name);
         }
-        if (!emitting) {
+        if (!emitting && !resumed) {
             define(name, new Symbol(name, Value.in(name, 0), 1), statement.line());
         }
     }
@@ -309,7 +342,7 @@ public final class Assembler implements Constants.Scope {
             align(section, piece.alignment());
             if (first) {
                 // 名前欄は最初の演算項を指し、長さ属性もその 1 つ分である
-                defineLabel(statement, piece.length());
+                defineLabel(statement, piece.length(), piece.scale());
                 first = false;
             }
             if (emitting && piece.bytes() != null && !section.dummy) {
@@ -419,6 +452,122 @@ public final class Assembler implements Constants.Scope {
      */
     static final int SVC_GET = 250;
     static final int SVC_PUT = 251;
+    /** GETMAIN / FREEMAIN / POST。これも実機の番号ではなく、この処理系の中の取り決めである。 */
+    static final int SVC_GETMAIN = 252;
+    static final int SVC_FREEMAIN = 253;
+    static final int SVC_POST = 254;
+
+    /** {@code 鍵=値} の演算項を引く。無ければ {@code null}。 */
+    private static String keyword(List<String> operands, String key) {
+        for (String operand : operands) {
+            String text = operand.trim();
+            if (text.toUpperCase(Locale.ROOT).startsWith(key + "=")) {
+                return text.substring(key.length() + 1).trim();
+            }
+        }
+        return null;
+    }
+
+    /** {@code (9)} のようにレジスターで書いた演算項なら、その中身。違えば {@code null}。 */
+    private static String registerForm(String text) {
+        return text.startsWith("(") && text.endsWith(")")
+                ? text.substring(1, text.length() - 1).trim() : null;
+    }
+
+    /**
+     * {@code GETMAIN RU,LV=長さ} と {@code FREEMAIN RU,LV=長さ,A=番地}。
+     *
+     * <p>無条件の要求 (RU / R) だけを持つ。長さを R0 に置き、GETMAIN は得た番地を R1 に返す。
+     * サブプール (SP=) は読み飛ばす。この処理系の記憶域にはサブプールの区別が無い。
+     */
+    private void storage(Statement statement, boolean obtain) {
+        List<String> operands = statement.operandList();
+        String kind = operands.isEmpty() ? "" : operands.get(0).trim().toUpperCase(Locale.ROOT);
+        String length = keyword(operands, "LV");
+        if (!(kind.equals("RU") || kind.equals("R")) || length == null) {
+            throw new AssemblyException(statement.line(), statement.operation()
+                    + " supports only the unconditional register form (RU,LV=...)");
+        }
+        String label = statement.label();
+        if (!obtain) {
+            String area = keyword(operands, "A");
+            if (area == null) {
+                throw new AssemblyException(statement.line(), "FREEMAIN requires A=");
+            }
+            String register = registerForm(area);
+            // A=(r) は番地の入ったレジスター、A=名前 は番地の入った語である
+            machine(register != null
+                    ? new Statement(label, "LR", "1," + register, statement.line())
+                    : new Statement(label, "L", "1," + area, statement.line()));
+            label = null;
+        }
+        String register = registerForm(length);
+        machine(register != null
+                ? new Statement(label, "LR", "0," + register, statement.line())
+                : new Statement(label, "LA", "0," + length, statement.line()));
+        machine(new Statement(null, "SVC",
+                Integer.toString(obtain ? SVC_GETMAIN : SVC_FREEMAIN), statement.line()));
+    }
+
+    /** {@code POST ecb[,完了コード]}。ECB に完了の印と完了コードを置く。 */
+    private void post(Statement statement) {
+        List<String> operands = statement.operandList();
+        if (operands.isEmpty()) {
+            throw new AssemblyException(statement.line(), "POST requires an ECB");
+        }
+        String register = registerForm(operands.get(0).trim());
+        machine(register != null
+                ? new Statement(statement.label(), "LR", "1," + register, statement.line())
+                : new Statement(statement.label(), "LA", "1," + operands.get(0),
+                        statement.line()));
+        machine(new Statement(null, "LA",
+                "0," + (operands.size() > 1 ? operands.get(1) : "0"), statement.line()));
+        machine(new Statement(null, "SVC", Integer.toString(SVC_POST), statement.line()));
+    }
+
+    /**
+     * {@code LINK EP=名前,PARAM=(...),VL=1}。引数の表をその場に作り、名前のプログラムを呼ぶ。
+     *
+     * <p>呼ぶ先は V 型の外部参照と同じに実行単位が解決する。この処理系には載せたモジュールを
+     * 使用数で管理する仕組みが無いので、LINK と CALL の違いは出ない。
+     */
+    private void link(Statement statement) {
+        List<String> operands = statement.operandList();
+        String name = keyword(operands, "EP");
+        if (name == null) {
+            throw new AssemblyException(statement.line(), "LINK supports only EP=name");
+        }
+        String list = keyword(operands, "PARAM");
+        List<String> parameters = list == null ? List.of()
+                : Statement.split(registerForm(list) == null ? list : registerForm(list),
+                        statement.line());
+        int line = statement.line();
+        String label = statement.label();
+        if (!parameters.isEmpty()) {
+            Statement cnop = new Statement(label, "CNOP", "0,4", line);
+            cnop(cnop);
+            label = null;
+            // 表は命令のすぐ後ろに置き、BAL がその番地を R1 に入れて飛び越す
+            machine(new Statement(null, "BAL", "1,*+4+" + 4 * parameters.size(), line));
+            constants(new Statement(null, "DC", parameters.size() + "A(0)", line), true);
+            for (int k = 0; k < parameters.size(); k++) {
+                String parameter = parameters.get(k).trim();
+                String register = registerForm(parameter);
+                if (register != null) {
+                    machine(new Statement(null, "ST", register + "," + 4 * k + "(,1)", line));
+                } else {
+                    machine(new Statement(null, "LA", "0," + parameter, line));
+                    machine(new Statement(null, "ST", "0," + 4 * k + "(,1)", line));
+                }
+            }
+            if ("1".equals(keyword(operands, "VL"))) {
+                machine(new Statement(null, "OI", 4 * (parameters.size() - 1) + "(1),X'80'",
+                        line));
+            }
+        }
+        machine(new Statement(label, "L", "15,=V(" + name + ")", line));
+        machine(new Statement(null, "BASR", "14,15", line));
+    }
 
     /** DCB の長さ。実機の QSAM の DCB (96 byte) と同じ場所に、同じ欄を置く。 */
     static final int DCB_LENGTH = 96;
@@ -562,15 +711,110 @@ public final class Assembler implements Constants.Scope {
         if (!statement.hasOperands()) {
             throw new AssemblyException(statement.line(), "EQU requires a value");
         }
-        List<String> operands = statement.operandList();
-        Value value = evaluate(operands.get(0), statement.line());
-        int length = operands.size() > 1 && !operands.get(1).isBlank()
-                ? absolute(operands.get(1), statement.line())
-                : lengthAttributeOf(operands.get(0));
-        if (!emitting) {
-            define(statement.label(), new Symbol(statement.label(), value, length),
-                    statement.line());
+        if (emitting) {
+            return;
         }
+        Value counter = current == null ? null : Value.in(current.name, current.location);
+        if (!defineEquate(statement, counter)) {
+            // まだ定義されていない記号を使っている。あとで定義されるなら値は決まるので、
+            // 1 周目の終わりまで待つ (HLASM は EQU の前方参照を許している)。
+            // 以前はここで断っていた
+            deferredEquates.add(new DeferredEquate(statement, counter));
+        }
+    }
+
+    /** 待たせた EQU。{@code counter} は、その文があった場所の所在カウンタである。 */
+    private record DeferredEquate(Statement statement, Value counter) {
+    }
+
+    private final List<DeferredEquate> deferredEquates = new ArrayList<>();
+
+    /** @return 定義できたら {@code true}。未定義の記号があって待つなら {@code false} */
+    private boolean defineEquate(Statement statement, Value counter) {
+        List<String> operands = statement.operandList();
+        Value value;
+        int length;
+        try {
+            String text = operands.get(0).trim();
+            value = text.startsWith("=") ? literal(text, statement.line())
+                    : Expressions.evaluate(inlineLiteralLengths(text), counter, symbols::get,
+                            codePage, statement.line());
+            length = operands.size() > 1 && !operands.get(1).isBlank()
+                    ? absolute(operands.get(1), statement.line())
+                    : lengthAttributeOf(operands.get(0));
+        } catch (AssemblyException failure) {
+            if (failure.getMessage().contains("undefined symbol")) {
+                return false;
+            }
+            throw failure;
+        }
+        define(statement.label(), new Symbol(statement.label(), value, length), statement.line());
+        return true;
+    }
+
+    /** 待たせた EQU を、進まなくなるまで解く。残ったものは本当に未定義である。 */
+    private void resolveDeferredEquates() {
+        boolean progress = true;
+        while (progress && !deferredEquates.isEmpty()) {
+            progress = deferredEquates.removeIf(d -> defineEquate(d.statement(), d.counter()));
+        }
+        if (!deferredEquates.isEmpty()) {
+            Statement statement = deferredEquates.get(0).statement();
+            // もう一度評価して、未定義の記号の名前が入った診断を出す
+            evaluate(statement.operandList().get(0), statement.line());
+            throw new AssemblyException(statement.line(),
+                    "EQU cannot be resolved: " + statement.label());
+        }
+    }
+
+    /**
+     * {@code L'=H'7'} のようなリテラルの長さ属性を、その数に置き換える。
+     * 式の評価はリテラルを組み立てられないので、ここで先に済ませる。
+     */
+    private String inlineLiteralLengths(String text) {
+        int at = text.indexOf("L'=");
+        while (at >= 0) {
+            if (at == 0 || !Expressions.isNamePart(text.charAt(at - 1))) {
+                int end = literalEnd(text, at + 2);
+                if (end > 0) {
+                    String number = Integer.toString(lengthAttributeOf(text.substring(at + 2, end)));
+                    text = text.substring(0, at) + number + text.substring(end);
+                }
+            }
+            at = text.indexOf("L'=", at + 1);
+        }
+        return text;
+    }
+
+    /** {@code =} から始まるリテラルの終わり。分からなければ -1。 */
+    private static int literalEnd(String text, int start) {
+        for (int k = start + 1; k < text.length(); k++) {
+            char c = text.charAt(k);
+            if (c == '\'') {
+                for (int m = k + 1; m < text.length(); m++) {
+                    if (text.charAt(m) == '\'') {
+                        if (m + 1 < text.length() && text.charAt(m + 1) == '\'') {
+                            m++;
+                        } else {
+                            return m + 1;
+                        }
+                    }
+                }
+                return -1;
+            }
+            if (c == '(') {
+                int depth = 0;
+                for (int m = k; m < text.length(); m++) {
+                    if (text.charAt(m) == '(') {
+                        depth++;
+                    } else if (text.charAt(m) == ')' && --depth == 0) {
+                        return m + 1;
+                    }
+                }
+                return -1;
+            }
+        }
+        return -1;
     }
 
     private void org(Statement statement) {
@@ -747,6 +991,9 @@ public final class Assembler implements Constants.Scope {
             }
             case RR -> {
                 require(operands, 2, statement);
+                if (definition.opcode() == 0x1C || definition.opcode() == 0x1D) {
+                    evenRegister(operands.get(0), line);
+                }
                 yield rr(definition.opcode(), register(operands.get(0), line),
                         register(operands.get(1), line));
             }
@@ -782,6 +1029,9 @@ public final class Assembler implements Constants.Scope {
                             ? checkRange(absolute(operands.get(0), line), 0, 15, line,
                                     "the branch mask")
                             : register(operands.get(0), line);
+                    if (definition.opcode() == 0x5C || definition.opcode() == 0x5D) {
+                        evenRegister(operands.get(0), line);
+                    }
                     second = operands.get(1);
                 }
                 Addr address = address(second, true, false, line);
@@ -825,8 +1075,15 @@ public final class Assembler implements Constants.Scope {
                 yield ss(definition.opcode(), packed, first, second);
             }
             case RRE -> {
-                require(operands, 2, statement);
-                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode(), 0,
+                int mask = 0;
+                if (definition.opcode() == 0xB9E1 && operands.size() == 3) {
+                    // POPCNT は 3 つ目に M3 を取れる (8 なら全体の 1 の数)
+                    mask = checkRange(absolute(operands.get(2), line), 0, 15, line, "the mask");
+                } else {
+                    require(operands, 2, statement);
+                }
+                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode(),
+                        (byte) (mask << 4),
                         (byte) (register(operands.get(0), line) << 4
                                 | register(operands.get(1), line))};
             }
@@ -839,7 +1096,8 @@ public final class Assembler implements Constants.Scope {
             }
             case RI -> {
                 require(operands, 2, statement);
-                int immediate = checkRange(absolute(operands.get(1), line), -32768, 65535, line,
+                // 符号つきの 16 ビットである。32768 は入らない (以前は 65535 まで通していた)
+                int immediate = checkRange(absolute(operands.get(1), line), -32768, 32767, line,
                         "the immediate operand");
                 yield new byte[] {(byte) (definition.opcode() >> 8),
                         (byte) (register(operands.get(0), line) << 4
@@ -909,7 +1167,8 @@ public final class Assembler implements Constants.Scope {
                 Addr first = address(operands.get(0), false, true, line);
                 Addr second = address(operands.get(1), false, false, line);
                 int l1 = first.length() == null ? lengthAttributeOf(operands.get(0)) : first.length();
-                int i3 = checkRange(absolute(operands.get(2), line), 0, 15, line,
+                // 丸めの数字は 10 進の 1 桁である。10 以上はデータ例外になるので、翻訳で断る
+                int i3 = checkRange(absolute(operands.get(2), line), 0, 9, line,
                         "the rounding digit");
                 int packed = (checkRange(l1, 1, 16, line, "the first length") - 1) << 4 | i3;
                 yield ss(definition.opcode(), packed, first, second);
@@ -975,6 +1234,18 @@ public final class Assembler implements Constants.Scope {
         if (operands.size() != count) {
             throw new AssemblyException(statement.line(), statement.operation() + " requires "
                     + count + " operand(s) but " + operands.size() + " were given");
+        }
+    }
+
+    /**
+     * 乗算と除算の第 1 演算項は偶数・奇数の組であり、偶数のレジスターでなければ指定例外に
+     * なる (Principles of Operation "MULTIPLY" / "DIVIDE")。HLASM は翻訳で断る
+     * (ASMA029E "an odd register is used where an even register is required")。
+     */
+    private void evenRegister(String operand, int line) {
+        if ((register(operand, line) & 1) != 0) {
+            throw new AssemblyException(line,
+                    "the first operand must be an even register: " + operand);
         }
     }
 
@@ -1128,13 +1399,18 @@ public final class Assembler implements Constants.Scope {
     // --- 記号と式 ---
 
     private void defineLabel(Statement statement, int length) {
+        defineLabel(statement, length, null);
+    }
+
+    private void defineLabel(Statement statement, int length, Integer scale) {
         if (statement.label() == null || emitting) {
             return;
         }
         Section section = current;
         Value value = section == null ? Value.absolute(0)
                 : Value.in(section.name, section.location);
-        define(statement.label(), new Symbol(statement.label(), value, length), statement.line());
+        define(statement.label(), new Symbol(statement.label(), value, length, scale),
+                statement.line());
     }
 
     private void define(String name, Symbol symbol, int line) {
@@ -1149,7 +1425,8 @@ public final class Assembler implements Constants.Scope {
             return literal(trimmed, line);
         }
         Value counter = current == null ? null : Value.in(current.name, current.location);
-        return Expressions.evaluate(trimmed, counter, symbols::get, codePage, line);
+        return Expressions.evaluate(inlineLiteralLengths(trimmed), counter, symbols::get, codePage,
+                line);
     }
 
     private int absolute(String text, int line) {

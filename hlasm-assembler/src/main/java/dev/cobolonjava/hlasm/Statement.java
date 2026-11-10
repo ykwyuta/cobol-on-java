@@ -23,6 +23,11 @@ public record Statement(String label, String operation, String operands, int lin
         this(label, operation, operands, line, "");
     }
 
+    /** 命令欄だけを差し替えた文。OPSYN で付け替えた名前を、もとの命令として組み立てるのに使う。 */
+    public Statement withOperation(String replacement) {
+        return new Statement(label, replacement, operands, line, identification);
+    }
+
     public boolean hasOperands() {
         return !operands.isEmpty();
     }

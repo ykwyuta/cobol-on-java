@@ -102,6 +102,25 @@ final class SystemServices implements Cpu.Services {
             case 20 -> close(cpu);
             case Assembler.SVC_GET -> get(cpu);
             case Assembler.SVC_PUT -> put(cpu);
+            case Assembler.SVC_GETMAIN -> {
+                // 得た記憶域は 0 で埋まっている。実機は中身を決めていないが、決めていない値に
+                // 頼るプログラムは正しくないので、どちらでも同じ結果になる
+                int length = cpu.register(0) & 0x00FFFFFF;
+                cpu.setRegister(1, memory.place("GETMAIN", new byte[Math.max(length, 1)]));
+                cpu.setRegister(15, 0);
+            }
+            case Assembler.SVC_FREEMAIN -> {
+                AddressSpace.Region region = memory.regionAt(cpu.register(1) & 0x7FFFFFFF);
+                if (region == null || !"GETMAIN".equals(region.name())) {
+                    // GETMAIN で得ていない番地を返そうとした。実機は S90A などで異常終了する
+                    throw new MachineException(MachineException.ADDRESSING,
+                            "FREEMAIN of storage that GETMAIN did not obtain");
+                }
+                memory.release(region.bytes());
+                cpu.setRegister(15, 0);
+            }
+            case Assembler.SVC_POST -> memory.putInt(cpu.register(1) & 0x7FFFFFFF,
+                    0x40000000 | (cpu.register(0) & 0x3FFFFFFF));
             default -> throw new MachineException(MachineException.OPERATION,
                     "SVC " + number + " is not supported yet");
         }

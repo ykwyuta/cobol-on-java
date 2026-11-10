@@ -54,10 +54,14 @@ public final class AddressSpace {
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
     /**
-     * 外の記号の入口を並べる場所。31 ビットの番地の上の端に取り、記憶域とは重ねない。
+     * 外の記号の入口を並べる場所。記憶域の始まりより下に取り、記憶域とは重ねない。
      * ここへ分岐したら、機械語を実行するのではなく名前でプログラムを呼ぶ。
+     *
+     * <p>以前は 31 ビットの番地の上の端に取っていた。24 ビットの番地で動いている (SAM24)
+     * プログラムからは届かず、番地 0 への分岐になった。モジュールは指定が無ければ 16M より
+     * 下に載る (RMODE 24) ので、24 ビットから呼べるのが正しい。
      */
-    public static final int EXTERNAL_ORIGIN = 0x7F000000;
+    public static final int EXTERNAL_ORIGIN = 0x1000;
 
     private AddressSpace(List<Region> regions) {
         this.regions = new ArrayList<>(regions);
@@ -116,6 +120,9 @@ public final class AddressSpace {
         if (index < 0) {
             index = externalNames.size();
             externalNames.add(name);
+        }
+        if (EXTERNAL_ORIGIN + index * 8 >= ORIGIN) {
+            throw new IllegalStateException("too many external symbols in one run unit");
         }
         return EXTERNAL_ORIGIN + index * 8;
     }

@@ -45,7 +45,7 @@ final class Quotes {
             char next = text.charAt(index + 1);
             if (!Character.isLetter(next) && next != '@' && next != '#' && next != '$'
                     && next != '&'
-                    && next != '_' && next != '*') {
+                    && next != '_' && next != '*' && next != '=') {
                 return true;
             }
         }

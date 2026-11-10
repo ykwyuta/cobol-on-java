@@ -253,6 +253,8 @@ public final class Instructions {
         define("STFPC", 0xB29C, Format.S);
         define("LFPC", 0xB29D, Format.S);
         define("PFPO", 0x010A, Format.E);
+        define("SAM24", 0x010C, Format.E);
+        define("SAM31", 0x010D, Format.E);
         define("LGR", 0xB904, Format.RRE);
         define("LTGR", 0xB902, Format.RRE);
         define("LCGR", 0xB903, Format.RRE);
