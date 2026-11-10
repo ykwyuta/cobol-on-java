@@ -313,7 +313,9 @@ public record FileDescription(String name, String ddName, Organization organizat
             if (!assign.LITERAL().isEmpty()) {
                 return unquote(assign.LITERAL(0).getText());
             }
-            return assign.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
+            // IDENTIFIER とは限らない。割当て名の位置では予約語 REPORT も名前である
+            return assign.getChild(assign.TO() == null ? 1 : 2).getText()
+                    .toUpperCase(Locale.ROOT);
         }
         diagnostics.add(new Diagnostic(origin, "SELECT " + name + " has no ASSIGN clause"));
         return null;

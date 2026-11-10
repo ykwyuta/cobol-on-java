@@ -31,6 +31,7 @@ import java.util.Optional;
  * verify corpus     &lt;置き場&gt;      [-I 写し句の置き場]... [-o 出力先]
  * verify pli-corpus &lt;置き場&gt;      [-o 出力先]
  * verify hlasm-corpus &lt;置き場&gt;    [-o 出力先]   組み立てと実行を別々に数える
+ * verify zcvs       &lt;ZCVS の置き場&gt; [-P プログラム名]... [-o 出力先]   z/OS の決めごとを測る
  * </pre>
  *
  * <p>どちらも<b>数だけ</b>を出す。コーパスの中身は出さないし、同梱もしない
@@ -56,6 +57,7 @@ public final class Main {
             System.err.println("       verify corpus     <directory> [-I copybooks]... [-o out]");
             System.err.println("       verify pli-corpus <directory> [-o out]");
             System.err.println("       verify hlasm-corpus <directory> [-o out]");
+            System.err.println("       verify zcvs       <ZCVS directory> [-P program]... [-o out]");
             System.err.println("       verify ims-gen    <directory> [-o out]");
             System.err.println("       verify ims-mpp    <base> -d classes -p program -s psb -m messages [-o out]");
             System.exit(2);
@@ -68,6 +70,7 @@ public final class Main {
             case "corpus" -> corpus(Path.of(args[1]), options(args, "-I"));
             case "pli-corpus" -> pliCorpus(Path.of(args[1]));
             case "hlasm-corpus" -> hlasmCorpus(Path.of(args[1]));
+            case "zcvs" -> zcvs(Path.of(args[1]), words(args, "-P"));
             case "ims-gen" -> imsGeneration(Path.of(args[1]));
             case "ims-mpp" -> dev.cobolonjava.verify.ims.ImsMessageRunner.run(Path.of(args[1]),
                     option(args, "-d"), word(args, "-p"), word(args, "-s"), option(args, "-m"));
@@ -189,6 +192,23 @@ public final class Main {
         return report.text("HLASM コーパス") + '\n' + report.csv();
     }
 
+    /**
+     * ZCVS (Zeus の z/OS Enterprise COBOL 検査スイート) を流す。
+     *
+     * <p>CCVS85 が測らない z/OS の決めごと (内部表現、TRUNC、EBCDIC、国字、ファイルの
+     * 入出力状態) を、別の処理系が書いた検査で測る。スイートは同梱しない。
+     */
+    private static String zcvs(Path root, List<String> only) {
+        if (!Files.isReadable(root.resolve("manifest.toml"))) {
+            System.err.println("ZCVS の置き場が無い: " + root);
+            System.err.println("https://github.com/ykwyuta/Zeus の zcvs を指すこと");
+            System.exit(1);
+        }
+        return dev.cobolonjava.verify.zcvs.ZcvsRunner.text(
+                new dev.cobolonjava.verify.zcvs.ZcvsRunner(root)
+                        .run(new java.util.LinkedHashSet<>(only)));
+    }
+
     /** IMS の DBDGEN / PSBGEN の原文を読めるか数える (設計 78)。 */
     private static String imsGeneration(Path root) {
         if (!Files.isDirectory(root)) {
@@ -231,6 +251,17 @@ public final class Main {
         System.err.println(name + " is required");
         System.exit(2);
         return null;
+    }
+
+    /** 同じ語の指定を何度でも読む。 */
+    private static List<String> words(String[] args, String name) {
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals(name)) {
+                out.add(args[i + 1]);
+            }
+        }
+        return List.copyOf(out);
     }
 
     /** 同じ指定を何度でも読む。 */

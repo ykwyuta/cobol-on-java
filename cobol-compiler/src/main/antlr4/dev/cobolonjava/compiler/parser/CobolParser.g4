@@ -292,8 +292,11 @@ selectClause
     | RECORD DELIMITER IS? (IDENTIFIER | STANDARD_1)
     ;
 
+// REPORT は報告書節の予約語だが、割当て名としても受ける。ZCVS の 93 本が
+// 「ASSIGN TO REPORT」と書いている。この位置に予約語 REPORT で始まる句は無いので、
+// 読み違えは起きない。<b>実機がこの綴りを受けるかは突き合わせていない</b>
 assignClause
-    : ASSIGN TO? (IDENTIFIER | LITERAL)+
+    : ASSIGN TO? (IDENTIFIER | LITERAL | REPORT)+
     ;
 
 // ORGANIZATION IS は省いてよい
