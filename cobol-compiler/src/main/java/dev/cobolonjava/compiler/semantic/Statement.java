@@ -806,6 +806,27 @@ public sealed interface Statement {
     }
 
     /**
+     * {@code EXIT PERFORM}、{@code EXIT PERFORM CYCLE}、{@code EXIT PARAGRAPH}、
+     * {@code EXIT SECTION}。
+     *
+     * <p>何もしない {@code EXIT} とは別物で、<b>制御を移す</b>。
+     */
+    record Exit(Kind kind, Origin origin) implements Statement {
+
+        /** どこへ抜けるか。 */
+        public enum Kind {
+            /** その場に書いた PERFORM の外へ。 */
+            PERFORM,
+            /** その場に書いた PERFORM の、次の回の判定へ。 */
+            CYCLE,
+            /** いまの段落の終わりへ。 */
+            PARAGRAPH,
+            /** いまの章の終わりへ。 */
+            SECTION
+        }
+    }
+
+    /**
      * 副入口 {@code ENTRY '名前' USING ...}。
      *
      * <p>流れの中で達しても何もしない。呼ばれたときに<b>ここから始まる</b>という印である。
@@ -942,13 +963,29 @@ public sealed interface Statement {
      * @param target     初期化する項目
      * @param withFiller {@code FILLER} も初期化するか
      * @param replacing  {@code REPLACING} の指定
+     * @param toValue    {@code TO VALUE} の指定。書かれていなければ {@code null}
+     * @param toDefault  {@code TO DEFAULT} が書かれたか
      */
     record Initialize(DataReference target, boolean withFiller,
-                      List<InitializeImage.Replacing> replacing, Origin origin)
+                      List<InitializeImage.Replacing> replacing, ToValue toValue,
+                      boolean toDefault, Origin origin)
             implements Statement {
+
+        public Initialize(DataReference target, boolean withFiller,
+                          List<InitializeImage.Replacing> replacing, Origin origin) {
+            this(target, withFiller, replacing, null, false, origin);
+        }
 
         public Initialize {
             replacing = List.copyOf(replacing);
+        }
+
+        /**
+         * {@code ALL TO VALUE} または {@code 分類 TO VALUE}。
+         *
+         * @param category 戻す分類。{@code ALL} なら {@code null}
+         */
+        public record ToValue(InitializeImage.Category category) {
         }
     }
 
@@ -1329,11 +1366,18 @@ public sealed interface Statement {
      * @param testAfter {@code WITH TEST AFTER} 指定。中身を 1 度実行してから条件を見る
      * @param varying   {@code VARYING} … {@code AFTER} …。外側から内側の順。指定がなければ空
      * @param body      その場に書いた文。段落を呼ぶ形では空
+     * @param forever   {@code UNTIL EXIT}。終わりの条件を持たずに繰り返す
      */
     record Perform(String target, String through, Operand times, Condition until,
                    boolean testAfter, List<Varying> varying, List<Statement> body,
-                   List<Statement> debug, Origin origin)
+                   List<Statement> debug, boolean forever, Origin origin)
             implements Statement {
+
+        public Perform(String target, String through, Operand times, Condition until,
+                       boolean testAfter, List<Varying> varying, List<Statement> body,
+                       List<Statement> debug, Origin origin) {
+            this(target, through, times, until, testAfter, varying, body, debug, false, origin);
+        }
 
         public Perform(String target, String through, Operand times, Condition until,
                        boolean testAfter, List<Varying> varying, List<Statement> body,

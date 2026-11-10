@@ -1723,6 +1723,24 @@ public final class ProcedureBuilder {
             if (context.exitStatement().PROGRAM() != null) {
                 return new Statement.ExitProgram(at);
             }
+            if (context.exitStatement().PERFORM() != null) {
+                if (inlinePerformDepth == 0) {
+                    report(at, "EXIT PERFORM must be written inside an in-line PERFORM");
+                    return null;
+                }
+                return new Statement.Exit(context.exitStatement().CYCLE() != null
+                        ? Statement.Exit.Kind.CYCLE : Statement.Exit.Kind.PERFORM, at);
+            }
+            if (context.exitStatement().PARAGRAPH() != null) {
+                return new Statement.Exit(Statement.Exit.Kind.PARAGRAPH, at);
+            }
+            if (context.exitStatement().SECTION() != null) {
+                if (currentSectionName == null) {
+                    report(at, "EXIT SECTION must be written inside a section");
+                    return null;
+                }
+                return new Statement.Exit(Statement.Exit.Kind.SECTION, at);
+            }
             // EXIT だけなら何もしない。PERFORM ... THRU の終わりに置く段落のためにある
             return new Statement.Continue(at);
         }
@@ -3393,6 +3411,10 @@ public final class ProcedureBuilder {
         boolean withFiller = context.FILLER() != null;
         List<InitializeImage.Replacing> replacing = new ArrayList<>();
         List<ItemReplacing> fromItems = new ArrayList<>();
+        Statement.Initialize.ToValue toValue = context.VALUE() == null ? null
+                : new Statement.Initialize.ToValue(context.ALL() != null
+                        ? null : categoryOf(context.initializeCategory()));
+        boolean toDefault = context.DEFAULT() != null;
         for (CobolParser.InitializeReplacingContext rule : context.initializeReplacing()) {
             InitializeImage.Category category = categoryOf(rule.initializeCategory());
             if (rule.identifier() != null) {
@@ -3427,8 +3449,10 @@ public final class ProcedureBuilder {
                 return null;
             }
             // 指定が値の決まらないものだけなら、まとめて書く分は何も残らない
-            if (fromItems.size() < replacing.size() || replacing.isEmpty()) {
-                statements.add(new Statement.Initialize(target, withFiller, replacing, origin));
+            if (fromItems.size() < replacing.size() || replacing.isEmpty()
+                    || toValue != null || toDefault) {
+                statements.add(new Statement.Initialize(target, withFiller, replacing, toValue,
+                        toDefault, origin));
             }
             if (!fromItems.isEmpty()
                     && !addItemReplacements(target, withFiller, fromItems, statements, origin)) {
@@ -3556,12 +3580,13 @@ public final class ProcedureBuilder {
      */
     private Statement setOf(CobolParser.SetStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        if (context.TRUE() != null) {
+        if (context.TRUE() != null || context.FALSE() != null) {
             List<Statement> moves = new ArrayList<>();
             for (CobolParser.IdentifierContext identifier : context.identifier()) {
                 String name = identifier.qualifiedDataName().dataName(0).getText()
                         .toUpperCase(Locale.ROOT);
-                Statement move = conditionNameMove(identifier, name, origin);
+                Statement move = conditionNameMove(identifier, name, context.FALSE() != null,
+                        origin);
                 if (move == null) {
                     return null;
                 }
@@ -3683,6 +3708,14 @@ public final class ProcedureBuilder {
 
     private Statement conditionNameMove(CobolParser.IdentifierContext context, String name,
                                         Origin origin) {
+        return conditionNameMove(context, name, false, origin);
+    }
+
+    /**
+     * @param toFalse {@code SET 条件名 TO FALSE}。{@code WHEN SET TO FALSE} の値を入れる
+     */
+    private Statement conditionNameMove(CobolParser.IdentifierContext context, String name,
+                                        boolean toFalse, Origin origin) {
         DataItem item = conditionNameOwner(context, name);
         if (item == null) {
             report(origin, "undefined condition-name: " + name);
@@ -3693,7 +3726,14 @@ public final class ProcedureBuilder {
             report(origin, "condition-name has no value: " + name);
             return null;
         }
-        Operand source = new Operand.Literal(conditionName.values().get(0).from());
+        if (toFalse && conditionName.whenFalse() == null) {
+            // 偽にする値は 1 つに決まらない。書いた人が WHEN SET TO FALSE で決める
+            report(origin, "SET " + name + " TO FALSE requires WHEN SET TO FALSE on the"
+                    + " condition-name");
+            return null;
+        }
+        Operand source = new Operand.Literal(toFalse
+                ? conditionName.whenFalse() : conditionName.values().get(0).from());
         DataReference target = resolver.resolveAs(item, context);
         if (target == null) {
             return null;
@@ -3880,6 +3920,9 @@ public final class ProcedureBuilder {
         return new Statement.Overflow(onException, otherwise);
     }
 
+    /** いま組み立てている文を囲んでいる、その場に書いた PERFORM の深さ。 */
+    private int inlinePerformDepth;
+
     private Statement performOf(CobolParser.PerformStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
         String target = null;
@@ -3893,6 +3936,7 @@ public final class ProcedureBuilder {
 
         Operand times = null;
         Condition until = null;
+        boolean forever = false;
         List<ReferenceResolver.Traced> untilTrace = List.of();
         boolean testAfter = false;
         List<Statement.Perform.Varying> varying = List.of();
@@ -3909,6 +3953,13 @@ public final class ProcedureBuilder {
                 if (varying == null) {
                     return null;
                 }
+            } else if (phrase.EXIT() != null) {
+                if (target != null) {
+                    // 段落を呼ぶ形には EXIT PERFORM が書けないので、抜ける手立てが GO TO しか無い
+                    report(origin, "PERFORM UNTIL EXIT is supported only for an in-line PERFORM");
+                    return null;
+                }
+                forever = true;
             } else {
                 // UNTIL は条件を見るたびに指し直したことになる (要件 FR-193)
                 boolean watching = watchesItems() && !inDebugSection;
@@ -3924,14 +3975,23 @@ public final class ProcedureBuilder {
         }
 
         List<Statement> body = new ArrayList<>();
-        for (CobolParser.StatementContext statement : context.statement()) {
-            Statement built = statementOf(statement);
-            if (built != null) {
-                body.add(built);
+        if (target == null) {
+            inlinePerformDepth++;
+        }
+        try {
+            for (CobolParser.StatementContext statement : context.statement()) {
+                Statement built = statementOf(statement);
+                if (built != null) {
+                    body.add(built);
+                }
+            }
+        } finally {
+            if (target == null) {
+                inlinePerformDepth--;
             }
         }
         return new Statement.Perform(target, through, times, until, testAfter, varying, body,
-                entriesFor(untilTrace, null, origin, null), origin);
+                entriesFor(untilTrace, null, origin, null), forever, origin);
     }
 
     /**
@@ -4596,6 +4656,16 @@ public final class ProcedureBuilder {
         Origin origin = ReferenceResolver.originOf(context);
         String spelling = context.functionName().getText().toUpperCase(Locale.ROOT);
         Intrinsic intrinsic = Intrinsic.of(spelling);
+        boolean side = context.LEADING() != null || context.TRAILING() != null;
+        if (intrinsic == Intrinsic.TRIM && side) {
+            intrinsic = context.LEADING() != null
+                    ? Intrinsic.TRIM_LEADING : Intrinsic.TRIM_TRAILING;
+        } else if (side || (intrinsic != null && intrinsic.trims()
+                && intrinsic != Intrinsic.TRIM)) {
+            // LEADING / TRAILING を取るのは TRIM だけである。中での呼び名は原文に書けない
+            report(origin, "LEADING / TRAILING is allowed only in FUNCTION TRIM");
+            return null;
+        }
         if (intrinsic == null) {
             report(origin, "FUNCTION " + spelling + " is not supported yet");
             return null;
@@ -4620,6 +4690,14 @@ public final class ProcedureBuilder {
                 return null;
             }
             returns = text ? intrinsic.textResult() : intrinsic.returns();
+        }
+        if (intrinsic.trims() && arguments.get(0) instanceof Expression.Value trimmed
+                && (trimmed.operand() instanceof Operand.Reference item
+                        ? DataCategory.of(item.reference()) == DataCategory.NATIONAL
+                        : trimmed.operand() instanceof Operand.Literal literal
+                                && literal.value() instanceof LiteralValue.National)) {
+            // 国字を削れば国字が返る
+            returns = Intrinsic.Result.NATIONAL;
         }
         boolean numericArguments = intrinsic.takes() == Intrinsic.Argument.NUMERIC
                 || (intrinsic.takes() == Intrinsic.Argument.EITHER
@@ -5236,6 +5314,9 @@ public final class ProcedureBuilder {
         if (isLengthOf(context.identifier())) {
             return lengthOfOperand(context.identifier(), origin);
         }
+        if (isWhenCompiled(context.identifier())) {
+            return new Operand.Literal(new LiteralValue.Text(WHEN_COMPILED));
+        }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
     }
@@ -5336,9 +5417,27 @@ public final class ProcedureBuilder {
      * <p>構文解析は {@code LENGTH OF X} を修飾名として読む。{@code LENGTH} という名前の項目が
      * 無いときだけ特殊レジスタとして扱い、長さが翻訳時に決まる項目の長さの定数にする。
      */
-    private boolean isLengthOf(CobolParser.IdentifierContext context) {
+    /**
+     * 特殊レジスタ {@code WHEN-COMPILED}。翻訳した日時を {@code MM/DD/YYhh.mm.ss} の 16 文字で
+     * 持つ (Enterprise COBOL 言語解説書)。翻訳時に決まるので定数にする。同じ名前の項目が
+     * 宣言されていれば、そちらを指す。{@code FUNCTION WHEN-COMPILED} (21 文字) とは別物である。
+     */
+    private static final String WHEN_COMPILED = java.time.ZonedDateTime.now()
+            .format(java.time.format.DateTimeFormatter.ofPattern("MM/dd/yyHH.mm.ss"));
+
+    private boolean isWhenCompiled(CobolParser.IdentifierContext context) {
         return context != null
                 && context.subscripts() == null
+                && context.referenceModifier() == null
+                && context.qualifiedDataName().dataName().size() == 1
+                && context.qualifiedDataName().dataName(0).getText()
+                        .equalsIgnoreCase("WHEN-COMPILED")
+                && layout.findAll("WHEN-COMPILED").isEmpty();
+    }
+
+    private boolean isLengthOf(CobolParser.IdentifierContext context) {
+        // 添字は付いていてよい。表の要素の長さは何番目でも同じである
+        return context != null
                 && context.referenceModifier() == null
                 && context.qualifiedDataName().dataName().size() >= 2
                 && context.qualifiedDataName().dataName(0).getText().equalsIgnoreCase("LENGTH")
@@ -5711,6 +5810,9 @@ public final class ProcedureBuilder {
         if (isLengthOf(context.identifier())) {
             return lengthOfOperand(context.identifier(), origin);
         }
+        if (isWhenCompiled(context.identifier())) {
+            return new Operand.Literal(new LiteralValue.Text(WHEN_COMPILED));
+        }
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
     }
@@ -5944,6 +6046,20 @@ public final class ProcedureBuilder {
             if (from == null) {
                 return null;
             }
+        } else if (context.literal() != null) {
+            Operand literal;
+            try {
+                literal = new Operand.Literal(LiteralValue.of(context.literal()));
+            } catch (RuntimeException e) {
+                report(origin, LiteralValue.invalidLiteral(context.literal().getText(), e));
+                return null;
+            }
+            DataReference into = new DataReference(record, List.of(), null, origin);
+            Statement.Move.Target checked = checkMove(literal, into, origin);
+            if (checked == null) {
+                return null;
+            }
+            from = new Statement.Move(literal, List.of(checked), false, origin);
         }
         FileDescription file = files.get(record.fileName());
         if (file.sort()) {

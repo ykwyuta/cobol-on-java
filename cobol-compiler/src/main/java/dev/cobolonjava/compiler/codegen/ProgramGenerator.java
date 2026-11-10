@@ -762,6 +762,8 @@ public final class ProgramGenerator {
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "setSwitch",
                             "(" + CONTEXT + "IZ)V", false);
                 });
+            } else if (statement instanceof Statement.Exit exit) {
+                planExit(exit, body);
             } else if (statement instanceof Statement.EntryPoint) {
                 // 流れの中で達した副入口は何もしない
                 continue;
@@ -2355,7 +2357,8 @@ public final class ProgramGenerator {
             return;
         }
         InitializeImage.Result image = InitializeImage.build(statement.target().item(),
-                statement.withFiller(), statement.replacing(), codePage,
+                statement.withFiller(), statement.replacing(), statement.toValue(),
+                statement.toDefault(), initialStorageBytes, codePage,
                 specialNames.highValue(), specialNames.lowValue());
         diagnostics.addAll(image.diagnostics());
         if (!image.succeeded()) {
@@ -4204,8 +4207,48 @@ public final class ProgramGenerator {
         // PERFORM で入った手続きの DEBUG-CONTENTS は PERFORM LOOP である (要件 FR-193)。
         // 繰り返しの 2 周目からではなく<b>1 周目から</b>そうである
         planDebugLine(statement.origin(), "PERFORM LOOP", body);
-        Runnable once = planPerformBody(statement);
-        if (once == null) {
+        if (statement.callsParagraph()) {
+            Runnable once = planPerformBody(statement);
+            if (once != null) {
+                planRepetition(statement, once, body);
+            }
+            return;
+        }
+        // その場に書いた PERFORM は、EXIT PERFORM の行き先を 2 つ持つ。中身の終わり
+        // (CYCLE: 次の回の判定へ進む) と、文の終わり (繰り返しそのものを抜ける) である。
+        // ラベルは命令を出すときに作って積む。中身の命令は入れ子の順に出るので、
+        // EXIT PERFORM がいちばん上を見れば、いちばん内側の PERFORM に当たる
+        Runnable inline = planPerformBody(statement);
+        Runnable once = () -> {
+            Label cycle = new Label();
+            cycleLabels.push(cycle);
+            inline.run();
+            cycleLabels.pop();
+            run.visitLabel(cycle);
+        };
+        List<Runnable> loop = new ArrayList<>();
+        planRepetition(statement, once, loop);
+        body.add(() -> {
+            Label exit = new Label();
+            exitLabels.push(exit);
+            loop.forEach(Runnable::run);
+            exitLabels.pop();
+            run.visitLabel(exit);
+        });
+    }
+
+    private final java.util.ArrayDeque<Label> cycleLabels = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<Label> exitLabels = new java.util.ArrayDeque<>();
+
+    private void planRepetition(Statement.Perform statement, Runnable once, List<Runnable> body) {
+        if (statement.forever()) {
+            // UNTIL EXIT。条件を持たない。抜けるのは EXIT PERFORM か GO TO だけである
+            body.add(() -> {
+                Label top = new Label();
+                run.visitLabel(top);
+                once.run();
+                run.visitJumpInsn(Opcodes.GOTO, top);
+            });
             return;
         }
         if (statement.times() == null && statement.until() == null
@@ -4222,6 +4265,42 @@ public final class ProgramGenerator {
             return;
         }
         planVarying(statement, once, body);
+    }
+
+    /**
+     * {@code EXIT PERFORM} / {@code EXIT PERFORM CYCLE} / {@code EXIT PARAGRAPH} /
+     * {@code EXIT SECTION}。
+     *
+     * <p>段落と章を抜けるほうは、段落のメソッドの戻り値で伝える。戻り値は
+     * 「0 以上なら GO TO の行き先、-1 なら流れ落ちた」であり、そこへ
+     * <b>「-(n+2) なら n 番の段落を流れ落ちたことにする」</b>を足した。PERFORM の範囲の
+     * 終わりがその段落なら PERFORM から戻り、そうでなければ次の段落へ進む。
+     * 流れ落ちたときと同じ判定に乗るので、範囲の終わりの扱いがずれない。
+     */
+    private void planExit(Statement.Exit statement, List<Runnable> body) {
+        switch (statement.kind()) {
+            case PERFORM -> body.add(() -> run.visitJumpInsn(Opcodes.GOTO, exitLabels.peek()));
+            case CYCLE -> body.add(() -> run.visitJumpInsn(Opcodes.GOTO, cycleLabels.peek()));
+            case PARAGRAPH, SECTION -> {
+                int here = paragraphNames.indexOf(currentParagraphName);
+                int last = lastOf(null, here);
+                if (statement.kind() == Statement.Exit.Kind.SECTION) {
+                    for (ProcedureBuilder.Section section : sections) {
+                        int first = paragraphNames.indexOf(section.first());
+                        int end = paragraphNames.indexOf(section.last());
+                        if (first <= here && here <= end) {
+                            last = end;
+                        }
+                    }
+                }
+                int code = -(last + 2);
+                body.add(() -> {
+                    push(code);
+                    run.visitInsn(Opcodes.IRETURN);
+                });
+            }
+            default -> throw new IllegalStateException("unknown EXIT: " + statement.kind());
+        }
     }
 
     /** 繰り返す中身を 1 回分。 */
@@ -4908,7 +4987,9 @@ public final class ProgramGenerator {
             case TIMESTAMP -> Intrinsics.TIMESTAMP_LENGTH;
             case SAME_LENGTH -> alphanumericLength(argument(function, 0));
             case WIDEST -> widestArgument(function);
-            case NATIONAL -> 2 * alphanumericLength(argument(function, 0));
+            case NATIONAL -> function.intrinsic().trims()
+                    ? nationalLength(argument(function, 0))
+                    : 2 * alphanumericLength(argument(function, 0));
             case FROM_NATIONAL -> lengthOf(argument(function, 0)) / 2;
             case INTEGER, NUMERIC -> 0;
         };
@@ -4978,6 +5059,28 @@ public final class ProgramGenerator {
             }
             case NATIONAL_OF -> planNationalOf(function);
             case DISPLAY_OF -> planDisplayOf(function);
+            case TRIM, TRIM_LEADING, TRIM_TRAILING -> {
+                Operand trimmed = argument(function, 0);
+                boolean national = categoryOfArgument(trimmed) == DataCategory.NATIONAL;
+                Runnable value = national
+                        ? planNationalBytes(trimmed, origin, nationalLength(trimmed))
+                        : planAlphanumericArgument(function, 0);
+                boolean leading = function.intrinsic() != Intrinsic.TRIM_TRAILING;
+                boolean trailing = function.intrinsic() != Intrinsic.TRIM_LEADING;
+                yield value == null ? null : () -> {
+                    value.run();
+                    push(leading ? 1 : 0);
+                    push(trailing ? 1 : 0);
+                    if (national) {
+                        run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "trimNational",
+                                "([BZZ)[B", false);
+                    } else {
+                        loadCodePage();
+                        run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "trim",
+                                "([BZZ" + CODE_PAGE + ")[B", false);
+                    }
+                };
+            }
             default -> {
                 report(origin, "FUNCTION " + function.intrinsic().spelling()
                         + " does not return an alphanumeric value");
@@ -5102,8 +5205,21 @@ public final class ProgramGenerator {
             case ATAN -> planUnary(function, "atan", origin);
             case RANDOM -> planRandom(function, origin);
             case ORD -> planOrd(function);
-            case NUMVAL -> planReading(function, "numval");
+            // DECIMAL-POINT IS COMMA なら、引数の綴りでも小数点はコンマである
+            case NUMVAL -> planReading(function, decimalPoint == ',' ? "numvalComma" : "numval");
             case NUMVAL_C -> planNumvalC(function);
+            case ABS -> planUnary(function, "abs", origin);
+            case TEST_NUMVAL, TEST_NUMVAL_C -> planTestNumval(function);
+            case BYTE_LENGTH -> {
+                Operand measured = argument(function, 0);
+                int bytes = categoryOfArgument(measured) == DataCategory.NATIONAL
+                        ? nationalLength(measured) : alphanumericLength(measured);
+                String field = decimalConstant(Decimal.of(bytes, 0));
+                yield () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, DECIMAL);
+            }
+            case YEAR_TO_YYYY -> planWindowed(function, "yearToYyyy", origin);
+            case DATE_TO_YYYYMMDD -> planWindowed(function, "dateToYyyymmdd", origin);
+            case DAY_TO_YYYYDDD -> planWindowed(function, "dayToYyyyddd", origin);
             default -> {
                 report(origin, "FUNCTION " + function.intrinsic().spelling()
                         + " does not return a numeric value");
@@ -5128,6 +5244,17 @@ public final class ProgramGenerator {
                 bytes.run();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, NATIONAL, "characters",
                         "([B)" + DECIMAL, false);
+            };
+        }
+        if (operand instanceof Operand.Function inner && inner.intrinsic().trims()) {
+            // 削ったあとの長さは実行時にしか決まらない
+            Runnable bytes = planFunctionBytes(inner);
+            boolean national = categoryOfArgument(argument(inner, 0)) == DataCategory.NATIONAL;
+            return bytes == null ? null : () -> {
+                bytes.run();
+                push(national ? 2 : 1);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "countOf",
+                        "([BI)" + DECIMAL, false);
             };
         }
         // 国字の長さは文字 (2 バイト) で数える
@@ -5193,14 +5320,87 @@ public final class ProgramGenerator {
         };
     }
 
+    /**
+     * {@code TEST-NUMVAL} / {@code TEST-NUMVAL-C}。小数点の文字は
+     * {@code DECIMAL-POINT IS COMMA} に従う。
+     */
+    private Runnable planTestNumval(Operand.Function function) {
+        Operand tested = argument(function, 0);
+        boolean national = categoryOfArgument(tested) == DataCategory.NATIONAL;
+        Runnable value = national
+                ? planNationalBytes(tested, function.origin(), nationalLength(tested))
+                : planAlphanumericArgument(function, 0);
+        boolean currencyForm = function.intrinsic() == Intrinsic.TEST_NUMVAL_C;
+        Runnable currency = function.arguments().size() > 1
+                ? planAlphanumericArgument(function, 1)
+                : () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal,
+                        bytesConstant(new byte[0]), "[B");
+        if (value == null || currency == null) {
+            return null;
+        }
+        boolean comma = decimalPoint == ',';
+        return () -> {
+            value.run();
+            if (national) {
+                // 国字は 1 文字 2 byte。文字の列に直してから調べれば、位置は文字で数えられる
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "nationalText",
+                        "([B)Ljava/lang/String;", false);
+            } else {
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "text",
+                        "([B" + CODE_PAGE + ")Ljava/lang/String;", false);
+            }
+            currency.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "text",
+                    "([B" + CODE_PAGE + ")Ljava/lang/String;", false);
+            push(currencyForm ? 1 : 0);
+            push(comma ? 1 : 0);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "testNumval",
+                    "(Ljava/lang/String;Ljava/lang/String;ZZ)" + DECIMAL, false);
+        };
+    }
+
+    /** 2 桁の年を窓で 4 桁にする関数。今年を知っているのは実行時の時計である。 */
+    private Runnable planWindowed(Operand.Function function, String method, Origin origin) {
+        Runnable value = planNumericArgument(function, 0, origin);
+        Runnable window = function.arguments().size() > 1
+                ? planNumericArgument(function, 1, origin)
+                : () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal,
+                        decimalConstant(Decimal.of(50, 0)), DECIMAL);
+        if (value == null || window == null) {
+            return null;
+        }
+        return () -> {
+            value.run();
+            window.run();
+            run.visitVarInsn(Opcodes.ALOAD, 2);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "currentYear",
+                    "(L" + Type.getInternalName(ProgramContext.class) + ";)I", false);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
+                    "(" + DECIMAL + DECIMAL + "I)" + DECIMAL, false);
+        };
+    }
+
     /** バイト列を読んで数値を返す関数。 */
     private Runnable planReading(Operand.Function function, String method) {
-        Runnable value = planAlphanumericArgument(function, 0);
+        Operand read = argument(function, 0);
+        boolean national = categoryOfArgument(read) == DataCategory.NATIONAL;
+        Runnable value = national
+                ? planNationalBytes(read, function.origin(), nationalLength(read))
+                : planAlphanumericArgument(function, 0);
         if (value == null) {
             return null;
         }
         return () -> {
             value.run();
+            if (national) {
+                // 国字の引数は、読む前にプログラムの文字へ直す。数字と符号はどの
+                // コードページにもあるので、直して失うものは無い
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "fromNational",
+                        "([B" + CODE_PAGE + ")[B", false);
+            }
             loadCodePage();
             run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, method,
                     "([B" + CODE_PAGE + ")" + DECIMAL, false);
@@ -5235,7 +5435,8 @@ public final class ProgramGenerator {
             value.run();
             currency.run();
             loadCodePage();
-            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS, "numvalC",
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, INTRINSICS,
+                    decimalPoint == ',' ? "numvalCComma" : "numvalC",
                     "([B[B" + CODE_PAGE + ")" + DECIMAL, false);
         };
     }
@@ -5654,6 +5855,20 @@ public final class ProgramGenerator {
                 DISPATCH_DESCRIPTOR, false);
         perform.visitVarInsn(Opcodes.ISTORE, next);
 
+        // EXIT PARAGRAPH / EXIT SECTION は「-(n+2)」を返す。n 番の段落を流れ落ちたことにする
+        Label fell = new Label();
+        perform.visitVarInsn(Opcodes.ILOAD, next);
+        perform.visitInsn(Opcodes.ICONST_M1);
+        perform.visitJumpInsn(Opcodes.IF_ICMPGE, fell);
+        perform.visitVarInsn(Opcodes.ILOAD, next);
+        perform.visitInsn(Opcodes.INEG);
+        perform.visitInsn(Opcodes.ICONST_2);
+        perform.visitInsn(Opcodes.ISUB);
+        perform.visitVarInsn(Opcodes.ISTORE, pc);
+        perform.visitInsn(Opcodes.ICONST_M1);
+        perform.visitVarInsn(Opcodes.ISTORE, next);
+        perform.visitLabel(fell);
+
         // GO TO で飛んだのなら、範囲の終わりに来たとは言えない
         perform.visitVarInsn(Opcodes.ILOAD, next);
         perform.visitJumpInsn(Opcodes.IFGE, jumped);
@@ -5972,7 +6187,7 @@ public final class ProgramGenerator {
             return planSourceBytes(source, origin, widest);
         }
         if (source instanceof Operand.Function function
-                && function.intrinsic() == Intrinsic.NATIONAL_OF) {
+                && function.returns() == Intrinsic.Result.NATIONAL) {
             return planFunctionBytes(function);
         }
         Runnable bytes = source instanceof Operand.Reference

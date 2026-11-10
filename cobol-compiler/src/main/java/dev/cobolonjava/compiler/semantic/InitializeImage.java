@@ -45,6 +45,14 @@ public final class InitializeImage {
     private final byte highValue;
     private final byte lowValue;
 
+    /** {@code TO VALUE} の指定。無ければ {@code null}。 */
+    private Statement.Initialize.ToValue toValue;
+    private boolean toDefault;
+    /** プログラムの初期イメージ。VALUE 句の値はここに組み立ててある。 */
+    private byte[] initial;
+    /** 初期化する項目 (1 回分) の、初期イメージの中での位置。 */
+    private int initialBase;
+
     private InitializeImage(CodePage codePage, boolean withFiller, List<Replacing> replacing,
                             byte highValue, byte lowValue) {
         this.codePage = codePage;
@@ -119,8 +127,37 @@ public final class InitializeImage {
      */
     public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
                                CodePage codePage, byte highValue, byte lowValue) {
+        return build(item, withFiller, replacing, null, false, null, codePage, highValue,
+                lowValue);
+    }
+
+    /**
+     * {@code TO VALUE} と {@code TO DEFAULT} まで踏まえて組み立てる。
+     *
+     * <p>決め方は 3 段である (2002 規格 14.8.19 の一般規則、Enterprise COBOL 言語解説書の
+     * INITIALIZE 文)。
+     * <ol>
+     *   <li>{@code TO VALUE} が書かれ、分類が当たり、VALUE 句を持つ項目は<b>VALUE 句の値</b></li>
+     *   <li>残りのうち {@code REPLACING} の分類が当たる項目は、その値</li>
+     *   <li>残りは、{@code TO DEFAULT} が書かれたか、VALUE も REPLACING も書かれて
+     *       いなければ既定 (空白・0)。そうでなければ<b>変えない</b></li>
+     * </ol>
+     *
+     * <p>VALUE 句の値は<b>初期イメージのバイトをそのまま</b>写す。転記し直すと
+     * {@code JUSTIFIED} が効いてしまうが、VALUE 句の初期値に {@code JUSTIFIED} は効かない。
+     *
+     * @param initial プログラムの初期イメージ。{@code TO VALUE} を書かなければ {@code null} でよい
+     */
+    public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
+                               Statement.Initialize.ToValue toValue, boolean toDefault,
+                               byte[] initial, CodePage codePage, byte highValue,
+                               byte lowValue) {
         InitializeImage builder = new InitializeImage(codePage, withFiller, replacing,
                 highValue, lowValue);
+        builder.toValue = toValue;
+        builder.toDefault = toDefault;
+        builder.initial = initial;
+        builder.initialBase = item.record().base() + item.offset();
         // 書かれた項目そのものは 1 回分である。表なら添字で 1 つに絞られている
         int length = item.length();
         byte[] image = new byte[length];
@@ -176,6 +213,17 @@ public final class InitializeImage {
             // FILLER は初期化の対象外である
             return;
         }
+        if (toValue != null && initial != null && item.initialValue() != null
+                && (toValue.category() == null
+                        || toValue.category().matches(DataCategory.of(item)))) {
+            int length = item.length();
+            int from = initialBase + at;
+            if (from + length <= initial.length && at + length <= image.length) {
+                System.arraycopy(initial, from, image, at, length);
+                Arrays.fill(written, at, at + length, true);
+            }
+            return;
+        }
         LiteralValue value = valueFor(item);
         if (value == null) {
             return;
@@ -196,10 +244,10 @@ public final class InitializeImage {
                 return rule.value();
             }
         }
-        if (replacing.isEmpty()) {
+        if (toDefault || (replacing.isEmpty() && toValue == null)) {
             return defaultFor(category);
         }
-        // REPLACING を書いたら、当たらなかった項目は変えない
+        // VALUE か REPLACING を書いたら、当たらなかった項目は変えない
         return null;
     }
 

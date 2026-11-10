@@ -54,8 +54,18 @@ public final class DataItem {
         this.origin = origin;
     }
 
-    /** 条件名 (88 レベル)。記憶域を占めず、直前の項目に付く。 */
-    public record ConditionName(String name, List<ValueRange> values, Origin origin) {
+    /**
+     * 条件名 (88 レベル)。記憶域を占めず、直前の項目に付く。
+     *
+     * @param whenFalse {@code WHEN SET TO FALSE} の値。{@code SET 条件名 TO FALSE} が親の項目に
+     *                  入れる。書かれていなければ {@code null}
+     */
+    public record ConditionName(String name, List<ValueRange> values, LiteralValue whenFalse,
+                                Origin origin) {
+
+        public ConditionName(String name, List<ValueRange> values, Origin origin) {
+            this(name, values, null, origin);
+        }
     }
 
     /** 条件名の値。{@code THRU} で範囲を書ける。範囲でなければ {@code to} は {@code null}。 */

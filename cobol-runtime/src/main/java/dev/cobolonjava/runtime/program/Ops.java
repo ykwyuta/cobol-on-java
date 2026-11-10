@@ -382,6 +382,11 @@ public final class Ops {
      * <p>時計は {@link ProgramContext} が持っている。実行のたびに変わる値を試験に
      * 書けるようにするためである。
      */
+    /** 今年。2 桁の年を 4 桁にする関数の窓がこれを基準にする。 */
+    public static int currentYear(ProgramContext context) {
+        return java.time.ZonedDateTime.now(context.clock()).getYear();
+    }
+
     public static byte[] currentDate(ProgramContext context) {
         return Intrinsics.timestamp(java.time.ZonedDateTime.now(context.clock()),
                 context.codePage());

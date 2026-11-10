@@ -109,7 +109,31 @@ public enum Intrinsic {
     /** 国字を英数字にする。第 2 引数は英数字の CCSID である。 */
     DISPLAY_OF(-2, Argument.ALPHANUMERIC, Result.FROM_NATIONAL),
     /** 0 以上 1 未満の乱数。引数を書けば種になる。 */
-    RANDOM(-3, Argument.NUMERIC, Result.NUMERIC);
+    RANDOM(-3, Argument.NUMERIC, Result.NUMERIC),
+    /** 絶対値。 */
+    ABS(1, Argument.NUMERIC, Result.NUMERIC),
+    /** NUMVAL が読める綴りなら 0、読めなければ最初に誤っている文字の位置。 */
+    TEST_NUMVAL(1, Argument.ALPHANUMERIC, Result.INTEGER),
+    TEST_NUMVAL_C(-2, Argument.ALPHANUMERIC, Result.INTEGER),
+    /** 占めるバイトの数。国字では LENGTH (文字の数) の 2 倍になる。 */
+    BYTE_LENGTH(1, Argument.ANY, Result.INTEGER),
+    /** 2 桁の年を、動かせる 100 年の窓で 4 桁にする。第 2 引数は窓の終わり (今年 + n)。 */
+    YEAR_TO_YYYY(-2, Argument.NUMERIC, Result.INTEGER),
+    DATE_TO_YYYYMMDD(-2, Argument.NUMERIC, Result.INTEGER),
+    DAY_TO_YYYYDDD(-2, Argument.NUMERIC, Result.INTEGER),
+    /**
+     * 前後の空白を削る。返す長さは実行時に決まる。翻訳時の長さ (引数と同じ) は上限である。
+     * {@code TRIM_LEADING} と {@code TRIM_TRAILING} は原文に書く名前ではなく、
+     * {@code TRIM(x LEADING)} と {@code TRIM(x TRAILING)} の中での呼び名である。
+     */
+    TRIM(1, Argument.ALPHANUMERIC, Result.SAME_LENGTH),
+    TRIM_LEADING(1, Argument.ALPHANUMERIC, Result.SAME_LENGTH),
+    TRIM_TRAILING(1, Argument.ALPHANUMERIC, Result.SAME_LENGTH);
+
+    /** 返すバイト列の長さが実行時に決まるか。 */
+    public boolean trims() {
+        return this == TRIM || this == TRIM_LEADING || this == TRIM_TRAILING;
+    }
 
     /** 引数の受け取り方。 */
     public enum Argument {

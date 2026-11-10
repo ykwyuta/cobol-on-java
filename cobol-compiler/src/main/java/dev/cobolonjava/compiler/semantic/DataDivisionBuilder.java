@@ -444,6 +444,7 @@ public final class DataDivisionBuilder {
             return;
         }
         List<DataItem.ValueRange> values = new ArrayList<>();
+        LiteralValue whenFalse = null;
         for (CobolParser.DataClauseContext clause : entry.dataClause()) {
             if (clause.valueClause() == null) {
                 report(origin, "level 88 condition-name allows only a VALUE clause");
@@ -453,12 +454,16 @@ public final class DataDivisionBuilder {
                 values.add(new DataItem.ValueRange(literalOf(range.literal(0), origin),
                         range.literal().size() > 1 ? literalOf(range.literal(1), origin) : null));
             }
+            if (clause.valueClause().FALSE() != null) {
+                whenFalse = literalOf(clause.valueClause().literal(), origin);
+            }
         }
         if (values.isEmpty()) {
             report(origin, "level 88 condition-name requires a VALUE clause");
             return;
         }
-        previous.addConditionName(new DataItem.ConditionName(nameOf(entry), values, origin));
+        previous.addConditionName(
+                new DataItem.ConditionName(nameOf(entry), values, whenFalse, origin));
     }
 
     private static String nameOf(CobolParser.DataDescriptionEntryContext entry) {
@@ -487,6 +492,10 @@ public final class DataDivisionBuilder {
             } else if (clause.blankWhenZeroClause() != null) {
                 item.setBlankWhenZero(true);
             } else if (clause.valueClause() != null) {
+                if (clause.valueClause().FALSE() != null) {
+                    report(origin, "WHEN SET TO FALSE is allowed only on a level 88"
+                            + " condition-name: " + describe(item));
+                }
                 applyValue(item, clause.valueClause(), origin);
             } else if (clause.externalClause() != null) {
                 // 割り付けには効かないが、<b>どの領域を指すか</b>に効く (要件 FR-014)
@@ -1512,6 +1521,15 @@ public final class DataDivisionBuilder {
         returnCode.setLength(returnCode.picture().size());
         Map<String, DataItem> registers = new LinkedHashMap<>();
         registers.put("RETURN-CODE", returnCode);
+        // TALLY は PIC 9(5) COMP の特殊レジスタである (Enterprise COBOL 言語解説書)。
+        // RETURN-CODE と同じ置き場に並べる
+        DataItem tally = new DataItem(INDEPENDENT_LEVEL, "TALLY", null);
+        tally.setPicture(PictureParser.parse("9(5)"));
+        tally.setUsage(Usage.COMP);
+        tally.setSection(DataSection.SPECIAL_REGISTER);
+        tally.setOffset(SpecialRegisterArea.TALLY_OFFSET);
+        tally.setLength(4);
+        registers.put("TALLY", tally);
         // 日時・task番号・端末のfieldは、出どころの無いときbinary zeroのままである (暫定判断 P-113)
         registers.put("EIBTIME", eibItem("EIBTIME", "S9(7)", Usage.COMP_3,
                 CicsEib.EIBTIME_OFFSET));
