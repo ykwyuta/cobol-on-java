@@ -56,6 +56,8 @@ java -cp <classpath> dev.cobolonjava.verify.Main zcvs <Zeus の zcvs> [-P プロ
 | 85 規格のあとの書き方 | 90 | 822 / 868 | `EXIT PERFORM`、`SET ... TO FALSE`、`INITIALIZE ... TO VALUE`、`TRIM` ほか |
 | 2 進項目・級条件・可変長の表 | 99 | 976 / 1,005 | 符号なしの 2 進、`TRUNC(BIN)`、NUMERIC の符号、複合 ODO |
 | 負系 | 115 | 992 / 1,005 | 書けない組み合わせを断る |
+| 入出力状態 | 118 | 1,053 / 1,078 | `FILE STATUS` の 2 つ目の項目、開く前の要求、文ごとの状態 |
+| 副鍵の重複 | 121 | 1,071 / 1,078 | 状態 02、同じ副鍵の並びの保持、VSAM の機能コード |
 
 区分ごとのいまの数。
 
@@ -67,7 +69,7 @@ java -cp <classpath> dev.cobolonjava.verify.Main zcvs <Zeus の zcvs> [-P プロ
 | ZE | 負系とその対照 | 60 / 65 |
 | ZA | TRUNC、算術、NUMPROC、関数 | 13 / 21 |
 | ZS | 特殊レジスタ、日付、LE サービス | 3 / 6 |
-| ZF | QSAM / VSAM / テープ | 4 / 16 |
+| ZF | QSAM / VSAM / テープ | 10 / 16 |
 | ZN | 国字、DBCS、CCSID | 0 / 14 |
 
 数は門ではない (覚え書き 7)。並べて、次にどこを直すかを決めるためのものである。
@@ -88,6 +90,11 @@ java -cp <classpath> dev.cobolonjava.verify.Main zcvs <Zeus の zcvs> [-P プロ
 | `DECIMAL-POINT IS COMMA` の下でも `NUMVAL` がピリオドを小数点として読んでいた | ZX109A |
 | 「`IF A = 1 AND 条件名`」のあとの文の比較まで先読みし、正しい原文を構文誤りで断っていた | ZX102A |
 | USING に並ばない連絡節の 01 を持つプログラムで PERFORM すると、内部の例外で落ちていた | ZP105A、ZP108A |
+| 開く前のファイルに READ / WRITE / CLOSE をすると既定の様式 (80 byte) を覚えてしまい、あとの OPEN が宣言の様式にならなかった | ZF113A |
+| 索引編成と相対編成が、開いていないファイルへのどの要求にも 42 を返していた (順編成は 47 / 48 / 49) | ZF104A |
+| 相対編成で終わりまで読んだあとの番号読みが 46 になっていた | ZF110A |
+| 重複を許す副鍵で、同じ値が続くときの READ と重複を作った WRITE / REWRITE が、02 ではなく 00 を返していた | ZF108A、ZF112A |
+| 同じ副鍵のレコードの並びが、閉じて開き直すと主鍵の順に戻っていた (P-087) | ZF108A、ZF112A |
 
 ## 自分のテストが狭いほうを固定していたもの
 
@@ -98,6 +105,19 @@ java -cp <classpath> dev.cobolonjava.verify.Main zcvs <Zeus の zcvs> [-P プロ
 | 「`BY VALUE` は断る」(2 本) | 写しを渡せば表せる |
 | 「副入口 (`ENTRY`) は断る」(2 本) | 段落を切って入口にできる |
 | 「`TRUNC(BIN)` と `TRUNC(OPT)` は断る」 | ランタイムには初めから切り替えがあり、翻訳系が渡していなかっただけだった |
+| 「開いていなければどの操作も 42」(2 本) | 42 は CLOSE だけ。READ 47・WRITE 48・REWRITE 49 |
+| 副鍵の並びを見る検査が「重複があっても 00」(3 本) | 続きがあれば 02 |
+
+## CCVS85 も流し直した
+
+ZCVS に合わせて直すたびに、規格の側を壊していないかを CCVS85 で確かめる。この一連の
+増分のあと、動かした結果は<b>346 本、8,723 件のうち落ちた判定 1 件</b>で変わっていない。
+
+流し直して、別のことが 1 つ見つかった。受理が 458 本中 443 本で、README の 444 本より
+1 本少なかった。NC107A が `PERFORM 0000000000000000000000000001` のように<b>数字だけの
+手続き名</b>を使っており、`ARITH(COMPAT)` の 18 桁の上限を入れた前の増分が、これを数字定数
+として数えて断っていた。その増分のあと測り直していなかった (覚え書き 2)。手続き名を
+検査から外して 444 本に戻した。
 
 ## ZCVS のほうが z/OS で通らないと判断したもの
 
@@ -116,8 +136,8 @@ java -cp <classpath> dev.cobolonjava.verify.Main zcvs <Zeus の zcvs> [-P プロ
 
 | 塊 | 本数 | 何が要るか |
 | --- | --- | --- |
-| 国字・DBCS・CCSID (ZN) | 14 | `CODEPAGE(930 / 939 / 1390 / 1399)` の下の翻訳と実行、国字の部分参照、国字編集、`INSPECT` / `INITIALIZE` の国字、`GROUP-USAGE NATIONAL` |
-| ファイル (ZF) | 12 | `FILE STATUS` の 2 つ目の項目 (VSAM の戻りコード)、`RECORDING MODE S / U`、`CODE-SET`、`SAME RECORD AREA`、副鍵の重複の状態 02、テープの `CLOSE REEL` |
+| 国字・DBCS・CCSID (ZN) | 14 | `CODEPAGE(930 / 939 / 1390 / 1399)` の下の翻訳と実行、国字の部分参照、国字編集、`INSPECT` / `INITIALIZE` の国字、`GROUP-USAGE NATIONAL`。翻訳系は定数のバイト列を IBM-1047 に固定して作っており (`LiteralValue.SOURCE_CODE_PAGE`)、コードページを翻訳時の指定にするところから要る |
+| ファイル (ZF) | 6 | `RECORDING MODE S / U`、`CODE-SET` (ASCII で書く)、`SAME RECORD AREA` (レコード領域の共有)、ラベルと宣言の食い違いの状態 39、テープの `CLOSE REEL` |
 | `NUMPROC(PFD / MIG)` と `NUMCLS` | 3 (+2) | 測る本が予約語で止まるので、外の基準が無い |
 | 外部浮動小数点の PICTURE | 4 | `PIC +9.9E+99` |
 | 浮動小数点の `COMPUTE` | 1 | べき乗と除算 (P-127) |
@@ -125,8 +145,8 @@ java -cp <classpath> dev.cobolonjava.verify.Main zcvs <Zeus の zcvs> [-P プロ
 | `INSPECT` の対象に関数 | 1 | `INSPECT FUNCTION REVERSE(...) TALLYING` |
 | 負系 | 2 | `CODE-SET` の下の符号つき項目、`RERUN` の `OF` 抜け |
 
-次の増分はこの表の上から選ぶ。ZN と ZF は本数が多いが、どちらも「翻訳できない」が
-先に立っているので、開ければその奥が数に出る (覚え書き 2)。
+次の増分はこの表の上から選ぶ。ZN は 1 本も翻訳できていないので、開ければその奥が
+数に出る (覚え書き 2)。ZF は開けた奥に動きの違いが 5 つあった。ZN も同じと見ておく。
 
 ## PL/I と HLASM
 
