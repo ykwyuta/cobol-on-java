@@ -348,4 +348,91 @@ class EnterpriseExtensionsTest {
                 "    DISPLAY 'OK'",
                 "    STOP RUN."));
     }
+
+    // ---- 内部表現と記憶域 ----
+
+    /** 4 桁の 2 進項目へ 5 桁の値を入れて読み戻す。TRUNC の値で結果が変わる。 */
+    private static List<String> storingFiveDigits(String options) {
+        return runSource(
+                "CBL " + options,
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. PGM.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-BIN PIC S9(4) COMP.",
+                "01 WS-C5 PIC S9(4) COMP-5.",
+                "01 WS-BIG PIC S9(5) COMP VALUE 12345.",
+                "01 WS-SHOW PIC 9(5).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    MOVE WS-BIG TO WS-BIN MOVE WS-BIN TO WS-SHOW",
+                "    DISPLAY WS-SHOW",
+                "    MOVE WS-BIG TO WS-C5 MOVE WS-C5 TO WS-SHOW",
+                "    DISPLAY WS-SHOW",
+                "    STOP RUN.");
+    }
+
+    @Test
+    @DisplayName("TRUNC(STD) は PICTURE の桁へ切り、TRUNC(BIN) は halfword に入るだけ持つ")
+    void truncDecidesHowBinaryItemsAreStored() {
+        // COMP-5 はどちらでも halfword に入るだけ持つ
+        assertEquals(List.of("02345", "12345"), storingFiveDigits("TRUNC(STD)"));
+        assertEquals(List.of("12345", "12345"), storingFiveDigits("TRUNC(BIN)"));
+    }
+
+    @Test
+    @DisplayName("符号なしの 2 進項目は、いちばん上のビットも値である (X'FFFF' は 65535)")
+    void unsignedBinaryUsesTheTopBit() {
+        // 符号つきとして読むと -1 になり、比較が外れる
+        assertEquals(List.of("MAX"), run(
+                List.of("01 WS-U PIC 9(4) COMP-5.",
+                        "01 WS-U-RAW REDEFINES WS-U PIC XX."),
+                "MAIN-START.",
+                "    MOVE HIGH-VALUES TO WS-U-RAW",
+                "    IF WS-U = 65535 DISPLAY 'MAX' ELSE DISPLAY 'WRONG'.",
+                "    STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("NUMERIC の級条件: 符号なしの詰め 10 進は F だけ、符号つきは C・D・F を通す")
+    void numericClassChecksTheSignNibble() {
+        assertEquals(List.of("UF", "SC", "SD"), run(
+                List.of("01 WS-RAW PIC X(3).",
+                        "01 WS-UP REDEFINES WS-RAW PIC 9(5) COMP-3.",
+                        "01 WS-SP REDEFINES WS-RAW PIC S9(5) COMP-3."),
+                "MAIN-START.",
+                "    MOVE X'12345F' TO WS-RAW",
+                "    IF WS-UP IS NUMERIC DISPLAY 'UF'.",
+                "    MOVE X'12345C' TO WS-RAW",
+                "    IF WS-UP IS NUMERIC DISPLAY 'UC'.",
+                "    IF WS-SP IS NUMERIC DISPLAY 'SC'.",
+                "    MOVE X'12345D' TO WS-RAW",
+                "    IF WS-SP IS NUMERIC DISPLAY 'SD'.",
+                "    MOVE X'12345A' TO WS-RAW",
+                "    IF WS-SP IS NUMERIC DISPLAY 'SA'.",
+                "    STOP RUN."));
+    }
+
+    @Test
+    @DisplayName("可変長の表のうしろの項目は、いまの個数に合わせて前へ詰まる")
+    void itemsAfterAVariableTableMove() {
+        // 位置を固定していると、表を縮めたときに「HD11  」のあとへ TL が離れて残る
+        assertEquals(List.of("008", "[HD1122TL    ]", "006", "[HD11TL      ]"), run(
+                List.of("01 WS-CNT PIC 9 COMP VALUE 2.",
+                        "01 WS-FLEX.",
+                        "   05 WS-HEAD PIC XX VALUE 'HD'.",
+                        "   05 WS-ITEM PIC XX OCCURS 0 TO 4 DEPENDING ON WS-CNT.",
+                        "   05 WS-TAIL PIC XX.",
+                        "01 WS-OUT PIC X(12)."),
+                "MAIN-START.",
+                "    MOVE '11' TO WS-ITEM(1) MOVE '22' TO WS-ITEM(2)",
+                "    MOVE 'TL' TO WS-TAIL",
+                "    MOVE LENGTH OF WS-FLEX TO WS-I DISPLAY WS-I",
+                "    MOVE WS-FLEX TO WS-OUT DISPLAY '[' WS-OUT ']'",
+                "    MOVE 1 TO WS-CNT",
+                "    MOVE 'TL' TO WS-TAIL",
+                "    MOVE LENGTH OF WS-FLEX TO WS-I DISPLAY WS-I",
+                "    MOVE WS-FLEX TO WS-OUT DISPLAY '[' WS-OUT ']'",
+                "    STOP RUN."));
+    }
 }

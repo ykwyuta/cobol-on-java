@@ -71,9 +71,38 @@ public final class BinaryDecimal {
 
     /** 2 進のバイト列を値へ復号する。 */
     public static Decimal decode(byte[] bytes, int scale) {
+        return decode(bytes, scale, true);
+    }
+
+    /**
+     * 符号の有無を踏まえて復号する。
+     *
+     * <p>符号を持たない 2 進項目は、いちばん上のビットも<b>値の一部</b>である。
+     * {@code PIC 9(4) COMP-5} は 0〜65535 を持てる (Enterprise COBOL プログラミングの手引きの
+     * TRUNC(BIN) の表)。符号つきとして読むと、X'FFFF' が -1 になる。ZCVS の ZD103A・ZD108A で
+     * 見つかった——書いたバイトは正しいのに、読み戻した値が違っていた。
+     *
+     * @param signed PICTURE に S があるか
+     */
+    public static Decimal decode(byte[] bytes, int scale, boolean signed) {
         if (bytes.length == 0) {
             throw new IllegalArgumentException("empty binary field");
         }
-        return Decimal.of(new BigInteger(bytes), scale);
+        return Decimal.of(signed ? new BigInteger(bytes) : new BigInteger(1, bytes), scale);
+    }
+
+    /**
+     * 記憶域の幅に収まるか。{@code TRUNC(BIN)} と {@code COMP-5} の桁あふれの判定である。
+     * PICTURE の桁数ではなく、halfword / fullword / doubleword に入るかで決まる。
+     */
+    public static boolean fitsStorage(Decimal value, int digits, int scale, boolean signed) {
+        int bits = byteLength(digits) * 8;
+        BigInteger unscaled = value.rescale(scale,
+                dev.cobolonjava.runtime.decimal.CobolRounding.TRUNCATION).signedUnscaled();
+        if (signed) {
+            return unscaled.bitLength() < bits;
+        }
+        return unscaled.signum() >= 0 ? unscaled.bitLength() <= bits
+                : unscaled.negate().bitLength() <= bits;
     }
 }

@@ -5549,7 +5549,27 @@ public final class ProcedureBuilder {
             report(origin, "LENGTH OF requires an item with a fixed length: " + name);
             return null;
         }
+        if (context.subscripts() == null && hasDependingTable(reference.item())) {
+            // OCCURS DEPENDING ON の表を含む項目の長さは、いま何個あるかで決まる。
+            // 翻訳時の長さ (いちばん大きい形) を定数で返してはならない。FUNCTION LENGTH と
+            // 同じ道で、実行時に数える
+            return new Operand.Function(Intrinsic.LENGTH,
+                    List.of(new Expression.Value(new Operand.Reference(reference))),
+                    Intrinsic.Result.INTEGER, origin);
+        }
         return new Operand.Literal(numberOf(reference.constantLength().getAsInt()));
+    }
+
+    private static boolean hasDependingTable(DataItem item) {
+        if (item.occursDepending() != null) {
+            return true;
+        }
+        for (DataItem child : item.children()) {
+            if (hasDependingTable(child)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** {@code DFHVALUE(cvda)} を CICS translator と同じ翻訳時定数へ落とす (暫定判断 P-130)。 */

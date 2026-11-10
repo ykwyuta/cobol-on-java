@@ -135,6 +135,12 @@ public final class ProgramGenerator {
     private char decimalPoint = '.';
 
     /**
+     * {@code TRUNC} の値 (STD / BIN / OPT)。翻訳単位で 1 つであり、{@code COMP} の項目への
+     * 格納のしかたを決める。{@code COMP-5} はどの値でも BIN と同じである。
+     */
+    private final String trunc;
+
+    /**
      * このプログラムの照合順序 (要件 FR-054)。
      *
      * <p>{@code PROGRAM COLLATING SEQUENCE} が書かれ、それがコードページのバイト値の
@@ -228,6 +234,8 @@ public final class ProgramGenerator {
         this.sourceName = sourceName;
         this.codePage = codePage;
         this.rangeChecks = options.subscriptRangeChecks();
+        this.trunc = options.value("TRUNC").map(v -> v.toUpperCase(java.util.Locale.ROOT))
+                .orElse("STD");
         this.arithmeticDigits = options.intermediateDigits();
         this.specialNames = specialNames;
     }
@@ -5246,6 +5254,22 @@ public final class ProgramGenerator {
                         "([B)" + DECIMAL, false);
             };
         }
+        if (operand instanceof Operand.Reference measured
+                && measured.reference().refMod() == null
+                && measured.reference().subscripts().isEmpty()
+                && hasDependingTable(measured.reference().item())) {
+            // OCCURS DEPENDING ON の表を含む項目。長さは<b>いま何個あるか</b>で決まる
+            // (Enterprise COBOL 言語解説書の LENGTH: 実行時の現在の長さを返す)。
+            // 以前はいちばん大きい形の長さを定数で返していた (ZCVS の ZD105A)
+            Runnable length = planSendingLength(measured.reference(), origin);
+            return length == null ? null : () -> {
+                length.run();
+                run.visitInsn(Opcodes.I2L);
+                run.visitInsn(Opcodes.ICONST_0);
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(Decimal.class),
+                        "of", "(JI)" + DECIMAL, false);
+            };
+        }
         if (operand instanceof Operand.Function inner && inner.intrinsic().trims()) {
             // 削ったあとの長さは実行時にしか決まらない
             Runnable bytes = planFunctionBytes(inner);
@@ -7402,7 +7426,88 @@ public final class ProgramGenerator {
                 "([L" + DATA_VIEW + ";ILjava/lang/String;)L" + DATA_VIEW + ";", false);
     }
 
+    /**
+     * 参照の位置。可変長の表のうしろにある項目は、表の<b>いまの個数</b>のぶんだけ前へ詰まる。
+     *
+     * <p>{@code OCCURS DEPENDING ON} の表のあとに同じレコードの項目が続くと、その項目は
+     * <b>位置が変わる項目</b>になる (Enterprise COBOL 言語解説書の「複合 OCCURS DEPENDING
+     * ON」、variably located item)。表が縮めば前へ詰まり、伸びればうしろへずれる。
+     * 以前はいちばん大きい形の位置に固定していたので、表を縮めると表とうしろの項目の
+     * あいだに隙間ができ、群として送り出したときにうしろの項目が切れていた
+     * (ZCVS の ZD113A で見つかった)。
+     *
+     * <p>85 規格は可変長の表をレコードの最後に置くことを求めているので、規格どおりの
+     * プログラムではここを通っても何も変わらない。
+     */
     private Runnable planOffset(DataReference reference, Origin origin) {
+        Runnable fixed = planStaticOffset(reference, origin);
+        List<DataItem> tables = precedingDependingTables(reference.item());
+        if (fixed == null || tables.isEmpty()) {
+            return fixed;
+        }
+        List<Runnable> shrink = new ArrayList<>();
+        for (DataItem table : tables) {
+            DataItem counter = table.occursDepending();
+            String field = numericItemConstant(counter, origin);
+            Runnable address = planAddress(
+                    new DataReference(counter, List.of(), null, origin), origin);
+            if (field == null || address == null) {
+                return null;
+            }
+            int max = table.occurs();
+            int element = table.length();
+            shrink.add(() -> {
+                // (最大回数 - いまの回数) × 1 個分だけ前へ
+                push(max);
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, NUMERIC_ITEM);
+                address.run();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "readInteger",
+                        "(" + NUMERIC_ITEM + "L" + STORAGE + ";I)I", false);
+                run.visitInsn(Opcodes.ISUB);
+                push(element);
+                run.visitInsn(Opcodes.IMUL);
+                run.visitInsn(Opcodes.ISUB);
+            });
+        }
+        return () -> {
+            fixed.run();
+            shrink.forEach(Runnable::run);
+        };
+    }
+
+    /**
+     * その項目より<b>前に</b>ある、同じレコードの可変長の表。
+     *
+     * <p>項目から上へたどり、それぞれの段で自分より前に並ぶ兄弟の中の表を集める。
+     * 自分を含む表 (祖先) は数えない——それは添字が決める。別の可変長の表の中にある
+     * 表も数えない。1 個分の長さ自体が変わるので、ここの式では表せない。
+     */
+    private List<DataItem> precedingDependingTables(DataItem item) {
+        List<DataItem> tables = new ArrayList<>();
+        for (DataItem current = item; current.parent() != null; current = current.parent()) {
+            for (DataItem sibling : current.parent().children()) {
+                if (sibling == current) {
+                    break;
+                }
+                if (sibling.redefinesName() == null) {
+                    collectTopDependingTables(sibling, tables);
+                }
+            }
+        }
+        return tables;
+    }
+
+    private static void collectTopDependingTables(DataItem item, List<DataItem> tables) {
+        if (item.occursDepending() != null) {
+            tables.add(item);
+            return;
+        }
+        for (DataItem child : item.children()) {
+            collectTopDependingTables(child, tables);
+        }
+    }
+
+    private Runnable planStaticOffset(DataReference reference, Origin origin) {
         OptionalInt constant = reference.absoluteOffset();
         if (constant.isPresent()) {
             int value = constant.getAsInt();
@@ -7831,6 +7936,14 @@ public final class ProgramGenerator {
                             Type.getInternalName(NumericItem.class), "withSignPosition",
                             "(" + Type.getDescriptor(SignPosition.class)
                                     + ")" + NUMERIC_ITEM, false);
+                }
+                if (usage == Usage.COMP && !trunc.equals("STD")) {
+                    String mode = Type.getInternalName(
+                            dev.cobolonjava.runtime.data.TruncMode.class);
+                    clinit.visitFieldInsn(Opcodes.GETSTATIC, mode, trunc, "L" + mode + ";");
+                    clinit.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            Type.getInternalName(NumericItem.class), "withTruncMode",
+                            "(L" + mode + ";)" + NUMERIC_ITEM, false);
                 }
             });
         }).name();

@@ -157,15 +157,31 @@ public final class NumericItem {
         return switch (usage) {
             case DISPLAY -> ZonedDecimal.decode(bytes, picture.scale(), signPosition, codePage, numProcMode);
             case COMP_3 -> PackedDecimal.decode(bytes, picture.scale(), numProcMode);
-            case COMP, COMP_5 -> BinaryDecimal.decode(bytes, picture.scale());
+            case COMP, COMP_5 -> BinaryDecimal.decode(bytes, picture.scale(),
+                    signPosition.isSigned());
             case COMP_1, COMP_2, NATIONAL -> throw new IllegalStateException(
                     "floating-point and national usages are rejected by the constructor");
         };
     }
 
-    /** 値がこの項目に桁落ちなく収まるかどうか (要件 FR-043 の SIZE ERROR 判定)。 */
+    /**
+     * 値がこの項目に桁落ちなく収まるかどうか (要件 FR-043 の SIZE ERROR 判定)。
+     *
+     * <p>{@code COMP-5} と、{@code TRUNC(BIN)} の下の 2 進項目は<b>記憶域の幅</b>で決まる。
+     * PICTURE の桁数を超えていても、halfword / fullword / doubleword に入れば収まっている。
+     */
     public boolean fits(Decimal value) {
+        if (binaryCapacity()) {
+            return BinaryDecimal.fitsStorage(value, picture.digits(), picture.scale(),
+                    signPosition.isSigned());
+        }
         return value.fitsInDigits(picture.digits(), picture.scale());
+    }
+
+    /** 記憶域の幅いっぱいまで値を持てる 2 進項目か。 */
+    private boolean binaryCapacity() {
+        return usage == Usage.COMP_5
+                || (usage == Usage.COMP && truncMode.resolve(undefinedBehavior) == TruncMode.BIN);
     }
 
     public void store(DataView view, Decimal value) {

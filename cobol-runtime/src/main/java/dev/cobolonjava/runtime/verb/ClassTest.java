@@ -46,7 +46,7 @@ public final class ClassTest {
     public static boolean numeric(byte[] bytes, NumericItem item, CodePage codePage) {
         return switch (item.usage()) {
             case DISPLAY -> zoned(bytes, item, codePage);
-            case COMP_3 -> packed(bytes);
+            case COMP_3 -> packed(bytes, item.signPosition().isSigned());
             // 2 進項目はバイトの並びがそのまま数である。数でない形を取れない
             default -> true;
         };
@@ -78,7 +78,7 @@ public final class ClassTest {
                 return false;
             }
             if (i == embedded) {
-                if (!validSign(zone)) {
+                if (!validSign(zone, true)) {
                     return false;
                 }
                 continue;
@@ -92,7 +92,7 @@ public final class ClassTest {
     }
 
     /** 詰め 10 進が数字か。最後のニブルが符号である。 */
-    private static boolean packed(byte[] bytes) {
+    private static boolean packed(byte[] bytes, boolean signed) {
         if (bytes.length == 0) {
             return false;
         }
@@ -103,7 +103,7 @@ public final class ClassTest {
                 return false;
             }
             if (i == bytes.length - 1) {
-                if (!validSign(low)) {
+                if (!validSign(low, signed)) {
                     return false;
                 }
             } else if (low > 9) {
@@ -113,9 +113,20 @@ public final class ClassTest {
         return true;
     }
 
-    /** 作用符号として通るニブル。機械が受け付ける形と同じである。 */
-    private static boolean validSign(int nibble) {
-        return nibble >= 0x0A;
+    /**
+     * 級条件で数字として通る符号のニブル。
+     *
+     * <p><b>機械が受け付ける形 (A〜F) とは違う</b>。Enterprise COBOL は NUMPROC(NOPFD) と
+     * 導入時の既定 NUMCLS(PRIM) の下で、符号つきの項目には C・D・F だけを、符号なしの項目には
+     * F だけを数字として通す (プログラミングの手引きの「NUMERIC 級条件で有効な符号」の表)。
+     * 以前は A〜F をどれも通し、符号なしの詰め 10 進は符号を見ていなかったので、
+     * {@code PIC 9(5) COMP-3} に X'12345C' が入っていても NUMERIC になっていた
+     * (ZCVS の ZA106A で見つかった)。NUMCLS(ALT) と NUMPROC(PFD) の表はまだ持たない。
+     *
+     * @param signed PICTURE に S があるか
+     */
+    private static boolean validSign(int nibble, boolean signed) {
+        return nibble == 0x0F || (signed && (nibble == 0x0C || nibble == 0x0D));
     }
 
     /** 英数字項目が数字か。すべてのバイトが 0〜9 でなければならない。 */

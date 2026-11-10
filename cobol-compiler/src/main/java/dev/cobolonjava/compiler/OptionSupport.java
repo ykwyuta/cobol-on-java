@@ -42,7 +42,7 @@ final class OptionSupport {
     /** 値によって、この処理系の振る舞いと同じなら黙って通すオプション。 */
     private static final Map<String, Set<String>> IMPLEMENTED_VALUES = Map.of(
             "ARITH", Set.of("COMPAT", "C", "EXTEND", "E"),
-            "TRUNC", Set.of("STD"),
+            "TRUNC", Set.of("STD", "BIN", "OPT"),
             "NUMPROC", Set.of("NOPFD"),
             "FLOAT", Set.of("HEX", "S390"),
             "CODEPAGE", Set.of("1047", "01047", "IBM-1047"),

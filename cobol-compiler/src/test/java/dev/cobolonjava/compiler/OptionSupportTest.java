@@ -37,7 +37,7 @@ class OptionSupportTest {
     @DisplayName("計算する値を変えるのに実装していない値は断る")
     void refusesResultChangingValuesThatAreNotImplemented() {
         for (String option : new String[] {"NUMPROC(PFD)", "NUMPROC(MIG)",
-                "TRUNC(BIN)", "TRUNC(OPT)", "APOST", "FLOAT(BINARY)", "CODEPAGE(1399)"}) {
+                "APOST", "FLOAT(BINARY)", "CODEPAGE(1399)"}) {
             CobolCompiler.Result result = compile(option);
             assertFalse(result.succeeded(), option);
             assertTrue(result.diagnostics().toString().contains("not supported yet"),
@@ -49,7 +49,7 @@ class OptionSupportTest {
     @DisplayName("この処理系の振る舞いと同じ値と、効いているオプションは黙って通す")
     void acceptsImplementedValuesSilently() {
         CobolCompiler.Result result = compile(
-                "ARITH(COMPAT),ARITH(EXTEND),TRUNC(STD),NUMPROC(NOPFD),FLOAT(HEX),CODEPAGE(1047),"
+                "ARITH(COMPAT),ARITH(EXTEND),TRUNC(STD),TRUNC(BIN),TRUNC(OPT),NUMPROC(NOPFD),FLOAT(HEX),CODEPAGE(1047),"
                         + "SSRANGE,DYNAM,QUOTE,SOURCEFORMAT(FIXED)");
         assertTrue(result.succeeded(), () -> result.diagnostics().toString());
         assertTrue(result.diagnostics().isEmpty(), () -> result.diagnostics().toString());
