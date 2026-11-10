@@ -258,6 +258,15 @@ public record FileDescription(String name, String ddName, Organization organizat
         for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
             // RESERVE は ALTERNATE を含むので、副鍵より先に外す。
             // PASSWORD は名前を持つが鍵ではない。どちらも翻訳の結果には効かない
+            if (clause.PADDING() != null && clause.literal() != null) {
+                // 埋め草は 1 文字である。翻訳の結果には効かないが、2 文字は書き間違いである
+                String text = clause.literal().getText();
+                boolean quoted = text.startsWith("'") || text.startsWith("\"");
+                if (quoted && text.length() != 3) {
+                    diagnostics.add(new Diagnostic(origin,
+                            "PADDING CHARACTER requires a one-character literal: " + text));
+                }
+            }
             if (clause.assignClause() != null || clause.RESERVE() != null
                     || clause.PASSWORD() != null || clause.PADDING() != null
                     || clause.DELIMITER() != null) {

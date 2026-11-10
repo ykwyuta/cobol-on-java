@@ -232,6 +232,34 @@ public final class ProcedureBuilder {
         }
     }
 
+    /** {@code PROGRAM-ID ... IS RECURSIVE} か。 */
+    private boolean recursiveProgram;
+
+    private static boolean recursiveOf(CobolParser.ProgramUnitContext program) {
+        CobolParser.ProgramAttributeContext attribute =
+                program.identificationDivision().programIdParagraph().programAttribute();
+        return attribute != null && attribute.RECURSIVE() != null;
+    }
+
+    /**
+     * 再帰プログラムに書けないもの。
+     *
+     * <p>{@code ALTER} が書き換える飛び先と、段分けの独立段の状態は<b>プログラムに 1 つ</b>
+     * である。再帰した呼び出しどうしで食い違うので、Enterprise COBOL は RECURSIVE の
+     * プログラムに {@code ALTER}・行き先の無い {@code GO TO}・段分けを書かせない
+     * (言語解説書の PROGRAM-ID 段落の RECURSIVE 句)。
+     */
+    private void checkRecursive(CobolParser.ProgramUnitContext unit) {
+        if (!recursiveProgram || unit.environmentDivision() == null) {
+            return;
+        }
+        String text = unit.environmentDivision().getText().toUpperCase(Locale.ROOT);
+        if (text.contains("SEGMENT-LIMIT")) {
+            report(ReferenceResolver.originOf(unit.environmentDivision()),
+                    "SEGMENT-LIMIT cannot be specified in a RECURSIVE program");
+        }
+    }
+
     private static boolean initialOf(CobolParser.ProgramUnitContext program) {
         CobolParser.ProgramAttributeContext attribute =
                 program.identificationDivision().programIdParagraph().programAttribute();
@@ -269,6 +297,8 @@ public final class ProcedureBuilder {
         for (CobolParser.ProgramUnitContext unit : List.of(program)) {
             builder.declareSqlInDataDivision(unit);
             builder.checkProgramId(unit);
+            builder.recursiveProgram = recursiveOf(unit);
+            builder.checkRecursive(unit);
             if (unit.procedureDivision() != null) {
                 parameters.addAll(builder.parametersOf(unit.procedureDivision()));
                 if (implicitUsing(unit.procedureDivision())) {
@@ -394,6 +424,12 @@ public final class ProcedureBuilder {
         ParserRuleContext parent = context.getParent();
         while (parent != null && !(parent instanceof CobolParser.ProcedureDivisionContext)) {
             parent = parent.getParent();
+        }
+        if (((CobolParser.ProcedureDivisionContext) parent).RETURNING() != null) {
+            // 戻り値を返すプログラムは入口を 1 つしか持てない (言語解説書の ENTRY 文)
+            report(origin, "ENTRY cannot be used in a program whose PROCEDURE DIVISION"
+                    + " specifies RETURNING");
+            return null;
         }
         if (programEntryOf((CobolParser.ProcedureDivisionContext) parent) == context) {
             return new Statement.Continue(origin);
@@ -3237,6 +3273,12 @@ public final class ProcedureBuilder {
      */
     private Statement goToOf(CobolParser.GoToStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
+        if (recursiveProgram && context.paragraphName().isEmpty()) {
+            // 行き先の無い GO TO は ALTER で書き換える前提の文である
+            report(origin, "GO TO without a procedure name cannot be used in a RECURSIVE"
+                    + " program");
+            return null;
+        }
         List<String> targets = new ArrayList<>();
         for (CobolParser.ParagraphNameContext name : context.paragraphName()) {
             targets.add(procedureNameOf(name));
@@ -3268,6 +3310,10 @@ public final class ProcedureBuilder {
     /** {@code ALTER} (要件 FR-063)。 */
     private Statement alterOf(CobolParser.AlterStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
+        if (recursiveProgram) {
+            report(origin, "ALTER cannot be used in a RECURSIVE program");
+            return null;
+        }
         List<Statement.Alter.Change> changes = new ArrayList<>();
         for (CobolParser.AlterChangeContext change : context.alterChange()) {
             changes.add(new Statement.Alter.Change(
@@ -3415,8 +3461,15 @@ public final class ProcedureBuilder {
                 : new Statement.Initialize.ToValue(context.ALL() != null
                         ? null : categoryOf(context.initializeCategory()));
         boolean toDefault = context.DEFAULT() != null;
+        java.util.Set<InitializeImage.Category> named = new java.util.HashSet<>();
         for (CobolParser.InitializeReplacingContext rule : context.initializeReplacing()) {
             InitializeImage.Category category = categoryOf(rule.initializeCategory());
+            if (!named.add(category)) {
+                // 同じ分類を 2 度書くと、どちらの値を入れるのか決まらない
+                report(origin, "INITIALIZE REPLACING names the same category twice (duplicate): "
+                        + rule.initializeCategory().getText());
+                return null;
+            }
             if (rule.identifier() != null) {
                 DataReference source = resolver.resolve(rule.identifier());
                 if (source == null) {
@@ -3954,6 +4007,11 @@ public final class ProcedureBuilder {
                     return null;
                 }
             } else if (phrase.EXIT() != null) {
+                if (phrase.performTest() != null) {
+                    // 条件が無いので、いつ見るかも決められない
+                    report(origin, "WITH TEST cannot be specified with PERFORM UNTIL EXIT");
+                    return null;
+                }
                 if (target != null) {
                     // 段落を呼ぶ形には EXIT PERFORM が書けないので、抜ける手立てが GO TO しか無い
                     report(origin, "PERFORM UNTIL EXIT is supported only for an in-line PERFORM");

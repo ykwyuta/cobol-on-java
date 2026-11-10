@@ -224,6 +224,15 @@ public final class DataDivisionBuilder {
                 specialRegisters(), builder.totalLength);
         // 回数を決める項目は表よりあとに書かれていてもよい。読み終えてから結び付ける
         layout.linkOccursDepending();
+        for (DataItem table : layout.all()) {
+            DataItem counter = table.occursDepending();
+            if (counter != null && counter.picture() != null
+                    && (!counter.picture().isNumeric() || counter.picture().scale() != 0)) {
+                // 個数は整数である。小数を持つ項目では「いま何個か」が決まらない
+                builder.report(table.origin(), "the OCCURS DEPENDING ON object must be an"
+                        + " integer item: " + counter.name());
+            }
+        }
         return new Result(layout,
                 Map.copyOf(builder.fileRecords), List.copyOf(builder.reports),
                 List.copyOf(builder.diagnostics));
@@ -475,6 +484,7 @@ public final class DataDivisionBuilder {
 
     private void applyClauses(DataItem item, CobolParser.DataDescriptionEntryContext entry,
                               Origin origin) {
+        boolean signWritten = false;
         for (CobolParser.DataClauseContext clause : entry.dataClause()) {
             if (clause.pictureClause() != null) {
                 applyPicture(item, clause.pictureClause(), origin);
@@ -482,6 +492,7 @@ public final class DataDivisionBuilder {
                 applyUsage(item, clause.usageClause(), origin);
             } else if (clause.signClause() != null) {
                 item.setSignPosition(signPositionOf(clause.signClause()));
+                signWritten = true;
             } else if (clause.occursClause() != null) {
                 applyOccurs(item, clause.occursClause(), origin);
             } else if (clause.redefinesClause() != null) {
@@ -510,6 +521,45 @@ public final class DataDivisionBuilder {
             }
         }
         applyBlankWhenZero(item, origin);
+        checkClauseCombinations(item, signWritten, origin);
+    }
+
+    /**
+     * 句と PICTURE の組み合わせを確かめる。
+     *
+     * <p>どれも規格と Enterprise COBOL の言語解説書が書けないと決めている組み合わせで
+     * ある。黙って通すと、句が<b>効かないまま</b>翻訳される。ZCVS の負系
+     * (ZE134N〜ZE136N、ZE143N、ZE109N、ZE145N) が断られることを確かめている。
+     */
+    private void checkClauseCombinations(DataItem item, boolean signWritten, Origin origin) {
+        Picture picture = item.picture();
+        if (picture != null && item.justified()
+                && (picture.isNumeric() || picture.isNumericEdited())) {
+            // 右詰めは英字・英数字の受取項目の話である。数字は元から小数点で揃う
+            report(origin, "JUSTIFIED requires an alphabetic or alphanumeric item: "
+                    + describe(item));
+        }
+        if (picture != null && item.blankWhenZero()) {
+            if (picture.signPosition().isSigned()) {
+                // 演算符号 S を持つ項目は、ゼロでも符号を持つ。空白にはできない
+                report(origin, "BLANK WHEN ZERO requires an item without the operational"
+                        + " sign S: " + describe(item));
+            } else if (picture.source().indexOf('*') >= 0) {
+                // 小切手保護の * は、ゼロのときに * で埋める。空白にするのと両立しない
+                report(origin, "BLANK WHEN ZERO requires a PICTURE without the asterisk"
+                        + " (*): " + describe(item));
+            }
+        }
+        if (picture != null && signWritten && picture.isNumeric()
+                && !picture.signPosition().isSigned()) {
+            report(origin, "SIGN requires a PICTURE with the operational sign S: "
+                    + describe(item));
+        }
+        if (item.external() && currentSection == DataSection.LOCAL_STORAGE) {
+            // EXTERNAL の領域は実行単位で 1 つである。呼び出しごとに作り直す
+            // LOCAL-STORAGE には置けない
+            report(origin, "LOCAL-STORAGE cannot specify EXTERNAL: " + describe(item));
+        }
     }
 
     /**

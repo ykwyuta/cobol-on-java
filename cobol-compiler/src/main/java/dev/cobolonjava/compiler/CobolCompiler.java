@@ -170,6 +170,10 @@ public final class CobolCompiler {
         // 告げるだけの診断は翻訳を止めない。積んでおいて結果に載せる (要件 FR-183)
         List<Diagnostic> warnings = new ArrayList<>(optionDiagnostics);
         warnings.addAll(parsed.diagnostics());
+        List<Diagnostic> nesting = endProgramDiagnostics(parsed.tree().programUnit());
+        if (!nesting.isEmpty()) {
+            return failed(null, nesting);
+        }
         List<Inherited> inherited = inheritedGlobals(parsed.tree().programUnit());
         // 囲む側の USE GLOBAL 宣言節。親は子より先に翻訳されるので、順に積める
         Map<String, List<ProcedureBuilder.GlobalDeclarative>> globals = new LinkedHashMap<>();
@@ -261,6 +265,57 @@ public final class CobolCompiler {
                         && closed.equalsIgnoreCase(openSelects.peek().owner())) {
                     openSelects.pop();
                 }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * {@code END PROGRAM} が、閉じるプログラムと合っているか確かめる。
+     *
+     * <p>入れ子は {@code END PROGRAM} の名前であとから組み立てている。名前が違えば、
+     * <b>どの囲みが閉じたのか決まらない</b>。別のプログラムを中に持つプログラムが
+     * 閉じられないまま終わるのも同じである。どちらも黙って通すと、GLOBAL の見え方が
+     * 書いた人の思ったものと違ってくる (ZCVS の ZE101N・ZE102N)。
+     *
+     * <p>最後のプログラムが {@code END PROGRAM} を持たず、中に何も持たないのは正しい。
+     */
+    private static List<Diagnostic> endProgramDiagnostics(
+            List<CobolParser.ProgramUnitContext> units) {
+        List<Diagnostic> out = new ArrayList<>();
+        Deque<String> names = new ArrayDeque<>();
+        // 別のプログラムを中に持ったことのあるプログラム
+        java.util.Set<String> containers = new java.util.HashSet<>();
+        for (CobolParser.ProgramUnitContext unit : units) {
+            if (!names.isEmpty()) {
+                containers.addAll(names);
+            }
+            names.push(programNameOf(unit));
+            for (CobolParser.EndProgramStatementContext end : unit.endProgramStatement()) {
+                String written = end.programName().getText();
+                if (written.length() >= 2 && (written.startsWith("'")
+                        || written.startsWith("\""))) {
+                    written = written.substring(1, written.length() - 1);
+                }
+                dev.cobolonjava.compiler.source.Origin origin = dev.cobolonjava.compiler.semantic.ReferenceResolver.originOf(end);
+                if (names.isEmpty()) {
+                    out.add(new Diagnostic(origin, "END PROGRAM " + written
+                            + " does not close any program"));
+                    continue;
+                }
+                String closed = names.pop();
+                if (!closed.equalsIgnoreCase(written)) {
+                    out.add(new Diagnostic(origin, "END PROGRAM " + written
+                            + " does not match PROGRAM-ID " + closed));
+                }
+            }
+        }
+        // 何も中に持たない最後のプログラムは閉じなくてよい。別のプログラムを中に持った
+        // プログラムは閉じなければならない
+        for (String open : names) {
+            if (containers.contains(open)) {
+                out.add(new Diagnostic(null, "END PROGRAM required for " + open
+                        + ", which contains another program"));
             }
         }
         return out;
