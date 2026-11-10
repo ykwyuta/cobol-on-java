@@ -744,6 +744,15 @@ public final class ProgramContext {
             return existing;
         }
         CobolProgram program = programResolver.resolve(id, loader);
+        if (program.entryOwner() != null) {
+            // 副入口。本体を引き、同じ作業場所のまま途中から入る口を返す
+            Loaded owner = resolve(program.entryOwner(), loader);
+            Loaded entry = new Loaded(new AlternateEntry(owner.program(), id.value()),
+                    owner.storage(), null);
+            loaded.put(id.value(), entry);
+            entryOwners.put(id.value(), ProgramId.of(program.entryOwner()).value());
+            return entry;
+        }
         dev.cobolonjava.runtime.interop.ProgramSignature catalogSignature =
                 programResolver.signature(id);
         dev.cobolonjava.runtime.interop.ProgramSignature embeddedSignature =
@@ -765,8 +774,22 @@ public final class ProgramContext {
      * <p>次に呼ばれたときは作業場所が初期状態から始まる。
      */
     public void forget(String name) {
-        loaded.remove(ProgramId.of(name).value());
+        String id = ProgramId.of(name).value();
+        // 副入口の名前で取り消しても、取り消されるのは本体である
+        String owner = entryOwners.getOrDefault(id, id);
+        loaded.remove(owner);
+        // 本体を忘れたら、その副入口も忘れる。残すと古い作業場所を見続ける
+        entryOwners.entrySet().removeIf(entry -> {
+            if (entry.getValue().equals(owner)) {
+                loaded.remove(entry.getKey());
+                return true;
+            }
+            return false;
+        });
     }
+
+    /** 引いたことのある副入口の名前と、その本体の名前。 */
+    private final Map<String, String> entryOwners = new java.util.HashMap<>();
 
     public CodePage codePage() {
         return codePage;

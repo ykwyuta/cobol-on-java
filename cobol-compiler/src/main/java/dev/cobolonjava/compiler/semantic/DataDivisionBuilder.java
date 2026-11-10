@@ -574,6 +574,12 @@ public final class DataDivisionBuilder {
             item.markPointer();
             return;
         }
+        if (name.equals("PROCEDURE-POINTER") || name.equals("FUNCTION-POINTER")) {
+            // 手続きポインタは 8 byte (入口と環境)、関数ポインタは 4 byte である
+            // (Enterprise COBOL 言語解説書の USAGE 句)
+            item.markEntryPointer(name.startsWith("PROCEDURE") ? 8 : 4);
+            return;
+        }
         Usage usage = switch (name) {
             case "DISPLAY" -> Usage.DISPLAY;
             case "PACKED-DECIMAL", "COMP-3", "COMPUTATIONAL-3" -> Usage.COMP_3;
@@ -613,7 +619,7 @@ public final class DataDivisionBuilder {
             report(item.origin(), "USAGE POINTER cannot have a PICTURE: " + describe(item));
             return;
         }
-        item.setPicture(PictureParser.parse("X(4)"));
+        item.setPicture(PictureParser.parse(item.entryPointerBytes() == 8 ? "X(8)" : "X(4)"));
         item.setUsage(Usage.DISPLAY);
     }
 

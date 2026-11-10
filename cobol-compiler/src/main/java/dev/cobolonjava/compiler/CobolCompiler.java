@@ -180,8 +180,7 @@ public final class CobolCompiler {
                 return one;
             }
             warnings.addAll(one.diagnostics());
-            programs.add(new Compiled(one.className(), one.classFile(), one.layout(),
-                    one.programSignature(), one.procedureManifest()));
+            programs.addAll(one.programs());
         }
         if (programs.isEmpty()) {
             return failed(null, List.of(new Diagnostic(null, "no program unit in " + fileName)));
@@ -527,8 +526,17 @@ public final class CobolCompiler {
             return failed(data.layout(), generated.diagnostics());
         }
         warnings.addAll(generated.diagnostics());
+        List<Compiled> classes = new ArrayList<>();
+        classes.add(new Compiled(generated.className(), generated.classFile(), data.layout(),
+                signature, manifest));
+        for (ProcedureBuilder.Entry entry : procedure.entries()) {
+            // 副入口の名前で引けるクラス。本体へつなぐだけで、署名も手続き情報も持たない
+            classes.add(new Compiled(ProgramGenerator.classNameOf(entry.name()),
+                    ProgramGenerator.entryAlias(entry.name(), programNameOf(program)),
+                    data.layout(), null, null));
+        }
         return new Result(generated.className(), generated.classFile(), data.layout(), signature,
-                manifest, List.copyOf(warnings));
+                manifest, List.copyOf(warnings), List.copyOf(classes));
     }
 
     private static Result failed(DataLayout layout, List<Diagnostic> diagnostics) {

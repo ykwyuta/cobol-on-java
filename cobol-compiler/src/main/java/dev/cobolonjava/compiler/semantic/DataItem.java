@@ -185,6 +185,25 @@ public final class DataItem {
         this.pointer = true;
     }
 
+    /**
+     * {@code USAGE PROCEDURE-POINTER} / {@code FUNCTION-POINTER} と書かれたときの大きさ (byte)。
+     * そうでなければ 0。データを指す POINTER と違い、入れるのは<b>プログラムの入口</b>である。
+     */
+    private int entryPointerBytes;
+
+    public boolean isEntryPointer() {
+        return entryPointerBytes > 0;
+    }
+
+    public int entryPointerBytes() {
+        return entryPointerBytes;
+    }
+
+    void markEntryPointer(int bytes) {
+        this.pointer = true;
+        this.entryPointerBytes = bytes;
+    }
+
     public boolean isIndex() {
         return index;
     }

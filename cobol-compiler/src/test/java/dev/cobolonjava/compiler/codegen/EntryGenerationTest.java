@@ -99,33 +99,28 @@ class EntryGenerationTest {
     }
 
     @Test
-    @DisplayName("手続き部の途中の ENTRY は副入口なので断る (P-152)")
-    void anEntryInTheMiddleIsRefused() {
-        // 先頭の文は DISPLAY で、ENTRY は段落 BEGIN の中にある
+    @DisplayName("手続き部の途中の ENTRY は副入口として翻訳できる")
+    void anEntryInTheMiddleIsAnAlternateEntryPoint() {
+        // 以前は「副入口は支えていない」と断ることを検査していた。副入口の名前で引く
+        // クラスがもう 1 つ出る。動きは SubprogramLinkageTest が見る
         CobolCompiler.Result result = compile(program("PROGRAM-ID. IMSPGM.",
                 "    DISPLAY 'START'.",
                 "    ENTRY 'ALTENTRY' USING IO-PCB."));
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().toString().contains("alternate entry points are not supported yet"),
-                () -> result.diagnostics().toString());
+        assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+        assertEquals(List.of("cobol.generated.IMSPGM", "cobol.generated.ALTENTRY"),
+                result.programs().stream().map(CobolCompiler.Compiled::className).toList());
     }
 
     @Test
-    @DisplayName("見出しに USING があるプログラムの ENTRY も副入口なので断る (P-152)")
-    void anEntryAfterProcedureDivisionUsingIsRefused() {
-        CobolCompiler.Result result = compile(List.of(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. IMSPGM.",
-                "DATA DIVISION.",
-                "LINKAGE SECTION.",
-                "01 IO-PCB PIC X(12).",
-                "PROCEDURE DIVISION USING IO-PCB.",
-                "    ENTRY 'DLITCBL' USING IO-PCB.",
-                "    GOBACK."));
+    @DisplayName("文の途中に書いた ENTRY は入口にできないので断る")
+    void anEntryInsideAStatementIsRefused() {
+        CobolCompiler.Result result = compile(program("PROGRAM-ID. IMSPGM.",
+                "    DISPLAY 'START'.",
+                "    IF IO-STAT = 'QC' ENTRY 'ALTENTRY' USING IO-PCB."));
 
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().toString().contains("alternate entry points are not supported yet"),
+        assertTrue(result.diagnostics().toString().contains("first statement of a sentence"),
                 () -> result.diagnostics().toString());
     }
 

@@ -365,9 +365,27 @@ public final class ZcvsRunner {
         return new Outcome(program, module, kind, 0, 0, reason, List.of());
     }
 
+    /**
+     * 落ちた理由。文面を持たない例外 (NullPointerException など) は、<b>どこで落ちたか</b>が
+     * 無いと手がかりにならないので、いちばん上の枠を添える。
+     */
     private static String describe(Throwable thrown) {
-        return thrown.getClass().getSimpleName()
-                + (thrown.getMessage() == null ? "" : ": " + thrown.getMessage());
+        if (thrown.getMessage() != null) {
+            return thrown.getClass().getSimpleName() + ": " + thrown.getMessage();
+        }
+        // JDK の中の枠は読んでも分からない。処理系の枠が出るまで下りる
+        StringBuilder where = new StringBuilder();
+        int shown = 0;
+        for (StackTraceElement frame : thrown.getStackTrace()) {
+            if (frame.getClassName().startsWith("java.")) {
+                continue;
+            }
+            where.append(shown == 0 ? " at " : " < ").append(frame);
+            if (++shown == 3) {
+                break;
+            }
+        }
+        return thrown.getClass().getSimpleName() + where;
     }
 
     private static List<Path> directories(Path root) {
@@ -403,6 +421,9 @@ public final class ZcvsRunner {
             // 作業場所の後始末に失敗しても、測定そのものは終わっている
         }
     }
+
+    /** 診断の頭にある位置。{@code 名前:行:桁: } の形である。 */
+    private static final Pattern POSITION = Pattern.compile(":\\d+:\\d+: ");
 
     /** 数と、落ちたところの一覧。 */
     public static String text(List<Outcome> outcomes) {
@@ -449,9 +470,10 @@ public final class ZcvsRunner {
         if (reason.length() <= 200) {
             return reason;
         }
-        int position = reason.indexOf(": ");
-        String head = position > 0 && position < 40 ? reason.substring(0, position + 2) : "";
-        return head + "..." + reason.substring(reason.length() - 170);
+        Matcher position = POSITION.matcher(reason);
+        String head = position.find() && position.end() < 60
+                ? reason.substring(0, position.end()) : "";
+        return head + "..." + reason.substring(reason.length() - 150);
     }
 
     /** 名前で引けるよう、探し方だけを外へ出す。 */

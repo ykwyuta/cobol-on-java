@@ -778,8 +778,8 @@ public sealed interface Statement {
      * @param arguments 渡す引数。{@code USING} に並べた順
      * @param exception {@code ON EXCEPTION} の指定。なければ {@code null}
      */
-    record Call(Operand target, List<Argument> arguments, Overflow exception, Origin origin)
-            implements Statement {
+    record Call(Operand target, List<Argument> arguments, boolean returning, Overflow exception,
+                Origin origin) implements Statement {
 
         public Call {
             arguments = List.copyOf(arguments);
@@ -788,9 +788,51 @@ public sealed interface Statement {
         /**
          * 引数 1 個。
          *
+         * @param value     渡すもの。{@code OMITTED} なら {@code null}
          * @param byContent 写しを渡すかどうか。{@code false} なら領域そのものを渡す
+         * @param byValue   {@code BY VALUE} か。写しを渡すのは {@code BY CONTENT} と同じだが、
+         *                  整数の定数は 4 byte の 2 進数にして渡す
          */
-        public record Argument(Operand value, boolean byContent) {
+        public record Argument(Operand value, boolean byContent, boolean byValue) {
+
+            public Argument(Operand value, boolean byContent) {
+                this(value, byContent, false);
+            }
+
+            public boolean omitted() {
+                return value == null;
+            }
+        }
+    }
+
+    /**
+     * 副入口 {@code ENTRY '名前' USING ...}。
+     *
+     * <p>流れの中で達しても何もしない。呼ばれたときに<b>ここから始まる</b>という印である。
+     * 段落を組み立てるときにここで切り、切った後ろを入口として覚える。
+     *
+     * @param name       入口の名前
+     * @param parameters {@code USING} に並べた連絡節の 01。書かれた順
+     */
+    record EntryPoint(String name, List<DataItem> parameters, Origin origin)
+            implements Statement {
+
+        public EntryPoint {
+            parameters = List.copyOf(parameters);
+        }
+    }
+
+    /**
+     * {@code SET 手続きポインタ TO ENTRY 名前}。
+     *
+     * @param pointers 受け取る手続きポインタ・関数ポインタ
+     * @param target   入口の名前。文字定数か、実行時に名前が決まる項目
+     */
+    record SetEntry(List<DataReference> pointers, Operand target, Origin origin)
+            implements Statement {
+
+        public SetEntry {
+            pointers = List.copyOf(pointers);
         }
     }
 

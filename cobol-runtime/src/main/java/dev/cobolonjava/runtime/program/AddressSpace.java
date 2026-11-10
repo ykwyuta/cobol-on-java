@@ -66,4 +66,34 @@ public final class AddressSpace {
         }
         return locations.get((int) index);
     }
+
+    /**
+     * 入口の番号の始まり。データの番号 ({@link #FIRST} から上へ伸びる) と重ならないよう、
+     * 31 bit の番地の上の端に置く。重なると、データを指す POINTER を手続きポインタへ
+     * 写して呼んだときに、たまたま当たった入口が動いてしまう。
+     */
+    private static final int FIRST_ENTRY = 0x7F00_0000;
+
+    private final List<String> entries = new ArrayList<>();
+
+    /** 入口の名前に番号を振る。同じ名前には同じ番号を返す ({@code SET ... TO ENTRY})。 */
+    public synchronized int entryOf(String name) {
+        String key = name.toUpperCase(java.util.Locale.ROOT);
+        int index = entries.indexOf(key);
+        if (index < 0) {
+            index = entries.size();
+            entries.add(key);
+        }
+        return FIRST_ENTRY + index * STEP;
+    }
+
+    /** 番号が指す入口の名前。この実行単位で振った番号でなければ {@code null}。 */
+    public synchronized String entryNamed(int number) {
+        long index = ((long) number - FIRST_ENTRY) / STEP;
+        if (number < FIRST_ENTRY || ((long) number - FIRST_ENTRY) % STEP != 0
+                || index >= entries.size()) {
+            return null;
+        }
+        return entries.get((int) index);
+    }
 }

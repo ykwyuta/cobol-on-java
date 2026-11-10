@@ -139,7 +139,7 @@ tokens {
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING, USING, REFERENCE, CONTENT, LINES, PAGE,
-    CALL, END_CALL, CANCEL, EXCEPTION,
+    CALL, END_CALL, CANCEL, EXCEPTION, RETURNING,
     INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
     NUMERIC_EDITED, ALPHABETIC_LOWER, ALPHABETIC_UPPER, CLASS, SYMBOLIC,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
@@ -174,6 +174,7 @@ tokens {
 
     // 用途
     DISPLAY, DISPLAY_1, BINARY, NATIONAL, INDEX, POINTER, PACKED_DECIMAL,
+    PROCEDURE_POINTER, FUNCTION_POINTER,
     COMP, COMP_1, COMP_2, COMP_3, COMP_4, COMP_5,
     COMPUTATIONAL, COMPUTATIONAL_1, COMPUTATIONAL_2, COMPUTATIONAL_3,
     COMPUTATIONAL_4, COMPUTATIONAL_5,
@@ -638,6 +639,8 @@ usageName
     | NATIONAL
     | INDEX
     | POINTER
+    | PROCEDURE_POINTER
+    | FUNCTION_POINTER
     | PACKED_DECIMAL
     | COMP | COMPUTATIONAL
     | COMP_1 | COMPUTATIONAL_1
@@ -765,7 +768,8 @@ relativeOffset
 
 // USING に並べた項目が、呼ぶ側から渡される領域に対応する
 procedureDivision
-    : PROCEDURE DIVISION (USING procedureParameter+)? PERIOD procedureBody
+    : PROCEDURE DIVISION (USING procedureParameter+)? (RETURNING identifier)? PERIOD
+      procedureBody
     ;
 
 procedureParameter
@@ -895,6 +899,11 @@ statement
 // 受けるのは IMS が呼ぶ入口 (手続き部の先頭) だけで、ほかの位置は意味解析で断る
 entryStatement
     : {entryAhead()}? IDENTIFIER LITERAL (USING procedureParameter+)?
+    ;
+
+// 「SET 手続きポインタ TO ENTRY 名前」の ENTRY。予約語にしていないので綴りで見る
+entryKeyword
+    : {"ENTRY".equalsIgnoreCase(_input.LT(1).getText())}? IDENTIFIER
     ;
 
 // 通信の文は支えていない (制約 C-5)。文ごと受け取って意味解析で断る。
@@ -1051,8 +1060,10 @@ stringStatement
       overflowPhrases END_STRING?
     ;
 
+// DELIMITED を書かなければ SIZE である (2002 規格)。85 規格は必ず書かせるが、
+// 省いた資産を読めないよりは読めたほうがよく、意味は 1 通りに決まる
 stringSource
-    : arithmeticOperand+ DELIMITED BY? (SIZE | arithmeticOperand)
+    : arithmeticOperand+ (DELIMITED BY? (SIZE | arithmeticOperand))?
     ;
 
 // UNSTRING は送出項目を区切って複数の受取項目へ配る
@@ -1383,6 +1394,8 @@ setStatement
     : SET identifier+ TO TRUE
     // 外から立てる切り替えを、プログラムからも動かせる。続けて書ける
     | SET switchSetting+
+    // 手続きポインタに入口を置く。名前は定数でも、実行時に決まる項目でもよい
+    | SET identifier+ TO entryKeyword callTarget
     | SET identifier+ TO arithmeticOperand
     | SET identifier+ (UP | DOWN) BY arithmeticOperand
     ;
@@ -1393,7 +1406,8 @@ switchSetting
 
 // 呼び先は文字定数か、実行時に名前が決まるデータ項目である
 callStatement
-    : CALL callTarget (USING callArgument+)? callExceptionPhrases END_CALL?
+    : CALL callTarget (USING callArgument+)? (RETURNING identifier)?
+      callExceptionPhrases END_CALL?
     ;
 
 callTarget
@@ -1406,6 +1420,8 @@ callArgument
     : BY? (REFERENCE | CONTENT | VALUE)
     | identifier
     | literal
+    // 引数を渡さない。呼ばれた側では、その連絡節の項目の番地が NULL になる
+    | OMITTED
     ;
 
 callExceptionPhrases

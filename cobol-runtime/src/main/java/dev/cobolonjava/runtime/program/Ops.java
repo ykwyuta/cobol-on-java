@@ -1531,6 +1531,12 @@ public final class Ops {
         }
         // 異常終了で抜けたときは積まれたまま残す (要件 FR-142)
         context.leave();
+        if (target.program().initialProgram()) {
+            // 初期プログラムは次に呼ばれたとき初期状態から始まる。戻るたびに忘れればそうなる。
+            // 再帰の途中 (同じ名前がまだ積まれている) で忘れると外側の作業場所を失うが、
+            // 初期プログラムは再帰できない決まりである
+            context.forget(name);
+        }
     }
 
     /** 動的な {@code CALL}。呼び先の名前をデータ項目から読む。 */
@@ -1639,6 +1645,110 @@ public final class Ops {
             System.arraycopy(arguments, 0, slots, 0, passed);
         }
         return slots;
+    }
+
+    /**
+     * {@code SET ptr TO ADDRESS OF 連絡節の 01}。渡されていなければ NULL を置く。
+     *
+     * <p>{@code OMITTED} で呼ばれた側は、こうして番地を NULL と比べて「渡されたか」を調べる。
+     * 項目の中身を読むのと違い、番地を取るだけなら打ち切る理由が無い。
+     */
+    public static void setAddressOfLinkage(Storage target, int targetOffset, ProgramContext context,
+                                           DataView[] arguments, int index) {
+        DataView passed = arguments == null || index >= arguments.length ? null : arguments[index];
+        if (passed == null) {
+            target.view(targetOffset, 4).setBytes(new byte[4]);
+            return;
+        }
+        setAddressOf(target, targetOffset, context, passed.storage(), passed.offset());
+    }
+
+    /**
+     * {@code SET 手続きポインタ TO ENTRY 名前}。
+     *
+     * <p>入口の名前に振った番号を頭の 4 byte に置く。手続きポインタの残りの 4 byte は 0 である。
+     * 番号はこの実行単位の中でだけ意味を持つ。ホストの番地ではない (暫定判断 P-150 と同じ扱い)。
+     * 入口を探すのは呼ぶときである。
+     */
+    public static void setEntry(Storage target, int offset, int length, ProgramContext context,
+                                String name) {
+        int number = AddressSpace.of(context).entryOf(name.trim());
+        byte[] value = new byte[length];
+        value[0] = (byte) (number >>> 24);
+        value[1] = (byte) (number >>> 16);
+        value[2] = (byte) (number >>> 8);
+        value[3] = (byte) number;
+        target.view(offset, length).setBytes(value);
+    }
+
+    /** 入口の名前をデータ項目から読む {@code SET ... TO ENTRY}。 */
+    public static void setEntry(Storage target, int offset, int length, ProgramContext context,
+                                byte[] name) {
+        setEntry(target, offset, length, context, context.codePage().decode(name));
+    }
+
+    /**
+     * 手続きポインタ・関数ポインタ越しの {@code CALL}。
+     *
+     * <p>NULL のポインタや、{@code SET ... TO ENTRY} で置いたのでない値で呼べば、ホストでは
+     * 番地 0 や壊れた番地へ分岐して {@code S0C1} / {@code S0C4} で終わる。ここでは S0C4 にする。
+     *
+     * @param pointer ポインタの中身。頭の 4 byte が入口の番号である
+     */
+    public static void callEntry(ProgramContext context, byte[] pointer, ClassLoader loader,
+                                 DataView[] arguments) {
+        int number = ((pointer[0] & 0xFF) << 24) | ((pointer[1] & 0xFF) << 16)
+                | ((pointer[2] & 0xFF) << 8) | (pointer[3] & 0xFF);
+        String name = AddressSpace.of(context).entryNamed(number);
+        if (name == null) {
+            throw new Abend(AbendCode.S0C4, "CALL through a procedure pointer that holds X'"
+                    + String.format("%08X", number) + "', which is not an entry set by SET ... TO ENTRY");
+        }
+        call(context, name, loader, arguments);
+    }
+
+    /**
+     * 呼び出し 1 回ぶんの LOCAL-STORAGE を作り、枠に置く。
+     *
+     * <p>初期イメージのうち LOCAL-STORAGE の範囲だけを写す。写しは呼び出しごとに別なので、
+     * 前の呼び出しの値は残らず、再帰した呼び出しどうしも互いを壊さない。
+     *
+     * @param slot    置く枠の番号
+     * @param initial プログラムの初期イメージ
+     * @param from    LOCAL-STORAGE の始まり
+     * @param length  LOCAL-STORAGE の長さ
+     * @return 枠を足した配列。渡された配列は書き換えない
+     */
+    public static DataView[] withLocalStorage(DataView[] slots, int slot, byte[] initial,
+                                              int from, int length) {
+        int passed = slots == null ? 0 : slots.length;
+        DataView[] out = new DataView[Math.max(passed, slot + 1)];
+        if (passed > 0) {
+            System.arraycopy(slots, 0, out, 0, passed);
+        }
+        out[slot] = Storage.copyOf(java.util.Arrays.copyOfRange(initial, from, from + length))
+                .whole();
+        return out;
+    }
+
+    /** この呼び出しの LOCAL-STORAGE。 */
+    public static Storage localStorage(DataView[] slots, int slot) {
+        return slots[slot].storage();
+    }
+
+    /**
+     * 副入口の引数を、連絡節の項目の枠へ並べ替える。
+     *
+     * @param slots {@code slots[i]} は、i 番目の引数を受ける項目の枠の番号
+     * @param size  枠の数
+     */
+    public static DataView[] entrySlots(DataView[] arguments, int[] slots, int size) {
+        DataView[] out = new DataView[size];
+        int passed = arguments == null ? 0 : arguments.length;
+        for (int i = 0; i < slots.length && i < passed; i++) {
+            out[slots[i]] = arguments[i];
+        }
+        return out;
     }
 
     /** {@code SET ptr TO ADDRESS OF 項目}。項目の記憶域と位置に振った番号を POINTER の 4 byte に置く。 */

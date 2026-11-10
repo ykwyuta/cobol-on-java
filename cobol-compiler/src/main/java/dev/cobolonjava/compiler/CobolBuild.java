@@ -106,6 +106,8 @@ public final class CobolBuild {
         DeployCatalogManifest manifest = DeployCatalogGenerator.generate(deployed);
         Files.writeString(catalog, manifest.toJson(), StandardCharsets.UTF_8);
         return new Result(failed, deployed.stream()
+                // 副入口の名前で引くためだけのクラスは署名を持たない。プログラムには数えない
+                .filter(program -> program.programSignature() != null)
                 .map(program -> program.programSignature().programId().value())
                 .toList(), manifest);
     }

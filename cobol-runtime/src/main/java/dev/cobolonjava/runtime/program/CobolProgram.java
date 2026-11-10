@@ -68,6 +68,36 @@ public interface CobolProgram {
     }
 
     /**
+     * 副入口 ({@code ENTRY '名前'}) から入る。
+     *
+     * <p>副入口を持たないプログラムでは、主入口から入るのと同じである。
+     *
+     * @param entry 入口の名前
+     */
+    default void runEntry(Storage storage, ProgramContext context, DataView[] arguments,
+                          String entry) {
+        run(storage, context, arguments);
+    }
+
+    /**
+     * {@code PROGRAM-ID ... IS INITIAL} か。
+     *
+     * <p>初期プログラムは<b>呼ばれるたびに初期状態から始まる</b> (85 規格 X 5.2 の INITIAL 句)。
+     * 作業場所は VALUE 句の値に戻り、開いたままのファイルは閉じられている。
+     */
+    default boolean initialProgram() {
+        return false;
+    }
+
+    /**
+     * このクラスが副入口の名前で引くためだけのものなら、本体のプログラムの名前。
+     * ふつうのプログラムでは {@code null}。
+     */
+    default String entryOwner() {
+        return null;
+    }
+
+    /**
      * 作業場所の割り付け (要件 FR-142)。
      *
      * <p>どのバイトがどの項目かを知っているのは翻訳の側である。生成クラスがこれを返し、

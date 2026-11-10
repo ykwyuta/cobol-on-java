@@ -22,6 +22,10 @@ final class DeployCatalogGenerator {
 
     static DeployCatalogManifest generate(List<CobolCompiler.Compiled> compiledPrograms) {
         List<CobolCompiler.Compiled> sorted = new ArrayList<>(compiledPrograms);
+        // 副入口の名前で引くためだけのクラスは、署名も手続き情報も持たない。カタログには
+        // 載せない。カタログ越しの配備では副入口をまだ呼べない (暫定判断 P-187)
+        sorted.removeIf(program -> program.programSignature() == null
+                && program.procedureManifest() == null);
         sorted.sort(Comparator.comparing(program -> program.programSignature().programId().value()));
         List<GeneratedProgramArtifact> artifacts = new ArrayList<>(sorted.size());
         MessageDigest revision = sha256();

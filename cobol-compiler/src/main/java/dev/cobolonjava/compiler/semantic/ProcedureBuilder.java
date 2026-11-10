@@ -187,13 +187,36 @@ public final class ProcedureBuilder {
     }
 
     /**
+     * 副入口 1 つ。
+     *
+     * @param name       入口の名前 ({@code ENTRY '名前'})
+     * @param paragraph  そこから始まる段落。{@code ENTRY} の文で段落を切った後ろ半分である
+     * @param parameters {@code USING} に並べた 01 レベル。書かれた順
+     */
+    public record Entry(String name, String paragraph, List<DataItem> parameters) {
+    }
+
+    /** 副入口で切った後ろ半分の段落の名前の頭。利用者語には書けない文字 (* と :) を使う。 */
+    public static final String ENTRY_PARAGRAPH = "*ENTRY:";
+
+    /**
      * 組み立ての結果。
      *
      * @param parameters {@code PROCEDURE DIVISION USING} に並べた 01 レベル。書かれた順
+     * @param entries    副入口。書かれた順
+     * @param initialProgram {@code PROGRAM-ID ... IS INITIAL} か。呼ばれるたびに初期状態から始まる
      */
     public record Result(List<Paragraph> paragraphs, List<Section> sections,
                          List<Declarative> declaratives, int firstNormalParagraph,
-                         List<DataItem> parameters, List<Diagnostic> diagnostics) {
+                         List<DataItem> parameters, List<Diagnostic> diagnostics,
+                         List<Entry> entries, boolean initialProgram) {
+
+        public Result(List<Paragraph> paragraphs, List<Section> sections,
+                      List<Declarative> declaratives, int firstNormalParagraph,
+                      List<DataItem> parameters, List<Diagnostic> diagnostics) {
+            this(paragraphs, sections, declaratives, firstNormalParagraph, parameters,
+                    diagnostics, List.of(), false);
+        }
 
         public boolean succeeded() {
             return !Diagnostic.blocking(diagnostics);
@@ -207,6 +230,12 @@ public final class ProcedureBuilder {
             }
             return List.copyOf(all);
         }
+    }
+
+    private static boolean initialOf(CobolParser.ProgramUnitContext program) {
+        CobolParser.ProgramAttributeContext attribute =
+                program.identificationDivision().programIdParagraph().programAttribute();
+        return attribute != null && attribute.INITIAL() != null;
     }
 
     /** 構文木の手続き部から文の並びを作る。 */
@@ -258,7 +287,8 @@ public final class ProcedureBuilder {
         builder.checkDeclaratives(declaratives);
         return new Result(List.copyOf(paragraphs), List.copyOf(sections),
                 List.copyOf(declaratives), builder.firstNormal, List.copyOf(parameters),
-                List.copyOf(diagnostics));
+                List.copyOf(diagnostics), List.copyOf(builder.entries),
+                initialOf(program));
     }
 
     /**
@@ -269,31 +299,44 @@ public final class ProcedureBuilder {
      */
     private List<DataItem> parametersOf(CobolParser.ProcedureDivisionContext context) {
         List<DataItem> parameters = new ArrayList<>();
+        // BY VALUE の項目も、渡された領域に重ねて読む。呼ぶ側が写しを渡すので、
+        // 書き換えは呼ぶ側に届かない。受ける側の読み書きは BY REFERENCE と変わらない
         for (CobolParser.ProcedureParameterContext parameter : usingOf(context)) {
-            if (parameter.VALUE() != null) {
-                report(ReferenceResolver.originOf(parameter),
-                        "BY VALUE is not supported yet");
-                continue;
-            }
-            DataReference reference = resolver.resolve(parameter.identifier());
-            if (reference == null) {
-                continue;
-            }
-            DataItem item = reference.item();
-            Origin origin = ReferenceResolver.originOf(parameter);
-            if (item.section() != DataSection.LINKAGE) {
-                report(origin, "PROCEDURE DIVISION USING requires a LINKAGE SECTION item: "
-                        + describe(reference));
-                continue;
-            }
-            if (item != item.record()) {
-                report(origin, "PROCEDURE DIVISION USING requires an 01 level item: "
-                        + describe(reference));
-                continue;
-            }
-            parameters.add(item);
+            addParameter(parameter.identifier(), "PROCEDURE DIVISION USING", parameters);
+        }
+        if (context.RETURNING() != null && programEntryOf(context) == null) {
+            // RETURNING の項目は、USING のうしろにもう 1 つ引数があるものとして受ける。
+            // 呼ぶ側の CALL ... RETURNING も同じ位置に受取項目を渡す。ホストは値を
+            // 写して返すが、呼ぶ側から見えるのは「受取項目に値が入る」ことだけである
+            addParameter(context.identifier(), "PROCEDURE DIVISION RETURNING", parameters);
         }
         return parameters;
+    }
+
+    private void addParameter(CobolParser.IdentifierContext identifier, String phrase,
+                              List<DataItem> parameters) {
+        DataReference reference = resolver.resolve(identifier);
+        if (reference == null) {
+            return;
+        }
+        DataItem item = reference.item();
+        Origin origin = ReferenceResolver.originOf(identifier);
+        if (item.section() != DataSection.LINKAGE) {
+            report(origin, phrase + " requires a LINKAGE SECTION item: "
+                    + describe(reference));
+            return;
+        }
+        if (item != item.record()) {
+            report(origin, phrase + " requires an 01 level item: "
+                    + describe(reference));
+            return;
+        }
+        if (parameters.contains(item)) {
+            report(origin, phrase + " names the same item twice: "
+                    + describe(reference));
+            return;
+        }
+        parameters.add(item);
     }
 
     /**
@@ -352,12 +395,31 @@ public final class ProcedureBuilder {
         while (parent != null && !(parent instanceof CobolParser.ProcedureDivisionContext)) {
             parent = parent.getParent();
         }
-        if (programEntryOf((CobolParser.ProcedureDivisionContext) parent) != context) {
-            report(origin, "ENTRY is supported only as the first statement of a procedure division"
-                    + " without USING (the entry IMS calls); alternate entry points are not supported yet");
+        if (programEntryOf((CobolParser.ProcedureDivisionContext) parent) == context) {
+            return new Statement.Continue(origin);
+        }
+        // 副入口。呼ばれたらここから始まるので、段落の頭にできる場所にしか書けない
+        boolean opensSentence = context.getParent() instanceof CobolParser.StatementContext statement
+                && statement.getParent() instanceof CobolParser.SentenceContext sentence
+                && sentence.statement(0) == statement
+                && !(sentence.getParent() instanceof CobolParser.DeclarativeSectionContext);
+        if (!opensSentence || inDebugSection) {
+            report(origin, "ENTRY must be the first statement of a sentence outside the"
+                    + " declaratives; an entry point inside another statement is not supported");
             return null;
         }
-        return new Statement.Continue(origin);
+        String literal = context.LITERAL().getText();
+        String name = literal.substring(1, literal.length() - 1).trim()
+                .toUpperCase(Locale.ROOT);
+        if (name.isEmpty() || entries.stream().anyMatch(known -> known.name().equals(name))) {
+            report(origin, "ENTRY requires a name that is not already an entry: " + literal);
+            return null;
+        }
+        List<DataItem> parameters = new ArrayList<>();
+        for (CobolParser.ProcedureParameterContext parameter : context.procedureParameter()) {
+            addParameter(parameter.identifier(), "ENTRY USING", parameters);
+        }
+        return new Statement.EntryPoint(name, parameters, origin);
     }
 
     /**
@@ -725,7 +787,7 @@ public final class ProcedureBuilder {
         firstNormal = paragraphs.size();
         List<Statement> leading = statementsOf(body.sentence());
         if (!leading.isEmpty()) {
-            paragraphs.add(new Paragraph(null, leading, leading.get(0).origin()));
+            addSplitting(paragraphs, new Paragraph(null, leading, leading.get(0).origin()));
         }
         for (CobolParser.ParagraphContext paragraph : body.paragraph()) {
             addParagraph(paragraph, paragraphs);
@@ -741,8 +803,8 @@ public final class ProcedureBuilder {
         String simple = wordOf(paragraph.paragraphName());
         Origin origin = ReferenceResolver.originOf(paragraph);
         List<Statement> entry = inDebugSection ? List.of() : debugEntry(simple, origin);
-        paragraphs.add(new Paragraph(keyOf(simple, section), statementsOf(paragraph.sentence()),
-                segment, entry, origin));
+        addSplitting(paragraphs, new Paragraph(keyOf(simple, section),
+                statementsOf(paragraph.sentence()), segment, entry, origin));
     }
 
     private void addParagraph(CobolParser.ParagraphContext paragraph, List<Paragraph> paragraphs) {
@@ -757,13 +819,52 @@ public final class ProcedureBuilder {
         Origin at = ReferenceResolver.originOf(unit.sectionHeader());
         // 章へ入ると、章の名前と最初の段落の名前で<b>2 度</b>デバッグの節が動く。
         // 章の見出しそのものが 1 つの段落になっているので、そのまま 2 度になる
-        paragraphs.add(new Paragraph(keyOf(name, name), statementsOf(unit.sentence()), segment,
-                debugEntry(name, at), at));
+        addSplitting(paragraphs, new Paragraph(keyOf(name, name), statementsOf(unit.sentence()),
+                segment, debugEntry(name, at), at));
+        // 章の名前で引くのは見出しの段落である。副入口で切った後ろ半分ではない
+        String heading = keyOf(name, name);
         for (CobolParser.ParagraphContext paragraph : unit.paragraph()) {
             addParagraph(paragraph, paragraphs, segment, name);
         }
-        sections.add(new Section(name, keyOf(name, name),
+        sections.add(new Section(name, heading,
                 paragraphs.get(paragraphs.size() - 1).name(), false));
+    }
+
+    /** 見つけた副入口。書かれた順。 */
+    private final List<Entry> entries = new ArrayList<>();
+
+    /**
+     * 段落を足す。副入口 ({@code ENTRY}) の文があれば、<b>そこで段落を切る</b>。
+     *
+     * <p>生成クラスが実行を始められるのは段落の頭だけである。だから副入口を段落の頭にする。
+     * 切った後ろ半分は名前を持たない続きであり、前半から流れ落ちてくれば続けて動く。
+     * {@code PERFORM} の範囲は続きまで含める ({@code ProgramGenerator} の範囲の終わり)。
+     */
+    private void addSplitting(List<Paragraph> paragraphs, Paragraph whole) {
+        List<Statement> piece = new ArrayList<>();
+        String name = whole.name();
+        List<Statement> debug = whole.debugEntry();
+        Origin origin = whole.origin();
+        boolean first = true;
+        for (Statement statement : whole.statements()) {
+            Statement.EntryPoint entry = statement instanceof Statement.Sentence sentence
+                    && !sentence.body().isEmpty()
+                    && sentence.body().get(0) instanceof Statement.EntryPoint found
+                    ? found : null;
+            if (entry != null) {
+                if (!(first && name == null && piece.isEmpty())) {
+                    paragraphs.add(new Paragraph(name, piece, whole.segment(), debug, origin));
+                }
+                first = false;
+                piece = new ArrayList<>();
+                name = ENTRY_PARAGRAPH + entry.name();
+                debug = List.of();
+                origin = entry.origin();
+                entries.add(new Entry(entry.name(), name, entry.parameters()));
+            }
+            piece.add(statement);
+        }
+        paragraphs.add(new Paragraph(name, piece, whole.segment(), debug, origin));
     }
 
     /**
@@ -1063,7 +1164,7 @@ public final class ProcedureBuilder {
             returned.into().targets().forEach(t -> out.add(t.reference()));
         } else if (statement instanceof Statement.Call call) {
             call.arguments().stream()
-                    .filter(argument -> !argument.byContent())
+                    .filter(argument -> !argument.byContent() && !argument.omitted())
                     .map(Statement.Call.Argument::value)
                     .filter(Operand.Reference.class::isInstance)
                     .map(Operand.Reference.class::cast)
@@ -2679,15 +2780,16 @@ public final class ProcedureBuilder {
         for (CobolParser.StringSourceContext source : context.stringSource()) {
             List<CobolParser.ArithmeticOperandContext> operands = source.arithmeticOperand();
             // DELIMITED BY SIZE でなければ、最後の被演算子が区切りである
-            int valueCount = source.SIZE() != null ? operands.size() : operands.size() - 1;
+            boolean bySize = source.SIZE() != null || source.DELIMITED() == null;
+            int valueCount = bySize ? operands.size() : operands.size() - 1;
             List<Operand> values = new ArrayList<>();
             for (int i = 0; i < valueCount; i++) {
                 values.add(operandOf(operands.get(i), origin));
             }
-            Operand delimiter = source.SIZE() != null
+            Operand delimiter = bySize
                     ? null
                     : operandOf(operands.get(operands.size() - 1), origin);
-            if (values.contains(null) || (source.SIZE() == null && delimiter == null)) {
+            if (values.contains(null) || (!bySize && delimiter == null)) {
                 return null;
             }
             sources.add(new Statement.StringStatement.StringSource(values, delimiter));
@@ -3470,6 +3572,9 @@ public final class ProcedureBuilder {
         if (!context.switchSetting().isEmpty()) {
             return switchSetOf(context, origin);
         }
+        if (context.entryKeyword() != null) {
+            return entrySetOf(context, origin);
+        }
         return indexSetOf(context, origin);
     }
 
@@ -3648,18 +3753,26 @@ public final class ProcedureBuilder {
         }
 
         boolean byContent = false;
+        boolean byValue = false;
         List<Statement.Call.Argument> arguments = new ArrayList<>();
         for (CobolParser.CallArgumentContext argument : context.callArgument()) {
             if (argument.VALUE() != null) {
-                report(origin, "CALL ... BY VALUE is not supported yet");
-                return null;
+                byContent = true;
+                byValue = true;
+                continue;
             }
             if (argument.REFERENCE() != null) {
                 byContent = false;
+                byValue = false;
                 continue;
             }
             if (argument.CONTENT() != null) {
                 byContent = true;
+                byValue = false;
+                continue;
+            }
+            if (argument.OMITTED() != null) {
+                arguments.add(new Statement.Call.Argument(null, false));
                 continue;
             }
             Operand value = argumentOf(argument, origin);
@@ -3668,11 +3781,42 @@ public final class ProcedureBuilder {
             }
             // 定数は渡す先の領域を持たない。写しを渡すほかない
             boolean copied = byContent || value instanceof Operand.Literal;
-            arguments.add(new Statement.Call.Argument(value, copied));
+            arguments.add(new Statement.Call.Argument(value, copied, byValue));
+        }
+        boolean returning = context.RETURNING() != null;
+        if (returning) {
+            // 受取項目は USING のうしろの引数として、領域そのものを渡す
+            DataReference receiver = resolver.resolve(context.identifier());
+            if (receiver == null) {
+                return null;
+            }
+            arguments.add(new Statement.Call.Argument(new Operand.Reference(receiver), false));
         }
 
         Statement.Overflow exception = exceptionOf(context.callExceptionPhrases());
-        return new Statement.Call(target, arguments, exception, origin);
+        return new Statement.Call(target, arguments, returning, exception, origin);
+    }
+
+    /** {@code SET 手続きポインタ TO ENTRY 名前}。 */
+    private Statement entrySetOf(CobolParser.SetStatementContext context, Origin origin) {
+        Operand target = callTargetOf(context.callTarget(), origin);
+        if (target == null) {
+            return null;
+        }
+        List<DataReference> pointers = new ArrayList<>();
+        for (CobolParser.IdentifierContext identifier : context.identifier()) {
+            DataReference pointer = resolver.resolve(identifier);
+            if (pointer == null) {
+                return null;
+            }
+            if (!pointer.item().isEntryPointer()) {
+                report(origin, "SET ... TO ENTRY requires a PROCEDURE-POINTER or"
+                        + " FUNCTION-POINTER item: " + describe(pointer));
+                return null;
+            }
+            pointers.add(pointer);
+        }
+        return new Statement.SetEntry(pointers, target, origin);
     }
 
     private Operand argumentOf(CobolParser.CallArgumentContext context, Origin origin) {
