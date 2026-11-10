@@ -292,7 +292,8 @@ selectClause
     | organizationName
     | ACCESS MODE? IS? (SEQUENTIAL | RANDOM | DYNAMIC)
     // FILE は省いてよい。CCVS85 は「STATUS IS X」とだけ書く
-    | FILE? STATUS IS? identifier
+    // 2 つ目の項目は VSAM の戻りコード (6 byte) を受ける。Enterprise COBOL の拡張である
+    | FILE? STATUS IS? identifier vsamStatus?
     | RECORDING MODE? IS? IDENTIFIER
     // 裸の RELATIVE は編成の指定、名前が続けば相対キーの指定である
     | RELATIVE (KEY? IS? identifier)?
@@ -304,6 +305,10 @@ selectClause
     // 順編成のブロックの埋め草と、レコードの切れ目。どちらも装置の話である
     | PADDING CHARACTER? IS? (identifier | literal)
     | RECORD DELIMITER IS? (IDENTIFIER | STANDARD_1)
+    ;
+
+vsamStatus
+    : identifier
     ;
 
 // REPORT は報告書節の予約語だが、割当て名としても受ける。ZCVS の 93 本が

@@ -3483,6 +3483,10 @@ public final class ProgramGenerator {
             if (address == null) {
                 return null;
             }
+            Runnable extended = file.vsamStatus() == null ? null
+                    : planAddress(file.vsamStatus(), origin);
+            boolean vsam = file.organization() == Organization.INDEXED
+                    || file.organization() == Organization.RELATIVE;
             store = () -> {
                 run.visitVarInsn(Opcodes.ALOAD, slot);
                 address.run();
@@ -3491,6 +3495,14 @@ public final class ProgramGenerator {
                 loadCodePage();
                 run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumeric",
                         "([BL" + STORAGE + ";IIZ" + CODE_PAGE + ")V", false);
+                if (extended != null && vsam) {
+                    // VSAM のファイルだけが 2 つ目の項目を持つ。QSAM では触らない
+                    run.visitVarInsn(Opcodes.ALOAD, slot);
+                    extended.run();
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "vsamStatus",
+                            "([BL" + STORAGE + ";I" + CODE_PAGE + ")V", false);
+                }
             };
         }
         Runnable handler = planDeclarative(file, slot, atEndHandled, invalidKeyHandled, opened);

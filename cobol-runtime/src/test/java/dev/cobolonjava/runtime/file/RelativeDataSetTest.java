@@ -277,17 +277,20 @@ class RelativeDataSetTest {
     }
 
     @Test
-    @DisplayName("開いていなければどの操作も 42 になる (FR-103)")
+    @DisplayName("開いていないファイルへの要求は、文ごとに決まった状態になる (FR-103)")
     void everyOperationNeedsAnOpenFile() {
+        // 以前はどの操作も 42 になることを検査していた。順編成はもとから 47 / 48 / 49 を
+        // 返しており、編成で番号が違っていた。42 は開いていないファイルの CLOSE だけである
+        // (85 規格 VII の入出力状態の表。ZCVS の ZF104A で見つかった)
         RelativeDataSet file = at("R.DAT");
 
-        assertEquals(FileStatus.NOT_OPEN, file.read(area()));
-        assertEquals(FileStatus.NOT_OPEN, file.readAt(1, area()));
-        assertEquals(FileStatus.NOT_OPEN, file.write(bytes("aaa")));
-        assertEquals(FileStatus.NOT_OPEN, file.writeAt(1, bytes("aaa")));
-        assertEquals(FileStatus.NOT_OPEN, file.rewrite(bytes("aaa")));
-        assertEquals(FileStatus.NOT_OPEN, file.delete());
-        assertEquals(FileStatus.NOT_OPEN, file.start(1, KeyRelation.EQUAL));
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.read(area()));
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.readAt(1, area()));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.write(bytes("aaa")));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.writeAt(1, bytes("aaa")));
+        assertEquals(FileStatus.REWRITE_NOT_ALLOWED, file.rewrite(bytes("aaa")));
+        assertEquals(FileStatus.REWRITE_NOT_ALLOWED, file.delete());
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.start(1, KeyRelation.EQUAL));
         assertEquals(FileStatus.NOT_OPEN, file.close());
     }
 

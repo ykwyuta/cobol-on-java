@@ -264,7 +264,10 @@ public final class RelativeDataSet implements KeyedDataSet {
     /** 番号で読む (要件 FR-101)。 */
     public String readAt(int number, byte[] into) {
         String checked = readable();
-        if (checked != null) {
+        // 終わりに達したあとでも、番号で読むのは構わない。46 は「次のレコード」が
+        // 決まらないときの順次読みの状態である。索引編成の鍵読みと同じ扱いにする
+        // (ZCVS の ZF110A で見つかった。終わりまで読んだあとの番号読みが 46 になっていた)
+        if (checked != null && !FileStatus.NOT_READABLE.equals(checked)) {
             return checked;
         }
         int slot = number - 1;
@@ -293,7 +296,10 @@ public final class RelativeDataSet implements KeyedDataSet {
     private String readable() {
         if (mode == null) {
             current = -1;
-            return FileStatus.NOT_OPEN;
+            // 開いていないファイルへの要求は、文ごとに決まった状態になる (85 規格 VII の
+            // 入出力状態の表: READ / START は 47、WRITE は 48、REWRITE / DELETE は 49)。
+            // 42 は開いていないファイルを CLOSE したときだけである
+            return FileStatus.READ_NOT_ALLOWED;
         }
         if (!mode.canRead()) {
             current = -1;
@@ -388,7 +394,7 @@ public final class RelativeDataSet implements KeyedDataSet {
 
     private String writable() {
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.WRITE_NOT_ALLOWED;
         }
         return mode.canWrite() ? null : FileStatus.WRITE_NOT_ALLOWED;
     }
@@ -480,7 +486,7 @@ public final class RelativeDataSet implements KeyedDataSet {
     /** 書き換えと削除は {@code I-O} だけである。読みながら直す使い方しか意味を持たない。 */
     private String changeable() {
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.REWRITE_NOT_ALLOWED;
         }
         return mode == OpenMode.IO ? null : FileStatus.REWRITE_NOT_ALLOWED;
     }

@@ -261,7 +261,7 @@ public final class SequentialDataSet implements DataSet {
      */
     public String rewrite(byte[] from) {
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.REWRITE_NOT_ALLOWED;
         }
         if (mode != OpenMode.IO) {
             return FileStatus.REWRITE_NOT_ALLOWED;

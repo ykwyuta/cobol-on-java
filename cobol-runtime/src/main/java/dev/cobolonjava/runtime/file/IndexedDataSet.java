@@ -411,7 +411,10 @@ public final class IndexedDataSet implements KeyedDataSet {
     private String readable() {
         if (mode == null) {
             current = null;
-            return FileStatus.NOT_OPEN;
+            // 開いていないファイルへの要求は、文ごとに決まった状態になる (85 規格 VII の
+            // 入出力状態の表: READ / START は 47、WRITE は 48、REWRITE / DELETE は 49)。
+            // 42 は開いていないファイルを CLOSE したときだけである
+            return FileStatus.READ_NOT_ALLOWED;
         }
         if (!mode.canRead()) {
             current = null;
@@ -675,14 +678,14 @@ public final class IndexedDataSet implements KeyedDataSet {
 
     private String writable() {
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.WRITE_NOT_ALLOWED;
         }
         return mode.canWrite() ? null : FileStatus.WRITE_NOT_ALLOWED;
     }
 
     private String changeable() {
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.REWRITE_NOT_ALLOWED;
         }
         return mode == OpenMode.IO ? null : FileStatus.REWRITE_NOT_ALLOWED;
     }

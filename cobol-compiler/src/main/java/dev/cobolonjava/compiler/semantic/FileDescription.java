@@ -37,7 +37,15 @@ public record FileDescription(String name, String ddName, Organization organizat
                               RecordFormat format, Access access, DataReference status,
                               boolean optional, DataReference relativeKey, List<RecordKey> keys,
                               boolean sort, List<DataItem> records, int recordLength,
-                              Varying varying, Linage linage, Origin origin) {
+                              Varying varying, Linage linage, Origin origin,
+                              DataReference vsamStatus) {
+
+    /**
+     * {@code FILE STATUS} の 2 つ目の項目の長さ。VSAM の戻りコード・機能コード・
+     * フィードバックコードを 2 進の halfword 3 つで受ける (Enterprise COBOL 言語解説書の
+     * FILE STATUS 句)。
+     */
+    public static final int VSAM_STATUS_LENGTH = 6;
 
     /**
      * 論理頁の形 (要件 FR-113)。
@@ -181,7 +189,8 @@ public record FileDescription(String name, String ddName, Organization organizat
     record Selected(String name, String ddName, Organization organization, RecordFormat format,
                     Access access, boolean optional, CobolParser.IdentifierContext status,
                     CobolParser.IdentifierContext relativeKey,
-                    List<SelectedKey> keys, Origin origin) {
+                    List<SelectedKey> keys, Origin origin,
+                    CobolParser.IdentifierContext vsamStatus) {
     }
 
     /** {@code RECORD KEY} と {@code ALTERNATE RECORD KEY} を読んだ途中の形。 */
@@ -253,6 +262,7 @@ public record FileDescription(String name, String ddName, Organization organizat
         RecordFormat format = RecordFormat.FIXED;
         Access access = Access.SEQUENTIAL;
         CobolParser.IdentifierContext status = null;
+        CobolParser.IdentifierContext vsamStatus = null;
         CobolParser.IdentifierContext relativeKey = null;
         List<SelectedKey> keys = new ArrayList<>();
         for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
@@ -282,6 +292,8 @@ public record FileDescription(String name, String ddName, Organization organizat
                 access = accessOf(clause);
             } else if (clause.STATUS() != null) {
                 status = clause.identifier();
+                vsamStatus = clause.vsamStatus() == null
+                        ? null : clause.vsamStatus().identifier();
             } else if (clause.RELATIVE() != null) {
                 // 裸の RELATIVE は編成の指定であり、鍵の名前ではない
                 if (clause.identifier() == null) {
@@ -300,7 +312,7 @@ public record FileDescription(String name, String ddName, Organization organizat
             }
         }
         return new Selected(name, ddName, organization, format, access, entry.OPTIONAL() != null,
-                status, relativeKey, keys, origin);
+                status, relativeKey, keys, origin, vsamStatus);
     }
 
     /**
@@ -406,6 +418,27 @@ public record FileDescription(String name, String ddName, Organization organizat
                         "FILE STATUS requires a two-character item"));
                 continue;
             }
+            DataReference vsamStatus = one.vsamStatus() == null
+                    ? null : resolver.resolve(one.vsamStatus());
+            if (one.vsamStatus() != null && vsamStatus == null) {
+                continue;
+            }
+            if (vsamStatus != null && one.organization() != Organization.INDEXED
+                    && one.organization() != Organization.RELATIVE
+                    && !one.ddName().startsWith("AS-")) {
+                // VSAM の戻りコードを受ける項目である。QSAM のファイルには入れるものが無い。
+                // 順編成でも割当て名が AS- で始まれば VSAM (ESDS) なので通す
+                diagnostics.add(new Diagnostic(one.origin(),
+                        "the second FILE STATUS item is allowed only for a VSAM file: "
+                                + one.name()));
+                continue;
+            }
+            if (vsamStatus != null
+                    && vsamStatus.constantLength().orElse(0) != VSAM_STATUS_LENGTH) {
+                diagnostics.add(new Diagnostic(one.origin(),
+                        "the second FILE STATUS item requires a six-byte item"));
+                continue;
+            }
             DataReference relativeKey = relativeKeyOf(one, varying, resolver, diagnostics);
             if (one.relativeKey() != null && relativeKey == null) {
                 continue;
@@ -430,7 +463,7 @@ public record FileDescription(String name, String ddName, Organization organizat
                     new FileDescription(one.name(), one.ddName(), one.organization(), format,
                             one.access(), status, one.optional(), relativeKey, keys,
                             entry != null && entry.SD() != null, area, length,
-                            varying, linage, one.origin())) != null) {
+                            varying, linage, one.origin(), vsamStatus)) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }
         }

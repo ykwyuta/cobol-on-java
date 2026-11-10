@@ -312,17 +312,20 @@ class IndexedDataSetTest {
     }
 
     @Test
-    @DisplayName("開いていなければどの操作も 42 になる (FR-103)")
+    @DisplayName("開いていないファイルへの要求は、文ごとに決まった状態になる (FR-103)")
     void everyOperationNeedsAnOpenFile() {
+        // 以前はどの操作も 42 になることを検査していた。順編成はもとから 47 / 48 / 49 を
+        // 返しており、編成で番号が違っていた。42 は開いていないファイルの CLOSE だけである
+        // (85 規格 VII の入出力状態の表。ZCVS の ZF104A で見つかった)
         IndexedDataSet file = at("K.DAT");
 
-        assertEquals(FileStatus.NOT_OPEN, file.read(area()));
-        assertEquals(FileStatus.NOT_OPEN, file.readKey(0, key("AAA"), area()));
-        assertEquals(FileStatus.NOT_OPEN, file.write(record("AAA", "x1", "one")));
-        assertEquals(FileStatus.NOT_OPEN, file.writeKey(record("AAA", "x1", "one")));
-        assertEquals(FileStatus.NOT_OPEN, file.rewrite(record("AAA", "x1", "one")));
-        assertEquals(FileStatus.NOT_OPEN, file.delete());
-        assertEquals(FileStatus.NOT_OPEN, file.start(0, key("AAA"), KeyRelation.EQUAL));
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.read(area()));
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.readKey(0, key("AAA"), area()));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.write(record("AAA", "x1", "one")));
+        assertEquals(FileStatus.WRITE_NOT_ALLOWED, file.writeKey(record("AAA", "x1", "one")));
+        assertEquals(FileStatus.REWRITE_NOT_ALLOWED, file.rewrite(record("AAA", "x1", "one")));
+        assertEquals(FileStatus.REWRITE_NOT_ALLOWED, file.delete());
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.start(0, key("AAA"), KeyRelation.EQUAL));
         assertEquals(FileStatus.NOT_OPEN, file.close());
     }
 
@@ -346,7 +349,7 @@ class IndexedDataSetTest {
         // 読む順序は鍵の順であり、バイト列の位置と対応しない。
         // だから順編成のように「壊れた場所まで読める」とは言えない
         assertEquals(FileStatus.IO_ERROR, file.open(OpenMode.INPUT, false));
-        assertEquals(FileStatus.NOT_OPEN, file.read(area()));
+        assertEquals(FileStatus.READ_NOT_ALLOWED, file.read(area()));
     }
 
     @Test

@@ -382,6 +382,37 @@ public final class Ops {
      * <p>時計は {@link ProgramContext} が持っている。実行のたびに変わる値を試験に
      * 書けるようにするためである。
      */
+    /**
+     * {@code FILE STATUS} の 2 つ目の項目 (VSAM の戻りコード) を入れる。
+     *
+     * <p>halfword 3 つである。戻りコード (レジスタ 15)、機能コード、フィードバックコード。
+     * VSAM まで届いて断られた要求だけが値を持ち、うまくいった要求と、VSAM へ届く前に
+     * COBOL のランタイムが断った要求 (開いていないファイルなど) は 0 である。
+     *
+     * <p>値は VSAM のマクロ命令の戻りコードの表 (DFSMS Macro Instructions for Data Sets の
+     * 「論理エラーのフィードバックコード」) から、入出力状態に対応するものを置く。
+     * この処理系は VSAM そのものを持たないので、<b>状態から逆に引いている</b>。
+     */
+    public static void vsamStatus(byte[] status, Storage target, int offset, CodePage codePage) {
+        String code = codePage.decode(status);
+        int feedback = switch (code) {
+            // 重複した副鍵。要求はうまくいっているので、戻りコードは 0 のままである
+            case "02" -> 8;
+            case "10" -> 4;
+            case "21" -> 12;
+            case "22" -> 8;
+            case "23" -> 16;
+            case "24" -> 28;
+            default -> 0;
+        };
+        int returnCode = switch (code) {
+            case "10", "21", "22", "23", "24" -> 8;
+            default -> 0;
+        };
+        target.view(offset, 6).setBytes(new byte[] {
+            0, (byte) returnCode, 0, 0, 0, (byte) feedback});
+    }
+
     /** 今年。2 桁の年を 4 桁にする関数の窓がこれを基準にする。 */
     public static int currentYear(ProgramContext context) {
         return java.time.ZonedDateTime.now(context.clock()).getYear();
@@ -914,6 +945,12 @@ public final class Ops {
     }
 
     private static IndexedDataSet indexed(ProgramContext context, String name, String ddName) {
+        if (context.neverOpened(name)) {
+            // 開く前の要求。閉じたままの仮のファイルが、文ごとの状態 (47 / 48 / 49) を返す
+            return IndexedDataSet.at(context.catalog().resolve(ddName),
+                    dev.cobolonjava.runtime.file.DataSetAttributes.standard(),
+                    new IndexedDataSet.Key(0, 1, false), java.util.List.of());
+        }
         return (IndexedDataSet) context.file(name, ddName);
     }
 
@@ -963,6 +1000,9 @@ public final class Ops {
 
     /** 直前に読んだレコードを消す (要件 FR-102)。鍵で引く編成だけである。 */
     public static byte[] delete(ProgramContext context, String name, String ddName) {
+        if (context.neverOpened(name)) {
+            return status(context, FileStatus.REWRITE_NOT_ALLOWED);
+        }
         return status(context, ((KeyedDataSet) context.file(name, ddName)).delete());
     }
 
@@ -1020,6 +1060,10 @@ public final class Ops {
 
     /** 相対編成として引く。編成は翻訳時に決まっているので、ここは必ず当たる。 */
     private static RelativeDataSet relative(ProgramContext context, String name, String ddName) {
+        if (context.neverOpened(name)) {
+            return RelativeDataSet.at(context.catalog().resolve(ddName),
+                    dev.cobolonjava.runtime.file.DataSetAttributes.standard());
+        }
         return (RelativeDataSet) context.file(name, ddName);
     }
 

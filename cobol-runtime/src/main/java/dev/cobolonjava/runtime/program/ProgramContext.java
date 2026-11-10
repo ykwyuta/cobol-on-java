@@ -384,9 +384,24 @@ public final class ProgramContext {
         return file == null ? dev.cobolonjava.runtime.abend.AbendCode.S037 : file.spaceAbend();
     }
 
+    /**
+     * すでに用意したファイルを引く。
+     *
+     * <p>ファイルを宣言どおりの様式で用意するのは {@code OPEN} である。<b>開く前に</b>
+     * 読み書きや {@code CLOSE} をされたときは、閉じたままの仮のファイルを返し、
+     * <b>覚えておかない</b>。以前はここで既定の様式 (80 byte の順編成) のファイルを
+     * 作って覚えていたので、あとから {@code OPEN} しても宣言の様式にならず、8 byte の
+     * レコードが 80 byte で書かれていた (ZCVS の ZF113A で見つかった。開く前の READ が
+     * 47 になることを確かめたあと、同じファイルを開いて読み書きしている)。
+     */
     public DataSet file(String name, String ddName) {
-        return files.computeIfAbsent(name,
-                k -> allocated(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
+        DataSet known = files.get(name);
+        return known != null ? known : SequentialDataSet.at(catalog.resolve(ddName));
+    }
+
+    /** そのファイルがまだ用意されていないか。 */
+    public boolean neverOpened(String name) {
+        return !files.containsKey(name);
     }
 
     /**
