@@ -313,7 +313,18 @@ final class PliSyntax {
      */
     record Program(String name, List<String> parameters, List<Stmt> body,
                    Map<String, Procedure> procedures, boolean main,
-                   Map<String, FileInfo> files, boolean noExecOps) {
+                   Map<String, FileInfo> files, boolean noExecOps,
+                   Map<String, List<GenericAlternative>> generics) {
+    }
+
+    /**
+     * GENERIC の 1 つの選択肢 (LRM "GENERIC attribute")。{@code descriptors} は引数ごとの
+     * FIXED / CHAR / BIT / POINTER / *。
+     */
+    record GenericAlternative(String entry, List<String> descriptors) {
+        boolean matches(List<String> kinds) {
+            return Parser.genericMatches(descriptors, kinds);
+        }
     }
 
     /**
@@ -853,9 +864,25 @@ final class PliSyntax {
                             + " is not BASED or CONTROLLED");
                 }
             }
+            for (Map.Entry<Token, List<Expr>> call : calls) {
+                List<GenericAlternative> alternatives = generics.get(call.getKey().text());
+                if (alternatives == null) continue;
+                List<String> kinds = new ArrayList<>();
+                for (Expr argument : call.getValue()) {
+                    kinds.add(argument instanceof Literal literal
+                            ? (literal.value() instanceof String ? "CHAR"
+                                    : literal.value() instanceof FixedValue ? "FIXED" : null)
+                            : null);
+                }
+                if (kinds.stream().allMatch(java.util.Objects::nonNull) && alternatives.stream()
+                        .noneMatch(a -> genericMatches(a.descriptors(), kinds))) {
+                    throw new ParseFailure(call.getKey(), "no GENERIC alternative of "
+                            + call.getKey().text() + " matches " + kinds);
+                }
+            }
             return new ParseResult(new Program(main.name, main.parameters,
                     List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
-                    Map.copyOf(files), main.noExecOps), List.of());
+                    Map.copyOf(files), main.noExecOps, Map.copyOf(generics)), List.of());
         }
 
         /** FILE の宣言の属性。名は大文字。 */
@@ -1204,6 +1231,12 @@ final class PliSyntax {
 
         private final List<StorageReference> storageReferences = new ArrayList<>();
 
+        /** GENERIC の名と選択肢。 */
+        private final Map<String, List<GenericAlternative>> generics = new java.util.HashMap<>();
+
+        /** CALL の名と引数。GENERIC の選択を読み終えてから確かめる。 */
+        private final List<Map.Entry<Token, List<Expr>>> calls = new ArrayList<>();
+
         /** LOCATE の変数。BASED でなければならない。 */
         private final List<Token> locateReferences = new ArrayList<>();
 
@@ -1306,6 +1339,7 @@ final class PliSyntax {
 
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
+            generic(name, part);
             checkAttributes(part, info);
             if (info.type == Type.FILE) {
                 int size = 0;
@@ -1556,6 +1590,11 @@ final class PliSyntax {
                     return new TypeInfo(Type.FILE, 0, 0);
                 }
                 if (tokens.get(i).is("ENTRY")) {
+                    // VARIABLE なら入口の値を持つ変数 (精度 1 で印す)。そうでなければ入口の宣言
+                    return new TypeInfo(Type.ENTRY, tokens.stream()
+                            .anyMatch(t -> t.is("VARIABLE")) ? 1 : 0, 0);
+                }
+                if (tokens.get(i).is("GENERIC")) {
                     return new TypeInfo(Type.ENTRY, 0, 0);
                 }
                 if (tokens.get(i).is("PIC") || tokens.get(i).is("PICTURE")) {
@@ -1623,6 +1662,57 @@ final class PliSyntax {
                 }
             }
             return new TypeInfo(inherited, inheritedPrecision, inheritedScale);
+        }
+
+        /** GENERIC(入口 WHEN(記述,...), ...) を読む。 */
+        private void generic(String name, List<Token> tokens) {
+            int at = -1;
+            for (int i = 0; i + 1 < tokens.size(); i++) {
+                if (tokens.get(i).is("GENERIC") && tokens.get(i + 1).is("(")) at = i + 1;
+            }
+            if (at < 0) {
+                return;
+            }
+            int close = findClosing(tokens, at);
+            List<GenericAlternative> alternatives = new ArrayList<>();
+            for (List<Token> item : split(tokens.subList(at + 1, close), ",")) {
+                if (item.size() < 3 || item.get(0).kind() != Kind.IDENT || !item.get(1).is("WHEN")
+                        || !item.get(2).is("(")) {
+                    throw new ParseFailure(item.isEmpty() ? tokens.get(at) : item.get(0),
+                            "GENERIC alternative 'entry WHEN(descriptors)' expected");
+                }
+                int end = findClosing(item, 2);
+                List<String> descriptors = new ArrayList<>();
+                for (List<Token> descriptor : split(item.subList(3, end), ",")) {
+                    String word = descriptor.isEmpty() ? "*" : descriptor.get(0).text();
+                    String kind = switch (word) {
+                        case "FIXED", "BIN", "BINARY", "DEC", "DECIMAL" -> "FIXED";
+                        case "CHAR", "CHARACTER" -> "CHAR";
+                        case "BIT" -> "BIT";
+                        case "POINTER", "PTR" -> "POINTER";
+                        case "*" -> "*";
+                        default -> throw new ParseFailure(descriptor.get(0),
+                                "GENERIC descriptor " + word + " is not supported yet");
+                    };
+                    descriptors.add(kind);
+                }
+                alternatives.add(new GenericAlternative(item.get(0).text(), List.copyOf(descriptors)));
+            }
+            generics.put(name.toUpperCase(Locale.ROOT), List.copyOf(alternatives));
+        }
+
+        /** 選択肢の記述が引数の種類に合うか。種類が分からない (null) 引数はどれにも合うとみなす。 */
+        static boolean genericMatches(List<String> descriptors, List<String> kinds) {
+            if (descriptors.size() != kinds.size()) {
+                return false;
+            }
+            for (int i = 0; i < kinds.size(); i++) {
+                String d = descriptors.get(i);
+                if (!d.equals("*") && kinds.get(i) != null && !d.equals(kinds.get(i))) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /** 宣言の PICTURE の指定の字。 */
@@ -1963,8 +2053,10 @@ final class PliSyntax {
         }
 
         private Stmt call() {
+            Token at = peek();
             String name = qualifiedName();
             List<Expr> args = check("(") ? arguments() : List.of();
+            calls.add(Map.entry(at, args));
             expect(";");
             return new Call(name, args);
         }
@@ -2140,7 +2232,15 @@ final class PliSyntax {
             if (check(Kind.IDENT)) {
                 String name = qualifiedName();
                 if (check("(")) {
-                    return new Function(name, arguments());
+                    Expr call = new Function(name, arguments());
+                    while (check("(")) {
+                        // TAB(1)(3): 入口の値を返したものを続けて呼ぶ
+                        List<Expr> applied = new ArrayList<>();
+                        applied.add(call);
+                        applied.addAll(arguments());
+                        call = new Function("#APPLY", List.copyOf(applied));
+                    }
+                    return call;
                 }
                 return new Reference(name);
             }

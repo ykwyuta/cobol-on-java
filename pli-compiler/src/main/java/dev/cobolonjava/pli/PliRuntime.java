@@ -1101,7 +1101,7 @@ public final class PliRuntime {
                 declareDefined(declaration, env);
                 return;
             }
-            if (declaration.type() == PliSyntax.Type.ENTRY
+            if ((declaration.type() == PliSyntax.Type.ENTRY && declaration.precision() == 0)
                     || declaration.type() == PliSyntax.Type.FILE) {
                 return;
             }
@@ -1364,7 +1364,8 @@ public final class PliRuntime {
                 }
                 return;
             }
-            if (assignment.value() instanceof PliSyntax.Reference reference) {
+            if (assignment.value() instanceof PliSyntax.Reference reference
+                    && env.contains(reference.name())) {
                 Var source = env.require(reference.name());
                 if (target.type == PliSyntax.Type.GROUP && source.type == PliSyntax.Type.GROUP) {
                     copy(source.view, target.view, context.codePage().space());
@@ -1792,8 +1793,62 @@ public final class PliRuntime {
             env.alias(declaration.name(), dummy);
         }
 
+        /** 入口の値が指す内部手続き。 */
+        private PliSyntax.Procedure entryProcedure(Object value) {
+            if (!(value instanceof EntryValue entry)) {
+                throw new PliExecutionException("an ENTRY variable without a value was called");
+            }
+            PliSyntax.Procedure procedure = program.procedures().get(entry.name());
+            if (procedure == null) {
+                throw new PliExecutionException("entry " + entry.name() + " is not an internal"
+                        + " procedure of this program");
+            }
+            return procedure;
+        }
+
+        /**
+         * GENERIC の選択 (LRM "GENERIC attribute")。引数の種類が記述に合う最初の選択肢を選ぶ。
+         * 合うものが無ければ誤りである。
+         */
+        private PliSyntax.Procedure generic(String name, List<PliSyntax.Expr> arguments, Env env) {
+            List<String> kinds = new ArrayList<>();
+            for (PliSyntax.Expr argument : arguments) {
+                Var variable = argument instanceof PliSyntax.Reference reference
+                        ? env.find(reference.name()) : null;
+                Object value = variable != null ? null : value(argument, env);
+                PliSyntax.Type type = variable != null ? variable.type : null;
+                kinds.add(type == PliSyntax.Type.BINARY || type == PliSyntax.Type.DECIMAL
+                        || type == PliSyntax.Type.PICTURE || value instanceof FixedValue
+                        || value instanceof Number ? "FIXED"
+                        : type == PliSyntax.Type.CHAR || value instanceof String ? "CHAR"
+                        : type == PliSyntax.Type.BIT || value instanceof PliSyntax.BitString
+                                || value instanceof Boolean ? "BIT"
+                        : type == PliSyntax.Type.POINTER || value instanceof PointerValue
+                                ? "POINTER" : "?");
+            }
+            for (PliSyntax.GenericAlternative alternative : program.generics().get(name)) {
+                if (alternative.matches(kinds)) {
+                    PliSyntax.Procedure procedure = program.procedures().get(alternative.entry());
+                    if (procedure == null) {
+                        throw new PliExecutionException("GENERIC " + name + " selects "
+                                + alternative.entry() + ", which is not an internal procedure");
+                    }
+                    return procedure;
+                }
+            }
+            throw new PliExecutionException("no GENERIC alternative of " + name + " matches "
+                    + kinds);
+        }
+
         private void call(PliSyntax.Call call, Env env) {
             PliSyntax.Procedure procedure = program.procedures().get(call.name());
+            if (procedure == null && program.generics().containsKey(call.name())) {
+                procedure = generic(call.name(), call.arguments(), env);
+            } else if (procedure == null && env.find(call.name()) != null
+                    && env.find(call.name()).type == PliSyntax.Type.ENTRY
+                    && env.find(call.name()).dimensions == null) {
+                procedure = entryProcedure(env.require(call.name()).read(context));
+            }
             if (procedure != null) {
                 invoke(procedure, call.arguments(), env);
                 return;
@@ -2195,6 +2250,11 @@ public final class PliRuntime {
                 return located(reference.name(), env,
                         rest -> evaluate(new PliSyntax.Reference(rest), env));
             }
+            if (expression instanceof PliSyntax.Reference reference && !env.contains(reference.name())
+                    && program.procedures().containsKey(reference.name())) {
+                // 手続きの名は入口の値である (入口の変数へ代入できる)
+                return new EntryValue(reference.name());
+            }
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
                 if (variable.dimensions != null) {
@@ -2392,8 +2452,20 @@ public final class PliRuntime {
                 }
             }
             PliSyntax.Procedure procedure = program.procedures().get(function.name());
+            List<PliSyntax.Expr> callArguments = function.arguments();
+            if (function.name().equals("#APPLY")) {
+                // 入口の値を返した式を、続く引数で呼ぶ (TAB(1)(3))
+                procedure = entryProcedure(value(function.arguments().get(0), env));
+                callArguments = function.arguments().subList(1, function.arguments().size());
+            } else if (procedure == null && program.generics().containsKey(function.name())) {
+                procedure = generic(function.name(), callArguments, env);
+            } else if (procedure == null && env.find(function.name()) != null
+                    && env.find(function.name()).type == PliSyntax.Type.ENTRY
+                    && env.find(function.name()).dimensions == null) {
+                procedure = entryProcedure(env.require(function.name()).read(context));
+            }
             if (procedure != null) {
-                Object result = invoke(procedure, function.arguments(), env);
+                Object result = invoke(procedure, callArguments, env);
                 if (result == null) {
                     throw new PliExecutionException("procedure " + procedure.name()
                             + " was used as a function but returned no value");
@@ -3288,7 +3360,15 @@ public final class PliRuntime {
                 case OFFSET -> FixedValue.binary(BigDecimal.valueOf(
                         java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt()), 31, 0);
                 case AREA -> new AreaImage(view.toByteArray());
-                case FILE, ENTRY -> "";
+                // 入口の変数。頭の 4 byte が AddressSpace の入口の番号である
+                case ENTRY -> {
+                    int number = view.length() < 4 ? 0
+                            : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt();
+                    String entry = number == 0 ? null
+                            : AddressSpace.of(context).entryNamed(number);
+                    yield entry == null ? "" : new EntryValue(entry);
+                }
+                case FILE -> "";
             };
         }
 
@@ -3388,7 +3468,15 @@ public final class PliRuntime {
                     }
                     view.setBytes(java.nio.ByteBuffer.allocate(4).putInt(pointer.address()).array());
                 }
-                case FILE, ENTRY -> throw new PliExecutionException(
+                case ENTRY -> {
+                    if (!(value instanceof EntryValue entry) || view.length() < 4) {
+                        throw new PliExecutionException("only an entry can be assigned to the"
+                                + " ENTRY variable " + name);
+                    }
+                    view.setBytes(java.nio.ByteBuffer.allocate(view.length())
+                            .putInt(AddressSpace.of(context).entryOf(entry.name())).array());
+                }
+                case FILE -> throw new PliExecutionException(
                         "assignment to " + type + " is not supported: " + name);
             }
         }
@@ -3544,6 +3632,10 @@ public final class PliRuntime {
     /**
      * POINTER の値。記憶域の位置に AddressSpace が振った番号で、0 は何も指さない (P-150)。
      */
+    /** 入口の値 (内部手続きの名)。 */
+    private record EntryValue(String name) {
+    }
+
     /** AREA の管理域の大きさ。割り当ては管理域の後ろから始まる。 */
     static final int AREA_HEADER = 16;
 

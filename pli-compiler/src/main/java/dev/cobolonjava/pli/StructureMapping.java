@@ -225,7 +225,9 @@ final class StructureMapping {
             case POINTER, OFFSET -> 4;
             // AREA(n) は n byte と管理域の 16 byte
             case AREA -> Math.max(0, decl.precision()) + PliRuntime.AREA_HEADER;
-            case GROUP, FILE, ENTRY -> 0;
+            // 入口の変数は 8 byte (頭の 4 byte に入口の番号を置く。この処理系の約束)
+            case ENTRY -> decl.precision() > 0 ? 8 : 0;
+            case GROUP, FILE -> 0;
         };
     }
 

@@ -290,6 +290,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `AREA`、`OFFSET`、`ALLOCATE ... IN`、`POINTER(o,a)`、`OFFSET(p,a)`、`EMPTY()` | 58 / 68 | 297 / 298 |
 | KEYED のファイル (KEY / KEYFROM、REWRITE、DELETE、ON KEY)、`LOCATE` | 60 / 68 | 306 / 307 |
 | `GET STRING` (EDIT、LIST)、`PUT STRING DATA` | 61 / 68 | 310 / 311 |
+| 入口の変数 (`ENTRY ... VARIABLE`、`TAB(1)(3)`)、`GENERIC` | 63 / 68 | 317 / 317 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -379,6 +380,13 @@ KEYED のファイルは COBOL と同じ索引付きデータセット (`Indexed
 した (実機と突き合わせていない)。`PUT STRING DATA` は `名=値` を空白で区切って ';' で終える。
 値の形は list-directed と同じにしたが、data-directed の空白の規則は確かめていない。
 ファイルからの `GET` はまだ持たず、翻訳で断る。
+
+入口の変数は 8 byte で、頭の 4 byte に AddressSpace が振った入口の番号を置く (この処理系の
+約束)。手続きの名を値にでき、入口の値を返す式は続けて呼べる (`TAB(1)(3)`)。指せるのは
+同じプログラムの内部手続きだけである。`GENERIC` は引数の種類 (FIXED / CHAR / BIT /
+POINTER / *) で最初に合う選択肢を選ぶ。引数がすべて定数なら翻訳で選び、合うものが無ければ
+断る (PE112N)。以前は GENERIC の宣言を型の分からない属性として読み飛ばし、前の項目の型を
+受け継いでいた。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

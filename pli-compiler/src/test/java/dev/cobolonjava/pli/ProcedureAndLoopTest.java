@@ -161,4 +161,42 @@ class ProcedureAndLoopTest {
         assertTrue(rejection("DO; ITERATE MISSING; END;").contains("no enclosing DO"));
         assertTrue(rejection("RETURN(7);").contains("without RETURNS"));
     }
+
+    @Test
+    @DisplayName("入口の変数は代入した手続きを呼び、配列の要素の入口は TAB(1)(3) で呼べる")
+    void entryVariables() throws Exception {
+        assertEquals("14 49 6 9", run("""
+                DCL E ENTRY(FIXED BIN(31)) RETURNS(FIXED BIN(31)) VARIABLE;
+                DCL TAB(2) ENTRY(FIXED BIN(31)) RETURNS(FIXED BIN(31)) VARIABLE;
+                DCL (A, B) FIXED BIN(31);
+                E = TWICE; A = E(7);
+                E = SQUARE; B = E(7);
+                TAB(1) = TWICE; TAB(2) = SQUARE;
+                PUT SKIP LIST(A, B, TAB(1)(3), TAB(2)(3));
+                TWICE: PROC(X) RETURNS(FIXED BIN(31));
+                  DCL X FIXED BIN(31); RETURN(X * 2); END TWICE;
+                SQUARE: PROC(X) RETURNS(FIXED BIN(31));
+                  DCL X FIXED BIN(31); RETURN(X * X); END SQUARE;
+                """).strip().replaceAll("\\s+", " "));
+    }
+
+    @Test
+    @DisplayName("GENERIC は引数の種類で選択肢を選び、定数の引数に合う選択肢が無ければ翻訳で断る")
+    void genericSelection() throws Exception {
+        assertEquals("12 3", run("""
+                DCL G GENERIC(GN WHEN(FIXED), GC WHEN(CHAR));
+                DCL (F1, F2) FIXED BIN(31);
+                DCL FLAG FIXED BIN(31);
+                CALL G(12); F1 = FLAG;
+                CALL G('ABC'); F2 = FLAG;
+                PUT SKIP LIST(F1, F2);
+                GN: PROC(X); DCL X FIXED BIN(31); FLAG = X; END GN;
+                GC: PROC(X); DCL X CHAR(*); FLAG = LENGTH(X); END GC;
+                """).strip().replaceAll("\\s+", " "));
+        assertTrue(rejection("""
+                DCL G GENERIC(C WHEN(CHAR));
+                CALL G(7);
+                C: PROC(X); DCL X FIXED BIN(31); END C;
+                """).contains("no GENERIC alternative"));
+    }
 }
