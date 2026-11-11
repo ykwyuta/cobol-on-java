@@ -416,6 +416,23 @@ public final class PliRuntime {
             } else if (statement instanceof PliSyntax.Return result) {
                 returned = result.value() == null ? null : value(result.value(), env);
                 throw ReturnSignal.INSTANCE;
+            } else if (statement instanceof PliSyntax.Select select) {
+                Object subject = select.subject() == null ? null : value(select.subject(), env);
+                for (PliSyntax.When when : select.whens()) {
+                    for (PliSyntax.Expr candidate : when.values()) {
+                        Object value = value(candidate, env);
+                        if (subject == null ? truth(value) : compare(subject, value) == 0) {
+                            execute(when.action(), env);
+                            return;
+                        }
+                    }
+                }
+                if (select.otherwise() != null) {
+                    execute(select.otherwise(), env);
+                } else {
+                    // 当たる WHEN も OTHERWISE も無ければ ERROR である (LRM "SELECT statement")
+                    throw new Condition("ERROR", null, 3, null);
+                }
             } else if (statement instanceof PliSyntax.OnCondition on) {
                 env.establish(conditionKey(on.condition(), on.qualifier()),
                         new Env.Handler(on.handler(), env, on.system()));

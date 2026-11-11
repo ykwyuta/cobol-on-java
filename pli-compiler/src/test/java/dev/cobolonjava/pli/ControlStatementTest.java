@@ -154,4 +154,41 @@ class ControlStatementTest {
                 END;
                 """).contains("CTL.pli"));
     }
+
+    @Test
+    @DisplayName("SELECT は最初に当たった WHEN だけを実行し、当たらなければ OTHERWISE へ行く")
+    void selectRunsOnlyTheFirstMatchingWhen() throws Exception {
+        assertEquals("12,13,21", run("""
+                DCL (T, K) FIXED BIN(31);
+                DO K = 2 TO 4 BY 2;
+                  SELECT(K);
+                    WHEN(1) T = 11;
+                    WHEN(2, 3) T = 12;
+                    WHEN(2) T = 99;
+                    OTHERWISE T = 13;
+                  END;
+                  PUT SKIP LIST(T);
+                END;
+                SELECT;
+                  WHEN(K < 4) T = 20;
+                  WHEN(K = 4) DO; T = 21; END;
+                END;
+                PUT SKIP LIST(T);
+                """));
+    }
+
+    @Test
+    @DisplayName("当たる WHEN も OTHERWISE も無い SELECT は ERROR を起こす")
+    void selectWithoutAMatchRaisesError() throws Exception {
+        assertEquals("ERROR", run("""
+                ON ERROR BEGIN;
+                  PUT SKIP LIST('ERROR');
+                  STOP;
+                END;
+                SELECT(5);
+                  WHEN(1) PUT SKIP LIST('ONE');
+                END;
+                PUT SKIP LIST('AFTER');
+                """));
+    }
 }

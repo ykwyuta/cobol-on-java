@@ -51,7 +51,7 @@ final class PliSyntax {
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
             Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group, OnCondition, Revert, Signal,
-            Prefixed {
+            Prefixed, Select {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -193,6 +193,16 @@ final class PliSyntax {
     }
 
     record Revert(String condition, String qualifier) implements Stmt {
+    }
+
+    /**
+     * {@code SELECT [(式)]; WHEN (式,...) 文 ... [OTHERWISE 文] END;}。主語の式が無ければ、
+     * WHEN の式を真偽として見る (LRM "SELECT statement")。
+     */
+    record Select(Expr subject, List<When> whens, Stmt otherwise) implements Stmt {
+    }
+
+    record When(List<Expr> values, Stmt action) {
     }
 
     record Signal(String condition, String qualifier) implements Stmt {
@@ -593,6 +603,28 @@ final class PliSyntax {
             }
             if (match("ON")) {
                 return onCondition();
+            }
+            if (match("SELECT")) {
+                Expr subject = check("(") ? parenthesizedExpression() : null;
+                expect(";");
+                List<When> whens = new ArrayList<>();
+                Stmt otherwise = null;
+                while (!check("END")) {
+                    if (match("WHEN")) {
+                        whens.add(new When(arguments(), labelled()));
+                    } else if (match("OTHERWISE") || match("OTHER")) {
+                        otherwise = labelled();
+                    } else {
+                        throw fail(peek(), "WHEN or OTHERWISE expected in SELECT, found "
+                                + peek().text());
+                    }
+                }
+                expect("END");
+                if (check(Kind.IDENT)) {
+                    next();
+                }
+                expect(";");
+                return new Select(subject, List.copyOf(whens), otherwise);
             }
             if (match("REVERT") || match("SIGNAL")) {
                 boolean revert = previous().is("REVERT");
