@@ -442,7 +442,7 @@ final class PliSyntax {
             int tokenColumn = column;
             char first = source.charAt(at);
             String two = at + 1 < source.length() ? source.substring(at, at + 2) : "";
-            if (List.of("^=", "¬=", "<=", ">=", "||", "**", "=>").contains(two)) {
+            if (List.of("^=", "¬=", "<=", ">=", "||", "**", "=>", "->").contains(two)) {
                 advance(first);
                 advance(source.charAt(at));
                 tokens.add(new Token(Kind.SYMBOL, two, tokenLine, tokenColumn));
@@ -1496,6 +1496,10 @@ final class PliSyntax {
             StringBuilder name = new StringBuilder(expect(Kind.IDENT, "identifier").text());
             while (match(".")) {
                 name.append('.').append(expect(Kind.IDENT, "qualified identifier").text());
+            }
+            if (match("->")) {
+                // locator で修飾した参照 Q->A (LRM "Locator qualification")。"Q->A" の名で運ぶ
+                name.append("->").append(qualifiedName());
             }
             return name.toString();
         }

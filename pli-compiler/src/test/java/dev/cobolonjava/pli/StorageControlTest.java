@@ -142,4 +142,37 @@ class StorageControlTest {
                 DCL A(*) FIXED BIN(31);
                 """).contains("(*)"));
     }
+
+    @Test
+    @DisplayName("Q->A は A の locator を一時的に Q にして読み書きし、右辺は入れ替える前に評価する")
+    void locatorQualification() throws Exception {
+        assertEquals("2 1,99 1", run("""
+                DCL (P, Q) POINTER;
+                DCL 1 NODE BASED(P), 2 A FIXED BIN(31);
+                ALLOCATE NODE SET(Q);
+                ALLOCATE NODE;
+                NODE.A = 1;
+                Q->A = NODE.A + 1;
+                PUT SKIP LIST(Q->A, NODE.A);
+                Q->A = 99;
+                PUT SKIP LIST(Q->A, A);
+                """).replaceAll(" +", " "));
+    }
+
+    @Test
+    @DisplayName("NULL は X'FF000000'、SYSNULL は 0 で、別の値である。POINTERADD は同じ記憶域の中を進む")
+    void nullSysnullAndPointerAdd() throws Exception {
+        assertEquals("FF000000,00000000,1", run("""
+                DCL (P, Q) POINTER;
+                DCL 1 NODE BASED(P), 2 A FIXED BIN(31), 2 B CHAR(4);
+                P = NULL();
+                PUT SKIP LIST(HEX(UNSPEC(P)));
+                P = SYSNULL();
+                PUT SKIP LIST(HEX(UNSPEC(P)));
+                ALLOCATE NODE;
+                IF POINTERADD(P, 4) = ADDR(NODE.B) & NULL() ^= SYSNULL()
+                  THEN PUT SKIP LIST('1');
+                  ELSE PUT SKIP LIST('0');
+                """));
+    }
 }

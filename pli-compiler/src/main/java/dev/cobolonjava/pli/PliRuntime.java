@@ -159,6 +159,47 @@ public final class PliRuntime {
          */
         private final Map<String, List<Runnable>> basedOn = new HashMap<>();
 
+        /**
+         * locator で修飾した参照 {@code Q->X} を、X の宣言の locator (BASED(P) の P) を Q の値に
+         * 一時的に置き換えて扱う (LRM "Locator qualification")。済んだら P を元の値に戻す。
+         */
+        private <T> T located(String qualified, Env env,
+                              java.util.function.Function<String, T> action) {
+            int arrow = qualified.indexOf("->");
+            String locatorName = qualified.substring(0, arrow).toUpperCase(Locale.ROOT);
+            String rest = qualified.substring(arrow + 2);
+            String root = rest.split("\\.|->")[0].toUpperCase(Locale.ROOT);
+            List<PliSyntax.Decl> chunk = null;
+            for (List<PliSyntax.Decl> candidate : declaredChunks.values()) {
+                if (candidate.stream().anyMatch(d -> d.name().equalsIgnoreCase(root))) {
+                    chunk = candidate;
+                }
+            }
+            if (chunk == null || chunk.get(0).basedOn() == null) {
+                throw new PliExecutionException(qualified + ": " + root
+                        + " is not BASED on a POINTER");
+            }
+            Var locator = env.require(locatorName);
+            if (locator.type != PliSyntax.Type.POINTER) {
+                throw new PliExecutionException(qualified + ": " + locatorName
+                        + " is not a POINTER");
+            }
+            String implicit = chunk.get(0).basedOn().toUpperCase(Locale.ROOT);
+            if (implicit.equals(locatorName)) {
+                return action.apply(rest);
+            }
+            Var base = env.require(implicit);
+            Object saved = base.read(context);
+            base.write(locator.read(context), context);
+            rebase(base.name);
+            try {
+                return action.apply(rest);
+            } finally {
+                env.require(implicit).write(saved, context);
+                rebase(implicit);
+            }
+        }
+
         /** 最上位の名から、その宣言の塊。ALLOCATE が宣言をたどるのに使う。 */
         private final Map<String, List<PliSyntax.Decl>> declaredChunks = new HashMap<>();
 
@@ -305,7 +346,7 @@ public final class PliRuntime {
                         ? base.view.subView(0, length) : base.view;
             }
             int address = ((PointerValue) base.read(context)).address();
-            if (address == 0) {
+            if (address == 0 || address == NULL_ADDRESS) {
                 throw new PliExecutionException("BASED on " + name + ", which is a null pointer");
             }
             AddressSpace.Location location = AddressSpace.of(context).locate(address);
@@ -763,7 +804,8 @@ public final class PliRuntime {
         private boolean nullPointer(String name, Env env) {
             Var base = env.require(name);
             return base.type == PliSyntax.Type.POINTER
-                    && ((PointerValue) base.read(context)).address() == 0;
+                    && (((PointerValue) base.read(context)).address() == 0
+                        || ((PointerValue) base.read(context)).address() == NULL_ADDRESS);
         }
 
         /**
@@ -978,6 +1020,17 @@ public final class PliRuntime {
         }
 
         private void assign(PliSyntax.Assign assignment, Env env) {
+            if (assignment.target().contains("->")) {
+                // 右辺は locator を入れ替える前に評価する。Q->A = NODE.A + 1 の NODE.A は
+                // 今の P が指すものである
+                Object value = value(assignment.value(), env);
+                located(assignment.target(), env, rest -> {
+                    assign(new PliSyntax.Assign(rest, assignment.subscripts(),
+                            new PliSyntax.Literal(value)), env);
+                    return null;
+                });
+                return;
+            }
             String pseudo = assignment.target().toUpperCase(Locale.ROOT);
             if ((pseudo.equals("ONSOURCE") || pseudo.equals("ONCHAR")) && !env.contains(pseudo)) {
                 // 擬似変数。CONVERSION の on-unit の中で、変換できなかった字の並びを直す
@@ -1123,6 +1176,11 @@ public final class PliRuntime {
          * 以前は構造の記憶域をそのまま文字として書いており、2 進の要素が文字化けしていた。
          */
         private List<Object> items(PliSyntax.Expr expression, Env env) {
+            if (expression instanceof PliSyntax.Reference reference
+                    && reference.name().contains("->")) {
+                return located(reference.name(), env,
+                        rest -> items(new PliSyntax.Reference(rest), env));
+            }
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
                 if (variable.dimensions != null) {
@@ -1594,6 +1652,11 @@ public final class PliRuntime {
                 }
                 return literal.value();
             }
+            if (expression instanceof PliSyntax.Reference reference
+                    && reference.name().contains("->")) {
+                return located(reference.name(), env,
+                        rest -> evaluate(new PliSyntax.Reference(rest), env));
+            }
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
                 if (variable.dimensions != null) {
@@ -1934,7 +1997,27 @@ public final class PliRuntime {
                     int at = source == null ? -1 : badCharacter(source);
                     yield at < 0 ? " " : String.valueOf(source.charAt(at));
                 }
-                case "SYSNULL", "NULL" -> new PointerValue(0);
+                // NULL は X'FF000000'、SYSNULL は 0 である (Enterprise PL/I Programming Guide
+                // "NULL and SYSNULL")。以前はどちらも 0 にしていた
+                case "SYSNULL" -> new PointerValue(0);
+                case "NULL" -> new PointerValue(NULL_ADDRESS);
+                case "POINTERADD", "PTRADD" -> {
+                    if (!(arguments.get(0) instanceof PointerValue pointer)) {
+                        throw new PliExecutionException(name + " needs a POINTER");
+                    }
+                    // POINTER の値は位置ごとに振った番号であり、番地の算術は効かない (P-150)。
+                    // 番号が指す記憶域の中で位置を進め、その位置の番号を求める
+                    AddressSpace.Location location = AddressSpace.of(context)
+                            .locate(pointer.address());
+                    int offset = location == null ? -1
+                            : location.offset() + number(arguments.get(1)).intValue();
+                    if (location == null || offset < 0 || offset > location.storage().size()) {
+                        throw new PliExecutionException(name + " leaves the storage the POINTER"
+                                + " points into; addresses outside it are not modelled (P-150)");
+                    }
+                    yield new PointerValue(AddressSpace.of(context)
+                            .addressOf(location.storage(), offset));
+                }
                 // DAYS(日付, 型) は 1582 年 10 月 15 日を 1 とする日の番号 (Lilian) である
                 case "DAYS" -> FixedValue.binary(BigDecimal.valueOf(
                         lilian(display(arguments.get(0)), display(arguments.get(1)))), 31, 0);
@@ -2710,6 +2793,9 @@ public final class PliRuntime {
     /**
      * POINTER の値。記憶域の位置に AddressSpace が振った番号で、0 は何も指さない (P-150)。
      */
+    /** NULL() の値 X'FF000000'。 */
+    private static final int NULL_ADDRESS = 0xFF000000;
+
     private record PointerValue(int address) {
     }
 
