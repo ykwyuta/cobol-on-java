@@ -3634,6 +3634,9 @@ public final class ProcedureBuilder {
         if (context.ALPHANUMERIC() != null) {
             return InitializeImage.Category.ALPHANUMERIC;
         }
+        if (context.NATIONAL() != null) {
+            return InitializeImage.Category.NATIONAL;
+        }
         return context.NUMERIC_EDITED() != null
                 ? InitializeImage.Category.NUMERIC_EDITED
                 : InitializeImage.Category.NUMERIC;

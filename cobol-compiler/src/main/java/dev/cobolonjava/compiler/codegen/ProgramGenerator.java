@@ -7982,6 +7982,11 @@ public final class ProgramGenerator {
             // (CCVS85 の NC105A / NC202A)
             return codePage.encode(number.source());
         }
+        if (value instanceof LiteralValue.National national) {
+            // 国字の定数を群へ移すと、UTF-16 のバイト列をそのまま群の転記で移す
+            // (言語解説書の MOVE の表: 群の受取項目は英数字の基本項目として扱う)
+            return national.bytes();
+        }
         byte[] out = new byte[targetLength];
         Arrays.fill(out, figureByte(((LiteralValue.Figure) value).constant()));
         return out;

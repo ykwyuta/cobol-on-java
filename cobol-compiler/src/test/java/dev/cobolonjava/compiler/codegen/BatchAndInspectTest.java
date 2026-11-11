@@ -340,4 +340,44 @@ class BatchAndInspectTest {
                 "    IF WS-RAW = X'0041005800590044' DISPLAY 'REPL'.",
                 "    STOP RUN.")));
     }
+
+    @Test
+    @DisplayName("国字の群の中の数字は、字ごとに UTF-16 で持つ国字の数字項目である")
+    void storesNationalDecimalsInANationalGroup() {
+        assertEquals(List.of("BYTES", "12", "SELECT"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 NAT-GROUP GROUP-USAGE NATIONAL.",
+                "    05 LETTERS PIC N(2).",
+                "    05 DIGITS-NUM PIC 99.",
+                "01 GROUP-RAW REDEFINES NAT-GROUP PIC X(8).",
+                "01 SHOWN PIC 99.",
+                "PROCEDURE DIVISION.",
+                "    MOVE N'AB12' TO NAT-GROUP.",
+                "    IF GROUP-RAW = X'0041004200310032' DISPLAY 'BYTES'.",
+                "    MOVE DIGITS-NUM TO SHOWN.",
+                "    DISPLAY SHOWN.",
+                "    INITIALIZE NAT-GROUP REPLACING NATIONAL BY N'XY'.",
+                "    IF LETTERS = N'XY' AND DIGITS-NUM = 12 DISPLAY 'SELECT'.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("符号つきの国字の数字は SIGN SEPARATE が要り、国字の群の中に別の USAGE は書けない")
+    void refusesNationalDecimalsThatCannotExist() {
+        for (List<String> items : List.of(
+                List.of("01 BAD PIC S9(3) NATIONAL."),
+                List.of("01 G GROUP-USAGE NATIONAL.", "    05 BAD PIC 9(4) BINARY."))) {
+            List<String> lines = new ArrayList<>(List.of(
+                    "IDENTIFICATION DIVISION.",
+                    "PROGRAM-ID. MAIN.",
+                    "DATA DIVISION.",
+                    "WORKING-STORAGE SECTION."));
+            lines.addAll(items);
+            lines.addAll(List.of("PROCEDURE DIVISION.", "    STOP RUN."));
+            assertFalse(compile(lines).succeeded(), items.toString());
+        }
+    }
 }

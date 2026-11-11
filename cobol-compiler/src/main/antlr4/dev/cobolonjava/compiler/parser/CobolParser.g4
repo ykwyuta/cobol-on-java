@@ -648,6 +648,8 @@ pictureClause
 
 usageClause
     : (USAGE IS?)? usageName
+    // 群の中の基本項目をすべて国字にする (Enterprise COBOL 言語解説書 "GROUP-USAGE clause")
+    | GROUP_USAGE IS? NATIONAL
     ;
 
 usageName
@@ -1414,6 +1416,7 @@ initializeCategory
     | ALPHANUMERIC
     | NUMERIC_EDITED
     | NUMERIC
+    | NATIONAL
     ;
 
 // SET は条件名を成り立たせる形と、指標名を動かす形の 2 つがある

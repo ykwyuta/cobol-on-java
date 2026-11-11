@@ -49,6 +49,11 @@ public enum DataCategory {
      * それは数値ではなくバイトの並びである。
      */
     public static DataCategory of(DataReference reference) {
+        if (reference.item().isGroupNational()) {
+            // GROUP-USAGE NATIONAL の群は、文の中では国字の基本項目として扱う
+            // (言語解説書 "GROUP-USAGE clause")。中を下へ配るのは INITIALIZE だけである
+            return NATIONAL;
+        }
         if (reference.refMod() != null) {
             // 国字の項目の一部は国字のままである
             return reference.characterWidth() == 2 ? NATIONAL : ALPHANUMERIC;

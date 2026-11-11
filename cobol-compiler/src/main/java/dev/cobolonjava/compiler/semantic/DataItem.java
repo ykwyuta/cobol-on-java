@@ -339,6 +339,18 @@ public final class DataItem {
     private boolean alias;
 
     /** 下位の項目を持たない項目かどうか。 */
+    private boolean groupNational;
+
+    /** {@code GROUP-USAGE NATIONAL} を書いた。 */
+    void markGroupNational() {
+        groupNational = true;
+    }
+
+    /** {@code GROUP-USAGE NATIONAL} の群か。その群は国字の群として扱う。 */
+    public boolean isGroupNational() {
+        return groupNational && !children().isEmpty();
+    }
+
     public boolean isElementary() {
         return children.isEmpty();
     }

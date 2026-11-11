@@ -73,7 +73,9 @@ public final class InitializeImage {
 
     /** {@code REPLACING} で書ける分類。 */
     public enum Category {
-        ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED;
+        ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED,
+        /** 国字の項目 ({@code PIC N})。国字の数字項目は NUMERIC に入る (言語解説書 "INITIALIZE")。 */
+        NATIONAL;
 
         /** 項目の分類がこれに当たるか。 */
         public boolean matches(DataCategory actual) {
@@ -83,6 +85,7 @@ public final class InitializeImage {
                 case ALPHANUMERIC_EDITED -> actual == DataCategory.ALPHANUMERIC_EDITED;
                 case NUMERIC -> actual.isNumeric();
                 case NUMERIC_EDITED -> actual == DataCategory.NUMERIC_EDITED;
+                case NATIONAL -> actual == DataCategory.NATIONAL;
             };
         }
     }

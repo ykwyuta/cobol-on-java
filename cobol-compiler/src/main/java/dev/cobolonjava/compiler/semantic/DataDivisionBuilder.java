@@ -631,6 +631,12 @@ public final class DataDivisionBuilder {
      * (暫定判断 P-035)。同じ持ち方にすれば、{@code SET} も添字も同じ道を通る。
      */
     private void applyUsage(DataItem item, CobolParser.UsageClauseContext clause, Origin origin) {
+        if (clause.GROUP_USAGE() != null) {
+            // 群の USAGE として下へ配る。基本項目に書くのは誤りなので、木ができてから見る
+            item.setUsage(Usage.NATIONAL);
+            item.markGroupNational();
+            return;
+        }
         String name = clause.usageName().getText().toUpperCase(Locale.ROOT);
         if (name.equals("INDEX")) {
             // 群に書かれることもある。実体を作るのは木ができてからである
@@ -1788,6 +1794,12 @@ public final class DataDivisionBuilder {
             return;
         }
         for (DataItem child : item.children()) {
+            if (item.isGroupNational() && child.usage() != null
+                    && child.usage() != Usage.NATIONAL) {
+                // 国字の群の中は国字だけである。別の USAGE を書けば誤り
+                report(child.origin(), "an item under GROUP-USAGE NATIONAL must not specify"
+                        + " another USAGE: " + describe(child));
+            }
             inheritUsage(child, usage, index);
         }
     }
@@ -1974,9 +1986,24 @@ public final class DataDivisionBuilder {
             item.setUsage(Usage.NATIONAL);
             return picture.size() * 2;
         }
+        if (item.isGroupNational()) {
+            report(item.origin(), "GROUP-USAGE NATIONAL may be written only on a group item: "
+                    + describe(item));
+            return picture.size();
+        }
+        if (usage == Usage.NATIONAL && picture.isNumeric() && !picture.isExternalFloating()) {
+            // 国字の数字項目 (national decimal)。字の形は DISPLAY と同じで、1 字が UTF-16 の
+            // 2 byte である。符号を持つなら SIGN SEPARATE が要る (重ね打ちの符号は国字に無い)
+            if (picture.signPosition().isSigned() && !item.signPosition().isSeparate()) {
+                report(item.origin(), "a signed national numeric item requires SIGN SEPARATE: "
+                        + describe(item));
+                return picture.size() * 2;
+            }
+            return numericLength(item, picture, Usage.NATIONAL);
+        }
         if (usage == Usage.NATIONAL) {
-            report(item.origin(), "USAGE NATIONAL is supported only with PICTURE N (national"
-                    + " decimal and national-edited items are not supported yet): " + describe(item));
+            report(item.origin(), "USAGE NATIONAL requires a national or numeric PICTURE"
+                    + " (national-edited items are not supported yet): " + describe(item));
             return picture.size();
         }
         if (picture.isNumeric()) {

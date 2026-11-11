@@ -62,6 +62,7 @@ public final class ClassTest {
                                   int signs) {
         return switch (item.usage()) {
             case DISPLAY -> zoned(bytes, item, codePage, signs);
+            case NATIONAL -> zoned(item.fromNational(bytes), item, codePage, signs);
             case COMP_3 -> packed(bytes, item.signPosition().isSigned(), signs);
             // 2 進項目はバイトの並びがそのまま数である。数でない形を取れない
             default -> true;

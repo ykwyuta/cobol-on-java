@@ -143,6 +143,9 @@ public record DataReference(DataItem item, List<Subscript> subscripts, RefMod re
      * 種別も英数字にしていた。
      */
     public int characterWidth() {
+        if (item.isGroupNational()) {
+            return 2;
+        }
         return item.isElementary() && item.picture() != null
                 && item.picture().category()
                         == dev.cobolonjava.runtime.picture.Picture.Category.NATIONAL ? 2 : 1;
