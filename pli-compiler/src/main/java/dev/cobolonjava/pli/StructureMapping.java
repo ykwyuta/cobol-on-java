@@ -217,7 +217,7 @@ final class StructureMapping {
             case PICTURE -> Math.max(1, decl.precision());
             // ALIGNED のビット列は 8 ビットごとに 1 byte
             case BIT -> Math.max(1, (decl.precision() + 7) / 8);
-            case BINARY -> binaryLength(decl.precision());
+            case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
             case DECIMAL -> PackedDecimal.byteLength(Math.max(1, decl.precision()));
             case POINTER -> 4;
             case GROUP, FILE, ENTRY -> 0;
@@ -232,7 +232,7 @@ final class StructureMapping {
     /** ALIGNED のときの境界合わせ (byte、LRM Table 39)。文字・PICTURE・10 進・ビット列は byte。 */
     static int alignment(PliSyntax.Decl decl) {
         return switch (decl.type()) {
-            case BINARY -> binaryLength(decl.precision());
+            case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
             case POINTER -> 4;
             // ALIGNED の VARYING は長さの半語の境界に置く
             case CHAR -> decl.varying() ? 2 : 1;

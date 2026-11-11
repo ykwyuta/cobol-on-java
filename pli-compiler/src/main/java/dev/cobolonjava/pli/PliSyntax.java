@@ -34,7 +34,7 @@ final class PliSyntax {
      */
     record Program(String name, List<String> parameters, List<Stmt> body,
                    Map<String, Procedure> procedures, boolean main,
-                   Map<String, FileInfo> files) {
+                   Map<String, FileInfo> files, boolean noExecOps) {
     }
 
     /**
@@ -69,7 +69,14 @@ final class PliSyntax {
      */
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
-                List<Bound> dimensions, List<InitItem> initialItems) {
+                List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned) {
+
+        Decl(String name, int level, Type type, int precision, int scale,
+             Expr initial, String basedOn, Boolean aligned, boolean varying,
+             List<Bound> dimensions, List<InitItem> initialItems) {
+            this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
+                    dimensions, initialItems, false);
+        }
 
         /** 配列の要素の数。配列でなければ 1。 */
         int count() {
@@ -414,7 +421,7 @@ final class PliSyntax {
             ProcedureBuilder main = parseProcedure();
             return new ParseResult(new Program(main.name, main.parameters,
                     List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
-                    Map.copyOf(files)), List.of());
+                    Map.copyOf(files), main.noExecOps), List.of());
         }
 
         /** FILE の宣言の属性。名は大文字。 */
@@ -449,6 +456,8 @@ final class PliSyntax {
                     int close = findClosing(attributes, i + 1);
                     result.main = attributes.subList(i + 2, close).stream()
                             .anyMatch(token -> token.is("MAIN"));
+                    result.noExecOps = attributes.subList(i + 2, close).stream()
+                            .anyMatch(token -> token.is("NOEXECOPS"));
                 }
             }
             while (!check(Kind.EOF)) {
@@ -660,10 +669,14 @@ final class PliSyntax {
                 throw new ParseFailure(part.get(0), "arrays of structures are not supported yet: "
                         + name);
             }
+            // UNSIGNED の FIXED BINARY は符号ビットを持たず、記憶域は p ≦ 8 で 1 byte、
+            // ≦ 16 で半語、≦ 32 で全語である (LRM "SIGNED and UNSIGNED attributes")
+            boolean unsigned = info.type == Type.BINARY
+                    && part.stream().anyMatch(token -> token.is("UNSIGNED"));
             return new Decl(name, level, info.type, info.precision, info.scale,
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
-                    dimensions.isEmpty() ? List.of() : initialItems(part));
+                    dimensions.isEmpty() ? List.of() : initialItems(part), unsigned);
         }
 
         /**
@@ -1365,6 +1378,8 @@ final class PliSyntax {
         final List<Stmt> body = new ArrayList<>();
         final Map<String, Procedure> procedures = new LinkedHashMap<>();
         boolean main;
+        /** {@code OPTIONS(NOEXECOPS)}。PARM に実行時オプションを書かない (全部が引数)。 */
+        boolean noExecOps;
 
         ProcedureBuilder(String name, List<String> parameters) {
             this.name = name;

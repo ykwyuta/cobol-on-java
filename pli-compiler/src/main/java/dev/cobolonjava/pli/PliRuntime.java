@@ -450,6 +450,7 @@ public final class PliRuntime {
                 Var variable = new Var(child.name(), child.type(), child.precision(),
                         child.scale(), view, mapping.bitShift(i));
                 variable.varying = child.varying();
+                variable.unsigned = child.unsigned();
                 env.put(variable);
                 env.alias(tree.get(index).name() + "." + child.name(), variable);
                 if (index > 0) {
@@ -547,6 +548,26 @@ public final class PliRuntime {
                 view = basedView(declaration.basedOn(), byteLength(declaration), env);
                 remember(declaration.basedOn(),
                         () -> declareScalar(declaration, env, area, offset, alias));
+            } else if (parameter && program.main() && declaration.type() == PliSyntax.Type.CHAR
+                    && declaration.precision() < 0) {
+                // 主手続きの CHAR(*) VARYING は PARM を受ける。PARM の頭の半語が長さで、
+                // 最初の '/' より前は実行時オプションである (LE の既定。Programming Guide
+                // "Passing an argument to the MAIN procedure")
+                DataView passed = parameters.get(upper);
+                int length = passed.length() < 2 ? 0
+                        : ((passed.get(0) & 0xFF) << 8) | (passed.get(1) & 0xFF);
+                String text = context.codePage().decode(
+                        passed.subView(2, Math.min(length, passed.length() - 2)).toByteArray());
+                int slash = program.noExecOps() ? -1 : text.indexOf('/');
+                text = slash < 0 ? text : text.substring(slash + 1);
+                byte[] encoded = context.codePage().encode(text);
+                view = Storage.allocate(encoded.length + 2).whole();
+                Var variable = new Var(declaration.name(), declaration.type(), encoded.length, 0,
+                        view);
+                variable.varying = true;
+                variable.write(text, context);
+                env.put(variable);
+                return;
             } else if (parameter) {
                 // 入口引数は参照で渡る。宣言した型で、渡された記憶域そのものを読む
                 view = argument(declaration.name(), byteLength(declaration));
@@ -558,6 +579,7 @@ public final class PliRuntime {
             Var variable = new Var(declaration.name(), declaration.type(),
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
+            variable.unsigned = declaration.unsigned();
             if (!declaration.dimensions().isEmpty()) {
                 declareElements(variable, declaration,
                         StructureMapping.unaligned(List.of(declaration), 0), 0);
@@ -591,6 +613,7 @@ public final class PliRuntime {
                         declaration.precision(), declaration.scale(),
                         array.view.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
                 element.varying = declaration.varying();
+                element.unsigned = declaration.unsigned();
                 array.elements.add(element);
             }
         }
@@ -1336,6 +1359,17 @@ public final class PliRuntime {
                 case "ADDR" -> {
                     return address(function, env);
                 }
+                // UNSPEC と HEX は値ではなく記憶域のビットを見る (LRM "UNSPEC", "HEX")
+                case "UNSPEC" -> {
+                    return new PliSyntax.BitString(bitsOf(storageOf(function, env)));
+                }
+                case "HEX" -> {
+                    return hexOf(function, env);
+                }
+                case "MAXLENGTH" -> {
+                    Var target = dataReference(function.arguments().get(0), env, "MAXLENGTH");
+                    return FixedValue.binary(BigDecimal.valueOf(target.capacity()), 31, 0);
+                }
                 default -> {
                 }
             }
@@ -1370,8 +1404,259 @@ public final class PliRuntime {
                 // x を y 回<b>つなげ足す</b>ので y+1 個になる。y が 0 以下なら x そのもの (LRM "REPEAT")
                 case "REPEAT" -> display(arguments.get(0))
                         .repeat(Math.max(0, number(arguments.get(1)).intValue()) + 1);
+                default -> moreBuiltins(name, arguments);
+            };
+        }
+
+        /**
+         * 組み込み関数の続き。意味は Enterprise PL/I Language Reference の各頁に従い、
+         * 並びは Zeus (同じ権利者の処理系) の {@code vm/bif.rs} を見て決めた。
+         * 実機とは突き合わせていない。
+         */
+        private Object moreBuiltins(String name, List<Object> arguments) {
+            return switch (name) {
+                case "REVERSE" -> new StringBuilder(display(arguments.get(0))).reverse().toString();
+                case "UPPERCASE" -> display(arguments.get(0)).toUpperCase(Locale.ROOT);
+                case "LOWERCASE" -> display(arguments.get(0)).toLowerCase(Locale.ROOT);
+                // 見つかった位置 (1 から)。無ければ 0 (LRM "INDEX")
+                case "INDEX" -> FixedValue.binary(BigDecimal.valueOf(
+                        display(arguments.get(0)).indexOf(display(arguments.get(1))) + 1), 31, 0);
+                // 第 2 引数に無い字の最初の位置。全部あれば 0 (LRM "VERIFY")
+                case "VERIFY" -> {
+                    String text = display(arguments.get(0));
+                    String allowed = display(arguments.get(1));
+                    int at = 0;
+                    for (int i = 0; i < text.length(); i++) {
+                        if (allowed.indexOf(text.charAt(i)) < 0) {
+                            at = i + 1;
+                            break;
+                        }
+                    }
+                    yield FixedValue.binary(BigDecimal.valueOf(at), 31, 0);
+                }
+                // 第 2 引数の字のどれかの最初の位置 (LRM "SEARCH")
+                case "SEARCH" -> {
+                    String text = display(arguments.get(0));
+                    String wanted = display(arguments.get(1));
+                    int at = 0;
+                    for (int i = 0; i < text.length(); i++) {
+                        if (wanted.indexOf(text.charAt(i)) >= 0) {
+                            at = i + 1;
+                            break;
+                        }
+                    }
+                    yield FixedValue.binary(BigDecimal.valueOf(at), 31, 0);
+                }
+                // 重ならない出現の数 (LRM "TALLY")
+                case "TALLY" -> {
+                    String text = display(arguments.get(0));
+                    String part = display(arguments.get(1));
+                    int count = 0;
+                    for (int at = part.isEmpty() ? -1 : text.indexOf(part); at >= 0;
+                         at = text.indexOf(part, at + part.length())) {
+                        count++;
+                    }
+                    yield FixedValue.binary(BigDecimal.valueOf(count), 31, 0);
+                }
+                // TRANSLATE(x, 置き換える字, 置き換えられる字)。第 3 引数を省けば全 256 字
+                case "TRANSLATE" -> {
+                    String text = display(arguments.get(0));
+                    String to = display(arguments.get(1));
+                    String from = arguments.size() > 2 ? display(arguments.get(2)) : null;
+                    StringBuilder out = new StringBuilder();
+                    for (int i = 0; i < text.length(); i++) {
+                        char c = text.charAt(i);
+                        int at = from == null ? -1 : from.indexOf(c);
+                        out.append(at >= 0 ? (at < to.length() ? to.charAt(at) : ' ') : c);
+                    }
+                    yield out.toString();
+                }
+                case "COPY" -> display(arguments.get(0))
+                        .repeat(Math.max(0, number(arguments.get(1)).intValue()));
+                // LEFT(x, n[, 埋める字]) は左に寄せて右を埋める。RIGHT は右に寄せる
+                case "LEFT", "RIGHT" -> {
+                    String text = display(arguments.get(0));
+                    int length = number(arguments.get(1)).intValue();
+                    char pad = arguments.size() > 2 ? display(arguments.get(2)).charAt(0) : ' ';
+                    String padding = String.valueOf(pad).repeat(Math.max(0, length - text.length()));
+                    yield name.equals("LEFT")
+                            ? (text.length() >= length ? text.substring(0, length) : text + padding)
+                            : (text.length() >= length ? text.substring(text.length() - length)
+                                    : padding + text);
+                }
+                case "MAX", "MIN" -> {
+                    Object best = arguments.get(0);
+                    for (Object next : arguments.subList(1, arguments.size())) {
+                        int order = number(next).compareTo(number(best));
+                        if (name.equals("MAX") ? order > 0 : order < 0) {
+                            best = next;
+                        }
+                    }
+                    yield best;
+                }
+                // MOD の結果は第 2 引数と同じ符号を持たない: 0 以上で y より小さい (LRM "MOD")
+                case "MOD" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    BigDecimal y = number(arguments.get(1));
+                    BigDecimal r = x.remainder(y);
+                    if (r.signum() != 0 && r.signum() != y.signum()) {
+                        r = r.add(y);
+                    }
+                    yield r;
+                }
+                case "REM" -> number(arguments.get(0)).remainder(number(arguments.get(1)));
+                case "SIGN" -> FixedValue.binary(BigDecimal.valueOf(
+                        number(arguments.get(0)).signum()), 15, 0);
+                case "FLOOR" -> number(arguments.get(0)).setScale(0, java.math.RoundingMode.FLOOR);
+                case "CEIL" -> number(arguments.get(0)).setScale(0, java.math.RoundingMode.CEILING);
+                case "TRUNC" -> number(arguments.get(0)).setScale(0, java.math.RoundingMode.DOWN);
+                // ROUND(x, n) は小数点以下 n 桁へ、半分は 0 から遠いほうへ
+                case "ROUND" -> number(arguments.get(0)).setScale(
+                        number(arguments.get(1)).intValue(), java.math.RoundingMode.HALF_UP);
+                case "SQRT" -> number(arguments.get(0)).sqrt(java.math.MathContext.DECIMAL64);
+                // 浮動小数点の関数。結果は FLOAT であり、16 桁で返す。実機の HFP の桁とは
+                // 突き合わせていない
+                case "SIN", "COS", "TAN", "ATAN", "LOG", "LOG10", "EXP", "SINH", "COSH",
+                     "TANH", "ASIN", "ACOS" -> {
+                    double x = number(arguments.get(0)).doubleValue();
+                    double r = switch (name) {
+                        case "SIN" -> Math.sin(x);
+                        case "COS" -> Math.cos(x);
+                        case "TAN" -> Math.tan(x);
+                        case "ATAN" -> Math.atan(x);
+                        case "LOG" -> Math.log(x);
+                        case "LOG10" -> Math.log10(x);
+                        case "EXP" -> Math.exp(x);
+                        case "SINH" -> Math.sinh(x);
+                        case "COSH" -> Math.cosh(x);
+                        case "TANH" -> Math.tanh(x);
+                        case "ASIN" -> Math.asin(x);
+                        default -> Math.acos(x);
+                    };
+                    yield new BigDecimal(r, java.math.MathContext.DECIMAL64);
+                }
+                // 明示した精度で計算する (LRM "ADD", "MULTIPLY", "DIVIDE")
+                case "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    BigDecimal y = number(arguments.get(1));
+                    int p = number(arguments.get(2)).intValue();
+                    int q = arguments.size() > 3 ? number(arguments.get(3)).intValue() : 0;
+                    BigDecimal result = switch (name) {
+                        case "ADD" -> x.add(y);
+                        case "SUBTRACT" -> x.subtract(y);
+                        case "MULTIPLY" -> x.multiply(y);
+                        default -> x.divide(y, q, java.math.RoundingMode.DOWN);
+                    };
+                    yield FixedValue.decimal(result.setScale(q, java.math.RoundingMode.DOWN),
+                            p, q);
+                }
+                case "BIN", "BINARY", "DEC", "DECIMAL", "FIXED" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    boolean binary = name.startsWith("BIN");
+                    int p = arguments.size() > 1 ? number(arguments.get(1)).intValue()
+                            : binary ? 31 : 15;
+                    int q = arguments.size() > 2 ? number(arguments.get(2)).intValue() : 0;
+                    BigDecimal value = x.setScale(Math.max(q, 0), java.math.RoundingMode.DOWN);
+                    yield binary ? FixedValue.binary(value, p, q) : FixedValue.decimal(value, p, q);
+                }
+                // 戻りコード (PLIRETC で決めた値) を返す (LRM "PLIRETV")
+                case "PLIRETV" -> FixedValue.binary(BigDecimal.valueOf(context.returnCode()), 31, 0);
+                case "SYSNULL", "NULL" -> new PointerValue(0);
+                // DAYS(日付, 型) は 1582 年 10 月 15 日を 1 とする日の番号 (Lilian) である
+                case "DAYS" -> FixedValue.binary(BigDecimal.valueOf(
+                        lilian(display(arguments.get(0)), display(arguments.get(1)))), 31, 0);
+                case "DAYSTODATE" -> dateOf(number(arguments.get(0)).longValue(),
+                        display(arguments.get(1)));
+                case "BOOL" -> {
+                    String x = bitText(arguments.get(0));
+                    String y = bitText(arguments.get(1));
+                    String rule = bitText(arguments.get(2));
+                    int length = Math.max(x.length(), y.length());
+                    StringBuilder out = new StringBuilder();
+                    for (int i = 0; i < length; i++) {
+                        int a = i < x.length() ? x.charAt(i) - '0' : 0;
+                        int b = i < y.length() ? y.charAt(i) - '0' : 0;
+                        out.append(rule.charAt(a * 2 + b));
+                    }
+                    yield new PliSyntax.BitString(out.toString());
+                }
                 default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
             };
+        }
+
+        /** 1582 年 10 月 14 日。DAYS はこの次の日を 1 とする。 */
+        private static final long LILIAN_ORIGIN =
+                java.time.LocalDate.of(1582, 10, 14).toEpochDay();
+
+        /** 型の YYYY / MM / DD を引いて日付にする。持たない型は断る。 */
+        private static long lilian(String date, String pattern) {
+            int y = pattern.indexOf("YYYY");
+            int m = pattern.indexOf("MM");
+            int d = pattern.indexOf("DD");
+            if (y < 0 || m < 0 || d < 0) {
+                throw new PliExecutionException("DAYS supports only patterns with YYYY, MM and DD: "
+                        + pattern);
+            }
+            java.time.LocalDate value = java.time.LocalDate.of(
+                    Integer.parseInt(date.substring(y, y + 4)),
+                    Integer.parseInt(date.substring(m, m + 2)),
+                    Integer.parseInt(date.substring(d, d + 2)));
+            return value.toEpochDay() - LILIAN_ORIGIN;
+        }
+
+        private static String dateOf(long lilian, String pattern) {
+            java.time.LocalDate value = java.time.LocalDate.ofEpochDay(lilian + LILIAN_ORIGIN);
+            return pattern.replace("YYYY", String.format("%04d", value.getYear()))
+                    .replace("MM", String.format("%02d", value.getMonthValue()))
+                    .replace("DD", String.format("%02d", value.getDayOfMonth()));
+        }
+
+        /** UNSPEC と HEX の引数の記憶域。変数なら記憶域、値なら値の内部の形。 */
+        private byte[] storageOf(PliSyntax.Function function, Env env) {
+            PliSyntax.Expr argument = function.arguments().get(0);
+            if (argument instanceof PliSyntax.Reference reference && env.contains(reference.name())) {
+                return env.require(reference.name()).view.toByteArray();
+            }
+            if (argument instanceof PliSyntax.Function element
+                    && arrayNamed(element.name(), env) != null) {
+                return element(arrayNamed(element.name(), env), element.arguments(), env)
+                        .view.toByteArray();
+            }
+            Object value = value(argument, env);
+            if (value instanceof PliSyntax.BitString bits) {
+                return bytesOfBits(bits.bits());
+            }
+            return context.codePage().encode(display(value));
+        }
+
+        private static String bitsOf(byte[] bytes) {
+            StringBuilder out = new StringBuilder(bytes.length * 8);
+            for (byte b : bytes) {
+                for (int i = 7; i >= 0; i--) {
+                    out.append((b >> i & 1) == 1 ? '1' : '0');
+                }
+            }
+            return out.toString();
+        }
+
+        private static byte[] bytesOfBits(String bits) {
+            byte[] out = new byte[(bits.length() + 7) / 8];
+            for (int i = 0; i < bits.length(); i++) {
+                if (bits.charAt(i) == '1') {
+                    out[i / 8] |= (byte) (0x80 >> (i % 8));
+                }
+            }
+            return out;
+        }
+
+        /** HEX(x): 記憶域 (ビット列なら 4 ビットずつ) を 16 進の字にする (LRM "HEX")。 */
+        private Object hexOf(PliSyntax.Function function, Env env) {
+            byte[] bytes = storageOf(function, env);
+            StringBuilder out = new StringBuilder();
+            for (byte b : bytes) {
+                out.append(String.format("%02X", b & 0xFF));
+            }
+            return out.toString();
         }
 
         /**
@@ -1713,6 +1998,8 @@ public final class PliRuntime {
         String unboundOn;
         /** {@code CHAR(n) VARYING} なら真。記憶域の頭の半語が今の長さ、n は {@link #precision}。 */
         boolean varying;
+        /** {@code FIXED BIN UNSIGNED} なら真。記憶域を符号なしで読む。 */
+        boolean unsigned;
         /** 配列なら次元ごとの上下限、スカラーなら {@code null}。 */
         List<PliSyntax.Bound> dimensions;
         /** 配列の要素。行の順。 */
@@ -1748,7 +2035,8 @@ public final class PliRuntime {
                         context.codePage().decode(view.toByteArray()), precision, scale);
                 // FIXED BIN(p,q) の記憶域は 2 の補数の整数で、値はそれを 2 の q 乗で割ったもの
                 case BINARY -> FixedValue.binary(new BigDecimal(
-                        new java.math.BigInteger(view.toByteArray()))
+                        unsigned ? new java.math.BigInteger(1, view.toByteArray())
+                                : new java.math.BigInteger(view.toByteArray()))
                         .divide(BigDecimal.valueOf(2).pow(Math.max(0, scale)))
                         .multiply(BigDecimal.valueOf(2).pow(Math.max(0, -scale))),
                         precision, scale);
@@ -1788,7 +2076,8 @@ public final class PliRuntime {
             }
             switch (type) {
                 case CHAR -> writeText(Executor.display(value), context);
-                case BIT -> writeBits(Executor.display(value));
+                case BIT -> writeBits(Executor.numeric(value) && !(value instanceof String)
+                        ? arithmeticToBits(value) : Executor.display(value));
                 case PICTURE -> writeText(picture(value), context);
                 case GROUP -> {
                     if (Executor.numeric(value) && Executor.number(value).signum() == 0) {
@@ -1876,6 +2165,28 @@ public final class PliRuntime {
                 text.append((view.get(bit / 8) >> (7 - bit % 8) & 1) == 1 ? '1' : '0');
             }
             return text.toString();
+        }
+
+        /**
+         * 算術の値をビット列にする (LRM "Arithmetic to bit-string conversion")。整数部の絶対値を
+         * 2 進にし、長さは FIXED BINARY にしたときの精度である。10 進の p 桁は
+         * {@code ceil(p * 3.32)} ビット (31 まで) になる。{@code B = 5} は FIXED DEC(1) なので
+         * 4 ビットの '0101' であり、BIT(8) へは右を 0 で埋めて '01010000' になる。
+         */
+        private static String arithmeticToBits(Object value) {
+            BigDecimal number = Executor.number(value).abs().setScale(0, java.math.RoundingMode.DOWN);
+            int bits;
+            if (value instanceof FixedValue fixed) {
+                bits = fixed.binary() ? fixed.precision()
+                        : Math.min((int) Math.ceil((fixed.precision() - fixed.scale()) * 3.32), 31);
+            } else {
+                bits = Math.max(1, number.toBigInteger().bitLength());
+            }
+            String text = number.toBigInteger().toString(2);
+            if (text.length() > bits) {
+                text = text.substring(text.length() - bits);
+            }
+            return "0".repeat(bits - text.length()) + text;
         }
 
         /**
