@@ -6151,7 +6151,7 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 
 マクロ前処理は Zeus の `preproc.rs` を移した (`PliMacroProcessor`)。`%INCLUDE` はその前に `PliPreprocessor` が正規表現で展開しきるので、`%IF` の偽の側にある `%INCLUDE` も取り込まれる。また前処理の手続きの本体は、Zeus のように構文解析器の AST にはせず、字句の並びのまま実行する。
 
-**どこがずれうるか**: 入口変数、GENERIC、CONTROLLED と `ALLOCATE`、ストリームの入力、編集の PICTURE、式の上下限を持つ配列、SYSPRINT 以外の PRINT ファイルは無い。条件は ON / SIGNAL / REVERT と一部の条件だけを持つ。前処理は `%INCLUDE` を条件によらず取り込み、前処理の配列と組み込み関数の一部 (`SYSPARM`、`SYSVERSION`、`COMPILEDATE`) を持たない。断るので黙って違う値にはならないが、動かせない資産が多い。
+**どこがずれうるか**: 入口変数、GENERIC、CONTROLLED と `ALLOCATE`、ストリームの入力、編集の PICTURE、式の上下限を持つ配列、SYSPRINT 以外の PRINT ファイルは無い。条件は ON / SIGNAL / REVERT と一部の条件だけを持つ。前処理は `%INCLUDE` を条件によらず取り込み、前処理の配列と組み込み関数の一部 (`SYSPARM`、`SYSVERSION`、`COMPILEDATE`) を持たない。`ALLOCATE` は CONTROLLED と BASED を持つが、`AREA` / `OFFSET`、BASED の `INITIAL`、`(*)` の上下限を前の世代から受け継ぐことは持たない。BASED の `FREE` は記憶域を取り戻さず、解いたあとの参照を検出しない。断るので黙って違う値にはならないが、動かせない資産が多い。
 
 **解消条件**: Zeus の `zeus-pli` を移す。字句・構文・意味・中間表現・実行の段に分け、有効範囲を静的にする。ZPVS を増分ごとに測る。
 

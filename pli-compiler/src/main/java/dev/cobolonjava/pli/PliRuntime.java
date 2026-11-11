@@ -159,6 +159,125 @@ public final class PliRuntime {
          */
         private final Map<String, List<Runnable>> basedOn = new HashMap<>();
 
+        /** 最上位の名から、その宣言の塊。ALLOCATE が宣言をたどるのに使う。 */
+        private final Map<String, List<PliSyntax.Decl>> declaredChunks = new HashMap<>();
+
+        /**
+         * {@code ALLOCATE}。CONTROLLED なら新しい世代を宣言し直し、前の世代の束縛を退避する。
+         * BASED なら記憶域を取り、その番地を locator (SET か BASED(P) の P) へ入れる
+         * (LRM "ALLOCATE statement for controlled variables" / "for based variables")。
+         */
+        private void allocate(PliSyntax.AllocateItem item, Env env) {
+            String name = item.name().toUpperCase(Locale.ROOT);
+            Var current = env.find(name);
+            if (current != null && current.generations != null) {
+                Generations generations = current.generations;
+                List<PliSyntax.Decl> chunk = new ArrayList<>(generations.chunk);
+                PliSyntax.Decl root = chunk.get(0);
+                if (!item.extents().isEmpty()) {
+                    if (item.extents().size() != root.dimensions().size()) {
+                        throw new PliExecutionException("ALLOCATE " + name + " gives "
+                                + item.extents().size() + " bound(s), but it has "
+                                + root.dimensions().size() + " dimension(s)");
+                    }
+                    List<PliSyntax.Bound> bounds = new ArrayList<>();
+                    for (PliSyntax.Expr extent : item.extents()) {
+                        bounds.add(new PliSyntax.Bound(1, number(value(extent, env)).intValue()));
+                    }
+                    chunk.set(0, root.withDimensions(bounds));
+                } else if (root.dimensions().contains(PliSyntax.Bound.STAR)) {
+                    // (*) の上下限は、ALLOCATE に書くか、前の世代から受け継ぐ。前の世代から
+                    // 受け継ぐ規則はまだ持たない
+                    throw new PliExecutionException("ALLOCATE " + name
+                            + " needs bounds for its (*) dimensions");
+                }
+                Env owner = generations.owner;
+                Map<String, Var> before = new HashMap<>(owner.variables);
+                declare(chunk, owner);
+                Map<String, Var> saved = new HashMap<>();
+                for (Map.Entry<String, Var> entry : owner.variables.entrySet()) {
+                    Var previous = before.get(entry.getKey());
+                    if (previous != entry.getValue()) {
+                        saved.put(entry.getKey(), previous);
+                        entry.getValue().generations = generations;
+                    }
+                }
+                generations.saved.push(saved);
+                rebindParameter(name, generations, env);
+                return;
+            }
+            List<PliSyntax.Decl> chunk = declaredChunks.get(name);
+            if (chunk == null || !"BASED".equals(chunk.get(0).storage())) {
+                throw new PliExecutionException(name + " is not BASED or CONTROLLED");
+            }
+            PliSyntax.Decl root = chunk.get(0);
+            String locator = item.set() != null ? item.set() : root.basedOn();
+            if (locator == null) {
+                throw new PliExecutionException("ALLOCATE " + name
+                        + " needs SET, because it is BASED without a locator");
+            }
+            for (PliSyntax.Decl decl : chunk) {
+                if (decl.initial() != null || !decl.initialItems().isEmpty()) {
+                    // ALLOCATE は BASED の INITIAL を効かせる。重ね直しは INITIAL を書かないので、
+                    // 黙って抜かすより断る
+                    throw new PliExecutionException("INITIAL of a BASED variable on ALLOCATE"
+                            + " is not supported yet: " + name);
+                }
+            }
+            int length;
+            try {
+                length = chunk.size() > 1 ? StructureMapping.map(chunk).size() : byteLength(root);
+            } catch (IllegalArgumentException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            DataView storage = Storage.allocate(Math.max(1, length)).whole();
+            Var pointer = env.require(locator);
+            if (pointer.type != PliSyntax.Type.POINTER) {
+                throw new PliExecutionException("SET(" + locator + ") needs a POINTER");
+            }
+            pointer.write(new PointerValue(address(storage)), context);
+            rebase(pointer.name);
+        }
+
+        /** {@code FREE}。CONTROLLED なら前の世代に戻す。BASED の記憶域は取り戻さない。 */
+        private void free(String freed, Env env) {
+            String name = freed.toUpperCase(Locale.ROOT);
+            Var current = env.find(name);
+            if (current != null && current.generations != null) {
+                Generations generations = current.generations;
+                if (generations.saved.isEmpty()) {
+                    throw new PliExecutionException("FREE " + name + ", which is not allocated");
+                }
+                Map<String, Var> saved = generations.saved.pop();
+                for (Map.Entry<String, Var> entry : saved.entrySet()) {
+                    if (entry.getValue() == null) {
+                        generations.owner.variables.remove(entry.getKey());
+                    } else {
+                        generations.owner.variables.put(entry.getKey(), entry.getValue());
+                    }
+                }
+                rebindParameter(name, generations, env);
+                return;
+            }
+            List<PliSyntax.Decl> chunk = declaredChunks.get(name);
+            if (chunk == null || !"BASED".equals(chunk.get(0).storage())) {
+                throw new PliExecutionException(name + " is not BASED or CONTROLLED");
+            }
+            // BASED の記憶域は Java の記憶域であり、取り戻すのは GC である。解いたあとの参照が
+            // 誤りであることは検出しない
+        }
+
+        /**
+         * 引数として渡された CONTROLLED (仮引数の名で ALLOCATE / FREE した) なら、仮引数の名を
+         * 呼んだ側の今の世代へ結び直す。呼んだ側の名は宣言の環境で置き換わっている。
+         */
+        private void rebindParameter(String name, Generations generations, Env env) {
+            String root = generations.chunk.get(0).name().toUpperCase(Locale.ROOT);
+            if (!name.equals(root)) {
+                env.alias(name, generations.owner.variables.get(root));
+            }
+        }
+
         /** 記憶域を指す POINTER の変数を作る。値は AddressSpace の番号 (COBOL の SET ADDRESS OF と同じ)。 */
         private Var pointerTo(String name, DataView target) {
             Var pointer = new Var(name, PliSyntax.Type.POINTER, 0, 0, Storage.allocate(4).whole());
@@ -226,7 +345,20 @@ public final class PliRuntime {
             deferredInits = inits;
             try {
                 for (List<PliSyntax.Decl> chunk : chunks) {
-                    if (chunk.get(0).basedOn() == null) declare(chunk, env);
+                    declaredChunks.put(chunk.get(0).name().toUpperCase(Locale.ROOT), chunk);
+                    if (chunk.get(0).controlled() && !env.arguments.containsKey(
+                            chunk.get(0).name().toUpperCase(Locale.ROOT))) {
+                        // CONTROLLED は ALLOCATE するまで記憶域を持たない (LRM "CONTROLLED
+                        // storage")。名だけを置き、世代の積み重ねをそこに持たせる
+                        PliSyntax.Decl root = chunk.get(0);
+                        Var placeholder = new Var(root.name(), root.type(), root.precision(),
+                                root.scale(), Storage.allocate(0).whole());
+                        placeholder.generations = new Generations(chunk, env);
+                        placeholder.unallocated = true;
+                        env.put(placeholder);
+                    } else if (chunk.get(0).basedOn() == null) {
+                        declare(chunk, env);
+                    }
                 }
             } finally {
                 deferredInits = null;
@@ -418,6 +550,10 @@ public final class PliRuntime {
             } else if (statement instanceof PliSyntax.Return result) {
                 returned = result.value() == null ? null : value(result.value(), env);
                 throw ReturnSignal.INSTANCE;
+            } else if (statement instanceof PliSyntax.Allocate allocate) {
+                allocate.items().forEach(item -> allocate(item, env));
+            } else if (statement instanceof PliSyntax.Free free) {
+                free.names().forEach(name -> free(name, env));
             } else if (statement instanceof PliSyntax.Select select) {
                 Object subject = select.subject() == null ? null : value(select.subject(), env);
                 for (PliSyntax.When when : select.whens()) {
@@ -1418,9 +1554,10 @@ public final class PliRuntime {
                     }
                 }
                 case PliSyntax.Reference reference -> {
-                    Var variable = env.contains(reference.name())
-                            ? env.require(reference.name()) : null;
-                    scanVariable(variable, wide);
+                    // 属性を見るだけで値は読まない。ALLOCATE していない CONTROLLED は
+                    // ALLOCATION(X) の引数に書けるので、ここで止めない
+                    Var variable = env.find(reference.name());
+                    scanVariable(variable == null || variable.unallocated ? null : variable, wide);
                 }
                 case PliSyntax.Unary unary -> scan(unary.operand(), env, wide);
                 case PliSyntax.Binary binary -> {
@@ -1545,6 +1682,54 @@ public final class PliRuntime {
                 }
                 case "HEX" -> {
                     return hexOf(function, env);
+                }
+                case "ALLOCATION", "ALLOCN" -> {
+                    // 世代の数 (LRM "ALLOCATION")。CONTROLLED でなければ誤りである
+                    PliSyntax.Expr argument = function.arguments().get(0);
+                    Var target = argument instanceof PliSyntax.Reference reference
+                            ? env.find(reference.name()) : null;
+                    if (target == null || target.generations == null) {
+                        throw new PliExecutionException("ALLOCATION needs a CONTROLLED variable");
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(target.generations.saved.size()),
+                            31, 0);
+                }
+                case "DIM", "HBOUND", "LBOUND" -> {
+                    Var array = dataReference(function.arguments().get(0), env, name);
+                    if (array.dimensions == null) {
+                        throw new PliExecutionException(name + " needs an array: " + array.name);
+                    }
+                    int dimension = function.arguments().size() > 1
+                            ? number(value(function.arguments().get(1), env)).intValue() : 1;
+                    if (dimension < 1 || dimension > array.dimensions.size()) {
+                        throw new PliExecutionException(name + ": " + array.name + " has no"
+                                + " dimension " + dimension);
+                    }
+                    PliSyntax.Bound bound = array.dimensions.get(dimension - 1);
+                    int result = switch (name) {
+                        case "DIM" -> bound.extent();
+                        case "HBOUND" -> bound.high();
+                        default -> bound.low();
+                    };
+                    return FixedValue.binary(BigDecimal.valueOf(result), 31, 0);
+                }
+                case "SUM" -> {
+                    // 結果は要素と同じ型 (LRM "SUM")。FIXED の要素だけを持つ
+                    Var array = dataReference(function.arguments().get(0), env, name);
+                    if (array.dimensions == null) {
+                        throw new PliExecutionException("SUM needs an array: " + array.name);
+                    }
+                    Object total = null;
+                    for (Var element : array.elements) {
+                        Object value = element.read(context);
+                        if (!(value instanceof FixedValue)) {
+                            throw new PliExecutionException("SUM of a non-FIXED array is not"
+                                    + " supported yet: " + array.name);
+                        }
+                        total = total == null ? value : arithmetic("+", total, value,
+                                new FixedValue.Arithmetic(options, false, false));
+                    }
+                    return total;
                 }
                 case "MAXLENGTH" -> {
                     Var target = dataReference(function.arguments().get(0), env, "MAXLENGTH");
@@ -2194,6 +2379,10 @@ public final class PliRuntime {
         Var require(String name) {
             Var value = find(name);
             if (value == null) throw new PliExecutionException("undeclared PL/I name: " + name);
+            if (value.unallocated) {
+                throw new PliExecutionException("CONTROLLED variable " + value.name
+                        + " is not allocated");
+            }
             if (value.unboundOn != null) {
                 throw new PliExecutionException("BASED on " + value.unboundOn
                         + ", which is a null pointer: " + name);
@@ -2230,10 +2419,25 @@ public final class PliRuntime {
             return own != null ? own : parent == null ? null : parent.endFile(file);
         }
 
-        private Var find(String name) {
+        Var find(String name) {
             String normalized = name.toUpperCase(Locale.ROOT);
             Var own = variables.get(normalized);
             return own != null ? own : parent == null ? null : parent.find(normalized);
+        }
+    }
+
+    /**
+     * CONTROLLED の変数の世代 (LRM "CONTROLLED storage")。ALLOCATE するたびに宣言の環境で
+     * 宣言し直し、置き換えた束縛をここへ積む。FREE で 1 つ戻す。積んだ数が ALLOCATION である。
+     */
+    private static final class Generations {
+        final List<PliSyntax.Decl> chunk;
+        final Env owner;
+        final java.util.ArrayDeque<Map<String, Var>> saved = new java.util.ArrayDeque<>();
+
+        Generations(List<PliSyntax.Decl> chunk, Env owner) {
+            this.chunk = List.copyOf(chunk);
+            this.owner = owner;
         }
     }
 
@@ -2257,6 +2461,10 @@ public final class PliRuntime {
         List<PliSyntax.Bound> dimensions;
         /** 配列の要素。行の順。 */
         final List<Var> elements = new ArrayList<>();
+        /** CONTROLLED なら、その世代の積み重ね。 */
+        Generations generations;
+        /** CONTROLLED をまだ ALLOCATE していない印。参照すると止まる。 */
+        boolean unallocated;
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
             this(name, type, precision, scale, view, 0);

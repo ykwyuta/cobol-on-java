@@ -280,6 +280,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `SELECT` | 41 / 68 | 225 / 231 |
 | `OPEN ... TITLE`、`ENV(V ...)` | 43 / 68 | 237 / 243 |
 | マクロ前処理 (Zeus `preproc.rs` を移した) | 46 / 68 | 244 / 250 |
+| `ALLOCATE` / `FREE` (CONTROLLED、BASED)、`ALLOCATION`、`DIM`、`SUM` | 48 / 68 | 253 / 259 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -297,6 +298,16 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 2 つある。宣言していない名を前処理の式で参照すると、Zeus は空の文字にするが、こちらは
 断る。数にならない文字を FIXED へ移すと、Zeus は 0 にするが、こちらは断る。どちらも
 近い値を黙って返さないためであり、実機とは突き合わせていない (P-197)。
+
+CONTROLLED の変数は、宣言した環境に世代の積み重ねを持つ。`ALLOCATE` は宣言をその環境で
+し直して前の束縛を退避し、`FREE` で戻す。積んだ数が `ALLOCATION` である。引数で渡された
+CONTROLLED を仮引数の名で `ALLOCATE` すると、呼んだ側の世代に積まれる (PS102A の `PUSH`)。
+BASED の `ALLOCATE` は記憶域を取って番地を locator (`SET` か `BASED(P)` の P) へ入れる。
+BASED の `INITIAL` を `ALLOCATE` で効かせることと、`AREA` / `OFFSET` はまだ持たず、断る。
+
+断るべき側の検査 (PE113N、PE114N) は、以前から「`ALLOCATE` という文を知らない」で
+断っていたので数の上では通っていた。ZPVS の道具は文面を照合しないので、正しい理由で
+断っているかは自分のテストで確かめる (`StorageControlTest`)。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

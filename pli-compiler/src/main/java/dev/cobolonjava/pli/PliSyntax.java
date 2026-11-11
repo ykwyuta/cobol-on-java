@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /** Bank-of-Z が使う構造化 PL/I サブセットの字句解析と構文木。 */
 final class PliSyntax {
@@ -54,7 +55,7 @@ final class PliSyntax {
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
             Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group, OnCondition, Revert, Signal,
-            Prefixed, Select {
+            Prefixed, Select, Allocate, Free {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -71,15 +72,31 @@ final class PliSyntax {
      * @param dimensions 配列の次元ごとの上下限。配列でなければ空
      * @param initialItems 配列の {@code INITIAL} の並び。スカラーなら空で、{@code initial} を使う
      */
+    /**
+     * @param storage 記憶域の種類。{@code CONTROLLED}、{@code BASED}、または {@code null}
+     *                (AUTOMATIC / STATIC)。CONTROLLED と、POINTER を書かない BASED は
+     *                ALLOCATE で記憶域を得る (LRM "Storage control")
+     */
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
-                List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned) {
+                List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
+                String storage) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
-                    dimensions, initialItems, false);
+                    dimensions, initialItems, false, null);
+        }
+
+        boolean controlled() {
+            return "CONTROLLED".equals(storage);
+        }
+
+        /** 次元を ALLOCATE に書いたものへ置き換えた宣言。 */
+        Decl withDimensions(List<Bound> bounds) {
+            return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
+                    varying, List.copyOf(bounds), initialItems, unsigned, storage);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -90,8 +107,13 @@ final class PliSyntax {
         }
     }
 
-    /** 配列の 1 つの次元の上下限 (LRM "DIMENSION attribute")。 */
+    /**
+     * 配列の 1 つの次元の上下限 (LRM "DIMENSION attribute")。CONTROLLED の {@code (*)} は
+     * {@link #STAR} で、上下限は ALLOCATE で決まる。
+     */
     record Bound(int low, int high) {
+        static final Bound STAR = new Bound(1, 0);
+
         int extent() {
             return high - low + 1;
         }
@@ -209,6 +231,20 @@ final class PliSyntax {
     }
 
     record Signal(String condition, String qualifier) implements Stmt {
+    }
+
+    /** {@code ALLOCATE 名[(上限,...)] [SET(locator)], ...;} (LRM "ALLOCATE statement")。 */
+    record Allocate(List<AllocateItem> items) implements Stmt {
+    }
+
+    /**
+     * @param extents ALLOCATE に書いた次元の上限 (下限は 1)。書かなければ空で、宣言の次元を使う
+     * @param set     {@code SET(locator)} の POINTER の名。無ければ {@code null}
+     */
+    record AllocateItem(String name, List<Expr> extents, String set) {
+    }
+
+    record Free(List<String> names) implements Stmt {
     }
 
     /** 条件の前置き {@code (SIZE): 文}。{@code enabled} は有効にする条件、{@code disabled} は無効。 */
@@ -468,6 +504,23 @@ final class PliSyntax {
                             + " is not a structure (LIKE requires a structure)");
                 }
             }
+            for (StorageReference reference : storageReferences) {
+                String storage = storageClasses.get(reference.name);
+                if (storage == null) {
+                    throw new ParseFailure(reference.token, reference.name + " is not declared");
+                }
+                if (reference.area && areaNames.contains(reference.name)) {
+                    throw new ParseFailure(reference.token, "ALLOCATE IN(" + reference.name
+                            + ") is not supported yet: AREA storage is not implemented");
+                }
+                if (reference.area) {
+                    throw new ParseFailure(reference.token, reference.name + " is not an AREA");
+                }
+                if (storage.isEmpty()) {
+                    throw new ParseFailure(reference.token, reference.name
+                            + " is not BASED or CONTROLLED");
+                }
+            }
             return new ParseResult(new Program(main.name, main.parameters,
                     List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
                     Map.copyOf(files), main.noExecOps), List.of());
@@ -492,6 +545,7 @@ final class PliSyntax {
                 }
                 expect(")");
             }
+            parameters.forEach(p -> parameterNames.add(p.toUpperCase(Locale.ROOT)));
             // 入口属性のうち要るのは OPTIONS(MAIN) だけである。RETURNS その他は保持しない
             List<Token> attributes = collectToSemicolon();
             ProcedureBuilder result = new ProcedureBuilder(name, List.copyOf(parameters));
@@ -599,6 +653,43 @@ final class PliSyntax {
                 next();
                 next();
                 return new Stop();
+            }
+            if (match("ALLOCATE") || match("ALLOC")) {
+                List<AllocateItem> items = new ArrayList<>();
+                do {
+                    Token name = expect(Kind.IDENT, "name after ALLOCATE");
+                    storageReferences.add(new StorageReference(name.text(), name, false));
+                    List<Expr> extents = List.of();
+                    if (check("(")) {
+                        extents = arguments();
+                    }
+                    String set = null;
+                    while (check("SET") || check("IN")) {
+                        boolean in = next().is("IN");
+                        expect("(");
+                        Token locator = expect(Kind.IDENT, in ? "area name" : "locator name");
+                        expect(")");
+                        if (in) {
+                            storageReferences.add(new StorageReference(locator.text(), locator,
+                                    true));
+                        } else {
+                            set = locator.text();
+                        }
+                    }
+                    items.add(new AllocateItem(name.text(), extents, set));
+                } while (match(","));
+                expect(";");
+                return new Allocate(List.copyOf(items));
+            }
+            if (match("FREE")) {
+                List<String> names = new ArrayList<>();
+                do {
+                    Token name = expect(Kind.IDENT, "name after FREE");
+                    storageReferences.add(new StorageReference(name.text(), name, false));
+                    names.add(name.text());
+                } while (match(","));
+                expect(";");
+                return new Free(List.copyOf(names));
             }
             if (match("WRITE")) {
                 return fileOperation(FileAction.WRITE);
@@ -710,6 +801,21 @@ final class PliSyntax {
         }
 
         private final List<NamedReference> namedReferences = new ArrayList<>();
+
+        /** 最上位の名の記憶域の種類 ({@link Decl#storage}、無ければ空)。 */
+        private final Map<String, String> storageClasses = new java.util.HashMap<>();
+
+        /** AREA を宣言した名。 */
+        private final Set<String> areaNames = new java.util.HashSet<>();
+
+        /** 引数の名。(*) の次元は引数なら書ける。 */
+        private final Set<String> parameterNames = new java.util.HashSet<>();
+
+        /** ALLOCATE と FREE が指す名と、IN に書いた名。読み終えてから確かめる。 */
+        private record StorageReference(String name, Token token, boolean area) {
+        }
+
+        private final List<StorageReference> storageReferences = new ArrayList<>();
 
         /**
          * 宣言の属性のうち、翻訳で断るべき組み合わせを確かめる (LRM "Data attributes")。
@@ -824,10 +930,25 @@ final class PliSyntax {
             // ≦ 16 で半語、≦ 32 で全語である (LRM "SIGNED and UNSIGNED attributes")
             boolean unsigned = info.type == Type.BINARY
                     && part.stream().anyMatch(token -> token.is("UNSIGNED"));
+            String storage = part.stream().anyMatch(t -> t.is("CONTROLLED") || t.is("CTL"))
+                    ? "CONTROLLED" : part.stream().anyMatch(t -> t.is("BASED")) ? "BASED" : null;
+            if (dimensions.contains(Bound.STAR) && !"CONTROLLED".equals(storage)
+                    && !parameterNames.contains(name.toUpperCase(Locale.ROOT))) {
+                // (*) は上下限を後で決める。決めるのは ALLOCATE (CONTROLLED) か引数である
+                throw new ParseFailure(part.get(0), "array bounds (*) require CONTROLLED"
+                        + " or a parameter: " + name);
+            }
+            if (level <= 1) {
+                storageClasses.put(name.toUpperCase(Locale.ROOT),
+                        storage == null ? "" : storage);
+                if (part.stream().anyMatch(t -> t.is("AREA"))) {
+                    areaNames.add(name.toUpperCase(Locale.ROOT));
+                }
+            }
             return new Decl(name, level, info.type, info.precision, info.scale,
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
-                    dimensions.isEmpty() ? List.of() : initialItems(part), unsigned);
+                    dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage);
         }
 
         /**
@@ -842,6 +963,10 @@ final class PliSyntax {
             int close = findClosing(part, at);
             List<Bound> bounds = new ArrayList<>();
             for (List<Token> dimension : split(part.subList(at + 1, close), ",")) {
+                if (dimension.size() == 1 && dimension.get(0).is("*")) {
+                    bounds.add(Bound.STAR);
+                    continue;
+                }
                 List<List<Token>> ends = split(dimension, ":");
                 int low = ends.size() == 2 ? bound(ends.get(0), part.get(at)) : 1;
                 int high = bound(ends.get(ends.size() - 1), part.get(at));
