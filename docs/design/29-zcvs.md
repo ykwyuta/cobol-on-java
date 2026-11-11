@@ -281,6 +281,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `OPEN ... TITLE`、`ENV(V ...)` | 43 / 68 | 237 / 243 |
 | マクロ前処理 (Zeus `preproc.rs` を移した) | 46 / 68 | 244 / 250 |
 | `ALLOCATE` / `FREE` (CONTROLLED、BASED)、`ALLOCATION`、`DIM`、`SUM` | 48 / 68 | 253 / 259 |
+| `Q->A`、`NULL` と `SYSNULL` の区別、`POINTERADD` | 49 / 68 | 261 / 267 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -308,6 +309,13 @@ BASED の `INITIAL` を `ALLOCATE` で効かせることと、`AREA` / `OFFSET` 
 断るべき側の検査 (PE113N、PE114N) は、以前から「`ALLOCATE` という文を知らない」で
 断っていたので数の上では通っていた。ZPVS の道具は文面を照合しないので、正しい理由で
 断っているかは自分のテストで確かめる (`StorageControlTest`)。
+
+locator で修飾した参照 `Q->A` は、A の宣言の locator (`BASED(P)` の P) を一時的に Q の値に
+して読み書きし、済んだら戻す。代入の右辺は入れ替える前に評価する。持つのは値の読み、
+代入の左辺、`PUT` の項目だけで、`ADDR(Q->A)` や引数に書いたものは「宣言されていない名」で
+断る。`NULL()` は X'FF000000'、`SYSNULL()` は 0 である (以前はどちらも 0)。POINTER の値は
+位置ごとに振った番号なので (P-150)、`POINTERADD` は番号が指す記憶域の中で位置を進めた
+番号を返し、記憶域の外へ出れば断る。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、
