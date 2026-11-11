@@ -208,6 +208,9 @@ public final class PliRuntime {
             return name.substring(name.lastIndexOf('.') + 1);
         }
 
+        /** FETCH した入口の名から、ロードモジュールの名 (TITLE)。 */
+        private final Map<String, String> fetched = new HashMap<>();
+
         /** 今動いている手続きの名。主手続きなら空。STATIC の記憶域を引く鍵に使う。 */
         private String scope = "";
 
@@ -700,6 +703,29 @@ public final class PliRuntime {
                 free.names().forEach(name -> free(name, env));
             } else if (statement instanceof PliSyntax.AssignByName byName) {
                 assignByName(env.require(byName.target()), env.require(byName.source()));
+            } else if (statement instanceof PliSyntax.Fetch fetch) {
+                for (int i = 0; i < fetch.entries().size(); i++) {
+                    String entry = fetch.entries().get(i).toUpperCase(Locale.ROOT);
+                    String module = fetch.titles().get(i) == null ? entry
+                            : character(value(fetch.titles().get(i), env)).strip()
+                                    .toUpperCase(Locale.ROOT);
+                    try {
+                        context.resolve(module, loader);
+                    } catch (dev.cobolonjava.runtime.program.ProgramNotFoundException missing) {
+                        // 読み込めないロードモジュール。ONCODE は Zeus と同じ 9251 にした。
+                        // 実機と突き合わせていない
+                        throw new Condition("ERROR", null, 9251, null);
+                    }
+                    fetched.put(entry, module);
+                }
+            } else if (statement instanceof PliSyntax.Release release) {
+                for (String entry : release.entries()) {
+                    String module = fetched.getOrDefault(entry.toUpperCase(Locale.ROOT),
+                            entry.toUpperCase(Locale.ROOT));
+                    // 読み込みを忘れ、その STATIC も捨てる。次の FETCH は初めの状態から始まる
+                    Ops.cancel(context, module);
+                    releaseStatics(context, module);
+                }
             } else if (statement instanceof PliSyntax.Get get) {
                 getString(get, env);
             } else if (statement instanceof PliSyntax.Select select) {
@@ -1926,7 +1952,8 @@ public final class PliRuntime {
                     arguments[i] = Storage.wrap(encoded).whole();
                 }
             }
-            Ops.call(context, call.name(), loader, arguments);
+            Ops.call(context, fetched.getOrDefault(call.name().toUpperCase(Locale.ROOT),
+                    call.name()), loader, arguments);
             // 呼んだ先が POINTER の引数を書き換えたかもしれない。BASED の変数は参照のたびに
             // POINTER の値で決まる (LRM "BASED attribute") ので、渡した POINTER に重ねた変数を
             // 重ね直す。以前は同じプログラムの中の代入でしか重ね直さなかった (P-185 の 3 点目)
@@ -3765,6 +3792,15 @@ public final class PliRuntime {
      */
     private static final Map<Object, Map<String, Map<String, Var>>> STATICS =
             java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /** RELEASE したプログラムの STATIC を捨てる。 */
+    private static void releaseStatics(ProgramContext context, String program) {
+        Map<String, Map<String, Var>> statics = STATICS.get(context.registers());
+        if (statics != null) {
+            String prefix = program.toUpperCase(Locale.ROOT) + ".";
+            statics.keySet().removeIf(key -> key.startsWith(prefix));
+        }
+    }
 
     /** 入口の値 (内部手続きの名)。 */
     private record EntryValue(String name) {

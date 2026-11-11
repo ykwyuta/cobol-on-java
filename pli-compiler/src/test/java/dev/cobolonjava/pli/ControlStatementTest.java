@@ -191,4 +191,17 @@ class ControlStatementTest {
                 PUT SKIP LIST('AFTER');
                 """));
     }
+
+    @Test
+    @DisplayName("読み込めないロードモジュールの FETCH は ONCODE 9251 の ERROR を起こす。RELEASE は誤りにならない")
+    void fetchOfAMissingModuleRaisesError() throws Exception {
+        assertEquals("9251,DONE", run("""
+                DCL NOWHERE ENTRY;
+                ON ERROR BEGIN; PUT SKIP LIST(ONCODE()); GO TO DONE; END;
+                RELEASE NOWHERE;
+                FETCH NOWHERE;
+                PUT SKIP LIST('NOT REACHED');
+                DONE: PUT SKIP LIST('DONE');
+                """));
+    }
 }

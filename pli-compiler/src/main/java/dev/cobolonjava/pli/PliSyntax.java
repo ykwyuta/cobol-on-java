@@ -345,11 +345,19 @@ final class PliSyntax {
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
             Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group, OnCondition, Revert, Signal,
-            Prefixed, Select, Allocate, Free, AssignByName, Get {
+            Prefixed, Select, Allocate, Free, AssignByName, Get, Fetch, Release {
     }
 
     /** {@code 構造 = 構造, BY NAME;} (LRM "Structure assignment BY NAME")。 */
     record AssignByName(String target, String source) implements Stmt {
+    }
+
+    /** {@code FETCH 入口 [TITLE(式)], ...;} (LRM "FETCH statement")。title は無ければ null。 */
+    record Fetch(List<String> entries, List<Expr> titles) implements Stmt {
+    }
+
+    /** {@code RELEASE 入口, ...;} (LRM "RELEASE statement")。 */
+    record Release(List<String> entries) implements Stmt {
     }
 
     /** 配列の断面の添字 {@code *} (LRM "Cross sections of arrays")。 */
@@ -968,6 +976,25 @@ final class PliSyntax {
             }
             if (match("DCL") || match("DECLARE")) {
                 return declaration();
+            }
+            if (match("FETCH")) {
+                List<String> entries = new ArrayList<>();
+                List<Expr> titles = new ArrayList<>();
+                do {
+                    entries.add(expect(Kind.IDENT, "entry name after FETCH").text());
+                    titles.add(match("TITLE") ? parenthesizedExpression() : null);
+                } while (match(","));
+                expect(";");
+                return new Fetch(List.copyOf(entries), java.util.Collections.unmodifiableList(
+                        new ArrayList<>(titles)));
+            }
+            if (match("RELEASE")) {
+                List<String> entries = new ArrayList<>();
+                do {
+                    entries.add(expect(Kind.IDENT, "entry name after RELEASE").text());
+                } while (match(","));
+                expect(";");
+                return new Release(List.copyOf(entries));
             }
             if (match("GET")) {
                 if (!check("STRING")) {
