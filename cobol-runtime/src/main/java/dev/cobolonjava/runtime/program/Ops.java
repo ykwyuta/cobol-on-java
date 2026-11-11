@@ -78,13 +78,42 @@ public final class Ops {
     /** 数字編集項目への転記。 */
     public static void moveNumericEdited(Decimal value, Picture target, Storage storage, int offset,
                                          CodePage codePage) {
+        if (target.isNationalEdited()) {
+            // USAGE NATIONAL の数字編集。編集した字を UTF-16 にして置く
+            Storage scratch = Storage.allocate(target.size());
+            Move.toNumericEdited(value, target, scratch.whole(), codePage);
+            byte[] national = dev.cobolonjava.runtime.data.National.fromAlphanumeric(
+                    scratch.array(), codePage);
+            System.arraycopy(national, 0, storage.array(), offset, national.length);
+            return;
+        }
         Move.toNumericEdited(value, target, storage.view(offset, target.size()), codePage);
+    }
+
+    /** UTF-16 の字を、実行時のコードページの字にする。表せない字は数字でない字になる。 */
+    private static byte[] nationalToDisplay(byte[] national, CodePage codePage) {
+        return dev.cobolonjava.runtime.data.National.toDisplay(national, codePage);
+    }
+
+    /** USAGE NATIONAL の数字編集項目から編集を解いて値を取り出す。 */
+    public static Decimal deEditNational(Storage storage, int offset, int length, int scale,
+                                         CodePage codePage) {
+        byte[] display = nationalToDisplay(read(storage, offset, length), codePage);
+        return deEdit(Storage.wrap(display), 0, display.length, scale, codePage);
+    }
+
+    /** USAGE NATIONAL の外部浮動小数点から値を取り出す。 */
+    public static Decimal deEditFloatingNational(Storage storage, int offset, int length,
+                                                 int implied, CodePage codePage) {
+        byte[] display = nationalToDisplay(read(storage, offset, length), codePage);
+        return deEditFloating(Storage.wrap(display), 0, display.length, implied, codePage);
     }
 
     /** 英数字編集項目への転記。 */
     public static void moveAlphanumericEdited(byte[] source, Picture target, Storage storage,
                                               int offset, CodePage codePage) {
-        Move.toAlphanumericEdited(source, target, storage.view(offset, target.size()), codePage);
+        int length = target.isNationalEdited() ? target.size() * 2 : target.size();
+        Move.toAlphanumericEdited(source, target, storage.view(offset, length), codePage);
     }
 
     /**

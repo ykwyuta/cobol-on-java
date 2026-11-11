@@ -73,6 +73,11 @@ public enum DataCategory {
             return NUMERIC_NONINTEGER;
         }
         Picture picture = item.picture();
+        if (picture.isNationalEdited()
+                && picture.category() == Picture.Category.ALPHANUMERIC_EDITED) {
+            // 国字編集 (PIC NBN) は国字として転記・比較する。挿入は転記が置く
+            return NATIONAL;
+        }
         return switch (picture.category()) {
             case ALPHABETIC -> ALPHABETIC;
             case ALPHANUMERIC -> ALPHANUMERIC;

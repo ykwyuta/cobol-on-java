@@ -246,10 +246,20 @@ public final class PictureParser {
                     SignPosition.UNSIGNED, false, cells);
         }
         if (anyNational) {
-            if (anyAlnum || anyAlpha || anyEditing || anyNine || sawV || signed
-                    || slotStored.size() > 0) {
+            // B / 0 / は anyEditing も立てる。国字の中に置けるのは挿入の字だけである
+            boolean onlyInsertion = cells.stream()
+                    .allMatch(c -> c.kind() == Kind.ALNUM || c.kind() == Kind.INSERT);
+            if (anyAlnum || anyAlpha || (anyEditing && !onlyInsertion) || anyNine || sawV
+                    || signed || slotStored.size() > 0) {
                 throw new PictureSyntaxException("national-edited PICTUREs (N mixed with other"
-                        + " symbols) are not supported yet: " + source);
+                        + " symbols than B, 0 and /) are not supported yet: " + source);
+            }
+            if (anyInsertion) {
+                // 国字編集 (N と B / 0 / の挿入)。挿入は英数字編集と同じに置き、1 字を
+                // UTF-16 で持つ (Enterprise COBOL 言語解説書 "National-edited items")
+                return new Picture(source, String.join("", symbols),
+                        Category.ALPHANUMERIC_EDITED, size, 0, 0, SignPosition.UNSIGNED, false,
+                        cells).asNational();
             }
             return new Picture(source, String.join("", symbols), Category.NATIONAL, size, 0, 0,
                     SignPosition.UNSIGNED, false, cells);

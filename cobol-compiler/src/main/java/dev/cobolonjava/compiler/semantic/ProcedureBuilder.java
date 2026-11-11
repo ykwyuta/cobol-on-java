@@ -3637,6 +3637,9 @@ public final class ProcedureBuilder {
         if (context.NATIONAL() != null) {
             return InitializeImage.Category.NATIONAL;
         }
+        if (context.NATIONAL_EDITED() != null) {
+            return InitializeImage.Category.NATIONAL_EDITED;
+        }
         if (context.DBCS() != null || context.EGCS() != null) {
             return InitializeImage.Category.DBCS;
         }

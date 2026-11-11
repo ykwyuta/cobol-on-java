@@ -64,6 +64,26 @@ public final class Picture {
     private final SignPosition signPosition;
     private final boolean blankWhenZero;
     private final List<Cell> cells;
+    /**
+     * 1 字を UTF-16 の 2 バイトで持つ形 (国字編集)。{@code PIC NBN} と、
+     * {@code USAGE NATIONAL} の数字編集・外部浮動小数点である。記憶域は {@link #size} の 2 倍。
+     */
+    private boolean national;
+
+    /** 同じ編集の、1 字を UTF-16 で持つ形 (USAGE NATIONAL の数字編集)。 */
+    public Picture asNational() {
+        Picture changed = new Picture(source, expanded, category, size, digits, scale,
+                signPosition, blankWhenZero, cells);
+        changed.floating = floating;
+        changed.national = true;
+        return changed;
+    }
+
+    /** 国字編集か (1 字が UTF-16 の 2 バイト)。 */
+    public boolean isNationalEdited() {
+        return national;
+    }
+
     /** 外部浮動小数点なら、繰り返しを展開した字の並び ({@code +99.99E+99})。違えば {@code null}。 */
     private String floating;
 
@@ -191,6 +211,7 @@ public final class Picture {
         Picture changed = new Picture(source, expanded, category, newSize, digits, scale,
                 newSignPosition, blankWhenZero, cells);
         changed.floating = floating;
+        changed.national = national;
         return changed;
     }
 
@@ -209,6 +230,7 @@ public final class Picture {
         Picture changed = new Picture(source, expanded, newCategory, size, digits, scale,
                 signPosition, value, cells);
         changed.floating = floating;
+        changed.national = national;
         return changed;
     }
 

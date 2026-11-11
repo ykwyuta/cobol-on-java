@@ -4874,7 +4874,9 @@ public final class ProgramGenerator {
                             "([B" + NUMERIC_ITEM + CODE_PAGE + "I)Z", false);
                 } else if (item.picture() != null && item.picture().isExternalFloating()) {
                     loadCodePage();
-                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "externalFloating",
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST,
+                            item.picture().isNationalEdited()
+                                    ? "externalFloatingNational" : "externalFloating",
                             "([B" + CODE_PAGE + ")Z", false);
                 } else {
                     loadCodePage();
@@ -6272,6 +6274,20 @@ public final class ProgramGenerator {
             return;
         }
         boolean justified = target.reference().item().justified();
+        Picture picture = target.reference().item().picture();
+        if (picture != null && picture.isNationalEdited() && target.reference().refMod() == null) {
+            // 国字編集 (PIC NBN)。挿入の字を置きながら詰める
+            String field = pictureConstant(picture);
+            body.add(() -> {
+                source.run();
+                run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, PICTURE);
+                offset.run();
+                loadCodePage();
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "moveAlphanumericEdited",
+                        "([B" + PICTURE + "L" + STORAGE + ";I" + CODE_PAGE + ")V", false);
+            });
+            return;
+        }
         body.add(() -> {
             source.run();
             offset.run();
@@ -6333,7 +6349,10 @@ public final class ProgramGenerator {
             return () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
         }
         if (source instanceof Operand.Reference reference
-                && DataCategory.of(reference.reference()) == DataCategory.NATIONAL) {
+                && (DataCategory.of(reference.reference()) == DataCategory.NATIONAL
+                    || (reference.reference().item().picture() != null
+                        && reference.reference().item().picture().isNationalEdited()))) {
+            // 国字の数字編集の項目も、字はもう UTF-16 である
             return planSourceBytes(source, origin, widest);
         }
         if (source instanceof Operand.Reference reference
@@ -7951,16 +7970,21 @@ public final class ProgramGenerator {
                     push(length.getAsInt());
                     push(implied);
                     loadCodePage();
-                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "deEditFloating",
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS,
+                            reference.item().picture().isNationalEdited()
+                                    ? "deEditFloatingNational" : "deEditFloating",
                             "(L" + STORAGE + ";III" + CODE_PAGE + ")" + DECIMAL, false);
                 };
             }
+            boolean national = reference.item().picture() != null
+                    && reference.item().picture().isNationalEdited();
             return () -> {
                 offset.run();
                 push(length.getAsInt());
                 push(scale);
                 loadCodePage();
-                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "deEdit",
+                run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS,
+                        national ? "deEditNational" : "deEdit",
                         "(L" + STORAGE + ";III" + CODE_PAGE + ")" + DECIMAL, false);
             };
         }
@@ -8131,7 +8155,8 @@ public final class ProgramGenerator {
      */
     private String pictureConstant(Picture picture) {
         boolean blank = picture.blankWhenZero();
-        String key = "P:" + picture.source() + ":" + decimalPoint + ":" + blank;
+        String key = "P:" + picture.source() + ":" + decimalPoint + ":" + blank + ":"
+                + picture.isNationalEdited();
         return constants.computeIfAbsent(key, k -> {
             String name = "P" + constants.size();
             return new Constant(name, PICTURE, () -> {
@@ -8146,6 +8171,12 @@ public final class ProgramGenerator {
                     clinit.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
                             Type.getInternalName(Picture.class), "withBlankWhenZero",
                             "(Z)" + PICTURE, false);
+                }
+                if (picture.isNationalEdited()) {
+                    // USAGE NATIONAL の数字編集は、原文の PICTURE だけからは分からない
+                    clinit.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            Type.getInternalName(Picture.class), "asNational",
+                            "()" + PICTURE, false);
                 }
             });
         }).name();

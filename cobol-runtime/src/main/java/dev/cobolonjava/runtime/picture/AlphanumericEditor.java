@@ -31,6 +31,9 @@ public final class AlphanumericEditor {
         if (picture.category() != Picture.Category.ALPHANUMERIC_EDITED) {
             throw new IllegalArgumentException("not an alphanumeric-edited picture: " + picture);
         }
+        if (picture.isNationalEdited()) {
+            return editNational(source, picture);
+        }
         byte[] out = new byte[picture.size()];
         int outIndex = 0;
         int sourceIndex = 0;
@@ -46,6 +49,31 @@ public final class AlphanumericEditor {
                 default -> throw new IllegalStateException(
                         "unexpected cell kind in alphanumeric editing: " + c.kind());
             }
+        }
+        return out;
+    }
+
+    /**
+     * 国字編集。送出データは UTF-16 であり、1 字 (2 バイト) ずつ N の位置へ置く。
+     * 挿入の B / 0 / は、国字の空白・0・斜線 (U+0020 / U+0030 / U+002F) になる。
+     */
+    private static byte[] editNational(byte[] source, Picture picture) {
+        byte[] out = new byte[picture.size() * 2];
+        int outIndex = 0;
+        int sourceIndex = 0;
+        for (Cell c : picture.cells()) {
+            char ch;
+            if (c.kind() == Kind.INSERT) {
+                ch = c.literal() == 'B' ? ' ' : c.literal();
+            } else if (sourceIndex + 1 < source.length) {
+                ch = (char) (((source[sourceIndex] & 0xFF) << 8)
+                        | (source[sourceIndex + 1] & 0xFF));
+                sourceIndex += 2;
+            } else {
+                ch = ' ';
+            }
+            out[outIndex++] = (byte) (ch >> 8);
+            out[outIndex++] = (byte) ch;
         }
         return out;
     }

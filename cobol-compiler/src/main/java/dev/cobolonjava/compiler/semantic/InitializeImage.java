@@ -77,7 +77,19 @@ public final class InitializeImage {
         /** 国字の項目 ({@code PIC N})。国字の数字項目は NUMERIC に入る (言語解説書 "INITIALIZE")。 */
         NATIONAL,
         /** DBCS の項目 ({@code PIC G})。{@code EGCS} は同じ意味の古い綴りである。 */
-        DBCS;
+        DBCS,
+        /** 国字編集の項目 ({@code PIC NBN})。NATIONAL には入らない。 */
+        NATIONAL_EDITED;
+
+        /** 項目がこの分類に当たるか。国字編集は国字と分ける。 */
+        public boolean matches(DataItem item) {
+            boolean nationalEdited = item.picture() != null && item.picture().isNationalEdited()
+                    && DataCategory.of(item) == DataCategory.NATIONAL;
+            if (this == NATIONAL_EDITED) {
+                return nationalEdited;
+            }
+            return !nationalEdited && matches(DataCategory.of(item));
+        }
 
         /** 項目の分類がこれに当たるか。 */
         public boolean matches(DataCategory actual) {
@@ -89,6 +101,7 @@ public final class InitializeImage {
                 case NUMERIC_EDITED -> actual == DataCategory.NUMERIC_EDITED;
                 case NATIONAL -> actual == DataCategory.NATIONAL;
                 case DBCS -> actual == DataCategory.DBCS;
+                case NATIONAL_EDITED -> false;
             };
         }
     }
@@ -246,7 +259,7 @@ public final class InitializeImage {
     private LiteralValue valueFor(DataItem item) {
         DataCategory category = DataCategory.of(item);
         for (Replacing rule : replacing) {
-            if (rule.category().matches(category)) {
+            if (rule.category().matches(item)) {
                 return rule.value();
             }
         }
@@ -286,6 +299,10 @@ public final class InitializeImage {
             if (category == DataCategory.DBCS) {
                 dev.cobolonjava.runtime.data.Dbcs.move(value instanceof LiteralValue.Dbcs dbcs
                         ? dbcs.bytes() : new byte[0], scratch, 0, length);
+            } else if (category == DataCategory.NATIONAL && item.picture() != null
+                    && item.picture().isNationalEdited()) {
+                Ops.moveAlphanumericEdited(NationalLiterals.bytesOf(value, length, codePage),
+                        item.picture(), scratch, 0, codePage);
             } else if (category == DataCategory.NATIONAL) {
                 dev.cobolonjava.runtime.data.National.move(
                         NationalLiterals.bytesOf(value, length, codePage), scratch, 0, length,
@@ -340,6 +357,12 @@ public final class InitializeImage {
         if (value instanceof LiteralValue.Figure figure
                 && figure.constant() == LiteralValue.FigurativeConstant.ZERO) {
             return Decimal.zero(scale);
+        }
+        if (value instanceof LiteralValue.Text text && !text.text().isEmpty()
+                && text.text().chars().allMatch(Character::isDigit)) {
+            // 英数字の定数を数値の受取側へ移すのは、符号なしの整数として読む転記である
+            // (MOVE の表)。REPLACING NUMERIC-EDITED BY '123' がこの形である
+            return Decimal.parse(text.text());
         }
         throw new IllegalArgumentException("a numeric item requires a numeric value");
     }

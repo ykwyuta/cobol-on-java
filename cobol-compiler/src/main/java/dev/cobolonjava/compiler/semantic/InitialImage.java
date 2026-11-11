@@ -237,7 +237,9 @@ public final class InitialImage {
             writeNumeric(image, item, value, picture, usage == null ? Usage.DISPLAY : usage);
             return;
         }
-        if (picture.category() == Picture.Category.NATIONAL) {
+        if (picture.category() == Picture.Category.NATIONAL || picture.isNationalEdited()) {
+            // 国字編集の初期値も、編集せずに字を UTF-16 で置く (編集の項目の VALUE は
+            // 書いた字そのものである)
             writeNational(image, item, value);
             return;
         }

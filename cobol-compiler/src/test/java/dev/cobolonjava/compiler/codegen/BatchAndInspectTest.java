@@ -460,4 +460,35 @@ class BatchAndInspectTest {
                 "    MOVE G1 TO X1.",
                 "    STOP RUN.")).succeeded());
     }
+
+    @Test
+    @DisplayName("国字編集は挿入の字を UTF-16 で置き、USAGE NATIONAL の数字編集は編集した字を UTF-16 で持つ")
+    void editsNationalItems() throws ReflectiveOperationException {
+        assertEquals(List.of("CHAR", "NUM", "BACK"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 NED-CH PIC NBN/0N.",
+                "01 NED-NUM PIC ZZ9.99 NATIONAL.",
+                "01 NED-RAW REDEFINES NED-NUM PIC X(12).",
+                "01 BACK PIC S9(3)V99 SIGN LEADING SEPARATE.",
+                "PROCEDURE DIVISION.",
+                "    MOVE N'XYZ' TO NED-CH.",
+                "    IF NED-CH = N'X Y/0Z' DISPLAY 'CHAR'.",
+                "    MOVE 10.34 TO NED-NUM.",
+                "    IF NED-NUM = N' 10.34' DISPLAY 'NUM'.",
+                "    MOVE NED-NUM TO BACK.",
+                "    IF BACK = 10.34 DISPLAY 'BACK'.",
+                "    STOP RUN.")));
+        // VALUE は編集せずに字をそのまま UTF-16 で置く
+        assertEquals("0041002000420020", initialHex(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 NED-CH PIC NBNN VALUE N'A B'.",
+                "PROCEDURE DIVISION.",
+                "    STOP RUN.")));
+    }
 }

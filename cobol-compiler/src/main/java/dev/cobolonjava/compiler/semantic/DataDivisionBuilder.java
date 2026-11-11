@@ -2006,6 +2006,20 @@ public final class DataDivisionBuilder {
             item.setUsage(Usage.NATIONAL);
             return picture.size() * 2;
         }
+        if (picture.isNationalEdited()) {
+            // 国字編集 (PIC NBN)。USAGE は NATIONAL だけである
+            if (usage != null && usage != Usage.NATIONAL) {
+                report(item.origin(), "a national-edited item requires USAGE NATIONAL: "
+                        + describe(item));
+            }
+            item.setUsage(Usage.NATIONAL);
+            return picture.size() * 2;
+        }
+        if (usage == Usage.NATIONAL && picture.isNumericEdited()) {
+            // USAGE NATIONAL の数字編集・外部浮動小数点。編集の字を UTF-16 で持つ
+            item.setPicture(picture.asNational());
+            return picture.size() * 2;
+        }
         if (item.isGroupNational()) {
             report(item.origin(), "GROUP-USAGE NATIONAL may be written only on a group item: "
                     + describe(item));
