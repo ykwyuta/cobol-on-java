@@ -84,6 +84,8 @@ public final class PliCompiler {
                     accept(loop.body());
                 } else if (statement instanceof PliSyntax.Block block) {
                     accept(block.body());
+                } else if (statement instanceof PliSyntax.Group group) {
+                    accept(group.body());
                 } else if (statement instanceof PliSyntax.OnEndFile handler) {
                     accept(handler.handler());
                 }

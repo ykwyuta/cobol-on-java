@@ -33,14 +33,24 @@ final class PliSyntax {
      *             番地を値に持つ (IMS の PCB の並び)。そうでない手続きの引数は参照で渡った変数そのもの
      */
     record Program(String name, List<String> parameters, List<Stmt> body,
-                   Map<String, Procedure> procedures, boolean main) {
+                   Map<String, Procedure> procedures, boolean main,
+                   Map<String, FileInfo> files) {
+    }
+
+    /**
+     * FILE の宣言に書いた属性のうち、開き方とレコードの形を決めるもの。
+     *
+     * @param output     {@code OUTPUT} を書いたか。OPEN に向きを書かなければこれで決まる
+     * @param recordSize {@code ENV(... RECSIZE(n))} の n。書かなければ 0
+     */
+    record FileInfo(boolean output, int recordSize) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
     }
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
-            Block, GoTo, Label, OnEndFile, FileOperation, Sql {
+            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -123,17 +133,35 @@ final class PliSyntax {
      * @param untilCondition 繰り返した<b>後</b>に調べる条件。無ければ {@code null}。
      *                       どちらも無ければ {@code DO LOOP} (無限の繰り返し) である
      */
-    record Loop(Expr whileCondition, Expr untilCondition, List<Stmt> body) implements Stmt {
+    record Loop(Expr whileCondition, Expr untilCondition, List<Stmt> body, String label)
+            implements Stmt {
     }
 
     record IterativeLoop(String control, Expr start, Expr finish, Expr step,
-                         List<Stmt> body) implements Stmt {
+                         List<Stmt> body, String label) implements Stmt {
     }
 
     record Call(String name, List<Expr> arguments) implements Stmt {
     }
 
-    record Return() implements Stmt {
+    /** @param value 関数の手続きが返す値。{@code RETURN;} なら {@code null} */
+    record Return(Expr value) implements Stmt {
+    }
+
+    /** いちばん内側の (名前を書けばその名前の) DO から出る。 */
+    record Leave(String label) implements Stmt {
+    }
+
+    /** いちばん内側の DO の次の繰り返しへ進む。 */
+    record Iterate(String label) implements Stmt {
+    }
+
+    /** 繰り返さない {@code DO; ... END;}。LEAVE で出られる (LRM "LEAVE statement")。 */
+    record Group(String label, List<Stmt> body) implements Stmt {
+    }
+
+    /** 実行単位を終える。 */
+    record Stop() implements Stmt {
     }
 
     record Block(List<Stmt> body) implements Stmt {
@@ -148,7 +176,7 @@ final class PliSyntax {
     record OnEndFile(String file, List<Stmt> handler) implements Stmt {
     }
 
-    enum FileAction { OPEN, READ, CLOSE }
+    enum FileAction { OPEN, READ, WRITE, CLOSE }
 
     record FileOperation(FileAction action, String file, String target) implements Stmt {
     }
@@ -385,8 +413,12 @@ final class PliSyntax {
             }
             ProcedureBuilder main = parseProcedure();
             return new ParseResult(new Program(main.name, main.parameters,
-                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main), List.of());
+                    List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
+                    Map.copyOf(files)), List.of());
         }
+
+        /** FILE の宣言の属性。名は大文字。 */
+        private final Map<String, FileInfo> files = new java.util.HashMap<>();
 
         private ProcedureBuilder parseProcedure() {
             String name = expect(Kind.IDENT, "procedure name").text();
@@ -407,6 +439,11 @@ final class PliSyntax {
             // 入口属性のうち要るのは OPTIONS(MAIN) だけである。RETURNS その他は保持しない
             List<Token> attributes = collectToSemicolon();
             ProcedureBuilder result = new ProcedureBuilder(name, List.copyOf(parameters));
+            boolean outerReturns = returnsValue;
+            returnsValue = attributes.stream().anyMatch(token -> token.is("RETURNS"));
+            // 手続きの中の LEAVE は、外の手続きの DO へは出られない
+            List<String> outerLoops = List.copyOf(loops);
+            loops.clear();
             for (int i = 0; i + 2 < attributes.size(); i++) {
                 if (attributes.get(i).is("OPTIONS") && attributes.get(i + 1).is("(")) {
                     int close = findClosing(attributes, i + 1);
@@ -427,11 +464,20 @@ final class PliSyntax {
                         next();
                     }
                     expect(";");
+                    returnsValue = outerReturns;
+                    loops.addAll(outerLoops);
                     return result;
                 }
-                result.body.add(statement());
+                result.body.add(labelled());
             }
             throw fail(peek(), "procedure " + name + " has no matching END");
+        }
+
+        /** 文を 1 つ読み、それが名前なら次の文に渡すために覚える。 */
+        private Stmt labelled() {
+            Stmt statement = statement();
+            pendingLabel = statement instanceof Label label ? label.name() : null;
+            return statement;
         }
 
         private Stmt statement() {
@@ -461,13 +507,39 @@ final class PliSyntax {
                 return call();
             }
             if (match("RETURN")) {
-                if (check("(")) {
-                    // 値を返すのは RETURNS を持つ関数の手続きだけで、それはまだ持たない。
-                    // 以前は値を読み飛ばしていた
-                    throw fail(previous(), "RETURN with a value is not supported yet");
+                Expr value = null;
+                if (check("(") && !returnsValue) {
+                    // 値を返せるのは RETURNS を書いた手続きだけである (LRM "RETURN statement")
+                    throw fail(previous(), "RETURN with a value is not allowed in a procedure"
+                            + " without RETURNS");
+                }
+                if (match("(")) {
+                    value = expression();
+                    expect(")");
                 }
                 expect(";");
-                return new Return();
+                return new Return(value);
+            }
+            if (match("LEAVE") || match("ITERATE")) {
+                boolean leave = previous().is("LEAVE");
+                Token verb = previous();
+                String label = check(Kind.IDENT) ? next().text() : null;
+                if (loops.isEmpty()) {
+                    throw fail(verb, "LEAVE / ITERATE outside a DO group");
+                }
+                if (label != null && !loops.contains(label.toUpperCase(java.util.Locale.ROOT))) {
+                    throw fail(verb, "no enclosing DO group is named " + label);
+                }
+                expect(";");
+                return leave ? new Leave(label) : new Iterate(label);
+            }
+            if (check("STOP") && check(1, ";")) {
+                next();
+                next();
+                return new Stop();
+            }
+            if (match("WRITE")) {
+                return fileOperation(FileAction.WRITE);
             }
             if (match("GO")) {
                 match("TO");
@@ -572,6 +644,16 @@ final class PliSyntax {
 
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
+            if (info.type == Type.FILE) {
+                int size = 0;
+                for (int i = 0; i + 1 < part.size(); i++) {
+                    if (part.get(i).is("RECSIZE")) {
+                        size = parenthesizedInt(part, i + 1, 0);
+                    }
+                }
+                files.put(name.toUpperCase(java.util.Locale.ROOT), new FileInfo(
+                        part.stream().anyMatch(token -> token.is("OUTPUT")), size));
+            }
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
                 // 要素がスカラーの配列 (2 A(5) FIXED BIN) は持つ
@@ -690,6 +772,11 @@ final class PliSyntax {
                                          int inheritedPrecision, int inheritedScale) {
             for (int i = from; i < tokens.size(); i++) {
                 if (tokens.get(i).is("CHAR") || tokens.get(i).is("CHARACTER")) {
+                    if (i + 2 < tokens.size() && tokens.get(i + 1).is("(")
+                            && tokens.get(i + 2).is("*")) {
+                        // CHAR(*) は引数の長さを受け継ぐ (LRM "Parameter attributes")。長さ -1 で表す
+                        return new TypeInfo(Type.CHAR, -1, 0);
+                    }
                     return new TypeInfo(Type.CHAR, parenthesizedInt(tokens, i + 1, 1), 0);
                 }
                 if (tokens.get(i).is("BIT")) {
@@ -869,7 +956,25 @@ final class PliSyntax {
             return new If(condition, whenTrue, whenFalse);
         }
 
+        /** いま翻訳している手続きが RETURNS を持つか。 */
+        private boolean returnsValue;
+        /** 囲んでいる DO の名前 (無ければ空)。内側が先頭。 */
+        private final java.util.ArrayDeque<String> loops = new java.util.ArrayDeque<>();
+        /** 直前に読んだ文の名前。次の DO がこれを自分の名前にする。 */
+        private String pendingLabel;
+
         private Stmt loop() {
+            String label = pendingLabel == null ? "" : pendingLabel;
+            pendingLabel = null;
+            loops.push(label.toUpperCase(java.util.Locale.ROOT));
+            try {
+                return loop(label.isEmpty() ? null : label);
+            } finally {
+                loops.pop();
+            }
+        }
+
+        private Stmt loop(String label) {
             if (check(Kind.IDENT) && check(1, "=")) {
                 String control = next().text();
                 expect("=");
@@ -879,16 +984,16 @@ final class PliSyntax {
                 Expr step = match("BY") ? expression()
                         : new Literal(java.math.BigDecimal.ONE);
                 expect(";");
-                return new IterativeLoop(control, start, finish, step, blockBody());
+                return new IterativeLoop(control, start, finish, step, blockBody(), label);
             }
             if (match(";")) {
                 // Type 1。繰り返さず、1 度だけ実行する。以前は条件の無い繰り返しとして扱い、
                 // IF ... THEN DO; ... END; が上限まで回っていた
-                return new Block(blockBody());
+                return new Group(label, blockBody());
             }
             if (match("LOOP") || match("FOREVER")) {
                 expect(";");
-                return new Loop(null, null, blockBody());
+                return new Loop(null, null, blockBody(), label);
             }
             Expr whileCondition = null;
             Expr untilCondition = null;
@@ -905,13 +1010,13 @@ final class PliSyntax {
                 throw fail(peek(), "DO option " + peek().text() + " is not supported yet");
             }
             expect(";");
-            return new Loop(whileCondition, untilCondition, blockBody());
+            return new Loop(whileCondition, untilCondition, blockBody(), label);
         }
 
         private List<Stmt> blockBody() {
             List<Stmt> body = new ArrayList<>();
             while (!check("END") && !check(Kind.EOF)) {
-                body.add(statement());
+                body.add(labelled());
             }
             expect("END");
             if (check(Kind.IDENT)) {
@@ -946,11 +1051,17 @@ final class PliSyntax {
             String file = qualifiedName();
             expect(")");
             String target = null;
-            if (action == FileAction.READ) {
-                expect("INTO");
+            if (action == FileAction.READ || action == FileAction.WRITE) {
+                expect(action == FileAction.READ ? "INTO" : "FROM");
                 expect("(");
                 target = qualifiedName();
                 expect(")");
+            }
+            if (action == FileAction.OPEN) {
+                // 向きだけを読む。TITLE や LINESIZE は断る (黙って捨てると別のファイルを開く)
+                if (match("OUTPUT") || match("INPUT") || match("UPDATE")) {
+                    target = previous().text().toUpperCase(java.util.Locale.ROOT);
+                }
             }
             expect(";");
             return new FileOperation(action, file, target);

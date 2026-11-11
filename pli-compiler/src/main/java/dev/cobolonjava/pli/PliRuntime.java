@@ -224,6 +224,7 @@ public final class PliRuntime {
                         }
                     }
                     case PliSyntax.Block block -> collectDeclarations(block.body(), chunks);
+                    case PliSyntax.Group group -> collectDeclarations(group.body(), chunks);
                     case PliSyntax.Loop loop -> collectDeclarations(loop.body(), chunks);
                     case PliSyntax.IterativeLoop loop -> collectDeclarations(loop.body(), chunks);
                     case PliSyntax.OnEndFile on -> collectDeclarations(on.handler(), chunks);
@@ -244,8 +245,8 @@ public final class PliRuntime {
             try {
                 declareAll(program.body(), globals);
                 execute(program.body(), globals);
-            } catch (ReturnSignal ignored) {
-                // 主手続きの RETURN は正常終了である。
+            } catch (ReturnSignal | StopSignal ignored) {
+                // 主手続きの RETURN と STOP は正常終了である。
             } finally {
                 sysprint.leave();
             }
@@ -289,7 +290,9 @@ public final class PliRuntime {
                 int guard = 0;
                 while (loop.whileCondition() == null
                         || truth(value(loop.whileCondition(), env))) {
-                    execute(loop.body(), env);
+                    if (!body(loop.body(), env, loop.label())) {
+                        break;
+                    }
                     if (loop.untilCondition() != null
                             && truth(value(loop.untilCondition(), env))) {
                         break;
@@ -302,10 +305,29 @@ public final class PliRuntime {
                 iterativeLoop(loop, env);
             } else if (statement instanceof PliSyntax.Call call) {
                 call(call, env);
-            } else if (statement instanceof PliSyntax.Return) {
+            } else if (statement instanceof PliSyntax.Return result) {
+                returned = result.value() == null ? null : value(result.value(), env);
                 throw ReturnSignal.INSTANCE;
+            } else if (statement instanceof PliSyntax.Leave leave) {
+                throw new LoopSignal(true, leave.label());
+            } else if (statement instanceof PliSyntax.Iterate iterate) {
+                throw new LoopSignal(false, iterate.label());
+            } else if (statement instanceof PliSyntax.Stop) {
+                throw StopSignal.INSTANCE;
             } else if (statement instanceof PliSyntax.Block block) {
                 execute(block.body(), env);
+            } else if (statement instanceof PliSyntax.Group group) {
+                try {
+                    execute(group.body(), env);
+                } catch (LoopSignal signal) {
+                    // 繰り返さない DO も LEAVE で出られる。ITERATE は繰り返す DO のものなので、
+                    // 名前を書かない ITERATE は外の繰り返しへ渡す
+                    boolean mine = signal.label == null ? signal.leave
+                            : signal.label.equalsIgnoreCase(group.label());
+                    if (!mine) {
+                        throw signal;
+                    }
+                }
             } else if (statement instanceof PliSyntax.GoTo goTo) {
                 throw new GoToSignal(goTo.label());
             } else if (statement instanceof PliSyntax.OnEndFile onEndFile) {
@@ -314,6 +336,26 @@ public final class PliRuntime {
                 file(operation, env);
             } else if (statement instanceof PliSyntax.Sql sql) {
                 sql(sql.source(), env);
+            }
+        }
+
+        /** 関数の手続きが RETURN(値) で返した値。呼んだ側がすぐに取り出す。 */
+        private Object returned;
+
+        /**
+         * 繰り返しの本体を 1 回動かす。
+         *
+         * @return LEAVE で出たなら {@code false}。ITERATE と、ふつうに終わったときは {@code true}
+         */
+        private boolean body(List<PliSyntax.Stmt> statements, Env env, String label) {
+            try {
+                execute(statements, env);
+                return true;
+            } catch (LoopSignal signal) {
+                if (signal.label != null && !signal.label.equalsIgnoreCase(label)) {
+                    throw signal; // 外側の、その名前の DO が受ける
+                }
+                return !signal.leave;
             }
         }
 
@@ -329,7 +371,9 @@ public final class PliRuntime {
             while (step.signum() > 0 ? current.compareTo(finish) <= 0
                     : current.compareTo(finish) >= 0) {
                 control.write(current, context);
-                execute(loop.body(), env);
+                if (!body(loop.body(), env, loop.label())) {
+                    break;
+                }
                 current = current.add(step);
                 if (++guard > 10_000_000) {
                     throw new PliExecutionException("loop iteration limit exceeded");
@@ -482,8 +526,12 @@ public final class PliRuntime {
                 return;
             }
             DataView view;
-            boolean parameter = parameters.containsKey(
-                    declaration.name().toUpperCase(Locale.ROOT));
+            String upper = declaration.name().toUpperCase(Locale.ROOT);
+            if (env.arguments.containsKey(upper)) {
+                bindParameter(declaration, env.arguments.get(upper), env);
+                return;
+            }
+            boolean parameter = parameters.containsKey(upper);
             if (declaration.type() == PliSyntax.Type.POINTER && parameter) {
                 return; // 入口引数の POINTER は、渡された記憶域の番号をもう持っている
             }
@@ -898,23 +946,90 @@ public final class PliRuntime {
             return display(value);
         }
 
+        /**
+         * 内部手続きを呼ぶ。
+         *
+         * <p>引数が変数の名前なら参照で渡る。式や定数なら、値を入れた仮の変数 (dummy argument) が
+         * 渡る (LRM "Passing arguments to procedures")。以前は名前しか受けず、
+         * {@code CALL P('ABC', X=1)} を断っていた。仮の変数の型は、手続きの中のパラメーターの
+         * 宣言が決める。型が合わない変数を渡したときも仮の変数になる。
+         *
+         * @return RETURN(値) の値。値を返さなければ {@code null}
+         */
+        private Object invoke(PliSyntax.Procedure procedure, List<PliSyntax.Expr> arguments,
+                              Env env) {
+            if (arguments.size() != procedure.parameters().size()) {
+                throw new PliExecutionException("procedure " + procedure.name() + " takes "
+                        + procedure.parameters().size() + " argument(s), but "
+                        + arguments.size() + " were passed");
+            }
+            Env local = new Env(env, context);
+            for (int i = 0; i < arguments.size(); i++) {
+                String name = procedure.parameters().get(i).toUpperCase(Locale.ROOT);
+                PliSyntax.Expr argument = arguments.get(i);
+                if (argument instanceof PliSyntax.Reference reference
+                        && env.contains(reference.name())) {
+                    Var variable = env.require(reference.name());
+                    local.alias(name, variable);
+                    local.arguments.put(name, variable);
+                } else {
+                    local.arguments.put(name, value(argument, env));
+                }
+            }
+            returned = null;
+            try {
+                declareAll(procedure.body(), local);
+                execute(procedure.body(), local);
+            } catch (ReturnSignal ignored) {
+                // 内部プロシージャから呼出元へ戻る。
+            }
+            Object result = returned;
+            returned = null;
+            return result;
+        }
+
+        /** 内部手続きのパラメーターを、渡された引数に結ぶ。 */
+        private void bindParameter(PliSyntax.Decl declaration, Object argument, Env env) {
+            if (!declaration.dimensions().isEmpty() || declaration.level() > 0) {
+                if (argument instanceof Var) {
+                    return; // 配列と構造は、渡された変数そのものを使う (alias 済み)
+                }
+                throw new PliExecutionException("an array or structure parameter needs a variable"
+                        + " as its argument: " + declaration.name());
+            }
+            boolean star = declaration.type() == PliSyntax.Type.CHAR && declaration.precision() < 0;
+            if (argument instanceof Var variable && variable.type == declaration.type()
+                    && variable.varying == declaration.varying() && variable.dimensions == null
+                    && (star || declaration.type() == PliSyntax.Type.POINTER
+                        || (variable.precision == declaration.precision()
+                            && variable.scale == declaration.scale())
+                        || (declaration.type() == PliSyntax.Type.CHAR && !variable.varying
+                            && variable.view.length() == declaration.precision()))) {
+                env.alias(declaration.name(), variable);
+                return;
+            }
+            Object value = argument instanceof Var variable ? variable.read(context) : argument;
+            int precision = star ? display(value).length() : declaration.precision();
+            int length = switch (declaration.type()) {
+                case CHAR -> precision + (declaration.varying() ? 2 : 0);
+                default -> byteLength(declaration);
+            };
+            Var dummy = new Var(declaration.name(), declaration.type(), precision,
+                    declaration.scale(), Storage.allocate(length).whole());
+            dummy.varying = declaration.varying();
+            dummy.write(value, context);
+            env.alias(declaration.name(), dummy);
+        }
+
         private void call(PliSyntax.Call call, Env env) {
             PliSyntax.Procedure procedure = program.procedures().get(call.name());
             if (procedure != null) {
-                Env local = new Env(env, context);
-                for (int i = 0; i < procedure.parameters().size(); i++) {
-                    if (i >= call.arguments().size()
-                            || !(call.arguments().get(i) instanceof PliSyntax.Reference reference)) {
-                        throw new PliExecutionException("internal procedure arguments must be references");
-                    }
-                    local.alias(procedure.parameters().get(i), env.require(reference.name()));
-                }
-                try {
-                    declareAll(procedure.body(), local);
-                    execute(procedure.body(), local);
-                } catch (ReturnSignal ignored) {
-                    // 内部プロシージャから呼出元へ戻る。
-                }
+                invoke(procedure, call.arguments(), env);
+                return;
+            }
+            if (call.name().equalsIgnoreCase("PLIRETC")) {
+                // 戻りコードを決める (LRM "PLIRETC")
+                context.setReturnCode(number(value(call.arguments().get(0), env)).intValue());
                 return;
             }
             DataView[] arguments = new DataView[call.arguments().size()];
@@ -954,9 +1069,36 @@ public final class PliRuntime {
         }
 
         private void file(PliSyntax.FileOperation operation, Env env) {
-            DataSet dataSet = context.file(operation.file(), operation.file());
+            PliSyntax.FileInfo info = program.files().get(
+                    operation.file().toUpperCase(Locale.ROOT));
+            // RECSIZE を書いた FILE は、その長さの固定長のレコードである。書いていなければ
+            // 割り当てた側 (DD) の形に任せる
+            DataSet dataSet = info != null && info.recordSize() > 0
+                    ? context.file(operation.file(), operation.file(),
+                            dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            dev.cobolonjava.runtime.file.RecordFormat.FIXED, info.recordSize())
+                    : context.file(operation.file(), operation.file());
             switch (operation.action()) {
-                case OPEN -> checkFileStatus(operation.file(), dataSet.open(OpenMode.INPUT, false), false);
+                case OPEN -> {
+                    // 向きは OPEN に書いたもの、無ければ宣言のもの、どちらも無ければ INPUT
+                    boolean output = operation.target() != null
+                            ? operation.target().equals("OUTPUT") : info != null && info.output();
+                    if ("UPDATE".equals(operation.target())) {
+                        throw new PliExecutionException("OPEN UPDATE is not supported yet: "
+                                + operation.file());
+                    }
+                    checkFileStatus(operation.file(),
+                            dataSet.open(output ? OpenMode.OUTPUT : OpenMode.INPUT, false), false);
+                }
+                case WRITE -> {
+                    Var source = env.require(operation.target());
+                    if (source.varying) {
+                        throw new PliExecutionException("WRITE FROM a VARYING string is not"
+                                + " supported yet: " + source.name);
+                    }
+                    checkFileStatus(operation.file(), dataSet.write(source.view.toByteArray()),
+                            false);
+                }
                 case CLOSE -> checkFileStatus(operation.file(), dataSet.close(), false);
                 case READ -> {
                     Var target = env.require(operation.target());
@@ -1196,6 +1338,15 @@ public final class PliRuntime {
                 }
                 default -> {
                 }
+            }
+            PliSyntax.Procedure procedure = program.procedures().get(function.name());
+            if (procedure != null) {
+                Object result = invoke(procedure, function.arguments(), env);
+                if (result == null) {
+                    throw new PliExecutionException("procedure " + procedure.name()
+                            + " was used as a function but returned no value");
+                }
+                return result;
             }
             List<Object> arguments = function.arguments().stream().map(e -> value(e, env)).toList();
             return switch (name) {
@@ -1502,6 +1653,8 @@ public final class PliRuntime {
         private final ProgramContext context;
         private final Map<String, Var> variables = new LinkedHashMap<>();
         private final Map<String, List<PliSyntax.Stmt>> endFileHandlers = new HashMap<>();
+        /** 内部手続きに渡された引数。変数 ({@link Var}) か、式の値。名は大文字。 */
+        private final Map<String, Object> arguments = new HashMap<>();
 
         Env(Env parent, ProgramContext context) {
             this.parent = parent;
@@ -1793,6 +1946,26 @@ public final class PliRuntime {
 
         private ReturnSignal() {
             super(null, null, false, false);
+        }
+    }
+
+    private static final class StopSignal extends RuntimeException {
+        static final StopSignal INSTANCE = new StopSignal();
+
+        private StopSignal() {
+            super(null, null, false, false);
+        }
+    }
+
+    /** LEAVE (出る) と ITERATE (次の繰り返しへ)。 */
+    private static final class LoopSignal extends RuntimeException {
+        final boolean leave;
+        final String label;
+
+        LoopSignal(boolean leave, String label) {
+            super(null, null, false, false);
+            this.leave = leave;
+            this.label = label;
         }
     }
 
