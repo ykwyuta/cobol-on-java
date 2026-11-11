@@ -1483,6 +1483,7 @@ public final class PliRuntime {
                     case "|" -> truth(left) || truth(right);
                     case "&" -> truth(left) && truth(right);
                     case "||" -> display(left) + display(right);
+                    case "**" -> power(number(left), number(right));
                     case "+", "-", "*", "/" -> arithmetic(binary.operator(), left, right,
                             arithmetic == null ? new FixedValue.Arithmetic(options, false, false)
                                     : arithmetic);
@@ -1859,6 +1860,29 @@ public final class PliRuntime {
                 case "*" -> a.multiply(b);
                 default -> a.divide(b, MathContext.DECIMAL128);
             };
+        }
+
+        /**
+         * べき乗。指数が整数なら掛け算を重ねて正確に出し、負なら逆数にする。整数でなければ
+         * 浮動小数点で近似する (LRM "Exponentiation")。結果の属性 (FIXED / FLOAT) は持たない。
+         */
+        private static Object power(BigDecimal base, BigDecimal exponent) {
+            if (exponent.stripTrailingZeros().scale() <= 0) {
+                int whole = exponent.intValueExact();
+                if (whole >= 0) {
+                    return base.pow(whole);
+                }
+                if (base.signum() == 0) {
+                    throw new Condition("ZERODIVIDE", null, 320, null);
+                }
+                return BigDecimal.ONE.divide(base.pow(-whole), MathContext.DECIMAL64);
+            }
+            if (base.signum() < 0) {
+                throw new PliExecutionException("ERROR: a negative number raised to a"
+                        + " non-integer power");
+            }
+            return new BigDecimal(Math.pow(base.doubleValue(), exponent.doubleValue()),
+                    MathContext.DECIMAL64);
         }
 
         private String filled(byte value, List<Object> arguments) {

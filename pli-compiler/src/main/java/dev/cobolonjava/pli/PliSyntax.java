@@ -1279,7 +1279,13 @@ final class PliSyntax {
             if (match("^") || match("¬") || match("-") || match("+")) {
                 return new Unary(previous().text(), unary());
             }
-            return primary();
+            Expr operand = primary();
+            if (match("**")) {
+                // べき乗は前置の演算子と同じいちばん高い優先度で、右から結ぶ
+                // (LRM "Combinations of operations")。-2**2 は -(2**2) である
+                return new Binary("**", operand, unary());
+            }
+            return operand;
         }
 
         private Expr primary() {
