@@ -36,7 +36,9 @@ class OptionSupportTest {
     @Test
     @DisplayName("計算する値を変えるのに実装していない値は断る")
     void refusesResultChangingValuesThatAreNotImplemented() {
-        for (String option : new String[] {"NUMPROC(PFD)", "NUMPROC(MIG)",
+        // NUMPROC(PFD) と NUMPROC(MIG) は以前ここにあった。NUMERIC の級条件の表を持ったので
+        // 通す (EnterpriseExtensionsTest が表を測る)
+        for (String option : new String[] {"NUMPROC(XYZ)", "NUMCLS(XYZ)",
                 "APOST", "FLOAT(BINARY)", "CODEPAGE(1399)"}) {
             CobolCompiler.Result result = compile(option);
             assertFalse(result.succeeded(), option);
@@ -49,7 +51,7 @@ class OptionSupportTest {
     @DisplayName("この処理系の振る舞いと同じ値と、効いているオプションは黙って通す")
     void acceptsImplementedValuesSilently() {
         CobolCompiler.Result result = compile(
-                "ARITH(COMPAT),ARITH(EXTEND),TRUNC(STD),TRUNC(BIN),TRUNC(OPT),NUMPROC(NOPFD),FLOAT(HEX),CODEPAGE(1047),"
+                "ARITH(COMPAT),ARITH(EXTEND),TRUNC(STD),TRUNC(BIN),TRUNC(OPT),NUMPROC(NOPFD),NUMPROC(PFD),NUMPROC(MIG),NUMCLS(ALT),FLOAT(HEX),CODEPAGE(1047),"
                         + "SSRANGE,DYNAM,QUOTE,SOURCEFORMAT(FIXED)");
         assertTrue(result.succeeded(), () -> result.diagnostics().toString());
         assertTrue(result.diagnostics().isEmpty(), () -> result.diagnostics().toString());
@@ -83,7 +85,7 @@ class OptionSupportTest {
     @DisplayName("ソースの CBL 文に書いた指定も同じに診断する")
     void checksOptionsWrittenInTheSource() {
         CobolCompiler.Result result = CobolCompiler.standard().compile("OPTS.cbl",
-                "       CBL NUMPROC(PFD)\n" + PROGRAM);
+                "       CBL FLOAT(BINARY)\n" + PROGRAM);
         assertFalse(result.succeeded());
     }
 }

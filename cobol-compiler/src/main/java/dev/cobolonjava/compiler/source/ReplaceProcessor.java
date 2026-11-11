@@ -39,6 +39,8 @@ public final class ReplaceProcessor {
     public static List<TextWord> apply(List<TextWord> words) {
         List<TextWord> out = new ArrayList<>();
         List<TextReplacement> active = List.of();
+        // 開いているプログラムの数。PROGRAM-ID で増え、END PROGRAM で減る
+        int depth = 0;
         int i = 0;
 
         while (i < words.size()) {
@@ -47,6 +49,21 @@ public final class ReplaceProcessor {
                 active = statement.replacements();
                 // REPLACE 文そのものは出力に残さない
                 i = statement.endIndex() + 1;
+                continue;
+            }
+            // REPLACE は、別々に翻訳されるプログラムの終わりまで効く (Enterprise COBOL 言語解説書
+            // "REPLACE statement": until ... the end of the separately compiled program)。
+            // 入れ子のプログラムは外側の続きなので引き継ぐが、いちばん外の END PROGRAM を
+            // 過ぎたら解く。以前は原文の終わりまで効かせていたので、続けて書いた次の
+            // プログラムの語まで置き換えていた
+            if (words.get(i).isWord("PROGRAM-ID")) {
+                depth++;
+            } else if (words.get(i).isWord("END") && i + 1 < words.size()
+                    && words.get(i + 1).isWord("PROGRAM") && depth > 0 && --depth == 0) {
+                while (i < words.size() && !words.get(i).isSeparator('.')) {
+                    out.add(words.get(i++));
+                }
+                active = List.of();
                 continue;
             }
             if (active.isEmpty()) {

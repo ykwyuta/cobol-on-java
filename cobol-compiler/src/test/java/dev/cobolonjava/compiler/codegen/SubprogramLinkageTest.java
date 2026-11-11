@@ -334,4 +334,111 @@ class SubprogramLinkageTest {
 
         assertEquals(List.of("008", "004", "NULL", "SET", "010", "020"), output);
     }
+
+    @Test
+    @DisplayName("GLOBAL の集団の中の項目を BY REFERENCE で渡すと、呼ばれた側の書いた値が残る")
+    void keepsWhatTheCalleeWroteIntoASharedRecord() {
+        // 分け合う領域 (GLOBAL、EXTERNAL) は呼び出しの前後で写しを取って合わせている。
+        // 以前は戻ったときに古い写しを書き戻し、呼ばれた側が番地で書いた値を消していた。
+        // 入れ子の側が GLOBAL へ書いた値 (写しで届く) も、同じ呼び出しの並びで残ること
+        List<String> output = run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 SHARED GLOBAL.",
+                        "    05 BY-NEST PIC X(4) VALUE SPACES.",
+                        "    05 BY-ADDR PIC X(4) VALUE SPACES.",
+                        "PROCEDURE DIVISION.",
+                        "    CALL 'INNER'.",
+                        "    CALL 'OUTER' USING BY-ADDR.",
+                        "    DISPLAY BY-NEST '/' BY-ADDR.",
+                        "    STOP RUN.",
+                        "IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. INNER.",
+                        "PROCEDURE DIVISION.",
+                        "    MOVE 'NEST' TO BY-NEST.",
+                        "    GOBACK.",
+                        "END PROGRAM INNER.",
+                        "END PROGRAM MAIN.",
+                        "IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. OUTER.",
+                        "DATA DIVISION.",
+                        "LINKAGE SECTION.",
+                        "01 LK PIC X(4).",
+                        "PROCEDURE DIVISION USING LK.",
+                        "    MOVE 'ADDR' TO LK.",
+                        "    GOBACK.",
+                        "END PROGRAM OUTER.")));
+
+        assertEquals(List.of("NEST/ADDR"), output);
+    }
+
+    @Test
+    @DisplayName("REPLACE は、いちばん外のプログラムの終わりで解ける")
+    void endsReplaceAtTheEndOfTheSeparatelyCompiledProgram() {
+        // 入れ子のプログラムは外側の続きなので置き換わる。続けて書いた別のプログラムは
+        // 置き換わらない。以前は原文の終わりまで効かせていた
+        List<String> output = run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "REPLACE =='OLD'== BY =='NEW'==.",
+                        "PROCEDURE DIVISION.",
+                        "    CALL 'INNER'.",
+                        "    CALL 'OUTER'.",
+                        "    STOP RUN.",
+                        "IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. INNER.",
+                        "PROCEDURE DIVISION.",
+                        "    DISPLAY 'OLD'.",
+                        "    GOBACK.",
+                        "END PROGRAM INNER.",
+                        "END PROGRAM MAIN.",
+                        "IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. OUTER.",
+                        "PROCEDURE DIVISION.",
+                        "    DISPLAY 'OLD'.",
+                        "    GOBACK.",
+                        "END PROGRAM OUTER.")));
+
+        assertEquals(List.of("NEW", "OLD"), output);
+    }
+
+    /** 符号つきの詰め 10 進に 4 通りの符号を入れ、NUMERIC かどうかを並べる。 */
+    private static List<String> classTable(String options) {
+        return run(List.of(
+                List.of("CBL " + options,
+                        "IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 RAW PIC X(2).",
+                        "01 NUM REDEFINES RAW PIC S9(3) COMP-3.",
+                        "01 ANS PIC X(4) VALUE SPACES.",
+                        "PROCEDURE DIVISION.",
+                        "    MOVE X'123A' TO RAW.",
+                        "    IF NUM IS NUMERIC MOVE 'Y' TO ANS(1:1)",
+                        "    ELSE MOVE 'N' TO ANS(1:1).",
+                        "    MOVE X'123C' TO RAW.",
+                        "    IF NUM IS NUMERIC MOVE 'Y' TO ANS(2:1)",
+                        "    ELSE MOVE 'N' TO ANS(2:1).",
+                        "    MOVE X'123F' TO RAW.",
+                        "    IF NUM IS NUMERIC MOVE 'Y' TO ANS(3:1)",
+                        "    ELSE MOVE 'N' TO ANS(3:1).",
+                        "    MOVE X'000F' TO RAW.",
+                        "    IF NUM IS NUMERIC MOVE 'Y' TO ANS(4:1)",
+                        "    ELSE MOVE 'N' TO ANS(4:1).",
+                        "    DISPLAY ANS.",
+                        "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("NUMERIC の級条件が通す符号は NUMPROC と NUMCLS で変わる")
+    void choosesTheSignTableFromTheOptions() {
+        // 並びは A・C・F (値 123)・F (値 0)
+        assertEquals(List.of("NYYY"), classTable("NUMPROC(NOPFD)"));
+        assertEquals(List.of("YYYY"), classTable("NUMPROC(NOPFD),NUMCLS(ALT)"));
+        assertEquals(List.of("NYNY"), classTable("NUMPROC(PFD)"));
+        assertEquals(List.of("NYYY"), classTable("NUMPROC(MIG)"));
+    }
 }

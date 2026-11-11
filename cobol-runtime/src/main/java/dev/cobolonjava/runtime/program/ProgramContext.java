@@ -254,7 +254,12 @@ public final class ProgramContext {
     /** 積まれたプログラムの記憶域と、その {@code EXTERNAL} の位置。 */
     private final java.util.Deque<ExternalFrame> externalFrames = new java.util.ArrayDeque<>();
 
-    private record ExternalFrame(String name, Storage storage, CobolProgram program) {
+    private record ExternalFrame(String name, Storage storage, CobolProgram program,
+                                 Map<String, byte[]> flushed) {
+
+        ExternalFrame(String name, Storage storage, CobolProgram program) {
+            this(name, storage, program, new java.util.HashMap<>());
+        }
 
         CobolProgram.ExternalRegion[] regions() {
             return program == null ? CobolProgram.NO_EXTERNAL_REGIONS : program.externalRegions();
@@ -302,8 +307,9 @@ public final class ProgramContext {
             return;
         }
         for (CobolProgram.ExternalRegion region : frame.regions()) {
-            externals.put(region.name(),
-                    frame.storage().view(region.offset(), region.length()).toByteArray());
+            byte[] bytes = frame.storage().view(region.offset(), region.length()).toByteArray();
+            externals.put(region.name(), bytes);
+            frame.flushed().put(region.name(), bytes);
         }
     }
 
@@ -324,6 +330,14 @@ public final class ProgramContext {
         }
         for (CobolProgram.ExternalRegion region : frame.regions()) {
             byte[] shared = externals.get(region.name());
+            // 写しが、自分が最後に書き出したときのままなら読み込まない。そのあいだに
+            // 自分の記憶域が変わっていれば、それは CALL に BY REFERENCE で渡した項目へ
+            // 呼ばれた側が書いたものである。以前はここで古い写しを書き戻し、
+            // 分け合う領域 (GLOBAL、EXTERNAL) の中の項目を渡すと、返ってきた値が消えていた
+            if (shared != null
+                    && java.util.Arrays.equals(shared, frame.flushed().get(region.name()))) {
+                continue;
+            }
             if (shared != null && shared.length == region.length()) {
                 frame.storage().view(region.offset(), region.length()).setBytes(shared);
             }

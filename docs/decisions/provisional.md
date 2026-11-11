@@ -6055,6 +6055,8 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 
 **解消条件**: z/OS probe ([docs/zos-probe](../zos-probe/runbook.md)) に、ZCVS が見つけた差 (設計 29 の「動きが違っていたもの」の表) を足して実機で測る。
 
+**2026-11-11 の追記**: こちらが「ZCVS のほうが通らない」と判断していた 8 本は、権利者の指示で Zeus の側の原文を直した (設計 29)。判断の根拠は公開仕様のままであり、実機では確かめていない。直した奥に、こちらの不備が 3 つあった。
+
 ## P-192 副プログラムとの連絡は「見える結果」で合わせ、機械の規約は写さない
 
 | 項目 | 内容 |
@@ -6083,11 +6085,11 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 
 **解消条件**: 覚え書きに呼び出しごとの写しを載せる。`INITIAL` の戻りでファイルを閉じる。
 
-## P-194 TRUNC(OPT) は STD と同じ、NUMPROC(PFD / MIG) と NUMCLS(ALT) は断る
+## P-194 TRUNC(OPT) は STD と同じ、NUMPROC(PFD / MIG) は級条件の表だけを変える
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 一部解消 (2026-11-10) |
+| 状態 | 一部解消 (2026-11-11) |
 | 場所 | `OptionSupport`、`ProgramGenerator.numericItemConstant`、`BinaryDecimal`、`ClassTest` |
 | 関連要件 | FR-181、FR-043 |
 
@@ -6096,6 +6098,8 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 **どこがずれうるか**: `TRUNC(BIN)` の下で 2 進項目を算術の途中結果に使うときの桁数 (5 / 10 / 20 桁として扱う規則) は入れていない。`DISPLAY` が 2 進項目を PICTURE の桁数で出すのもそのままである。`NUMPROC(PFD)` / `NUMPROC(MIG)` / `NUMCLS(ALT)` は断る。測る本 (ZCVS の ZA111A〜ZA115A) が予約語で止まるので、外の基準が無い。
 
 **解消条件**: `NUMPROC` と `NUMCLS` を測れる検査を z/OS probe に足し、実機の表で実装する。
+
+**2026-11-11 の追記**: `NUMPROC(PFD)`、`NUMPROC(MIG)`、`NUMCLS(ALT)` を受け付け、NUMERIC の級条件が通す符号の表を変える (`ClassTest.numeric` の `signs`)。表は Zeus と同じにした。演算と `MOVE` は `NOPFD` のままである。優先符号 (C・D・F) の入力では同じ結果になり、優先符号でない入力の `PFD` の結果は言語解説書が予測できないとしている。`MIG` が優先符号でない入力をどう直すかは持っていない。`NUMCLS` は z/OS では導入時の設定であり、CBL 文で選べるのは Zeus の検査スイートに合わせたこの処理系の拡張である。以前は `NUMCLS(ALT)` を知らないオプションとして警告して通し、既定の表で判定していた。
 
 ## P-195 可変長の表のうしろの項目は、入れ子でない表のぶんだけ詰める
 

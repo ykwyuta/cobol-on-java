@@ -199,6 +199,8 @@ public final class ProgramGenerator {
     private List<String> paragraphNames = new ArrayList<>();
     /** 囲む側が書いた {@code USE GLOBAL} 宣言節 (要件 FR-091)。 */
     private List<ProcedureBuilder.GlobalDeclarative> inheritedDeclaratives = List.of();
+    /** NUMERIC の級条件が使う符号の表 (NUMPROC と NUMCLS が決める)。 */
+    private final int classSigns;
 
     /** いま組み立てている段落の名前。行き先の無い {@code GO TO} の文面に使う。 */
     private String currentParagraphName = "";
@@ -237,6 +239,14 @@ public final class ProgramGenerator {
         this.trunc = options.value("TRUNC").map(v -> v.toUpperCase(java.util.Locale.ROOT))
                 .orElse("STD");
         this.arithmeticDigits = options.intermediateDigits();
+        // NUMPROC(PFD) は NUMCLS より先に効く。PFD でなければ NUMCLS が表を選ぶ
+        boolean preferred = options.value("NUMPROC").map(v -> v.equalsIgnoreCase("PFD"))
+                .orElse(false);
+        boolean alternate = options.value("NUMCLS").map(v -> v.equalsIgnoreCase("ALT"))
+                .orElse(false);
+        this.classSigns = preferred ? dev.cobolonjava.runtime.verb.ClassTest.SIGNS_PREFERRED
+                : alternate ? dev.cobolonjava.runtime.verb.ClassTest.SIGNS_ALTERNATE
+                : dev.cobolonjava.runtime.verb.ClassTest.SIGNS_PRIMARY;
         this.specialNames = specialNames;
     }
 
@@ -4817,8 +4827,9 @@ public final class ProgramGenerator {
                 if (signedNumeric) {
                     run.visitFieldInsn(Opcodes.GETSTATIC, internal, shape, NUMERIC_ITEM);
                     loadCodePage();
+                    push(classSigns);
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "numeric",
-                            "([B" + NUMERIC_ITEM + CODE_PAGE + ")Z", false);
+                            "([B" + NUMERIC_ITEM + CODE_PAGE + "I)Z", false);
                 } else {
                     loadCodePage();
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "digits",

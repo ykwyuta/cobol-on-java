@@ -40,21 +40,27 @@ final class OptionSupport {
             "DYNAM");
 
     /** 値によって、この処理系の振る舞いと同じなら黙って通すオプション。 */
-    private static final Map<String, Set<String>> IMPLEMENTED_VALUES = Map.of(
-            "ARITH", Set.of("COMPAT", "C", "EXTEND", "E"),
-            "TRUNC", Set.of("STD", "BIN", "OPT"),
-            "NUMPROC", Set.of("NOPFD"),
-            "FLOAT", Set.of("HEX", "S390"),
-            "CODEPAGE", Set.of("1047", "01047", "IBM-1047"),
-            "PGMNAME", Set.of("COMPAT", "CO"),
-            "INTDATE", Set.of("ANSI"),
-            "NSYMBOL", Set.of("NATIONAL", "NAT"),
-            "QUOTE", Set.of(""),
-            "Q", Set.of(""));
+    private static final Map<String, Set<String>> IMPLEMENTED_VALUES = Map.ofEntries(
+            Map.entry("ARITH", Set.of("COMPAT", "C", "EXTEND", "E")),
+            Map.entry("TRUNC", Set.of("STD", "BIN", "OPT")),
+            // PFD と MIG は NUMERIC の級条件の表を変える。演算は、符号が優先符号 (C・D・F) で
+            // あるかぎり NOPFD と同じ結果になる。優先符号でない入力の PFD の結果は
+            // 言語解説書が「予測できない」としているので、NOPFD と同じに扱ってよい
+            Map.entry("NUMPROC", Set.of("NOPFD", "PFD", "MIG")),
+            // NUMCLS は z/OS では導入時の設定である。Zeus の検査スイートに合わせて
+            // CBL 文でも選べるようにしている
+            Map.entry("NUMCLS", Set.of("PRIM", "ALT")),
+            Map.entry("FLOAT", Set.of("HEX", "S390")),
+            Map.entry("CODEPAGE", Set.of("1047", "01047", "IBM-1047")),
+            Map.entry("PGMNAME", Set.of("COMPAT", "CO")),
+            Map.entry("INTDATE", Set.of("ANSI")),
+            Map.entry("NSYMBOL", Set.of("NATIONAL", "NAT")),
+            Map.entry("QUOTE", Set.of("")),
+            Map.entry("Q", Set.of("")));
 
     /** 値を変えるのに実装していない値を持ちうるオプション。値が違えば断る。 */
     private static final Set<String> RESULT_CHANGING = Set.of(
-            "ARITH", "TRUNC", "NUMPROC", "FLOAT", "CODEPAGE", "APOST", "APOSTROPHE",
+            "ARITH", "TRUNC", "NUMPROC", "NUMCLS", "FLOAT", "CODEPAGE", "APOST", "APOSTROPHE",
             "ZONEDATA", "NUMCHECK", "INTDATE", "PGMNAME", "CURRENCY",
             // NSYMBOL(DBCS) は PIC N を DBCS (DISPLAY-1) にする。持っていない
             "NSYMBOL");
