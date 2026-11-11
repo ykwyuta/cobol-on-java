@@ -27,6 +27,10 @@ public final class NumericEditor {
         if (picture.category() != Picture.Category.NUMERIC_EDITED) {
             throw new IllegalArgumentException("not a numeric-edited picture: " + picture);
         }
+        if (picture.isExternalFloating()) {
+            return codePage.encode(dev.cobolonjava.runtime.picture.ExternalFloating.format(
+                    value.toBigDecimal(), picture.floatingTemplate()));
+        }
         List<Cell> cells = picture.cells();
         int size = picture.size();
 

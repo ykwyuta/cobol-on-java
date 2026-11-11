@@ -59,6 +59,35 @@ public final class Picture {
     private final SignPosition signPosition;
     private final boolean blankWhenZero;
     private final List<Cell> cells;
+    /** 外部浮動小数点なら、繰り返しを展開した字の並び ({@code +99.99E+99})。違えば {@code null}。 */
+    private String floating;
+
+    /** 外部浮動小数点の PICTURE。種別は数字編集として扱う (字で持ち、編集して書き込む)。 */
+    static Picture externalFloating(String source, String template) {
+        Picture picture = new Picture(source, template, Category.NUMERIC_EDITED,
+                ExternalFloating.size(template),
+                ExternalFloating.integerDigits(template)
+                        + ExternalFloating.fractionDigits(template),
+                ExternalFloating.fractionDigits(template), SignPosition.UNSIGNED, false,
+                List.of());
+        picture.floating = template;
+        return picture;
+    }
+
+    /** 外部浮動小数点か。 */
+    public boolean isExternalFloating() {
+        return floating != null;
+    }
+
+    /** 外部浮動小数点の字の並び。 */
+    public String floatingTemplate() {
+        return floating;
+    }
+
+    /** {@code V} で書いた、字に出ない小数の桁数。 */
+    public int floatingImpliedScale() {
+        return floating != null && floating.indexOf('V') >= 0 ? scale : 0;
+    }
 
     Picture(String source, String expanded, Category category, int size, int digits, int scale,
             SignPosition signPosition, boolean blankWhenZero, List<Cell> cells) {
@@ -148,8 +177,10 @@ public final class Picture {
         int newSize = signPosition.isSigned() && !isNumericEdited()
                 ? digits + (newSignPosition.isSeparate() ? 1 : 0)
                 : size;
-        return new Picture(source, expanded, category, newSize, digits, scale,
+        Picture changed = new Picture(source, expanded, category, newSize, digits, scale,
                 newSignPosition, blankWhenZero, cells);
+        changed.floating = floating;
+        return changed;
     }
 
     /**
@@ -164,8 +195,10 @@ public final class Picture {
         Category newCategory = value && category == Category.NUMERIC
                 ? Category.NUMERIC_EDITED
                 : category;
-        return new Picture(source, expanded, newCategory, size, digits, scale,
+        Picture changed = new Picture(source, expanded, newCategory, size, digits, scale,
                 signPosition, value, cells);
+        changed.floating = floating;
+        return changed;
     }
 
     @Override

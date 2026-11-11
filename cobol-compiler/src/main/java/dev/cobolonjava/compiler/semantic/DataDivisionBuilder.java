@@ -539,6 +539,15 @@ public final class DataDivisionBuilder {
             report(origin, "JUSTIFIED requires an alphabetic or alphanumeric item: "
                     + describe(item));
         }
+        if (picture != null && picture.isExternalFloating()
+                && (item.initialValue() != null || item.justified() || item.blankWhenZero()
+                    || !(item.usage() == null || item.usage() == Usage.DISPLAY
+                         || item.usage() == Usage.NATIONAL))) {
+            // 外部浮動小数点は字で持つ。VALUE・JUSTIFIED・BLANK WHEN ZERO は書けず、
+            // USAGE は DISPLAY か NATIONAL に限る (言語解説書 "External floating-point items")
+            report(origin, "an external floating item requires USAGE DISPLAY or NATIONAL"
+                    + " and allows no VALUE, JUSTIFIED or BLANK WHEN ZERO: " + describe(item));
+        }
         if (picture != null && item.blankWhenZero()) {
             if (picture.signPosition().isSigned()) {
                 // 演算符号 S を持つ項目は、ゼロでも符号を持つ。空白にはできない

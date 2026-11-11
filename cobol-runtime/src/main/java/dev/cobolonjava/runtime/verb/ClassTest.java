@@ -173,6 +173,12 @@ public final class ClassTest {
         return true;
     }
 
+    /** 外部浮動小数点の項目が数字か。字の並びがその形をしていればよい。 */
+    public static boolean externalFloating(byte[] bytes, CodePage codePage) {
+        return dev.cobolonjava.runtime.picture.ExternalFloating.parse(
+                codePage.decode(bytes), 0) != null;
+    }
+
     /** 英数字項目が数字か。すべてのバイトが 0〜9 でなければならない。 */
     public static boolean digits(byte[] bytes, CodePage codePage) {
         byte zero = codePage.digit(0);

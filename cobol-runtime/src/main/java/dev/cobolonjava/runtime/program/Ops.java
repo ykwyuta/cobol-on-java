@@ -1171,6 +1171,19 @@ public final class Ops {
      *
      * @param scale 編集した項目の小数の桁数
      */
+    /** 外部浮動小数点の項目から値を取り出す。形が崩れていればデータ例外である。 */
+    public static Decimal deEditFloating(Storage storage, int offset, int length, int implied,
+                                         CodePage codePage) {
+        String text = codePage.decode(read(storage, offset, length));
+        java.math.BigDecimal value =
+                dev.cobolonjava.runtime.picture.ExternalFloating.parse(text, implied);
+        if (value == null) {
+            throw new IllegalStateException(
+                    "S0C7: not an external floating-point value: " + text);
+        }
+        return Decimal.parse(value.toPlainString());
+    }
+
     public static Decimal deEdit(Storage storage, int offset, int length, int scale,
                                  CodePage codePage) {
         String text = codePage.decode(read(storage, offset, length));

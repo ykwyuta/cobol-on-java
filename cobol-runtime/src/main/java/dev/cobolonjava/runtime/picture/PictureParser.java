@@ -46,6 +46,11 @@ public final class PictureParser {
             throw new PictureSyntaxException("PICTURE character-string must not be empty");
         }
         List<String> symbols = expand(source.trim().toUpperCase(Locale.ROOT), currency);
+        String template = String.join("", symbols);
+        if (template.indexOf('E') >= 0 && ExternalFloating.matches(template)) {
+            // 外部浮動小数点。以前は E を知らない記号として断っていた
+            return Picture.externalFloating(source, template);
+        }
 
         boolean signed = false;
         if (!symbols.isEmpty() && symbols.get(0).equals("S")) {

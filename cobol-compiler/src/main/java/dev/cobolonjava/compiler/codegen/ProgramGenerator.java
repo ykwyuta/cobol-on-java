@@ -4869,6 +4869,10 @@ public final class ProgramGenerator {
                     push(classSigns);
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "numeric",
                             "([B" + NUMERIC_ITEM + CODE_PAGE + "I)Z", false);
+                } else if (item.picture() != null && item.picture().isExternalFloating()) {
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "externalFloating",
+                            "([B" + CODE_PAGE + ")Z", false);
                 } else {
                     loadCodePage();
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, CLASS_TEST, "digits",
@@ -7855,6 +7859,18 @@ public final class ProgramGenerator {
         if (DataCategory.of(reference) == DataCategory.NUMERIC_EDITED) {
             // 数字編集項目からは<b>編集を解いて</b>値を取り出す (de-editing)
             int scale = reference.item().picture() == null ? 0 : reference.item().picture().scale();
+            if (reference.item().picture() != null
+                    && reference.item().picture().isExternalFloating()) {
+                int implied = reference.item().picture().floatingImpliedScale();
+                return () -> {
+                    offset.run();
+                    push(length.getAsInt());
+                    push(implied);
+                    loadCodePage();
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "deEditFloating",
+                            "(L" + STORAGE + ";III" + CODE_PAGE + ")" + DECIMAL, false);
+                };
+            }
             return () -> {
                 offset.run();
                 push(length.getAsInt());

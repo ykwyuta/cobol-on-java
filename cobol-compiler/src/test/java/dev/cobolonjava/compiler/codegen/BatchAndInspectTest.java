@@ -180,4 +180,50 @@ class BatchAndInspectTest {
                 compile(withFile("RERUN ON F EVERY 100 RECORDS OF F.", null, "PIC X(10)."));
         assertTrue(accepted.succeeded(), () -> accepted.diagnostics().toString());
     }
+
+    @Test
+    @DisplayName("外部浮動小数点は、左端の桁が 0 にならないように寄せて字で持つ")
+    void normalizesExternalFloatingItems() {
+        assertEquals(List.of("+00.00E+00/Y", "+12.50E-01", "-12.50E-01", "+12.34E+02",
+                "00123400000"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 EXT PIC +99.99E+99.",
+                "01 BACK PIC 9(5)V9(6).",
+                "01 FLAG PIC X VALUE 'N'.",
+                "PROCEDURE DIVISION.",
+                "    MOVE 0 TO EXT.",
+                "    IF EXT IS NUMERIC MOVE 'Y' TO FLAG.",
+                "    DISPLAY EXT '/' FLAG.",
+                "    MOVE 1.25 TO EXT.",
+                "    DISPLAY EXT.",
+                "    MOVE -1.25 TO EXT.",
+                "    DISPLAY EXT.",
+                "    MOVE 1234 TO EXT.",
+                "    DISPLAY EXT.",
+                "    MOVE 123.4 TO EXT.",
+                "    MOVE EXT TO BACK.",
+                "    DISPLAY BACK.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("外部浮動小数点に VALUE と 2 進の USAGE は書けない")
+    void refusesClausesAnExternalFloatingItemCannotHave() {
+        for (String clause : List.of("VALUE 1", "JUSTIFIED", "COMP")) {
+            CobolCompiler.Result result = compile(List.of(
+                    "IDENTIFICATION DIVISION.",
+                    "PROGRAM-ID. MAIN.",
+                    "DATA DIVISION.",
+                    "WORKING-STORAGE SECTION.",
+                    "01 EXT PIC +9.9E+99 " + clause + ".",
+                    "PROCEDURE DIVISION.",
+                    "    STOP RUN."));
+            assertFalse(result.succeeded(), clause);
+            assertTrue(result.diagnostics().toString().contains("external floating item"),
+                    () -> clause + ": " + result.diagnostics());
+        }
+    }
 }
