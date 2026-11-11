@@ -275,13 +275,13 @@ class NationalGenerationTest {
     }
 
     @Test
-    @DisplayName("1390 と 1399 は JDK に無いので断る (P-002)")
+    @DisplayName("持っていない CCSID は断る (P-002)。1390 と 1399 は表を持ったので例を変えた")
     void refusesUnsupportedCcsids() {
         String diagnostics = refusal(List.of(
                         "01 X PIC X(2).",
                         "01 N PIC N(2)."),
-                "MOVE FUNCTION NATIONAL-OF(X, 1399) TO N.");
-        assertTrue(diagnostics.contains("1399"), diagnostics);
+                "MOVE FUNCTION NATIONAL-OF(X, 1388) TO N.");
+        assertTrue(diagnostics.contains("1388"), diagnostics);
     }
 
     // --- INITIALIZE ---

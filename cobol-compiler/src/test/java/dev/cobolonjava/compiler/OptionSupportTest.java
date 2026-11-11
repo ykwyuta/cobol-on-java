@@ -39,7 +39,8 @@ class OptionSupportTest {
         // NUMPROC(PFD) と NUMPROC(MIG) は以前ここにあった。NUMERIC の級条件の表を持ったので
         // 通す (EnterpriseExtensionsTest が表を測る)
         for (String option : new String[] {"NUMPROC(XYZ)", "NUMCLS(XYZ)",
-                "APOST", "FLOAT(BINARY)", "CODEPAGE(1399)"}) {
+                // CODEPAGE(1399) は以前ここにあった。表を持ったので、持っていない別のものにする
+                "APOST", "FLOAT(BINARY)", "CODEPAGE(1388)"}) {
             CobolCompiler.Result result = compile(option);
             assertFalse(result.succeeded(), option);
             assertTrue(result.diagnostics().toString().contains("not supported yet"),

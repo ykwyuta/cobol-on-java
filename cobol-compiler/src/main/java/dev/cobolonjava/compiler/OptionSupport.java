@@ -56,10 +56,10 @@ final class OptionSupport {
             // CBL 文でも選べるようにしている
             Map.entry("NUMCLS", Set.of("PRIM", "ALT")),
             Map.entry("FLOAT", Set.of("HEX", "S390")),
-            // 930 と 939 は日本語の EBCDIC (SBCS と、SO / SI で囲む DBCS)。1390 と 1399 は
-            // 変換の表を持っていないので断る
+            // 930 / 939 / 1390 / 1399 は日本語の EBCDIC (SBCS と、SO / SI で囲む DBCS)。
+            // 1390 と 1399 は ICU の表から作った文字集合で持つ
             Map.entry("CODEPAGE", Set.of("1047", "01047", "IBM-1047", "37", "037",
-                    "930", "939")),
+                    "930", "939", "1390", "1399")),
             Map.entry("PGMNAME", Set.of("COMPAT", "CO")),
             Map.entry("INTDATE", Set.of("ANSI")),
             Map.entry("NSYMBOL", Set.of("NATIONAL", "NAT", "DBCS")),

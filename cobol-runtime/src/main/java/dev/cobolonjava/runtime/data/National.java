@@ -189,9 +189,9 @@ public final class National {
             case 819:
                 return StandardCharsets.ISO_8859_1;
             case 1390:
+                return dev.cobolonjava.runtime.codepage.CodePages.IBM_1390.charset();
             case 1399:
-                throw new UnsupportedCharsetException("CCSID " + ccsid
-                        + " is not supported (P-002)");
+                return dev.cobolonjava.runtime.codepage.CodePages.IBM_1399.charset();
             default:
                 break;
         }
