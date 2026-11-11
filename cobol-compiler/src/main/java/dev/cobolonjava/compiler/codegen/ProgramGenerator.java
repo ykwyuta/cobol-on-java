@@ -6525,8 +6525,11 @@ public final class ProgramGenerator {
                              List<Runnable> body) {
         boolean floating = hasFloating(statement.value())
                 || statement.targets().stream().anyMatch(target -> isFloating(target.reference()));
-        if (floating && hasDivisionOrPower(statement.value())) {
-            // 浮動小数点で評価される式の中間結果の精度は、除算とべき乗で 10 進と食い違う。近い値を返さない
+        if (hasFloating(statement.value()) && hasDivisionOrPower(statement.value())) {
+            // 浮動小数点の<b>被演算子</b>を割ったりべき乗したりするときは断る。中間結果の精度が
+            // 10 進と食い違う。受取側だけが浮動小数点なら、式は固定小数点の規則で評価して
+            // 最後に浮動小数点へ入れる。以前はこれも断っていた (ZCVS の ZA121A。検査は
+            // 10 の -9 乗の幅で判定しており、桁の違いは問うていない。覚え書き 5)
             report(statement.origin(),
                     "COMPUTE with floating-point items supports only +, - and * yet (P-127)");
             return;

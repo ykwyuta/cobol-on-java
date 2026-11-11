@@ -226,4 +226,28 @@ class BatchAndInspectTest {
                     () -> clause + ": " + result.diagnostics());
         }
     }
+
+    @Test
+    @DisplayName("浮動小数点の受取側へ入れる除算とべき乗は、小数部を落とさない")
+    void keepsTheFractionForAFloatingReceiver() {
+        // 以前は断っていた。断るのをやめただけでは、商が整数に切れて 0 が入る
+        assertEquals(List.of("0125000", "0125000", "2000000"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 R COMP-2.",
+                "01 D PIC 9V9(6).",
+                "PROCEDURE DIVISION.",
+                "    COMPUTE R = 1 / 8.",
+                "    COMPUTE D = R.",
+                "    DISPLAY D.",
+                "    COMPUTE R = 2 ** -3.",
+                "    COMPUTE D = R.",
+                "    DISPLAY D.",
+                "    COMPUTE R = 4 ** 0.5.",
+                "    COMPUTE D = R.",
+                "    DISPLAY D.",
+                "    STOP RUN.")));
+    }
 }
