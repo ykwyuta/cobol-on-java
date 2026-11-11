@@ -334,7 +334,7 @@ final class PliSyntax {
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
             Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group, OnCondition, Revert, Signal,
-            Prefixed, Select, Allocate, Free, AssignByName {
+            Prefixed, Select, Allocate, Free, AssignByName, Get {
     }
 
     /** {@code 構造 = 構造, BY NAME;} (LRM "Structure assignment BY NAME")。 */
@@ -456,7 +456,20 @@ final class PliSyntax {
      * @param format {@code EDIT} の書式並び
      */
     record Put(String string, boolean page, int skip, boolean edit, List<Expr> values,
-               List<FormatItem> format) implements Stmt {
+               List<FormatItem> format, boolean data) implements Stmt {
+
+        Put(String string, boolean page, int skip, boolean edit, List<Expr> values,
+            List<FormatItem> format) {
+            this(string, page, skip, edit, values, format, false);
+        }
+    }
+
+    /**
+     * {@code GET STRING(s) EDIT(...)(...)} と {@code GET STRING(s) LIST(...)} (LRM "GET
+     * statement")。ファイルからの GET はまだ持たない。
+     */
+    record Get(String string, boolean edit, List<Expr> targets, List<FormatItem> format)
+            implements Stmt {
     }
 
     /**
@@ -924,6 +937,27 @@ final class PliSyntax {
             }
             if (match("DCL") || match("DECLARE")) {
                 return declaration();
+            }
+            if (match("GET")) {
+                if (!check("STRING")) {
+                    throw fail(previous(), "statement GET without STRING is not supported yet");
+                }
+                next();
+                expect("(");
+                String string = qualifiedName();
+                expect(")");
+                boolean edit;
+                if (match("EDIT")) {
+                    edit = true;
+                } else if (match("LIST")) {
+                    edit = false;
+                } else {
+                    throw fail(peek(), "GET STRING supports only EDIT and LIST yet");
+                }
+                List<Expr> targets = arguments();
+                List<FormatItem> format = edit ? formatList() : List.of();
+                expect(";");
+                return new Get(string, edit, targets, format);
             }
             if (match("PUT")) {
                 return put();
@@ -1762,6 +1796,7 @@ final class PliSyntax {
             boolean page = false;
             int skip = 0;
             Boolean edit = null;
+            boolean data = false;
             List<Expr> values = List.of();
             List<FormatItem> format = List.of();
             while (!check(";")) {
@@ -1797,17 +1832,23 @@ final class PliSyntax {
                     if (edit) {
                         format = formatList();
                     }
+                } else if (check("DATA") && edit == null && string != null) {
+                    // data-directed (名=値;) は STRING への出力だけを持つ
+                    next();
+                    data = true;
+                    edit = false;
+                    values = arguments();
                 } else {
                     throw fail(option, "PUT option " + option.text() + " is not supported yet");
                 }
             }
-            if (string != null && (page || skip > 0 || edit == null || !edit)) {
+            if (string != null && (page || skip > 0 || edit == null || (!edit && !data))) {
                 // PAGE と SKIP はファイルにしか書けない。STRING への LIST は区切りと引用符の規則が
                 // PRINT ファイルと違い、まだ持たない
                 throw fail(peek(), "PUT STRING supports only EDIT without PAGE or SKIP");
             }
             expect(";");
-            return new Put(string, page, skip, edit != null && edit, values, format);
+            return new Put(string, page, skip, edit != null && edit, values, format, data);
         }
 
         private List<FormatItem> formatList() {

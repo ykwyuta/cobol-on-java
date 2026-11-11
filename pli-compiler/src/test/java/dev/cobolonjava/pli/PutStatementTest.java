@@ -349,4 +349,19 @@ class PutStatementTest {
                 PUT SKIP LIST(C + 1);
                 """));
     }
+
+    @Test
+    @DisplayName("GET STRING EDIT は欄ごとに字を取り、点の無い F(w,d) の欄は d 桁の小数を含むとみなす。LIST は区切りで受ける")
+    void getString() throws Exception {
+        assertEquals("12.34 7 12.34 -1.25 17 AB", run("""
+                DCL S CHAR(20) INIT(' 12.34:   7: 1234');
+                DCL A FIXED DEC(7,2), B FIXED BIN(31), C FIXED DEC(7,2);
+                DCL N CHAR(4);
+                GET STRING(S) EDIT(A, B, C)(F(6,2), X(1), F(4), X(1), F(5,2));
+                PUT SKIP LIST(A, B, C);
+                S = '-1.25,17 ''AB''';
+                GET STRING(S) LIST(A, B, N);
+                PUT SKIP LIST(A, B, N);
+                """).strip().replaceAll("\\s+", " "));
+    }
 }

@@ -289,6 +289,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | 数の編集の PICTURE (Zeus `picture.rs` を移した) | 56 / 68 | 291 / 292 |
 | `AREA`、`OFFSET`、`ALLOCATE ... IN`、`POINTER(o,a)`、`OFFSET(p,a)`、`EMPTY()` | 58 / 68 | 297 / 298 |
 | KEYED のファイル (KEY / KEYFROM、REWRITE、DELETE、ON KEY)、`LOCATE` | 60 / 68 | 306 / 307 |
+| `GET STRING` (EDIT、LIST)、`PUT STRING DATA` | 61 / 68 | 310 / 311 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -372,6 +373,12 @@ KEYED のファイルは COBOL と同じ索引付きデータセット (`Indexed
 番号は Zeus と同じで、実機と突き合わせていない。`LOCATE` は出力のバッファを取って locator に
 入れ、そのファイルの次の `WRITE`・`LOCATE`・`CLOSE` の前に書き出す。`CLOSE` しないまま
 終わったときのバッファはまだ書き出さない。
+
+`GET STRING` は EDIT (F・A・X の欄) と LIST (空白か ',' で区切った項目、引用符の文字) を
+持つ。点の無い F(w,d) の欄は d 桁の小数を含むとみなす。空白だけの F の欄は CONVERSION に
+した (実機と突き合わせていない)。`PUT STRING DATA` は `名=値` を空白で区切って ';' で終える。
+値の形は list-directed と同じにしたが、data-directed の空白の規則は確かめていない。
+ファイルからの `GET` はまだ持たず、翻訳で断る。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

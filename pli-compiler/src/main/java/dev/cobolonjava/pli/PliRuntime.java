@@ -667,6 +667,8 @@ public final class PliRuntime {
                 free.names().forEach(name -> free(name, env));
             } else if (statement instanceof PliSyntax.AssignByName byName) {
                 assignByName(env.require(byName.target()), env.require(byName.source()));
+            } else if (statement instanceof PliSyntax.Get get) {
+                getString(get, env);
             } else if (statement instanceof PliSyntax.Select select) {
                 Object subject = select.subject() == null ? null : value(select.subject(), env);
                 for (PliSyntax.When when : select.whens()) {
@@ -1511,9 +1513,131 @@ public final class PliRuntime {
          * <p>以前はこの文を読み飛ばしていた。Bank-of-Z の {@code BNKSTMT} は明細の合計行を
          * この形で作っており、前の行の中身がそのまま印字されていた。
          */
+        /**
+         * {@code GET STRING}。EDIT は書式の欄ごとに字を取り (F は数、A は字、X は飛ばす)、LIST は
+         * 空白か ',' で区切った項目を順に受け取る (LRM "Edit-directed input", "List-directed
+         * input")。項目の字は代入の規則で受け取る側の型へ変換する。
+         */
+        private void getString(PliSyntax.Get get, Env env) {
+            String source = display(env.require(get.string()).read(context));
+            List<Var> targets = new ArrayList<>();
+            for (PliSyntax.Expr target : get.targets()) {
+                targets.add(dataReference(target, env, "GET"));
+            }
+            if (get.edit()) {
+                int at = 0;
+                int item = 0;
+                for (Var target : targets) {
+                    while (true) {
+                        if (item == get.format().size()) {
+                            throw new PliExecutionException("GET EDIT format list has fewer data"
+                                    + " items than targets");
+                        }
+                        PliSyntax.FormatItem next = get.format().get(item++);
+                        if (next.width() < 0) {
+                            throw new PliExecutionException("GET EDIT format item "
+                                    + next.code() + " needs a width");
+                        }
+                        String field = at >= source.length() ? ""
+                                : source.substring(at, Math.min(source.length(), at + next.width()));
+                        at += next.width();
+                        if (next.code() == 'X') {
+                            continue;
+                        }
+                        if (next.code() == 'F') {
+                            String digits = field.strip();
+                            if (digits.isEmpty()) {
+                                throw new Condition("CONVERSION", null, 600, field);
+                            }
+                            BigDecimal number;
+                            try {
+                                number = new BigDecimal(digits);
+                            } catch (NumberFormatException bad) {
+                                throw new Condition("CONVERSION", null, 600, field);
+                            }
+                            if (!digits.contains(".") && next.fraction() > 0) {
+                                // 点の無い欄は d 桁の小数を含むとみなす
+                                number = number.movePointLeft(next.fraction());
+                            }
+                            target.write(FixedValue.decimal(number, Math.max(1,
+                                    number.precision()), Math.max(0, number.scale())), context);
+                        } else {
+                            target.write(field, context);
+                        }
+                        break;
+                    }
+                }
+                return;
+            }
+            int at = 0;
+            for (Var target : targets) {
+                while (at < source.length() && source.charAt(at) == ' ') at++;
+                if (at >= source.length()) {
+                    throw new Condition("ENDFILE", null, 70, null);
+                }
+                String text;
+                if (source.charAt(at) == '\'') {
+                    StringBuilder quoted = new StringBuilder();
+                    at++;
+                    while (at < source.length()) {
+                        char c = source.charAt(at++);
+                        if (c == '\'') {
+                            if (at < source.length() && source.charAt(at) == '\'') {
+                                quoted.append(c);
+                                at++;
+                                continue;
+                            }
+                            break;
+                        }
+                        quoted.append(c);
+                    }
+                    text = quoted.toString();
+                    target.write(text, context);
+                } else {
+                    int end = at;
+                    while (end < source.length() && source.charAt(end) != ','
+                            && source.charAt(end) != ' ') end++;
+                    text = source.substring(at, end);
+                    at = end;
+                    if (!text.isEmpty()) {
+                        Object value = text;
+                        if (target.type == PliSyntax.Type.BINARY
+                                || target.type == PliSyntax.Type.DECIMAL) {
+                            try {
+                                BigDecimal number = new BigDecimal(text);
+                                value = FixedValue.decimal(number, Math.max(1, number.precision()),
+                                        Math.max(0, number.scale()));
+                            } catch (NumberFormatException bad) {
+                                throw new Condition("CONVERSION", null, 600, text);
+                            }
+                        }
+                        target.write(value, context);
+                    }
+                }
+                while (at < source.length() && source.charAt(at) == ' ') at++;
+                if (at < source.length() && source.charAt(at) == ',') at++;
+            }
+        }
+
         private void putString(PliSyntax.Put put, Env env) {
             StringBuilder text = new StringBuilder();
-            edit(put, env, text::append);
+            if (put.data()) {
+                // data-directed: 名=値 を空白で区切り、最後に ';' を置く (LRM "Data-directed
+                // output")。値の形は list-directed と同じにした。実機と突き合わせていない
+                for (PliSyntax.Expr expression : put.values()) {
+                    if (!(expression instanceof PliSyntax.Reference reference)) {
+                        throw new PliExecutionException("PUT DATA needs variable names");
+                    }
+                    for (Object item : items(expression, env)) {
+                        if (!text.isEmpty()) text.append(' ');
+                        text.append(reference.name().toUpperCase(Locale.ROOT)).append('=')
+                                .append(listed(item).strip());
+                    }
+                }
+                text.append(';');
+            } else {
+                edit(put, env, text::append);
+            }
             Var target = env.require(put.string());
             if (text.length() > target.capacity()) {
                 throw new PliExecutionException("ERROR: PUT STRING needs " + text.length()
