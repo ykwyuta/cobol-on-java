@@ -200,6 +200,14 @@ public final class PliRuntime {
             }
         }
 
+        /** REFER の対象の名から、その構造の locator の名。 */
+        private final Map<String, String> referObjects = new HashMap<>();
+
+        private static String referKey(String target) {
+            String name = target.toUpperCase(Locale.ROOT);
+            return name.substring(name.lastIndexOf('.') + 1);
+        }
+
         /** 最上位の名から、その宣言の塊。ALLOCATE が宣言をたどるのに使う。 */
         private final Map<String, List<PliSyntax.Decl>> declaredChunks = new HashMap<>();
 
@@ -265,13 +273,36 @@ public final class PliRuntime {
                             + " is not supported yet: " + name);
                 }
             }
+            List<PliSyntax.Decl> shape = hasRefer(chunk) ? allocationShape(chunk, env) : chunk;
             int length;
+            StructureMapping.Result mapping = null;
             try {
-                length = chunk.size() > 1 ? StructureMapping.map(chunk).size() : byteLength(root);
+                if (shape.size() > 1) {
+                    mapping = StructureMapping.map(shape);
+                    length = mapping.size();
+                } else {
+                    length = byteLength(root);
+                }
             } catch (IllegalArgumentException unsupported) {
                 throw new PliExecutionException(unsupported.getMessage());
             }
             DataView storage = Storage.allocate(Math.max(1, length)).whole();
+            if (shape != chunk) {
+                // ALLOCATE は REFER の対象に、宣言の式で決めた上限を入れる (LRM "REFER option")
+                for (PliSyntax.Decl decl : shape) {
+                    for (PliSyntax.Bound bound : decl.dimensions()) {
+                        if (bound.refer() == null) continue;
+                        int j = indexOf(shape, bound.refer());
+                        PliSyntax.Decl object = shape.get(j);
+                        Var target = new Var(object.name(), object.type(), object.precision(),
+                                object.scale(), storage.subView(mapping.byteOffset(j),
+                                        mapping.byteLength(j)), mapping.bitShift(j));
+                        target.unsigned = object.unsigned();
+                        target.write(FixedValue.binary(BigDecimal.valueOf(bound.high()), 31, 0),
+                                context);
+                    }
+                }
+            }
             Var pointer = env.require(locator);
             if (pointer.type != PliSyntax.Type.POINTER) {
                 throw new PliExecutionException("SET(" + locator + ") needs a POINTER");
@@ -387,6 +418,16 @@ public final class PliRuntime {
             try {
                 for (List<PliSyntax.Decl> chunk : chunks) {
                     declaredChunks.put(chunk.get(0).name().toUpperCase(Locale.ROOT), chunk);
+                    if (chunk.get(0).basedOn() != null && hasRefer(chunk)) {
+                        for (PliSyntax.Decl decl : chunk) {
+                            for (PliSyntax.Bound bound : decl.dimensions()) {
+                                if (bound.refer() != null) {
+                                    referObjects.put(bound.refer().toUpperCase(Locale.ROOT),
+                                            chunk.get(0).basedOn().toUpperCase(Locale.ROOT));
+                                }
+                            }
+                        }
+                    }
                     if (chunk.get(0).controlled() && !env.arguments.containsKey(
                             chunk.get(0).name().toUpperCase(Locale.ROOT))) {
                         // CONTROLLED は ALLOCATE するまで記憶域を持たない (LRM "CONTROLLED
@@ -564,6 +605,11 @@ public final class PliRuntime {
             if (statement instanceof PliSyntax.Declare) {
                 // 手続きに入ったときに declareAll が済ませている
                 return;
+            } else if (statement instanceof PliSyntax.Assign assign
+                    && referObjects.containsKey(referKey(assign.target()))) {
+                assign(assign, env);
+                // REFER の対象が変わると構造の形が変わる。重ね直す
+                rebase(referObjects.get(referKey(assign.target())));
             } else if (statement instanceof PliSyntax.Assign assign) {
                 assign(assign, env);
             } else if (statement instanceof PliSyntax.Put put) {
@@ -764,6 +810,17 @@ public final class PliRuntime {
                 remember(root.basedOn(), () -> declareGroup(tree, env));
                 return;
             }
+            List<PliSyntax.Decl> shape = tree;
+            if (root.basedOn() != null && hasRefer(tree)) {
+                // REFER の構造の形は、記憶域の中の対象の今の値で決まる
+                shape = resolveRefer(tree, mapping, env);
+                try {
+                    mapping = StructureMapping.map(shape);
+                } catch (IllegalArgumentException unsupported) {
+                    throw new PliExecutionException(unsupported.getMessage());
+                }
+                length = mapping.size();
+            }
             if (root.basedOn() != null) {
                 area = basedView(root.basedOn(), length, env);
                 remember(root.basedOn(), () -> declareGroup(tree, env));
@@ -778,7 +835,83 @@ public final class PliRuntime {
             // 記憶域を取ったときにしか効かないので、宣言で重ねた先を書き換えてはならない。
             // 以前は文字の要素を空白で埋めており、IMS から渡された DB PCB の DBD 名と PROCOPT を消していた
             boolean based = root.basedOn() != null;
-            declareMembers(tree, 0, tree.size(), env, group, area, mapping, root.name(), based);
+            declareMembers(shape, 0, shape.size(), env, group, area, mapping, root.name(), based);
+        }
+
+        private static boolean hasRefer(List<PliSyntax.Decl> tree) {
+            return tree.stream().anyMatch(decl -> decl.dimensions().stream()
+                    .anyMatch(bound -> bound.refer() != null));
+        }
+
+        private static int indexOf(List<PliSyntax.Decl> tree, String name) {
+            for (int i = 0; i < tree.size(); i++) {
+                if (tree.get(i).name().equalsIgnoreCase(name)) return i;
+            }
+            throw new PliExecutionException("REFER object " + name + " is not in the structure");
+        }
+
+        /** REFER の上限を、記憶域にある対象の今の値に置き換えた宣言の塊。 */
+        private List<PliSyntax.Decl> resolveRefer(List<PliSyntax.Decl> tree,
+                                                  StructureMapping.Result placeholder, Env env) {
+            // 対象は REFER の配列より前にあるので、その位置は仮の上限によらない
+            int needed = 0;
+            for (PliSyntax.Decl decl : tree) {
+                for (PliSyntax.Bound bound : decl.dimensions()) {
+                    if (bound.refer() != null) {
+                        int j = indexOf(tree, bound.refer());
+                        needed = Math.max(needed, placeholder.byteOffset(j)
+                                + placeholder.byteLength(j));
+                    }
+                }
+            }
+            DataView area = basedView(tree.get(0).basedOn(), needed, env);
+            List<PliSyntax.Decl> shape = new ArrayList<>(tree);
+            for (int i = 0; i < shape.size(); i++) {
+                PliSyntax.Decl decl = shape.get(i);
+                if (decl.dimensions().stream().noneMatch(bound -> bound.refer() != null)) {
+                    continue;
+                }
+                List<PliSyntax.Bound> bounds = new ArrayList<>();
+                for (PliSyntax.Bound bound : decl.dimensions()) {
+                    if (bound.refer() == null) {
+                        bounds.add(bound);
+                        continue;
+                    }
+                    int j = indexOf(tree, bound.refer());
+                    PliSyntax.Decl object = tree.get(j);
+                    Var current = new Var(object.name(), object.type(), object.precision(),
+                            object.scale(), area.subView(placeholder.byteOffset(j),
+                                    placeholder.byteLength(j)), placeholder.bitShift(j));
+                    current.unsigned = object.unsigned();
+                    int extent = number(current.read(context)).intValue();
+                    if (extent < 0) {
+                        throw new PliExecutionException("REFER object " + object.name()
+                                + " is negative: " + extent);
+                    }
+                    bounds.add(new PliSyntax.Bound(1, extent, bound.referExtent(), bound.refer()));
+                }
+                shape.set(i, decl.withDimensions(bounds));
+            }
+            return shape;
+        }
+
+        /** ALLOCATE のとき、REFER の上限を宣言の式で決めた塊。 */
+        private List<PliSyntax.Decl> allocationShape(List<PliSyntax.Decl> tree, Env env) {
+            List<PliSyntax.Decl> shape = new ArrayList<>(tree);
+            for (int i = 0; i < shape.size(); i++) {
+                PliSyntax.Decl decl = shape.get(i);
+                if (decl.dimensions().stream().noneMatch(bound -> bound.refer() != null)) {
+                    continue;
+                }
+                List<PliSyntax.Bound> bounds = new ArrayList<>();
+                for (PliSyntax.Bound bound : decl.dimensions()) {
+                    bounds.add(bound.refer() == null ? bound : new PliSyntax.Bound(1,
+                            number(value(bound.referExtent(), env)).intValue(),
+                            bound.referExtent(), bound.refer()));
+                }
+                shape.set(i, decl.withDimensions(bounds));
+            }
+            return shape;
         }
 
         /** {@code index} の構造の直下の要素を宣言する。小構造は入れ子で開く。 */
@@ -1824,6 +1957,19 @@ public final class PliRuntime {
             switch (name) {
                 case "SIZE", "STORAGE", "STG" -> {
                     return size(function, env);
+                }
+                case "CURRENTSIZE", "CSTG", "CURRENTSTORAGE" -> {
+                    // 今の大きさ (LRM "CURRENTSIZE")。VARYING の文字なら今の長さ + 2、REFER の
+                    // 構造は今の形の大きさ (重ね直しで決まる) である
+                    Var target = dataReference(function.arguments().get(0), env, name);
+                    int size = target.type == PliSyntax.Type.CHAR && target.varying
+                            ? target.currentLength() + 2 : target.view.length();
+                    if (target.type == PliSyntax.Type.GROUP && elements(target).stream()
+                            .anyMatch(member -> member.varying)) {
+                        throw new PliExecutionException("CURRENTSIZE of a structure with VARYING"
+                                + " members is not supported yet: " + target.name);
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(size), 31, 0);
                 }
                 case "ADDR" -> {
                     return address(function, env);

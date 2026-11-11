@@ -399,8 +399,20 @@ final class PliSyntax {
      * 配列の 1 つの次元の上下限 (LRM "DIMENSION attribute")。CONTROLLED の {@code (*)} は
      * {@link #STAR} で、上下限は ALLOCATE で決まる。
      */
-    record Bound(int low, int high) {
+    record Bound(int low, int high, Expr referExtent, String refer) {
         static final Bound STAR = new Bound(1, 0);
+
+        Bound(int low, int high) {
+            this(low, high, null, null);
+        }
+
+        /**
+         * {@code 式 REFER(要素)} の上限 (LRM "REFER option")。上限は ALLOCATE のときに式で決まり、
+         * そのあとは要素の今の値で決まる。宣言の時点の上限は仮に 1 とする。
+         */
+        static Bound refer(Expr referExtent, String refer) {
+            return new Bound(1, 1, referExtent, refer);
+        }
 
         int extent() {
             return high - low + 1;
@@ -1136,6 +1148,7 @@ final class PliSyntax {
 
         private List<Decl> parseDeclarations(List<Token> declaration) {
             List<Decl> decls = parseDeclarationList(declaration);
+            checkRefer(decls, declaration.isEmpty() ? peek() : declaration.get(0));
             for (int i = 0; i < decls.size(); i++) {
                 boolean structure = decls.get(i).level() > 0 && i + 1 < decls.size()
                         && decls.get(i + 1).level() > decls.get(i).level();
@@ -1256,6 +1269,23 @@ final class PliSyntax {
                     bounds.add(Bound.STAR);
                     continue;
                 }
+                int referAt = -1;
+                for (int i = 0; i < dimension.size(); i++) {
+                    if (dimension.get(i).is("REFER")) referAt = i;
+                }
+                if (referAt > 0) {
+                    List<Token> inner = new ArrayList<>(dimension.subList(0, referAt));
+                    Token last = dimension.get(referAt);
+                    inner.add(new Token(Kind.EOF, "<EOF>", last.line(), last.column()));
+                    Expr extent = new Parser(fileName, inner).expression();
+                    if (referAt + 3 >= dimension.size() || !dimension.get(referAt + 1).is("(")
+                            || dimension.get(referAt + 2).kind() != Kind.IDENT
+                            || !dimension.get(referAt + 3).is(")")) {
+                        throw new ParseFailure(dimension.get(referAt), "REFER(member) expected");
+                    }
+                    bounds.add(Bound.refer(extent, dimension.get(referAt + 2).text()));
+                    continue;
+                }
                 List<List<Token>> ends = split(dimension, ":");
                 int low = ends.size() == 2 ? bound(ends.get(0), part.get(at)) : 1;
                 int high = bound(ends.get(ends.size() - 1), part.get(at));
@@ -1265,6 +1295,42 @@ final class PliSyntax {
                 bounds.add(new Bound(low, high));
             }
             return List.copyOf(bounds);
+        }
+
+        /**
+         * REFER は BASED の構造の中にだけ書け、その対象は同じ構造の、前に宣言したスカラーの
+         * 要素でなければならない (LRM "REFER option")。
+         */
+        private static void checkRefer(List<Decl> decls, Token where) {
+            Decl root = null;
+            for (int i = 0; i < decls.size(); i++) {
+                Decl decl = decls.get(i);
+                if (decl.level() <= 1) {
+                    root = decl;
+                }
+                for (Bound bound : decl.dimensions()) {
+                    if (bound.refer() == null) {
+                        continue;
+                    }
+                    if (root == null || root == decl || !"BASED".equals(root.storage())) {
+                        throw new ParseFailure(where, "REFER is allowed only in a BASED structure: "
+                                + decl.name());
+                    }
+                    boolean found = false;
+                    for (int j = decls.indexOf(root) + 1; j < i; j++) {
+                        Decl member = decls.get(j);
+                        if (member.name().equalsIgnoreCase(bound.refer())
+                                && member.dimensions().isEmpty() && member.type() != Type.GROUP) {
+                            found = true;
+                        }
+                    }
+                    if (!found) {
+                        throw new ParseFailure(where, "REFER object " + bound.refer()
+                                + " must be a scalar member of the structure declared before "
+                                + decl.name());
+                    }
+                }
+            }
         }
 
         /** 次元の上限か下限。符号つきの整数だけを読む。{@code *} や式はまだ持たない。 */

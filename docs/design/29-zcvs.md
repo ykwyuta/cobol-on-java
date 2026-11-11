@@ -284,6 +284,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `Q->A`、`NULL` と `SYSNULL` の区別、`POINTERADD` | 49 / 68 | 261 / 267 |
 | `DEFINE STRUCTURE` / `DEFINE ALIAS` の `TYPE`、`LIKE` の展開 | 50 / 68 | 266 / 272 |
 | `DEFINED` (文字の重ねと iSUB) | 51 / 68 | 271 / 272 |
+| `REFER`、`CURRENTSIZE` | 54 / 68 | 278 / 279 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -341,6 +342,12 @@ LIKE を使うのは負の検査 (PE104N、PE105N) と、それが「名があ�
 FLOAT) を読み、`VALUE` は INIT と同じに値を持つ。FLOAT、COMPLEX、AREA、OFFSET、HANDLE、
 WIDECHAR、GRAPHIC、LABEL などまだ持たない型の宣言は、正しい PL/I なので翻訳では通し、
 実行でその名を使ったときに止める。数は変わらない (51 / 68)。
+
+`REFER` の構造 (`2 ITEMS(N REFER(CNT))`) は、BASED の構造を重ねるたびに記憶域の中の
+対象 (CNT) の今の値を読んで形を決める。対象は REFER の配列より前にあるので、その位置は
+仮の形で求められる。`ALLOCATE` は宣言の式 (N) で形を決めて記憶域を取り、対象に上限を
+入れる。対象へ代入したら重ね直すので、後ろの要素 (TAIL) の位置が動く。REFER は BASED の
+構造の中で、前に宣言したスカラーの要素だけを対象にでき、それ以外は翻訳で断る。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

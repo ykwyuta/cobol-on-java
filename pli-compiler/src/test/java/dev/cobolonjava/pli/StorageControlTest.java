@@ -175,4 +175,34 @@ class StorageControlTest {
                   ELSE PUT SKIP LIST('0');
                 """));
     }
+
+    @Test
+    @DisplayName("REFER の構造は ALLOCATE で対象に上限が入り、対象を変えると後ろの要素の位置が動く")
+    void referStructuresFollowTheirObject() throws Exception {
+        assertEquals("3 3 20,CCCC 16,EDIT TAIL 20", run("""
+                DCL N FIXED BIN(31) INIT(3), P POINTER;
+                DCL 1 R BASED(P), 2 CNT FIXED BIN(31),
+                  2 ITEMS(N REFER(CNT)) CHAR(4), 2 TAIL CHAR(4);
+                ALLOCATE R;
+                PUT SKIP LIST(CNT, DIM(ITEMS), STG(R));
+                ITEMS(1) = 'AAAA'; ITEMS(2) = 'BBBB'; ITEMS(3) = 'CCCC'; TAIL = 'TAIL';
+                CNT = 2;
+                PUT SKIP LIST(TAIL, STG(R));
+                TAIL = 'EDIT'; CNT = 3;
+                PUT SKIP LIST(ITEMS(3), TAIL, CURRENTSIZE(R));
+                """).replaceAll(" +", " "));
+    }
+
+    @Test
+    @DisplayName("REFER は BASED の構造の中で、前に宣言したスカラーの要素だけを対象にできる")
+    void referIsChecked() {
+        assertTrue(rejection("""
+                DCL N FIXED BIN(31);
+                DCL 1 X, 2 CNT FIXED BIN(31), 2 A(N REFER(CNT)) CHAR(1);
+                """).contains("BASED structure"));
+        assertTrue(rejection("""
+                DCL N FIXED BIN(31);
+                DCL 1 X BASED, 2 A(N REFER(CNT)) CHAR(1);
+                """).contains("scalar member"));
+    }
 }
