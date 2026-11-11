@@ -156,6 +156,48 @@ public final class CobolCompiler {
      * まとめると、関わりのない重なりを誤りとして報せてしまう。
      */
     public Result compile(String fileName, String source) {
+        // 続けて書いたプログラムの前の CBL / PROCESS 文は、そのプログラムからの指定である
+        // (Enterprise COBOL プログラミングの手引き "Compiling multiple programs (batch
+        // compilation)")。そこで原文を切り、切った先を別の指定で翻訳する。行番号がずれない
+        // ように、前のぶんは空行で埋める。以前は 2 本目の CBL 文を構文の誤りにしていた
+        String[] lines = source.split("\\R", -1);
+        boolean ended = false;
+        for (int i = 0; i < lines.length; i++) {
+            String text = lines[i].length() > 7 ? lines[i].substring(7).strip() : "";
+            boolean comment = lines[i].length() > 6 && "*/".indexOf(lines[i].charAt(6)) >= 0;
+            if (comment) {
+                continue;
+            }
+            String upper = text.toUpperCase(java.util.Locale.ROOT);
+            if (upper.startsWith("END PROGRAM ")) {
+                ended = true;
+            } else if (ended && (upper.startsWith("CBL ") || upper.startsWith("PROCESS "))) {
+                Result head = compileBatch(fileName,
+                        String.join("\n", java.util.Arrays.copyOfRange(lines, 0, i)));
+                if (!head.succeeded()) {
+                    return head;
+                }
+                String[] rest = lines.clone();
+                java.util.Arrays.fill(rest, 0, i, "");
+                Result tail = compile(fileName, String.join("\n", rest));
+                if (!tail.succeeded()) {
+                    return tail;
+                }
+                List<Diagnostic> all = new ArrayList<>(head.diagnostics());
+                all.addAll(tail.diagnostics());
+                List<Compiled> programs = new ArrayList<>(head.programs());
+                programs.addAll(tail.programs());
+                Compiled first = programs.get(0);
+                return new Result(first.className(), first.classFile(), first.layout(),
+                        first.programSignature(), first.procedureManifest(), List.copyOf(all),
+                        List.copyOf(programs));
+            }
+        }
+        return compileBatch(fileName, source);
+    }
+
+    /** 1 つの指定で翻訳するひとまとまり。 */
+    private Result compileBatch(String fileName, String source) {
         CompilerOptions effective = options.merge(preprocessor.optionsOf(source));
         // 効かないオプションを黙って受理しない (要件 FR-181)
         List<Diagnostic> optionDiagnostics = OptionSupport.check(effective);
@@ -173,6 +215,11 @@ public final class CobolCompiler {
         List<Diagnostic> nesting = endProgramDiagnostics(parsed.tree().programUnit());
         if (!nesting.isEmpty()) {
             return failed(null, nesting);
+        }
+        List<Diagnostic> rerun = new ArrayList<>();
+        rerunDiagnostics(parsed.tree(), rerun);
+        if (!rerun.isEmpty()) {
+            return failed(null, rerun);
         }
         List<Inherited> inherited = inheritedGlobals(parsed.tree().programUnit());
         // 囲む側の USE GLOBAL 宣言節。親は子より先に翻訳されるので、順に積める
@@ -268,6 +315,44 @@ public final class CobolCompiler {
             }
         }
         return out;
+    }
+
+    /**
+     * {@code RERUN} の形を見る。
+     *
+     * <p>再開の点そのものは取らない (実行時の資源管理の話である) が、書き方は見る。
+     * {@code EVERY n RECORDS} と {@code EVERY END OF REEL / UNIT} のあとには
+     * {@code OF ファイル名} が要る (Enterprise COBOL 言語解説書 "RERUN clause")。
+     * 以前は終止符まで読み飛ばしていたので、欠けていても通していた。
+     */
+    private static void rerunDiagnostics(org.antlr.v4.runtime.tree.ParseTree node,
+                                         List<Diagnostic> out) {
+        if (node instanceof CobolParser.IoControlEntryContext entry && entry.RERUN() != null) {
+            for (int i = 0; i < entry.getChildCount(); i++) {
+                String word = entry.getChild(i).getText().toUpperCase(java.util.Locale.ROOT);
+                if (!word.equals("RECORDS") && !word.equals("REEL") && !word.equals("UNIT")) {
+                    continue;
+                }
+                int next = i + 1;
+                if (next < entry.getChildCount()
+                        && entry.getChild(next).getText().equalsIgnoreCase("OF")) {
+                    next++;
+                }
+                if (next >= entry.getChildCount()) {
+                    out.add(new Diagnostic(
+                            dev.cobolonjava.compiler.semantic.ReferenceResolver.originOf(entry),
+                            "RERUN: a file name expected after " + word));
+                }
+            }
+            return;
+        }
+        if (node instanceof CobolParser.DataDivisionContext
+                || node instanceof CobolParser.ProcedureDivisionContext) {
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rerunDiagnostics(node.getChild(i), out);
+        }
     }
 
     /**

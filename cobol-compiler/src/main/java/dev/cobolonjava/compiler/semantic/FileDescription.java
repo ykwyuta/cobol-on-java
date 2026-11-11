@@ -32,13 +32,15 @@ import java.util.Map;
  * @param recordLength レコード長。{@code FD} 配下の記述から決まる
  * @param varying      可変長の指定。固定長なら {@code null}
  * @param linage       {@code LINAGE} の指定。書かれていなければ {@code null}
+ * @param ascii        {@code CODE-SET} が ASCII (STANDARD-1 / STANDARD-2) の符号系を指す。
+ *                     外に置くレコードは ASCII で、読み書きのたびに変換する
  */
 public record FileDescription(String name, String ddName, Organization organization,
                               RecordFormat format, Access access, DataReference status,
                               boolean optional, DataReference relativeKey, List<RecordKey> keys,
                               boolean sort, List<DataItem> records, int recordLength,
                               Varying varying, Linage linage, Origin origin,
-                              DataReference vsamStatus) {
+                              DataReference vsamStatus, boolean ascii) {
 
     /**
      * {@code FILE STATUS} の 2 つ目の項目の長さ。VSAM の戻りコード・機能コード・
@@ -463,7 +465,8 @@ public record FileDescription(String name, String ddName, Organization organizat
                     new FileDescription(one.name(), one.ddName(), one.organization(), format,
                             one.access(), status, one.optional(), relativeKey, keys,
                             entry != null && entry.SD() != null, area, length,
-                            varying, linage, one.origin(), vsamStatus)) != null) {
+                            varying, linage, one.origin(), vsamStatus,
+                            asciiCodeSet(entry, area, diagnostics))) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }
         }
@@ -701,6 +704,103 @@ public record FileDescription(String name, String ddName, Organization organizat
             }
         }
         return entries;
+    }
+
+    /**
+     * {@code CODE-SET} が ASCII を指すか (Enterprise COBOL 言語解説書 "CODE-SET clause")。
+     *
+     * <p>CODE-SET を書いたファイルのレコードは、字として外へ出せるものだけでできていなければ
+     * ならない。符号つきの数字項目は {@code SIGN IS SEPARATE} を要る (重ね打ちの符号は
+     * 変換すると数字でも符号でもない字になる)。以前は CODE-SET を読んで捨てていたので、
+     * EBCDIC のまま書いていた。
+     */
+    private static boolean asciiCodeSet(CobolParser.FileDescriptionEntryContext entry,
+                                        List<DataItem> area, List<Diagnostic> diagnostics) {
+        if (entry == null) {
+            return false;
+        }
+        String alphabet = null;
+        for (CobolParser.FileDescriptionClauseContext clause : entry.fileDescriptionClause()) {
+            if (clause.CODE_SET() != null) {
+                alphabet = clause.IDENTIFIER(0).getText();
+            }
+        }
+        if (alphabet == null) {
+            return false;
+        }
+        Origin origin = ReferenceResolver.originOf(entry);
+        for (DataItem record : area) {
+            DataItem offending = signedWithoutSeparateSign(record);
+            if (offending != null) {
+                diagnostics.add(new Diagnostic(origin, "CODE-SET requires SIGN IS SEPARATE for"
+                        + " the signed numeric item " + offending.name()));
+                return false;
+            }
+        }
+        org.antlr.v4.runtime.tree.ParseTree unit = entry;
+        while (unit != null && !(unit instanceof CobolParser.ProgramUnitContext)) {
+            unit = unit.getParent();
+        }
+        CobolParser.AlphabetClauseContext found = alphabetNamed(unit, alphabet);
+        if (found == null) {
+            diagnostics.add(new Diagnostic(origin, "CODE-SET names an alphabet that is not"
+                    + " defined in SPECIAL-NAMES: " + alphabet));
+            return false;
+        }
+        CobolParser.AlphabetSpecificationContext spec = found.alphabetSpecification();
+        if (spec.STANDARD_1() != null || spec.STANDARD_2() != null) {
+            return true;
+        }
+        if (spec.NATIVE() != null || spec.EBCDIC() != null) {
+            return false;
+        }
+        // 自分で並べた符号系へ変換する表は持っていない。黙って EBCDIC のまま書かない
+        diagnostics.add(new Diagnostic(origin,
+                "CODE-SET with a user-defined alphabet is not supported yet: " + alphabet));
+        return false;
+    }
+
+    private static DataItem signedWithoutSeparateSign(DataItem item) {
+        if (item.isElementary() && item.picture() != null && item.picture().isNumeric()
+                && item.picture().signPosition().isSigned()
+                && (item.usage() == null || item.usage() == dev.cobolonjava.runtime.item.Usage.DISPLAY)) {
+            // SIGN 句は集団に書いて下へ効かせることもできる
+            boolean separate = false;
+            for (DataItem at = item; at != null && !separate; at = at.parent()) {
+                separate = at.signPosition() != null && at.signPosition().isSeparate();
+            }
+            if (!separate) {
+                return item;
+            }
+        }
+        for (DataItem child : item.children()) {
+            DataItem found = signedWithoutSeparateSign(child);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static CobolParser.AlphabetClauseContext alphabetNamed(
+            org.antlr.v4.runtime.tree.ParseTree node, String name) {
+        if (node == null) {
+            return null;
+        }
+        if (node instanceof CobolParser.AlphabetClauseContext clause) {
+            return clause.IDENTIFIER().getText().equalsIgnoreCase(name) ? clause : null;
+        }
+        if (node instanceof CobolParser.DataDivisionContext
+                || node instanceof CobolParser.ProcedureDivisionContext) {
+            return null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CobolParser.AlphabetClauseContext found = alphabetNamed(node.getChild(i), name);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**

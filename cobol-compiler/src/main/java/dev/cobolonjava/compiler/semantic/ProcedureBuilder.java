@@ -2939,9 +2939,24 @@ public final class ProcedureBuilder {
 
     private Statement inspectOf(CobolParser.InspectStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
-        DataReference target = resolver.resolve(context.identifier());
-        if (target == null) {
-            return null;
+        // 関数の値も調べられる (Enterprise COBOL 言語解説書 "INSPECT statement": identifier-1 は
+        // 関数識別子でもよい)。値は書き換えられないので、数える句だけが書ける
+        Operand source = null;
+        DataReference target = null;
+        if (context.functionCall() != null) {
+            source = functionOf(context.functionCall());
+            if (source == null) {
+                return null;
+            }
+            if (context.replacingPhrase() != null || context.convertingPhrase() != null) {
+                report(origin, "INSPECT of a function value allows only the TALLYING phrase");
+                return null;
+            }
+        } else {
+            target = resolver.resolve(context.identifier());
+            if (target == null) {
+                return null;
+            }
         }
 
         List<Statement.Inspect.InspectClause> clauses = new ArrayList<>();
@@ -2988,7 +3003,7 @@ public final class ProcedureBuilder {
             }
             converting = new Statement.Inspect.Converting(from, to, region);
         }
-        return new Statement.Inspect(target, clauses, converting, origin);
+        return new Statement.Inspect(target, clauses, converting, origin, source);
     }
 
     /**

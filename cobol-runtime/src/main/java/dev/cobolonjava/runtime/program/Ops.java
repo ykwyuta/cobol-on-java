@@ -305,6 +305,11 @@ public final class Ops {
         return InspectScan.tally(read(storage, offset, length), clauses);
     }
 
+    /** 関数の値など、項目でない値を数える走査。 */
+    public static int[] tallyValue(byte[] value, InspectScan.Clause... clauses) {
+        return InspectScan.tally(value, clauses);
+    }
+
     /** 置き換える走査。 */
     public static void replace(Storage storage, int offset, int length,
                                InspectScan.Clause... clauses) {
@@ -494,6 +499,11 @@ public final class Ops {
      *
      * @return ファイル状態コードのバイト列。2 バイトである
      */
+    /** そのファイルの外のレコードは ASCII である ({@code CODE-SET})。開く前に呼ぶ。 */
+    public static void codeSetAscii(ProgramContext context, String name) {
+        context.codeSetAscii(name);
+    }
+
     public static byte[] open(ProgramContext context, String name, String ddName, int mode,
                               int organization, int format, int recordLength, boolean optional) {
         if (context.isFileLocked(name)) {

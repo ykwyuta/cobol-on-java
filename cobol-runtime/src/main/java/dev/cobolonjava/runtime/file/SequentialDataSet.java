@@ -172,6 +172,39 @@ public final class SequentialDataSet implements DataSet {
                 : FileStatus.OK;
     }
 
+    /** {@code CODE-SET} の変換の表。中の字 → 外の字、外の字 → 中の字。無ければ変換しない。 */
+    private byte[] toExternal;
+    private byte[] toInternal;
+
+    /**
+     * 外のレコードを ASCII にする ({@code CODE-SET IS} STANDARD-1 の符号系)。
+     *
+     * <p>書くときに実行時のコードページから ASCII へ、読むときに戻す。ASCII に無い字は
+     * 置換文字 (X'1A') になる。REWRITE は持たない (CODE-SET のファイルは順に読むか書くかで
+     * ある)。変換の表は実機と突き合わせていない。
+     */
+    public void codeSetAscii() {
+        toExternal = new byte[256];
+        toInternal = new byte[256];
+        java.util.Arrays.fill(toExternal, (byte) 0x1A);
+        java.util.Arrays.fill(toInternal, (byte) 0x3F);
+        for (int b = 0; b < 256; b++) {
+            char c = attributes.codePage().decode(new byte[] {(byte) b}).charAt(0);
+            if (c < 0x80) {
+                toExternal[b] = (byte) c;
+                toInternal[c] = (byte) b;
+            }
+        }
+    }
+
+    private static void translate(byte[] bytes, int length, byte[] table) {
+        if (table != null) {
+            for (int i = 0; i < length; i++) {
+                bytes[i] = table[bytes[i] & 0xFF];
+            }
+        }
+    }
+
     /**
      * 1 レコード読む (要件 FR-102)。
      *
@@ -209,6 +242,7 @@ public final class SequentialDataSet implements DataSet {
         current = position - 1;
         int length = Math.min(record.length, into.length);
         System.arraycopy(record, 0, into, 0, length);
+        translate(into, length, toInternal);
         lastLength = length;
         if (attributes.format() == RecordFormat.VARIABLE) {
             // 可変長では受取領域の余りに触らない。規格上そこの中身は決まっていない
@@ -243,7 +277,9 @@ public final class SequentialDataSet implements DataSet {
         if (allocation.exceeded(written(), sizeOf(from))) {
             return FileStatus.NO_SPACE;
         }
-        records.add(from.clone());
+        byte[] record = from.clone();
+        translate(record, record.length, toExternal);
+        records.add(record);
         position = records.size();
         current = -1;
         lastLength = from.length;
@@ -260,6 +296,10 @@ public final class SequentialDataSet implements DataSet {
      * @return ファイル状態コード
      */
     public String rewrite(byte[] from) {
+        if (toExternal != null) {
+            throw new UnsupportedOperationException(
+                    "REWRITE on a CODE-SET file is not supported yet");
+        }
         if (mode == null) {
             return FileStatus.REWRITE_NOT_ALLOWED;
         }

@@ -1120,7 +1120,8 @@ notOnOverflowPhrase
 // INSPECT は 1 度の走査で、書かれた順に句を試す。
 // TALLYING と REPLACING は同じ文に並べられる
 inspectStatement
-    : INSPECT identifier (tallyingPhrase replacingPhrase? | replacingPhrase | convertingPhrase)
+    : INSPECT (identifier | functionCall)
+      (tallyingPhrase replacingPhrase? | replacingPhrase | convertingPhrase)
     ;
 
 tallyingPhrase

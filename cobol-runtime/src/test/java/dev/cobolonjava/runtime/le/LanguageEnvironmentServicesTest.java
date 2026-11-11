@@ -100,4 +100,26 @@ class LanguageEnvironmentServicesTest {
             assertEquals(0, value);
         }
     }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("Lilian の秒を絵文字列で字にする。1582-10-15 は金曜である")
+    void formatsLilianSecondsWithAPictureString() {
+        org.junit.jupiter.api.Assertions.assertEquals("15821015 288 FRI",
+                LanguageEnvironmentServices.formatLilian(1, 0, "YYYYMMDD DDD WWW"));
+        // 2026-10-16 は Lilian の 162,137 日目
+        long day = java.time.LocalDate.of(2026, 10, 16).toEpochDay()
+                - java.time.LocalDate.of(1582, 10, 14).toEpochDay();
+        org.junit.jupiter.api.Assertions.assertEquals("2026-10-16 Fri",
+                LanguageEnvironmentServices.formatLilian(day, 0, "YYYY-MM-DD Www"));
+        org.junit.jupiter.api.Assertions.assertEquals("2026/10/16 14:30:25",
+                LanguageEnvironmentServices.formatLilian(day, 14 * 3600 + 30 * 60 + 25,
+                        "YYYY/MM/DD HH:MI:SS"));
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("持たない絵は近い字を作らずに断る")
+    void refusesAPictureItDoesNotKnow() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> LanguageEnvironmentServices.formatLilian(1, 0, "YYYY AP"));
+    }
 }

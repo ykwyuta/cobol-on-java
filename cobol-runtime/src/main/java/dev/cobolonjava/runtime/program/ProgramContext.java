@@ -432,10 +432,23 @@ public final class ProgramContext {
         return files.computeIfAbsent(name, k -> {
             DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage);
             Path path = catalog.resolve(ddName);
+            if (organization != Organization.RELATIVE && asciiFiles.contains(name)) {
+                SequentialDataSet file = SequentialDataSet.at(path, declared);
+                file.codeSetAscii();
+                return allocated(file, ddName);
+            }
             return allocated(organization == Organization.RELATIVE
                     ? RelativeDataSet.at(path, declared)
                     : SequentialDataSet.at(path, declared), ddName);
         });
+    }
+
+    /** {@code CODE-SET} で ASCII と決めたファイルの名前。 */
+    private final java.util.Set<String> asciiFiles = new java.util.HashSet<>();
+
+    /** そのファイルの外のレコードを ASCII にする。ファイルを用意する前に呼ぶ。 */
+    public void codeSetAscii(String name) {
+        asciiFiles.add(name);
     }
 
     /**
@@ -772,7 +785,19 @@ public final class ProgramContext {
         if (existing != null) {
             return existing;
         }
-        CobolProgram program = programResolver.resolve(id, loader);
+        CobolProgram program;
+        try {
+            program = programResolver.resolve(id, loader);
+        } catch (ProgramNotFoundException missing) {
+            // LE の呼び出しサービスは、利用者が登録していなくてもいつも在る。
+            // 利用者の同じ名前のプログラムが先である
+            if (!dev.cobolonjava.runtime.le.LanguageEnvironmentServices.BUILT_IN
+                    .isResolvable(id, loader)) {
+                throw missing;
+            }
+            program = dev.cobolonjava.runtime.le.LanguageEnvironmentServices.BUILT_IN
+                    .resolve(id, loader);
+        }
         if (program.entryOwner() != null) {
             // 副入口。本体を引き、同じ作業場所のまま途中から入る口を返す
             Loaded owner = resolve(program.entryOwner(), loader);

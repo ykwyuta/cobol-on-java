@@ -600,7 +600,13 @@ public sealed interface Statement {
      * @param converting {@code CONVERTING} の指定。なければ {@code null}
      */
     record Inspect(DataReference target, List<InspectClause> clauses, Converting converting,
-                   Origin origin) implements Statement {
+                   Origin origin, Operand source) implements Statement {
+
+        /** 項目を調べる INSPECT。{@code source} は関数の値を調べるときだけ持つ。 */
+        public Inspect(DataReference target, List<InspectClause> clauses, Converting converting,
+                       Origin origin) {
+            this(target, clauses, converting, origin, null);
+        }
 
         public Inspect {
             clauses = List.copyOf(clauses);

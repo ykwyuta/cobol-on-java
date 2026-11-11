@@ -2431,7 +2431,15 @@ public final class ProgramGenerator {
             boolean optional = file.optional();
             boolean indexed = file.organization() == Organization.INDEXED;
             List<Runnable> watched = planStatements(opened.debug());
+            boolean ascii = file.ascii();
             body.add(() -> {
+                if (ascii) {
+                    // CODE-SET。開く前に、外のレコードが ASCII であることを実行単位へ告げる
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitLdcInsn(file.name());
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "codeSetAscii",
+                            "(" + CONTEXT + "Ljava/lang/String;)V", false);
+                }
                 emitFileName(file);
                 push(mode);
                 if (!indexed) {
@@ -3926,6 +3934,33 @@ public final class ProgramGenerator {
     }
 
     /** {@code CANCEL}。次に呼ばれたときの作業場所を初期状態へ戻す。 */
+    /** 関数の値を数える INSPECT。値のバイト列をそのまま走査する。 */
+    private void planInspectValue(Statement.Inspect statement, List<Runnable> body) {
+        Runnable bytes = planSourceBytes(statement.source(), statement.origin(), 0);
+        List<Statement.Inspect.InspectClause> tallying = statement.clauses();
+        List<Runnable> clauses = planInspectClauses(tallying, statement.origin());
+        if (bytes == null || clauses == null) {
+            return;
+        }
+        List<Runnable> counters = new ArrayList<>();
+        int array = nextLocal++;
+        for (int i = 0; i < tallying.size(); i++) {
+            Runnable add = planTallyAdd(tallying.get(i), i, array, statement.origin());
+            if (add == null) {
+                return;
+            }
+            counters.add(add);
+        }
+        body.add(() -> {
+            bytes.run();
+            emitClauseArray(clauses);
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "tallyValue",
+                    "([B[" + CLAUSE + ")[I", false);
+            run.visitVarInsn(Opcodes.ASTORE, array);
+            counters.forEach(Runnable::run);
+        });
+    }
+
     private void planCancel(Statement.Cancel statement, List<Runnable> body) {
         for (Operand target : statement.targets()) {
             Runnable name = planCallTarget(target, statement.origin());
@@ -3973,6 +4008,10 @@ public final class ProgramGenerator {
      * ひとつの走査にまとめると、数える句が位置を取ってしまい置き換えが起きない。
      */
     private void planInspect(Statement.Inspect statement, List<Runnable> body) {
+        if (statement.source() != null) {
+            planInspectValue(statement, body);
+            return;
+        }
         Runnable offset = planAddress(statement.target(), statement.origin());
         // 可変長の表を含む群なら、走査するのは<b>いま何個あるか</b>までである
         Runnable size = planSendingLength(statement.target(), statement.origin());
