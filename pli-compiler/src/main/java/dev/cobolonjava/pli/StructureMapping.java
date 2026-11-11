@@ -222,7 +222,9 @@ final class StructureMapping {
             case BIT -> Math.max(1, (decl.precision() + 7) / 8);
             case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
             case DECIMAL -> PackedDecimal.byteLength(Math.max(1, decl.precision()));
-            case POINTER -> 4;
+            case POINTER, OFFSET -> 4;
+            // AREA(n) は n byte と管理域の 16 byte
+            case AREA -> Math.max(0, decl.precision()) + PliRuntime.AREA_HEADER;
             case GROUP, FILE, ENTRY -> 0;
         };
     }
@@ -236,7 +238,8 @@ final class StructureMapping {
     static int alignment(PliSyntax.Decl decl) {
         return switch (decl.type()) {
             case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
-            case POINTER -> 4;
+            case POINTER, OFFSET -> 4;
+            case AREA -> 8;
             // ALIGNED の VARYING は長さの半語の境界に置く
             case CHAR -> decl.varying() ? 2 : 1;
             default -> 1;

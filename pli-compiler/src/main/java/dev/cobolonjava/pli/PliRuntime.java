@@ -286,7 +286,23 @@ public final class PliRuntime {
             } catch (IllegalArgumentException unsupported) {
                 throw new PliExecutionException(unsupported.getMessage());
             }
-            DataView storage = Storage.allocate(Math.max(1, length)).whole();
+            DataView storage;
+            int areaOffset = -1;
+            if (item.in() != null) {
+                // AREA の中に取る。次の空きから、倍語の境界にそろえて置く
+                Var area = env.require(item.in());
+                if (area.type != PliSyntax.Type.AREA) {
+                    throw new PliExecutionException(item.in() + " is not an AREA");
+                }
+                areaOffset = (area.areaUsed() + 7) / 8 * 8;
+                if (areaOffset + Math.max(1, length) > area.view.length()) {
+                    throw new Condition("AREA", null, 360, null);
+                }
+                area.areaUse(areaOffset + Math.max(1, length));
+                storage = area.view.subView(areaOffset, Math.max(1, length));
+            } else {
+                storage = Storage.allocate(Math.max(1, length)).whole();
+            }
             if (shape != chunk) {
                 // ALLOCATE は REFER の対象に、宣言の式で決めた上限を入れる (LRM "REFER option")
                 for (PliSyntax.Decl decl : shape) {
@@ -304,6 +320,11 @@ public final class PliRuntime {
                 }
             }
             Var pointer = env.require(locator);
+            if (pointer.type == PliSyntax.Type.OFFSET && areaOffset >= 0) {
+                // OFFSET の locator には AREA の頭からの位置を入れる
+                pointer.write(FixedValue.binary(BigDecimal.valueOf(areaOffset), 31, 0), context);
+                return;
+            }
             if (pointer.type != PliSyntax.Type.POINTER) {
                 throw new PliExecutionException("SET(" + locator + ") needs a POINTER");
             }
@@ -2001,6 +2022,45 @@ public final class PliRuntime {
                 case "HEX" -> {
                     return hexOf(function, env);
                 }
+                case "POINTER", "PTR" -> {
+                    if (env.contains(name)) {
+                        break;
+                    }
+                    // POINTER(offset, area): AREA の中の位置を指す POINTER (LRM "POINTER")
+                    Var area = dataReference(function.arguments().get(1), env, name);
+                    if (area.type != PliSyntax.Type.AREA) {
+                        throw new PliExecutionException(name + " needs an AREA: " + area.name);
+                    }
+                    int at = number(value(function.arguments().get(0), env)).intValue();
+                    if (at < AREA_HEADER || at > area.view.length()) {
+                        throw new PliExecutionException("offset " + at + " is outside the AREA "
+                                + area.name);
+                    }
+                    return new PointerValue(AddressSpace.of(context).addressOf(
+                            area.view.storage(), area.view.offset() + at));
+                }
+                case "OFFSET" -> {
+                    if (env.contains(name)) {
+                        break;
+                    }
+                    // OFFSET(pointer, area): POINTER が指す位置の AREA の頭からの位置
+                    Object pointer = value(function.arguments().get(0), env);
+                    Var area = dataReference(function.arguments().get(1), env, name);
+                    AddressSpace.Location location = pointer instanceof PointerValue p
+                            ? AddressSpace.of(context).locate(p.address()) : null;
+                    if (area.type != PliSyntax.Type.AREA || location == null
+                            || location.storage() != area.view.storage()
+                            || location.offset() < area.view.offset()
+                            || location.offset() > area.view.offset() + area.view.length()) {
+                        throw new PliExecutionException("OFFSET: the POINTER does not point into"
+                                + " the AREA");
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(
+                            location.offset() - area.view.offset()), 31, 0);
+                }
+                case "EMPTY" -> {
+                    return EMPTY_AREA;
+                }
                 case "ALLOCATION", "ALLOCN" -> {
                     // 世代の数 (LRM "ALLOCATION")。CONTROLLED でなければ誤りである
                     PliSyntax.Expr argument = function.arguments().get(0);
@@ -2950,8 +3010,22 @@ public final class PliRuntime {
                         NumProcMode.PFD).toBigDecimal(), precision, scale);
                 case POINTER -> new PointerValue(view.length() < 4 ? 0
                         : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt());
+                case OFFSET -> FixedValue.binary(BigDecimal.valueOf(
+                        java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt()), 31, 0);
+                case AREA -> new AreaImage(view.toByteArray());
                 case FILE, ENTRY -> "";
             };
+        }
+
+        /** AREA の次の空きの位置 (AREA の頭から)。管理域が 0 なら空である。 */
+        int areaUsed() {
+            int used = java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt();
+            return used == 0 ? AREA_HEADER : used;
+        }
+
+        void areaUse(int used) {
+            byte[] bytes = java.nio.ByteBuffer.allocate(4).putInt(used).array();
+            for (int i = 0; i < 4; i++) view.set(i, bytes[i]);
         }
 
         /** VARYING の今の長さ。 */
@@ -2970,6 +3044,32 @@ public final class PliRuntime {
         }
 
         void write(Object value, ProgramContext context) {
+            if (type == PliSyntax.Type.AREA) {
+                // AREA への代入は、割り当てた部分と管理域を写す (LRM "Area assignment")。
+                // EMPTY() は空にする
+                if (value == EMPTY_AREA) {
+                    view.fill((byte) 0);
+                    return;
+                }
+                if (!(value instanceof AreaImage image)) {
+                    throw new PliExecutionException("only an AREA or EMPTY() can be assigned to"
+                            + " the AREA " + name);
+                }
+                int used = java.nio.ByteBuffer.wrap(image.bytes(), 0, 4).getInt();
+                int extent = used == 0 ? AREA_HEADER : used;
+                if (extent > view.length()) {
+                    throw new Condition("AREA", null, 360, null);
+                }
+                view.fill((byte) 0);
+                for (int i = 0; i < extent; i++) view.set(i, image.bytes()[i]);
+                return;
+            }
+            if (type == PliSyntax.Type.OFFSET) {
+                byte[] bytes = java.nio.ByteBuffer.allocate(4)
+                        .putInt(Executor.number(value).intValue()).array();
+                for (int i = 0; i < 4; i++) view.set(i, bytes[i]);
+                return;
+            }
             if (type == PliSyntax.Type.CHAR && varying) {
                 // 代入した値の長さが今の長さになる。最大を超えた右は落ちる (STRINGSIZE は既定で
                 // 無効。LRM "Assignment to character strings")
@@ -3169,6 +3269,16 @@ public final class PliRuntime {
     /**
      * POINTER の値。記憶域の位置に AddressSpace が振った番号で、0 は何も指さない (P-150)。
      */
+    /** AREA の管理域の大きさ。割り当ては管理域の後ろから始まる。 */
+    static final int AREA_HEADER = 16;
+
+    /** AREA の値 (記憶域の写し)。AREA への代入に使う。 */
+    private record AreaImage(byte[] bytes) {
+    }
+
+    /** EMPTY() の値。 */
+    private static final Object EMPTY_AREA = new Object();
+
     /** NULL() の値 X'FF000000'。 */
     private static final int NULL_ADDRESS = 0xFF000000;
 

@@ -346,7 +346,12 @@ final class PliSyntax {
     record Declare(List<Decl> declarations) implements Stmt {
     }
 
-    enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE }
+    /**
+     * AREA(n) の記憶域は n byte に 16 byte の管理域を足したもの (LRM "AREA attribute")。
+     * 管理域の頭の 4 byte に次の空きの位置を置く (この処理系の約束であり、実機の形ではない)。
+     * OFFSET は AREA の頭からの byte の位置を FIXED BIN(31) の形で持つ。
+     */
+    enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE, AREA, OFFSET }
 
     /**
      * 宣言 1 つ。
@@ -548,7 +553,7 @@ final class PliSyntax {
      * @param extents ALLOCATE に書いた次元の上限 (下限は 1)。書かなければ空で、宣言の次元を使う
      * @param set     {@code SET(locator)} の POINTER の名。無ければ {@code null}
      */
-    record AllocateItem(String name, List<Expr> extents, String set) {
+    record AllocateItem(String name, List<Expr> extents, String set, String in) {
     }
 
     record Free(List<String> names) implements Stmt {
@@ -816,14 +821,10 @@ final class PliSyntax {
                 if (storage == null) {
                     throw new ParseFailure(reference.token, reference.name + " is not declared");
                 }
-                if (reference.area && areaNames.contains(reference.name)) {
-                    throw new ParseFailure(reference.token, "ALLOCATE IN(" + reference.name
-                            + ") is not supported yet: AREA storage is not implemented");
-                }
-                if (reference.area) {
+                if (reference.area && !areaNames.contains(reference.name)) {
                     throw new ParseFailure(reference.token, reference.name + " is not an AREA");
                 }
-                if (storage.isEmpty()) {
+                if (!reference.area && storage.isEmpty()) {
                     throw new ParseFailure(reference.token, reference.name
                             + " is not BASED or CONTROLLED");
                 }
@@ -971,6 +972,7 @@ final class PliSyntax {
                         extents = arguments();
                     }
                     String set = null;
+                    String area = null;
                     while (check("SET") || check("IN")) {
                         boolean in = next().is("IN");
                         expect("(");
@@ -979,11 +981,12 @@ final class PliSyntax {
                         if (in) {
                             storageReferences.add(new StorageReference(locator.text(), locator,
                                     true));
+                            area = locator.text();
                         } else {
                             set = locator.text();
                         }
                     }
-                    items.add(new AllocateItem(name.text(), extents, set));
+                    items.add(new AllocateItem(name.text(), extents, set, area));
                 } while (match(","));
                 expect(";");
                 return new Allocate(List.copyOf(items));
@@ -1443,8 +1446,15 @@ final class PliSyntax {
                 if (tokens.get(i).is("BIT")) {
                     return new TypeInfo(Type.BIT, parenthesizedInt(tokens, i + 1, 1), 0);
                 }
-                if (tokens.get(i).is("POINTER")) {
+                if (tokens.get(i).is("POINTER") || tokens.get(i).is("PTR")) {
                     return new TypeInfo(Type.POINTER, 0, 0);
+                }
+                if (tokens.get(i).is("AREA")) {
+                    // 大きさを省けば 1000 byte (LRM "AREA attribute")
+                    return new TypeInfo(Type.AREA, parenthesizedInt(tokens, i + 1, 1000), 0);
+                }
+                if (tokens.get(i).is("OFFSET")) {
+                    return new TypeInfo(Type.OFFSET, 0, 0);
                 }
                 if (tokens.get(i).is("FILE")) {
                     return new TypeInfo(Type.FILE, 0, 0);
@@ -1532,7 +1542,7 @@ final class PliSyntax {
 
         /** まだ持たない型の属性。宣言は翻訳で通し、実行でその名を使うと止まる。 */
         private static final Set<String> UNSUPPORTED_TYPES = Set.of("FLOAT", "COMPLEX", "CPLX",
-                "AREA", "OFFSET", "HANDLE", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
+                "HANDLE", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
                 "TASK", "EVENT", "ORDINAL");
 
         /**

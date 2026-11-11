@@ -205,4 +205,25 @@ class StorageControlTest {
                 DCL 1 X BASED, 2 A(N REFER(CNT)) CHAR(1);
                 """).contains("scalar member"));
     }
+
+    @Test
+    @DisplayName("AREA の中に ALLOCATE し、OFFSET で指す。AREA の代入は中身ごと写り、EMPTY() で空になる")
+    void areasAndOffsets() throws Exception {
+        assertEquals("7 1,7,99 7,12", run("""
+                DCL A AREA(256), B AREA(256);
+                DCL O OFFSET(A), P POINTER, Q POINTER;
+                DCL 1 NODE BASED(P), 2 VALUE FIXED BIN(31), 2 TEXT CHAR(4);
+                ALLOCATE NODE IN(A) SET(O); P = POINTER(O, A);
+                NODE.VALUE = 7; NODE.TEXT = 'DATA';
+                IF OFFSET(P, A) = O THEN PUT SKIP LIST(NODE.VALUE, '1');
+                B = A; P = POINTER(O, B);
+                PUT SKIP LIST(NODE.VALUE);
+                NODE.VALUE = 99; P = POINTER(O, A); Q = POINTER(O, B);
+                PUT SKIP LIST(Q->VALUE, NODE.VALUE);
+                A = EMPTY();
+                ALLOCATE NODE IN(A) SET(O); P = POINTER(O, A);
+                NODE.VALUE = 12;
+                PUT SKIP LIST(NODE.VALUE);
+                """).replaceAll(" +", " "));
+    }
 }

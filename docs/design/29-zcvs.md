@@ -287,6 +287,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `REFER`、`CURRENTSIZE` | 54 / 68 | 278 / 279 |
 | 配列の断面 `A(*,2)`、`BY NAME`、擬似変数 `UNSPEC` | 55 / 68 | 285 / 286 |
 | 数の編集の PICTURE (Zeus `picture.rs` を移した) | 56 / 68 | 291 / 292 |
+| `AREA`、`OFFSET`、`ALLOCATE ... IN`、`POINTER(o,a)`、`OFFSET(p,a)`、`EMPTY()` | 58 / 68 | 297 / 298 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -357,6 +358,12 @@ T I R F(n)、浮動の字の並び、浮動小数の PICTURE (仮数 E|K 指数)
 記憶域の長さは像の長さであり、以前は数字の位置の数にしていた (9 と V だけの PICTURE で
 しか合わない)。浮動小数の PICTURE は書けるが、値を読むことは FLOAT を持たないので断る。
 編集の期待値は Zeus の検査をそのまま移したもので、実機と突き合わせていない。
+
+`AREA(n)` は n byte と管理域 16 byte の記憶域で、管理域の頭の 4 byte に次の空きの位置を
+置く。この管理域の形はこの処理系の約束であって、実機の形ではない (AREA の中身を
+`UNSPEC` で見る資産とは合わない)。`ALLOCATE ... IN(a)` は次の空きから倍語の境界にそろえて
+取り、溢れれば AREA 条件を起こす。解いた部分を再び使うことはまだ持たない。`OFFSET` は
+AREA の頭からの位置である。AREA への代入は使った部分と管理域を写し、`EMPTY()` で空にする。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、
