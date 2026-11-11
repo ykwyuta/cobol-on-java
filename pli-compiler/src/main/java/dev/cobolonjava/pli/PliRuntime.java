@@ -1936,6 +1936,12 @@ public final class PliRuntime {
                 invoke(procedure, call.arguments(), env);
                 return;
             }
+            if (call.name().equalsIgnoreCase("PLIFREE")
+                    && program.procedures().get("PLIFREE") == null) {
+                // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
+                // 解いたあとの参照が誤りであることは検出しない
+                return;
+            }
             if (call.name().equalsIgnoreCase("PLIRETC")) {
                 // 戻りコードを決める (LRM "PLIRETC")
                 context.setReturnCode(number(value(call.arguments().get(0), env)).intValue());
@@ -2538,6 +2544,29 @@ public final class PliRuntime {
                 }
                 case "EMPTY" -> {
                     return EMPTY_AREA;
+                }
+                case "HANDLE" -> {
+                    if (env.contains(name)) break;
+                    // 型つきの構造を指す値 (LRM "HANDLE")。ここでは POINTER と同じ番号である
+                    return address(function, env);
+                }
+                case "NEW" -> {
+                    if (env.contains(name)) break;
+                    // NEW(:T:) は型 T の記憶域を取る。翻訳で NEW('#T') に読み替えてある
+                    Object type = value(function.arguments().get(0), env);
+                    List<PliSyntax.Decl> chunk = type instanceof String text
+                            ? declaredChunks.get(text) : null;
+                    if (chunk == null) {
+                        throw new PliExecutionException("NEW needs a type defined by DEFINE"
+                                + " STRUCTURE");
+                    }
+                    int length;
+                    try {
+                        length = StructureMapping.map(chunk).size();
+                    } catch (IllegalArgumentException unsupported) {
+                        throw new PliExecutionException(unsupported.getMessage());
+                    }
+                    return new PointerValue(address(Storage.allocate(Math.max(1, length)).whole()));
                 }
                 case "LINENO", "PAGENO" -> {
                     String file = function.arguments().get(0) instanceof PliSyntax.Reference r

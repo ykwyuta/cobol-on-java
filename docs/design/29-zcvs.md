@@ -293,6 +293,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | 入口の変数 (`ENTRY ... VARIABLE`、`TAB(1)(3)`)、`GENERIC` | 63 / 68 | 317 / 317 |
 | SYSPRINT 以外の PRINT ファイル (`LINESIZE`、`PAGESIZE`、`LINE`、`LINENO`、`PAGENO`、`ON ENDPAGE`) | 64 / 68 | 324 / 324 |
 | `STATIC` の記憶域 (数は変わらない)、`FETCH` / `RELEASE` | 65 / 68 | 330 / 330 |
+| `HANDLE`、`H=>X`、`NEW(:T:)`、`PLIFREE` | 66 / 68 | 334 / 334 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -406,6 +407,11 @@ PC104A の FETCH の奥にあったので数に出ていなかった。いまは
 (番号は Zeus と同じ。実機と突き合わせていない)。`TITLE` は入口の名を別のロードモジュールへ
 結ぶ。`RELEASE` は読み込みを忘れ、そのプログラムの STATIC も捨てるので、次の `FETCH` は
 初めの状態から始まる。
+
+`HANDLE` は宣言の字句の段で読み替える。`DEFINE STRUCTURE T` から型の形の BASED の構造
+`#T BASED(#T#P)` を合成し、`H HANDLE T` を POINTER に、`H=>X` を locator 修飾
+`H->#T.X` に、`NEW(:T:)` を `NEW('#T')` にする。値は POINTER と同じ番号であり、型の検査
+(別の型の HANDLE の代入を断ること) はまだ持たない。`PLIFREE` は何もしない。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

@@ -226,4 +226,18 @@ class StorageControlTest {
                 PUT SKIP LIST(NODE.VALUE);
                 """).replaceAll(" +", " "));
     }
+
+    @Test
+    @DisplayName("HANDLE は型つきの構造を指し、H=>X で読み書きする。NEW(:T:) は別の記憶域を取る")
+    void handlesToTypedStructures() throws Exception {
+        assertEquals("17,3 4 17", run("""
+                DEFINE STRUCTURE 1 POINT, 2 X FIXED BIN(31), 2 Y FIXED BIN(31);
+                DCL P TYPE POINT, H HANDLE POINT;
+                P.X = 7; H = HANDLE(P); H=>X = 17;
+                PUT SKIP LIST(P.X);
+                H = NEW(:POINT:); H=>X = 3; H=>Y = 4;
+                PUT SKIP LIST(H=>X, H=>Y, P.X);
+                CALL PLIFREE(H);
+                """).replaceAll(" +", " "));
+    }
 }

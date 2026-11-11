@@ -34,7 +34,7 @@ final class PliSyntax {
      */
     private static List<Token> expandTypes(List<Token> tokens) {
         if (tokens.stream().noneMatch(t -> t.kind() == Kind.IDENT
-                && (t.is("DEFINE") || t.is("TYPE") || t.is("LIKE")))) {
+                && (t.is("DEFINE") || t.is("TYPE") || t.is("LIKE") || t.is("HANDLE")))) {
             return tokens;
         }
         // 文に分ける。最後は EOF
@@ -57,10 +57,28 @@ final class PliSyntax {
         for (List<Token> statement : statements) {
             int k = keywordAt(statement);
             if (k >= 0 && statement.get(k).is("DEFINE")) {
-                define(statement, k, structures, aliases);
+                String defined = define(statement, k, structures, aliases);
+                if (defined != null) {
+                    // HANDLE と NEW のために、型の形の BASED の構造を合成して置く
+                    kept.addAll(typedStructure(defined, structures.get(defined),
+                            statement.get(k)));
+                }
             } else {
                 kept.add(statement);
             }
+        }
+        // HANDLE 型: 宣言を POINTER にし、H=>X を H->#T.X に、NEW(:T:) を NEW('#T') に読み替える
+        Map<String, String> handles = new java.util.HashMap<>();
+        for (int s = 0; s < kept.size(); s++) {
+            List<Token> statement = kept.get(s);
+            int k = keywordAt(statement);
+            if (k >= 0 && (statement.get(k).is("DCL") || statement.get(k).is("DECLARE"))) {
+                kept.set(s, rewriteParts(statement, k, part -> List.of(handle(part, structures,
+                        handles))));
+            }
+        }
+        for (int s = 0; s < kept.size(); s++) {
+            kept.set(s, handleReferences(kept.get(s), handles, structures));
         }
         // TYPE を展開する
         for (int s = 0; s < kept.size(); s++) {
@@ -157,14 +175,15 @@ final class PliSyntax {
         return out;
     }
 
-    private static void define(List<Token> statement, int k,
-                               Map<String, List<List<Token>>> structures,
-                               Map<String, List<Token>> aliases) {
+    /** DEFINE を読む。DEFINE STRUCTURE なら型の名を返す。 */
+    private static String define(List<Token> statement, int k,
+                                 Map<String, List<List<Token>>> structures,
+                                 Map<String, List<Token>> aliases) {
         Token kind = statement.get(k + 1);
         if (kind.is("ALIAS") && statement.size() > k + 3) {
             aliases.put(statement.get(k + 2).text(),
                     List.copyOf(statement.subList(k + 3, statement.size() - 1)));
-            return;
+            return null;
         }
         if (kind.is("STRUCTURE") || kind.is("STRUCT")) {
             List<List<Token>> parts = parts(statement, k + 1);
@@ -178,9 +197,84 @@ final class PliSyntax {
                         + " name are not supported yet: " + root.get(name + 1).text());
             }
             structures.put(root.get(name).text(), List.copyOf(parts.subList(1, parts.size())));
-            return;
+            return root.get(name).text();
         }
         throw new ParseFailure(kind, "DEFINE " + kind.text() + " is not supported yet");
+    }
+
+    /** {@code DCL 1 #T BASED(#T#P), 要素...; DCL #T#P POINTER;} の字句。 */
+    private static List<List<Token>> typedStructure(String type, List<List<Token>> members,
+                                                    Token at) {
+        java.util.function.BiFunction<Kind, String, Token> t =
+                (kind, text) -> new Token(kind, text, at.line(), at.column());
+        List<Token> structure = new ArrayList<>(List.of(t.apply(Kind.IDENT, "DCL"),
+                t.apply(Kind.NUMBER, "1"), t.apply(Kind.IDENT, "#" + type),
+                t.apply(Kind.IDENT, "BASED"), t.apply(Kind.SYMBOL, "("),
+                t.apply(Kind.IDENT, "#" + type + "#P"), t.apply(Kind.SYMBOL, ")")));
+        for (List<Token> member : members) {
+            structure.add(t.apply(Kind.SYMBOL, ","));
+            structure.addAll(member);
+        }
+        structure.add(t.apply(Kind.SYMBOL, ";"));
+        List<Token> pointer = List.of(t.apply(Kind.IDENT, "DCL"),
+                t.apply(Kind.IDENT, "#" + type + "#P"), t.apply(Kind.IDENT, "POINTER"),
+                t.apply(Kind.SYMBOL, ";"));
+        return List.of(structure, pointer);
+    }
+
+    /** {@code H HANDLE T} / {@code H HANDLE(T)} を POINTER にし、H の型を覚える。 */
+    private static List<Token> handle(List<Token> part, Map<String, List<List<Token>>> structures,
+                                      Map<String, String> handles) {
+        int at = indexAtDepth0(part, "HANDLE");
+        if (at < 0) {
+            return part;
+        }
+        int typeAt = at + 1 < part.size() && part.get(at + 1).is("(") ? at + 2 : at + 1;
+        if (typeAt >= part.size() || part.get(typeAt).kind() != Kind.IDENT
+                || !structures.containsKey(part.get(typeAt).text())) {
+            throw new ParseFailure(part.get(at), "HANDLE needs a type defined by DEFINE"
+                    + " STRUCTURE");
+        }
+        int name = levelOf(part) > 0 ? 1 : 0;
+        handles.put(part.get(name).text(), part.get(typeAt).text());
+        List<Token> out = new ArrayList<>(part.subList(0, at));
+        out.add(new Token(Kind.IDENT, "POINTER", part.get(at).line(), part.get(at).column()));
+        out.addAll(part.subList(typeAt + (typeAt == at + 2 ? 2 : 1), part.size()));
+        return out;
+    }
+
+    private static List<Token> handleReferences(List<Token> statement, Map<String, String> handles,
+                                                Map<String, List<List<Token>>> structures) {
+        List<Token> out = new ArrayList<>();
+        for (int i = 0; i < statement.size(); i++) {
+            Token token = statement.get(i);
+            if (token.kind() == Kind.IDENT && handles.containsKey(token.text())
+                    && i + 2 < statement.size() && statement.get(i + 1).is("=>")
+                    && statement.get(i + 2).kind() == Kind.IDENT) {
+                out.add(token);
+                out.add(new Token(Kind.SYMBOL, "->", token.line(), token.column()));
+                out.add(new Token(Kind.IDENT, "#" + handles.get(token.text()), token.line(),
+                        token.column()));
+                out.add(new Token(Kind.SYMBOL, ".", token.line(), token.column()));
+                out.add(statement.get(i + 2));
+                i += 2;
+                continue;
+            }
+            if (token.is("NEW") && i + 5 < statement.size() && statement.get(i + 1).is("(")
+                    && statement.get(i + 2).is(":") && statement.get(i + 4).is(":")
+                    && statement.get(i + 5).is(")")
+                    && structures.containsKey(statement.get(i + 3).text())) {
+                out.add(token);
+                out.add(statement.get(i + 1));
+                out.add(new Token(Kind.STRING, "#" + statement.get(i + 3).text(), token.line(),
+                        token.column()));
+                out.add(statement.get(i + 5));
+                i += 5;
+                continue;
+            }
+            out.add(token);
+        }
+        return out;
     }
 
     private static int levelOf(List<Token> part) {
@@ -1760,8 +1854,7 @@ final class PliSyntax {
         }
 
         /** まだ持たない型の属性。宣言は翻訳で通し、実行でその名を使うと止まる。 */
-        private static final Set<String> UNSUPPORTED_TYPES = Set.of("FLOAT", "COMPLEX", "CPLX",
-                "HANDLE", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
+        private static final Set<String> UNSUPPORTED_TYPES = Set.of("FLOAT", "COMPLEX", "CPLX", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
                 "TASK", "EVENT", "ORDINAL");
 
         /**
