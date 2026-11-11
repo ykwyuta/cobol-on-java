@@ -1252,7 +1252,7 @@ closeFile
 // では巻の操作が起きず、状態コード 07 が立つ。LOCK は錠を掛け、閉じたあと
 // <b>この実行単位では二度と開けなく</b>する
 closeOption
-    : (REEL | UNIT) (FOR? REMOVAL)?
+    : (REEL | UNIT) (FOR? REMOVAL | WITH? NO REWIND)?
     | WITH? NO REWIND
     | WITH? LOCK
     ;

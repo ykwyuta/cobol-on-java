@@ -719,4 +719,31 @@ class SequentialDataSetTest {
                 DataSetOpenException.class, () -> file.open(OpenMode.INPUT));
         assertEquals(AbendCode.S013, failure.abendCode());
     }
+
+    @Test
+    @DisplayName("置かれているファイルとレコード長の宣言が食い違えば、開くときに 39 になる")
+    void refusesToOpenWithConflictingAttributes(@TempDir Path directory) {
+        Path path = directory.resolve("CONFLICT");
+        DataSetAttributes eight =
+                new DataSetAttributes(RecordFormat.FIXED, 8, CodePages.DEFAULT);
+        SequentialDataSet writer = SequentialDataSet.at(path, eight);
+        assertEquals(FileStatus.OK, writer.open(OpenMode.OUTPUT));
+        assertEquals(FileStatus.OK, writer.write(CodePages.DEFAULT.encode("ORIGINAL")));
+        assertEquals(FileStatus.OK, writer.close());
+
+        // 9 byte と宣言して開く。以前は置かれている 8 byte を黙って使っていた
+        SequentialDataSet longer = SequentialDataSet.at(path,
+                new DataSetAttributes(RecordFormat.FIXED, 9, CodePages.DEFAULT));
+        assertEquals(FileStatus.ATTRIBUTE_CONFLICT, longer.open(OpenMode.INPUT));
+        // 様式が違っても同じである
+        SequentialDataSet variable = SequentialDataSet.at(path,
+                new DataSetAttributes(RecordFormat.VARIABLE, 8, CodePages.DEFAULT));
+        assertEquals(FileStatus.ATTRIBUTE_CONFLICT, variable.open(OpenMode.INPUT));
+        // 作り直す (OUTPUT) のは宣言どおりでよい。合っている宣言なら読める
+        SequentialDataSet same = SequentialDataSet.at(path, eight);
+        assertEquals(FileStatus.OK, same.open(OpenMode.INPUT));
+        byte[] record = new byte[8];
+        assertEquals(FileStatus.OK, same.read(record));
+        assertEquals("ORIGINAL", CodePages.DEFAULT.decode(record));
+    }
 }

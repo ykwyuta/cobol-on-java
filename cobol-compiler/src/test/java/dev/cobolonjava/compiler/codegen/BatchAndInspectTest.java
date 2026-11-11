@@ -250,4 +250,31 @@ class BatchAndInspectTest {
                 "    DISPLAY D.",
                 "    STOP RUN.")));
     }
+
+    @Test
+    @DisplayName("SAME RECORD AREA は、あとに APPLY や RERUN を書いても効く")
+    void sharesTheRecordAreaEvenWithOtherEntries() {
+        // 以前は APPLY の指定も SAME として読み、そこに書いたファイルの共有を壊していた
+        assertEquals(List.of("[SHARED01]"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT FILE-A ASSIGN TO DDA.",
+                "    SELECT FILE-B ASSIGN TO DDB.",
+                "I-O-CONTROL.",
+                "    SAME RECORD AREA FOR FILE-A FILE-B.",
+                "    APPLY WRITE-ONLY ON FILE-B.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  FILE-A.",
+                "01  REC-A PIC X(8).",
+                "FD  FILE-B RECORDING MODE S.",
+                "01  REC-B PIC X(8).",
+                "PROCEDURE DIVISION.",
+                "    MOVE 'SHARED01' TO REC-A.",
+                "    DISPLAY '[' REC-B ']'.",
+                "    STOP RUN.")));
+    }
 }

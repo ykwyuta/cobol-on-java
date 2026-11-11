@@ -59,6 +59,12 @@ public final class FileStatus {
     /** {@code CLOSE ... WITH LOCK} で閉じたファイルを、もう一度開こうとした。 */
     public static final String CLOSED_WITH_LOCK = "38";
     /** すでに開いている。 */
+    /**
+     * 開こうとしたファイルの固定の属性が、プログラムの宣言と食い違っている
+     * (85 規格 VII-4, 1.3.5(3)I。様式とレコード長がここに入る)。
+     */
+    public static final String ATTRIBUTE_CONFLICT = "39";
+
     public static final String ALREADY_OPEN = "41";
     /** 開いていない。 */
     public static final String NOT_OPEN = "42";

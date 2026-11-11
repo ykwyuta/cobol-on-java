@@ -1678,7 +1678,11 @@ public final class DataDivisionBuilder {
         }
         for (CobolParser.IoControlEntryContext entry : program.environmentDivision()
                 .inputOutputSection().ioControlParagraph().ioControlEntry()) {
-            if (entry.SAME() == null || entry.SORT() != null || entry.SORT_MERGE() != null) {
+            // 指定の種類は<b>先頭の語</b>で見る。SAME() は「この規則のどこかに SAME が現れうる」
+            // ために並びを返し、無くても null にならない。以前は null と比べていたので、
+            // RERUN や APPLY の指定も SAME として読み、そこに書かれたファイルの共有を壊していた
+            if (!entry.getStart().getText().equalsIgnoreCase("SAME")
+                    || entry.SORT() != null || entry.SORT_MERGE() != null) {
                 continue;
             }
             String first = null;

@@ -364,14 +364,21 @@ public record FileDescription(String name, String ddName, Organization organizat
         return clause.DYNAMIC() != null ? Access.DYNAMIC : Access.SEQUENTIAL;
     }
 
-    /** {@code RECORDING MODE} の綴り。不定長 (U) はまだ扱わない。 */
+    /**
+     * {@code RECORDING MODE} の綴り。
+     *
+     * <p>S (ブロックをまたぐ可変長) と U (不定長) は、プログラムから見れば<b>レコードごとに
+     * 長さが違うファイル</b>である。違いはブロックへの詰め方 (セグメントに割るか、1 ブロック
+     * 1 レコードか) であり、この処理系はブロックを持たないので、どちらも可変長として置く。
+     * 以前は断っていた。置かれるバイト列はホストの形 (BDW・SDW) ではない。
+     */
     private static RecordFormat recordingOf(String text, RecordFormat current, Origin origin,
                                             List<Diagnostic> diagnostics) {
         String mode = text.trim().toUpperCase(Locale.ROOT);
         if (mode.equals("F") || mode.equals("FB")) {
             return RecordFormat.FIXED;
         }
-        if (mode.equals("V") || mode.equals("VB")) {
+        if (mode.equals("V") || mode.equals("VB") || mode.equals("S") || mode.equals("U")) {
             return RecordFormat.VARIABLE;
         }
         diagnostics.add(new Diagnostic(origin, "RECORDING MODE " + mode + " is not supported yet"));

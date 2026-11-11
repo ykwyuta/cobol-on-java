@@ -114,6 +114,10 @@ class PliCompilerTest {
     @Test
     void bankOfZPliAssetsAreAcceptedWithoutSourceChanges() throws Exception {
         Path root = Path.of("..", "reference", "Bank-of-Z-main", "src", "base");
+        // 資産は同梱しない (要件 NFR-042)。置かれていなければ飛ばす。以前は失敗になり、
+        // うしろのモジュールのテストまで止めていた (覚え書き 6: 道具が失敗を作らない)
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isDirectory(root),
+                "the Bank of Z corpus is not present");
         for (Path source : new Path[] {
                 root.resolve(Path.of("batch", "pli", "BNKSTMT.pli")),
                 root.resolve(Path.of("ims", "pli", "IBLOGIN.pli"))}) {

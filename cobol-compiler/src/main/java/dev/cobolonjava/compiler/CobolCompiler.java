@@ -327,7 +327,10 @@ public final class CobolCompiler {
      */
     private static void rerunDiagnostics(org.antlr.v4.runtime.tree.ParseTree node,
                                          List<Diagnostic> out) {
-        if (node instanceof CobolParser.IoControlEntryContext entry && entry.RERUN() != null) {
+        if (node instanceof CobolParser.IoControlEntryContext entry) {
+            if (!entry.getStart().getText().equalsIgnoreCase("RERUN")) {
+                return;
+            }
             for (int i = 0; i < entry.getChildCount(); i++) {
                 String word = entry.getChild(i).getText().toUpperCase(java.util.Locale.ROOT);
                 if (!word.equals("RECORDS") && !word.equals("REEL") && !word.equals("UNIT")) {

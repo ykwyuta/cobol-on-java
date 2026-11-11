@@ -75,7 +75,29 @@ public final class SequentialDataSet implements DataSet {
      * @param declared プログラムが {@code SELECT} と {@code FD} に書いた様式
      */
     public static SequentialDataSet at(Path path, DataSetAttributes declared) {
-        return new SequentialDataSet(path, DataSetAttributes.read(path, declared));
+        SequentialDataSet file =
+                new SequentialDataSet(path, DataSetAttributes.read(path, declared));
+        file.declared = declared;
+        return file;
+    }
+
+    /** プログラムが宣言した様式。宣言を知らずに用意したファイルでは {@code null}。 */
+    private DataSetAttributes declared;
+
+    /**
+     * 置かれているファイルの属性が、宣言と食い違っているか。
+     *
+     * <p>様式 (固定長か可変長か) と、固定長のレコード長を見る。可変長の最大長は、宣言の
+     * ほうが短くても読めるレコードがあるので見ない。以前は置かれている属性を黙って使い、
+     * 9 byte と宣言したファイルで 8 byte のレコードを読んでいた (ZCVS の ZF109A)。
+     */
+    private boolean conflictsWithDeclaration() {
+        if (declared == null) {
+            return false;
+        }
+        return declared.format() != attributes.format()
+                || (declared.format() == RecordFormat.FIXED
+                    && declared.recordLength() != attributes.recordLength());
     }
 
     public DataSetAttributes attributes() {
@@ -147,6 +169,9 @@ public final class SequentialDataSet implements DataSet {
             return refused;
         }
         boolean missing = !Files.isReadable(path);
+        if (!missing && requested != OpenMode.OUTPUT && conflictsWithDeclaration()) {
+            return FileStatus.ATTRIBUTE_CONFLICT;
+        }
         damagedAt = -1;
         if (requested == OpenMode.OUTPUT || missing) {
             records = new ArrayList<>();
