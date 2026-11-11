@@ -282,6 +282,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | マクロ前処理 (Zeus `preproc.rs` を移した) | 46 / 68 | 244 / 250 |
 | `ALLOCATE` / `FREE` (CONTROLLED、BASED)、`ALLOCATION`、`DIM`、`SUM` | 48 / 68 | 253 / 259 |
 | `Q->A`、`NULL` と `SYSNULL` の区別、`POINTERADD` | 49 / 68 | 261 / 267 |
+| `DEFINE STRUCTURE` / `DEFINE ALIAS` の `TYPE`、`LIKE` の展開 | 50 / 68 | 266 / 272 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -316,6 +317,14 @@ locator で修飾した参照 `Q->A` は、A の宣言の locator (`BASED(P)` �
 断る。`NULL()` は X'FF000000'、`SYSNULL()` は 0 である (以前はどちらも 0)。POINTER の値は
 位置ごとに振った番号なので (P-150)、`POINTERADD` は番号が指す記憶域の中で位置を進めた
 番号を返し、記憶域の外へ出れば断る。
+
+`LIKE` は以前、参照した名があるかを確かめるだけで<b>展開していなかった</b>。`DCL Q LIKE P`
+は中身の無い宣言になり、`Q = P` が何を写すかは実行してみるまで分からなかった。ZPVS で
+LIKE を使うのは負の検査 (PE104N、PE105N) と、それが「名がある」ことしか見ない正の検査
+(PE104P、PE105P) だけだったので、数には出ていなかった。いまは `DEFINE STRUCTURE` /
+`DEFINE ALIAS` の `TYPE` と合わせて、構文解析の前に宣言の字句の並びの上で展開する。
+`LIKE` は要素の名と属性を写し、参照した構造の記憶域の種類と次元は写さない。小構造と
+修飾した名の `LIKE`、`DEFINE ORDINAL` はまだ持たず、断る。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

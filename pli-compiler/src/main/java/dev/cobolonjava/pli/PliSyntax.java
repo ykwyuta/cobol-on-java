@@ -15,11 +15,289 @@ final class PliSyntax {
 
     static ParseResult parse(String fileName, String source) {
         try {
-            return new Parser(fileName, new Lexer(fileName, source).scan()).parse();
+            return new Parser(fileName, expandTypes(new Lexer(fileName, source).scan())).parse();
         } catch (ParseFailure failure) {
             return new ParseResult(null, List.of(new Diagnostic(Diagnostic.Severity.ERROR,
                     fileName, failure.token.line(), failure.token.column(), failure.getMessage())));
         }
+    }
+
+    /**
+     * {@code DEFINE STRUCTURE} / {@code DEFINE ALIAS} で定義した型の {@code TYPE} と、
+     * {@code LIKE} を、宣言の字句の並びの上で展開する (LRM "DEFINE STRUCTURE", "DEFINE ALIAS",
+     * "LIKE attribute")。以前は LIKE の名があるかを確かめるだけで展開しておらず、
+     * {@code DCL Q LIKE P} が中身の無い宣言になっていた。
+     *
+     * <p>LIKE は参照した構造の要素の名と属性を写す。参照した構造の大きい方の記憶域の種類と
+     * 次元は写さない。展開は宣言の順によらない (後に書かれた構造も参照できる)。
+     * DEFINE / TYPE / LIKE の無い原文は並びを変えない。
+     */
+    private static List<Token> expandTypes(List<Token> tokens) {
+        if (tokens.stream().noneMatch(t -> t.kind() == Kind.IDENT
+                && (t.is("DEFINE") || t.is("TYPE") || t.is("LIKE")))) {
+            return tokens;
+        }
+        // 文に分ける。最後は EOF
+        List<List<Token>> statements = new ArrayList<>();
+        int start = 0;
+        int depth = 0;
+        for (int i = 0; i < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.is("(")) depth++;
+            else if (t.is(")")) depth--;
+            else if ((t.is(";") && depth <= 0) || t.kind() == Kind.EOF) {
+                statements.add(new ArrayList<>(tokens.subList(start, i + 1)));
+                start = i + 1;
+                depth = 0;
+            }
+        }
+        Map<String, List<List<Token>>> structures = new java.util.HashMap<>();
+        Map<String, List<Token>> aliases = new java.util.HashMap<>();
+        List<List<Token>> kept = new ArrayList<>();
+        for (List<Token> statement : statements) {
+            int k = keywordAt(statement);
+            if (k >= 0 && statement.get(k).is("DEFINE")) {
+                define(statement, k, structures, aliases);
+            } else {
+                kept.add(statement);
+            }
+        }
+        // TYPE を展開する
+        for (int s = 0; s < kept.size(); s++) {
+            List<Token> statement = kept.get(s);
+            int k = keywordAt(statement);
+            if (k >= 0 && (statement.get(k).is("DCL") || statement.get(k).is("DECLARE"))) {
+                kept.set(s, rewriteParts(statement, k, part -> expandType(part, structures,
+                        aliases)));
+            }
+        }
+        // LIKE を展開する。LIKE で作った構造をさらに LIKE で参照できるよう、繰り返す
+        for (int round = 0; round < 8; round++) {
+            Map<String, List<List<Token>>> declared = new java.util.HashMap<>();
+            Set<String> minor = new java.util.HashSet<>();
+            for (List<Token> statement : kept) {
+                int k = keywordAt(statement);
+                if (k >= 0 && (statement.get(k).is("DCL") || statement.get(k).is("DECLARE"))) {
+                    recordStructures(parts(statement, k), declared, minor);
+                }
+            }
+            boolean changed = false;
+            for (int s = 0; s < kept.size(); s++) {
+                List<Token> statement = kept.get(s);
+                int k = keywordAt(statement);
+                if (k >= 0 && (statement.get(k).is("DCL") || statement.get(k).is("DECLARE"))) {
+                    List<Token> rewritten = rewriteParts(statement, k,
+                            part -> expandLike(part, declared, minor));
+                    if (!rewritten.equals(statement)) {
+                        kept.set(s, rewritten);
+                        changed = true;
+                    }
+                }
+            }
+            if (!changed) {
+                break;
+            }
+        }
+        List<Token> out = new ArrayList<>();
+        kept.forEach(out::addAll);
+        return out;
+    }
+
+    /** 文の頭の名札を飛ばしたところ。無ければ -1。 */
+    private static int keywordAt(List<Token> statement) {
+        int i = 0;
+        while (i + 1 < statement.size() && statement.get(i).kind() == Kind.IDENT
+                && statement.get(i + 1).is(":")) {
+            i += 2;
+        }
+        return i < statement.size() && statement.get(i).kind() == Kind.IDENT ? i : -1;
+    }
+
+    /** 宣言の文の、深さ 0 の ',' で分けた項目。末尾の ';' は含めない。 */
+    private static List<List<Token>> parts(List<Token> statement, int keyword) {
+        List<List<Token>> parts = new ArrayList<>();
+        List<Token> current = new ArrayList<>();
+        int depth = 0;
+        for (int i = keyword + 1; i < statement.size(); i++) {
+            Token t = statement.get(i);
+            if ((t.is(";") && depth == 0) || t.kind() == Kind.EOF) {
+                break;
+            }
+            if (t.is("(")) depth++;
+            if (t.is(")")) depth--;
+            if (t.is(",") && depth == 0) {
+                parts.add(current);
+                current = new ArrayList<>();
+            } else {
+                current.add(t);
+            }
+        }
+        parts.add(current);
+        return parts;
+    }
+
+    private static List<Token> rewriteParts(List<Token> statement, int keyword,
+                                            java.util.function.Function<List<Token>,
+                                                    List<List<Token>>> rewrite) {
+        List<Token> out = new ArrayList<>(statement.subList(0, keyword + 1));
+        List<List<Token>> parts = parts(statement, keyword);
+        Token last = statement.get(statement.size() - 1);
+        boolean first = true;
+        for (List<Token> part : parts) {
+            for (List<Token> replaced : rewrite.apply(part)) {
+                if (!first) {
+                    out.add(new Token(Kind.SYMBOL, ",", replaced.isEmpty() ? last.line()
+                            : replaced.get(0).line(), 0));
+                }
+                out.addAll(replaced);
+                first = false;
+            }
+        }
+        out.add(last);
+        return out;
+    }
+
+    private static void define(List<Token> statement, int k,
+                               Map<String, List<List<Token>>> structures,
+                               Map<String, List<Token>> aliases) {
+        Token kind = statement.get(k + 1);
+        if (kind.is("ALIAS") && statement.size() > k + 3) {
+            aliases.put(statement.get(k + 2).text(),
+                    List.copyOf(statement.subList(k + 3, statement.size() - 1)));
+            return;
+        }
+        if (kind.is("STRUCTURE") || kind.is("STRUCT")) {
+            List<List<Token>> parts = parts(statement, k + 1);
+            List<Token> root = parts.get(0);
+            int name = root.size() > 0 && root.get(0).kind() == Kind.NUMBER ? 1 : 0;
+            if (name >= root.size() || root.get(name).kind() != Kind.IDENT) {
+                throw new ParseFailure(kind, "DEFINE STRUCTURE needs a level-1 name");
+            }
+            if (root.size() > name + 1) {
+                throw new ParseFailure(root.get(name + 1), "attributes of the DEFINE STRUCTURE"
+                        + " name are not supported yet: " + root.get(name + 1).text());
+            }
+            structures.put(root.get(name).text(), List.copyOf(parts.subList(1, parts.size())));
+            return;
+        }
+        throw new ParseFailure(kind, "DEFINE " + kind.text() + " is not supported yet");
+    }
+
+    private static int levelOf(List<Token> part) {
+        return !part.isEmpty() && part.get(0).kind() == Kind.NUMBER
+                && !part.get(0).text().contains(".") ? Integer.parseInt(part.get(0).text()) : 0;
+    }
+
+    /** 要素の項目を、段を {@code shift} だけ下げて写す。 */
+    private static List<Token> shifted(List<Token> member, int shift) {
+        List<Token> copy = new ArrayList<>(member);
+        int level = levelOf(member);
+        Token old = member.get(0);
+        copy.set(0, new Token(Kind.NUMBER, String.valueOf(level + shift), old.line(),
+                old.column()));
+        return copy;
+    }
+
+    private static int indexAtDepth0(List<Token> part, String word) {
+        int depth = 0;
+        for (int i = 0; i < part.size(); i++) {
+            Token t = part.get(i);
+            if (t.is("(")) depth++;
+            else if (t.is(")")) depth--;
+            else if (depth == 0 && t.kind() == Kind.IDENT && t.is(word)) return i;
+        }
+        return -1;
+    }
+
+    private static List<List<Token>> expandType(List<Token> part,
+                                                Map<String, List<List<Token>>> structures,
+                                                Map<String, List<Token>> aliases) {
+        int at = indexAtDepth0(part, "TYPE");
+        if (at < 0 || at + 1 >= part.size() || part.get(at + 1).kind() != Kind.IDENT) {
+            return List.of(part);
+        }
+        String type = part.get(at + 1).text();
+        List<Token> rest = new ArrayList<>(part.subList(0, at));
+        List<Token> after = part.subList(at + 2, part.size());
+        if (aliases.containsKey(type)) {
+            rest.addAll(aliases.get(type));
+            rest.addAll(after);
+            return List.of(rest);
+        }
+        if (!structures.containsKey(type)) {
+            throw new ParseFailure(part.get(at + 1), "type " + type + " is not defined");
+        }
+        return withMembers(part, rest, after, structures.get(type), 1);
+    }
+
+    /** 構造の写しを作る。根は宣言の名と自分の属性、要素は写した元の段から下げる。 */
+    private static List<List<Token>> withMembers(List<Token> part, List<Token> head,
+                                                 List<Token> after, List<List<Token>> members,
+                                                 int sourceLevel) {
+        if (!part.isEmpty() && part.get(levelOf(part) > 0 ? 1 : 0).is("(")) {
+            throw new ParseFailure(part.get(0), "a factored declaration of a structure type"
+                    + " is not supported yet");
+        }
+        int level = Math.max(1, levelOf(part));
+        List<Token> root = new ArrayList<>();
+        root.add(new Token(Kind.NUMBER, String.valueOf(level), part.get(0).line(),
+                part.get(0).column()));
+        root.addAll(levelOf(head) > 0 ? head.subList(1, head.size()) : head);
+        root.addAll(after);
+        List<List<Token>> out = new ArrayList<>();
+        out.add(root);
+        for (List<Token> member : members) {
+            out.add(shifted(member, level - sourceLevel));
+        }
+        return out;
+    }
+
+    /** 宣言の文の中の、段 1 の構造の要素の項目と、小構造の名を集める。 */
+    private static void recordStructures(List<List<Token>> parts,
+                                         Map<String, List<List<Token>>> declared,
+                                         Set<String> minor) {
+        for (int i = 0; i < parts.size(); i++) {
+            List<Token> part = parts.get(i);
+            int level = levelOf(part);
+            if (level == 0 || part.size() < 2 || part.get(1).kind() != Kind.IDENT) {
+                continue;
+            }
+            int end = i + 1;
+            while (end < parts.size() && levelOf(parts.get(end)) > level) end++;
+            if (end == i + 1) {
+                continue;
+            }
+            if (level == 1) {
+                declared.put(part.get(1).text(), List.copyOf(parts.subList(i + 1, end)));
+            } else {
+                minor.add(part.get(1).text());
+            }
+        }
+    }
+
+    private static List<List<Token>> expandLike(List<Token> part,
+                                                Map<String, List<List<Token>>> declared,
+                                                Set<String> minor) {
+        int at = indexAtDepth0(part, "LIKE");
+        if (at < 0 || at + 1 >= part.size() || part.get(at + 1).kind() != Kind.IDENT) {
+            return List.of(part);
+        }
+        String reference = part.get(at + 1).text();
+        if (at + 2 < part.size() && part.get(at + 2).is(".")) {
+            throw new ParseFailure(part.get(at + 1), "LIKE of a qualified name is not"
+                    + " supported yet: " + reference);
+        }
+        if (minor.contains(reference) && !declared.containsKey(reference)) {
+            throw new ParseFailure(part.get(at + 1), "LIKE of a minor structure is not"
+                    + " supported yet: " + reference);
+        }
+        List<List<Token>> members = declared.get(reference);
+        if (members == null) {
+            // 宣言されていない名と構造でない名は、読み終えてから名指しで断る
+            return List.of(part);
+        }
+        List<Token> head = new ArrayList<>(part.subList(0, at));
+        return withMembers(part, head, part.subList(at + 2, part.size()), members, 1);
     }
 
     record ParseResult(Program program, List<Diagnostic> diagnostics) {

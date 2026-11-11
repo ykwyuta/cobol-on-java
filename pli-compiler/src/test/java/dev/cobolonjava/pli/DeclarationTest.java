@@ -231,4 +231,54 @@ class DeclarationTest {
                     .replace(System.lineSeparator(), "\n"));
         }
     }
+
+    private static String refusal(String body) {
+        PliCompiler.Result result = PliCompiler.standard().compile("DECLS.pli",
+                "DECLS: PROCEDURE OPTIONS(MAIN);\n" + body + "\nEND DECLS;\n");
+        assertFalse(result.succeeded(), "expected the compiler to refuse: " + body);
+        return result.diagnostics().toString();
+    }
+
+    @Test
+    @DisplayName("TYPE は DEFINE の構造と別名を展開し、LIKE は要素を写した別の記憶域を作る")
+    void typesAndLikeAreExpanded() throws Exception {
+        assertEquals("3 4 8 3 4,8 3 8,5 12.34", String.join(",", main("""
+                DEFINE STRUCTURE 1 POINT, 2 X FIXED BIN(31), 2 Y FIXED BIN(31);
+                DEFINE ALIAS MONEY FIXED DEC(9,2);
+                DCL Q LIKE P;
+                DCL P TYPE POINT;
+                DCL M TYPE MONEY;
+                P.X = 3; P.Y = 4;
+                Q = P;
+                PUT SKIP LIST(Q.X, Q.Y, STG(Q), P.X, P.Y);
+                Q.X = 8;
+                PUT SKIP LIST(Q.X, P.X, STG(P));
+                M = 12.345;
+                PUT SKIP LIST(STG(M), M);
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("LIKE で作る構造は、宣言の段の下に要素を置く")
+    void likeInsideAStructureKeepsItsLevel() throws Exception {
+        assertEquals("1 2,12", String.join(",", main("""
+                DCL 1 BASE, 2 A FIXED BIN(31), 2 B FIXED BIN(31);
+                DCL 1 OUTER, 2 INNER LIKE BASE, 2 TAIL FIXED BIN(31);
+                OUTER.INNER.A = 1; OUTER.INNER.B = 2; OUTER.TAIL = 3;
+                PUT SKIP LIST(OUTER.INNER.A, OUTER.INNER.B);
+                PUT SKIP LIST(STG(OUTER));
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("定義していない TYPE、小構造の LIKE、DEFINE ORDINAL は翻訳で断る")
+    void unsupportedTypeFormsAreRefused() {
+        assertTrue(refusal("DCL P TYPE NOWHERE;").contains("type NOWHERE is not defined"));
+        assertTrue(refusal("""
+                DCL 1 S, 2 T, 3 A FIXED BIN(31);
+                DCL X LIKE T;
+                """).contains("minor structure"));
+        assertTrue(refusal("DEFINE ORDINAL C(RED, BLUE);").contains("DEFINE ORDINAL"));
+        assertTrue(refusal("DCL X LIKE MISSING;").contains("MISSING is not declared"));
+    }
 }
