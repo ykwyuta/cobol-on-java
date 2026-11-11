@@ -355,4 +355,19 @@ class DeclarationTest {
         assertTrue(String.valueOf(cause.getMessage()).contains("FLOAT is not supported yet"),
                 cause::toString);
     }
+
+    @Test
+    @DisplayName("STATIC は手続きを呼ぶたびに取り直さず、INITIAL は最初の 1 度だけ効く。AUTOMATIC は毎回")
+    void staticStorageSurvivesCalls() throws Exception {
+        assertEquals("1 1,2 1,3 1", String.join(",", main("""
+                DCL I FIXED BIN(31);
+                DO I = 1 TO 3; CALL BUMP; END;
+                BUMP: PROC;
+                  DCL C FIXED BIN(31) STATIC INIT(0);
+                  DCL A FIXED BIN(31) INIT(0);
+                  C = C + 1; A = A + 1;
+                  PUT SKIP LIST(C, A);
+                END BUMP;
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
 }

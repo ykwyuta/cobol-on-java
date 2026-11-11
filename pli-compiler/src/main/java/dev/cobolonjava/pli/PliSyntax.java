@@ -1386,7 +1386,8 @@ final class PliSyntax {
             boolean unsigned = info.type == Type.BINARY
                     && part.stream().anyMatch(token -> token.is("UNSIGNED"));
             String storage = part.stream().anyMatch(t -> t.is("CONTROLLED") || t.is("CTL"))
-                    ? "CONTROLLED" : part.stream().anyMatch(t -> t.is("BASED")) ? "BASED" : null;
+                    ? "CONTROLLED" : part.stream().anyMatch(t -> t.is("BASED")) ? "BASED"
+                    : part.stream().anyMatch(t -> t.is("STATIC")) ? "STATIC" : null;
             if (dimensions.contains(Bound.STAR) && !"CONTROLLED".equals(storage)
                     && !parameterNames.contains(name.toUpperCase(Locale.ROOT))) {
                 // (*) は上下限を後で決める。決めるのは ALLOCATE (CONTROLLED) か引数である
@@ -1395,7 +1396,7 @@ final class PliSyntax {
             }
             if (level <= 1) {
                 storageClasses.put(name.toUpperCase(Locale.ROOT),
-                        storage == null ? "" : storage);
+                        storage == null || storage.equals("STATIC") ? "" : storage);
                 if (part.stream().anyMatch(t -> t.is("AREA"))) {
                     areaNames.add(name.toUpperCase(Locale.ROOT));
                 }

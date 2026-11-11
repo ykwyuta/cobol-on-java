@@ -208,6 +208,35 @@ public final class PliRuntime {
             return name.substring(name.lastIndexOf('.') + 1);
         }
 
+        /** 今動いている手続きの名。主手続きなら空。STATIC の記憶域を引く鍵に使う。 */
+        private String scope = "";
+
+        /**
+         * STATIC の宣言 (LRM "STATIC attribute")。記憶域は実行単位で 1 つで、手続きに入るたびに
+         * 取り直さず、INITIAL も最初の 1 度だけ効く。以前は AUTOMATIC と同じに扱っており、
+         * 呼ぶたびに INITIAL の値へ戻っていた。
+         */
+        private void declareStatic(List<PliSyntax.Decl> chunk, Env env) {
+            Map<String, Map<String, Var>> statics = STATICS.computeIfAbsent(context.registers(),
+                    ignored -> new HashMap<>());
+            String key = program.name().toUpperCase(Locale.ROOT) + "." + scope + "."
+                    + chunk.get(0).name().toUpperCase(Locale.ROOT);
+            Map<String, Var> saved = statics.get(key);
+            if (saved != null) {
+                env.variables.putAll(saved);
+                return;
+            }
+            Map<String, Var> before = new HashMap<>(env.variables);
+            declare(chunk, env);
+            Map<String, Var> bindings = new HashMap<>();
+            for (Map.Entry<String, Var> entry : env.variables.entrySet()) {
+                if (before.get(entry.getKey()) != entry.getValue()) {
+                    bindings.put(entry.getKey(), entry.getValue());
+                }
+            }
+            statics.put(key, bindings);
+        }
+
         /** 最上位の名から、その宣言の塊。ALLOCATE が宣言をたどるのに使う。 */
         private final Map<String, List<PliSyntax.Decl>> declaredChunks = new HashMap<>();
 
@@ -459,6 +488,10 @@ public final class PliRuntime {
                         placeholder.generations = new Generations(chunk, env);
                         placeholder.unallocated = true;
                         env.put(placeholder);
+                    } else if ("STATIC".equals(chunk.get(0).storage())
+                            && !env.arguments.containsKey(
+                                    chunk.get(0).name().toUpperCase(Locale.ROOT))) {
+                        declareStatic(chunk, env);
                     } else if (chunk.get(0).basedOn() == null && chunk.get(0).defined() == null) {
                         declare(chunk, env);
                     }
@@ -1768,11 +1801,15 @@ public final class PliRuntime {
                 }
             }
             returned = null;
+            String outerScope = scope;
+            scope = outerScope + "/" + procedure.name().toUpperCase(Locale.ROOT);
             try {
                 declareAll(procedure.body(), local);
                 execute(procedure.body(), local);
             } catch (ReturnSignal ignored) {
                 // 内部プロシージャから呼出元へ戻る。
+            } finally {
+                scope = outerScope;
             }
             Object result = returned;
             returned = null;
@@ -3722,6 +3759,13 @@ public final class PliRuntime {
     /**
      * POINTER の値。記憶域の位置に AddressSpace が振った番号で、0 は何も指さない (P-150)。
      */
+    /**
+     * STATIC の記憶域。実行単位 (特殊レジスタの置き場で見分ける。AddressSpace と同じ) ごとに、
+     * 「プログラム名.手続きの道.変数名」から宣言の束縛への表。
+     */
+    private static final Map<Object, Map<String, Map<String, Var>>> STATICS =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
     /** 入口の値 (内部手続きの名)。 */
     private record EntryValue(String name) {
     }
