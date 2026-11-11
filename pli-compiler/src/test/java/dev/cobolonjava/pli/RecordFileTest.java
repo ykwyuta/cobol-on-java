@@ -84,4 +84,45 @@ class RecordFileTest {
         assertEquals(12, written.length);
         assertArrayEquals(new byte[] {0, 12, 0, 0}, java.util.Arrays.copyOf(written, 4));
     }
+
+    @Test
+    @DisplayName("KEYED のファイルは鍵で読み書きし、重なる鍵は ONCODE 52、無い鍵は 51 の KEY 条件になる")
+    void keyedFiles() throws Exception {
+        assertEquals("01FIRST,52,01EDITED,51", run("""
+                DCL KF FILE RECORD KEYED DIRECT UPDATE ENV(F RECSIZE(8) KEYLENGTH(2) KEYLOC(1));
+                DCL REC CHAR(8), CODE FIXED BIN(31) INIT(0);
+                ON KEY(KF) CODE = ONCODE();
+                OPEN FILE(KF) OUTPUT TITLE('KSDS');
+                REC = '01FIRST'; WRITE FILE(KF) FROM(REC) KEYFROM('01');
+                CLOSE FILE(KF);
+                OPEN FILE(KF) UPDATE TITLE('KSDS');
+                READ FILE(KF) INTO(REC) KEY('01');
+                PUT SKIP LIST(REC);
+                WRITE FILE(KF) FROM(REC) KEYFROM('01');
+                PUT SKIP LIST(CODE);
+                REC = '01EDITED'; REWRITE FILE(KF) FROM(REC) KEY('01');
+                READ FILE(KF) INTO(REC) KEY('01');
+                PUT SKIP LIST(REC);
+                DELETE FILE(KF) KEY('01');
+                READ FILE(KF) INTO(REC) KEY('01');
+                PUT SKIP LIST(CODE);
+                CLOSE FILE(KF);
+                """));
+    }
+
+    @Test
+    @DisplayName("LOCATE で取ったバッファは、次の LOCATE と CLOSE の前に 1 レコードずつ書き出される")
+    void locateWritesTheBufferLater() throws Exception {
+        run("""
+                DCL OUT FILE RECORD OUTPUT ENV(F RECSIZE(4));
+                DCL P POINTER;
+                DCL X CHAR(4) BASED(P);
+                OPEN FILE(OUT);
+                LOCATE X FILE(OUT); X = 'AAAA';
+                LOCATE X FILE(OUT); X = 'BBBB';
+                CLOSE FILE(OUT);
+                """);
+        byte[] written = Files.readAllBytes(directory.resolve("OUT"));
+        assertEquals(8, written.length);
+    }
 }

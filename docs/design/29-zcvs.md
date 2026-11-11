@@ -288,6 +288,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | 配列の断面 `A(*,2)`、`BY NAME`、擬似変数 `UNSPEC` | 55 / 68 | 285 / 286 |
 | 数の編集の PICTURE (Zeus `picture.rs` を移した) | 56 / 68 | 291 / 292 |
 | `AREA`、`OFFSET`、`ALLOCATE ... IN`、`POINTER(o,a)`、`OFFSET(p,a)`、`EMPTY()` | 58 / 68 | 297 / 298 |
+| KEYED のファイル (KEY / KEYFROM、REWRITE、DELETE、ON KEY)、`LOCATE` | 60 / 68 | 306 / 307 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -364,6 +365,13 @@ T I R F(n)、浮動の字の並び、浮動小数の PICTURE (仮数 E|K 指数)
 `UNSPEC` で見る資産とは合わない)。`ALLOCATE ... IN(a)` は次の空きから倍語の境界にそろえて
 取り、溢れれば AREA 条件を起こす。解いた部分を再び使うことはまだ持たない。`OFFSET` は
 AREA の頭からの位置である。AREA への代入は使った部分と管理域を写し、`EMPTY()` で空にする。
+
+KEYED のファイルは COBOL と同じ索引付きデータセット (`IndexedDataSet`) に乗せた。鍵は
+`ENV(KEYLENGTH(n) KEYLOC(k))` で決まり、書いていなければ翻訳で断る (VSAM の定義から読む
+道をまだ持たない)。鍵の無いレコードは ONCODE 51、重なる鍵は 52 で KEY 条件を起こす。
+番号は Zeus と同じで、実機と突き合わせていない。`LOCATE` は出力のバッファを取って locator に
+入れ、そのファイルの次の `WRITE`・`LOCATE`・`CLOSE` の前に書き出す。`CLOSE` しないまま
+終わったときのバッファはまだ書き出さない。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

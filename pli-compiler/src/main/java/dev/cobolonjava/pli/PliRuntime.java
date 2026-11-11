@@ -1730,6 +1730,35 @@ public final class PliRuntime {
             String key = ddName.equals(name) ? name : name + "@" + ddName;
             // RECSIZE を書いた FILE は、その形のレコードである。書いていなければ
             // 割り当てた側 (DD) の形に任せる。V 形式の RECSIZE は 4 byte の RDW を含む
+            if (info != null && info.keyed()) {
+                DataSet indexed = context.file(key, ddName,
+                        dev.cobolonjava.runtime.file.RecordFormat.FIXED, info.recordSize(),
+                        List.of(new dev.cobolonjava.runtime.file.IndexedDataSet.Key(
+                                info.keyLocation() - 1, info.keyLength(), false)));
+                if (!(indexed instanceof dev.cobolonjava.runtime.file.IndexedDataSet ksds)) {
+                    throw new PliExecutionException(operation.file() + " was opened before as a"
+                            + " non-KEYED data set");
+                }
+                keyed(operation, info, ksds, env);
+                return;
+            }
+            if (operation.key() != null) {
+                throw new PliExecutionException("KEY / KEYFROM needs a KEYED file: "
+                        + operation.file());
+            }
+            if (operation.action() == PliSyntax.FileAction.LOCATE) {
+                locate(operation, key, env, info, ddName);
+                return;
+            }
+            if (operation.action() == PliSyntax.FileAction.WRITE
+                    || operation.action() == PliSyntax.FileAction.CLOSE) {
+                flushLocated(key, info, ddName);
+            }
+            if (operation.action() == PliSyntax.FileAction.REWRITE
+                    || operation.action() == PliSyntax.FileAction.DELETE) {
+                throw new PliExecutionException(operation.action() + " of a non-KEYED file is"
+                        + " not supported yet: " + operation.file());
+            }
             DataSet dataSet = info != null && info.recordSize() > 0
                     ? context.file(key, ddName,
                             dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
@@ -1782,6 +1811,128 @@ public final class PliRuntime {
                     }
                 }
             }
+        }
+
+        /** LOCATE で取ったまま、まだ書いていないバッファ。ファイルの鍵ごと。 */
+        private final Map<String, DataView> located = new HashMap<>();
+
+        /**
+         * {@code LOCATE}。出力のバッファを取って locator (SET か BASED(P) の P) に入れる。
+         * バッファは、そのファイルの次の WRITE・LOCATE・CLOSE の前に書き出す (LRM "LOCATE
+         * statement")。
+         */
+        private void locate(PliSyntax.FileOperation operation, String key, Env env,
+                            PliSyntax.FileInfo info, String ddName) {
+            flushLocated(key, info, ddName);
+            String name = operation.target().toUpperCase(Locale.ROOT);
+            List<PliSyntax.Decl> chunk = declaredChunks.get(name);
+            String locator = operation.title() instanceof PliSyntax.Reference set ? set.name()
+                    : chunk == null ? null : chunk.get(0).basedOn();
+            if (chunk == null || locator == null) {
+                throw new PliExecutionException("LOCATE " + name + " needs SET or BASED(pointer)");
+            }
+            int length;
+            try {
+                length = chunk.size() > 1 ? StructureMapping.map(chunk).size()
+                        : byteLength(chunk.get(0));
+            } catch (IllegalArgumentException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            DataView buffer = Storage.allocate(Math.max(1, length)).whole();
+            Var pointer = env.require(locator);
+            pointer.write(new PointerValue(address(buffer)), context);
+            rebase(pointer.name);
+            located.put(key, buffer);
+        }
+
+        private void flushLocated(String key, PliSyntax.FileInfo info, String ddName) {
+            DataView buffer = located.remove(key);
+            if (buffer == null) {
+                return;
+            }
+            DataSet dataSet = info != null && info.recordSize() > 0
+                    ? context.file(key, ddName,
+                            dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            dev.cobolonjava.runtime.file.RecordFormat.FIXED, info.recordSize())
+                    : context.file(key, ddName);
+            checkFileStatus(key, dataSet.write(buffer.toByteArray()), false);
+        }
+
+        /**
+         * KEYED のファイル (VSAM KSDS) の操作 (LRM "Keyed access")。鍵はレコードの中の
+         * KEYLOC から KEYLENGTH byte にある。鍵の無いレコードを読もうとすれば ONCODE 51、
+         * 重なる鍵を書こうとすれば 52 で KEY 条件を起こす (番号は Zeus と同じ。実機と
+         * 突き合わせていない)。
+         */
+        private void keyed(PliSyntax.FileOperation operation, PliSyntax.FileInfo info,
+                           dev.cobolonjava.runtime.file.IndexedDataSet dataSet, Env env) {
+            String file = operation.file().toUpperCase(Locale.ROOT);
+            byte[] key = operation.key() == null ? null : keyBytes(operation.key(), info, env);
+            switch (operation.action()) {
+                case OPEN -> {
+                    OpenMode mode = "UPDATE".equals(operation.target()) ? OpenMode.IO
+                            : "OUTPUT".equals(operation.target())
+                                    || (operation.target() == null && info.output())
+                                    ? OpenMode.OUTPUT : OpenMode.INPUT;
+                    checkFileStatus(operation.file(), dataSet.open(mode, false), false);
+                }
+                case CLOSE -> checkFileStatus(operation.file(), dataSet.close(), false);
+                case READ -> {
+                    if (key == null) {
+                        throw new PliExecutionException("sequential READ of a KEYED file is not"
+                                + " supported yet: " + operation.file());
+                    }
+                    Var target = env.require(operation.target());
+                    byte[] record = new byte[info.recordSize()];
+                    String status = dataSet.readKey(0, key, record);
+                    if ("23".equals(status)) {
+                        throw new Condition("KEY", file, 51, null);
+                    }
+                    checkFileStatus(operation.file(), status, false);
+                    copy(dev.cobolonjava.runtime.storage.Storage.wrap(record).whole(),
+                            target.view, context.codePage().space());
+                }
+                case WRITE, REWRITE -> {
+                    Var source = env.require(operation.target());
+                    byte[] record = new byte[info.recordSize()];
+                    java.util.Arrays.fill(record, context.codePage().space());
+                    byte[] data = source.view.toByteArray();
+                    System.arraycopy(data, 0, record, 0, Math.min(data.length, record.length));
+                    if (key != null && !java.util.Arrays.equals(key, java.util.Arrays.copyOfRange(
+                            record, info.keyLocation() - 1,
+                            info.keyLocation() - 1 + info.keyLength()))) {
+                        // 鍵がレコードの中にある (KEYLOC) とき、KEYFROM / KEY はその鍵と同じで
+                        // なければならない。違うときの扱いは確かめていないので断る
+                        throw new PliExecutionException("the KEY of " + operation.action()
+                                + " differs from the key in the record: " + operation.file());
+                    }
+                    boolean write = operation.action() == PliSyntax.FileAction.WRITE;
+                    String status = write ? dataSet.writeKey(record) : dataSet.rewriteKey(record);
+                    if (write && "22".equals(status)) {
+                        throw new Condition("KEY", file, 52, null);
+                    }
+                    if (!write && "23".equals(status)) {
+                        throw new Condition("KEY", file, 51, null);
+                    }
+                    checkFileStatus(operation.file(), status, false);
+                }
+                case DELETE -> {
+                    String status = dataSet.deleteKey(key);
+                    if ("23".equals(status)) {
+                        throw new Condition("KEY", file, 51, null);
+                    }
+                    checkFileStatus(operation.file(), status, false);
+                }
+            }
+        }
+
+        /** KEY / KEYFROM の値を、鍵の長さの文字にする (短ければ空白で埋める)。 */
+        private byte[] keyBytes(PliSyntax.Expr expression, PliSyntax.FileInfo info, Env env) {
+            byte[] encoded = context.codePage().encode(character(value(expression, env)));
+            byte[] key = new byte[info.keyLength()];
+            java.util.Arrays.fill(key, context.codePage().space());
+            System.arraycopy(encoded, 0, key, 0, Math.min(encoded.length, key.length));
+            return key;
         }
 
         private void sql(String source, Env env) {

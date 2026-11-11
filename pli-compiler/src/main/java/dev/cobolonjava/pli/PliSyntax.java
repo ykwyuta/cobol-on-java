@@ -325,7 +325,8 @@ final class PliSyntax {
      *                   RDW を含む (Programming Guide "RECSIZE": for V-format, the maximum length
      *                   including the 4-byte prefix)
      */
-    record FileInfo(boolean output, int recordSize, boolean variable) {
+    record FileInfo(boolean output, int recordSize, boolean variable, boolean keyed,
+                    int keyLength, int keyLocation) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
@@ -564,14 +565,18 @@ final class PliSyntax {
             implements Stmt {
     }
 
-    enum FileAction { OPEN, READ, WRITE, CLOSE }
+    enum FileAction { OPEN, READ, WRITE, CLOSE, REWRITE, DELETE, LOCATE }
 
     /**
      * @param title {@code OPEN ... TITLE(式)} の式。ファイルを結ぶ DD 名を開くときに決める
      *              (LRM "TITLE option")。無ければ {@code null} で、ファイルの名が DD 名になる
      */
-    record FileOperation(FileAction action, String file, String target, Expr title)
-            implements Stmt {
+    record FileOperation(FileAction action, String file, String target, Expr title,
+                         Expr key) implements Stmt {
+
+        FileOperation(FileAction action, String file, String target, Expr title) {
+            this(action, file, target, title, null);
+        }
     }
 
     record Sql(String source) implements Stmt {
@@ -814,6 +819,12 @@ final class PliSyntax {
                 if (reference.structure && !structure) {
                     throw new ParseFailure(reference.token, reference.name
                             + " is not a structure (LIKE requires a structure)");
+                }
+            }
+            for (Token reference : locateReferences) {
+                if (!"BASED".equals(storageClasses.get(reference.text()))) {
+                    throw new ParseFailure(reference, "LOCATE needs a BASED variable: "
+                            + reference.text());
                 }
             }
             for (StorageReference reference : storageReferences) {
@@ -1063,6 +1074,29 @@ final class PliSyntax {
             if (match("OPEN")) {
                 return fileOperation(FileAction.OPEN);
             }
+            if (match("LOCATE")) {
+                // LOCATE 変数 FILE(f) [SET(p)] (LRM "LOCATE statement")。target に変数、
+                // title の位置に SET の POINTER を置く
+                Token variable = expect(Kind.IDENT, "BASED variable after LOCATE");
+                locateReferences.add(variable);
+                expect("FILE");
+                expect("(");
+                String file = qualifiedName();
+                expect(")");
+                Expr set = null;
+                if (match("SET")) {
+                    set = new Reference(parenthesizedExpressionName());
+                }
+                expect(";");
+                return new FileOperation(FileAction.LOCATE, file, variable.text(), set, null);
+            }
+            if (match("REWRITE")) {
+                return fileOperation(FileAction.REWRITE);
+            }
+            if (check("DELETE") && check(1, "FILE")) {
+                next();
+                return fileOperation(FileAction.DELETE);
+            }
             if (match("READ")) {
                 return fileOperation(FileAction.READ);
             }
@@ -1135,6 +1169,16 @@ final class PliSyntax {
         }
 
         private final List<StorageReference> storageReferences = new ArrayList<>();
+
+        /** LOCATE の変数。BASED でなければならない。 */
+        private final List<Token> locateReferences = new ArrayList<>();
+
+        private String parenthesizedExpressionName() {
+            expect("(");
+            String name = expect(Kind.IDENT, "locator name").text();
+            expect(")");
+            return name;
+        }
 
         /**
          * 宣言の属性のうち、翻訳で断るべき組み合わせを確かめる (LRM "Data attributes")。
@@ -1236,9 +1280,27 @@ final class PliSyntax {
                         size = parenthesizedInt(part, i + 1, 0);
                     }
                 }
+                int keyLength = 0;
+                int keyLocation = 1;
+                for (int i = 0; i + 1 < part.size(); i++) {
+                    if (part.get(i).is("KEYLENGTH") || part.get(i).is("KEYLEN")) {
+                        keyLength = parenthesizedInt(part, i + 1, 0);
+                    }
+                    if (part.get(i).is("KEYLOC")) {
+                        keyLocation = parenthesizedInt(part, i + 1, 1);
+                    }
+                }
+                boolean keyed = part.stream().anyMatch(token -> token.is("KEYED"));
+                if (keyed && keyLength == 0) {
+                    // 鍵の長さと位置はデータセット (VSAM の定義) からも決まる。それを読む道を
+                    // まだ持たないので、ENV に書いていなければ断る
+                    throw new ParseFailure(part.get(0), "a KEYED file needs ENV(KEYLENGTH(n))"
+                            + " yet: " + name);
+                }
                 files.put(name.toUpperCase(java.util.Locale.ROOT), new FileInfo(
                         part.stream().anyMatch(token -> token.is("OUTPUT")), size,
-                        part.stream().anyMatch(token -> token.is("V") || token.is("VB"))));
+                        part.stream().anyMatch(token -> token.is("V") || token.is("VB")),
+                        keyed, keyLength, keyLocation));
             }
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
@@ -1932,11 +1994,19 @@ final class PliSyntax {
             String file = qualifiedName();
             expect(")");
             String target = null;
-            if (action == FileAction.READ || action == FileAction.WRITE) {
+            if (action == FileAction.READ || action == FileAction.WRITE
+                    || action == FileAction.REWRITE) {
                 expect(action == FileAction.READ ? "INTO" : "FROM");
                 expect("(");
                 target = qualifiedName();
                 expect(")");
+            }
+            Expr key = null;
+            if (action == FileAction.WRITE ? match("KEYFROM")
+                    : (action != FileAction.OPEN && action != FileAction.CLOSE && match("KEY"))) {
+                key = parenthesizedExpression();
+            } else if (action == FileAction.DELETE) {
+                throw fail(peek(), "DELETE needs KEY(...) yet");
             }
             Expr title = null;
             if (action == FileAction.OPEN) {
@@ -1953,7 +2023,7 @@ final class PliSyntax {
                 }
             }
             expect(";");
-            return new FileOperation(action, file, target, title);
+            return new FileOperation(action, file, target, title, key);
         }
 
         private Expr parenthesizedExpression() {
