@@ -151,5 +151,78 @@ ZCVS に合わせて直すたびに、規格の側を壊していないかを CC
 ## PL/I と HLASM
 
 Zeus は同じ形のスイートを PL/I (ZPVS、68 本) と HLASM (ZHVS、125 本) にも持っている。
-まだ流していない。COBOL と同じ道具の形で流せるはずであり、流せば同じように並ぶと
-見ている。
+同じ道具で流す。`manifest.toml` の `language` で言語を決め、副プログラムは拡張子で
+翻訳系を選ぶ (HLASM の検査が COBOL と PL/I の副プログラムを LINK する本がある)。
+
+```
+java -cp <classpath> dev.cobolonjava.verify.Main zcvs path/to/Zeus/zhvs -o zhvs-report.txt
+java -cp <classpath> dev.cobolonjava.verify.Main zcvs path/to/Zeus/zpvs -o zpvs-report.txt
+```
+
+### HLASM (ZHVS) — 2026-11-11
+
+| 測った時点 | 通った本 | 判定 |
+| --- | --- | --- |
+| 始め | 32 / 125 | — (通っていたのは「断ること」を見る本だけ) |
+| 64 ビットのレジスター、再配置、外部呼び出し、QSAM | 51 / 125 | 171 / 175 |
+| 浮動小数点 (HFP・BFP・DFP) と PFPO | 110 / 125 | 527 / 531 |
+| 前方参照の EQU、節の再開、OPSYN、属性、OS のサービス | 125 / 125 | 577 / 577 |
+
+門は 4 つあった。汎用レジスターが 32 ビットしか無い、番地定数を再配置していない、
+V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。報告の副プログラムが
+この 4 つを全部使うので、動かす本が 1 本も通らなかった。
+
+**自分の診断が狭かったもの** (覚え書き 3)。どれも HLASM Language Reference が許している。
+
+| 自分の診断 | 実際は |
+| --- | --- |
+| `undefined symbol` (EQU) | EQU はあとで定義される記号を使える |
+| `the symbol is defined twice` (CSECT) | 同じ名前の CSECT は節の続きに戻る |
+| `OPSYN is not supported yet` | 付け替えた時点の命令を指す表で足りる |
+| `the scale and exponent modifiers are not supported` | 固定小数点の位取り (`FS2'1.5'`) |
+| `a quoted string is not closed` | `L'=H'7'` の引用符は属性の印である |
+
+**自分が入れていた不具合**。
+
+- モジュールの記憶域を呼ぶたびに作り直していた。作業域の値が呼び出しをまたいで
+  残らなかった。自分のテストは「記憶域は空」を正しいこととして固定していた
+- R15 を RETURN-CODE へ渡していなかった
+- 2 周目の演算項なしの `ORG` が、1 周目の最高位置へ飛んでいた
+- 外の記号の入口を 31 ビットの上の端に置いていたので、`SAM24` のあいだは呼べなかった
+
+**断るべきものを通していたもの**。乗算・除算の奇数のレジスター (ASMA029E)、
+16 ビットに入らない即値、`SRP` の 10 以上の丸めの数字。
+
+浮動小数点は Zeus の `hlasm/float.rs` と `hlasm/execute/floating/` を移した
+(`FloatingPoint`、`FloatingUnit`)。値は整数の比で持ち、ホストの `double` を通さない。
+持たないものは断る (暫定判断 P-196)。
+
+### PL/I (ZPVS) — 2026-11-11
+
+| 測った時点 | 通った本 | 判定 |
+| --- | --- | --- |
+| 始め | 16 / 68 | 16 / 23 (通っていたのは「断ること」を見る本だけ) |
+| 報告の副手続きが動くようにした | 19 / 68 | 29 / 41 |
+
+門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
+以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、
+`LEAVE` / `ITERATE`、`WRITE FILE ... FROM` を入れた。
+
+門の奥に並んだもの (多い順)。
+
+| 理由 | 本 |
+| --- | --- |
+| 組み込み関数が無い | 7 |
+| `ALLOCATE` (CONTROLLED / BASED の記憶域) | 4 |
+| 配列の上下限が式 | 4 |
+| `DEFINE` (型の定義) | 3 |
+| 前処理の文 (`%`) | 3 |
+| `OPEN ... TITLE` | 3 |
+| `ON` の条件 (CONVERSION、ZERODIVIDE、KEY、CONDITION) | 5 |
+| 断るべきものを通している (`LIKE`、精度の範囲、GENERIC ほか) | 7 |
+| `SELECT`、`LOCATE`、`GET`、`FETCH`、編集の PICTURE、`**` ほか | 各 1 |
+
+いまの PL/I は Bank of Z の資産が使う部分だけを持つ小さな解釈系であり、ZPVS が
+測る言語の広さ (入口変数、GENERIC、CONTROLLED、条件、前処理、ストリーム入出力) には
+届いていない。この広さは継ぎ足しでは埋まらない。Zeus の `zeus-pli` (字句・構文・
+意味・中間表現・実行の 5 段、約 2 万行) を移すのが次の増分である (暫定判断 P-197)。
