@@ -419,6 +419,17 @@ final class PliSyntax {
                 throw fail(peek(), "a labeled PROCEDURE was not found");
             }
             ProcedureBuilder main = parseProcedure();
+            // LIKE と OFFSET が指す名は、あとに書かれていてもよい。全部読んでから確かめる
+            for (NamedReference reference : namedReferences) {
+                Boolean structure = declaredNames.get(reference.name.toUpperCase(Locale.ROOT));
+                if (structure == null) {
+                    throw new ParseFailure(reference.token, reference.name + " is not declared");
+                }
+                if (reference.structure && !structure) {
+                    throw new ParseFailure(reference.token, reference.name
+                            + " is not a structure (LIKE requires a structure)");
+                }
+            }
             return new ParseResult(new Program(main.name, main.parameters,
                     List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
                     Map.copyOf(files), main.noExecOps), List.of());
@@ -602,7 +613,56 @@ final class PliSyntax {
             return new Declare(parseDeclarations(declaration));
         }
 
+        /** 宣言した名と、それが構造 (下位の項目を持つ) か。 */
+        private final Map<String, Boolean> declaredNames = new java.util.HashMap<>();
+
+        /** LIKE や OFFSET(領域) が指す名。読み終えてから確かめる。 */
+        private record NamedReference(String name, Token token, boolean structure) {
+        }
+
+        private final List<NamedReference> namedReferences = new ArrayList<>();
+
+        /**
+         * 宣言の属性のうち、翻訳で断るべき組み合わせを確かめる (LRM "Data attributes")。
+         * 以前は知らない属性を読み飛ばしていたので、範囲外の精度や文字の COMPLEX を通していた。
+         */
+        private void checkAttributes(List<Token> part, TypeInfo info) {
+            for (int i = 0; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.is("LIKE") && i + 1 < part.size()) {
+                    namedReferences.add(new NamedReference(part.get(i + 1).text(), part.get(i + 1),
+                            true));
+                }
+                if (token.is("OFFSET") && i + 2 < part.size() && part.get(i + 1).is("(")) {
+                    namedReferences.add(new NamedReference(part.get(i + 2).text(), part.get(i + 2),
+                            false));
+                }
+                if (token.is("COMPLEX") && info.type != Type.BINARY && info.type != Type.DECIMAL) {
+                    throw new ParseFailure(token, "COMPLEX requires an arithmetic type");
+                }
+            }
+            if (info.type == Type.DECIMAL && (info.precision < 1 || info.precision > 31)) {
+                throw new ParseFailure(part.get(0), "FIXED DECIMAL precision " + info.precision
+                        + " is out of range (1 to 31)");
+            }
+            if (info.type == Type.BINARY && (info.precision < 1 || info.precision > 63)) {
+                throw new ParseFailure(part.get(0), "FIXED BINARY precision " + info.precision
+                        + " is out of range (1 to 63)");
+            }
+        }
+
         private List<Decl> parseDeclarations(List<Token> declaration) {
+            List<Decl> decls = parseDeclarationList(declaration);
+            for (int i = 0; i < decls.size(); i++) {
+                boolean structure = decls.get(i).level() > 0 && i + 1 < decls.size()
+                        && decls.get(i + 1).level() > decls.get(i).level();
+                declaredNames.merge(decls.get(i).name().toUpperCase(Locale.ROOT), structure,
+                        Boolean::logicalOr);
+            }
+            return decls;
+        }
+
+        private List<Decl> parseDeclarationList(List<Token> declaration) {
             List<List<Token>> parts = split(declaration, ",");
             List<Decl> out = new ArrayList<>();
             Type inheritedType = Type.GROUP;
@@ -653,6 +713,7 @@ final class PliSyntax {
 
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
+            checkAttributes(part, info);
             if (info.type == Type.FILE) {
                 int size = 0;
                 for (int i = 0; i + 1 < part.size(); i++) {
