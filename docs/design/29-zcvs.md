@@ -333,6 +333,15 @@ LIKE を使うのは負の検査 (PE104N、PE105N) と、それが「名があ�
 自分の添字に置いた基の要素を共有する。配列の単純な定義、構造の `DEFINED`、属性の違う
 重ねは記憶域の並びの規則を確かめていないので、実行で断る。
 
+同じ形 (知らない属性を黙って読み飛ばす) を宣言の型でも探した。型の属性を見つけられ
+ないと、<b>前の項目の型を受け継いでいた</b>。`DCL F FLOAT DEC(6)` は構造になり、
+`DCL Z COMPLEX FIXED DEC(7,2)` は実数になり、`DCL A BIN FIXED(31)` (語順が逆) と
+`DCL D FIXED(5)` (底を省いた) も前の項目の型になっていた。名前付きの定数 `VALUE(10)` は
+読み飛ばされて 0 だった。いまは語順と省略の既定 (FIXED だけなら DECIMAL、BIN / DEC だけなら
+FLOAT) を読み、`VALUE` は INIT と同じに値を持つ。FLOAT、COMPLEX、AREA、OFFSET、HANDLE、
+WIDECHAR、GRAPHIC、LABEL などまだ持たない型の宣言は、正しい PL/I なので翻訳では通し、
+実行でその名を使ったときに止める。数は変わらない (51 / 68)。
+
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、
 `LEAVE` / `ITERATE`、`WRITE FILE ... FROM` を入れた。

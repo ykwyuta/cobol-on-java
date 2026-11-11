@@ -710,6 +710,18 @@ public final class PliRuntime {
         }
 
         private void declare(List<PliSyntax.Decl> declarations, Env env) {
+            String unsupported = declarations.stream().map(PliSyntax.Decl::unsupported)
+                    .filter(java.util.Objects::nonNull).findFirst().orElse(null);
+            if (unsupported != null) {
+                // まだ持たない型の宣言。名だけを置き、使ったら止める
+                for (PliSyntax.Decl decl : declarations) {
+                    Var placeholder = new Var(decl.name(), decl.type(), decl.precision(),
+                            decl.scale(), Storage.allocate(0).whole());
+                    placeholder.unsupported = unsupported;
+                    env.put(placeholder);
+                }
+                return;
+            }
             for (int i = 0; i < declarations.size();) {
                 PliSyntax.Decl declaration = declarations.get(i);
                 if (declaration.level() > 0 && declaration.type() == PliSyntax.Type.GROUP) {
@@ -2539,6 +2551,10 @@ public final class PliRuntime {
         Var require(String name) {
             Var value = find(name);
             if (value == null) throw new PliExecutionException("undeclared PL/I name: " + name);
+            if (value.unsupported != null) {
+                throw new PliExecutionException(value.unsupported + " is not supported yet: "
+                        + value.name);
+            }
             if (value.unallocated) {
                 throw new PliExecutionException("CONTROLLED variable " + value.name
                         + " is not allocated");
@@ -2623,6 +2639,8 @@ public final class PliRuntime {
         final List<Var> elements = new ArrayList<>();
         /** CONTROLLED なら、その世代の積み重ね。 */
         Generations generations;
+        /** まだ持たない型の属性で宣言した名なら、その属性。参照すると止まる。 */
+        String unsupported;
         /** CONTROLLED をまだ ALLOCATE していない印。参照すると止まる。 */
         boolean unallocated;
 

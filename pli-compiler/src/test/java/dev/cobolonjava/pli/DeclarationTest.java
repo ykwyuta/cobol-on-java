@@ -322,4 +322,37 @@ class DeclarationTest {
         while (cause.getCause() != null) cause = cause.getCause();
         assertTrue(String.valueOf(cause.getMessage()).contains("DEFINED"), cause::toString);
     }
+
+    @Test
+    @DisplayName("BIN FIXED(31) の語順と FIXED だけの宣言は型を取り違えない。VALUE は定数の値を持つ")
+    void attributeOrderAndNamedConstants() throws Exception {
+        assertEquals("4,3,10", String.join(",", main("""
+                DCL 1 S, 2 C CHAR(1);
+                DCL A BIN FIXED(31);
+                DCL D FIXED(5);
+                DCL K FIXED BIN(31) VALUE(10);
+                PUT SKIP LIST(STG(A));
+                PUT SKIP LIST(STG(D));
+                PUT SKIP LIST(K);
+                """).strip().lines().map(String::strip).toList()));
+    }
+
+    @Test
+    @DisplayName("FLOAT や COMPLEX の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
+    void unsupportedTypesStopWhenUsed() throws Exception {
+        assertEquals("OK", main("""
+                DCL F FLOAT DEC(6);
+                DCL Z COMPLEX FIXED DEC(7,2);
+                PUT SKIP LIST('OK');
+                """).strip());
+        Exception failure = assertThrows(Exception.class, () -> main("""
+                DCL 1 S, 2 C CHAR(1);
+                DCL F FLOAT DEC(6);
+                F = 1;
+                """));
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        assertTrue(String.valueOf(cause.getMessage()).contains("FLOAT is not supported yet"),
+                cause::toString);
+    }
 }

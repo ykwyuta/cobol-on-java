@@ -358,13 +358,13 @@ final class PliSyntax {
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
                 List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
-                String storage, Defined defined) {
+                String storage, Defined defined, String unsupported) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
-                    dimensions, initialItems, false, null, null);
+                    dimensions, initialItems, false, null, null, null);
         }
 
         boolean controlled() {
@@ -374,7 +374,8 @@ final class PliSyntax {
         /** 次元を ALLOCATE に書いたものへ置き換えた宣言。 */
         Decl withDimensions(List<Bound> bounds) {
             return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
-                    varying, List.copyOf(bounds), initialItems, unsigned, storage, defined);
+                    varying, List.copyOf(bounds), initialItems, unsigned, storage, defined,
+                    unsupported);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -1236,7 +1237,7 @@ final class PliSyntax {
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
                     dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage,
-                    defined(part));
+                    defined(part), unsupportedAttribute(part));
         }
 
         /**
@@ -1374,6 +1375,22 @@ final class PliSyntax {
                     }
                     return picture(tokens.get(i + 1));
                 }
+                if ((tokens.get(i).is("BIN") || tokens.get(i).is("BINARY")
+                        || tokens.get(i).is("DEC") || tokens.get(i).is("DECIMAL"))
+                        && tokens.subList(i + 1, tokens.size()).stream()
+                                .anyMatch(t -> t.is("FIXED"))) {
+                    // BIN FIXED(31) の語順。精度は FIXED の後ろにも BIN の後ろにも書ける。
+                    // 以前は FIXED の直後に BIN が無いと型を見つけられず、前の項目の型を受け継いでいた
+                    boolean binary = tokens.get(i).is("BIN") || tokens.get(i).is("BINARY");
+                    int fixedAt = i + 1;
+                    while (!tokens.get(fixedAt).is("FIXED")) fixedAt++;
+                    int at = i + 1 < tokens.size() && tokens.get(i + 1).is("(") ? i + 1 : fixedAt + 1;
+                    return binary
+                            ? new TypeInfo(Type.BINARY, parenthesizedInt(tokens, at, 15),
+                                    parenthesizedSecondInt(tokens, at, 0))
+                            : new TypeInfo(Type.DECIMAL, parenthesizedInt(tokens, at, 5),
+                                    parenthesizedSecondInt(tokens, at, 0));
+                }
                 if (tokens.get(i).is("FIXED")) {
                     int j = i + 1;
                     if (j < tokens.size() && (tokens.get(j).is("BIN")
@@ -1390,18 +1407,74 @@ final class PliSyntax {
                         int scale = parenthesizedSecondInt(tokens, j + 1, 0);
                         return new TypeInfo(Type.DECIMAL, precision, scale);
                     }
+                    boolean baseLater = tokens.subList(j, tokens.size()).stream()
+                            .anyMatch(t -> t.is("BIN") || t.is("BINARY") || t.is("DEC")
+                                    || t.is("DECIMAL"));
+                    if (!baseLater) {
+                        // FIXED だけなら DECIMAL である (LRM "Default attributes")。
+                        // 以前は前の項目の型を受け継いでいた
+                        return new TypeInfo(Type.DECIMAL, parenthesizedInt(tokens, j, 5),
+                                parenthesizedSecondInt(tokens, j, 0));
+                    }
+                    if (j < tokens.size() && tokens.get(j).is("(")) {
+                        // FIXED(p,q) BIN の語順。精度は FIXED の後ろにある
+                        int close = j;
+                        while (!tokens.get(close).is(")")) close++;
+                        if (close + 1 < tokens.size() && (tokens.get(close + 1).is("BIN")
+                                || tokens.get(close + 1).is("BINARY"))) {
+                            return new TypeInfo(Type.BINARY, parenthesizedInt(tokens, j, 15),
+                                    parenthesizedSecondInt(tokens, j, 0));
+                        }
+                        if (close + 1 < tokens.size() && (tokens.get(close + 1).is("DEC")
+                                || tokens.get(close + 1).is("DECIMAL"))) {
+                            return new TypeInfo(Type.DECIMAL, parenthesizedInt(tokens, j, 5),
+                                    parenthesizedSecondInt(tokens, j, 0));
+                        }
+                    }
                 }
             }
             return new TypeInfo(inherited, inheritedPrecision, inheritedScale);
         }
 
+        /** まだ持たない型の属性。宣言は翻訳で通し、実行でその名を使うと止まる。 */
+        private static final Set<String> UNSUPPORTED_TYPES = Set.of("FLOAT", "COMPLEX", "CPLX",
+                "AREA", "OFFSET", "HANDLE", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
+                "TASK", "EVENT", "ORDINAL");
+
         /**
-         * {@code INITIAL(...)} の中身を式として読む (LRM "INITIAL attribute")。
+         * 宣言に書かれた、まだ持たない型の属性の名。無ければ null。
          *
-         * <p>以前は括弧の直後の字句 1 つだけを見ていたので、{@code INIT(-12345)} は負号で止まって
-         * 初期値が無いことになり、黙って 0 になっていた。{@code INIT(ADDR(S))} も同じ理由で
-         * NULL のままだった。z/OS probe の PLISTRM で見つかった。
+         * <p>以前は知らない型の属性を読み飛ばし、前の項目の型を受け継いでいた。
+         * {@code DCL F FLOAT DEC(6)} が構造になり、{@code DCL Z COMPLEX FIXED DEC(7,2)} が実数に
+         * なっていた。宣言そのものは正しい PL/I なので翻訳では断らず、使ったときに止める。
+         * {@code BIN} / {@code DEC} だけで {@code FIXED} の無いものは FLOAT である (LRM
+         * "Default attributes")。
          */
+        private static String unsupportedAttribute(List<Token> tokens) {
+            int depth = 0;
+            boolean base = false;
+            boolean fixed = false;
+            boolean picture = false;
+            for (int i = 0; i < tokens.size(); i++) {
+                Token t = tokens.get(i);
+                if (t.is("(")) depth++;
+                else if (t.is(")")) depth--;
+                else if (depth == 0 && t.kind() == Kind.IDENT) {
+                    if (t.is("DEFINED") || t.is("DEF") || t.is("LIKE") || t.is("TYPE")) {
+                        i++; // 次は名であり、属性ではない
+                        continue;
+                    }
+                    if (UNSUPPORTED_TYPES.contains(t.text())) {
+                        return t.text();
+                    }
+                    base |= t.is("BIN") || t.is("BINARY") || t.is("DEC") || t.is("DECIMAL");
+                    fixed |= t.is("FIXED");
+                    picture |= t.is("PIC") || t.is("PICTURE");
+                }
+            }
+            return base && !fixed && !picture ? "FLOAT" : null;
+        }
+
         /** DEFINED の基と添字と POSITION を読む。iSUB ({@code 1SUB}) は ISUB_1 の名にする。 */
         private Defined defined(List<Token> tokens) {
             int at = -1;
@@ -1470,9 +1543,20 @@ final class PliSyntax {
             return new Defined(name, subscripts, position);
         }
 
+        /**
+         * {@code INITIAL(...)} の中身を式として読む (LRM "INITIAL attribute")。
+         *
+         * <p>以前は括弧の直後の字句 1 つだけを見ていたので、{@code INIT(-12345)} は負号で止まって
+         * 初期値が無いことになり、黙って 0 になっていた。{@code INIT(ADDR(S))} も同じ理由で
+         * NULL のままだった。z/OS probe の PLISTRM で見つかった。
+         */
         private Expr initial(List<Token> tokens) {
             for (int i = 0; i + 1 < tokens.size(); i++) {
-                if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL"))
+                // VALUE は名前付きの定数である (LRM "VALUE attribute")。値の読みは INIT と同じに
+                // する。以前は読み飛ばしていたので、定数が 0 や空白になっていた。定数へ代入しても
+                // 断らない (翻訳の検査をまだ持たない)
+                if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL")
+                        || tokens.get(i).is("VALUE"))
                         && tokens.get(i + 1).is("(")) {
                     int close = findClosing(tokens, i + 1);
                     List<Token> inner = new ArrayList<>(tokens.subList(i + 2, close));
