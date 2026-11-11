@@ -333,8 +333,15 @@ final class PliSyntax {
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
             Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group, OnCondition, Revert, Signal,
-            Prefixed, Select, Allocate, Free {
+            Prefixed, Select, Allocate, Free, AssignByName {
     }
+
+    /** {@code 構造 = 構造, BY NAME;} (LRM "Structure assignment BY NAME")。 */
+    record AssignByName(String target, String source) implements Stmt {
+    }
+
+    /** 配列の断面の添字 {@code *} (LRM "Cross sections of arrays")。 */
+    enum Asterisk { STAR }
 
     record Declare(List<Decl> declarations) implements Stmt {
     }
@@ -1078,6 +1085,15 @@ final class PliSyntax {
                 List<Expr> subscripts = check("(") ? arguments() : List.of();
                 if (match("=")) {
                     Expr value = expression();
+                    if (match(",")) {
+                        expect("BY");
+                        expect("NAME");
+                        expect(";");
+                        if (!subscripts.isEmpty() || !(value instanceof Reference source)) {
+                            throw fail(previous(), "BY NAME needs structure names on both sides");
+                        }
+                        return new AssignByName(target, source.name());
+                    }
                     expect(";");
                     return new Assign(target, subscripts, value);
                 }
@@ -1994,6 +2010,11 @@ final class PliSyntax {
                     return new Function(name, arguments());
                 }
                 return new Reference(name);
+            }
+            if (check("*") && (check(1, ",") || check(1, ")"))) {
+                // 添字の * は配列の断面である。添字の外の * は乗算なので、ここへは来ない
+                next();
+                return new Literal(Asterisk.STAR);
             }
             throw fail(peek(), "expression expected, found " + peek().text());
         }

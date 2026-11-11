@@ -285,6 +285,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `DEFINE STRUCTURE` / `DEFINE ALIAS` の `TYPE`、`LIKE` の展開 | 50 / 68 | 266 / 272 |
 | `DEFINED` (文字の重ねと iSUB) | 51 / 68 | 271 / 272 |
 | `REFER`、`CURRENTSIZE` | 54 / 68 | 278 / 279 |
+| 配列の断面 `A(*,2)`、`BY NAME`、擬似変数 `UNSPEC` | 55 / 68 | 285 / 286 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。

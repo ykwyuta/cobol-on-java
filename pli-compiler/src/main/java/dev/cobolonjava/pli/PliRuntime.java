@@ -644,6 +644,8 @@ public final class PliRuntime {
                 allocate.items().forEach(item -> allocate(item, env));
             } else if (statement instanceof PliSyntax.Free free) {
                 free.names().forEach(name -> free(name, env));
+            } else if (statement instanceof PliSyntax.AssignByName byName) {
+                assignByName(env.require(byName.target()), env.require(byName.source()));
             } else if (statement instanceof PliSyntax.Select select) {
                 Object subject = select.subject() == null ? null : value(select.subject(), env);
                 for (PliSyntax.When when : select.whens()) {
@@ -1274,6 +1276,11 @@ public final class PliRuntime {
             }
             if (!assignment.subscripts().isEmpty()) {
                 Var array = arrayNamed(assignment.target(), env);
+                if (array != null && assignment.subscripts().stream().anyMatch(
+                        s -> s instanceof PliSyntax.Literal l && l.value() == PliSyntax.Asterisk.STAR)) {
+                    crossSection(array, assignment, env);
+                    return;
+                }
                 if (array != null) {
                     element(array, assignment.subscripts(), env)
                             .write(value(assignment.value(), env), context);
@@ -1281,6 +1288,10 @@ public final class PliRuntime {
                 }
                 if (assignment.target().equals("SUBSTR") && !env.contains("SUBSTR")) {
                     substrPseudovariable(assignment, env);
+                    return;
+                }
+                if (assignment.target().equals("UNSPEC") && !env.contains("UNSPEC")) {
+                    unspecPseudovariable(assignment, env);
                     return;
                 }
                 throw new PliExecutionException(assignment.target() + " is not an array");
@@ -2491,6 +2502,105 @@ public final class PliRuntime {
                 index = index * bound.extent() + (subscript - bound.low());
             }
             return array.elements.get(index);
+        }
+
+        /**
+         * 配列の断面への代入 {@code A(*,2) = 値} (LRM "Cross sections of arrays")。* の次元は
+         * すべての添字を、そうでない次元は書いた添字だけを取る。値はスカラーだけを持つ。
+         */
+        private void crossSection(Var array, PliSyntax.Assign assignment, Env env) {
+            List<PliSyntax.Expr> subscripts = assignment.subscripts();
+            if (subscripts.size() != array.dimensions.size()) {
+                throw new PliExecutionException(array.name + " has " + array.dimensions.size()
+                        + " dimension(s), but " + subscripts.size() + " subscript(s) were given");
+            }
+            if (containsArray(assignment.value(), env)) {
+                throw new PliExecutionException("assigning an array expression to a cross"
+                        + " section is not supported yet: " + array.name);
+            }
+            Integer[] fixed = new Integer[subscripts.size()];
+            for (int d = 0; d < subscripts.size(); d++) {
+                if (!(subscripts.get(d) instanceof PliSyntax.Literal literal
+                        && literal.value() == PliSyntax.Asterisk.STAR)) {
+                    fixed[d] = number(value(subscripts.get(d), env)).intValue();
+                    PliSyntax.Bound bound = array.dimensions.get(d);
+                    if (fixed[d] < bound.low() || fixed[d] > bound.high()) {
+                        throw new PliExecutionException("SUBSCRIPTRANGE: subscript " + fixed[d]
+                                + " of " + array.name);
+                    }
+                }
+            }
+            Object value = value(assignment.value(), env);
+            int rank = array.dimensions.size();
+            int[] index = new int[rank];
+            for (int d = 0; d < rank; d++) index[d] = array.dimensions.get(d).low();
+            for (Var element : array.elements) {
+                boolean selected = true;
+                for (int d = 0; d < rank; d++) {
+                    if (fixed[d] != null && fixed[d] != index[d]) selected = false;
+                }
+                if (selected) {
+                    element.write(value, context);
+                }
+                for (int d = rank - 1; d >= 0; d--) {
+                    if (++index[d] <= array.dimensions.get(d).high()) break;
+                    index[d] = array.dimensions.get(d).low();
+                }
+            }
+        }
+
+        /**
+         * 擬似変数 {@code UNSPEC(x) = ビット列} (LRM "UNSPEC pseudovariable")。値を x の記憶域の
+         * ビットの長さに右を 0 で埋めるか切って、記憶域へそのまま書く。
+         */
+        private void unspecPseudovariable(PliSyntax.Assign assignment, Env env) {
+            if (assignment.subscripts().size() != 1) {
+                throw new PliExecutionException("UNSPEC pseudovariable needs one argument");
+            }
+            Var target = dataReference(assignment.subscripts().get(0), env, "UNSPEC");
+            if (target.bitShift != 0 || target.dimensions != null) {
+                throw new PliExecutionException("UNSPEC pseudovariable on an unaligned bit or an"
+                        + " array is not supported yet: " + target.name);
+            }
+            String bits = bitText(value(assignment.value(), env));
+            int length = target.view.length() * 8;
+            bits = bits.length() >= length ? bits.substring(0, length)
+                    : bits + "0".repeat(length - bits.length());
+            byte[] bytes = new byte[target.view.length()];
+            for (int i = 0; i < bytes.length; i++) {
+                bytes[i] = (byte) Integer.parseInt(bits.substring(i * 8, i * 8 + 8), 2);
+            }
+            target.view.setBytes(bytes);
+        }
+
+        /**
+         * {@code Y = X, BY NAME;}。同じ名の要素どうしを、名の要素がともに構造なら入れ子で
+         * 代入する (LRM "BY NAME option")。名の合わない要素は変えない。
+         */
+        private void assignByName(Var target, Var source) {
+            if (target.type != PliSyntax.Type.GROUP || source.type != PliSyntax.Type.GROUP) {
+                throw new PliExecutionException("BY NAME needs structures: " + target.name
+                        + ", " + source.name);
+            }
+            for (Var member : target.members) {
+                for (Var from : source.members) {
+                    if (!from.name.equals(member.name) || member.name.equals("*")) {
+                        continue;
+                    }
+                    boolean group = member.type == PliSyntax.Type.GROUP;
+                    if (group != (from.type == PliSyntax.Type.GROUP)) {
+                        continue;
+                    }
+                    if (group) {
+                        assignByName(member, from);
+                    } else if (member.dimensions != null || from.dimensions != null) {
+                        throw new PliExecutionException("BY NAME with array members is not"
+                                + " supported yet: " + member.name);
+                    } else {
+                        member.write(from.read(context), context);
+                    }
+                }
+            }
         }
 
         /**
