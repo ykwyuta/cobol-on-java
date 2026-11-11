@@ -411,6 +411,29 @@ public record FileDescription(String name, String ddName, Organization organizat
             String recording = recordingOf(entry);
             if (recording != null) {
                 format = recordingOf(recording, format, one.origin(), diagnostics);
+                // S はブロックをまたいで割るので、ブロックの大きさを字数で書かなければ
+                // ならない。U は 1 ブロックが 1 レコードなので、ブロックの大きさは書けない
+                // (Enterprise COBOL 言語解説書 "RECORDING MODE clause")
+                boolean blocked = false;
+                boolean inCharacters = false;
+                for (CobolParser.FileDescriptionClauseContext clause
+                        : entry.fileDescriptionClause()) {
+                    if (clause.BLOCK() != null) {
+                        blocked = true;
+                        inCharacters = clause.RECORDS() == null;
+                    }
+                }
+                if (recording.equalsIgnoreCase("S") && !(blocked && inCharacters)) {
+                    diagnostics.add(new Diagnostic(one.origin(),
+                            "RECORDING MODE S requires BLOCK CONTAINS in characters: "
+                                    + one.name()));
+                    continue;
+                }
+                if (recording.equalsIgnoreCase("U") && blocked) {
+                    diagnostics.add(new Diagnostic(one.origin(),
+                            "RECORDING MODE U cannot specify BLOCK CONTAINS: " + one.name()));
+                    continue;
+                }
             }
             Varying varying = varyingOf(entry, length, resolver, diagnostics);
             if (varying != null) {

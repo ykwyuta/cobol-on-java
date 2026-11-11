@@ -270,11 +270,27 @@ class BatchAndInspectTest {
                 "FILE SECTION.",
                 "FD  FILE-A.",
                 "01  REC-A PIC X(8).",
-                "FD  FILE-B RECORDING MODE S.",
+                "FD  FILE-B RECORDING MODE S BLOCK CONTAINS 16 CHARACTERS.",
                 "01  REC-B PIC X(8).",
                 "PROCEDURE DIVISION.",
                 "    MOVE 'SHARED01' TO REC-A.",
                 "    DISPLAY '[' REC-B ']'.",
                 "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("RECORDING MODE S は BLOCK CONTAINS が要り、U には書けない")
+    void checksBlockingAgainstTheRecordingMode() {
+        CobolCompiler.Result spanned =
+                compile(withFile(null, "RECORDING MODE S.", "PIC X(20)."));
+        assertFalse(spanned.succeeded());
+        assertTrue(spanned.diagnostics().toString().contains("requires BLOCK CONTAINS"),
+                () -> spanned.diagnostics().toString());
+
+        CobolCompiler.Result undefined = compile(withFile(null,
+                "RECORDING MODE U BLOCK CONTAINS 80 CHARACTERS.", "PIC X(80)."));
+        assertFalse(undefined.succeeded());
+        assertTrue(undefined.diagnostics().toString().contains("cannot specify BLOCK"),
+                () -> undefined.diagnostics().toString());
     }
 }
