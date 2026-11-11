@@ -1409,6 +1409,26 @@ public final class PliRuntime {
                 putString(put, env);
                 return;
             }
+            if (put.file() != null) {
+                UserPrintFile file = printFiles.get(put.file().toUpperCase(Locale.ROOT));
+                if (file == null) {
+                    throw new PliExecutionException("PUT FILE(" + put.file() + ") needs an open"
+                            + " PRINT file; other stream files are not supported yet");
+                }
+                if (put.page()) file.page();
+                if (put.line() != null) file.line(number(value(put.line(), env)).intValue());
+                if (put.skip() > 0) file.skip(put.skip());
+                if (put.edit()) {
+                    edit(put, env, file::text);
+                } else {
+                    for (PliSyntax.Expr expression : put.values()) {
+                        for (Object item : items(expression, env)) {
+                            file.text(" " + listed(item));
+                        }
+                    }
+                }
+                return;
+            }
             // PAGE、SKIP、値の順に効く
             if (put.page()) {
                 sysprint.page();
@@ -1909,6 +1929,10 @@ public final class PliRuntime {
             String key = ddName.equals(name) ? name : name + "@" + ddName;
             // RECSIZE を書いた FILE は、その形のレコードである。書いていなければ
             // 割り当てた側 (DD) の形に任せる。V 形式の RECSIZE は 4 byte の RDW を含む
+            if (info != null && info.print()) {
+                printFile(operation, info, key, ddName, env);
+                return;
+            }
             if (info != null && info.keyed()) {
                 DataSet indexed = context.file(key, ddName,
                         dev.cobolonjava.runtime.file.RecordFormat.FIXED, info.recordSize(),
@@ -1990,6 +2014,61 @@ public final class PliRuntime {
                     }
                 }
             }
+        }
+
+        /** 開いている PRINT ファイル。ファイル名ごと。 */
+        private final Map<String, UserPrintFile> printFiles = new HashMap<>();
+
+        /** PRINT ファイルの OPEN と CLOSE。LINESIZE と PAGESIZE の既定は 120 と 60。 */
+        private void printFile(PliSyntax.FileOperation operation, PliSyntax.FileInfo info,
+                               String key, String ddName, Env env) {
+            String name = operation.file().toUpperCase(Locale.ROOT);
+            switch (operation.action()) {
+                case OPEN -> {
+                    int lineSize = operation.lineSize() != null
+                            ? number(value(operation.lineSize(), env)).intValue()
+                            : info.recordSize() > 1 ? info.recordSize() - 1 : PrintFile.LINESIZE;
+                    int pageSize = operation.pageSize() != null
+                            ? number(value(operation.pageSize(), env)).intValue()
+                            : PrintFile.PAGESIZE;
+                    int recordLength = info.recordSize() > 0 ? info.recordSize() : lineSize + 1;
+                    if (lineSize + 1 > recordLength) {
+                        throw new PliExecutionException("LINESIZE(" + lineSize + ") does not fit"
+                                + " RECSIZE(" + recordLength + ") of " + name);
+                    }
+                    DataSet dataSet = context.file(key, ddName,
+                            dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            dev.cobolonjava.runtime.file.RecordFormat.FIXED, recordLength);
+                    checkFileStatus(name, dataSet.open(OpenMode.OUTPUT, false), false);
+                    printFiles.put(name, new UserPrintFile(dataSet, context.codePage(), lineSize,
+                            pageSize, recordLength, () -> endPage(name, env)));
+                }
+                case CLOSE -> {
+                    UserPrintFile file = printFiles.remove(name);
+                    if (file != null) {
+                        file.close();
+                    }
+                    checkFileStatus(name, context.file(key, ddName).close(), false);
+                }
+                default -> throw new PliExecutionException(operation.action()
+                        + " of the PRINT file " + name + " is not supported");
+            }
+        }
+
+        /** ENDPAGE の on-unit があれば動かして真を返す。PUT はそのあと続く。 */
+        private boolean endPage(String file, Env env) {
+            Env.Handler handler = env.handler(conditionKey("ENDPAGE", file));
+            if (handler == null || handler.system()) {
+                return false;
+            }
+            int savedCode = onCode;
+            onCode = 90;
+            try {
+                execute(handler.statements(), new Env(handler.established(), context));
+            } finally {
+                onCode = savedCode;
+            }
+            return true;
         }
 
         /** LOCATE で取ったまま、まだ書いていないバッファ。ファイルの鍵ごと。 */
@@ -2395,6 +2474,17 @@ public final class PliRuntime {
                 }
                 case "EMPTY" -> {
                     return EMPTY_AREA;
+                }
+                case "LINENO", "PAGENO" -> {
+                    String file = function.arguments().get(0) instanceof PliSyntax.Reference r
+                            ? r.name().toUpperCase(Locale.ROOT) : "";
+                    UserPrintFile print = printFiles.get(file);
+                    if (print == null) {
+                        throw new PliExecutionException(name + " needs an open PRINT file other"
+                                + " than SYSPRINT yet: " + file);
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(name.equals("LINENO")
+                            ? print.lineNumber() : print.pageNumber()), 31, 0);
                 }
                 case "ALLOCATION", "ALLOCN" -> {
                     // 世代の数 (LRM "ALLOCATION")。CONTROLLED でなければ誤りである

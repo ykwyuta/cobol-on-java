@@ -337,7 +337,7 @@ final class PliSyntax {
      *                   including the 4-byte prefix)
      */
     record FileInfo(boolean output, int recordSize, boolean variable, boolean keyed,
-                    int keyLength, int keyLocation) {
+                    int keyLength, int keyLocation, boolean print) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
@@ -467,11 +467,11 @@ final class PliSyntax {
      * @param format {@code EDIT} の書式並び
      */
     record Put(String string, boolean page, int skip, boolean edit, List<Expr> values,
-               List<FormatItem> format, boolean data) implements Stmt {
+               List<FormatItem> format, boolean data, String file, Expr line) implements Stmt {
 
         Put(String string, boolean page, int skip, boolean edit, List<Expr> values,
             List<FormatItem> format) {
-            this(string, page, skip, edit, values, format, false);
+            this(string, page, skip, edit, values, format, false, null, null);
         }
     }
 
@@ -596,10 +596,14 @@ final class PliSyntax {
      *              (LRM "TITLE option")。無ければ {@code null} で、ファイルの名が DD 名になる
      */
     record FileOperation(FileAction action, String file, String target, Expr title,
-                         Expr key) implements Stmt {
+                         Expr key, Expr lineSize, Expr pageSize) implements Stmt {
 
         FileOperation(FileAction action, String file, String target, Expr title) {
-            this(action, file, target, title, null);
+            this(action, file, target, title, null, null, null);
+        }
+
+        FileOperation(FileAction action, String file, String target, Expr title, Expr key) {
+            this(action, file, target, title, key, null, null);
         }
     }
 
@@ -1368,7 +1372,8 @@ final class PliSyntax {
                 files.put(name.toUpperCase(java.util.Locale.ROOT), new FileInfo(
                         part.stream().anyMatch(token -> token.is("OUTPUT")), size,
                         part.stream().anyMatch(token -> token.is("V") || token.is("VB")),
-                        keyed, keyLength, keyLocation));
+                        keyed, keyLength, keyLocation,
+                        part.stream().anyMatch(token -> token.is("PRINT"))));
             }
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
@@ -1887,6 +1892,8 @@ final class PliSyntax {
             int skip = 0;
             Boolean edit = null;
             boolean data = false;
+            String putFile = null;
+            Expr line = null;
             List<Expr> values = List.of();
             List<FormatItem> format = List.of();
             while (!check(";")) {
@@ -1913,9 +1920,11 @@ final class PliSyntax {
                     Token file = expect(Kind.IDENT, "file name");
                     expect(")");
                     if (!file.is("SYSPRINT")) {
-                        throw fail(file, "PUT FILE(" + file.text() + ") is not supported yet;"
-                                + " only SYSPRINT is");
+                        // SYSPRINT 以外は PRINT のストリームのファイルだけを持つ (実行で確かめる)
+                        putFile = file.text();
                     }
+                } else if (match("LINE")) {
+                    line = parenthesizedExpression();
                 } else if ((check("LIST") || check("EDIT")) && edit == null) {
                     edit = next().is("EDIT");
                     values = arguments();
@@ -1938,7 +1947,12 @@ final class PliSyntax {
                 throw fail(peek(), "PUT STRING supports only EDIT without PAGE or SKIP");
             }
             expect(";");
-            return new Put(string, page, skip, edit != null && edit, values, format, data);
+            if (line != null && putFile == null) {
+                throw fail(peek(), "PUT LINE is supported only for PRINT files other than"
+                        + " SYSPRINT yet");
+            }
+            return new Put(string, page, skip, edit != null && edit, values, format, data, putFile,
+                    line);
         }
 
         private List<FormatItem> formatList() {
@@ -2063,7 +2077,7 @@ final class PliSyntax {
 
         /** 持っている条件。ほかの条件は断る。 */
         private static final java.util.Set<String> CONDITIONS = java.util.Set.of(
-                "ENDFILE", "KEY", "CONVERSION", "CONV", "ZERODIVIDE", "ZDIV", "SIZE",
+                "ENDFILE", "ENDPAGE", "KEY", "CONVERSION", "CONV", "ZERODIVIDE", "ZDIV", "SIZE",
                 "FIXEDOVERFLOW", "FOFL", "CONDITION", "COND", "ERROR");
 
         private String conditionName() {
@@ -2142,6 +2156,8 @@ final class PliSyntax {
                 throw fail(peek(), "DELETE needs KEY(...) yet");
             }
             Expr title = null;
+            Expr lineSize = null;
+            Expr pageSize = null;
             if (action == FileAction.OPEN) {
                 // 向きと TITLE を読む。LINESIZE や PAGESIZE は断る (黙って捨てると行の形が変わる)
                 while (!check(";")) {
@@ -2149,6 +2165,10 @@ final class PliSyntax {
                         target = previous().text().toUpperCase(java.util.Locale.ROOT);
                     } else if (match("TITLE") && title == null) {
                         title = parenthesizedExpression();
+                    } else if (match("LINESIZE") && lineSize == null) {
+                        lineSize = parenthesizedExpression();
+                    } else if (match("PAGESIZE") && pageSize == null) {
+                        pageSize = parenthesizedExpression();
                     } else {
                         throw fail(peek(), "OPEN option " + peek().text()
                                 + " is not supported yet");
@@ -2156,7 +2176,7 @@ final class PliSyntax {
                 }
             }
             expect(";");
-            return new FileOperation(action, file, target, title, key);
+            return new FileOperation(action, file, target, title, key, lineSize, pageSize);
         }
 
         private Expr parenthesizedExpression() {

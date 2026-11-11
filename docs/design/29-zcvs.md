@@ -291,6 +291,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | KEYED のファイル (KEY / KEYFROM、REWRITE、DELETE、ON KEY)、`LOCATE` | 60 / 68 | 306 / 307 |
 | `GET STRING` (EDIT、LIST)、`PUT STRING DATA` | 61 / 68 | 310 / 311 |
 | 入口の変数 (`ENTRY ... VARIABLE`、`TAB(1)(3)`)、`GENERIC` | 63 / 68 | 317 / 317 |
+| SYSPRINT 以外の PRINT ファイル (`LINESIZE`、`PAGESIZE`、`LINE`、`LINENO`、`PAGENO`、`ON ENDPAGE`) | 64 / 68 | 324 / 324 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -387,6 +388,12 @@ KEYED のファイルは COBOL と同じ索引付きデータセット (`Indexed
 POINTER / *) で最初に合う選択肢を選ぶ。引数がすべて定数なら翻訳で選び、合うものが無ければ
 断る (PE112N)。以前は GENERIC の宣言を型の分からない属性として読み飛ばし、前の項目の型を
 受け継いでいた。
+
+SYSPRINT 以外の PRINT ファイル (`UserPrintFile`) は、行を ASA の制御文字を頭に付けた
+レコードとして書き、頁の中の行と頁の番号を数える。行が PAGESIZE を超えようとすると
+その頁で 1 度だけ ENDPAGE を起こす。ENDPAGE は on-unit から戻ると PUT がそのまま続く
+条件なので、例外で文を抜ける他の条件の仕組みには乗せず、その場で on-unit を動かす。
+on-unit が無ければ改頁する。PRINT でないストリームのファイルへの PUT はまだ持たない。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

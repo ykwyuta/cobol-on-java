@@ -125,4 +125,36 @@ class RecordFileTest {
         byte[] written = Files.readAllBytes(directory.resolve("OUT"));
         assertEquals(8, written.length);
     }
+
+    @Test
+    @DisplayName("PRINT ファイルは行と頁を数え、ENDPAGE はその頁で 1 度だけ起き、on-unit が無ければ改頁する")
+    void printFilesCountLinesAndPages() throws Exception {
+        assertEquals("1 1,3 1,4 1 1,5 1 1,1 2,1 4", run("""
+                DCL F FILE STREAM OUTPUT PRINT ENV(F RECSIZE(21));
+                DCL G FILE STREAM OUTPUT PRINT ENV(F RECSIZE(21));
+                DCL N FIXED BIN(31) INIT(0);
+                OPEN FILE(F) LINESIZE(20) PAGESIZE(3);
+                PUT FILE(F) SKIP EDIT('ABC')(A);
+                PUT SKIP LIST(LINENO(F), PAGENO(F));
+                PUT FILE(F) LINE(3) EDIT('GHI')(A);
+                PUT SKIP LIST(LINENO(F), PAGENO(F));
+                ON ENDPAGE(F) N = N + 1;
+                PUT FILE(F) SKIP EDIT('OUT')(A);
+                PUT SKIP LIST(LINENO(F), PAGENO(F), N);
+                PUT FILE(F) SKIP EDIT('MORE')(A);
+                PUT SKIP LIST(LINENO(F), PAGENO(F), N);
+                PUT FILE(F) PAGE EDIT('P2')(A);
+                PUT SKIP LIST(LINENO(F), PAGENO(F));
+                CLOSE FILE(F);
+                OPEN FILE(G) PAGESIZE(1);
+                PUT FILE(G) SKIP EDIT('A')(A);
+                PUT FILE(G) SKIP EDIT('B')(A);
+                PUT FILE(G) SKIP EDIT('C')(A);
+                PUT FILE(G) SKIP EDIT('D')(A);
+                PUT SKIP LIST(LINENO(G), PAGENO(G));
+                CLOSE FILE(G);
+                """).replaceAll(" +", " ").replace(", ", ","));
+        byte[] f = Files.readAllBytes(directory.resolve("F"));
+        assertEquals(6 * 21, f.length);
+    }
 }

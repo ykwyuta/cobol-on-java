@@ -228,9 +228,16 @@ class PutStatementTest {
 
     @Test
     @DisplayName("まだ持たない選択子と書式項目は、読み飛ばさずに翻訳で断る")
-    void unsupportedFormsAreRefused() {
-        assertTrue(rejection("PUT LINE(5) LIST('A');").contains("PUT option LINE"));
-        assertTrue(rejection("PUT FILE(REPORT) LIST('A');").contains("PUT FILE(REPORT)"));
+    void unsupportedFormsAreRefused() throws Exception {
+        // LINE は SYSPRINT 以外の PRINT ファイルでは持つ (RecordFileTest)。SYSPRINT ではまだ断る
+        assertTrue(rejection("PUT LINE(5) LIST('A');").contains("PUT LINE"));
+        // PUT FILE は PRINT ファイルを持ったので翻訳では通す。開いた PRINT ファイルでなければ
+        // 実行で止まる
+        Exception failure = assertThrows(Exception.class, () -> run("PUT FILE(REPORT) LIST('A');"));
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        assertTrue(String.valueOf(cause.getMessage()).contains("PUT FILE(REPORT)"),
+                cause::toString);
         assertTrue(rejection("PUT SKIP EDIT(1) (E(10,3));").contains("format item E"));
         assertTrue(rejection("PUT SKIP(0) LIST('A');").contains("SKIP(0)"));
         assertTrue(rejection("""
