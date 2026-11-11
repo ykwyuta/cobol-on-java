@@ -141,7 +141,8 @@ class ControlStatementTest {
     @DisplayName("値を持つ RETURN、知らない ON・EXEC・文は、実行まで待たずに翻訳で断る")
     void unsupportedStatementsAreRefusedAtCompileTime() {
         assertTrue(rejection("RETURN(5);").contains("RETURN with a value"));
-        assertTrue(rejection("ON ERROR BEGIN; END;").contains("ON ERROR"));
+        // ON ERROR は以前ここで断っていた。条件の処置を持ったので、持っていない FINISH を例にする
+        assertTrue(rejection("ON FINISH BEGIN; END;").contains("ON FINISH"));
         assertTrue(rejection("EXEC CICS RETURN;").contains("EXEC CICS"));
         assertTrue(rejection("""
                 DCL A CHAR(3);

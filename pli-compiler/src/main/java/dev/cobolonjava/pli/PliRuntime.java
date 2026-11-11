@@ -74,6 +74,33 @@ public final class PliRuntime {
         return ProcedureManifest.of(parsed.program().name(), List.of());
     }
 
+    /**
+     * 起きた条件 (LRM "Conditions")。on-unit があればそこへ、無ければ既定の処置へ進む。
+     *
+     * @param source CONVERSION なら変換できなかった字の並び (ONSOURCE)。ほかは {@code null}
+     */
+    static final class Condition extends RuntimeException {
+        final String name;
+        final String qualifier;
+        final int code;
+        final String source;
+
+        Condition(String name, String qualifier, int code, String source) {
+            super(name + (qualifier == null ? "" : "(" + qualifier + ")"), null, false, false);
+            this.name = name;
+            this.qualifier = qualifier;
+            this.code = code;
+            this.source = source;
+        }
+    }
+
+    /** CONVERSION の on-unit が直した字の並び。変換をやり直すときに、元の並びの代わりに使う。 */
+    private static final ThreadLocal<Map<String, String>> REPAIRED =
+            ThreadLocal.withInitial(HashMap::new);
+
+    /** 条件の前置きで有効にした SIZE。既定では無効である (LRM "Condition prefixes")。 */
+    private static final ThreadLocal<Boolean> SIZE_ENABLED = ThreadLocal.withInitial(() -> false);
+
     public static final class PliExecutionException extends RuntimeException {
         public PliExecutionException(String message) {
             super(message);
@@ -274,7 +301,88 @@ public final class PliRuntime {
             }
         }
 
+        private static String conditionKey(String condition, String qualifier) {
+            return qualifier == null ? condition : condition + "(" + qualifier + ")";
+        }
+
+        /** いま処置している条件の ONCODE と ONSOURCE / ONCHAR。 */
+        private int onCode;
+        private String onSource;
+        /** on-unit が ONSOURCE / ONCHAR に入れた直し。正常に戻れば変換をやり直す。 */
+        private String repairedSource;
+
+        /**
+         * 文を 1 つ動かし、起きた条件を処置する。
+         *
+         * <p>on-unit は条件の起きた場所で呼ばれ、正常に戻れば文の次へ進む。CONVERSION だけは、
+         * on-unit が ONSOURCE か ONCHAR を直していれば、その文を直した字の並びでやり直す
+         * (LRM "CONVERSION condition")。on-unit の中の GO TO は on-unit を抜けて飛ぶ。
+         * on-unit が無ければ既定の処置である。CONDITION は何もせずに続け、ほかは止める。
+         */
         private void execute(PliSyntax.Stmt statement, Env env) {
+            for (int attempt = 0; ; attempt++) {
+                try {
+                    executeStatement(statement, env);
+                    return;
+                } catch (Condition condition) {
+                    Env.Handler handler = env.handler(conditionKey(condition.name,
+                            condition.qualifier));
+                    if (handler == null || handler.system()) {
+                        if (condition.name.equals("CONDITION")) {
+                            return;
+                        }
+                        // 既定の処置は ERROR を起こすことである。ERROR の on-unit があれば動かし、
+                        // 正常に戻っても実行は終わる (LRM "ERROR condition")
+                        Env.Handler error = condition.name.equals("ERROR") ? null
+                                : env.handler("ERROR");
+                        if (error != null && !error.system()) {
+                            int savedCode = onCode;
+                            onCode = condition.code;
+                            try {
+                                execute(error.statements(), new Env(error.established(), context));
+                            } finally {
+                                onCode = savedCode;
+                            }
+                        }
+                        throw new PliExecutionException(condition.name
+                                + (condition.source == null ? "" : ": '" + condition.source
+                                + "' cannot be converted"));
+                    }
+                    int savedCode = onCode;
+                    String savedSource = onSource;
+                    onCode = condition.code;
+                    onSource = condition.source;
+                    repairedSource = null;
+                    try {
+                        execute(handler.statements(), new Env(handler.established(), context));
+                    } finally {
+                        onCode = savedCode;
+                        onSource = savedSource;
+                    }
+                    if (!condition.name.equals("CONVERSION") || repairedSource == null
+                            || attempt > 16) {
+                        if (condition.name.equals("CONVERSION")) {
+                            throw new PliExecutionException("CONVERSION: the on-unit returned"
+                                    + " without repairing '" + condition.source + "'");
+                        }
+                        return;
+                    }
+                    REPAIRED.get().put(condition.source, repairedSource);
+                }
+            }
+        }
+
+        private void executeStatement(PliSyntax.Stmt statement, Env env) {
+            try {
+                executeStatementOnce(statement, env);
+            } finally {
+                if (!REPAIRED.get().isEmpty() && onSource == null) {
+                    REPAIRED.get().clear();
+                }
+            }
+        }
+
+        private void executeStatementOnce(PliSyntax.Stmt statement, Env env) {
             if (statement instanceof PliSyntax.Declare) {
                 // 手続きに入ったときに declareAll が済ませている
                 return;
@@ -308,6 +416,27 @@ public final class PliRuntime {
             } else if (statement instanceof PliSyntax.Return result) {
                 returned = result.value() == null ? null : value(result.value(), env);
                 throw ReturnSignal.INSTANCE;
+            } else if (statement instanceof PliSyntax.OnCondition on) {
+                env.establish(conditionKey(on.condition(), on.qualifier()),
+                        new Env.Handler(on.handler(), env, on.system()));
+            } else if (statement instanceof PliSyntax.Revert revert) {
+                env.revert(conditionKey(revert.condition(), revert.qualifier()));
+            } else if (statement instanceof PliSyntax.Signal signal) {
+                throw new Condition(signal.condition(), signal.qualifier(),
+                        signal.condition().equals("CONDITION") ? 500 : 0, null);
+            } else if (statement instanceof PliSyntax.Prefixed prefixed) {
+                boolean before = SIZE_ENABLED.get();
+                if (prefixed.enabled().contains("SIZE")) {
+                    SIZE_ENABLED.set(true);
+                }
+                if (prefixed.disabled().contains("SIZE")) {
+                    SIZE_ENABLED.set(false);
+                }
+                try {
+                    execute(prefixed.statement(), env);
+                } finally {
+                    SIZE_ENABLED.set(before);
+                }
             } else if (statement instanceof PliSyntax.Leave leave) {
                 throw new LoopSignal(true, leave.label());
             } else if (statement instanceof PliSyntax.Iterate iterate) {
@@ -694,6 +823,25 @@ public final class PliRuntime {
         }
 
         private void assign(PliSyntax.Assign assignment, Env env) {
+            String pseudo = assignment.target().toUpperCase(Locale.ROOT);
+            if ((pseudo.equals("ONSOURCE") || pseudo.equals("ONCHAR")) && !env.contains(pseudo)) {
+                // 擬似変数。CONVERSION の on-unit の中で、変換できなかった字の並びを直す
+                if (onSource == null) {
+                    throw new PliExecutionException(pseudo + " is assigned outside a"
+                            + " CONVERSION on-unit");
+                }
+                String value = display(value(assignment.value(), env));
+                if (pseudo.equals("ONSOURCE")) {
+                    repairedSource = value;
+                } else {
+                    String current = repairedSource != null ? repairedSource : onSource;
+                    int at = badCharacter(current);
+                    repairedSource = at < 0 ? current
+                            : current.substring(0, at) + (value.isEmpty() ? " " : value.substring(0, 1))
+                                    + current.substring(at + 1);
+                }
+                return;
+            }
             if (!assignment.subscripts().isEmpty()) {
                 Var array = arrayNamed(assignment.target(), env);
                 if (array != null) {
@@ -1561,6 +1709,14 @@ public final class PliRuntime {
                 }
                 // 戻りコード (PLIRETC で決めた値) を返す (LRM "PLIRETV")
                 case "PLIRETV" -> FixedValue.binary(BigDecimal.valueOf(context.returnCode()), 31, 0);
+                case "ONCODE" -> FixedValue.binary(BigDecimal.valueOf(onCode), 31, 0);
+                case "ONSOURCE" -> onSource == null ? "" : onSource;
+                // 変換できなかった最初の字 (LRM "ONCHAR")
+                case "ONCHAR" -> {
+                    String source = repairedSource != null ? repairedSource : onSource;
+                    int at = source == null ? -1 : badCharacter(source);
+                    yield at < 0 ? " " : String.valueOf(source.charAt(at));
+                }
                 case "SYSNULL", "NULL" -> new PointerValue(0);
                 // DAYS(日付, 型) は 1582 年 10 月 15 日を 1 とする日の番号 (Lilian) である
                 case "DAYS" -> FixedValue.binary(BigDecimal.valueOf(
@@ -1582,6 +1738,25 @@ public final class PliRuntime {
                 }
                 default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
             };
+        }
+
+        /** 数の字の並びのうち、数にならない最初の字の位置。無ければ -1。 */
+        private static int badCharacter(String text) {
+            String stripped = text.strip();
+            int offset = text.indexOf(stripped.isEmpty() ? " " : stripped);
+            boolean point = false;
+            for (int i = 0; i < stripped.length(); i++) {
+                char c = stripped.charAt(i);
+                if (Character.isDigit(c) || ((c == '+' || c == '-') && i == 0)) {
+                    continue;
+                }
+                if (c == '.' && !point) {
+                    point = true;
+                    continue;
+                }
+                return offset + i;
+            }
+            return -1;
         }
 
         /** 1582 年 10 月 14 日。DAYS はこの次の日を 1 とする。 */
@@ -1881,7 +2056,9 @@ public final class PliRuntime {
             if (value instanceof BigDecimal decimal) return decimal;
             if (value instanceof Number numeric) return new BigDecimal(numeric.toString());
             if (value instanceof Boolean bool) return bool ? BigDecimal.ONE : BigDecimal.ZERO;
-            String text = display(value).strip();
+            String original = display(value);
+            String repaired = REPAIRED.get().get(original);
+            String text = (repaired != null ? repaired : original).strip();
             if (text.isEmpty()) {
                 // 空の文字列と空白だけの文字列は 0 になり、CONVERSION は起きない (LRM "Target: Coded
                 // arithmetic", CHARACTER)
@@ -1890,7 +2067,8 @@ public final class PliRuntime {
             try {
                 return new BigDecimal(text);
             } catch (NumberFormatException e) {
-                throw new PliExecutionException("value is not numeric: " + display(value));
+                // 字を数にできない。CONVERSION の条件である (ONCODE 600 番台)
+                throw new Condition("CONVERSION", null, 612, repaired != null ? repaired : original);
             }
         }
 
@@ -1970,6 +2148,26 @@ public final class PliRuntime {
 
         void onEndFile(String file, List<PliSyntax.Stmt> handler) {
             endFileHandlers.put(file.toUpperCase(Locale.ROOT), handler);
+        }
+
+        /** 条件の on-unit と、それを確立した環境。SYSTEM なら handler は空で system が真。 */
+        record Handler(List<PliSyntax.Stmt> statements, Env established, boolean system) {
+        }
+
+        private final Map<String, Handler> handlers = new HashMap<>();
+
+        void establish(String key, Handler handler) {
+            handlers.put(key, handler);
+        }
+
+        void revert(String key) {
+            handlers.remove(key);
+        }
+
+        /** 呼んだ側へたどって on-unit を探す (動的な有効範囲。LRM "Establishing an ON-unit")。 */
+        Handler handler(String key) {
+            Handler own = handlers.get(key);
+            return own != null ? own : parent == null ? null : parent.handler(key);
         }
 
         List<PliSyntax.Stmt> endFile(String file) {
@@ -2087,8 +2285,18 @@ public final class PliRuntime {
                     }
                 }
                 case BINARY -> writeBinary(Executor.number(value));
-                case DECIMAL -> view.setBytes(PackedDecimal.encode(
-                        Decimal.parse(Executor.number(value).toPlainString()), precision, scale, true));
+                case DECIMAL -> {
+                    BigDecimal number = Executor.number(value);
+                    if (SIZE_ENABLED.get() && number.setScale(Math.max(scale, 0),
+                            java.math.RoundingMode.DOWN).precision() - Math.max(scale, 0)
+                                    > precision - scale && number.abs().compareTo(
+                                    BigDecimal.TEN.pow(precision - scale)) >= 0) {
+                        // 整数部が入りきらない。SIZE を有効にしていれば条件になる
+                        throw new Condition("SIZE", null, 340, null);
+                    }
+                    view.setBytes(PackedDecimal.encode(
+                            Decimal.parse(number.toPlainString()), precision, scale, true));
+                }
                 // POINTER へは POINTER の値 (ADDR や別の POINTER) だけが入る (LRM "Non-computational targets")
                 case POINTER -> {
                     if (!(value instanceof PointerValue pointer)) {

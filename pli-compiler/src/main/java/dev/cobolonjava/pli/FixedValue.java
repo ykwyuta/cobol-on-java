@@ -120,7 +120,7 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
      */
     FixedValue divide(FixedValue other, Arithmetic arithmetic) {
         if (other.value.signum() == 0) {
-            throw new PliRuntime.PliExecutionException("ZERODIVIDE");
+            throw new PliRuntime.Condition("ZERODIVIDE", null, 320, null);
         }
         FixedValue[] pair = common(this, other, arithmetic);
         FixedValue a = pair[0];

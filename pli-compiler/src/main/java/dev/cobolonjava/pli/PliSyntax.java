@@ -50,7 +50,8 @@ final class PliSyntax {
     }
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
-            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group {
+            Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group, OnCondition, Revert, Signal,
+            Prefixed {
     }
 
     record Declare(List<Decl> declarations) implements Stmt {
@@ -181,6 +182,25 @@ final class PliSyntax {
     }
 
     record OnEndFile(String file, List<Stmt> handler) implements Stmt {
+    }
+
+    /**
+     * {@code ON 条件 on-unit}。条件は名と、ファイルや条件名の修飾 ({@code CONDITION(BAD)} の
+     * BAD) で表す。{@code system} は {@code ON ... SYSTEM;} (既定の処置に戻す)。
+     */
+    record OnCondition(String condition, String qualifier, List<Stmt> handler, boolean system)
+            implements Stmt {
+    }
+
+    record Revert(String condition, String qualifier) implements Stmt {
+    }
+
+    record Signal(String condition, String qualifier) implements Stmt {
+    }
+
+    /** 条件の前置き {@code (SIZE): 文}。{@code enabled} は有効にする条件、{@code disabled} は無効。 */
+    record Prefixed(List<String> enabled, List<String> disabled, Stmt statement)
+            implements Stmt {
     }
 
     enum FileAction { OPEN, READ, WRITE, CLOSE }
@@ -507,6 +527,10 @@ final class PliSyntax {
                 skipToSemicolon();
                 return new Block(List.of());
             }
+            if (match(";")) {
+                // 空の文 (null statement)。名札だけを置くときに書く (LRM "Null statement")
+                return new Block(List.of());
+            }
             if (match("DCL") || match("DECLARE")) {
                 return declaration();
             }
@@ -569,6 +593,31 @@ final class PliSyntax {
             }
             if (match("ON")) {
                 return onCondition();
+            }
+            if (match("REVERT") || match("SIGNAL")) {
+                boolean revert = previous().is("REVERT");
+                String condition = conditionName();
+                String qualifier = qualifier();
+                expect(";");
+                return revert ? new Revert(condition, qualifier) : new Signal(condition, qualifier);
+            }
+            if (check("(") && check(1, Kind.IDENT) && conditionPrefixAhead()) {
+                // 条件の前置き (SIZE): 文。その文のあいだだけ条件を有効・無効にする
+                next();
+                List<String> enabled = new ArrayList<>();
+                List<String> disabled = new ArrayList<>();
+                do {
+                    String name = expect(Kind.IDENT, "condition prefix").text()
+                            .toUpperCase(java.util.Locale.ROOT);
+                    if (name.startsWith("NO")) {
+                        disabled.add(name.substring(2));
+                    } else {
+                        enabled.add(name);
+                    }
+                } while (match(","));
+                expect(")");
+                expect(":");
+                return new Prefixed(enabled, disabled, statement());
             }
             if (match("OPEN")) {
                 return fileOperation(FileAction.OPEN);
@@ -1107,16 +1156,64 @@ final class PliSyntax {
             return new Call(name, args);
         }
 
-        private Stmt onCondition() {
-            if (!match("ENDFILE")) {
-                throw fail(peek(), "ON " + peek().text() + " is not supported yet");
+        /** 持っている条件。ほかの条件は断る。 */
+        private static final java.util.Set<String> CONDITIONS = java.util.Set.of(
+                "ENDFILE", "KEY", "CONVERSION", "CONV", "ZERODIVIDE", "ZDIV", "SIZE",
+                "FIXEDOVERFLOW", "FOFL", "CONDITION", "COND", "ERROR");
+
+        private String conditionName() {
+            Token name = expect(Kind.IDENT, "condition name");
+            String upper = name.text().toUpperCase(java.util.Locale.ROOT);
+            if (!CONDITIONS.contains(upper)) {
+                throw fail(name, "ON " + name.text() + " is not supported yet");
             }
-            expect("(");
-            String file = qualifiedName();
+            return switch (upper) {
+                case "CONV" -> "CONVERSION";
+                case "ZDIV" -> "ZERODIVIDE";
+                case "FOFL" -> "FIXEDOVERFLOW";
+                case "COND" -> "CONDITION";
+                default -> upper;
+            };
+        }
+
+        private String qualifier() {
+            if (!match("(")) {
+                return null;
+            }
+            String name = qualifiedName().toUpperCase(java.util.Locale.ROOT);
             expect(")");
-            expect("BEGIN");
-            expect(";");
-            return new OnEndFile(file, blockBody());
+            return name;
+        }
+
+        /** {@code (名 [, 名]...):} が続くか。 */
+        private boolean conditionPrefixAhead() {
+            int k = 1;
+            while (check(k, Kind.IDENT) && check(k + 1, ",")) {
+                k += 2;
+            }
+            return check(k, Kind.IDENT) && check(k + 1, ")") && check(k + 2, ":");
+        }
+
+        private Stmt onCondition() {
+            String condition = conditionName();
+            String qualifier = qualifier();
+            match("SNAP");
+            if (match("SYSTEM")) {
+                expect(";");
+                return new OnCondition(condition, qualifier, List.of(), true);
+            }
+            List<Stmt> handler;
+            if (match("BEGIN")) {
+                expect(";");
+                handler = blockBody();
+            } else {
+                // on-unit は 1 つの文でもよい (LRM "ON statement")
+                handler = List.of(statement());
+            }
+            if (condition.equals("ENDFILE")) {
+                return new OnEndFile(qualifier, handler);
+            }
+            return new OnCondition(condition, qualifier, handler, false);
         }
 
         private Stmt fileOperation(FileAction action) {
@@ -1356,6 +1453,10 @@ final class PliSyntax {
 
         private boolean check(Kind kind) {
             return peek().kind() == kind;
+        }
+
+        private boolean check(int ahead, Kind kind) {
+            return token(ahead).kind() == kind;
         }
 
         private Token expect(String value) {

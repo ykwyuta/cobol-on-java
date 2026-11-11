@@ -78,4 +78,67 @@ class BuiltinFunctionTest {
                 PUT SKIP LIST(DAYSTODATE(DAYS('20000229','YYYYMMDD'), 'YYYYMMDD'));
                 """));
     }
+
+    @Test
+    @DisplayName("on-unit は呼んだ先でも効き、REVERT で外の on-unit に戻る")
+    void handlesConditionsDynamically() throws Exception {
+        assertEquals("1,12,13", run("""
+                DCL FLAG FIXED BIN(31) INIT(0);
+                DCL BAD CONDITION;
+                ON CONDITION(BAD) FLAG=FLAG+1;
+                CALL CHILD;
+                PUT SKIP LIST(FLAG);
+                CALL OVERRIDE;
+                PUT SKIP LIST(FLAG);
+                SIGNAL CONDITION(BAD);
+                PUT SKIP LIST(FLAG);
+                CHILD: PROC; SIGNAL CONDITION(BAD); END CHILD;
+                OVERRIDE: PROC;
+                  ON CONDITION(BAD) FLAG=FLAG+10;
+                  SIGNAL CONDITION(BAD);
+                  REVERT CONDITION(BAD);
+                  SIGNAL CONDITION(BAD);
+                END OVERRIDE;
+                """));
+    }
+
+    @Test
+    @DisplayName("ZERODIVIDE の on-unit から GO TO で抜け、ONCODE は 320 である")
+    void handlesZeroDivide() throws Exception {
+        assertEquals("320", run("""
+                DCL CODE FIXED BIN(31), (R, Z) FIXED BIN(31) INIT(0);
+                ON ZERODIVIDE BEGIN; CODE=ONCODE(); GO TO AFTER; END;
+                R=1/Z;
+                AFTER:;
+                PUT SKIP LIST(CODE);
+                """));
+    }
+
+    @Test
+    @DisplayName("CONVERSION の on-unit が ONCHAR を直すと変換をやり直す。元の字は変わらない")
+    void repairsConversions() throws Exception {
+        assertEquals("12345,X,12X45", run("""
+                DCL S CHAR(5) INIT('12X45');
+                DCL N FIXED DEC(5), SEEN CHAR(1);
+                ON CONVERSION BEGIN; SEEN=ONCHAR(); ONCHAR()='3'; END;
+                N=S;
+                PUT SKIP LIST(N);
+                PUT SKIP LIST(SEEN);
+                PUT SKIP LIST(S);
+                """));
+    }
+
+    @Test
+    @DisplayName("SIZE は前置き (SIZE): を書いたときだけ起きる")
+    void raisesSizeOnlyWhenEnabled() throws Exception {
+        assertEquals("0,2", run("""
+                DCL FLAG FIXED BIN(31) INIT(0);
+                DCL SMALL FIXED DEC(2);
+                ON SIZE FLAG=2;
+                SMALL=123;
+                PUT SKIP LIST(FLAG);
+                (SIZE): SMALL=123;
+                PUT SKIP LIST(FLAG);
+                """));
+    }
 }
