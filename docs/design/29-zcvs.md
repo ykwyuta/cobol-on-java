@@ -278,10 +278,17 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | 報告の副手続きが動くようにした | 19 / 68 | 29 / 41 |
 | 組み込み関数、条件 (ON / SIGNAL / REVERT)、`**`、宣言の検査 (82660a4) | 40 / 68 | 217 / 223 |
 | `SELECT` | 41 / 68 | 225 / 231 |
+| `OPEN ... TITLE`、`ENV(V ...)` | 43 / 68 | 237 / 243 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
 実機と突き合わせていない。
+
+`TITLE` はファイルを結ぶ DD 名を開くたびに決める (LRM "TITLE option")。PF103A では
+`OUT` と `INP` の 2 つのファイルが同じ DD `XXXXX001` を開く。以前は `TITLE` を読まずに
+ファイルの名を DD 名にしていたので、別々の (割り当ての無い) データセットになるところだった。
+用意したデータセットは「ファイル名と DD 名の組」で引く。`ENV(V RECSIZE(n))` の n は
+4 byte の RDW を含むので、データの最大長は n-4 である (Programming Guide "RECSIZE")。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

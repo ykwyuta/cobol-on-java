@@ -42,8 +42,11 @@ final class PliSyntax {
      *
      * @param output     {@code OUTPUT} を書いたか。OPEN に向きを書かなければこれで決まる
      * @param recordSize {@code ENV(... RECSIZE(n))} の n。書かなければ 0
+     * @param variable   {@code ENV(V ...)} / {@code ENV(VB ...)} の可変長か。RECSIZE は 4 byte の
+     *                   RDW を含む (Programming Guide "RECSIZE": for V-format, the maximum length
+     *                   including the 4-byte prefix)
      */
-    record FileInfo(boolean output, int recordSize) {
+    record FileInfo(boolean output, int recordSize, boolean variable) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
@@ -215,7 +218,12 @@ final class PliSyntax {
 
     enum FileAction { OPEN, READ, WRITE, CLOSE }
 
-    record FileOperation(FileAction action, String file, String target) implements Stmt {
+    /**
+     * @param title {@code OPEN ... TITLE(式)} の式。ファイルを結ぶ DD 名を開くときに決める
+     *              (LRM "TITLE option")。無ければ {@code null} で、ファイルの名が DD 名になる
+     */
+    record FileOperation(FileAction action, String file, String target, Expr title)
+            implements Stmt {
     }
 
     record Sql(String source) implements Stmt {
@@ -803,7 +811,8 @@ final class PliSyntax {
                     }
                 }
                 files.put(name.toUpperCase(java.util.Locale.ROOT), new FileInfo(
-                        part.stream().anyMatch(token -> token.is("OUTPUT")), size));
+                        part.stream().anyMatch(token -> token.is("OUTPUT")), size,
+                        part.stream().anyMatch(token -> token.is("V") || token.is("VB"))));
             }
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
@@ -1260,14 +1269,22 @@ final class PliSyntax {
                 target = qualifiedName();
                 expect(")");
             }
+            Expr title = null;
             if (action == FileAction.OPEN) {
-                // 向きだけを読む。TITLE や LINESIZE は断る (黙って捨てると別のファイルを開く)
-                if (match("OUTPUT") || match("INPUT") || match("UPDATE")) {
-                    target = previous().text().toUpperCase(java.util.Locale.ROOT);
+                // 向きと TITLE を読む。LINESIZE や PAGESIZE は断る (黙って捨てると行の形が変わる)
+                while (!check(";")) {
+                    if (match("OUTPUT") || match("INPUT") || match("UPDATE")) {
+                        target = previous().text().toUpperCase(java.util.Locale.ROOT);
+                    } else if (match("TITLE") && title == null) {
+                        title = parenthesizedExpression();
+                    } else {
+                        throw fail(peek(), "OPEN option " + peek().text()
+                                + " is not supported yet");
+                    }
                 }
             }
             expect(";");
-            return new FileOperation(action, file, target);
+            return new FileOperation(action, file, target, title);
         }
 
         private Expr parenthesizedExpression() {

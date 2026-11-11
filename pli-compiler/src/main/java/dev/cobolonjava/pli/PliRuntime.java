@@ -114,6 +114,8 @@ public final class PliRuntime {
         private final Env globals;
         private final Map<String, CursorDefinition> cursors = new HashMap<>();
         private final PrintFile sysprint;
+        /** ファイル名から、最後の OPEN の TITLE で結んだ DD 名への表。 */
+        private final Map<String, String> titles = new java.util.HashMap<>();
         /** *PROCESS の RULES と LIMITS。翻訳時に原文へ残した注記から読む。 */
         private final PliOptions options;
         /** 評価中の式の算術の規則。式の頭で決め、式の中では変えない。 */
@@ -1259,13 +1261,25 @@ public final class PliRuntime {
         private void file(PliSyntax.FileOperation operation, Env env) {
             PliSyntax.FileInfo info = program.files().get(
                     operation.file().toUpperCase(Locale.ROOT));
-            // RECSIZE を書いた FILE は、その長さの固定長のレコードである。書いていなければ
-            // 割り当てた側 (DD) の形に任せる
+            String name = operation.file().toUpperCase(Locale.ROOT);
+            if (operation.action() == PliSyntax.FileAction.OPEN) {
+                // TITLE はファイルを結ぶ DD 名を開くたびに決める。無ければファイルの名である
+                // (LRM "TITLE option")。同じ DD を別のファイルが開くこともあるので、用意した
+                // データセットは「ファイル名と DD 名の組」で引く
+                titles.put(name, operation.title() == null ? name
+                        : character(value(operation.title(), env)).strip().toUpperCase(Locale.ROOT));
+            }
+            String ddName = titles.getOrDefault(name, name);
+            String key = ddName.equals(name) ? name : name + "@" + ddName;
+            // RECSIZE を書いた FILE は、その形のレコードである。書いていなければ
+            // 割り当てた側 (DD) の形に任せる。V 形式の RECSIZE は 4 byte の RDW を含む
             DataSet dataSet = info != null && info.recordSize() > 0
-                    ? context.file(operation.file(), operation.file(),
+                    ? context.file(key, ddName,
                             dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
-                            dev.cobolonjava.runtime.file.RecordFormat.FIXED, info.recordSize())
-                    : context.file(operation.file(), operation.file());
+                            info.variable() ? dev.cobolonjava.runtime.file.RecordFormat.VARIABLE
+                                    : dev.cobolonjava.runtime.file.RecordFormat.FIXED,
+                            info.variable() ? info.recordSize() - 4 : info.recordSize())
+                    : context.file(key, ddName);
             switch (operation.action()) {
                 case OPEN -> {
                     // 向きは OPEN に書いたもの、無ければ宣言のもの、どちらも無ければ INPUT
