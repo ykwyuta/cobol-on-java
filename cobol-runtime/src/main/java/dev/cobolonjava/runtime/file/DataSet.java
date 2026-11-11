@@ -47,6 +47,26 @@ public sealed interface DataSet permits SequentialDataSet, KeyedDataSet {
     default void secondary(boolean value) {
     }
 
+    /** 割当てが磁気テープだと告げる。巻を持ち、CLOSE REEL で次の巻へ移る。 */
+    default void tape(boolean value) {
+    }
+
+    /**
+     * 次の巻へ移る ({@code CLOSE ... REEL / UNIT})。巻を持たない媒体では何もせず
+     * {@code 07} を返す (85 規格 VII-38, 4.2.4(3)F)。
+     */
+    default String nextVolume() {
+        return FileStatus.NON_REEL;
+    }
+
+    /**
+     * 逆から読むようにする ({@code OPEN INPUT ... REVERSED})。開いた直後に呼ぶ。逆から
+     * 読めるのは磁気テープだけである。ほかの媒体では開き方が媒体に合わない ({@code 37})。
+     */
+    default String reverse() {
+        return FileStatus.OPEN_CONFLICT;
+    }
+
     /**
      * 領域を使い切ったときの異常終了コード。順編成だけが {@code x37} で止まる。鍵で引く編成は
      * 状態 {@code 24} であり、ここへは来ない。

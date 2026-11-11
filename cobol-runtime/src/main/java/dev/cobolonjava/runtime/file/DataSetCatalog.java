@@ -105,6 +105,19 @@ public final class DataSetCatalog {
         return this;
     }
 
+    private final java.util.Set<String> tapes = new java.util.HashSet<>();
+
+    /** その DD を磁気テープに割り当てる (JCL の UNIT=3480 など)。 */
+    public DataSetCatalog tape(String ddName) {
+        tapes.add(ddName.toUpperCase(Locale.ROOT));
+        return this;
+    }
+
+    /** その DD が磁気テープか。 */
+    public boolean isTape(String ddName) {
+        return tapes.contains(ddName.toUpperCase(Locale.ROOT));
+    }
+
     /** その DD の SPACE に二次割当が書かれていたか。 */
     public boolean hasSecondary(String ddName) {
         return secondaries.contains(ddName.toUpperCase(Locale.ROOT));

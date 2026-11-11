@@ -1015,10 +1015,15 @@ public sealed interface Statement {
          * @param debug    ファイル名が見張られているときに、開いたあとで動かす文 (要件 FR-193)
          */
         public record Opened(FileDescription file, OpenMode mode, boolean noRewind,
-                             List<Statement> debug) {
+                             List<Statement> debug, boolean reversed) {
 
             public Opened {
                 debug = List.copyOf(debug);
+            }
+
+            public Opened(FileDescription file, OpenMode mode, boolean noRewind,
+                          List<Statement> debug) {
+                this(file, mode, noRewind, debug, false);
             }
 
             public Opened(FileDescription file, OpenMode mode) {

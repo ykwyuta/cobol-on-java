@@ -5960,15 +5960,15 @@ public final class ProcedureBuilder {
                 if (file == null) {
                     return null;
                 }
-                if (one.REVERSED() != null) {
-                    // 逆から読むという指示である。黙って順に読めば<b>違う答えを返す</b>。
-                    // 巻の扱いのように「何も起きなかった」で済む話ではないので、断る
+                if (one.REVERSED() != null && mode != OpenMode.INPUT) {
                     report(ReferenceResolver.originOf(one),
-                            "OPEN ... REVERSED is not supported yet");
+                            "REVERSED may be written only with OPEN INPUT");
                     continue;
                 }
+                // REVERSED は逆から読む。読めるのは磁気テープだけで、ほかの媒体では
+                // 実行時に 37 になる (以前は翻訳で断っていた)
                 opened.add(new Statement.Open.Opened(file, mode, one.REWIND() != null,
-                        fileDebugEntry(file, false, origin)));
+                        fileDebugEntry(file, false, origin), one.REVERSED() != null));
             }
         }
         return new Statement.Open(opened, origin);

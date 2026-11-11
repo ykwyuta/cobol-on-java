@@ -56,6 +56,63 @@ public final class SequentialDataSet implements DataSet {
      * 実際に読めているからである。ホストも同じで、装置の誤りは読んだ時点で立つ。
      */
     private int damagedAt = -1;
+
+    /** 磁気テープか。巻の境目を持つ。 */
+    private boolean tape;
+    /** 2 本目からの各巻が始まるレコードの番号。書いたときに作り、開くときに読む。 */
+    private List<Integer> volumeStarts = new ArrayList<>();
+    /** 読んでいる巻 (0 から)。 */
+    private int volume;
+
+    @Override
+    public void tape(boolean value) {
+        tape = value;
+    }
+
+    /** 巻の境目を置くファイル。データの隣に置く。 */
+    private Path volumesFile() {
+        return path.resolveSibling(path.getFileName() + ".volumes");
+    }
+
+    private int volumeStart(int index) {
+        return index == 0 ? 0 : volumeStarts.get(index - 1);
+    }
+
+    private int volumeEnd(int index) {
+        return index < volumeStarts.size() ? volumeStarts.get(index) : records.size();
+    }
+
+    @Override
+    public String nextVolume() {
+        if (mode == null) {
+            return FileStatus.NOT_OPEN;
+        }
+        if (!tape) {
+            return FileStatus.NON_REEL;
+        }
+        if (mode.canWrite()) {
+            // 書いている巻を閉じ、次の巻を始める。何も書かずに閉じれば空の巻になる
+            volumeStarts.add(records.size());
+        } else {
+            // 読んでいる巻の残りを飛ばし、次の巻の頭へ。最後の巻の先は終わりである
+            volume++;
+            position = volume <= volumeStarts.size() ? volumeStart(volume) : records.size();
+            current = -1;
+        }
+        return FileStatus.OK;
+    }
+
+    @Override
+    public String reverse() {
+        if (!tape) {
+            return FileStatus.OPEN_CONFLICT;
+        }
+        // 逆から読む。巻の境目は逆にしても読む順には効かないので捨てる
+        records = new ArrayList<>(records);
+        java.util.Collections.reverse(records);
+        volumeStarts = new ArrayList<>();
+        return FileStatus.OK;
+    }
     /** ジョブが割り当てで決めたこと (要件 FR-113, FR-141)。 */
     private final DataSetAllocation allocation = new DataSetAllocation();
 
@@ -186,6 +243,19 @@ public final class SequentialDataSet implements DataSet {
             records = new ArrayList<>(framed.records());
             damagedAt = framed.damagedAt();
         }
+        volume = 0;
+        volumeStarts = new ArrayList<>();
+        if (tape && requested != OpenMode.OUTPUT && Files.isReadable(volumesFile())) {
+            try {
+                for (String line : Files.readAllLines(volumesFile())) {
+                    if (!line.isBlank()) {
+                        volumeStarts.add(Integer.parseInt(line.trim()));
+                    }
+                }
+            } catch (IOException e) {
+                throw new DataSetIoException("read", volumesFile(), e);
+            }
+        }
         mode = requested;
         // EXTEND は末尾から書き足す。ほかは先頭から
         position = requested == OpenMode.EXTEND ? records.size() : 0;
@@ -257,6 +327,10 @@ public final class SequentialDataSet implements DataSet {
             // 切り分けが途中で行き詰まった場所である。ここから先は読めない
             current = -1;
             return FileStatus.IO_ERROR;
+        }
+        // 読み終えた巻 (空の巻も) は、次の巻へ自動で移る
+        while (volume < volumeStarts.size() && position >= volumeEnd(volume)) {
+            volume++;
         }
         if (position >= records.size()) {
             atEnd = true;
@@ -361,6 +435,11 @@ public final class SequentialDataSet implements DataSet {
                 Files.write(path, join(records), StandardOpenOption.CREATE,
                         StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
                 attributes.write(path);
+                if (tape) {
+                    StringBuilder text = new StringBuilder();
+                    volumeStarts.forEach(start -> text.append(start).append('\n'));
+                    Files.writeString(volumesFile(), text);
+                }
             } catch (IOException e) {
                 throw new DataSetIoException("write", path, e);
             }

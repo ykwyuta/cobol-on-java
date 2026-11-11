@@ -465,6 +465,7 @@ public final class ProgramContext {
         file.limit(catalog.limitOf(ddName));
         file.member(catalog.isMemberOfLibrary(ddName));
         file.secondary(catalog.hasSecondary(ddName));
+        file.tape(catalog.isTape(ddName));
         return file;
     }
 

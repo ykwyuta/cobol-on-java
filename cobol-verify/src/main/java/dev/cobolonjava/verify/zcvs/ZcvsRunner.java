@@ -336,6 +336,50 @@ public final class ZcvsRunner {
         }
     }
 
+    /** 磁気テープの装置の型番。JCL の UNIT= にこれを書いた DD はテープである。 */
+    private static final java.util.Set<String> TAPE_UNITS =
+            java.util.Set.of("3400", "3420", "3480", "3490", "3590", "TAPE", "CART");
+
+    /**
+     * manifest が指す JCL から、磁気テープに割り当てた DD を拾う。
+     *
+     * <p>JCL 全体は読まない。要るのは DD 名と {@code UNIT=} だけである。続きの行
+     * ({@code //} のあとが空白で始まる行) は前の DD の続きとして読む。
+     */
+    private DataSetCatalog tapes(DataSetCatalog catalog, String module,
+                                 ZcvsManifest.Entry entry) {
+        if (entry.jcl() == null) {
+            return catalog;
+        }
+        Path jcl = suite.resolve(module).resolve(entry.jcl());
+        if (!java.nio.file.Files.isReadable(jcl)) {
+            return catalog;
+        }
+        try {
+            String dd = null;
+            for (String line : java.nio.file.Files.readAllLines(jcl)) {
+                if (!line.startsWith("//") || line.startsWith("//*")) {
+                    continue;
+                }
+                java.util.regex.Matcher named =
+                        java.util.regex.Pattern.compile("^//(\\S+)\\s+DD\\b").matcher(line);
+                if (named.find()) {
+                    dd = named.group(1);
+                } else if (!line.startsWith("// ")) {
+                    dd = null;
+                }
+                java.util.regex.Matcher unit =
+                        java.util.regex.Pattern.compile("UNIT=([A-Z0-9]+)").matcher(line);
+                if (dd != null && unit.find() && TAPE_UNITS.contains(unit.group(1))) {
+                    catalog.tape(dd);
+                }
+            }
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        return catalog;
+    }
+
     private Outcome execute(String module, String program, ZcvsManifest.Entry entry,
                             List<Generatable> compiled, Path directory) {
         CodePage codePage = entry.ccsid() == 0 ? CodePages.DEFAULT
@@ -345,7 +389,7 @@ public final class ZcvsRunner {
                 // 標準入力は読ませない。道具の起動のしかたで結果が変わってはならない
                 .withInput(() -> null)
                 .withCodePage(codePage)
-                .withCatalog(new DataSetCatalog(directory));
+                .withCatalog(tapes(new DataSetCatalog(directory), module, entry));
         Object thrown = limited("run-" + program, () -> {
             try {
                 Generated loader = new Generated();

@@ -2463,8 +2463,16 @@ public final class ProgramGenerator {
                     // 巻き戻さないという指示は、巻を持たない媒体では行いようがない。
                     // 開けたことは変わらないので、成功したときだけ 07 に置き換える
                     run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitLdcInsn(file.ddName());
                     run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "nonReel",
-                            "([B" + CONTEXT + ")[B", false);
+                            "([B" + CONTEXT + "Ljava/lang/String;)[B", false);
+                }
+                if (opened.reversed()) {
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitLdcInsn(file.name());
+                    run.visitLdcInsn(file.ddName());
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "reverse",
+                            "([B" + CONTEXT + "Ljava/lang/String;Ljava/lang/String;)[B", false);
                 }
                 run.visitVarInsn(Opcodes.ASTORE, slot);
                 status.run();

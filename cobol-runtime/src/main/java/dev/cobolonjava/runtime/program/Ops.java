@@ -552,6 +552,14 @@ public final class Ops {
      * 誤りのほうが伝えるべきことである (85 規格 VII-38, 4.2.4(3)F)。
      */
     public static byte[] nonReel(byte[] status, ProgramContext context) {
+        return nonReel(status, context, null);
+    }
+
+    /** 磁気テープなら巻き戻さずに開けるので、状態はそのままである。 */
+    public static byte[] nonReel(byte[] status, ProgramContext context, String ddName) {
+        if (ddName != null && context.catalog().isTape(ddName)) {
+            return status;
+        }
         return FileStatus.OK.equals(context.codePage().decode(status))
                 ? status(context, FileStatus.NON_REEL)
                 : status;
@@ -1156,7 +1164,19 @@ public final class Ops {
         if (!file.isOpen()) {
             return status(context, FileStatus.NOT_OPEN);
         }
-        return status(context, FileStatus.NON_REEL);
+        return status(context, file.nextVolume());
+    }
+
+    /**
+     * 逆から読む — {@code OPEN INPUT ... REVERSED}。開けたときだけ呼ぶ。逆から読めるのは
+     * 磁気テープだけである (QSAM の RDBACK)。ほかの媒体では 37 を返す。
+     */
+    public static byte[] reverse(byte[] opened, ProgramContext context, String name,
+                                 String ddName) {
+        if (!FileStatus.succeeded(context.codePage().decode(opened))) {
+            return opened;
+        }
+        return status(context, context.file(name, ddName).reverse());
     }
 
     /**
@@ -1168,6 +1188,10 @@ public final class Ops {
      */
     public static byte[] closeNoRewind(ProgramContext context, String name, String ddName) {
         String status = context.file(name, ddName).close();
+        if (context.catalog().isTape(ddName)) {
+            // 磁気テープは巻き戻さずに閉じられる
+            return status(context, status);
+        }
         return status(context, FileStatus.OK.equals(status) ? FileStatus.NON_REEL : status);
     }
 

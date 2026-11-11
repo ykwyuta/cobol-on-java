@@ -41,9 +41,18 @@ public final class ZcvsManifest {
      * @param exitCode   期待する復帰コード。書かれていなければ 0
      * @param diagnostic 断る診断に含まれるはずの語 (Zeus の文面)。無ければ {@code null}
      */
-    public record Entry(Expect expect, int ccsid, String parm, int exitCode, String diagnostic) {
+    public record Entry(Expect expect, int ccsid, String parm, int exitCode, String diagnostic,
+                        String jcl) {
 
-        static final Entry PLAIN = new Entry(Expect.RUN, 0, null, 0, null);
+        static final Entry PLAIN = new Entry(Expect.RUN, 0, null, 0, null, null);
+
+        public Entry(Expect expect, int ccsid, String parm, int exitCode, String diagnostic) {
+            this(expect, ccsid, parm, exitCode, diagnostic, null);
+        }
+
+        Entry withJcl(String value) {
+            return new Entry(expect, ccsid, parm, exitCode, diagnostic, value);
+        }
     }
 
     private final Map<String, Entry> entries;
@@ -90,15 +99,17 @@ public final class ZcvsManifest {
                     case "compile-error" -> Expect.COMPILE_ERROR;
                     case "compile-only" -> Expect.COMPILE_ONLY;
                     default -> Expect.RUN;
-                }, entry.ccsid(), entry.parm(), entry.exitCode(), entry.diagnostic());
+                }, entry.ccsid(), entry.parm(), entry.exitCode(), entry.diagnostic(), entry.jcl());
                 case "ccsid" -> new Entry(entry.expect(), Integer.parseInt(value), entry.parm(),
-                        entry.exitCode(), entry.diagnostic());
+                        entry.exitCode(), entry.diagnostic(), entry.jcl());
                 case "parm" -> new Entry(entry.expect(), entry.ccsid(), value, entry.exitCode(),
-                        entry.diagnostic());
+                        entry.diagnostic(), entry.jcl());
                 case "expect_exit_code" -> new Entry(entry.expect(), entry.ccsid(), entry.parm(),
-                        Integer.parseInt(value), entry.diagnostic());
+                        Integer.parseInt(value), entry.diagnostic(), entry.jcl());
                 case "diagnostic_contains" -> new Entry(entry.expect(), entry.ccsid(),
-                        entry.parm(), entry.exitCode(), value);
+                        entry.parm(), entry.exitCode(), value, entry.jcl());
+                // 割当てを書いた JCL。DD の装置 (UNIT) を読むために要る
+                case "jcl" -> entry.withJcl(value);
                 default -> entry;
             };
         }

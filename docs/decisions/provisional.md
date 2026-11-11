@@ -6152,3 +6152,17 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 **どこがずれうるか**: 入口変数、GENERIC、CONTROLLED と `ALLOCATE`、`ON` の条件、前処理、ストリームの入力、編集の PICTURE、式の上下限を持つ配列は無い。断るので黙って違う値にはならないが、動かせない資産が多い。
 
 **解消条件**: Zeus の `zeus-pli` を移す。字句・構文・意味・中間表現・実行の段に分け、有効範囲を静的にする。ZPVS を増分ごとに測る。
+
+## P-198 磁気テープは巻の境目と逆読みだけを持つ
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 暫定 (2026-11-11) |
+| 場所 | `SequentialDataSet` (`tape`、`nextVolume`、`reverse`)、`DataSetCatalog.tape`、`ZcvsRunner.tapes` |
+| 関連要件 | FR-102、FR-113 |
+
+**暫定の扱い**: 割当てがテープと告げたファイルは巻の境目を持つ。`CLOSE ... REEL / UNIT` で次の巻へ移り、読むときは巻をまたいで続く。境目はデータの隣の `.volumes` に置く。`OPEN INPUT ... REVERSED` はテープなら逆から読み、ほかの媒体では状態 37 (開き方が媒体に合わない) にする。テープの `WITH NO REWIND` は 00 である。
+
+**どこがずれうるか**: ディスクの `REVERSED` を 37 にするのは、QSAM の逆読み (RDBACK) がテープだけであることからの判断で、実機と突き合わせていない。巻のラベル、VOL=SER、多巻のときの巻の大きさによる自動の切り替えは持たない。いまテープと知るのは ZCVS の道具だけで、ジョブ (`cobol-job`) の JCL の `UNIT=` はまだ見ていない。
+
+**解消条件**: ジョブの DD の `UNIT=` からテープを決める。z/OS probe でディスクの `REVERSED` の状態を確かめる。
