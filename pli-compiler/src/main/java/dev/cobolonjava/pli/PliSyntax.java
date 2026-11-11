@@ -365,13 +365,13 @@ final class PliSyntax {
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
                 List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
-                String storage, Defined defined, String unsupported) {
+                String storage, Defined defined, String unsupported, String picture) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
-                    dimensions, initialItems, false, null, null, null);
+                    dimensions, initialItems, false, null, null, null, null);
         }
 
         boolean controlled() {
@@ -382,7 +382,7 @@ final class PliSyntax {
         Decl withDimensions(List<Bound> bounds) {
             return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
                     varying, List.copyOf(bounds), initialItems, unsigned, storage, defined,
-                    unsupported);
+                    unsupported, picture);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -1266,7 +1266,8 @@ final class PliSyntax {
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
                     dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage,
-                    defined(part), unsupportedAttribute(part));
+                    defined(part), unsupportedAttribute(part),
+                    info.type == Type.PICTURE ? pictureSpecification(part) : null);
         }
 
         /**
@@ -1516,6 +1517,17 @@ final class PliSyntax {
                 }
             }
             return new TypeInfo(inherited, inheritedPrecision, inheritedScale);
+        }
+
+        /** 宣言の PICTURE の指定の字。 */
+        private static String pictureSpecification(List<Token> tokens) {
+            for (int i = 0; i + 1 < tokens.size(); i++) {
+                if ((tokens.get(i).is("PIC") || tokens.get(i).is("PICTURE"))
+                        && tokens.get(i + 1).kind() == Kind.STRING) {
+                    return tokens.get(i + 1).text();
+                }
+            }
+            return null;
         }
 
         /** まだ持たない型の属性。宣言は翻訳で通し、実行でその名を使うと止まる。 */
@@ -2209,10 +2221,9 @@ final class PliSyntax {
      * 数える。以前は '9' の字を数えていたので、{@code '(9)9'} (9 が 9 個) を 2 桁と読んでいた。
      *
      * <ul>
-     *   <li>{@code 9} と高々 1 つの {@code V} だけなら数の PICTURE。FIXED DEC(桁数, V より右の桁数) の
-     *       値を持ち、記憶域は数字だけ (V は場所を取らない)</li>
      *   <li>{@code X} / {@code A} / {@code 9} だけなら文字の PICTURE。CHAR と同じに扱う</li>
-     *   <li>ほかの字 (Z、S、$、小数点、編集の字など) はまだ持たないので断る</li>
+     *   <li>それ以外は数の PICTURE ({@link PliPicture})。FIXED DEC(数字の位置の数, V より右の数字の
+     *       数 - F) の値を持ち、記憶域は編集した字の像である。以前は 9 と V だけを持っていた</li>
      * </ul>
      */
     private static TypeInfo picture(Token specification) {
@@ -2233,16 +2244,21 @@ final class PliSyntax {
             }
         }
         String picture = expanded.toString();
-        if (!picture.isEmpty() && picture.matches("9*V?9*")) {
-            int point = picture.indexOf('V');
-            int digits = picture.replace("V", "").length();
-            return new TypeInfo(Type.PICTURE, digits, point < 0 ? 0 : picture.length() - point - 1);
-        }
-        if (!picture.isEmpty() && picture.matches("[XA9]*")) {
+        if (!picture.isEmpty() && picture.matches("[XA9]*") && picture.matches(".*[XA].*")) {
             return new TypeInfo(Type.CHAR, picture.length(), 0);
         }
-        throw new ParseFailure(specification, "PICTURE '" + specification.text()
-                + "' is not supported yet; only 9 and V, or X, A and 9");
+        PliPicture numeric;
+        try {
+            numeric = PliPicture.parse(specification.text());
+        } catch (IllegalArgumentException invalid) {
+            throw new ParseFailure(specification, "PICTURE '" + specification.text() + "': "
+                    + invalid.getMessage());
+        }
+        if (numeric == null) {
+            throw new ParseFailure(specification, "PICTURE '" + specification.text()
+                    + "' mixes character and numeric characters");
+        }
+        return new TypeInfo(Type.PICTURE, numeric.precision, numeric.scale);
     }
 
     private static final class ProcedureBuilder {

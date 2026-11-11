@@ -930,6 +930,7 @@ public final class PliRuntime {
                         child.scale(), view, mapping.bitShift(i));
                 variable.varying = child.varying();
                 variable.unsigned = child.unsigned();
+                variable.picture = pictureOf(child);
                 env.put(variable);
                 env.alias(tree.get(index).name() + "." + child.name(), variable);
                 if (index > 0) {
@@ -1066,6 +1067,11 @@ public final class PliRuntime {
                     declaration.scale(), base.view.subView(position - 1, length)));
         }
 
+        private static PliPicture pictureOf(PliSyntax.Decl declaration) {
+            return declaration.type() == PliSyntax.Type.PICTURE && declaration.picture() != null
+                    ? PliPicture.parse(declaration.picture()) : null;
+        }
+
         private void declareScalar(PliSyntax.Decl declaration, Env env, DataView area,
                                    int offset, String alias) {
             if (declaration.defined() != null) {
@@ -1130,6 +1136,7 @@ public final class PliRuntime {
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
             variable.unsigned = declaration.unsigned();
+            variable.picture = pictureOf(declaration);
             if (!declaration.dimensions().isEmpty()) {
                 declareElements(variable, declaration,
                         StructureMapping.unaligned(List.of(declaration), 0), 0);
@@ -1163,6 +1170,7 @@ public final class PliRuntime {
                         declaration.precision(), declaration.scale(),
                         array.view.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
                 element.varying = declaration.varying();
+                element.picture = pictureOf(declaration);
                 element.unsigned = declaration.unsigned();
                 array.elements.add(element);
             }
@@ -1634,6 +1642,7 @@ public final class PliRuntime {
             Var dummy = new Var(declaration.name(), declaration.type(), precision,
                     declaration.scale(), Storage.allocate(length).whole());
             dummy.varying = declaration.varying();
+            dummy.picture = pictureOf(declaration);
             dummy.write(value, context);
             env.alias(declaration.name(), dummy);
         }
@@ -2895,6 +2904,8 @@ public final class PliRuntime {
         final List<Var> elements = new ArrayList<>();
         /** CONTROLLED なら、その世代の積み重ね。 */
         Generations generations;
+        /** 数の PICTURE なら、その指定。 */
+        PliPicture picture;
         /** まだ持たない型の属性で宣言した名なら、その属性。参照すると止まる。 */
         String unsupported;
         /** CONTROLLED をまだ ALLOCATE していない印。参照すると止まる。 */
@@ -2927,7 +2938,7 @@ public final class PliRuntime {
                 // 数の PICTURE は、出力では字をそのまま送り (LRM "For numeric character values, the
                 // character value is transmitted")、演算では FIXED DEC(p,q) として扱う
                 case PICTURE -> new NumericPicture(
-                        context.codePage().decode(view.toByteArray()), precision, scale);
+                        context.codePage().decode(view.toByteArray()), precision, scale, picture);
                 // FIXED BIN(p,q) の記憶域は 2 の補数の整数で、値はそれを 2 の q 乗で割ったもの
                 case BINARY -> FixedValue.binary(new BigDecimal(
                         unsigned ? new java.math.BigInteger(1, view.toByteArray())
@@ -3120,6 +3131,20 @@ public final class PliRuntime {
          * 符号の字を持たない PICTURE に負の値は入らないので、黙って符号を落とさずに止める。
          */
         private String picture(Object value) {
+            if (picture != null) {
+                BigDecimal number = Executor.number(value);
+                if (number.signum() < 0 && !picture.signed()) {
+                    throw new PliExecutionException("a negative value cannot be stored in the"
+                            + " unsigned PICTURE of " + name + " yet: " + number);
+                }
+                PliPicture.Edited edited = picture.isFloat() ? picture.editFloat(number)
+                        : picture.edit(number);
+                if (edited.lost()) {
+                    throw new PliExecutionException("SIZE: " + number + " does not fit the"
+                            + " PICTURE of " + name);
+                }
+                return edited.text();
+            }
             BigDecimal number = Executor.number(value).setScale(scale, java.math.RoundingMode.DOWN);
             if (number.signum() < 0) {
                 throw new PliExecutionException("a negative value cannot be stored in the unsigned"
@@ -3154,9 +3179,23 @@ public final class PliRuntime {
      * 数の PICTURE の値。字の形を持ち、演算に使うときだけ FIXED DEC(p,q) に直す。出力は字を
      * 送るだけなので、数字でない字が入っていても書ける。
      */
-    private record NumericPicture(String text, int precision, int scale) {
+    private record NumericPicture(String text, int precision, int scale, PliPicture picture) {
         FixedValue fixed() {
-            return FixedValue.decimal(Executor.number(text).movePointLeft(scale), precision, scale);
+            if (picture == null) {
+                return FixedValue.decimal(Executor.number(text).movePointLeft(scale), precision,
+                        scale);
+            }
+            BigDecimal value;
+            try {
+                value = picture.value(text);
+            } catch (UnsupportedOperationException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            if (value == null) {
+                // 像が PICTURE に合わない。実機では CONVERSION になる
+                throw new Condition("CONVERSION", null, 600, text);
+            }
+            return FixedValue.decimal(value, precision, scale);
         }
     }
 

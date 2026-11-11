@@ -286,6 +286,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `DEFINED` (文字の重ねと iSUB) | 51 / 68 | 271 / 272 |
 | `REFER`、`CURRENTSIZE` | 54 / 68 | 278 / 279 |
 | 配列の断面 `A(*,2)`、`BY NAME`、擬似変数 `UNSPEC` | 55 / 68 | 285 / 286 |
+| 数の編集の PICTURE (Zeus `picture.rs` を移した) | 56 / 68 | 291 / 292 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -349,6 +350,13 @@ WIDECHAR、GRAPHIC、LABEL などまだ持たない型の宣言は、正しい P
 仮の形で求められる。`ALLOCATE` は宣言の式 (N) で形を決めて記憶域を取り、対象に上限を
 入れる。対象へ代入したら重ね直すので、後ろの要素 (TAIL) の位置が動く。REFER は BASED の
 構造の中で、前に宣言したスカラーの要素だけを対象にでき、それ以外は翻訳で断る。
+
+数の PICTURE は Zeus の `picture.rs` を移した (`PliPicture`)。9 Z * Y V , . / B $ S + - CR DB
+T I R F(n)、浮動の字の並び、浮動小数の PICTURE (仮数 E|K 指数) を持つ。値は編集した字の像と
+して記憶域に置き、算術では FIXED DEC(数字の位置の数, V より右の数字の数 - F) として読む。
+記憶域の長さは像の長さであり、以前は数字の位置の数にしていた (9 と V だけの PICTURE で
+しか合わない)。浮動小数の PICTURE は書けるが、値を読むことは FLOAT を持たないので断る。
+編集の期待値は Zeus の検査をそのまま移したもので、実機と突き合わせていない。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

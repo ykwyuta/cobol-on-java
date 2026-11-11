@@ -126,9 +126,25 @@ class StructureAndPictureTest {
     }
 
     @Test
-    @DisplayName("編集の字を持つ PICTURE はまだ持たないので翻訳で断る")
-    void editingPicturesAreRefused() {
-        PliCompiler.Result result = compile("", "DCL P PIC'ZZ9.99';");
+    @DisplayName("編集の PICTURE は像を記憶域に置く。V の無い '.' は挿入の字で、小数点にならない")
+    void editingPicturesStoreTheirImage() throws Exception {
+        // 以前はこの PICTURE を翻訳で断っていた。ZZ9.99 は V が無いので整数の 5 桁であり、
+        // 12.3 は 12 になって '  0.12' と編集される
+        assertEquals(" 12.30,  0.12,12.30", run("""
+                DCL P PIC'ZZ9V.99';
+                DCL Q PIC'ZZ9.99';
+                P = 12.3;
+                Q = 12.3;
+                PUT SKIP LIST(P);
+                PUT SKIP LIST(Q);
+                PUT SKIP LIST(TRIM(CHAR(P + 0)));
+                """));
+    }
+
+    @Test
+    @DisplayName("文字の字と数の編集の字を混ぜた PICTURE は翻訳で断る")
+    void mixedPicturesAreRefused() {
+        PliCompiler.Result result = compile("", "DCL P PIC'XZ9';");
         assertFalse(result.succeeded());
         assertTrue(result.diagnostics().toString().contains("PICTURE"));
     }

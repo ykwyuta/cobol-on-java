@@ -214,7 +214,10 @@ final class StructureMapping {
         return switch (decl.type()) {
             // VARYING は今の長さを持つ半語が前に付く
             case CHAR -> Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0);
-            case PICTURE -> Math.max(1, decl.precision());
+            // 記憶域は編集した字の像の長さである (挿入の字、符号、通貨記号も字を取る)。
+            // 以前は数字の位置の数にしており、9 と V だけの PICTURE でしか合わなかった
+            case PICTURE -> decl.picture() != null ? PliPicture.parse(decl.picture()).length
+                    : Math.max(1, decl.precision());
             // ALIGNED のビット列は 8 ビットごとに 1 byte
             case BIT -> Math.max(1, (decl.precision() + 7) / 8);
             case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
