@@ -103,7 +103,7 @@ public record DataReference(DataItem item, List<Subscript> subscripts, RefMod re
             if (!(refMod.leftmost() instanceof Subscript.Constant leftmost)) {
                 return OptionalInt.empty();
             }
-            offset += leftmost.value() - 1;
+            offset += (leftmost.value() - 1) * characterWidth();
         }
         return OptionalInt.of(offset);
     }
@@ -121,15 +121,30 @@ public record DataReference(DataItem item, List<Subscript> subscripts, RefMod re
         if (refMod == null) {
             return OptionalInt.of(item.length());
         }
+        int unit = characterWidth();
         if (refMod.length() == null) {
             // 長さの省略は「項目の終わりまで」である
             if (refMod.leftmost() instanceof Subscript.Constant leftmost) {
-                return OptionalInt.of(item.length() - (leftmost.value() - 1));
+                return OptionalInt.of(item.length() - (leftmost.value() - 1) * unit);
             }
             return OptionalInt.empty();
         }
         return refMod.length() instanceof Subscript.Constant length
-                ? OptionalInt.of(length.value())
+                ? OptionalInt.of(length.value() * unit)
                 : OptionalInt.empty();
+    }
+
+    /**
+     * 部分参照の位置と長さの単位が占めるバイト数。
+     *
+     * <p>国字の項目の部分参照は<b>字</b>で数える (Enterprise COBOL 言語解説書 "Reference
+     * modification": 国字項目では位置と長さは国字の字の位置である)。1 字は 2 byte なので、
+     * バイトの位置へ直すときにこれを掛ける。以前は国字の部分参照をバイトで数え、
+     * 種別も英数字にしていた。
+     */
+    public int characterWidth() {
+        return item.isElementary() && item.picture() != null
+                && item.picture().category()
+                        == dev.cobolonjava.runtime.picture.Picture.Category.NATIONAL ? 2 : 1;
     }
 }

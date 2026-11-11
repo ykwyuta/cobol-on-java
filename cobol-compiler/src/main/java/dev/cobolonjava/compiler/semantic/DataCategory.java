@@ -50,7 +50,8 @@ public enum DataCategory {
      */
     public static DataCategory of(DataReference reference) {
         if (reference.refMod() != null) {
-            return ALPHANUMERIC;
+            // 国字の項目の一部は国字のままである
+            return reference.characterWidth() == 2 ? NATIONAL : ALPHANUMERIC;
         }
         return of(reference.item());
     }

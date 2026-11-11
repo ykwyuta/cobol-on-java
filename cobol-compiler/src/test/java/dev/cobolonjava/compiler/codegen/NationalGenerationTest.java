@@ -304,12 +304,8 @@ class NationalGenerationTest {
                 "STRING N DELIMITED BY SIZE INTO X.").contains("cannot be used"));
     }
 
-    @Test
-    @DisplayName("国字の部分参照は断る (位置は文字で数えるため)")
-    void refusesReferenceModification() {
-        assertTrue(refusal(List.of("01 N PIC N(3).", "01 M PIC N(1)."),
-                "MOVE N(2:1) TO M.").contains("reference modification"));
-    }
+    // 「国字の部分参照は断る」はここにあった。位置を字で数えるようにしたので通す。
+    // 振る舞いは BatchAndInspectTest.countsNationalReferenceModificationInCharacters が測る
 
     @Test
     @DisplayName("国字編集、国字の数字、DBCS (USAGE DISPLAY の PIC N) は断る")

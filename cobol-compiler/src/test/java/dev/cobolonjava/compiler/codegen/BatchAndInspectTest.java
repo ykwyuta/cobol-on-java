@@ -316,4 +316,28 @@ class BatchAndInspectTest {
                     String.format("%02X", program.initialStorage()[0] & 0xFF), expected[0]);
         }
     }
+
+    @Test
+    @DisplayName("国字の部分参照は字で数え、結果は国字である")
+    void countsNationalReferenceModificationInCharacters() {
+        // 以前は断っていた。1 字は 2 byte なので、バイトで数えると字の途中を指す
+        assertEquals(List.of("LAST", "TAIL", "REPL"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-N PIC N(4) USAGE NATIONAL.",
+                "01 WS-RAW REDEFINES WS-N PIC X(8).",
+                "01 WS-SHORT PIC N(2) USAGE NATIONAL.",
+                "01 WS-SRAW REDEFINES WS-SHORT PIC X(4).",
+                "01 WS-I PIC 9 VALUE 3.",
+                "PROCEDURE DIVISION.",
+                "    MOVE N'ABCD' TO WS-N.",
+                "    IF WS-N(4:1) = N'D' DISPLAY 'LAST'.",
+                "    MOVE WS-N(WS-I:) TO WS-SHORT.",
+                "    IF WS-SRAW = X'00430044' DISPLAY 'TAIL'.",
+                "    MOVE N'XY' TO WS-N(2:2).",
+                "    IF WS-RAW = X'0041005800590044' DISPLAY 'REPL'.",
+                "    STOP RUN.")));
+    }
 }

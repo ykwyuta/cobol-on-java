@@ -7623,7 +7623,7 @@ public final class ProgramGenerator {
                 return null;
             }
             if (reference.refMod().leftmost() instanceof DataReference.Subscript.Constant value) {
-                fixed += value.value() - 1;
+                fixed += (value.value() - 1) * reference.characterWidth();
             } else {
                 variable.add(leftmost);
             }
@@ -7685,8 +7685,9 @@ public final class ProgramGenerator {
             // 長さが定数でない形はそもそも生成できない (暫定判断 P-027)
             return;
         }
-        push(length.getAsInt());
-        push(reference.item().length());
+        // 範囲は字で確かめる。国字なら 1 字が 2 byte である
+        push(length.getAsInt() / reference.characterWidth());
+        push(reference.item().length() / reference.characterWidth());
         run.visitLdcInsn(describe(reference.item()));
         run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "checkRefMod",
                 "(IIILjava/lang/String;)I", false);
@@ -7712,6 +7713,10 @@ public final class ProgramGenerator {
             emitRefModCheck(reference, origin);
             run.visitInsn(Opcodes.ICONST_1);
             run.visitInsn(Opcodes.ISUB);
+            if (reference.characterWidth() != 1) {
+                push(reference.characterWidth());
+                run.visitInsn(Opcodes.IMUL);
+            }
             run.visitInsn(Opcodes.IADD);
         };
     }
@@ -7768,8 +7773,17 @@ public final class ProgramGenerator {
             return () -> push(length);
         }
         DataReference.RefMod refMod = reference.refMod();
+        int unit = reference.characterWidth();
         if (refMod.length() != null) {
-            return planSubscriptValue(refMod.length(), origin);
+            Runnable characters = planSubscriptValue(refMod.length(), origin);
+            if (characters == null || unit == 1) {
+                return characters;
+            }
+            return () -> {
+                characters.run();
+                push(unit);
+                run.visitInsn(Opcodes.IMUL);
+            };
         }
         // 長さの省略。項目の終わりまでなので「全体の長さ - (開始位置 - 1)」である
         Runnable leftmost = planSubscriptValue(refMod.leftmost(), origin);
@@ -7778,8 +7792,12 @@ public final class ProgramGenerator {
         }
         int whole = reference.item().length();
         return () -> {
-            push(whole + 1);
+            push(whole + unit);
             leftmost.run();
+            if (unit != 1) {
+                push(unit);
+                run.visitInsn(Opcodes.IMUL);
+            }
             run.visitInsn(Opcodes.ISUB);
         };
     }

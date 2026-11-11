@@ -144,9 +144,8 @@ public final class NationalGuard {
         if (DataCategory.of(reference.item()) != DataCategory.NATIONAL) {
             return;
         }
-        if (reference.refMod() != null) {
-            refuse(origin, "reference modification of a national item");
-        } else if (!allowed) {
+        // 部分参照は字で数える (DataReference.characterWidth)。以前はここで断っていた
+        if (!allowed) {
             refuse(origin, "the national item "
                     + (reference.item().name() == null ? "FILLER" : reference.item().name()));
         }
