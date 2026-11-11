@@ -48,7 +48,10 @@ public final class PliPreprocessor {
         for (int depth = 0; depth < 32; depth++) {
             Matcher matcher = INCLUDE.matcher(current);
             if (!matcher.find()) {
-                return new Result(current, List.copyOf(diagnostics));
+                // include を展開しきってから、マクロ前処理の文を実行する
+                PliMacroProcessor.Result macro = PliMacroProcessor.process(fileName, current);
+                diagnostics.addAll(macro.diagnostics());
+                return new Result(macro.source(), List.copyOf(diagnostics));
             }
             StringBuffer expanded = new StringBuffer();
             do {

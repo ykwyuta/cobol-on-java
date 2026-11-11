@@ -244,8 +244,8 @@ z/OS の決めごと (内部表現、`TRUNC`、副プログラムの連絡、入
 ([設計 29](docs/design/29-zcvs.md))。
 
 同じ道具で Zeus の HLASM のスイート (ZHVS) と PL/I のスイート (ZPVS) も流せる。
-いまは ZHVS が 125 本のうち 125 本 (判定 577 / 577)、ZPVS が 68 本のうち 43 本
-(判定 237 / 243) である。PL/I は言語の広さがまだ足りない。
+いまは ZHVS が 125 本のうち 125 本 (判定 577 / 577)、ZPVS が 68 本のうち 46 本
+(判定 244 / 250) である。PL/I は言語の広さがまだ足りない。
 
 ```
 java -cp <classpath> dev.cobolonjava.verify.Main zcvs path/to/Zeus/zcvs -o zcvs-report.txt
