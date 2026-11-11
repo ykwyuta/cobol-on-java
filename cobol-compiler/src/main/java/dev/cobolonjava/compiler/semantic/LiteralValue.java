@@ -140,6 +140,33 @@ public sealed interface LiteralValue {
     }
 
     /** 図形定数。項目の長さいっぱいまで埋める。 */
+    /**
+     * DBCS の定数 ({@code G'..'}、{@code NSYMBOL(DBCS)} の下の {@code N'..'})。バイト列は翻訳時の
+     * コードページで作り、SO / SI で囲まない。
+     */
+    record Dbcs(String text, byte[] bytes) implements LiteralValue {
+
+        public Dbcs {
+            Objects.requireNonNull(text, "text");
+            bytes = bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return bytes.clone();
+        }
+
+        static Dbcs of(String text) {
+            try {
+                return new Dbcs(text, dev.cobolonjava.runtime.data.Dbcs.fromText(text,
+                        CompileCodePage.current()));
+            } catch (RuntimeException failure) {
+                throw new IllegalArgumentException(failure.getMessage()
+                        + " (a DBCS literal needs a DBCS code page such as CODEPAGE(939))");
+            }
+        }
+    }
+
     record Figure(FigurativeConstant constant) implements LiteralValue {
     }
 
@@ -240,6 +267,10 @@ public sealed interface LiteralValue {
      */
     static LiteralValue literalOf(String spelling) {
         char first = Character.toUpperCase(spelling.charAt(0));
+        if (first == 'G' || (first == 'N' && CompileCodePage.dbcsSymbol()
+                && Character.toUpperCase(spelling.charAt(1)) != 'X')) {
+            return Dbcs.of(unquote(spelling.substring(1)));
+        }
         if (first == 'N') {
             if (Character.toUpperCase(spelling.charAt(1)) == 'X') {
                 byte[] bytes = HexFormat.of().parseHex(spelling, 3, spelling.length() - 1);

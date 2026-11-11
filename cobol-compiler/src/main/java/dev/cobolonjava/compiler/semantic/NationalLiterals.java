@@ -24,6 +24,10 @@ public final class NationalLiterals {
         if (value instanceof LiteralValue.National national) {
             return national.bytes();
         }
+        if (value instanceof LiteralValue.Dbcs dbcs) {
+            // DBCS の定数を国字の受取側へ。字に直してから UTF-16 にする
+            return dbcs.text().getBytes(java.nio.charset.StandardCharsets.UTF_16BE);
+        }
         if (value instanceof LiteralValue.Figure figure) {
             char unit = switch (figure.constant()) {
                 case SPACE -> 0x0020;

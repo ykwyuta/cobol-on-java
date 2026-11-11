@@ -61,6 +61,20 @@ class BatchAndInspectTest {
         return sink.toString(StandardCharsets.UTF_8).lines().toList();
     }
 
+    /** 初期値の像をバイトの 16 進で返す。 */
+    private static String initialHex(List<String> lines) throws ReflectiveOperationException {
+        CobolCompiler.Result result = compile(lines);
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        CobolProgram program = (CobolProgram) new GeneratedLoader()
+                .define(result.className(), result.classFile())
+                .getDeclaredConstructor().newInstance();
+        StringBuilder hex = new StringBuilder();
+        for (byte b : program.initialStorage()) {
+            hex.append(String.format("%02X", b & 0xFF));
+        }
+        return hex.toString();
+    }
+
     @Test
     @DisplayName("INSPECT は関数の値も数えられる。元の項目は変わらない")
     void talliesAFunctionValue() {
@@ -379,5 +393,71 @@ class BatchAndInspectTest {
             lines.addAll(List.of("PROCEDURE DIVISION.", "    STOP RUN."));
             assertFalse(compile(lines).succeeded(), items.toString());
         }
+    }
+
+    @Test
+    @DisplayName("DBCS の項目は SO / SI を持たず、余りは X'4040' で埋まる")
+    void storesDbcsWithoutShiftCodes() throws ReflectiveOperationException {
+        // 日 は IBM-939 の 2 バイト文字 X'4562'。英数字の項目に書けば SO / SI で囲まれる
+        assertEquals("456240404562456240400E45620F", initialHex(List.of(
+                "CBL CODEPAGE(939)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 G1 PIC G(2) DISPLAY-1 VALUE G'日'.",
+                "01 G2 PIC G(3) DISPLAY-1 VALUE G'日日'.",
+                "01 X1 PIC X(4) VALUE '日'.",
+                "PROCEDURE DIVISION.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("NSYMBOL(DBCS) の下では PIC N と N'..' が DBCS である")
+    void treatsPictureNAsDbcsUnderNsymbolDbcs() throws ReflectiveOperationException {
+        assertEquals("45624040", initialHex(List.of(
+                "CBL CODEPAGE(939),NSYMBOL(DBCS)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 N1 PIC N(2) VALUE N'日'.",
+                "PROCEDURE DIVISION.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("DBCS を国字へ移すと字に直り、DBCS の空白は和字の空白になる")
+    void convertsDbcsToNational() {
+        assertEquals(List.of("65E53000"), run(List.of(
+                "CBL CODEPAGE(939)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 G1 PIC G(2) DISPLAY-1.",
+                "01 N1 PIC N(2) USAGE NATIONAL.",
+                "01 N1-RAW REDEFINES N1 PIC X(4).",
+                "PROCEDURE DIVISION.",
+                "    MOVE G'日' TO G1.",
+                "    MOVE G1 TO N1.",
+                "    IF N1-RAW = X'65E53000' DISPLAY '65E53000'.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("DBCS は英数字へは移せない")
+    void refusesToMoveDbcsToAlphanumeric() {
+        assertFalse(compile(List.of(
+                "CBL CODEPAGE(939)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 G1 PIC G(2) DISPLAY-1.",
+                "01 X1 PIC X(4).",
+                "PROCEDURE DIVISION.",
+                "    MOVE G1 TO X1.",
+                "    STOP RUN.")).succeeded());
     }
 }

@@ -29,7 +29,9 @@ public enum DataCategory {
      * 2 バイトを占める。英数字とは<b>バイトの意味が違う</b>ので、英数字のように扱ってはならない
      * ({@link #isAlphanumericLike} は偽)。
      */
-    NATIONAL;
+    NATIONAL,
+    /** DBCS。{@code PIC G} の項目と {@code G'..'} の定数。1 字 2 バイトで、SO / SI を持たない。 */
+    DBCS;
 
     /** 数値として扱う分類かどうか。 */
     public boolean isNumeric() {
@@ -78,6 +80,7 @@ public enum DataCategory {
             case NUMERIC_EDITED -> NUMERIC_EDITED;
             case NUMERIC -> picture.scale() > 0 ? NUMERIC_NONINTEGER : NUMERIC_INTEGER;
             case NATIONAL -> NATIONAL;
+            case DBCS -> DBCS;
         };
     }
 
@@ -90,6 +93,9 @@ public enum DataCategory {
     public static DataCategory of(LiteralValue value, boolean numericReceiver) {
         if (value instanceof LiteralValue.National) {
             return NATIONAL;
+        }
+        if (value instanceof LiteralValue.Dbcs) {
+            return DBCS;
         }
         if (value instanceof LiteralValue.Number number) {
             return number.value().scale() > 0 ? NUMERIC_NONINTEGER : NUMERIC_INTEGER;

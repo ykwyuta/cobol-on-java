@@ -205,9 +205,12 @@ public final class CobolCompiler {
             dev.cobolonjava.compiler.semantic.CompileCodePage.set(effective.value("CODEPAGE")
                     .filter(OptionSupport::codePageSupported)
                     .map(dev.cobolonjava.runtime.codepage.CodePages::forName).orElse(null));
+            dev.cobolonjava.compiler.semantic.CompileCodePage.setDbcsSymbol(effective
+                    .value("NSYMBOL").map(v -> v.equalsIgnoreCase("DBCS")).orElse(false));
             return compileWith(fileName, source, effective);
         } finally {
             dev.cobolonjava.compiler.semantic.CompileCodePage.set(null);
+            dev.cobolonjava.compiler.semantic.CompileCodePage.setDbcsSymbol(false);
         }
     }
 

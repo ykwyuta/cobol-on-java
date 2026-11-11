@@ -15,6 +15,23 @@ import dev.cobolonjava.runtime.codepage.CodePages;
 public final class CompileCodePage {
 
     private static final ThreadLocal<CodePage> CURRENT = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> DBCS_SYMBOL = new ThreadLocal<>();
+
+    /**
+     * {@code NSYMBOL(DBCS)} か。そのとき {@code PIC N} と {@code N'..'} は国字ではなく DBCS である
+     * (Enterprise COBOL 言語解説書 "NSYMBOL")。
+     */
+    public static boolean dbcsSymbol() {
+        return Boolean.TRUE.equals(DBCS_SYMBOL.get());
+    }
+
+    public static void setDbcsSymbol(boolean value) {
+        if (value) {
+            DBCS_SYMBOL.set(true);
+        } else {
+            DBCS_SYMBOL.remove();
+        }
+    }
 
     private CompileCodePage() {
     }

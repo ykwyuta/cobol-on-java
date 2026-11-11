@@ -664,8 +664,12 @@ public final class DataDivisionBuilder {
             case "NATIONAL" -> Usage.NATIONAL;
             default -> null;
         };
+        if (name.equals("DISPLAY-1")) {
+            // DBCS。数字の USAGE ではないので Usage には持たず、PICTURE の種別で表す
+            item.markDisplay1();
+            return;
+        }
         if (usage == null) {
-            // DISPLAY-1 はランタイムが未対応 (暫定判断 P-006)
             report(origin, "USAGE " + name + " is not supported yet");
             return;
         }
@@ -1975,9 +1979,25 @@ public final class DataDivisionBuilder {
             report(item.origin(), "elementary item requires a PICTURE clause: " + describe(item));
             return 0;
         }
+        if (picture.category() == Picture.Category.NATIONAL
+                && (item.isDisplay1() || (CompileCodePage.dbcsSymbol() && usage == null))) {
+            // PIC N に DISPLAY-1 と書くか、NSYMBOL(DBCS) の下で USAGE を書かなければ DBCS である
+            picture = picture.asDbcs();
+            item.setPicture(picture);
+        }
+        if (item.isDisplay1() && picture.category() != Picture.Category.DBCS) {
+            report(item.origin(), "USAGE DISPLAY-1 requires PICTURE G or N: " + describe(item));
+            return picture.size();
+        }
+        if (picture.category() == Picture.Category.DBCS) {
+            if (usage != null && usage != Usage.DISPLAY) {
+                report(item.origin(), "a DBCS item (PICTURE G) requires USAGE DISPLAY-1: "
+                        + describe(item));
+            }
+            return picture.size() * 2;
+        }
         if (picture.category() == Picture.Category.NATIONAL) {
-            // PIC N は既定 (NSYMBOL(NATIONAL)) で国字である。USAGE DISPLAY と書けば DBCS
-            // (DISPLAY-1) の意味になるが、それはまだ持たない
+            // PIC N は既定 (NSYMBOL(NATIONAL)) で国字である
             if (usage != null && usage != Usage.NATIONAL) {
                 report(item.origin(), "PICTURE N requires USAGE NATIONAL (DBCS items are not"
                         + " supported yet): " + describe(item));

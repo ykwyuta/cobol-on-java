@@ -340,6 +340,16 @@ public final class DataItem {
 
     /** 下位の項目を持たない項目かどうか。 */
     private boolean groupNational;
+    private boolean display1;
+
+    /** {@code USAGE DISPLAY-1} を書いた。DBCS の項目である。 */
+    void markDisplay1() {
+        display1 = true;
+    }
+
+    public boolean isDisplay1() {
+        return display1;
+    }
 
     /** {@code GROUP-USAGE NATIONAL} を書いた。 */
     void markGroupNational() {

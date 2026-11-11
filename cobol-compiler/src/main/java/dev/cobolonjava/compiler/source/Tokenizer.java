@@ -260,8 +260,12 @@ public final class Tokenizer {
      */
     private boolean isNationalLiteralStart(int j) {
         char c = text.charAt(j);
-        if (c != 'N' && c != 'n' || j + 1 >= text.length()) {
+        if (c != 'N' && c != 'n' && c != 'G' && c != 'g' || j + 1 >= text.length()) {
             return false;
+        }
+        if (c == 'G' || c == 'g') {
+            // DBCS の定数 G'..'。16 進の形は持たない
+            return text.charAt(j + 1) == '\'' || text.charAt(j + 1) == '"';
         }
         char next = text.charAt(j + 1);
         if (next == 'X' || next == 'x') {

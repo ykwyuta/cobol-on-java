@@ -5594,11 +5594,30 @@ public final class ProgramGenerator {
      * {@code FUNCTION NATIONAL-OF}。英数字をコードページ (または第 2 引数の CCSID) の文字として
      * 読み、国字にする。
      */
+    /** DBCS の項目を国字 (UTF-16) にして積む。字は実行時のコードページで読む。 */
+    private Runnable planDbcsAsNational(Operand source, Origin origin) {
+        Runnable bytes = planSourceBytes(source, origin, 0);
+        if (bytes == null) {
+            return null;
+        }
+        return () -> {
+            bytes.run();
+            loadCodePage();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    Type.getInternalName(dev.cobolonjava.runtime.data.Dbcs.class), "toNational",
+                    "([B" + CODE_PAGE + ")[B", false);
+        };
+    }
+
     private Runnable planNationalOf(Operand.Function function) {
         Operand operand = argument(function, 0);
         if (categoryOfArgument(operand) == DataCategory.NATIONAL) {
             report(function.origin(), "the argument of FUNCTION NATIONAL-OF must not be national");
             return null;
+        }
+        if (categoryOfArgument(operand) == DataCategory.DBCS && function.arguments().size() == 1) {
+            // DBCS の項目は SO / SI を持たないので、囲んでから字に直す
+            return planDbcsAsNational(operand, function.origin());
         }
         Runnable bytes = planAlphanumericArgument(function, 0);
         Integer ccsid = ccsidArgument(function);
@@ -6197,6 +6216,7 @@ public final class ProgramGenerator {
                 case ALPHANUMERIC_EDITED ->
                         planAlphanumericEditedMove(move, target, offset, body);
                 case NATIONAL -> planNationalMove(move, target, offset, body);
+                case DBCS -> planDbcsMove(move, target, offset, body);
             }
         }
     }
@@ -6262,6 +6282,42 @@ public final class ProgramGenerator {
         });
     }
 
+    /** DBCS の受取項目への転記。左詰めで、余りは DBCS の空白で埋める。 */
+    private void planDbcsMove(Statement.Move move, Statement.Move.Target target,
+                              Runnable offset, List<Runnable> body) {
+        Runnable length = planLength(target.reference(), move.origin());
+        int widest = target.reference().constantLength()
+                .orElse(target.reference().item().length());
+        Runnable source;
+        if (move.source() instanceof Operand.Literal literal) {
+            byte[] bytes;
+            if (literal.value() instanceof LiteralValue.Dbcs dbcs) {
+                bytes = dbcs.bytes();
+            } else if (literal.value() instanceof LiteralValue.Figure figure
+                    && figure.constant() == LiteralValue.FigurativeConstant.SPACE) {
+                bytes = new byte[0];
+            } else {
+                report(move.origin(), "only a DBCS literal or SPACE can be moved to a DBCS item");
+                return;
+            }
+            String field = bytesConstant(bytes);
+            source = () -> run.visitFieldInsn(Opcodes.GETSTATIC, internal, field, "[B");
+        } else {
+            source = planSourceBytes(move.source(), move.origin(), widest);
+        }
+        if (length == null || source == null) {
+            return;
+        }
+        body.add(() -> {
+            source.run();
+            offset.run();
+            length.run();
+            run.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    Type.getInternalName(dev.cobolonjava.runtime.data.Dbcs.class), "move",
+                    "([BL" + STORAGE + ";II)V", false);
+        });
+    }
+
     /**
      * 国字のバイト列を積む命令。国字でない送り側は国字へ直す。
      *
@@ -6279,6 +6335,10 @@ public final class ProgramGenerator {
         if (source instanceof Operand.Reference reference
                 && DataCategory.of(reference.reference()) == DataCategory.NATIONAL) {
             return planSourceBytes(source, origin, widest);
+        }
+        if (source instanceof Operand.Reference reference
+                && DataCategory.of(reference.reference()) == DataCategory.DBCS) {
+            return planDbcsAsNational(source, origin);
         }
         if (source instanceof Operand.Function function
                 && function.returns() == Intrinsic.Result.NATIONAL) {
@@ -7982,6 +8042,11 @@ public final class ProgramGenerator {
             // (CCVS85 の NC105A / NC202A)
             return codePage.encode(number.source());
         }
+        if (value instanceof LiteralValue.Dbcs dbcs) {
+            // DBCS の定数と比べるときは、DBCS のバイト列のまま比べる。余りの空白 (X'40') は
+            // DBCS の空白 X'4040' と同じバイトになる
+            return dbcs.bytes();
+        }
         if (value instanceof LiteralValue.National national) {
             // 国字の定数を群へ移すと、UTF-16 のバイト列をそのまま群の転記で移す
             // (言語解説書の MOVE の表: 群の受取項目は英数字の基本項目として扱う)
@@ -8360,8 +8425,17 @@ public final class ProgramGenerator {
     }
 
     private void loadCodePage() {
-        run.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CodePages.class), "DEFAULT",
-                CODE_PAGE);
+        if (codePage == CodePages.DEFAULT) {
+            run.visitFieldInsn(Opcodes.GETSTATIC, Type.getInternalName(CodePages.class),
+                    "DEFAULT", CODE_PAGE);
+            return;
+        }
+        // 翻訳時に選んだコードページ (CODEPAGE オプション) で読み書きする。以前はいつも
+        // IBM-1047 を積んでいたので、CODEPAGE(939) で翻訳したプログラムの DBCS や
+        // 英小文字が、実行時に別の字として読まれていた
+        run.visitLdcInsn(codePage.name());
+        run.visitMethodInsn(Opcodes.INVOKESTATIC, Type.getInternalName(CodePages.class),
+                "forName", "(Ljava/lang/String;)" + CODE_PAGE, false);
     }
 
     private void push(int value) {

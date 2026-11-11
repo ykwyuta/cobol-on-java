@@ -241,6 +241,20 @@ public final class InitialImage {
             writeNational(image, item, value);
             return;
         }
+        if (picture.category() == Picture.Category.DBCS) {
+            // DBCS の初期値は DBCS の定数か SPACE である。余りは DBCS の空白で埋める
+            // image はこの項目の分だけの切り出しである
+            byte[] bytes = value instanceof LiteralValue.Dbcs dbcs ? dbcs.bytes() : new byte[0];
+            if (bytes.length > image.length) {
+                report(item.origin(), "VALUE is longer than " + describe(item));
+                return;
+            }
+            for (int i = 0; i < image.length; i++) {
+                image[i] = i < (bytes.length & ~1) ? bytes[i]
+                        : dev.cobolonjava.runtime.data.Dbcs.SPACE;
+            }
+            return;
+        }
         // JUSTIFIED は<b>初期値には効かない</b>。規格がそう決めている
         // (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは実行時の転記だけで
         // ある。X(3) JUST VALUE "XY" は "XY " になる (CCVS85 の NC107A)

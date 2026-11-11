@@ -15,7 +15,12 @@ public final class Picture {
     public enum Category {
         ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED,
         /** 国字 ({@code PIC N}、{@code USAGE NATIONAL})。1 文字が UTF-16 の 2 バイトを占める。 */
-        NATIONAL
+        NATIONAL,
+        /**
+         * DBCS ({@code PIC G}、{@code USAGE DISPLAY-1})。1 字が 2 バイトの EBCDIC の 2 バイト文字で、
+         * SO / SI で囲まない。空白は {@code X'4040'} である。
+         */
+        DBCS
     }
 
     /** バイト位置 1 個 (または {@code CR} / {@code DB} の 2 個) の役割。 */
@@ -148,6 +153,12 @@ public final class Picture {
 
     public boolean isNumeric() {
         return category == Category.NUMERIC;
+    }
+
+    /** 同じ字数の DBCS の PICTURE。{@code PIC N} を {@code DISPLAY-1} と書いたときに使う。 */
+    public Picture asDbcs() {
+        return new Picture(source, expanded, Category.DBCS, size, 0, 0, SignPosition.UNSIGNED,
+                false, cells);
     }
 
     public boolean isNumericEdited() {

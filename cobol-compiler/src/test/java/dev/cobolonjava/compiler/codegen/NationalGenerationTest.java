@@ -308,14 +308,16 @@ class NationalGenerationTest {
     // 振る舞いは BatchAndInspectTest.countsNationalReferenceModificationInCharacters が測る
 
     @Test
-    @DisplayName("国字編集と DBCS (USAGE DISPLAY の PIC N) は断る")
+    @DisplayName("国字編集と、USAGE DISPLAY の PIC N は断る")
     void refusesOtherNationalForms() {
         assertFalse(compile(null, List.of("01 N PIC NBN."), "GOBACK.").succeeded());
         // 国字の数字 (PIC 9 USAGE NATIONAL) は以前ここで断っていた。持ったので通す。
         // 振る舞いは BatchAndInspectTest.storesNationalDecimalsInANationalGroup が測る
         assertTrue(compile(null, List.of("01 N PIC 9(3) USAGE NATIONAL."), "GOBACK.").succeeded());
         assertFalse(compile(null, List.of("01 N PIC N(3) USAGE DISPLAY."), "GOBACK.").succeeded());
-        assertFalse(compile("NSYMBOL(DBCS)", List.of("01 N PIC N(3)."), "GOBACK.").succeeded());
+        // NSYMBOL(DBCS) は以前ここで断っていた。PIC N を DBCS として持ったので通す。
+        // 振る舞いは BatchAndInspectTest.treatsPictureNAsDbcsUnderNsymbolDbcs が測る
+        assertTrue(compile("NSYMBOL(DBCS)", List.of("01 N PIC N(3)."), "GOBACK.").succeeded());
         assertTrue(compile("NSYMBOL(NATIONAL)", List.of("01 N PIC N(3)."), "GOBACK.").succeeded());
     }
 }

@@ -62,7 +62,7 @@ final class OptionSupport {
                     "930", "939")),
             Map.entry("PGMNAME", Set.of("COMPAT", "CO")),
             Map.entry("INTDATE", Set.of("ANSI")),
-            Map.entry("NSYMBOL", Set.of("NATIONAL", "NAT")),
+            Map.entry("NSYMBOL", Set.of("NATIONAL", "NAT", "DBCS")),
             Map.entry("QUOTE", Set.of("")),
             Map.entry("Q", Set.of("")));
 

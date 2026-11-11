@@ -75,7 +75,9 @@ public final class InitializeImage {
     public enum Category {
         ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED,
         /** 国字の項目 ({@code PIC N})。国字の数字項目は NUMERIC に入る (言語解説書 "INITIALIZE")。 */
-        NATIONAL;
+        NATIONAL,
+        /** DBCS の項目 ({@code PIC G})。{@code EGCS} は同じ意味の古い綴りである。 */
+        DBCS;
 
         /** 項目の分類がこれに当たるか。 */
         public boolean matches(DataCategory actual) {
@@ -86,6 +88,7 @@ public final class InitializeImage {
                 case NUMERIC -> actual.isNumeric();
                 case NUMERIC_EDITED -> actual == DataCategory.NUMERIC_EDITED;
                 case NATIONAL -> actual == DataCategory.NATIONAL;
+                case DBCS -> actual == DataCategory.DBCS;
             };
         }
     }
@@ -280,7 +283,10 @@ public final class InitializeImage {
         Storage scratch = Storage.allocate(length);
         try {
             DataCategory category = DataCategory.of(item);
-            if (category == DataCategory.NATIONAL) {
+            if (category == DataCategory.DBCS) {
+                dev.cobolonjava.runtime.data.Dbcs.move(value instanceof LiteralValue.Dbcs dbcs
+                        ? dbcs.bytes() : new byte[0], scratch, 0, length);
+            } else if (category == DataCategory.NATIONAL) {
                 dev.cobolonjava.runtime.data.National.move(
                         NationalLiterals.bytesOf(value, length, codePage), scratch, 0, length,
                         item.justified());
