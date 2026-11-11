@@ -34,6 +34,11 @@ import java.util.Set;
  */
 final class OptionSupport {
 
+    /** その {@code CODEPAGE} の値を翻訳に使えるか。 */
+    static boolean codePageSupported(String value) {
+        return IMPLEMENTED_VALUES.get("CODEPAGE").contains(value.toUpperCase(java.util.Locale.ROOT));
+    }
+
     /** 効いているオプション。値を問わない。 */
     private static final Set<String> EFFECTIVE = Set.of(
             "SOURCEFORMAT", "SSRANGE", "NOSSRANGE", "CICS", "NOCICS", "SQL", "NOSQL",
@@ -51,7 +56,10 @@ final class OptionSupport {
             // CBL 文でも選べるようにしている
             Map.entry("NUMCLS", Set.of("PRIM", "ALT")),
             Map.entry("FLOAT", Set.of("HEX", "S390")),
-            Map.entry("CODEPAGE", Set.of("1047", "01047", "IBM-1047")),
+            // 930 と 939 は日本語の EBCDIC (SBCS と、SO / SI で囲む DBCS)。1390 と 1399 は
+            // 変換の表を持っていないので断る
+            Map.entry("CODEPAGE", Set.of("1047", "01047", "IBM-1047", "37", "037",
+                    "930", "939")),
             Map.entry("PGMNAME", Set.of("COMPAT", "CO")),
             Map.entry("INTDATE", Set.of("ANSI")),
             Map.entry("NSYMBOL", Set.of("NATIONAL", "NAT")),

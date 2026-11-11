@@ -199,6 +199,19 @@ public final class CobolCompiler {
     /** 1 つの指定で翻訳するひとまとまり。 */
     private Result compileBatch(String fileName, String source) {
         CompilerOptions effective = options.merge(preprocessor.optionsOf(source));
+        // 文字定数と初期値はこのコードページで作る。実行時のコードページと合っていなければ
+        // ならない (合わせるのは動かす側である)
+        try {
+            dev.cobolonjava.compiler.semantic.CompileCodePage.set(effective.value("CODEPAGE")
+                    .filter(OptionSupport::codePageSupported)
+                    .map(dev.cobolonjava.runtime.codepage.CodePages::forName).orElse(null));
+            return compileWith(fileName, source, effective);
+        } finally {
+            dev.cobolonjava.compiler.semantic.CompileCodePage.set(null);
+        }
+    }
+
+    private Result compileWith(String fileName, String source, CompilerOptions effective) {
         // 効かないオプションを黙って受理しない (要件 FR-181)
         List<Diagnostic> optionDiagnostics = OptionSupport.check(effective);
         if (Diagnostic.blocking(optionDiagnostics)) {

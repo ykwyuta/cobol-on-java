@@ -283,9 +283,9 @@ public sealed interface LiteralValue {
      * 日本語の資産をいま扱える唯一の書き方だからである (設計 28 章)。
      */
     private static void requireRepresentable(String text) {
-        if (!SOURCE_CODE_PAGE.canEncode(text)) {
+        if (!CompileCodePage.current().canEncode(text)) {
             // 文面は 1 か所で作る。判定と診断で言うことがずれないようにするためである
-            SOURCE_CODE_PAGE.encode(text);
+            CompileCodePage.current().encode(text);
         }
     }
 

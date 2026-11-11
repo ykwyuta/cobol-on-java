@@ -67,10 +67,10 @@ java -cp <classpath> dev.cobolonjava.verify.Main zcvs <Zeus の zcvs> [-P プロ
 | ZD | 内部表現、ODO、編集、照合 | 15 / 15 |
 | ZP | 副プログラム、ENTRY、再帰、ポインタ | 12 / 12 |
 | ZX | 85 規格のあとの制御・INITIALIZE・指示文 | 9 / 9 |
-| ZE | 負系とその対照 | 60 / 65 |
-| ZA | TRUNC、算術、NUMPROC、関数 | 19 / 21 |
-| ZS | 特殊レジスタ、日付、LE サービス | 4 / 6 |
-| ZF | QSAM / VSAM / テープ | 10 / 16 |
+| ZE | 負系とその対照 | 65 / 65 |
+| ZA | TRUNC、算術、NUMPROC、関数 | 20 / 21 |
+| ZS | 特殊レジスタ、日付、LE サービス | 6 / 6 |
+| ZF | QSAM / VSAM / テープ | 14 / 16 |
 | ZN | 国字、DBCS、CCSID | 0 / 14 |
 
 数は門ではない (覚え書き 7)。並べて、次にどこを直すかを決めるためのものである。
@@ -157,20 +157,34 @@ ZCVS に合わせて直すたびに、規格の側を壊していないかを CC
 `NOPFD` と同じ結果になる。優先符号でない入力の `PFD` の結果は言語解説書が
 「予測できない」としているので、`NOPFD` と同じに扱っている (暫定判断 P-194)。
 
-## まだ残っているもの
+## まだ残っているもの (2026-11-11)
+
+158 本のうち 141 本が通る。残りは 17 本である。
 
 | 塊 | 本数 | 何が要るか |
 | --- | --- | --- |
-| 国字・DBCS・CCSID (ZN) | 14 | `CODEPAGE(930 / 939 / 1390 / 1399)` の下の翻訳と実行、国字の部分参照、国字編集、`INSPECT` / `INITIALIZE` の国字、`GROUP-USAGE NATIONAL`。翻訳系は定数のバイト列を IBM-1047 に固定して作っており (`LiteralValue.SOURCE_CODE_PAGE`)、コードページを翻訳時の指定にするところから要る |
-| ファイル (ZF) | 6 | `RECORDING MODE S / U`、`CODE-SET` (ASCII で書く)、`SAME RECORD AREA` (レコード領域の共有)、ラベルと宣言の食い違いの状態 39、テープの `CLOSE REEL` |
-| 外部浮動小数点の PICTURE | 4 | `PIC +9.9E+99` |
-| 浮動小数点の `COMPUTE` | 1 | べき乗と除算 (P-127) |
-| LE サービス | 1 | `CEEDAYS` ほか |
-| `INSPECT` の対象に関数 | 1 | `INSPECT FUNCTION REVERSE(...) TALLYING` |
-| 負系 | 2 | `CODE-SET` の下の符号つき項目、`RERUN` の `OF` 抜け |
+| 国字・DBCS (ZN、ZA120A) | 13 | 門 (`CODEPAGE(930 / 939)` を翻訳に効かせる) は開けた。奥は 1 本ごとに別の機能である。`DISPLAY-1` (`PIC G`) と `G'..'` の定数、`NSYMBOL(DBCS)`、国字編集の PICTURE、国字の数字項目 (`PIC 9 USAGE NATIONAL`、外部浮動小数点の国字の形)、`INITIALIZE ... REPLACING NATIONAL`、`INSPECT` / `STRING` の国字、日本語を含む定数を書ける文 |
+| `CODEPAGE(1390 / 1399)` (ZN112A、ZN113A) | 2 | 変換の表が JDK に無い。表を固定して取り込むところから要る |
+| テープ装置 (ZF201M、ZF202M) | 2 | `OPEN ... REVERSED`、巻の切り替え (`CLOSE REEL` が 00 を返す)。割当てが装置を磁気テープと決める仕組みが無い。ZF202M は 18 件のうち 15 件が通っている |
 
-次の増分はこの表の上から選ぶ。ZN は 1 本も翻訳できていないので、開ければその奥が
-数に出る (覚え書き 2)。ZF は開けた奥に動きの違いが 5 つあった。ZN も同じと見ておく。
+2026-11-11 に入れたもの。
+
+| 増分 | 通った本 | 入れたもの |
+| --- | --- | --- |
+| 小さい 5 つ | 134 | LE のサービス 5 つ、`INSPECT` の対象に関数、`CODE-SET`、`RERUN` の検査、続けて書いたプログラムの前の CBL 文 |
+| 外部浮動小数点 | — | `PIC +99.99E+99` (DISPLAY の形) |
+| 浮動小数点の受取側 | — | 除算とべき乗 (P-127 を書き直した) |
+| ファイルまわり | 140 | `SAME` と `APPLY`、状態 39、`RECORDING MODE S / U` |
+| ZF102A (Zeus 側を直した) | 141 | 「ディスクの `RECORDING MODE U` は状態 39」は Zeus の実装の制限だった |
+
+**「読んで捨てる」と決めた句の中に、値を変えるものと断るべき誤りの両方があった。**
+`CODE-SET` は ASCII で書くという指定であり、`RERUN` は `OF ファイル名` が欠けていれば
+誤りである。読み飛ばしは診断も一緒に捨てる。
+
+**自分が入れていた不具合。** `I-O-CONTROL` の指定の種類を `entry.SAME() == null` で
+見ていた。ANTLR の取り出し口は並びを返し、無くても null にならない。`APPLY` や
+`RERUN` の指定まで `SAME` として読み、そこに書かれたファイルの領域の共有を壊していた。
+入れたばかりの `RERUN` の検査も同じ書き方をしていた。
 
 ## PL/I と HLASM
 

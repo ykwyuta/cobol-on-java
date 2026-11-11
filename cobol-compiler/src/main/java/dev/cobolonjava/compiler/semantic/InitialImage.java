@@ -84,7 +84,7 @@ public final class InitialImage {
 
     /** 既定 (IBM-1047、図形定数 {@code QUOTE} は {@code "}、空白で充填) で組み立てる。 */
     public static Result build(DataLayout layout) {
-        return build(layout, CodePages.DEFAULT, '"');
+        return build(layout, CompileCodePage.current(), '"');
     }
 
     /**
@@ -94,7 +94,7 @@ public final class InitialImage {
      * 表すバイトが変わる。<b>並びのいちばん後ろに来る文字</b>だからである。
      */
     public static Result build(DataLayout layout, SpecialNames specialNames) {
-        return build(layout, CodePages.DEFAULT, '"',
+        return build(layout, CompileCodePage.current(), '"',
                 specialNames.highValue(), specialNames.lowValue());
     }
 

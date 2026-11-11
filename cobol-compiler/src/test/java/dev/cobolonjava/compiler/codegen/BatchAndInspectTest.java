@@ -293,4 +293,27 @@ class BatchAndInspectTest {
         assertTrue(undefined.diagnostics().toString().contains("cannot specify BLOCK"),
                 () -> undefined.diagnostics().toString());
     }
+
+    @Test
+    @DisplayName("CODEPAGE で選んだコードページで、文字定数と初期値のバイト列を作る")
+    void encodesLiteralsInTheSelectedCodePage() throws ReflectiveOperationException {
+        // 英小文字の a は IBM-1047 で X'81'、IBM-930 (片仮名のコードページ) で X'62' である
+        for (String[] expected : new String[][] {{"1047", "81"}, {"930", "62"}}) {
+            CobolCompiler.Result result = compile(List.of(
+                    "CBL CODEPAGE(" + expected[0] + ")",
+                    "IDENTIFICATION DIVISION.",
+                    "PROGRAM-ID. MAIN.",
+                    "DATA DIVISION.",
+                    "WORKING-STORAGE SECTION.",
+                    "01 WS-A PIC X VALUE 'a'.",
+                    "PROCEDURE DIVISION.",
+                    "    STOP RUN."));
+            assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+            CobolProgram program = (CobolProgram) new GeneratedLoader()
+                    .define(result.className(), result.classFile())
+                    .getDeclaredConstructor().newInstance();
+            assertEquals(expected[1],
+                    String.format("%02X", program.initialStorage()[0] & 0xFF), expected[0]);
+        }
+    }
 }

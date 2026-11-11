@@ -306,7 +306,8 @@ public final class ProgramGenerator {
                                   ProgramSignature signature,
                                   ProcedureManifest manifest) {
         ProgramGenerator generator = new ProgramGenerator(programName, classNameOf(programName),
-                sourceName, CodePages.DEFAULT, options, specialNames);
+                sourceName, dev.cobolonjava.compiler.semantic.CompileCodePage.current(), options,
+                specialNames);
         generator.layout = layout;
         generator.inheritedDeclaratives = List.copyOf(globals);
         generator.programSignature = signature;
@@ -324,7 +325,9 @@ public final class ProgramGenerator {
     public static Result generate(String programName, ProcedureBuilder.Result procedure,
                                   InitialImage.Result image, CompilerOptions options,
                                   SpecialNames specialNames) {
-        return generate(programName, procedure, image, CodePages.DEFAULT, options, specialNames);
+        return generate(programName, procedure, image,
+                dev.cobolonjava.compiler.semantic.CompileCodePage.current(), options,
+                specialNames);
     }
 
     /** コードページまで指定してプログラムを生成する。 */

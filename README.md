@@ -240,7 +240,7 @@ NIST の COBOL-85 検証スイート (CCVS85) を処理系へ流し、モジュ�
 
 z/OS の決めごと (内部表現、`TRUNC`、副プログラムの連絡、入出力状態) は
 [Zeus](https://github.com/ykwyuta/Zeus) の検査スイート ZCVS で測る。これも同梱しない
-(GPL-3.0-or-later)。置き場を指して流す。いまは 158 本のうち 129 本、判定 1,341 / 1,348 である
+(GPL-3.0-or-later)。置き場を指して流す。いまは 158 本のうち 141 本、判定 1,391 / 1,394 である
 ([設計 29](docs/design/29-zcvs.md))。
 
 同じ道具で Zeus の HLASM のスイート (ZHVS) と PL/I のスイート (ZPVS) も流せる。
