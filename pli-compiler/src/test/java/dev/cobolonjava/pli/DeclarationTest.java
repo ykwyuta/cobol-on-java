@@ -281,4 +281,45 @@ class DeclarationTest {
         assertTrue(refusal("DEFINE ORDINAL C(RED, BLUE);").contains("DEFINE ORDINAL"));
         assertTrue(refusal("DCL X LIKE MISSING;").contains("MISSING is not declared"));
     }
+
+    @Test
+    @DisplayName("DEFINED ... POSITION は基の文字の一部に重なり、書けば基が変わる")
+    void definedOverlayWithPosition() throws Exception {
+        assertEquals("DEF,ABC123GH", String.join(",", main("""
+                DCL S CHAR(8) INIT('ABCDEFGH');
+                DCL PART CHAR(3) DEFINED S POSITION(4);
+                PUT SKIP LIST(PART);
+                PART = '123';
+                PUT SKIP LIST(S);
+                """).strip().lines().map(String::strip).toList()));
+    }
+
+    @Test
+    @DisplayName("iSUB の DEFINED は基の要素そのものを共有する (対角と転置)")
+    void isubDefiningSharesElements() throws Exception {
+        assertEquals("11 22 33,21 13,99 143", String.join(",", main("""
+                DCL A(3,3) FIXED BIN(31);
+                DCL DIAG(3) FIXED BIN(31) DEFINED A(1SUB,1SUB);
+                DCL T(3,3) FIXED BIN(31) DEFINED A(2SUB,1SUB);
+                DCL (I,J) FIXED BIN(31);
+                DO I=1 TO 3; DO J=1 TO 3; A(I,J)=I*10+J; END; END;
+                PUT SKIP LIST(DIAG(1), DIAG(2), DIAG(3));
+                PUT SKIP LIST(T(1,2), T(3,1));
+                DIAG(2) = 99;
+                PUT SKIP LIST(A(2,2), SUM(DIAG));
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("文字の重ねと iSUB 以外の DEFINED は、黙って別の記憶域にせず止まる")
+    void otherDefinedFormsStop() {
+        Exception failure = assertThrows(Exception.class, () -> main("""
+                DCL N FIXED BIN(31);
+                DCL M FIXED BIN(31) DEFINED N;
+                M = 1;
+                """));
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        assertTrue(String.valueOf(cause.getMessage()).contains("DEFINED"), cause::toString);
+    }
 }

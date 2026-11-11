@@ -283,6 +283,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `ALLOCATE` / `FREE` (CONTROLLED、BASED)、`ALLOCATION`、`DIM`、`SUM` | 48 / 68 | 253 / 259 |
 | `Q->A`、`NULL` と `SYSNULL` の区別、`POINTERADD` | 49 / 68 | 261 / 267 |
 | `DEFINE STRUCTURE` / `DEFINE ALIAS` の `TYPE`、`LIKE` の展開 | 50 / 68 | 266 / 272 |
+| `DEFINED` (文字の重ねと iSUB) | 51 / 68 | 271 / 272 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -325,6 +326,12 @@ LIKE を使うのは負の検査 (PE104N、PE105N) と、それが「名があ�
 `DEFINE ALIAS` の `TYPE` と合わせて、構文解析の前に宣言の字句の並びの上で展開する。
 `LIKE` は要素の名と属性を写し、参照した構造の記憶域の種類と次元は写さない。小構造と
 修飾した名の `LIKE`、`DEFINE ORDINAL` はまだ持たず、断る。
+
+`DEFINED` も以前は<b>黙って読み飛ばしていた</b>。PS105A は翻訳が通り、5 つの判定が
+すべて違う値で落ちていた。読み飛ばされた変数は自分の記憶域を持つので、基とつながらない。
+いまは文字の重ね (`POSITION`) と iSUB の定義を持つ。iSUB の定義は、要素ごとに iSUB を
+自分の添字に置いた基の要素を共有する。配列の単純な定義、構造の `DEFINED`、属性の違う
+重ねは記憶域の並びの規則を確かめていないので、実行で断る。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

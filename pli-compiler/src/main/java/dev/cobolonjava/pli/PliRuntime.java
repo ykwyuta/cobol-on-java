@@ -397,7 +397,7 @@ public final class PliRuntime {
                         placeholder.generations = new Generations(chunk, env);
                         placeholder.unallocated = true;
                         env.put(placeholder);
-                    } else if (chunk.get(0).basedOn() == null) {
+                    } else if (chunk.get(0).basedOn() == null && chunk.get(0).defined() == null) {
                         declare(chunk, env);
                     }
                 }
@@ -406,7 +406,10 @@ public final class PliRuntime {
             }
             inits.forEach(Runnable::run);
             for (List<PliSyntax.Decl> chunk : chunks) {
-                if (chunk.get(0).basedOn() != null) declare(chunk, env);
+                // DEFINED は基の記憶域に重ねるので、基が値を持ってから宣言する
+                if (chunk.get(0).basedOn() != null || chunk.get(0).defined() != null) {
+                    declare(chunk, env);
+                }
             }
         }
 
@@ -730,6 +733,10 @@ public final class PliRuntime {
          */
         private void declareGroup(List<PliSyntax.Decl> tree, Env env) {
             PliSyntax.Decl root = tree.get(0);
+            if (tree.stream().anyMatch(decl -> decl.defined() != null)) {
+                throw new PliExecutionException("DEFINED structures are not supported yet: "
+                        + root.name());
+            }
             StructureMapping.Result mapping;
             try {
                 mapping = StructureMapping.map(tree);
@@ -846,8 +853,78 @@ public final class PliRuntime {
             return length > 0 && length < argument.length() ? argument.subView(0, length) : argument;
         }
 
+        /**
+         * DEFINED の変数 (LRM "DEFINED attribute")。iSUB の定義なら、要素ごとに iSUB を自分の
+         * 添字に置いた基の要素を共有する。添字の無い定義は文字の重ね (POSITION) だけを持つ。
+         */
+        private void declareDefined(PliSyntax.Decl declaration, Env env) {
+            PliSyntax.Defined defined = declaration.defined();
+            Var base = env.require(defined.base());
+            if (defined.subscripts() != null) {
+                if (base.dimensions == null) {
+                    throw new PliExecutionException("DEFINED " + defined.base()
+                            + "(...) needs an array base: " + declaration.name());
+                }
+                if (declaration.dimensions().isEmpty()) {
+                    throw new PliExecutionException("a scalar DEFINED on an array element is not"
+                            + " supported yet: " + declaration.name());
+                }
+                Var array = new Var(declaration.name(), declaration.type(),
+                        declaration.precision(), declaration.scale(), Storage.allocate(0).whole());
+                array.dimensions = declaration.dimensions();
+                int rank = declaration.dimensions().size();
+                int[] index = new int[rank];
+                for (int d = 0; d < rank; d++) index[d] = declaration.dimensions().get(d).low();
+                for (int n = 0; n < declaration.count(); n++) {
+                    Env subscripts = new Env(env, context);
+                    for (int d = 0; d < rank; d++) {
+                        Var isub = new Var("ISUB_" + (d + 1), PliSyntax.Type.BINARY, 31, 0,
+                                Storage.allocate(4).whole());
+                        isub.write(FixedValue.binary(BigDecimal.valueOf(index[d]), 31, 0),
+                                context);
+                        subscripts.put(isub);
+                    }
+                    Var element = element(base, defined.subscripts(), subscripts);
+                    if (element.type != declaration.type()
+                            || element.precision != declaration.precision()
+                            || element.scale != declaration.scale()) {
+                        throw new PliExecutionException("DEFINED with attributes other than the"
+                                + " base's is not supported yet: " + declaration.name());
+                    }
+                    array.elements.add(element);
+                    for (int d = rank - 1; d >= 0; d--) {
+                        if (++index[d] <= declaration.dimensions().get(d).high()) break;
+                        index[d] = declaration.dimensions().get(d).low();
+                    }
+                }
+                env.put(array);
+                return;
+            }
+            if (!declaration.dimensions().isEmpty() || base.dimensions != null
+                    || declaration.type() != PliSyntax.Type.CHAR || base.type != PliSyntax.Type.CHAR
+                    || declaration.varying() || base.varying) {
+                // 文字の重ね (string overlay defining) だけを持つ。配列の単純な定義と、
+                // 型の違う重ねは記憶域の並びの規則を確かめていないので断る
+                throw new PliExecutionException("only CHARACTER overlay DEFINED (with POSITION)"
+                        + " and iSUB DEFINED are supported yet: " + declaration.name());
+            }
+            int position = defined.position() == null ? 1
+                    : number(value(defined.position(), env)).intValue();
+            int length = byteLength(declaration);
+            if (position < 1 || position - 1 + length > base.view.length()) {
+                throw new PliExecutionException("DEFINED " + declaration.name() + " POSITION("
+                        + position + ") lies outside " + base.name);
+            }
+            env.put(new Var(declaration.name(), declaration.type(), declaration.precision(),
+                    declaration.scale(), base.view.subView(position - 1, length)));
+        }
+
         private void declareScalar(PliSyntax.Decl declaration, Env env, DataView area,
                                    int offset, String alias) {
+            if (declaration.defined() != null) {
+                declareDefined(declaration, env);
+                return;
+            }
             if (declaration.type() == PliSyntax.Type.ENTRY
                     || declaration.type() == PliSyntax.Type.FILE) {
                 return;

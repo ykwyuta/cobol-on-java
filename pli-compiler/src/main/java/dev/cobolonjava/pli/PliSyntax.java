@@ -358,13 +358,13 @@ final class PliSyntax {
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
                 List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
-                String storage) {
+                String storage, Defined defined) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
-                    dimensions, initialItems, false, null);
+                    dimensions, initialItems, false, null, null);
         }
 
         boolean controlled() {
@@ -374,7 +374,7 @@ final class PliSyntax {
         /** 次元を ALLOCATE に書いたものへ置き換えた宣言。 */
         Decl withDimensions(List<Bound> bounds) {
             return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
-                    varying, List.copyOf(bounds), initialItems, unsigned, storage);
+                    varying, List.copyOf(bounds), initialItems, unsigned, storage, defined);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -383,6 +383,15 @@ final class PliSyntax {
             for (Bound bound : dimensions) count *= bound.extent();
             return count;
         }
+    }
+
+    /**
+     * {@code DEFINED 基 [(添字,...)] [POSITION(式)]} (LRM "DEFINED attribute")。
+     *
+     * @param subscripts 基の添字。iSUB は {@code ISUB_i} という名の参照にしてある。無ければ null
+     * @param position   POSITION の式。無ければ null
+     */
+    record Defined(String base, List<Expr> subscripts, Expr position) {
     }
 
     /**
@@ -1226,7 +1235,8 @@ final class PliSyntax {
             return new Decl(name, level, info.type, info.precision, info.scale,
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
-                    dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage);
+                    dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage,
+                    defined(part));
         }
 
         /**
@@ -1392,6 +1402,74 @@ final class PliSyntax {
          * 初期値が無いことになり、黙って 0 になっていた。{@code INIT(ADDR(S))} も同じ理由で
          * NULL のままだった。z/OS probe の PLISTRM で見つかった。
          */
+        /** DEFINED の基と添字と POSITION を読む。iSUB ({@code 1SUB}) は ISUB_1 の名にする。 */
+        private Defined defined(List<Token> tokens) {
+            int at = -1;
+            int depth = 0;
+            for (int i = 0; i < tokens.size(); i++) {
+                if (tokens.get(i).is("(")) depth++;
+                else if (tokens.get(i).is(")")) depth--;
+                else if (depth == 0 && (tokens.get(i).is("DEFINED") || tokens.get(i).is("DEF"))) {
+                    at = i;
+                }
+            }
+            if (at < 0) {
+                return null;
+            }
+            if (at + 1 >= tokens.size() || tokens.get(at + 1).kind() != Kind.IDENT) {
+                throw new ParseFailure(tokens.get(at), "DEFINED needs a base variable");
+            }
+            List<Token> inner = new ArrayList<>();
+            int end = at + 1;
+            // 基の名 (修飾してよい)、添字、POSITION を、宣言の残りの属性から切り出す
+            while (end < tokens.size()) {
+                Token t = tokens.get(end);
+                if (t.is("POSITION") || t.is("POS")) {
+                    break;
+                }
+                if (t.is("(")) {
+                    int close = findClosing(tokens, end);
+                    for (int i = end; i <= close; i++) {
+                        Token u = tokens.get(i);
+                        if (u.kind() == Kind.NUMBER && i + 1 < close
+                                && tokens.get(i + 1).is("SUB")) {
+                            inner.add(new Token(Kind.IDENT, "ISUB_" + u.text(), u.line(),
+                                    u.column()));
+                            i++;
+                        } else {
+                            inner.add(u);
+                        }
+                    }
+                    end = close + 1;
+                    break;
+                }
+                if (t.kind() != Kind.IDENT && !t.is(".")) {
+                    break;
+                }
+                if (t.kind() == Kind.IDENT && !inner.isEmpty() && !inner.get(inner.size() - 1)
+                        .is(".")) {
+                    break;
+                }
+                inner.add(t);
+                end++;
+            }
+            Token last = tokens.get(Math.min(end, tokens.size()) - 1);
+            inner.add(new Token(Kind.EOF, "<EOF>", last.line(), last.column()));
+            Parser base = new Parser(fileName, inner);
+            String name = base.qualifiedName();
+            List<Expr> subscripts = base.check("(") ? base.arguments() : null;
+            Expr position = null;
+            if (end < tokens.size() && (tokens.get(end).is("POSITION") || tokens.get(end).is("POS"))
+                    && end + 1 < tokens.size() && tokens.get(end + 1).is("(")) {
+                int close = findClosing(tokens, end + 1);
+                List<Token> positionTokens = new ArrayList<>(tokens.subList(end + 2, close));
+                positionTokens.add(new Token(Kind.EOF, "<EOF>", tokens.get(close).line(),
+                        tokens.get(close).column()));
+                position = new Parser(fileName, positionTokens).expression();
+            }
+            return new Defined(name, subscripts, position);
+        }
+
         private Expr initial(List<Token> tokens) {
             for (int i = 0; i + 1 < tokens.size(); i++) {
                 if ((tokens.get(i).is("INIT") || tokens.get(i).is("INITIAL"))
