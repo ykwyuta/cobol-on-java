@@ -6153,7 +6153,7 @@ BASED は参照のたびに POINTER の値で決まる (LRM "BASED attribute")�
 
 **どこがずれうるか**: 入口変数、GENERIC、CONTROLLED と `ALLOCATE`、ストリームの入力、編集の PICTURE、式の上下限を持つ配列、SYSPRINT 以外の PRINT ファイルは無い。条件は ON / SIGNAL / REVERT と一部の条件だけを持つ。前処理は `%INCLUDE` を条件によらず取り込み、前処理の配列と組み込み関数の一部 (`SYSPARM`、`SYSVERSION`、`COMPILEDATE`) を持たない。`ALLOCATE` は CONTROLLED と BASED と AREA の中を持つが、AREA の管理域の形は実機と違い、AREA の中で解いた部分を再び使わない。BASED の `INITIAL`、`(*)` の上下限を前の世代から受け継ぐことは持たない。BASED の `FREE` は記憶域を取り戻さず、解いたあとの参照を検出しない。断るので黙って違う値にはならないが、動かせない資産が多い。
 
-**解消条件**: Zeus の `zeus-pli` を移す。字句・構文・意味・中間表現・実行の段に分け、有効範囲を静的にする。ZPVS を増分ごとに測る。
+**解消条件**: 有効範囲を静的にする (内部手続きの名の解決を、呼んだ側でなく宣言した場所でたどる)。FLOAT、COMPLEX、WIDECHAR、GRAPHIC の値の型を持つ (ZPVS で残る PD106A)。ZPVS を増分ごとに測る。Zeus の `zeus-pli` を丸ごと移すことは要らなかった (2026-11-12 に 67 / 68)。
 
 ## P-198 磁気テープは巻の境目と逆読みだけを持つ
 
