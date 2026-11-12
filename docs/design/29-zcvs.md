@@ -480,3 +480,43 @@ X'4040') に直す。SBCS に無い字 (漢字) の GRAPHIC と、VARYING の WI
 場所の変数ではなくそちらが見えていた。ZPVS の 68 本はこの違いを測っておらず、数は
 変わらない (68 / 68)。いまは名を宣言した場所の環境で、on-unit を呼んだ側の鎖でたどる。
 環境に 2 つの鎖を持たせた。
+
+## 検査スイートを広げる (2026-11-12)
+
+3 つのスイートがどれも全部通ったので、<b>通ったことが何を裏付けているか</b>を疑った。
+このセッションで直した誤りのうち、どの検査にも引っかからずに通っていたものは多い
+(静的な有効範囲、STATIC、LIKE の展開、DEFINED、宣言の型の受け継ぎ、BUILTIN)。
+PC102A は「静的スコープ」を測ると書いてあるが、副手続きを主手続きからしか呼ばない
+ので、動的スコープでも同じ値になる。そこで Zeus のスイートに、<b>間違った実装では
+通らない形</b>の検査を足した (Zeus のリポジトリ)。
+
+| スイート | 足したもの | Zeus | cobol-on-java |
+| --- | --- | --- | --- |
+| ZPVS | PC109A (静的スコープ・STATIC)、PD108A (宣言の既定・VALUE・BUILTIN)、PA105A (編集の PICTURE)、PF106A (ENDPAGE の既定・KEY の ONCODE) 4 本 22 判定 | 22 / 22 | 22 / 22 (82660a4 の版では PC109A が 3 / 6) |
+| ZCVS | ZX110A (VARYING AFTER・SET FALSE)、ZA122A (丸めの桁上がりと SIZE ERROR・分離符号)、ZP113A (引数の別名・BY CONTENT・GLOBAL の遮蔽・RETURN-CODE)、ZS107A (世紀窓・国別の分離符号・INITIALIZE と REDEFINES) 4 本 34 判定 | 34 / 34 | 3 本 25 / 25、ZS107A は翻訳で止まる |
+| ZHVS | HI110A (TR・TRT・EX・MVCL・CLCL・MVST・SRST・CLST・EDMK・MVO・TM)、HI111A (BCT・BXLE・BXH・CLM・STCM・IC・SLDA・SRDA)、HM105A (&SYSNDX・GBLx・MEXIT・計算形 AGO・&SYSLIST・D2A・文字列比較) 3 本 45 判定 | 45 / 45 | HI111A 11 / 11、2 本は翻訳で止まる |
+
+cobol-on-java で新しく見つかった非互換は 3 つである。
+
+- 関数の結果の部分参照 `FUNCTION CURRENT-DATE(1:4)` を読めない (ZS107A)。既存の
+  ZCVS も CCVS85 もこの書き方を使っていなかった。
+- HLASM の MVCL を知らない (HI110A。後ろの命令は未確認)。
+- 計算形の `AGO (&Q).G1,.G2,.G3` を読めない (HM105A)。
+
+Zeus の側でも 4 つ見つかった。アセンブラーが MVO・BXH・BXLE を知らず、長さ 0 を
+明示した SS 命令 (EX の対象の慣用形) を断り、MVST/CLST/SRST をオブジェクトへ
+符号化できなかった。Zeus を直して検査を通した。
+
+足すときに自分の検査の誤りも見つかった。数値の項目を英数字へ MOVE すると符号の無い
+数字に変換されるので、byte を見るには集団で包む必要がある。Enterprise COBOL の
+YEAR-TO-YYYY は引数 2 つまでで、3 つ目 (現在の年) は ISO 2014 の形である。どれも
+Zeus で先に流して気づいた。国別の項目から英数字への MOVE は、Zeus が受理し
+cobol-on-java が拒否する。公開文書で「無効」と明記した表を確認できなかったので、
+負の検査にはせず ZCVS の監査 (E04) に未決として残した。
+
+Zeus の Hercules の道具 (`zeus-hercdiff zhvs`) は、この環境の Hercules 3.13 では
+1 本も完走しなかった。プログラムの配置が報告の領域と重なる、プログラム割込みの
+後の戻りが 31 ビットのアドレスのまま 64 ビットで分岐する、などである。追加した
+ZHVS の期待値は Principles of Operation から手で定めたもので、Hercules では
+裏付けていない。
+
