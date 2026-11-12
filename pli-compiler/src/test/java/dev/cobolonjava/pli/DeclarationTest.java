@@ -338,7 +338,7 @@ class DeclarationTest {
     }
 
     @Test
-    @DisplayName("FLOAT や COMPLEX の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
+    @DisplayName("COMPLEX などまだ持たない型の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
     void unsupportedTypesStopWhenUsed() throws Exception {
         assertEquals("OK", main("""
                 DCL F FLOAT DEC(6);
@@ -347,12 +347,12 @@ class DeclarationTest {
                 """).strip());
         Exception failure = assertThrows(Exception.class, () -> main("""
                 DCL 1 S, 2 C CHAR(1);
-                DCL F FLOAT DEC(6);
-                F = 1;
+                DCL Z COMPLEX FIXED DEC(7,2);
+                Z = 1;
                 """));
         Throwable cause = failure;
         while (cause.getCause() != null) cause = cause.getCause();
-        assertTrue(String.valueOf(cause.getMessage()).contains("FLOAT is not supported yet"),
+        assertTrue(String.valueOf(cause.getMessage()).contains("COMPLEX is not supported yet"),
                 cause::toString);
     }
 
@@ -394,13 +394,12 @@ class DeclarationTest {
                 DCL K;
                 PUT SKIP LIST(STG(ICOUNT), ICOUNT, STG(K), STG(ABC));
                 """).strip().split("\\s+")));
-        Exception failure = assertThrows(Exception.class, () -> main("""
+        // I から N でない名は FLOAT DEC(6) で、前の A の FIXED BIN(31) を受け継がない
+        assertEquals("41100000", main("""
                 DCL A FIXED BIN(31), X;
                 X = 1;
-                """));
-        Throwable cause = failure;
-        while (cause.getCause() != null) cause = cause.getCause();
-        assertTrue(String.valueOf(cause.getMessage()).contains("FLOAT"), cause::toString);
+                PUT SKIP LIST(HEX(UNSPEC(X)));
+                """).strip());
     }
 
     @Test
@@ -412,5 +411,19 @@ class DeclarationTest {
                 SUBSTR(S, 2, 1) = 'X';
                 PUT SKIP LIST(S);
                 """).strip());
+    }
+
+    @Test
+    @DisplayName("FLOAT は 16 進浮動小数で記憶域に置く。短精度は 4 byte、長精度は 8 byte で、下の桁は切り捨てる")
+    void floatIsStoredAsHexadecimalFloatingPoint() throws Exception {
+        assertEquals("41100000 C1C8000000000000 40199999,4 8 4,-24.00", String.join(",", main("""
+                DCL F FLOAT DEC(6), H FLOAT DEC(16), B BIN(21), T FLOAT;
+                DCL N FIXED DEC(7,2);
+                F = 1; H = -12.5; T = 0.1;
+                PUT SKIP LIST(HEX(UNSPEC(F)), HEX(UNSPEC(H)), HEX(UNSPEC(T)));
+                PUT SKIP LIST(STG(F), STG(H), STG(B));
+                N = H * 2 + F;
+                PUT SKIP LIST(N);
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
     }
 }

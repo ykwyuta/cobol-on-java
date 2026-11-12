@@ -622,7 +622,9 @@ final class PliSyntax {
      * 管理域の頭の 4 byte に次の空きの位置を置く (この処理系の約束であり、実機の形ではない)。
      * OFFSET は AREA の頭からの byte の位置を FIXED BIN(31) の形で持つ。
      */
-    enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE, AREA, OFFSET }
+    enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE, AREA, OFFSET,
+        /** FLOAT。精度は桁数、位取りは底 (1 なら 2 進、0 なら 10 進)。記憶域は HFP である。 */
+        FLOAT }
 
     /**
      * 宣言 1 つ。
@@ -1669,8 +1671,7 @@ final class PliSyntax {
             if (first >= 'I' && first <= 'N') {
                 return new TypeInfo(Type.BINARY, 15, 0);
             }
-            defaultFloat = true;
-            return new TypeInfo(Type.DECIMAL, 6, 0);
+            return new TypeInfo(Type.FLOAT, 6, 0);
         }
 
         /** {@code DEFAULT RANGE(a:b) 属性;} を、宣言を読む前に集める。 */
@@ -1925,8 +1926,52 @@ final class PliSyntax {
             return null;
         }
 
+        /**
+         * FLOAT の宣言なら、その型。FLOAT と書いたものと、BIN / DEC だけで FIXED の無いもの
+         * (LRM "Default attributes")。精度を省けば 10 進は 6、2 進は 21 である。
+         */
+        private static TypeInfo floatInfo(List<Token> tokens, int from) {
+            int depth = 0;
+            boolean isFloat = false;
+            boolean fixed = false;
+            boolean other = false;
+            int baseAt = -1;
+            int precisionAt = -1;
+            for (int i = from; i < tokens.size(); i++) {
+                Token t = tokens.get(i);
+                if (t.is("(")) depth++;
+                else if (t.is(")")) depth--;
+                else if (depth == 0 && t.kind() == Kind.IDENT) {
+                    if (t.is("DEFINED") || t.is("DEF") || t.is("LIKE") || t.is("TYPE")) {
+                        i++;
+                        continue;
+                    }
+                    boolean base = t.is("BIN") || t.is("BINARY") || t.is("DEC") || t.is("DECIMAL");
+                    if (base) baseAt = i;
+                    isFloat |= t.is("FLOAT");
+                    fixed |= t.is("FIXED");
+                    other |= t.is("PIC") || t.is("PICTURE") || t.is("COMPLEX") || t.is("CPLX");
+                    if ((base || t.is("FLOAT")) && i + 1 < tokens.size()
+                            && tokens.get(i + 1).is("(")) {
+                        precisionAt = i + 1;
+                    }
+                }
+            }
+            if (fixed || other || !(isFloat || baseAt >= 0)) {
+                return null;
+            }
+            boolean binary = baseAt >= 0
+                    && (tokens.get(baseAt).is("BIN") || tokens.get(baseAt).is("BINARY"));
+            return new TypeInfo(Type.FLOAT, precisionAt < 0 ? (binary ? 21 : 6)
+                    : parenthesizedInt(tokens, precisionAt, binary ? 21 : 6), binary ? 1 : 0);
+        }
+
         private static TypeInfo typeInfo(List<Token> tokens, int from, Type inherited,
                                          int inheritedPrecision, int inheritedScale) {
+            TypeInfo floating = floatInfo(tokens, from);
+            if (floating != null) {
+                return floating;
+            }
             for (int i = from; i < tokens.size(); i++) {
                 if (tokens.get(i).is("CHAR") || tokens.get(i).is("CHARACTER")) {
                     if (i + 2 < tokens.size() && tokens.get(i + 1).is("(")
@@ -2090,7 +2135,7 @@ final class PliSyntax {
         }
 
         /** まだ持たない型の属性。宣言は翻訳で通し、実行でその名を使うと止まる。 */
-        private static final Set<String> UNSUPPORTED_TYPES = Set.of("FLOAT", "COMPLEX", "CPLX", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
+        private static final Set<String> UNSUPPORTED_TYPES = Set.of("COMPLEX", "CPLX", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
                 "TASK", "EVENT", "ORDINAL");
 
         /**
@@ -2124,7 +2169,7 @@ final class PliSyntax {
                     picture |= t.is("PIC") || t.is("PICTURE");
                 }
             }
-            return base && !fixed && !picture ? "FLOAT" : null;
+            return null;
         }
 
         /** DEFINED の基と添字と POSITION を読む。iSUB ({@code 1SUB}) は ISUB_1 の名にする。 */

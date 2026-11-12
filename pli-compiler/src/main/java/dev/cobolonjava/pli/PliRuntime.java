@@ -3564,6 +3564,7 @@ public final class PliRuntime {
                         NumProcMode.PFD).toBigDecimal(), precision, scale);
                 case POINTER -> new PointerValue(view.length() < 4 ? 0
                         : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt());
+                case FLOAT -> hfpDecode();
                 case OFFSET -> FixedValue.binary(BigDecimal.valueOf(
                         java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt()), 31, 0);
                 case AREA -> new AreaImage(view.toByteArray());
@@ -3577,6 +3578,60 @@ public final class PliRuntime {
                 }
                 case FILE -> "";
             };
+        }
+
+        /**
+         * FLOAT の値を 16 進浮動小数 (HFP) で書く。頭の byte は符号と 64 を足した 16 の指数、
+         * 残りは 16 進の小数である。入らない下の桁は切り捨てる。Enterprise PL/I の既定は
+         * DEFAULT(HEXADEC) である。IEEE (DEFAULT(IEEE)) と拡張精度 (16 byte) はまだ持たない。
+         * 実機と突き合わせていない。
+         */
+        private void hfpEncode(BigDecimal value) {
+            if (view.length() != 4 && view.length() != 8) {
+                throw new PliExecutionException("extended FLOAT is not supported yet: " + name);
+            }
+            byte[] bytes = new byte[view.length()];
+            if (value.signum() != 0) {
+                int digits = (view.length() - 1) * 2;
+                BigDecimal a = value.abs();
+                BigDecimal sixteen = BigDecimal.valueOf(16);
+                int exponent = 0;
+                while (a.compareTo(power16(exponent)) >= 0) exponent++;
+                while (a.compareTo(power16(exponent - 1)) < 0) exponent--;
+                java.math.BigInteger fraction = a.multiply(power16(digits - exponent))
+                        .setScale(0, java.math.RoundingMode.DOWN).toBigInteger();
+                if (exponent + 64 < 0 || exponent + 64 > 127) {
+                    throw new Condition(exponent > 0 ? "OVERFLOW" : "UNDERFLOW", null,
+                            exponent > 0 ? 300 : 330, null);
+                }
+                bytes[0] = (byte) ((value.signum() < 0 ? 0x80 : 0) | (exponent + 64));
+                byte[] raw = fraction.toByteArray();
+                for (int i = 0; i < raw.length && i < bytes.length - 1; i++) {
+                    bytes[bytes.length - 1 - i] = raw[raw.length - 1 - i];
+                }
+            }
+            view.setBytes(bytes);
+        }
+
+        private static BigDecimal power16(int exponent) {
+            BigDecimal power = BigDecimal.valueOf(16).pow(Math.abs(exponent));
+            return exponent >= 0 ? power : BigDecimal.ONE.divide(power);
+        }
+
+        private BigDecimal hfpDecode() {
+            if (view.length() != 4 && view.length() != 8) {
+                throw new PliExecutionException("extended FLOAT is not supported yet: " + name);
+            }
+            byte[] bytes = view.toByteArray();
+            java.math.BigInteger fraction = new java.math.BigInteger(1,
+                    java.util.Arrays.copyOfRange(bytes, 1, bytes.length));
+            if (fraction.signum() == 0) {
+                return BigDecimal.ZERO;
+            }
+            int exponent = (bytes[0] & 0x7F) - 64;
+            BigDecimal value = new BigDecimal(fraction)
+                    .multiply(power16(exponent - (bytes.length - 1) * 2));
+            return (bytes[0] & 0x80) != 0 ? value.negate() : value;
         }
 
         /** AREA の次の空きの位置 (AREA の頭から)。管理域が 0 なら空である。 */
@@ -3624,6 +3679,10 @@ public final class PliRuntime {
                 }
                 view.fill((byte) 0);
                 for (int i = 0; i < extent; i++) view.set(i, image.bytes()[i]);
+                return;
+            }
+            if (type == PliSyntax.Type.FLOAT) {
+                hfpEncode(Executor.number(value));
                 return;
             }
             if (type == PliSyntax.Type.OFFSET) {
