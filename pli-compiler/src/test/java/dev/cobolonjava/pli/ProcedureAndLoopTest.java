@@ -199,4 +199,43 @@ class ProcedureAndLoopTest {
                 C: PROC(X); DCL X FIXED BIN(31); END C;
                 """).contains("no GENERIC alternative"));
     }
+
+    @Test
+    @DisplayName("名は手続きを宣言した場所でたどる。呼んだ側の同じ名の変数は見えない")
+    void namesResolveWhereTheProcedureIsDeclared() throws Exception {
+        assertEquals("1,2,1", run("""
+                DCL X FIXED BIN(31) INIT(1);
+                CALL OUTER;
+                PUT SKIP LIST(X);
+                OUTER: PROC;
+                  DCL X FIXED BIN(31) INIT(2);
+                  CALL SHOW;
+                  CALL INNER;
+                  INNER: PROC;
+                    PUT SKIP LIST(X);
+                  END INNER;
+                END OUTER;
+                SHOW: PROC;
+                  PUT SKIP LIST(X);
+                END SHOW;
+                """));
+    }
+
+    @Test
+    @DisplayName("on-unit は呼んだ側の鎖でたどる。呼んだ手続きが確立した ON は、呼ばれた先の条件を受ける")
+    void onUnitsFollowTheCallChain() throws Exception {
+        assertEquals("CAUGHT,1", run("""
+                DCL X FIXED BIN(31) INIT(1);
+                CALL OUTER;
+                OUTER: PROC;
+                  DCL X FIXED BIN(31) INIT(2);
+                  ON CONDITION(BAD) PUT SKIP LIST('CAUGHT');
+                  CALL RAISE;
+                END OUTER;
+                RAISE: PROC;
+                  SIGNAL CONDITION(BAD);
+                  PUT SKIP LIST(X);
+                END RAISE;
+                """));
+    }
 }

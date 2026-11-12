@@ -565,7 +565,8 @@ final class PliSyntax {
     record Program(String name, List<String> parameters, List<Stmt> body,
                    Map<String, Procedure> procedures, boolean main,
                    Map<String, FileInfo> files, boolean noExecOps,
-                   Map<String, List<GenericAlternative>> generics) {
+                   Map<String, List<GenericAlternative>> generics,
+                   Map<String, String> enclosing) {
     }
 
     /**
@@ -1155,7 +1156,8 @@ final class PliSyntax {
             }
             return new ParseResult(new Program(main.name, main.parameters,
                     List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
-                    Map.copyOf(files), main.noExecOps, Map.copyOf(generics)), List.of());
+                    Map.copyOf(files), main.noExecOps, Map.copyOf(generics),
+                    Map.copyOf(enclosing)), List.of());
         }
 
         /** FILE の宣言の属性。名は大文字。 */
@@ -1198,6 +1200,7 @@ final class PliSyntax {
             while (!check(Kind.EOF)) {
                 if (procedureAhead()) {
                     ProcedureBuilder nested = parseProcedure();
+                    enclosing.put(nested.name, result.name);
                     result.procedures.put(nested.name, nested.freeze());
                     result.procedures.putAll(nested.procedures);
                     continue;
@@ -1527,6 +1530,9 @@ final class PliSyntax {
         }
 
         private final List<StorageReference> storageReferences = new ArrayList<>();
+
+        /** 内部手続きの名から、それを宣言した (囲む) 手続きの名。 */
+        private final Map<String, String> enclosing = new java.util.HashMap<>();
 
         /** GENERIC の名と選択肢。 */
         private final Map<String, List<GenericAlternative>> generics = new java.util.HashMap<>();

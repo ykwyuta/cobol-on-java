@@ -208,6 +208,9 @@ public final class PliRuntime {
             return name.substring(name.lastIndexOf('.') + 1);
         }
 
+        /** 動いている内部手続きの環境。手続きの名ごとに、新しい呼び出しが上。 */
+        private final Map<String, java.util.ArrayDeque<Env>> activations = new HashMap<>();
+
         /** FETCH した入口の名から、ロードモジュールの名 (TITLE)。 */
         private final Map<String, String> fetched = new HashMap<>();
 
@@ -1816,7 +1819,13 @@ public final class PliRuntime {
                         + procedure.parameters().size() + " argument(s), but "
                         + arguments.size() + " were passed");
             }
-            Env local = new Env(env, context);
+            // 名は手続きを宣言した場所の環境でたどる (静的な有効範囲。LRM "Scopes of
+            // declarations")。以前は呼んだ側の環境につないでいたので、呼んだ側の同じ名の
+            // 変数が見えていた (暫定判断 P-197)。on-unit は呼んだ側の鎖でたどる
+            String enclosing = program.enclosing().get(procedure.name());
+            java.util.ArrayDeque<Env> outer = enclosing == null ? null : activations.get(enclosing);
+            Env declared = outer == null || outer.isEmpty() ? globals : outer.peek();
+            Env local = new Env(declared, env, context);
             for (int i = 0; i < arguments.size(); i++) {
                 String name = procedure.parameters().get(i).toUpperCase(Locale.ROOT);
                 PliSyntax.Expr argument = arguments.get(i);
@@ -1832,6 +1841,8 @@ public final class PliRuntime {
             returned = null;
             String outerScope = scope;
             scope = outerScope + "/" + procedure.name().toUpperCase(Locale.ROOT);
+            activations.computeIfAbsent(procedure.name(), k -> new java.util.ArrayDeque<>())
+                    .push(local);
             try {
                 declareAll(procedure.body(), local);
                 execute(procedure.body(), local);
@@ -1839,6 +1850,7 @@ public final class PliRuntime {
                 // 内部プロシージャから呼出元へ戻る。
             } finally {
                 scope = outerScope;
+                activations.get(procedure.name()).pop();
             }
             Object result = returned;
             returned = null;
@@ -3464,8 +3476,16 @@ public final class PliRuntime {
         /** 内部手続きに渡された引数。変数 ({@link Var}) か、式の値。名は大文字。 */
         private final Map<String, Object> arguments = new HashMap<>();
 
+        /** on-unit を探す鎖 (呼んだ側)。名を探す鎖 ({@link #parent}、宣言した場所) とは別である。 */
+        private final Env caller;
+
         Env(Env parent, ProgramContext context) {
+            this(parent, parent, context);
+        }
+
+        Env(Env parent, Env caller, ProgramContext context) {
             this.parent = parent;
+            this.caller = caller;
             this.context = context;
         }
 
@@ -3520,12 +3540,12 @@ public final class PliRuntime {
         /** 呼んだ側へたどって on-unit を探す (動的な有効範囲。LRM "Establishing an ON-unit")。 */
         Handler handler(String key) {
             Handler own = handlers.get(key);
-            return own != null ? own : parent == null ? null : parent.handler(key);
+            return own != null ? own : caller == null ? null : caller.handler(key);
         }
 
         List<PliSyntax.Stmt> endFile(String file) {
             List<PliSyntax.Stmt> own = endFileHandlers.get(file.toUpperCase(Locale.ROOT));
-            return own != null ? own : parent == null ? null : parent.endFile(file);
+            return own != null ? own : caller == null ? null : caller.endFile(file);
         }
 
         Var find(String name) {
