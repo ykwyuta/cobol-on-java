@@ -1013,6 +1013,7 @@ public final class PliRuntime {
                 variable.varying = child.varying();
                 variable.unsigned = child.unsigned();
                 variable.picture = pictureOf(child);
+                variable.complex = child.complex();
                 env.put(variable);
                 env.alias(tree.get(index).name() + "." + child.name(), variable);
                 if (index > 0) {
@@ -1219,6 +1220,7 @@ public final class PliRuntime {
             variable.varying = declaration.varying();
             variable.unsigned = declaration.unsigned();
             variable.picture = pictureOf(declaration);
+            variable.complex = declaration.complex();
             if (!declaration.dimensions().isEmpty()) {
                 declareElements(variable, declaration,
                         StructureMapping.unaligned(List.of(declaration), 0), 0);
@@ -1253,6 +1255,7 @@ public final class PliRuntime {
                         array.view.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
                 element.varying = declaration.varying();
                 element.picture = pictureOf(declaration);
+                element.complex = declaration.complex();
                 element.unsigned = declaration.unsigned();
                 array.elements.add(element);
             }
@@ -2434,6 +2437,9 @@ public final class PliRuntime {
                             ? bitwise(bits.bits(), "", (x, y) -> x == '1' ? '0' : '1')
                             : !truth(operand);
                     case "-" -> operand instanceof FixedValue fixed ? fixed.negate()
+                            : operand instanceof PliSyntax.Complex z
+                                    ? new PliSyntax.Complex(z.real().negate(),
+                                            z.imaginary().negate())
                             : number(operand).negate();
                     case "+" -> operand instanceof FixedValue ? operand : number(operand);
                     default -> throw new PliExecutionException("unknown unary operator "
@@ -2673,7 +2679,19 @@ public final class PliRuntime {
                 // 結果は x と同じ base・scale・precision を持つ (LRM "ABS")
                 case "ABS" -> arguments.get(0) instanceof FixedValue fixed
                         ? (fixed.value().signum() < 0 ? fixed.negate() : fixed)
+                        // 複素数の絶対値は実部と虚部の 2 乗の和の正の平方根 (LRM "ABS")
+                        : arguments.get(0) instanceof PliSyntax.Complex z
+                                ? z.real().multiply(z.real()).add(z.imaginary()
+                                        .multiply(z.imaginary()))
+                                        .sqrt(java.math.MathContext.DECIMAL64)
+                                        .stripTrailingZeros()
                         : number(arguments.get(0)).abs();
+                case "REAL" -> complex(arguments.get(0)).real();
+                case "IMAG" -> complex(arguments.get(0)).imaginary();
+                case "CONJG" -> new PliSyntax.Complex(complex(arguments.get(0)).real(),
+                        complex(arguments.get(0)).imaginary().negate());
+                case "COMPLEX", "CPLX" -> new PliSyntax.Complex(number(arguments.get(0)),
+                        number(arguments.get(1)));
                 // x を y 回<b>つなげ足す</b>ので y+1 個になる。y が 0 以下なら x そのもの (LRM "REPEAT")
                 case "REPEAT" -> display(arguments.get(0))
                         .repeat(Math.max(0, number(arguments.get(1)).intValue()) + 1);
@@ -3012,6 +3030,28 @@ public final class PliRuntime {
                                          FixedValue.Arithmetic rules) {
             if (left instanceof NumericPicture picture) left = picture.fixed();
             if (right instanceof NumericPicture picture) right = picture.fixed();
+            if (left instanceof PliSyntax.Complex || right instanceof PliSyntax.Complex) {
+                // 複素数の演算。結果の精度の規則は持たず、値を切らずに運ぶ (実機と突き合わせていない)
+                PliSyntax.Complex x = complex(left);
+                PliSyntax.Complex y = complex(right);
+                BigDecimal a = x.real(), b = x.imaginary(), c = y.real(), d = y.imaginary();
+                return switch (operator) {
+                    case "+" -> new PliSyntax.Complex(a.add(c), b.add(d));
+                    case "-" -> new PliSyntax.Complex(a.subtract(c), b.subtract(d));
+                    case "*" -> new PliSyntax.Complex(a.multiply(c).subtract(b.multiply(d)),
+                            a.multiply(d).add(b.multiply(c)));
+                    default -> {
+                        BigDecimal norm = c.multiply(c).add(d.multiply(d));
+                        if (norm.signum() == 0) {
+                            throw new Condition("ZERODIVIDE", null, 320, null);
+                        }
+                        java.math.MathContext mc = java.math.MathContext.DECIMAL128;
+                        yield new PliSyntax.Complex(
+                                a.multiply(c).add(b.multiply(d)).divide(norm, mc),
+                                b.multiply(c).subtract(a.multiply(d)).divide(norm, mc));
+                    }
+                };
+            }
             if (left instanceof FixedValue a && right instanceof FixedValue b) {
                 return switch (operator) {
                     case "+" -> a.add(b, rules);
@@ -3309,6 +3349,13 @@ public final class PliRuntime {
         }
 
         private static int compare(Object left, Object right) {
+            if (left instanceof PliSyntax.Complex || right instanceof PliSyntax.Complex) {
+                // 複素数は等しいかどうかだけを比べられる。等しくなければ 0 でない値を返す
+                PliSyntax.Complex x = complex(left);
+                PliSyntax.Complex y = complex(right);
+                return x.real().compareTo(y.real()) == 0
+                        && x.imaginary().compareTo(y.imaginary()) == 0 ? 0 : 1;
+            }
             if (numeric(left) || numeric(right)) {
                 return number(left).compareTo(number(right));
             }
@@ -3334,11 +3381,18 @@ public final class PliRuntime {
 
         private static boolean numeric(Object value) {
             return value instanceof Number || value instanceof FixedValue
-                    || value instanceof NumericPicture;
+                    || value instanceof NumericPicture || value instanceof PliSyntax.Complex;
+        }
+
+        private static PliSyntax.Complex complex(Object value) {
+            return value instanceof PliSyntax.Complex z ? z
+                    : new PliSyntax.Complex(number(value), BigDecimal.ZERO);
         }
 
         private static BigDecimal number(Object value) {
             if (value instanceof FixedValue fixed) return fixed.value();
+            // 複素数を実数にすると虚部は捨てられる (LRM "Mode conversion")
+            if (value instanceof PliSyntax.Complex z) return z.real();
             if (value instanceof NumericPicture picture) return picture.fixed().value();
             // ビット列を数にすると、符号なしの 2 進の値になる (LRM "Target: Coded arithmetic", BIT)
             if (value instanceof PliSyntax.BitString bits) {
@@ -3518,6 +3572,8 @@ public final class PliRuntime {
         final List<Var> elements = new ArrayList<>();
         /** CONTROLLED なら、その世代の積み重ね。 */
         Generations generations;
+        /** COMPLEX なら真。記憶域の前半が実部、後半が虚部である。 */
+        boolean complex;
         /** 数の PICTURE なら、その指定。 */
         PliPicture picture;
         /** まだ持たない型の属性で宣言した名なら、その属性。参照すると止まる。 */
@@ -3539,7 +3595,19 @@ public final class PliRuntime {
             this.view = view;
         }
 
+        /** 複素数の変数の実部 (0) か虚部 (1) を、同じ型の実数の変数として見る。 */
+        private Var part(int index) {
+            int half = view.length() / 2;
+            Var part = new Var(name, type, precision, scale, view.subView(index * half, half));
+            part.unsigned = unsigned;
+            return part;
+        }
+
         Object read(ProgramContext context) {
+            if (complex) {
+                return new PliSyntax.Complex(Executor.number(part(0).read(context)),
+                        Executor.number(part(1).read(context)));
+            }
             if (type == PliSyntax.Type.CHAR && varying) {
                 // 頭の半語が今の長さ (LRM Table 39)。宣言の長さを超える値は壊れた記憶域である
                 int length = currentLength();
@@ -3565,6 +3633,25 @@ public final class PliRuntime {
                 case POINTER -> new PointerValue(view.length() < 4 ? 0
                         : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt());
                 case FLOAT -> hfpDecode();
+                case WIDECHAR -> new String(view.toByteArray(),
+                        java.nio.charset.StandardCharsets.UTF_16BE);
+                case GRAPHIC -> {
+                    // SBCS から直した字 (X'42' + SBCS の字、空白は X'4040') だけを文字に戻せる
+                    byte[] bytes = view.toByteArray();
+                    byte[] single = new byte[bytes.length / 2];
+                    for (int i = 0; i < single.length; i++) {
+                        int high = bytes[2 * i] & 0xFF;
+                        if (high == 0x40 && (bytes[2 * i + 1] & 0xFF) == 0x40) {
+                            single[i] = context.codePage().space();
+                        } else if (high == 0x42) {
+                            single[i] = bytes[2 * i + 1];
+                        } else {
+                            throw new PliExecutionException("GRAPHIC data other than converted"
+                                    + " SBCS characters cannot be read yet: " + name);
+                        }
+                    }
+                    yield context.codePage().decode(single);
+                }
                 case OFFSET -> FixedValue.binary(BigDecimal.valueOf(
                         java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt()), 31, 0);
                 case AREA -> new AreaImage(view.toByteArray());
@@ -3661,6 +3748,14 @@ public final class PliRuntime {
         }
 
         void write(Object value, ProgramContext context) {
+            if (complex) {
+                // 実数を入れると虚部は 0 になる
+                PliSyntax.Complex z = value instanceof PliSyntax.Complex c ? c
+                        : new PliSyntax.Complex(Executor.number(value), BigDecimal.ZERO);
+                part(0).write(z.real(), context);
+                part(1).write(z.imaginary(), context);
+                return;
+            }
             if (type == PliSyntax.Type.AREA) {
                 // AREA への代入は、割り当てた部分と管理域を写す (LRM "Area assignment")。
                 // EMPTY() は空にする
@@ -3683,6 +3778,37 @@ public final class PliRuntime {
             }
             if (type == PliSyntax.Type.FLOAT) {
                 hfpEncode(Executor.number(value));
+                return;
+            }
+            if (type == PliSyntax.Type.WIDECHAR) {
+                // UTF-16 (big endian) で置き、足りない右を U+0020 で埋める (LRM "WIDECHAR")
+                String text = Executor.display(value);
+                byte[] bytes = new byte[view.length()];
+                for (int i = 0; i < bytes.length / 2; i++) {
+                    char c = i < text.length() ? text.charAt(i) : ' ';
+                    bytes[2 * i] = (byte) (c >> 8);
+                    bytes[2 * i + 1] = (byte) c;
+                }
+                view.setBytes(bytes);
+                return;
+            }
+            if (type == PliSyntax.Type.GRAPHIC) {
+                // SBCS の字は X'42' を前に付けた DBCS の字に、空白は X'4040' に直す
+                // (LRM "Converting to GRAPHIC")。SBCS に無い字 (漢字) はまだ持たない
+                String graphic = Executor.display(value);
+                byte[] single = context.codePage().encode(graphic);
+                if (!context.codePage().decode(single).equals(graphic)) {
+                    throw new PliExecutionException("GRAPHIC data that is not in the SBCS code"
+                            + " page is not supported yet: " + name);
+                }
+                byte[] bytes = new byte[view.length()];
+                for (int i = 0; i < bytes.length / 2; i++) {
+                    byte b = i < single.length ? single[i] : context.codePage().space();
+                    boolean space = b == context.codePage().space();
+                    bytes[2 * i] = (byte) (space ? 0x40 : 0x42);
+                    bytes[2 * i + 1] = space ? (byte) 0x40 : b;
+                }
+                view.setBytes(bytes);
                 return;
             }
             if (type == PliSyntax.Type.OFFSET) {

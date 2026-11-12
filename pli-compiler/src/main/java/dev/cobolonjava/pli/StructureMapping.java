@@ -211,6 +211,11 @@ final class StructureMapping {
 
     /** 記憶域の大きさ (LRM Table 39)。 */
     static int length(PliSyntax.Decl decl) {
+        // 複素数は実部と虚部を続けて置く
+        return (decl.complex() ? 2 : 1) * realLength(decl);
+    }
+
+    private static int realLength(PliSyntax.Decl decl) {
         return switch (decl.type()) {
             // VARYING は今の長さを持つ半語が前に付く
             case CHAR -> Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0);
@@ -224,6 +229,7 @@ final class StructureMapping {
             case DECIMAL -> PackedDecimal.byteLength(Math.max(1, decl.precision()));
             case POINTER, OFFSET -> 4;
             case FLOAT -> floatLength(decl.precision(), decl.scale() == 1);
+            case WIDECHAR, GRAPHIC -> 2 * Math.max(1, decl.precision());
             // AREA(n) は n byte と管理域の 16 byte
             case AREA -> Math.max(0, decl.precision()) + PliRuntime.AREA_HEADER;
             // 入口の変数は 8 byte (頭の 4 byte に入口の番号を置く。この処理系の約束)

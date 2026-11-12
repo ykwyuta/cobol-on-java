@@ -611,6 +611,10 @@ final class PliSyntax {
     record Release(List<String> entries) implements Stmt {
     }
 
+    /** 複素数の値。虚数の定数 {@code 2I} は実部 0 の複素数である (LRM "Complex data")。 */
+    record Complex(java.math.BigDecimal real, java.math.BigDecimal imaginary) {
+    }
+
     /** 配列の断面の添字 {@code *} (LRM "Cross sections of arrays")。 */
     enum Asterisk { STAR }
 
@@ -624,7 +628,9 @@ final class PliSyntax {
      */
     enum Type { GROUP, CHAR, BINARY, DECIMAL, BIT, POINTER, FILE, ENTRY, PICTURE, AREA, OFFSET,
         /** FLOAT。精度は桁数、位取りは底 (1 なら 2 進、0 なら 10 進)。記憶域は HFP である。 */
-        FLOAT }
+        FLOAT,
+        /** WIDECHAR(n) は UTF-16 の n 字、GRAPHIC(n) は DBCS の n 字。どちらも 2n byte。 */
+        WIDECHAR, GRAPHIC }
 
     /**
      * 宣言 1 つ。
@@ -643,13 +649,14 @@ final class PliSyntax {
     record Decl(String name, int level, Type type, int precision, int scale,
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
                 List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
-                String storage, Defined defined, String unsupported, String picture) {
+                String storage, Defined defined, String unsupported, String picture,
+                boolean complex) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
-                    dimensions, initialItems, false, null, null, null, null);
+                    dimensions, initialItems, false, null, null, null, null, false);
         }
 
         boolean controlled() {
@@ -660,7 +667,7 @@ final class PliSyntax {
         Decl withDimensions(List<Bound> bounds) {
             return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
                     varying, List.copyOf(bounds), initialItems, unsigned, storage, defined,
-                    unsupported, picture);
+                    unsupported, picture, complex);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -1552,7 +1559,8 @@ final class PliSyntax {
                     namedReferences.add(new NamedReference(part.get(i + 2).text(), part.get(i + 2),
                             false));
                 }
-                if (token.is("COMPLEX") && info.type != Type.BINARY && info.type != Type.DECIMAL) {
+                if (token.is("COMPLEX") && info.type != Type.BINARY && info.type != Type.DECIMAL
+                        && info.type != Type.FLOAT) {
                     throw new ParseFailure(token, "COMPLEX requires an arithmetic type");
                 }
             }
@@ -1764,7 +1772,8 @@ final class PliSyntax {
                     varying(part), dimensions,
                     dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage,
                     defined(part), floatByDefault ? "FLOAT" : unsupportedAttribute(part),
-                    info.type == Type.PICTURE ? pictureSpecification(part) : null);
+                    info.type == Type.PICTURE ? pictureSpecification(part) : null,
+                    part.stream().anyMatch(t -> t.is("COMPLEX") || t.is("CPLX")));
         }
 
         /**
@@ -1950,7 +1959,7 @@ final class PliSyntax {
                     if (base) baseAt = i;
                     isFloat |= t.is("FLOAT");
                     fixed |= t.is("FIXED");
-                    other |= t.is("PIC") || t.is("PICTURE") || t.is("COMPLEX") || t.is("CPLX");
+                    other |= t.is("PIC") || t.is("PICTURE");
                     if ((base || t.is("FLOAT")) && i + 1 < tokens.size()
                             && tokens.get(i + 1).is("(")) {
                         precisionAt = i + 1;
@@ -1980,6 +1989,12 @@ final class PliSyntax {
                         return new TypeInfo(Type.CHAR, -1, 0);
                     }
                     return new TypeInfo(Type.CHAR, parenthesizedInt(tokens, i + 1, 1), 0);
+                }
+                if (tokens.get(i).is("WIDECHAR") || tokens.get(i).is("WCHAR")) {
+                    return new TypeInfo(Type.WIDECHAR, parenthesizedInt(tokens, i + 1, 1), 0);
+                }
+                if (tokens.get(i).is("GRAPHIC")) {
+                    return new TypeInfo(Type.GRAPHIC, parenthesizedInt(tokens, i + 1, 1), 0);
                 }
                 if (tokens.get(i).is("BIT")) {
                     return new TypeInfo(Type.BIT, parenthesizedInt(tokens, i + 1, 1), 0);
@@ -2135,7 +2150,7 @@ final class PliSyntax {
         }
 
         /** まだ持たない型の属性。宣言は翻訳で通し、実行でその名を使うと止まる。 */
-        private static final Set<String> UNSUPPORTED_TYPES = Set.of("COMPLEX", "CPLX", "WIDECHAR", "WCHAR", "GRAPHIC", "LABEL", "FORMAT",
+        private static final Set<String> UNSUPPORTED_TYPES = Set.of("LABEL", "FORMAT",
                 "TASK", "EVENT", "ORDINAL");
 
         /**
@@ -2163,6 +2178,15 @@ final class PliSyntax {
                     }
                     if (UNSUPPORTED_TYPES.contains(t.text())) {
                         return t.text();
+                    }
+                    if ((t.is("WIDECHAR") || t.is("WCHAR") || t.is("GRAPHIC")) && tokens.stream()
+                            .anyMatch(x -> x.is("VARYING") || x.is("VAR") || x.is("VARYINGZ"))) {
+                        return "VARYING " + t.text();
+                    }
+                    if ((t.is("COMPLEX") || t.is("CPLX")) && tokens.stream()
+                            .noneMatch(x -> x.is("FIXED"))) {
+                        // 複素数は FIXED だけを持つ
+                        return "COMPLEX FLOAT";
                     }
                     base |= t.is("BIN") || t.is("BINARY") || t.is("DEC") || t.is("DECIMAL");
                     fixed |= t.is("FIXED");
@@ -2649,7 +2673,15 @@ final class PliSyntax {
                 return new Literal(value);
             }
             if (check(Kind.NUMBER)) {
-                return new Literal(FixedValue.constant(next().text()));
+                Token number = next();
+                if (check("I") && peek().line() == number.line()
+                        && peek().column() == number.column() + number.text().length()) {
+                    // 数に続けて書いた I は虚数の定数である (2I)。空白を挟めば名の I である
+                    next();
+                    return new Literal(new Complex(java.math.BigDecimal.ZERO,
+                            new java.math.BigDecimal(number.text())));
+                }
+                return new Literal(FixedValue.constant(number.text()));
             }
             if (check(Kind.IDENT)) {
                 String name = qualifiedName();

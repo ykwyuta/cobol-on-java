@@ -338,21 +338,21 @@ class DeclarationTest {
     }
 
     @Test
-    @DisplayName("COMPLEX などまだ持たない型の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
+    @DisplayName("COMPLEX FLOAT などまだ持たない型の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
     void unsupportedTypesStopWhenUsed() throws Exception {
         assertEquals("OK", main("""
-                DCL F FLOAT DEC(6);
-                DCL Z COMPLEX FIXED DEC(7,2);
+                DCL L LABEL;
+                DCL Z COMPLEX FLOAT DEC(6);
                 PUT SKIP LIST('OK');
                 """).strip());
         Exception failure = assertThrows(Exception.class, () -> main("""
                 DCL 1 S, 2 C CHAR(1);
-                DCL Z COMPLEX FIXED DEC(7,2);
+                DCL Z COMPLEX FLOAT DEC(6);
                 Z = 1;
                 """));
         Throwable cause = failure;
         while (cause.getCause() != null) cause = cause.getCause();
-        assertTrue(String.valueOf(cause.getMessage()).contains("COMPLEX is not supported yet"),
+        assertTrue(String.valueOf(cause.getMessage()).contains("COMPLEX FLOAT is not supported yet"),
                 cause::toString);
     }
 
@@ -425,5 +425,30 @@ class DeclarationTest {
                 N = H * 2 + F;
                 PUT SKIP LIST(N);
                 """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("複素数は実部と虚部を続けて置き、2I は虚数の定数である。積・共役・絶対値")
+    void complexArithmetic() throws Exception {
+        assertEquals("5 5 5 -5 5 8", String.join(" ", main("""
+                DCL Z COMPLEX FIXED DEC(7,2);
+                DCL (R1, I1, R2, I2, M) FIXED BIN(31);
+                Z = (1+2I)*(3-1I);
+                R1 = REAL(Z); I1 = IMAG(Z);
+                R2 = REAL(CONJG(Z)); I2 = IMAG(CONJG(Z));
+                M = ABS(3+4I);
+                PUT SKIP LIST(R1, I1, R2, I2, M, STG(Z));
+                """).strip().split("\\s+")));
+    }
+
+    @Test
+    @DisplayName("WIDECHAR は UTF-16、GRAPHIC は SBCS の字に X'42' を付けた DBCS で置き、右を空白で埋める")
+    void wideAndGraphicStrings() throws Exception {
+        assertEquals("0041004200200020 42C142C24040", String.join(" ", main("""
+                DCL W WIDECHAR(4);
+                DCL G GRAPHIC(3);
+                W = 'AB'; G = 'AB';
+                PUT SKIP LIST(HEX(UNSPEC(W)), HEX(UNSPEC(G)));
+                """).strip().split("\\s+")));
     }
 }

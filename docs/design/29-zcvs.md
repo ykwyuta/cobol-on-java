@@ -295,6 +295,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | `STATIC` の記憶域 (数は変わらない)、`FETCH` / `RELEASE` | 65 / 68 | 330 / 330 |
 | `HANDLE`、`H=>X`、`NEW(:T:)`、`PLIFREE` | 66 / 68 | 334 / 334 |
 | 型の無い名の既定と `DFT RANGE`、`BUILTIN` の宣言、`DEFINE ORDINAL` | 67 / 68 | 340 / 340 |
+| FLOAT (HFP)、COMPLEX、WIDECHAR、GRAPHIC | 68 / 68 | 348 / 348 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -462,3 +463,14 @@ FLOAT は 16 進浮動小数 (HFP) で記憶域に置く。短精度 (10 進 6 �
 合わせた。値は解釈系の中では桁数を決めない 10 進の数として運ぶので、FLOAT どうしの
 演算の途中の丸めは実機と違いうる。IEEE、拡張精度 (16 byte)、FLOAT を文字にする変換
 (PUT LIST の E 形式) はまだ持たず、断る。数は変わらない (67 / 68)。
+
+COMPLEX は FIXED だけを持つ。記憶域は実部と虚部を続けて置き、数に続けて書いた `I` を
+虚数の定数として読む (`2I`。空白を挟めば名の I)。演算の結果の精度の規則は持たず、値を
+切らずに運ぶ。COMPLEX FLOAT は宣言を通し、使ったら止める。WIDECHAR は UTF-16 (big endian)、
+GRAPHIC は DBCS で置く。GRAPHIC へ SBCS の字を入れると X'42' を前に付けた字 (空白は
+X'4040') に直す。SBCS に無い字 (漢字) の GRAPHIC と、VARYING の WIDECHAR / GRAPHIC は
+まだ持たず、断る。
+
+これで ZPVS は 68 / 68 (判定 348 / 348) になった。<b>これは Zeus と同じ判定を出すという
+ことであって、実機と同じという裏付けではない</b> (Zeus の振る舞いは実機の裏付けではない)。
+この段に「実機と突き合わせていない」と書いた点が、そのまま残りの仕事である。
