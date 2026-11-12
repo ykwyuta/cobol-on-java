@@ -294,6 +294,7 @@ V 型の外部参照が無い、DCB / OPEN / GET / PUT が無い、である。�
 | SYSPRINT 以外の PRINT ファイル (`LINESIZE`、`PAGESIZE`、`LINE`、`LINENO`、`PAGENO`、`ON ENDPAGE`) | 64 / 68 | 324 / 324 |
 | `STATIC` の記憶域 (数は変わらない)、`FETCH` / `RELEASE` | 65 / 68 | 330 / 330 |
 | `HANDLE`、`H=>X`、`NEW(:T:)`、`PLIFREE` | 66 / 68 | 334 / 334 |
+| 型の無い名の既定と `DFT RANGE`、`BUILTIN` の宣言、`DEFINE ORDINAL` | 67 / 68 | 340 / 340 |
 
 `SELECT` は主語があれば WHEN の値と比べ、無ければ WHEN の式を真偽として見る。
 当たる WHEN も OTHERWISE も無ければ ERROR を起こす (LRM "SELECT statement")。
@@ -412,6 +413,15 @@ PC104A の FETCH の奥にあったので数に出ていなかった。いまは
 `#T BASED(#T#P)` を合成し、`H HANDLE T` を POINTER に、`H=>X` を locator 修飾
 `H->#T.X` に、`NEW(:T:)` を `NEW('#T')` にする。値は POINTER と同じ番号であり、型の検査
 (別の型の HANDLE の代入を断ること) はまだ持たない。`PLIFREE` は何もしない。
+
+型の属性の無い最上位の名は、以前は<b>前の項目の型を受け継いでいた</b> (`DCL A FIXED BIN(31),
+B;` の B が FIXED BIN(31) になる)。PL/I では属性は ',' を越えて受け継がれない。いまは
+`DEFAULT RANGE(a:b)` の規則に合えばその属性、そうでなければ I から N で始まる名は
+FIXED BIN(15)、ほかは FLOAT DEC(6) (まだ持たないので使ったら止める) にする。`BUILTIN` と
+`CONDITION` の宣言も同じく型を受け継いで変数を作っていた (`DCL SUBSTR BUILTIN` が擬似変数を
+隠す)。いまは記憶域を持たない。`DEFINE ORDINAL` は TYPE と同じく字句の段で展開し、要素は
+FIXED BIN(31) の名前付きの定数、変数も FIXED BIN(31) にした (Zeus と同じ。実機の大きさは
+PRECISION で決まり、突き合わせていない)。
 
 門は内部手続きの引数だった。`CALL ZCHECK('名前', R=129.75)` のように式を渡す。
 以前は名前しか受けなかった。式の引数を仮の変数で渡し、`CHAR(*)`、`RETURNS`、

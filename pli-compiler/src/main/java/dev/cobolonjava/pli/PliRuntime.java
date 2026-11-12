@@ -2689,6 +2689,30 @@ public final class PliRuntime {
         private Object moreBuiltins(String name, List<Object> arguments) {
             return switch (name) {
                 case "REVERSE" -> new StringBuilder(display(arguments.get(0))).reverse().toString();
+                // ORDINAL の組み込み関数。2 つ目の引数は翻訳で足した要素の表 (名=値,...) である
+                case "ORDINALNAME", "ORDINALSUCC", "ORDINALPRED" -> {
+                    int x = number(arguments.get(0)).intValue();
+                    List<String[]> members = new ArrayList<>();
+                    for (String member : display(arguments.get(1)).split(",")) {
+                        members.add(member.split("="));
+                    }
+                    int k = -1;
+                    for (int i = 0; i < members.size(); i++) {
+                        if (Integer.parseInt(members.get(i)[1]) == x) k = i;
+                    }
+                    int target = name.equals("ORDINALSUCC") ? k + 1
+                            : name.equals("ORDINALPRED") ? k - 1 : k;
+                    if (k < 0 || target < 0 || target >= members.size()) {
+                        throw new PliExecutionException(name + ": " + x + " has no such"
+                                + " ORDINAL member");
+                    }
+                    yield name.equals("ORDINALNAME") ? members.get(target)[0]
+                            : FixedValue.binary(new BigDecimal(members.get(target)[1]), 31, 0);
+                }
+                case "BINVALUE", "BINARYVALUE" -> arguments.get(0) instanceof PointerValue pointer
+                        ? FixedValue.binary(BigDecimal.valueOf(pointer.address()), 31, 0)
+                        : FixedValue.binary(number(arguments.get(0)).setScale(0,
+                                java.math.RoundingMode.DOWN), 31, 0);
                 case "UPPERCASE" -> display(arguments.get(0)).toUpperCase(Locale.ROOT);
                 case "LOWERCASE" -> display(arguments.get(0)).toLowerCase(Locale.ROOT);
                 // 見つかった位置 (1 から)。無ければ 0 (LRM "INDEX")

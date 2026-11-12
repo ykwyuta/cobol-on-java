@@ -271,14 +271,14 @@ class DeclarationTest {
     }
 
     @Test
-    @DisplayName("定義していない TYPE、小構造の LIKE、DEFINE ORDINAL は翻訳で断る")
+    @DisplayName("定義していない TYPE と小構造の LIKE は翻訳で断る")
     void unsupportedTypeFormsAreRefused() {
         assertTrue(refusal("DCL P TYPE NOWHERE;").contains("type NOWHERE is not defined"));
         assertTrue(refusal("""
                 DCL 1 S, 2 T, 3 A FIXED BIN(31);
                 DCL X LIKE T;
                 """).contains("minor structure"));
-        assertTrue(refusal("DEFINE ORDINAL C(RED, BLUE);").contains("DEFINE ORDINAL"));
+        // DEFINE ORDINAL は持ったので、ここでは断らない (ordinalTypes)
         assertTrue(refusal("DCL X LIKE MISSING;").contains("MISSING is not declared"));
     }
 
@@ -369,5 +369,48 @@ class DeclarationTest {
                   PUT SKIP LIST(C, A);
                 END BUMP;
                 """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("ORDINAL の要素は VALUE の無いとき前の値 + 1 で、名・次・前・FIRST・LAST を引ける")
+    void ordinalTypes() throws Exception {
+        assertEquals("RED BLUE 5 BLUE RED 6", String.join(" ", main("""
+                DEFINE ORDINAL COLOR(RED, GREEN VALUE(5), BLUE);
+                DCL C TYPE COLOR;
+                C = GREEN;
+                PUT SKIP LIST(ORDINALNAME(FIRST(COLOR)), ORDINALNAME(LAST(COLOR)));
+                PUT SKIP LIST(BINVALUE(C));
+                PUT SKIP LIST(ORDINALNAME(ORDINALSUCC(C)), ORDINALNAME(ORDINALPRED(C)));
+                PUT SKIP LIST(BINVALUE(BLUE));
+                """).strip().split("\\s+")));
+    }
+
+    @Test
+    @DisplayName("型の無い名は前の項目の型を受け継がない: DFT RANGE、I から N は FIXED BIN(15)、ほかは FLOAT")
+    void attributelessNamesGetDefaults() throws Exception {
+        assertEquals("2 7 2 4", String.join(" ", main("""
+                DFT RANGE(A:B) FIXED BIN(31);
+                DCL C FIXED BIN(15), ICOUNT INIT(7), ABC INIT(1);
+                DCL K;
+                PUT SKIP LIST(STG(ICOUNT), ICOUNT, STG(K), STG(ABC));
+                """).strip().split("\\s+")));
+        Exception failure = assertThrows(Exception.class, () -> main("""
+                DCL A FIXED BIN(31), X;
+                X = 1;
+                """));
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        assertTrue(String.valueOf(cause.getMessage()).contains("FLOAT"), cause::toString);
+    }
+
+    @Test
+    @DisplayName("BUILTIN の宣言は変数を作らないので、擬似変数 SUBSTR がそのまま使える")
+    void builtinDeclarationsDeclareNoVariable() throws Exception {
+        assertEquals("AXC", main("""
+                DCL (SUBSTR, LENGTH) BUILTIN;
+                DCL S CHAR(3) INIT('ABC');
+                SUBSTR(S, 2, 1) = 'X';
+                PUT SKIP LIST(S);
+                """).strip());
     }
 }

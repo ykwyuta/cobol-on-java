@@ -53,10 +53,15 @@ final class PliSyntax {
         }
         Map<String, List<List<Token>>> structures = new java.util.HashMap<>();
         Map<String, List<Token>> aliases = new java.util.HashMap<>();
+        Map<String, Map<String, Integer>> ordinals = new java.util.HashMap<>();
+        Map<String, String> ordinalVariables = new java.util.HashMap<>();
         List<List<Token>> kept = new ArrayList<>();
         for (List<Token> statement : statements) {
             int k = keywordAt(statement);
-            if (k >= 0 && statement.get(k).is("DEFINE")) {
+            if (k >= 0 && statement.get(k).is("DEFINE") && k + 1 < statement.size()
+                    && statement.get(k + 1).is("ORDINAL")) {
+                kept.add(ordinal(statement, k, ordinals));
+            } else if (k >= 0 && statement.get(k).is("DEFINE")) {
                 String defined = define(statement, k, structures, aliases);
                 if (defined != null) {
                     // HANDLE と NEW のために、型の形の BASED の構造を合成して置く
@@ -86,7 +91,13 @@ final class PliSyntax {
             int k = keywordAt(statement);
             if (k >= 0 && (statement.get(k).is("DCL") || statement.get(k).is("DECLARE"))) {
                 kept.set(s, rewriteParts(statement, k, part -> expandType(part, structures,
-                        aliases)));
+                        aliases, ordinals, ordinalVariables)));
+            }
+        }
+        if (!ordinals.isEmpty()) {
+            // 変数の型は TYPE を展開して分かる。そのあとで ORDINAL の参照を読み替える
+            for (int s = 0; s < kept.size(); s++) {
+                kept.set(s, ordinalReferences(kept.get(s), ordinals, ordinalVariables));
             }
         }
         // LIKE を展開する。LIKE で作った構造をさらに LIKE で参照できるよう、繰り返す
@@ -202,6 +213,137 @@ final class PliSyntax {
         throw new ParseFailure(kind, "DEFINE " + kind.text() + " is not supported yet");
     }
 
+    /**
+     * {@code DEFINE ORDINAL T(要素 [VALUE(n)], ...)} (LRM "DEFINE ORDINAL")。要素は名前付きの
+     * 定数になる。VALUE の無い要素は前の値 + 1 (最初は 0)。要素の定数の宣言の字句を返す。
+     */
+    private static List<Token> ordinal(List<Token> statement, int k,
+                                       Map<String, Map<String, Integer>> ordinals) {
+        Token at = statement.get(k + 1);
+        if (k + 3 >= statement.size() || statement.get(k + 2).kind() != Kind.IDENT
+                || !statement.get(k + 3).is("(")) {
+            throw new ParseFailure(at, "DEFINE ORDINAL name(members) expected");
+        }
+        int close = k + 3;
+        int depth = 0;
+        for (int i = k + 3; i < statement.size(); i++) {
+            if (statement.get(i).is("(")) depth++;
+            if (statement.get(i).is(")") && --depth == 0) {
+                close = i;
+                break;
+            }
+        }
+        Map<String, Integer> members = new LinkedHashMap<>();
+        int next = 0;
+        List<Token> declaration = new ArrayList<>();
+        declaration.add(new Token(Kind.IDENT, "DCL", at.line(), at.column()));
+        List<Token> inner = statement.subList(k + 4, close);
+        List<List<Token>> items = new ArrayList<>();
+        List<Token> current = new ArrayList<>();
+        depth = 0;
+        for (Token t : inner) {
+            if (t.is("(")) depth++;
+            if (t.is(")")) depth--;
+            if (t.is(",") && depth == 0) {
+                items.add(current);
+                current = new ArrayList<>();
+            } else {
+                current.add(t);
+            }
+        }
+        items.add(current);
+        for (List<Token> item : items) {
+            if (item.isEmpty() || item.get(0).kind() != Kind.IDENT) {
+                throw new ParseFailure(at, "ORDINAL member name expected");
+            }
+            int value = next;
+            if (item.size() > 1) {
+                if (item.size() != 5 || !item.get(1).is("VALUE") || !item.get(2).is("(")
+                        || item.get(3).kind() != Kind.NUMBER || !item.get(4).is(")")) {
+                    throw new ParseFailure(item.get(1), "ORDINAL member VALUE(integer) expected");
+                }
+                value = Integer.parseInt(item.get(3).text());
+            }
+            members.put(item.get(0).text(), value);
+            next = value + 1;
+            if (declaration.size() > 1) {
+                declaration.add(new Token(Kind.SYMBOL, ",", at.line(), at.column()));
+            }
+            Token name = item.get(0);
+            declaration.addAll(List.of(name, new Token(Kind.IDENT, "FIXED", name.line(), 0),
+                    new Token(Kind.IDENT, "BIN", name.line(), 0),
+                    new Token(Kind.SYMBOL, "(", name.line(), 0),
+                    new Token(Kind.NUMBER, "31", name.line(), 0),
+                    new Token(Kind.SYMBOL, ")", name.line(), 0),
+                    new Token(Kind.IDENT, "VALUE", name.line(), 0),
+                    new Token(Kind.SYMBOL, "(", name.line(), 0),
+                    new Token(Kind.NUMBER, String.valueOf(value), name.line(), 0),
+                    new Token(Kind.SYMBOL, ")", name.line(), 0)));
+        }
+        ordinals.put(statement.get(k + 2).text(), members);
+        declaration.add(statement.get(statement.size() - 1));
+        return declaration;
+    }
+
+    /**
+     * ORDINALNAME / ORDINALSUCC / ORDINALPRED に型の要素の表を 2 つ目の引数として足し、
+     * FIRST(T) / LAST(T) を値に置き換える。型は引数の中の ORDINAL の変数・要素・型の名で決める。
+     */
+    private static List<Token> ordinalReferences(List<Token> statement,
+                                                 Map<String, Map<String, Integer>> ordinals,
+                                                 Map<String, String> variables) {
+        List<Token> out = new ArrayList<>(statement);
+        for (int i = out.size() - 1; i >= 0; i--) {
+            Token t = out.get(i);
+            if (!(t.is("ORDINALNAME") || t.is("ORDINALSUCC") || t.is("ORDINALPRED"))
+                    || i + 1 >= out.size() || !out.get(i + 1).is("(")) {
+                continue;
+            }
+            int depth = 0;
+            int close = -1;
+            for (int j = i + 1; j < out.size(); j++) {
+                if (out.get(j).is("(")) depth++;
+                if (out.get(j).is(")") && --depth == 0) {
+                    close = j;
+                    break;
+                }
+            }
+            String type = null;
+            for (int j = i + 2; j < close && type == null; j++) {
+                String word = out.get(j).text();
+                if (variables.containsKey(word)) type = variables.get(word);
+                else if (ordinals.containsKey(word)) type = word;
+                else {
+                    for (Map.Entry<String, Map<String, Integer>> o : ordinals.entrySet()) {
+                        if (o.getValue().containsKey(word)) type = o.getKey();
+                    }
+                }
+            }
+            if (type == null) {
+                throw new ParseFailure(t, t.text() + " needs an ORDINAL argument");
+            }
+            StringBuilder table = new StringBuilder();
+            for (Map.Entry<String, Integer> member : ordinals.get(type).entrySet()) {
+                if (!table.isEmpty()) table.append(',');
+                table.append(member.getKey()).append('=').append(member.getValue());
+            }
+            out.add(close, new Token(Kind.STRING, table.toString(), t.line(), t.column()));
+            out.add(close, new Token(Kind.SYMBOL, ",", t.line(), t.column()));
+        }
+        for (int i = out.size() - 4; i >= 0; i--) {
+            Token t = out.get(i);
+            if ((t.is("FIRST") || t.is("LAST")) && out.get(i + 1).is("(")
+                    && ordinals.containsKey(out.get(i + 2).text()) && out.get(i + 3).is(")")) {
+                List<Integer> values = new ArrayList<>(ordinals.get(out.get(i + 2).text())
+                        .values());
+                int value = t.is("FIRST") ? values.get(0) : values.get(values.size() - 1);
+                for (int r = 0; r < 4; r++) out.remove(i);
+                out.add(i, new Token(Kind.NUMBER, String.valueOf(value), t.line(), t.column()));
+            }
+        }
+        return out;
+    }
+
     /** {@code DCL 1 #T BASED(#T#P), 要素...; DCL #T#P POINTER;} の字句。 */
     private static List<List<Token>> typedStructure(String type, List<List<Token>> members,
                                                     Token at) {
@@ -305,7 +447,9 @@ final class PliSyntax {
 
     private static List<List<Token>> expandType(List<Token> part,
                                                 Map<String, List<List<Token>>> structures,
-                                                Map<String, List<Token>> aliases) {
+                                                Map<String, List<Token>> aliases,
+                                                Map<String, Map<String, Integer>> ordinals,
+                                                Map<String, String> ordinalVariables) {
         int at = indexAtDepth0(part, "TYPE");
         if (at < 0 || at + 1 >= part.size() || part.get(at + 1).kind() != Kind.IDENT) {
             return List.of(part);
@@ -313,6 +457,19 @@ final class PliSyntax {
         String type = part.get(at + 1).text();
         List<Token> rest = new ArrayList<>(part.subList(0, at));
         List<Token> after = part.subList(at + 2, part.size());
+        if (ordinals.containsKey(type)) {
+            // ORDINAL の変数は FIXED BIN(31) の値を持つ (Zeus と同じ。実機の大きさは
+            // PRECISION で決まり、突き合わせていない)
+            Token t = part.get(at);
+            ordinalVariables.put(part.get(levelOf(part) > 0 ? 1 : 0).text(), type);
+            rest.addAll(List.of(new Token(Kind.IDENT, "FIXED", t.line(), t.column()),
+                    new Token(Kind.IDENT, "BIN", t.line(), t.column()),
+                    new Token(Kind.SYMBOL, "(", t.line(), t.column()),
+                    new Token(Kind.NUMBER, "31", t.line(), t.column()),
+                    new Token(Kind.SYMBOL, ")", t.line(), t.column())));
+            rest.addAll(after);
+            return List.of(rest);
+        }
         if (aliases.containsKey(type)) {
             rest.addAll(aliases.get(type));
             rest.addAll(after);
@@ -933,6 +1090,7 @@ final class PliSyntax {
         }
 
         ParseResult parse() {
+            collectDefaults();
             while (!check(Kind.EOF) && !procedureAhead()) {
                 at++;
             }
@@ -1070,6 +1228,11 @@ final class PliSyntax {
             }
             if (match("DCL") || match("DECLARE")) {
                 return declaration();
+            }
+            if (match("DFT") || match("DEFAULT")) {
+                // 規則は宣言を読む前に集めてある (collectDefaults)
+                skipToSemicolon();
+                return new Block(List.of());
             }
             if (match("FETCH")) {
                 List<String> entries = new ArrayList<>();
@@ -1437,10 +1600,14 @@ final class PliSyntax {
                     List<String> names = part.subList(p + 1, close).stream()
                             .filter(t -> t.kind() == Kind.IDENT).map(Token::text).toList();
                     List<Bound> dimensions = dimensions(part, close + 1, level);
-                    TypeInfo info = typeInfo(part, close + 1, inheritedType,
+                    TypeInfo info = typeInfo(part, close + 1, level > 0 ? inheritedType : null,
                             inheritedPrecision, inheritedScale);
                     for (String name : names) {
-                        out.add(declaration(name, level, info, part, dimensions));
+                        out.add(declaration(name, level, info.type == null
+                                ? defaulted(name, part) : info, part, dimensions));
+                    }
+                    if (info.type == null) {
+                        continue;
                     }
                     inheritedType = info.type;
                     inheritedPrecision = info.precision;
@@ -1452,8 +1619,13 @@ final class PliSyntax {
                     continue;
                 }
                 List<Bound> dimensions = dimensions(part, p, level);
-                TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : inheritedType,
+                TypeInfo info = typeInfo(part, p, level > 0 ? Type.GROUP : null,
                         inheritedPrecision, inheritedScale);
+                if (info.type == null) {
+                    // 型の属性の無い最上位の名。以前は前の項目の型を受け継いでいた。属性は
+                    // ',' を越えて受け継がれない (括弧でくくった名の並びだけが分け合う)
+                    info = defaulted(nameToken.text(), part);
+                }
                 out.add(declaration(nameToken.text(), level, info, part, dimensions));
                 inheritedType = info.type;
                 inheritedPrecision = info.precision;
@@ -1462,9 +1634,73 @@ final class PliSyntax {
             return List.copyOf(out);
         }
 
+        /** DEFAULT / DFT の RANGE(a:b) の規則。 */
+        private record DefaultRule(char low, char high, List<Token> attributes) {
+        }
+
+        private final List<DefaultRule> defaultRules = new ArrayList<>();
+
+        /** 型を既定で決めた FLOAT の名。宣言は通し、使ったら止める。 */
+        private boolean defaultFloat;
+
+        /**
+         * 型の属性の無い最上位の名の型 (LRM "Language-specified defaults")。BUILTIN と
+         * CONDITION の宣言は記憶域を持たない。DEFAULT RANGE の規則に合えばその属性、
+         * そうでなければ I から N で始まる名は FIXED BINARY(15)、ほかは FLOAT DECIMAL(6) である。
+         */
+        private TypeInfo defaulted(String name, List<Token> part) {
+            if (part.stream().anyMatch(t -> t.is("BUILTIN") || t.is("CONDITION")
+                    || t.is("COND"))) {
+                return new TypeInfo(Type.ENTRY, 0, 0);
+            }
+            char first = Character.toUpperCase(name.charAt(0));
+            for (DefaultRule rule : defaultRules) {
+                if (first >= rule.low() && first <= rule.high()) {
+                    TypeInfo info = typeInfo(rule.attributes(), 0, null, 0, 0);
+                    if (info.type != null) {
+                        return info;
+                    }
+                    if (unsupportedAttribute(rule.attributes()) != null) {
+                        defaultFloat = true;
+                        return new TypeInfo(Type.DECIMAL, 6, 0);
+                    }
+                }
+            }
+            if (first >= 'I' && first <= 'N') {
+                return new TypeInfo(Type.BINARY, 15, 0);
+            }
+            defaultFloat = true;
+            return new TypeInfo(Type.DECIMAL, 6, 0);
+        }
+
+        /** {@code DEFAULT RANGE(a:b) 属性;} を、宣言を読む前に集める。 */
+        private void collectDefaults() {
+            for (int i = 0; i + 1 < tokens.size(); i++) {
+                Token token = tokens.get(i);
+                if (!(token.is("DFT") || token.is("DEFAULT"))
+                        || (i > 0 && !tokens.get(i - 1).is(";"))) {
+                    continue;
+                }
+                int end = i;
+                while (end < tokens.size() && !tokens.get(end).is(";")) end++;
+                List<Token> statement = tokens.subList(i + 1, end);
+                if (statement.size() < 6 || !statement.get(0).is("RANGE")
+                        || !statement.get(1).is("(") || !statement.get(3).is(":")
+                        || !statement.get(5).is(")")) {
+                    throw new ParseFailure(token, "only DEFAULT RANGE(a:b) attributes is"
+                            + " supported yet");
+                }
+                defaultRules.add(new DefaultRule(Character.toUpperCase(statement.get(2).text()
+                        .charAt(0)), Character.toUpperCase(statement.get(4).text().charAt(0)),
+                        List.copyOf(statement.subList(6, statement.size()))));
+            }
+        }
+
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
             generic(name, part);
+            boolean floatByDefault = defaultFloat;
+            defaultFloat = false;
             checkAttributes(part, info);
             if (info.type == Type.FILE) {
                 int size = 0;
@@ -1526,7 +1762,7 @@ final class PliSyntax {
                     dimensions.isEmpty() ? initial(part) : null, basedOn(part), alignment(part),
                     varying(part), dimensions,
                     dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage,
-                    defined(part), unsupportedAttribute(part),
+                    defined(part), floatByDefault ? "FLOAT" : unsupportedAttribute(part),
                     info.type == Type.PICTURE ? pictureSpecification(part) : null);
         }
 
