@@ -231,4 +231,224 @@ class DeclarationTest {
                     .replace(System.lineSeparator(), "\n"));
         }
     }
+
+    private static String refusal(String body) {
+        PliCompiler.Result result = PliCompiler.standard().compile("DECLS.pli",
+                "DECLS: PROCEDURE OPTIONS(MAIN);\n" + body + "\nEND DECLS;\n");
+        assertFalse(result.succeeded(), "expected the compiler to refuse: " + body);
+        return result.diagnostics().toString();
+    }
+
+    @Test
+    @DisplayName("TYPE は DEFINE の構造と別名を展開し、LIKE は要素を写した別の記憶域を作る")
+    void typesAndLikeAreExpanded() throws Exception {
+        assertEquals("3 4 8 3 4,8 3 8,5 12.34", String.join(",", main("""
+                DEFINE STRUCTURE 1 POINT, 2 X FIXED BIN(31), 2 Y FIXED BIN(31);
+                DEFINE ALIAS MONEY FIXED DEC(9,2);
+                DCL Q LIKE P;
+                DCL P TYPE POINT;
+                DCL M TYPE MONEY;
+                P.X = 3; P.Y = 4;
+                Q = P;
+                PUT SKIP LIST(Q.X, Q.Y, STG(Q), P.X, P.Y);
+                Q.X = 8;
+                PUT SKIP LIST(Q.X, P.X, STG(P));
+                M = 12.345;
+                PUT SKIP LIST(STG(M), M);
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("LIKE で作る構造は、宣言の段の下に要素を置く")
+    void likeInsideAStructureKeepsItsLevel() throws Exception {
+        assertEquals("1 2,12", String.join(",", main("""
+                DCL 1 BASE, 2 A FIXED BIN(31), 2 B FIXED BIN(31);
+                DCL 1 OUTER, 2 INNER LIKE BASE, 2 TAIL FIXED BIN(31);
+                OUTER.INNER.A = 1; OUTER.INNER.B = 2; OUTER.TAIL = 3;
+                PUT SKIP LIST(OUTER.INNER.A, OUTER.INNER.B);
+                PUT SKIP LIST(STG(OUTER));
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("定義していない TYPE と小構造の LIKE は翻訳で断る")
+    void unsupportedTypeFormsAreRefused() {
+        assertTrue(refusal("DCL P TYPE NOWHERE;").contains("type NOWHERE is not defined"));
+        assertTrue(refusal("""
+                DCL 1 S, 2 T, 3 A FIXED BIN(31);
+                DCL X LIKE T;
+                """).contains("minor structure"));
+        // DEFINE ORDINAL は持ったので、ここでは断らない (ordinalTypes)
+        assertTrue(refusal("DCL X LIKE MISSING;").contains("MISSING is not declared"));
+    }
+
+    @Test
+    @DisplayName("DEFINED ... POSITION は基の文字の一部に重なり、書けば基が変わる")
+    void definedOverlayWithPosition() throws Exception {
+        assertEquals("DEF,ABC123GH", String.join(",", main("""
+                DCL S CHAR(8) INIT('ABCDEFGH');
+                DCL PART CHAR(3) DEFINED S POSITION(4);
+                PUT SKIP LIST(PART);
+                PART = '123';
+                PUT SKIP LIST(S);
+                """).strip().lines().map(String::strip).toList()));
+    }
+
+    @Test
+    @DisplayName("iSUB の DEFINED は基の要素そのものを共有する (対角と転置)")
+    void isubDefiningSharesElements() throws Exception {
+        assertEquals("11 22 33,21 13,99 143", String.join(",", main("""
+                DCL A(3,3) FIXED BIN(31);
+                DCL DIAG(3) FIXED BIN(31) DEFINED A(1SUB,1SUB);
+                DCL T(3,3) FIXED BIN(31) DEFINED A(2SUB,1SUB);
+                DCL (I,J) FIXED BIN(31);
+                DO I=1 TO 3; DO J=1 TO 3; A(I,J)=I*10+J; END; END;
+                PUT SKIP LIST(DIAG(1), DIAG(2), DIAG(3));
+                PUT SKIP LIST(T(1,2), T(3,1));
+                DIAG(2) = 99;
+                PUT SKIP LIST(A(2,2), SUM(DIAG));
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("文字の重ねと iSUB 以外の DEFINED は、黙って別の記憶域にせず止まる")
+    void otherDefinedFormsStop() {
+        Exception failure = assertThrows(Exception.class, () -> main("""
+                DCL N FIXED BIN(31);
+                DCL M FIXED BIN(31) DEFINED N;
+                M = 1;
+                """));
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        assertTrue(String.valueOf(cause.getMessage()).contains("DEFINED"), cause::toString);
+    }
+
+    @Test
+    @DisplayName("BIN FIXED(31) の語順と FIXED だけの宣言は型を取り違えない。VALUE は定数の値を持つ")
+    void attributeOrderAndNamedConstants() throws Exception {
+        assertEquals("4,3,10", String.join(",", main("""
+                DCL 1 S, 2 C CHAR(1);
+                DCL A BIN FIXED(31);
+                DCL D FIXED(5);
+                DCL K FIXED BIN(31) VALUE(10);
+                PUT SKIP LIST(STG(A));
+                PUT SKIP LIST(STG(D));
+                PUT SKIP LIST(K);
+                """).strip().lines().map(String::strip).toList()));
+    }
+
+    @Test
+    @DisplayName("COMPLEX FLOAT などまだ持たない型の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
+    void unsupportedTypesStopWhenUsed() throws Exception {
+        assertEquals("OK", main("""
+                DCL L LABEL;
+                DCL Z COMPLEX FLOAT DEC(6);
+                PUT SKIP LIST('OK');
+                """).strip());
+        Exception failure = assertThrows(Exception.class, () -> main("""
+                DCL 1 S, 2 C CHAR(1);
+                DCL Z COMPLEX FLOAT DEC(6);
+                Z = 1;
+                """));
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        assertTrue(String.valueOf(cause.getMessage()).contains("COMPLEX FLOAT is not supported yet"),
+                cause::toString);
+    }
+
+    @Test
+    @DisplayName("STATIC は手続きを呼ぶたびに取り直さず、INITIAL は最初の 1 度だけ効く。AUTOMATIC は毎回")
+    void staticStorageSurvivesCalls() throws Exception {
+        assertEquals("1 1,2 1,3 1", String.join(",", main("""
+                DCL I FIXED BIN(31);
+                DO I = 1 TO 3; CALL BUMP; END;
+                BUMP: PROC;
+                  DCL C FIXED BIN(31) STATIC INIT(0);
+                  DCL A FIXED BIN(31) INIT(0);
+                  C = C + 1; A = A + 1;
+                  PUT SKIP LIST(C, A);
+                END BUMP;
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("ORDINAL の要素は VALUE の無いとき前の値 + 1 で、名・次・前・FIRST・LAST を引ける")
+    void ordinalTypes() throws Exception {
+        assertEquals("RED BLUE 5 BLUE RED 6", String.join(" ", main("""
+                DEFINE ORDINAL COLOR(RED, GREEN VALUE(5), BLUE);
+                DCL C TYPE COLOR;
+                C = GREEN;
+                PUT SKIP LIST(ORDINALNAME(FIRST(COLOR)), ORDINALNAME(LAST(COLOR)));
+                PUT SKIP LIST(BINVALUE(C));
+                PUT SKIP LIST(ORDINALNAME(ORDINALSUCC(C)), ORDINALNAME(ORDINALPRED(C)));
+                PUT SKIP LIST(BINVALUE(BLUE));
+                """).strip().split("\\s+")));
+    }
+
+    @Test
+    @DisplayName("型の無い名は前の項目の型を受け継がない: DFT RANGE、I から N は FIXED BIN(15)、ほかは FLOAT")
+    void attributelessNamesGetDefaults() throws Exception {
+        assertEquals("2 7 2 4", String.join(" ", main("""
+                DFT RANGE(A:B) FIXED BIN(31);
+                DCL C FIXED BIN(15), ICOUNT INIT(7), ABC INIT(1);
+                DCL K;
+                PUT SKIP LIST(STG(ICOUNT), ICOUNT, STG(K), STG(ABC));
+                """).strip().split("\\s+")));
+        // I から N でない名は FLOAT DEC(6) で、前の A の FIXED BIN(31) を受け継がない
+        assertEquals("41100000", main("""
+                DCL A FIXED BIN(31), X;
+                X = 1;
+                PUT SKIP LIST(HEX(UNSPEC(X)));
+                """).strip());
+    }
+
+    @Test
+    @DisplayName("BUILTIN の宣言は変数を作らないので、擬似変数 SUBSTR がそのまま使える")
+    void builtinDeclarationsDeclareNoVariable() throws Exception {
+        assertEquals("AXC", main("""
+                DCL (SUBSTR, LENGTH) BUILTIN;
+                DCL S CHAR(3) INIT('ABC');
+                SUBSTR(S, 2, 1) = 'X';
+                PUT SKIP LIST(S);
+                """).strip());
+    }
+
+    @Test
+    @DisplayName("FLOAT は 16 進浮動小数で記憶域に置く。短精度は 4 byte、長精度は 8 byte で、下の桁は切り捨てる")
+    void floatIsStoredAsHexadecimalFloatingPoint() throws Exception {
+        assertEquals("41100000 C1C8000000000000 40199999,4 8 4,-24.00", String.join(",", main("""
+                DCL F FLOAT DEC(6), H FLOAT DEC(16), B BIN(21), T FLOAT;
+                DCL N FIXED DEC(7,2);
+                F = 1; H = -12.5; T = 0.1;
+                PUT SKIP LIST(HEX(UNSPEC(F)), HEX(UNSPEC(H)), HEX(UNSPEC(T)));
+                PUT SKIP LIST(STG(F), STG(H), STG(B));
+                N = H * 2 + F;
+                PUT SKIP LIST(N);
+                """).strip().lines().map(l -> l.strip().replaceAll(" +", " ")).toList()));
+    }
+
+    @Test
+    @DisplayName("複素数は実部と虚部を続けて置き、2I は虚数の定数である。積・共役・絶対値")
+    void complexArithmetic() throws Exception {
+        assertEquals("5 5 5 -5 5 8", String.join(" ", main("""
+                DCL Z COMPLEX FIXED DEC(7,2);
+                DCL (R1, I1, R2, I2, M) FIXED BIN(31);
+                Z = (1+2I)*(3-1I);
+                R1 = REAL(Z); I1 = IMAG(Z);
+                R2 = REAL(CONJG(Z)); I2 = IMAG(CONJG(Z));
+                M = ABS(3+4I);
+                PUT SKIP LIST(R1, I1, R2, I2, M, STG(Z));
+                """).strip().split("\\s+")));
+    }
+
+    @Test
+    @DisplayName("WIDECHAR は UTF-16、GRAPHIC は SBCS の字に X'42' を付けた DBCS で置き、右を空白で埋める")
+    void wideAndGraphicStrings() throws Exception {
+        assertEquals("0041004200200020 42C142C24040", String.join(" ", main("""
+                DCL W WIDECHAR(4);
+                DCL G GRAPHIC(3);
+                W = 'AB'; G = 'AB';
+                PUT SKIP LIST(HEX(UNSPEC(W)), HEX(UNSPEC(G)));
+                """).strip().split("\\s+")));
+    }
 }

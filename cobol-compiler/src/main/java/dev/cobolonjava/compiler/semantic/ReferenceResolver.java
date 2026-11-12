@@ -470,7 +470,7 @@ public final class ReferenceResolver {
         diagnostics.add(new Diagnostic(origin, message));
     }
 
-    static Origin originOf(ParserRuleContext context) {
+    public static Origin originOf(ParserRuleContext context) {
         Token token = context.getStart();
         return token instanceof OriginToken origin ? origin.origin() : null;
     }

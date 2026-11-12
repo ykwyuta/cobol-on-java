@@ -179,10 +179,29 @@ class FileIoGenerationTest {
     }
 
     @Test
-    @DisplayName("OPEN INPUT ... REVERSED は断る (FR-102)")
-    void openReversedIsRejected() {
-        // 逆から読むという指示である。黙って順に読めば違う答えを返す。巻の扱いのように
-        // 「何も起きなかった」で済む話ではないので、近いことをするより断るのが正しい
+    @DisplayName("ディスクの OPEN INPUT ... REVERSED は 37 になり、順に読んだ答えを返さない (FR-102)")
+    void openReversedOnDiskIsRefusedAtRunTime(@TempDir Path directory) {
+        // 逆から読めるのは磁気テープだけである (テープは SequentialDataSetTest が測る)。
+        // 以前は翻訳で断っていた。テープを持ったので、媒体を見て実行時に断る
+        write(directory.resolve("INDD"), ebcdic("ABCDEFGH"));
+        assertEquals("37", run(directory, source(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. BACKWARD.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT IN-FILE ASSIGN TO INDD FILE STATUS WS-STATUS.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  IN-FILE.",
+                "01  IN-REC PIC X(8).",
+                "WORKING-STORAGE SECTION.",
+                "01  WS-STATUS PIC XX.",
+                "PROCEDURE DIVISION.",
+                "    OPEN INPUT IN-FILE REVERSED.",
+                "    DISPLAY WS-STATUS.",
+                "    STOP RUN.")).replace("|", ""));
+        // 書くときに逆向きは無い
         CobolCompiler.Result result = CobolCompiler.standard().compile(FILE, source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. BACKWARD.",
@@ -195,12 +214,9 @@ class FileIoGenerationTest {
                 "FD  IN-FILE.",
                 "01  IN-REC PIC X(8).",
                 "PROCEDURE DIVISION.",
-                "    OPEN INPUT IN-FILE REVERSED.",
+                "    OPEN OUTPUT IN-FILE REVERSED.",
                 "    STOP RUN."));
-
         assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().toString().contains("REVERSED"),
-                result.diagnostics().toString());
     }
 
     @Test

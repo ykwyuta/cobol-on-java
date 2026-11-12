@@ -170,4 +170,57 @@ class ReplaceProcessorTest {
         assertEquals(FILE, origin.fileName());
         assertEquals(1, origin.line(), "REPLACE 文が書かれた 1 行目を指す");
     }
+
+    // ---- 語の一部の置換。ZCVS (ZX103A、ZS105A、ZS106A、ZE127N〜ZE133P) で見つかった ----
+
+    @Test
+    @DisplayName("REPLACE LEADING は語の頭だけを置き換える")
+    void leadingReplacesThePrefixOfAWord() {
+        assertEquals("MOVE NEW-A TO B-OLD-C. MOVE OLDER TO D.", replace(
+                "REPLACE LEADING ==OLD-== BY ==NEW-==.",
+                "MOVE OLD-A TO B-OLD-C.",
+                "MOVE OLDER TO D."));
+    }
+
+    @Test
+    @DisplayName("REPLACE TRAILING は語の尻だけを置き換える")
+    void trailingReplacesTheSuffixOfAWord() {
+        assertEquals("MOVE A-NEW TO OLD-B.", replace(
+                "REPLACE TRAILING ==-OLD== BY ==-NEW==.",
+                "MOVE A-OLD TO OLD-B."));
+    }
+
+    @Test
+    @DisplayName("LEADING の置換後を空にすると、頭が削られる")
+    void leadingWithEmptyReplacementCutsThePrefix() {
+        assertEquals("01 CUT PIC X.", replace(
+                "REPLACE LEADING ==OLD-== BY ====.",
+                "01 OLD-CUT PIC X."));
+    }
+
+    @Test
+    @DisplayName("コロンは語を切るので、:TAG:-AREA の :TAG: だけを置き換えられる")
+    void aColonDelimitedTagIsReplacedInsideAWord() {
+        // 1 語のままだと :TAG:-AREA は :TAG: に当たらず、置換されずに構文誤りになる
+        assertEquals("01 WS-TAG-AREA. MOVE A(1:2) TO WS-TAG-VALUE.", replace(
+                "REPLACE ==:TAG:== BY ==WS-TAG==.",
+                "01 :TAG:-AREA.",
+                "MOVE A(1:2) TO :TAG:-VALUE."));
+    }
+
+    @Test
+    @DisplayName("置き換えられる側が空の擬似テキストなら断る")
+    void emptyPseudoTextToBeReplacedIsRefused() {
+        assertThrows(SourceFormatException.class,
+                () -> replace("REPLACE ==== BY ==ABC==.", "MOVE A TO B."));
+    }
+
+    @Test
+    @DisplayName("LEADING / TRAILING の被演算子は両側とも擬似テキストでなければ断る")
+    void partialWordOperandsMustBePseudoText() {
+        assertThrows(SourceFormatException.class,
+                () -> replace("REPLACE LEADING ==XYZ== BY ABC.", "MOVE A TO B."));
+        assertThrows(SourceFormatException.class,
+                () -> replace("REPLACE TRAILING XYZ BY ==ABC==.", "MOVE A TO B."));
+    }
 }

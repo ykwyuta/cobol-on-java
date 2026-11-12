@@ -228,9 +228,16 @@ class PutStatementTest {
 
     @Test
     @DisplayName("まだ持たない選択子と書式項目は、読み飛ばさずに翻訳で断る")
-    void unsupportedFormsAreRefused() {
-        assertTrue(rejection("PUT LINE(5) LIST('A');").contains("PUT option LINE"));
-        assertTrue(rejection("PUT FILE(REPORT) LIST('A');").contains("PUT FILE(REPORT)"));
+    void unsupportedFormsAreRefused() throws Exception {
+        // LINE は SYSPRINT 以外の PRINT ファイルでは持つ (RecordFileTest)。SYSPRINT ではまだ断る
+        assertTrue(rejection("PUT LINE(5) LIST('A');").contains("PUT LINE"));
+        // PUT FILE は PRINT ファイルを持ったので翻訳では通す。開いた PRINT ファイルでなければ
+        // 実行で止まる
+        Exception failure = assertThrows(Exception.class, () -> run("PUT FILE(REPORT) LIST('A');"));
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        assertTrue(String.valueOf(cause.getMessage()).contains("PUT FILE(REPORT)"),
+                cause::toString);
         assertTrue(rejection("PUT SKIP EDIT(1) (E(10,3));").contains("format item E"));
         assertTrue(rejection("PUT SKIP(0) LIST('A');").contains("SKIP(0)"));
         assertTrue(rejection("""
@@ -348,5 +355,20 @@ class PutStatementTest {
                 DCL C CHAR(3) INIT('12');
                 PUT SKIP LIST(C + 1);
                 """));
+    }
+
+    @Test
+    @DisplayName("GET STRING EDIT は欄ごとに字を取り、点の無い F(w,d) の欄は d 桁の小数を含むとみなす。LIST は区切りで受ける")
+    void getString() throws Exception {
+        assertEquals("12.34 7 12.34 -1.25 17 AB", run("""
+                DCL S CHAR(20) INIT(' 12.34:   7: 1234');
+                DCL A FIXED DEC(7,2), B FIXED BIN(31), C FIXED DEC(7,2);
+                DCL N CHAR(4);
+                GET STRING(S) EDIT(A, B, C)(F(6,2), X(1), F(4), X(1), F(5,2));
+                PUT SKIP LIST(A, B, C);
+                S = '-1.25,17 ''AB''';
+                GET STRING(S) LIST(A, B, N);
+                PUT SKIP LIST(A, B, N);
+                """).strip().replaceAll("\\s+", " "));
     }
 }

@@ -591,21 +591,23 @@ class CallGenerationTest {
     }
 
     @Test
-    @DisplayName("BY VALUE はまだ書けないと報告する (FR-081)")
-    void byValueIsReportedAsUnsupported() {
-        CobolCompiler.Result result = compile(List.of(
-                "IDENTIFICATION DIVISION.",
-                "PROGRAM-ID. MAIN.",
-                "DATA DIVISION.",
-                "WORKING-STORAGE SECTION.",
-                "01 WS-A PIC X(3).",
-                "PROCEDURE DIVISION.",
-                "MAIN-START.",
-                "    CALL 'SUBA' USING BY VALUE WS-A."));
+    @DisplayName("BY VALUE は写しを渡すので、呼ばれた側の書き換えが届かない (FR-081)")
+    void byValuePassesACopy() {
+        // 以前は「まだ書けない」と断ることを検査していた。SubprogramLinkageTest が
+        // 定数の渡り方と受ける側の BY VALUE を見る
+        String output = run(List.of(
+                List.of("IDENTIFICATION DIVISION.",
+                        "PROGRAM-ID. MAIN.",
+                        "DATA DIVISION.",
+                        "WORKING-STORAGE SECTION.",
+                        "01 WS-A PIC X(3) VALUE 'abc'.",
+                        "PROCEDURE DIVISION.",
+                        "MAIN-START.",
+                        "    CALL 'SUBA' USING BY VALUE WS-A",
+                        "    DISPLAY WS-A."),
+                SUB_WRITES));
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("BY VALUE"),
-                result.diagnostics().toString());
+        assertEquals("abc" + System.lineSeparator(), output);
     }
 
     // ---- EXIT PROGRAM (FR-067) ----

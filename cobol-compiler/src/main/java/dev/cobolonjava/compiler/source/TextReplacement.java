@@ -3,18 +3,31 @@ package dev.cobolonjava.compiler.source;
 import java.util.List;
 
 /**
- * 置換の 1 組 (要件 FR-090, FR-091)。
+ * {@code COPY ... REPLACING} と {@code REPLACE} に共通する置換の 1 組。
  *
- * <p>{@code COPY ... REPLACING} と {@code REPLACE} はどちらも語の列を語の列で置き換える。
- * 適用の対象 (コピー句の中か、以降のソース全体か) が違うだけで、照合と差し替えの規則は同じである。
- *
- * @param from 置き換えられる語の列
- * @param to   差し込む語の列。空でもよい (指定した語を取り除くことになる)
+ * @param from 置換対象の語の列
+ * @param to   置換後の語の列
+ * @param part 語の全体を置き換えるのか、語の頭・尻だけを置き換えるのか
  */
-public record TextReplacement(List<TextWord> from, List<TextWord> to) {
+public record TextReplacement(List<TextWord> from, List<TextWord> to, Part part) {
+
+    /**
+     * 置き換える範囲。
+     *
+     * <p>{@code LEADING} / {@code TRAILING} は<b>語の一部</b>を置き換える (2002 規格、
+     * Enterprise COBOL の部分語置換)。{@code REPLACE LEADING ==OLD-== BY ==NEW-==} は
+     * {@code OLD-TOTAL} を {@code NEW-TOTAL} にする。
+     */
+    public enum Part {
+        WHOLE, LEADING, TRAILING
+    }
 
     public TextReplacement {
         from = List.copyOf(from);
         to = List.copyOf(to);
+    }
+
+    public TextReplacement(List<TextWord> from, List<TextWord> to) {
+        this(from, to, Part.WHOLE);
     }
 }

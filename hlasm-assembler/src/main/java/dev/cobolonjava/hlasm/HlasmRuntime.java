@@ -50,50 +50,136 @@ public final class HlasmRuntime {
         return execute(module, context, arguments);
     }
 
-    public static int execute(ObjectModule module, ProgramContext context, DataView[] arguments) {
-        // context は増分 3 (OS のサービス) で使う。今はどの命令も外へ触れない
-        byte[] text = module.text();
-        byte[] saveArea = new byte[SAVE_AREA_BYTES];
-        byte[] parameterList = new byte[Math.max(4, arguments.length * 4)];
+    /** 生成クラスが持つ機械語を戻す。{@code initialStorage()} がこれを返す。 */
+    public static byte[] decode(String encodedText) {
+        return java.util.Base64.getDecoder().decode(encodedText);
+    }
 
-        AddressSpace.Builder builder = AddressSpace.builder();
-        int textBase = builder.place(module.name(), text);
-        int saveBase = builder.place("SAVEAREA", saveArea);
-        int listBase = builder.place("PARMLIST", parameterList);
-        // 引数は呼ぶ側の記憶域そのものを指す。同じ記憶域を指す引数が 2 つあれば、
-        // 番地空間でも同じ番地に重なる (決定 0002 のエイリアシング)
-        int[] argumentAddress = new int[arguments.length];
-        for (int k = 0; k < arguments.length; k++) {
-            DataView view = arguments[k];
-            int base = builder.place("ARG" + (k + 1), view.storage().array());
-            argumentAddress[k] = base + view.offset();
+    /**
+     * 生成クラスから動かす。
+     *
+     * <p>機械語は<b>プログラムの記憶域そのもの</b>に置く。ランタイムは副プログラムの記憶域を
+     * 呼び出しをまたいで持ち続けるので、モジュールの中の {@code DS} / {@code DC} の値も
+     * 呼び出しをまたいで残る。ホストで載せたままのモジュールが値を持ち続けるのと同じである。
+     * 以前は呼ばれるたびに機械語を写し直していたので、モジュールの中の作業域が毎回初期値へ
+     * 戻っていた。
+     *
+     * @param relocations 載せた番地を足す欄。{@code 位置:長さ;...}
+     * @param externals   外の記号の番地を入れる欄。{@code 位置:長さ:名前;...}
+     * @param loader      このプログラムを読み込んだもの。外の記号をここから引く
+     */
+    public static void executeLoaded(String name, dev.cobolonjava.runtime.storage.Storage storage,
+                                     String encodedText, int entryOffset, String relocations,
+                                     String externals, ProgramContext context,
+                                     DataView[] arguments, ClassLoader loader) {
+        List<ObjectModule.Relocation> fields = new ArrayList<>();
+        for (String one : relocations.isEmpty() ? new String[0] : relocations.split(";")) {
+            String[] parts = one.split(":");
+            fields.add(new ObjectModule.Relocation(Integer.parseInt(parts[0]),
+                    Integer.parseInt(parts[1])));
         }
-        AddressSpace memory = builder.build();
-
-        for (int k = 0; k < arguments.length; k++) {
-            int address = argumentAddress[k];
-            // 最後の番地は上位ビットを立てる。これが引数表の終わりの印である
-            if (k == arguments.length - 1) {
-                address |= 0x80000000;
-            }
-            memory.putInt(listBase + k * 4, address);
+        List<ObjectModule.External> outside = new ArrayList<>();
+        for (String one : externals.isEmpty() ? new String[0] : externals.split(";")) {
+            String[] parts = one.split(":");
+            outside.add(new ObjectModule.External(Integer.parseInt(parts[0]),
+                    Integer.parseInt(parts[1]), parts[2]));
         }
-
-        Cpu cpu = new Cpu(memory);
-        cpu.setRegister(1, listBase);
-        cpu.setRegister(13, saveBase);
-        cpu.setRegister(14, Cpu.RETURN_SENTINEL);
-        cpu.setRegister(15, textBase + module.entryOffset());
-        try {
-            return cpu.run(textBase + module.entryOffset());
-        } catch (MachineException failure) {
-            // 割込みは観測できる結果なので、実行時の例外として包む。
-            // RunawayProgramException は包まずに通す。測る側がそれと分かる必要がある
-            throw new HlasmExecutionException(module.name() + ": " + failure.getMessage(), failure);
+        byte[] text = storage.array();
+        if (text.length == 0 && !encodedText.isEmpty()) {
+            // 呼ぶ側が記憶域を用意しなかった (試験や古い呼び方)。その場かぎりの写しで動かす。
+            // モジュールの中の値は呼び出しをまたいで残らない
+            text = decode(encodedText);
+        }
+        int returnCode = run(name, text, entryOffset, fields, outside, context, arguments,
+                loader);
+        if (context != null) {
+            // R15 は RETURN-CODE になる。ホストでも、呼ばれた側が R15 に置いた値を呼んだ
+            // COBOL が RETURN-CODE として読む。以前は捨てていた
+            context.setReturnCode(returnCode);
         }
     }
 
-    /** 署名が受ける引数の数の上限。 */
+    public static int execute(ObjectModule module, ProgramContext context, DataView[] arguments) {
+        return run(module.name(), module.text(), module.entryOffset(), module.relocations(),
+                module.externals(), context, arguments, HlasmRuntime.class.getClassLoader());
+    }
+
+    /** 実行単位ごとの番地空間。呼ぶ側と呼ばれる側が同じ番地を見る。 */
+    private static final java.util.Map<ProgramContext, AddressSpace> SPACES =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    private static int run(String name, byte[] text, int entryOffset,
+                           List<ObjectModule.Relocation> relocations,
+                           List<ObjectModule.External> externals, ProgramContext context,
+                           DataView[] arguments, ClassLoader loader) {
+        AddressSpace memory = context == null ? AddressSpace.empty()
+                : SPACES.computeIfAbsent(context, ignored -> AddressSpace.empty());
+        byte[] saveArea = new byte[SAVE_AREA_BYTES];
+        byte[] parameterList = new byte[Math.max(4, arguments.length * 4)];
+
+        int textBase = memory.place(name, text);
+        if (memory.firstRelocation(text)) {
+            // 番地定数は節の先頭からの変位で組み立ててある。載せた番地を足して番地にする
+            for (ObjectModule.Relocation field : relocations) {
+                patch(text, field.offset(), field.length(),
+                        read(text, field.offset(), field.length()) + textBase);
+            }
+            for (ObjectModule.External field : externals) {
+                patch(text, field.offset(), field.length(),
+                        memory.externalAddress(field.name()));
+            }
+        }
+        int saveBase = memory.place("SAVEAREA", saveArea);
+        int listBase = memory.place("PARMLIST", parameterList);
+        try {
+            // 引数は呼ぶ側の記憶域そのものを指す。同じ記憶域を指す引数が 2 つあれば、
+            // 番地空間でも同じ番地に重なる (決定 0002 のエイリアシング)
+            for (int k = 0; k < arguments.length; k++) {
+                DataView view = arguments[k];
+                int address = view == null ? 0
+                        : memory.place("ARG" + (k + 1), view.storage().array()) + view.offset();
+                // 最後の番地は上位ビットを立てる。これが引数表の終わりの印である
+                if (k == arguments.length - 1) {
+                    address |= 0x80000000;
+                }
+                memory.putInt(listBase + k * 4, address);
+            }
+
+            Cpu cpu = new Cpu(memory);
+            if (context != null) {
+                cpu.setServices(new SystemServices(context, memory, loader));
+            }
+            cpu.setRegister(1, listBase);
+            cpu.setRegister(13, saveBase);
+            cpu.setRegister(14, Cpu.RETURN_SENTINEL);
+            cpu.setRegister(15, textBase + entryOffset);
+            return cpu.run(textBase + entryOffset);
+        } catch (MachineException failure) {
+            // 割込みは観測できる結果なので、実行時の例外として包む。
+            // RunawayProgramException は包まずに通す。測る側がそれと分かる必要がある
+            throw new HlasmExecutionException(name + ": " + failure.getMessage(), failure);
+        } finally {
+            memory.release(parameterList);
+            memory.release(saveArea);
+        }
+    }
+
+    private static int read(byte[] text, int offset, int length) {
+        int value = 0;
+        // 8 byte の欄は下位 4 byte が番地である
+        for (int k = Math.max(offset, offset + length - 4); k < offset + length; k++) {
+            value = value << 8 | (text[k] & 0xFF);
+        }
+        return value;
+    }
+
+    private static void patch(byte[] text, int offset, int length, int value) {
+        for (int k = offset + length - 1; k >= Math.max(offset, offset + length - 4); k--) {
+            text[k] = (byte) value;
+            value >>>= 8;
+        }
+    }
+
     static final int ARGUMENT_LIMIT = 255;
 
     /** 入口の引数は参照渡しであり、実際の範囲は呼ぶ側が決める。 */

@@ -141,7 +141,8 @@ class ControlStatementTest {
     @DisplayName("値を持つ RETURN、知らない ON・EXEC・文は、実行まで待たずに翻訳で断る")
     void unsupportedStatementsAreRefusedAtCompileTime() {
         assertTrue(rejection("RETURN(5);").contains("RETURN with a value"));
-        assertTrue(rejection("ON ERROR BEGIN; END;").contains("ON ERROR"));
+        // ON ERROR は以前ここで断っていた。条件の処置を持ったので、持っていない FINISH を例にする
+        assertTrue(rejection("ON FINISH BEGIN; END;").contains("ON FINISH"));
         assertTrue(rejection("EXEC CICS RETURN;").contains("EXEC CICS"));
         assertTrue(rejection("""
                 DCL A CHAR(3);
@@ -152,5 +153,55 @@ class ControlStatementTest {
                 DO I = 1 TO 5 WHILE(I < 3);
                 END;
                 """).contains("CTL.pli"));
+    }
+
+    @Test
+    @DisplayName("SELECT は最初に当たった WHEN だけを実行し、当たらなければ OTHERWISE へ行く")
+    void selectRunsOnlyTheFirstMatchingWhen() throws Exception {
+        assertEquals("12,13,21", run("""
+                DCL (T, K) FIXED BIN(31);
+                DO K = 2 TO 4 BY 2;
+                  SELECT(K);
+                    WHEN(1) T = 11;
+                    WHEN(2, 3) T = 12;
+                    WHEN(2) T = 99;
+                    OTHERWISE T = 13;
+                  END;
+                  PUT SKIP LIST(T);
+                END;
+                SELECT;
+                  WHEN(K < 4) T = 20;
+                  WHEN(K = 4) DO; T = 21; END;
+                END;
+                PUT SKIP LIST(T);
+                """));
+    }
+
+    @Test
+    @DisplayName("当たる WHEN も OTHERWISE も無い SELECT は ERROR を起こす")
+    void selectWithoutAMatchRaisesError() throws Exception {
+        assertEquals("ERROR", run("""
+                ON ERROR BEGIN;
+                  PUT SKIP LIST('ERROR');
+                  STOP;
+                END;
+                SELECT(5);
+                  WHEN(1) PUT SKIP LIST('ONE');
+                END;
+                PUT SKIP LIST('AFTER');
+                """));
+    }
+
+    @Test
+    @DisplayName("読み込めないロードモジュールの FETCH は ONCODE 9251 の ERROR を起こす。RELEASE は誤りにならない")
+    void fetchOfAMissingModuleRaisesError() throws Exception {
+        assertEquals("9251,DONE", run("""
+                DCL NOWHERE ENTRY;
+                ON ERROR BEGIN; PUT SKIP LIST(ONCODE()); GO TO DONE; END;
+                RELEASE NOWHERE;
+                FETCH NOWHERE;
+                PUT SKIP LIST('NOT REACHED');
+                DONE: PUT SKIP LIST('DONE');
+                """));
     }
 }

@@ -74,6 +74,33 @@ public final class PliRuntime {
         return ProcedureManifest.of(parsed.program().name(), List.of());
     }
 
+    /**
+     * 起きた条件 (LRM "Conditions")。on-unit があればそこへ、無ければ既定の処置へ進む。
+     *
+     * @param source CONVERSION なら変換できなかった字の並び (ONSOURCE)。ほかは {@code null}
+     */
+    static final class Condition extends RuntimeException {
+        final String name;
+        final String qualifier;
+        final int code;
+        final String source;
+
+        Condition(String name, String qualifier, int code, String source) {
+            super(name + (qualifier == null ? "" : "(" + qualifier + ")"), null, false, false);
+            this.name = name;
+            this.qualifier = qualifier;
+            this.code = code;
+            this.source = source;
+        }
+    }
+
+    /** CONVERSION の on-unit が直した字の並び。変換をやり直すときに、元の並びの代わりに使う。 */
+    private static final ThreadLocal<Map<String, String>> REPAIRED =
+            ThreadLocal.withInitial(HashMap::new);
+
+    /** 条件の前置きで有効にした SIZE。既定では無効である (LRM "Condition prefixes")。 */
+    private static final ThreadLocal<Boolean> SIZE_ENABLED = ThreadLocal.withInitial(() -> false);
+
     public static final class PliExecutionException extends RuntimeException {
         public PliExecutionException(String message) {
             super(message);
@@ -87,6 +114,8 @@ public final class PliRuntime {
         private final Env globals;
         private final Map<String, CursorDefinition> cursors = new HashMap<>();
         private final PrintFile sysprint;
+        /** ファイル名から、最後の OPEN の TITLE で結んだ DD 名への表。 */
+        private final Map<String, String> titles = new java.util.HashMap<>();
         /** *PROCESS の RULES と LIMITS。翻訳時に原文へ残した注記から読む。 */
         private final PliOptions options;
         /** 評価中の式の算術の規則。式の頭で決め、式の中では変えない。 */
@@ -130,6 +159,253 @@ public final class PliRuntime {
          */
         private final Map<String, List<Runnable>> basedOn = new HashMap<>();
 
+        /**
+         * locator で修飾した参照 {@code Q->X} を、X の宣言の locator (BASED(P) の P) を Q の値に
+         * 一時的に置き換えて扱う (LRM "Locator qualification")。済んだら P を元の値に戻す。
+         */
+        private <T> T located(String qualified, Env env,
+                              java.util.function.Function<String, T> action) {
+            int arrow = qualified.indexOf("->");
+            String locatorName = qualified.substring(0, arrow).toUpperCase(Locale.ROOT);
+            String rest = qualified.substring(arrow + 2);
+            String root = rest.split("\\.|->")[0].toUpperCase(Locale.ROOT);
+            List<PliSyntax.Decl> chunk = null;
+            for (List<PliSyntax.Decl> candidate : declaredChunks.values()) {
+                if (candidate.stream().anyMatch(d -> d.name().equalsIgnoreCase(root))) {
+                    chunk = candidate;
+                }
+            }
+            if (chunk == null || chunk.get(0).basedOn() == null) {
+                throw new PliExecutionException(qualified + ": " + root
+                        + " is not BASED on a POINTER");
+            }
+            Var locator = env.require(locatorName);
+            if (locator.type != PliSyntax.Type.POINTER) {
+                throw new PliExecutionException(qualified + ": " + locatorName
+                        + " is not a POINTER");
+            }
+            String implicit = chunk.get(0).basedOn().toUpperCase(Locale.ROOT);
+            if (implicit.equals(locatorName)) {
+                return action.apply(rest);
+            }
+            Var base = env.require(implicit);
+            Object saved = base.read(context);
+            base.write(locator.read(context), context);
+            rebase(base.name);
+            try {
+                return action.apply(rest);
+            } finally {
+                env.require(implicit).write(saved, context);
+                rebase(implicit);
+            }
+        }
+
+        /** REFER の対象の名から、その構造の locator の名。 */
+        private final Map<String, String> referObjects = new HashMap<>();
+
+        private static String referKey(String target) {
+            String name = target.toUpperCase(Locale.ROOT);
+            return name.substring(name.lastIndexOf('.') + 1);
+        }
+
+        /** 動いている内部手続きの環境。手続きの名ごとに、新しい呼び出しが上。 */
+        private final Map<String, java.util.ArrayDeque<Env>> activations = new HashMap<>();
+
+        /** FETCH した入口の名から、ロードモジュールの名 (TITLE)。 */
+        private final Map<String, String> fetched = new HashMap<>();
+
+        /** 今動いている手続きの名。主手続きなら空。STATIC の記憶域を引く鍵に使う。 */
+        private String scope = "";
+
+        /**
+         * STATIC の宣言 (LRM "STATIC attribute")。記憶域は実行単位で 1 つで、手続きに入るたびに
+         * 取り直さず、INITIAL も最初の 1 度だけ効く。以前は AUTOMATIC と同じに扱っており、
+         * 呼ぶたびに INITIAL の値へ戻っていた。
+         */
+        private void declareStatic(List<PliSyntax.Decl> chunk, Env env) {
+            Map<String, Map<String, Var>> statics = STATICS.computeIfAbsent(context.registers(),
+                    ignored -> new HashMap<>());
+            String key = program.name().toUpperCase(Locale.ROOT) + "." + scope + "."
+                    + chunk.get(0).name().toUpperCase(Locale.ROOT);
+            Map<String, Var> saved = statics.get(key);
+            if (saved != null) {
+                env.variables.putAll(saved);
+                return;
+            }
+            Map<String, Var> before = new HashMap<>(env.variables);
+            declare(chunk, env);
+            Map<String, Var> bindings = new HashMap<>();
+            for (Map.Entry<String, Var> entry : env.variables.entrySet()) {
+                if (before.get(entry.getKey()) != entry.getValue()) {
+                    bindings.put(entry.getKey(), entry.getValue());
+                }
+            }
+            statics.put(key, bindings);
+        }
+
+        /** 最上位の名から、その宣言の塊。ALLOCATE が宣言をたどるのに使う。 */
+        private final Map<String, List<PliSyntax.Decl>> declaredChunks = new HashMap<>();
+
+        /**
+         * {@code ALLOCATE}。CONTROLLED なら新しい世代を宣言し直し、前の世代の束縛を退避する。
+         * BASED なら記憶域を取り、その番地を locator (SET か BASED(P) の P) へ入れる
+         * (LRM "ALLOCATE statement for controlled variables" / "for based variables")。
+         */
+        private void allocate(PliSyntax.AllocateItem item, Env env) {
+            String name = item.name().toUpperCase(Locale.ROOT);
+            Var current = env.find(name);
+            if (current != null && current.generations != null) {
+                Generations generations = current.generations;
+                List<PliSyntax.Decl> chunk = new ArrayList<>(generations.chunk);
+                PliSyntax.Decl root = chunk.get(0);
+                if (!item.extents().isEmpty()) {
+                    if (item.extents().size() != root.dimensions().size()) {
+                        throw new PliExecutionException("ALLOCATE " + name + " gives "
+                                + item.extents().size() + " bound(s), but it has "
+                                + root.dimensions().size() + " dimension(s)");
+                    }
+                    List<PliSyntax.Bound> bounds = new ArrayList<>();
+                    for (PliSyntax.Expr extent : item.extents()) {
+                        bounds.add(new PliSyntax.Bound(1, number(value(extent, env)).intValue()));
+                    }
+                    chunk.set(0, root.withDimensions(bounds));
+                } else if (root.dimensions().contains(PliSyntax.Bound.STAR)) {
+                    // (*) の上下限は、ALLOCATE に書くか、前の世代から受け継ぐ。前の世代から
+                    // 受け継ぐ規則はまだ持たない
+                    throw new PliExecutionException("ALLOCATE " + name
+                            + " needs bounds for its (*) dimensions");
+                }
+                Env owner = generations.owner;
+                Map<String, Var> before = new HashMap<>(owner.variables);
+                declare(chunk, owner);
+                Map<String, Var> saved = new HashMap<>();
+                for (Map.Entry<String, Var> entry : owner.variables.entrySet()) {
+                    Var previous = before.get(entry.getKey());
+                    if (previous != entry.getValue()) {
+                        saved.put(entry.getKey(), previous);
+                        entry.getValue().generations = generations;
+                    }
+                }
+                generations.saved.push(saved);
+                rebindParameter(name, generations, env);
+                return;
+            }
+            List<PliSyntax.Decl> chunk = declaredChunks.get(name);
+            if (chunk == null || !"BASED".equals(chunk.get(0).storage())) {
+                throw new PliExecutionException(name + " is not BASED or CONTROLLED");
+            }
+            PliSyntax.Decl root = chunk.get(0);
+            String locator = item.set() != null ? item.set() : root.basedOn();
+            if (locator == null) {
+                throw new PliExecutionException("ALLOCATE " + name
+                        + " needs SET, because it is BASED without a locator");
+            }
+            for (PliSyntax.Decl decl : chunk) {
+                if (decl.initial() != null || !decl.initialItems().isEmpty()) {
+                    // ALLOCATE は BASED の INITIAL を効かせる。重ね直しは INITIAL を書かないので、
+                    // 黙って抜かすより断る
+                    throw new PliExecutionException("INITIAL of a BASED variable on ALLOCATE"
+                            + " is not supported yet: " + name);
+                }
+            }
+            List<PliSyntax.Decl> shape = hasRefer(chunk) ? allocationShape(chunk, env) : chunk;
+            int length;
+            StructureMapping.Result mapping = null;
+            try {
+                if (shape.size() > 1) {
+                    mapping = StructureMapping.map(shape);
+                    length = mapping.size();
+                } else {
+                    length = byteLength(root);
+                }
+            } catch (IllegalArgumentException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            DataView storage;
+            int areaOffset = -1;
+            if (item.in() != null) {
+                // AREA の中に取る。次の空きから、倍語の境界にそろえて置く
+                Var area = env.require(item.in());
+                if (area.type != PliSyntax.Type.AREA) {
+                    throw new PliExecutionException(item.in() + " is not an AREA");
+                }
+                areaOffset = (area.areaUsed() + 7) / 8 * 8;
+                if (areaOffset + Math.max(1, length) > area.view.length()) {
+                    throw new Condition("AREA", null, 360, null);
+                }
+                area.areaUse(areaOffset + Math.max(1, length));
+                storage = area.view.subView(areaOffset, Math.max(1, length));
+            } else {
+                storage = Storage.allocate(Math.max(1, length)).whole();
+            }
+            if (shape != chunk) {
+                // ALLOCATE は REFER の対象に、宣言の式で決めた上限を入れる (LRM "REFER option")
+                for (PliSyntax.Decl decl : shape) {
+                    for (PliSyntax.Bound bound : decl.dimensions()) {
+                        if (bound.refer() == null) continue;
+                        int j = indexOf(shape, bound.refer());
+                        PliSyntax.Decl object = shape.get(j);
+                        Var target = new Var(object.name(), object.type(), object.precision(),
+                                object.scale(), storage.subView(mapping.byteOffset(j),
+                                        mapping.byteLength(j)), mapping.bitShift(j));
+                        target.unsigned = object.unsigned();
+                        target.write(FixedValue.binary(BigDecimal.valueOf(bound.high()), 31, 0),
+                                context);
+                    }
+                }
+            }
+            Var pointer = env.require(locator);
+            if (pointer.type == PliSyntax.Type.OFFSET && areaOffset >= 0) {
+                // OFFSET の locator には AREA の頭からの位置を入れる
+                pointer.write(FixedValue.binary(BigDecimal.valueOf(areaOffset), 31, 0), context);
+                return;
+            }
+            if (pointer.type != PliSyntax.Type.POINTER) {
+                throw new PliExecutionException("SET(" + locator + ") needs a POINTER");
+            }
+            pointer.write(new PointerValue(address(storage)), context);
+            rebase(pointer.name);
+        }
+
+        /** {@code FREE}。CONTROLLED なら前の世代に戻す。BASED の記憶域は取り戻さない。 */
+        private void free(String freed, Env env) {
+            String name = freed.toUpperCase(Locale.ROOT);
+            Var current = env.find(name);
+            if (current != null && current.generations != null) {
+                Generations generations = current.generations;
+                if (generations.saved.isEmpty()) {
+                    throw new PliExecutionException("FREE " + name + ", which is not allocated");
+                }
+                Map<String, Var> saved = generations.saved.pop();
+                for (Map.Entry<String, Var> entry : saved.entrySet()) {
+                    if (entry.getValue() == null) {
+                        generations.owner.variables.remove(entry.getKey());
+                    } else {
+                        generations.owner.variables.put(entry.getKey(), entry.getValue());
+                    }
+                }
+                rebindParameter(name, generations, env);
+                return;
+            }
+            List<PliSyntax.Decl> chunk = declaredChunks.get(name);
+            if (chunk == null || !"BASED".equals(chunk.get(0).storage())) {
+                throw new PliExecutionException(name + " is not BASED or CONTROLLED");
+            }
+            // BASED の記憶域は Java の記憶域であり、取り戻すのは GC である。解いたあとの参照が
+            // 誤りであることは検出しない
+        }
+
+        /**
+         * 引数として渡された CONTROLLED (仮引数の名で ALLOCATE / FREE した) なら、仮引数の名を
+         * 呼んだ側の今の世代へ結び直す。呼んだ側の名は宣言の環境で置き換わっている。
+         */
+        private void rebindParameter(String name, Generations generations, Env env) {
+            String root = generations.chunk.get(0).name().toUpperCase(Locale.ROOT);
+            if (!name.equals(root)) {
+                env.alias(name, generations.owner.variables.get(root));
+            }
+        }
+
         /** 記憶域を指す POINTER の変数を作る。値は AddressSpace の番号 (COBOL の SET ADDRESS OF と同じ)。 */
         private Var pointerTo(String name, DataView target) {
             Var pointer = new Var(name, PliSyntax.Type.POINTER, 0, 0, Storage.allocate(4).whole());
@@ -157,7 +433,7 @@ public final class PliRuntime {
                         ? base.view.subView(0, length) : base.view;
             }
             int address = ((PointerValue) base.read(context)).address();
-            if (address == 0) {
+            if (address == 0 || address == NULL_ADDRESS) {
                 throw new PliExecutionException("BASED on " + name + ", which is a null pointer");
             }
             AddressSpace.Location location = AddressSpace.of(context).locate(address);
@@ -197,14 +473,44 @@ public final class PliRuntime {
             deferredInits = inits;
             try {
                 for (List<PliSyntax.Decl> chunk : chunks) {
-                    if (chunk.get(0).basedOn() == null) declare(chunk, env);
+                    declaredChunks.put(chunk.get(0).name().toUpperCase(Locale.ROOT), chunk);
+                    if (chunk.get(0).basedOn() != null && hasRefer(chunk)) {
+                        for (PliSyntax.Decl decl : chunk) {
+                            for (PliSyntax.Bound bound : decl.dimensions()) {
+                                if (bound.refer() != null) {
+                                    referObjects.put(bound.refer().toUpperCase(Locale.ROOT),
+                                            chunk.get(0).basedOn().toUpperCase(Locale.ROOT));
+                                }
+                            }
+                        }
+                    }
+                    if (chunk.get(0).controlled() && !env.arguments.containsKey(
+                            chunk.get(0).name().toUpperCase(Locale.ROOT))) {
+                        // CONTROLLED は ALLOCATE するまで記憶域を持たない (LRM "CONTROLLED
+                        // storage")。名だけを置き、世代の積み重ねをそこに持たせる
+                        PliSyntax.Decl root = chunk.get(0);
+                        Var placeholder = new Var(root.name(), root.type(), root.precision(),
+                                root.scale(), Storage.allocate(0).whole());
+                        placeholder.generations = new Generations(chunk, env);
+                        placeholder.unallocated = true;
+                        env.put(placeholder);
+                    } else if ("STATIC".equals(chunk.get(0).storage())
+                            && !env.arguments.containsKey(
+                                    chunk.get(0).name().toUpperCase(Locale.ROOT))) {
+                        declareStatic(chunk, env);
+                    } else if (chunk.get(0).basedOn() == null && chunk.get(0).defined() == null) {
+                        declare(chunk, env);
+                    }
                 }
             } finally {
                 deferredInits = null;
             }
             inits.forEach(Runnable::run);
             for (List<PliSyntax.Decl> chunk : chunks) {
-                if (chunk.get(0).basedOn() != null) declare(chunk, env);
+                // DEFINED は基の記憶域に重ねるので、基が値を持ってから宣言する
+                if (chunk.get(0).basedOn() != null || chunk.get(0).defined() != null) {
+                    declare(chunk, env);
+                }
             }
         }
 
@@ -224,6 +530,7 @@ public final class PliRuntime {
                         }
                     }
                     case PliSyntax.Block block -> collectDeclarations(block.body(), chunks);
+                    case PliSyntax.Group group -> collectDeclarations(group.body(), chunks);
                     case PliSyntax.Loop loop -> collectDeclarations(loop.body(), chunks);
                     case PliSyntax.IterativeLoop loop -> collectDeclarations(loop.body(), chunks);
                     case PliSyntax.OnEndFile on -> collectDeclarations(on.handler(), chunks);
@@ -244,8 +551,8 @@ public final class PliRuntime {
             try {
                 declareAll(program.body(), globals);
                 execute(program.body(), globals);
-            } catch (ReturnSignal ignored) {
-                // 主手続きの RETURN は正常終了である。
+            } catch (ReturnSignal | StopSignal ignored) {
+                // 主手続きの RETURN と STOP は正常終了である。
             } finally {
                 sysprint.leave();
             }
@@ -273,10 +580,96 @@ public final class PliRuntime {
             }
         }
 
+        private static String conditionKey(String condition, String qualifier) {
+            return qualifier == null ? condition : condition + "(" + qualifier + ")";
+        }
+
+        /** いま処置している条件の ONCODE と ONSOURCE / ONCHAR。 */
+        private int onCode;
+        private String onSource;
+        /** on-unit が ONSOURCE / ONCHAR に入れた直し。正常に戻れば変換をやり直す。 */
+        private String repairedSource;
+
+        /**
+         * 文を 1 つ動かし、起きた条件を処置する。
+         *
+         * <p>on-unit は条件の起きた場所で呼ばれ、正常に戻れば文の次へ進む。CONVERSION だけは、
+         * on-unit が ONSOURCE か ONCHAR を直していれば、その文を直した字の並びでやり直す
+         * (LRM "CONVERSION condition")。on-unit の中の GO TO は on-unit を抜けて飛ぶ。
+         * on-unit が無ければ既定の処置である。CONDITION は何もせずに続け、ほかは止める。
+         */
         private void execute(PliSyntax.Stmt statement, Env env) {
+            for (int attempt = 0; ; attempt++) {
+                try {
+                    executeStatement(statement, env);
+                    return;
+                } catch (Condition condition) {
+                    Env.Handler handler = env.handler(conditionKey(condition.name,
+                            condition.qualifier));
+                    if (handler == null || handler.system()) {
+                        if (condition.name.equals("CONDITION")) {
+                            return;
+                        }
+                        // 既定の処置は ERROR を起こすことである。ERROR の on-unit があれば動かし、
+                        // 正常に戻っても実行は終わる (LRM "ERROR condition")
+                        Env.Handler error = condition.name.equals("ERROR") ? null
+                                : env.handler("ERROR");
+                        if (error != null && !error.system()) {
+                            int savedCode = onCode;
+                            onCode = condition.code;
+                            try {
+                                execute(error.statements(), new Env(error.established(), context));
+                            } finally {
+                                onCode = savedCode;
+                            }
+                        }
+                        throw new PliExecutionException(condition.name
+                                + (condition.source == null ? "" : ": '" + condition.source
+                                + "' cannot be converted"));
+                    }
+                    int savedCode = onCode;
+                    String savedSource = onSource;
+                    onCode = condition.code;
+                    onSource = condition.source;
+                    repairedSource = null;
+                    try {
+                        execute(handler.statements(), new Env(handler.established(), context));
+                    } finally {
+                        onCode = savedCode;
+                        onSource = savedSource;
+                    }
+                    if (!condition.name.equals("CONVERSION") || repairedSource == null
+                            || attempt > 16) {
+                        if (condition.name.equals("CONVERSION")) {
+                            throw new PliExecutionException("CONVERSION: the on-unit returned"
+                                    + " without repairing '" + condition.source + "'");
+                        }
+                        return;
+                    }
+                    REPAIRED.get().put(condition.source, repairedSource);
+                }
+            }
+        }
+
+        private void executeStatement(PliSyntax.Stmt statement, Env env) {
+            try {
+                executeStatementOnce(statement, env);
+            } finally {
+                if (!REPAIRED.get().isEmpty() && onSource == null) {
+                    REPAIRED.get().clear();
+                }
+            }
+        }
+
+        private void executeStatementOnce(PliSyntax.Stmt statement, Env env) {
             if (statement instanceof PliSyntax.Declare) {
                 // 手続きに入ったときに declareAll が済ませている
                 return;
+            } else if (statement instanceof PliSyntax.Assign assign
+                    && referObjects.containsKey(referKey(assign.target()))) {
+                assign(assign, env);
+                // REFER の対象が変わると構造の形が変わる。重ね直す
+                rebase(referObjects.get(referKey(assign.target())));
             } else if (statement instanceof PliSyntax.Assign assign) {
                 assign(assign, env);
             } else if (statement instanceof PliSyntax.Put put) {
@@ -289,7 +682,9 @@ public final class PliRuntime {
                 int guard = 0;
                 while (loop.whileCondition() == null
                         || truth(value(loop.whileCondition(), env))) {
-                    execute(loop.body(), env);
+                    if (!body(loop.body(), env, loop.label())) {
+                        break;
+                    }
                     if (loop.untilCondition() != null
                             && truth(value(loop.untilCondition(), env))) {
                         break;
@@ -302,10 +697,98 @@ public final class PliRuntime {
                 iterativeLoop(loop, env);
             } else if (statement instanceof PliSyntax.Call call) {
                 call(call, env);
-            } else if (statement instanceof PliSyntax.Return) {
+            } else if (statement instanceof PliSyntax.Return result) {
+                returned = result.value() == null ? null : value(result.value(), env);
                 throw ReturnSignal.INSTANCE;
+            } else if (statement instanceof PliSyntax.Allocate allocate) {
+                allocate.items().forEach(item -> allocate(item, env));
+            } else if (statement instanceof PliSyntax.Free free) {
+                free.names().forEach(name -> free(name, env));
+            } else if (statement instanceof PliSyntax.AssignByName byName) {
+                assignByName(env.require(byName.target()), env.require(byName.source()));
+            } else if (statement instanceof PliSyntax.Fetch fetch) {
+                for (int i = 0; i < fetch.entries().size(); i++) {
+                    String entry = fetch.entries().get(i).toUpperCase(Locale.ROOT);
+                    String module = fetch.titles().get(i) == null ? entry
+                            : character(value(fetch.titles().get(i), env)).strip()
+                                    .toUpperCase(Locale.ROOT);
+                    try {
+                        context.resolve(module, loader);
+                    } catch (dev.cobolonjava.runtime.program.ProgramNotFoundException missing) {
+                        // 読み込めないロードモジュール。ONCODE は Zeus と同じ 9251 にした。
+                        // 実機と突き合わせていない
+                        throw new Condition("ERROR", null, 9251, null);
+                    }
+                    fetched.put(entry, module);
+                }
+            } else if (statement instanceof PliSyntax.Release release) {
+                for (String entry : release.entries()) {
+                    String module = fetched.getOrDefault(entry.toUpperCase(Locale.ROOT),
+                            entry.toUpperCase(Locale.ROOT));
+                    // 読み込みを忘れ、その STATIC も捨てる。次の FETCH は初めの状態から始まる
+                    Ops.cancel(context, module);
+                    releaseStatics(context, module);
+                }
+            } else if (statement instanceof PliSyntax.Get get) {
+                getString(get, env);
+            } else if (statement instanceof PliSyntax.Select select) {
+                Object subject = select.subject() == null ? null : value(select.subject(), env);
+                for (PliSyntax.When when : select.whens()) {
+                    for (PliSyntax.Expr candidate : when.values()) {
+                        Object value = value(candidate, env);
+                        if (subject == null ? truth(value) : compare(subject, value) == 0) {
+                            execute(when.action(), env);
+                            return;
+                        }
+                    }
+                }
+                if (select.otherwise() != null) {
+                    execute(select.otherwise(), env);
+                } else {
+                    // 当たる WHEN も OTHERWISE も無ければ ERROR である (LRM "SELECT statement")
+                    throw new Condition("ERROR", null, 3, null);
+                }
+            } else if (statement instanceof PliSyntax.OnCondition on) {
+                env.establish(conditionKey(on.condition(), on.qualifier()),
+                        new Env.Handler(on.handler(), env, on.system()));
+            } else if (statement instanceof PliSyntax.Revert revert) {
+                env.revert(conditionKey(revert.condition(), revert.qualifier()));
+            } else if (statement instanceof PliSyntax.Signal signal) {
+                throw new Condition(signal.condition(), signal.qualifier(),
+                        signal.condition().equals("CONDITION") ? 500 : 0, null);
+            } else if (statement instanceof PliSyntax.Prefixed prefixed) {
+                boolean before = SIZE_ENABLED.get();
+                if (prefixed.enabled().contains("SIZE")) {
+                    SIZE_ENABLED.set(true);
+                }
+                if (prefixed.disabled().contains("SIZE")) {
+                    SIZE_ENABLED.set(false);
+                }
+                try {
+                    execute(prefixed.statement(), env);
+                } finally {
+                    SIZE_ENABLED.set(before);
+                }
+            } else if (statement instanceof PliSyntax.Leave leave) {
+                throw new LoopSignal(true, leave.label());
+            } else if (statement instanceof PliSyntax.Iterate iterate) {
+                throw new LoopSignal(false, iterate.label());
+            } else if (statement instanceof PliSyntax.Stop) {
+                throw StopSignal.INSTANCE;
             } else if (statement instanceof PliSyntax.Block block) {
                 execute(block.body(), env);
+            } else if (statement instanceof PliSyntax.Group group) {
+                try {
+                    execute(group.body(), env);
+                } catch (LoopSignal signal) {
+                    // 繰り返さない DO も LEAVE で出られる。ITERATE は繰り返す DO のものなので、
+                    // 名前を書かない ITERATE は外の繰り返しへ渡す
+                    boolean mine = signal.label == null ? signal.leave
+                            : signal.label.equalsIgnoreCase(group.label());
+                    if (!mine) {
+                        throw signal;
+                    }
+                }
             } else if (statement instanceof PliSyntax.GoTo goTo) {
                 throw new GoToSignal(goTo.label());
             } else if (statement instanceof PliSyntax.OnEndFile onEndFile) {
@@ -314,6 +797,26 @@ public final class PliRuntime {
                 file(operation, env);
             } else if (statement instanceof PliSyntax.Sql sql) {
                 sql(sql.source(), env);
+            }
+        }
+
+        /** 関数の手続きが RETURN(値) で返した値。呼んだ側がすぐに取り出す。 */
+        private Object returned;
+
+        /**
+         * 繰り返しの本体を 1 回動かす。
+         *
+         * @return LEAVE で出たなら {@code false}。ITERATE と、ふつうに終わったときは {@code true}
+         */
+        private boolean body(List<PliSyntax.Stmt> statements, Env env, String label) {
+            try {
+                execute(statements, env);
+                return true;
+            } catch (LoopSignal signal) {
+                if (signal.label != null && !signal.label.equalsIgnoreCase(label)) {
+                    throw signal; // 外側の、その名前の DO が受ける
+                }
+                return !signal.leave;
             }
         }
 
@@ -329,7 +832,9 @@ public final class PliRuntime {
             while (step.signum() > 0 ? current.compareTo(finish) <= 0
                     : current.compareTo(finish) >= 0) {
                 control.write(current, context);
-                execute(loop.body(), env);
+                if (!body(loop.body(), env, loop.label())) {
+                    break;
+                }
                 current = current.add(step);
                 if (++guard > 10_000_000) {
                     throw new PliExecutionException("loop iteration limit exceeded");
@@ -338,6 +843,18 @@ public final class PliRuntime {
         }
 
         private void declare(List<PliSyntax.Decl> declarations, Env env) {
+            String unsupported = declarations.stream().map(PliSyntax.Decl::unsupported)
+                    .filter(java.util.Objects::nonNull).findFirst().orElse(null);
+            if (unsupported != null) {
+                // まだ持たない型の宣言。名だけを置き、使ったら止める
+                for (PliSyntax.Decl decl : declarations) {
+                    Var placeholder = new Var(decl.name(), decl.type(), decl.precision(),
+                            decl.scale(), Storage.allocate(0).whole());
+                    placeholder.unsupported = unsupported;
+                    env.put(placeholder);
+                }
+                return;
+            }
             for (int i = 0; i < declarations.size();) {
                 PliSyntax.Decl declaration = declarations.get(i);
                 if (declaration.level() > 0 && declaration.type() == PliSyntax.Type.GROUP) {
@@ -361,6 +878,10 @@ public final class PliRuntime {
          */
         private void declareGroup(List<PliSyntax.Decl> tree, Env env) {
             PliSyntax.Decl root = tree.get(0);
+            if (tree.stream().anyMatch(decl -> decl.defined() != null)) {
+                throw new PliExecutionException("DEFINED structures are not supported yet: "
+                        + root.name());
+            }
             StructureMapping.Result mapping;
             try {
                 mapping = StructureMapping.map(tree);
@@ -376,6 +897,17 @@ public final class PliRuntime {
                 remember(root.basedOn(), () -> declareGroup(tree, env));
                 return;
             }
+            List<PliSyntax.Decl> shape = tree;
+            if (root.basedOn() != null && hasRefer(tree)) {
+                // REFER の構造の形は、記憶域の中の対象の今の値で決まる
+                shape = resolveRefer(tree, mapping, env);
+                try {
+                    mapping = StructureMapping.map(shape);
+                } catch (IllegalArgumentException unsupported) {
+                    throw new PliExecutionException(unsupported.getMessage());
+                }
+                length = mapping.size();
+            }
             if (root.basedOn() != null) {
                 area = basedView(root.basedOn(), length, env);
                 remember(root.basedOn(), () -> declareGroup(tree, env));
@@ -390,7 +922,83 @@ public final class PliRuntime {
             // 記憶域を取ったときにしか効かないので、宣言で重ねた先を書き換えてはならない。
             // 以前は文字の要素を空白で埋めており、IMS から渡された DB PCB の DBD 名と PROCOPT を消していた
             boolean based = root.basedOn() != null;
-            declareMembers(tree, 0, tree.size(), env, group, area, mapping, root.name(), based);
+            declareMembers(shape, 0, shape.size(), env, group, area, mapping, root.name(), based);
+        }
+
+        private static boolean hasRefer(List<PliSyntax.Decl> tree) {
+            return tree.stream().anyMatch(decl -> decl.dimensions().stream()
+                    .anyMatch(bound -> bound.refer() != null));
+        }
+
+        private static int indexOf(List<PliSyntax.Decl> tree, String name) {
+            for (int i = 0; i < tree.size(); i++) {
+                if (tree.get(i).name().equalsIgnoreCase(name)) return i;
+            }
+            throw new PliExecutionException("REFER object " + name + " is not in the structure");
+        }
+
+        /** REFER の上限を、記憶域にある対象の今の値に置き換えた宣言の塊。 */
+        private List<PliSyntax.Decl> resolveRefer(List<PliSyntax.Decl> tree,
+                                                  StructureMapping.Result placeholder, Env env) {
+            // 対象は REFER の配列より前にあるので、その位置は仮の上限によらない
+            int needed = 0;
+            for (PliSyntax.Decl decl : tree) {
+                for (PliSyntax.Bound bound : decl.dimensions()) {
+                    if (bound.refer() != null) {
+                        int j = indexOf(tree, bound.refer());
+                        needed = Math.max(needed, placeholder.byteOffset(j)
+                                + placeholder.byteLength(j));
+                    }
+                }
+            }
+            DataView area = basedView(tree.get(0).basedOn(), needed, env);
+            List<PliSyntax.Decl> shape = new ArrayList<>(tree);
+            for (int i = 0; i < shape.size(); i++) {
+                PliSyntax.Decl decl = shape.get(i);
+                if (decl.dimensions().stream().noneMatch(bound -> bound.refer() != null)) {
+                    continue;
+                }
+                List<PliSyntax.Bound> bounds = new ArrayList<>();
+                for (PliSyntax.Bound bound : decl.dimensions()) {
+                    if (bound.refer() == null) {
+                        bounds.add(bound);
+                        continue;
+                    }
+                    int j = indexOf(tree, bound.refer());
+                    PliSyntax.Decl object = tree.get(j);
+                    Var current = new Var(object.name(), object.type(), object.precision(),
+                            object.scale(), area.subView(placeholder.byteOffset(j),
+                                    placeholder.byteLength(j)), placeholder.bitShift(j));
+                    current.unsigned = object.unsigned();
+                    int extent = number(current.read(context)).intValue();
+                    if (extent < 0) {
+                        throw new PliExecutionException("REFER object " + object.name()
+                                + " is negative: " + extent);
+                    }
+                    bounds.add(new PliSyntax.Bound(1, extent, bound.referExtent(), bound.refer()));
+                }
+                shape.set(i, decl.withDimensions(bounds));
+            }
+            return shape;
+        }
+
+        /** ALLOCATE のとき、REFER の上限を宣言の式で決めた塊。 */
+        private List<PliSyntax.Decl> allocationShape(List<PliSyntax.Decl> tree, Env env) {
+            List<PliSyntax.Decl> shape = new ArrayList<>(tree);
+            for (int i = 0; i < shape.size(); i++) {
+                PliSyntax.Decl decl = shape.get(i);
+                if (decl.dimensions().stream().noneMatch(bound -> bound.refer() != null)) {
+                    continue;
+                }
+                List<PliSyntax.Bound> bounds = new ArrayList<>();
+                for (PliSyntax.Bound bound : decl.dimensions()) {
+                    bounds.add(bound.refer() == null ? bound : new PliSyntax.Bound(1,
+                            number(value(bound.referExtent(), env)).intValue(),
+                            bound.referExtent(), bound.refer()));
+                }
+                shape.set(i, decl.withDimensions(bounds));
+            }
+            return shape;
         }
 
         /** {@code index} の構造の直下の要素を宣言する。小構造は入れ子で開く。 */
@@ -406,6 +1014,9 @@ public final class PliRuntime {
                 Var variable = new Var(child.name(), child.type(), child.precision(),
                         child.scale(), view, mapping.bitShift(i));
                 variable.varying = child.varying();
+                variable.unsigned = child.unsigned();
+                variable.picture = pictureOf(child);
+                variable.complex = child.complex();
                 env.put(variable);
                 env.alias(tree.get(index).name() + "." + child.name(), variable);
                 if (index > 0) {
@@ -434,7 +1045,8 @@ public final class PliRuntime {
         private boolean nullPointer(String name, Env env) {
             Var base = env.require(name);
             return base.type == PliSyntax.Type.POINTER
-                    && ((PointerValue) base.read(context)).address() == 0;
+                    && (((PointerValue) base.read(context)).address() == 0
+                        || ((PointerValue) base.read(context)).address() == NULL_ADDRESS);
         }
 
         /**
@@ -475,15 +1087,94 @@ public final class PliRuntime {
             return length > 0 && length < argument.length() ? argument.subView(0, length) : argument;
         }
 
+        /**
+         * DEFINED の変数 (LRM "DEFINED attribute")。iSUB の定義なら、要素ごとに iSUB を自分の
+         * 添字に置いた基の要素を共有する。添字の無い定義は文字の重ね (POSITION) だけを持つ。
+         */
+        private void declareDefined(PliSyntax.Decl declaration, Env env) {
+            PliSyntax.Defined defined = declaration.defined();
+            Var base = env.require(defined.base());
+            if (defined.subscripts() != null) {
+                if (base.dimensions == null) {
+                    throw new PliExecutionException("DEFINED " + defined.base()
+                            + "(...) needs an array base: " + declaration.name());
+                }
+                if (declaration.dimensions().isEmpty()) {
+                    throw new PliExecutionException("a scalar DEFINED on an array element is not"
+                            + " supported yet: " + declaration.name());
+                }
+                Var array = new Var(declaration.name(), declaration.type(),
+                        declaration.precision(), declaration.scale(), Storage.allocate(0).whole());
+                array.dimensions = declaration.dimensions();
+                int rank = declaration.dimensions().size();
+                int[] index = new int[rank];
+                for (int d = 0; d < rank; d++) index[d] = declaration.dimensions().get(d).low();
+                for (int n = 0; n < declaration.count(); n++) {
+                    Env subscripts = new Env(env, context);
+                    for (int d = 0; d < rank; d++) {
+                        Var isub = new Var("ISUB_" + (d + 1), PliSyntax.Type.BINARY, 31, 0,
+                                Storage.allocate(4).whole());
+                        isub.write(FixedValue.binary(BigDecimal.valueOf(index[d]), 31, 0),
+                                context);
+                        subscripts.put(isub);
+                    }
+                    Var element = element(base, defined.subscripts(), subscripts);
+                    if (element.type != declaration.type()
+                            || element.precision != declaration.precision()
+                            || element.scale != declaration.scale()) {
+                        throw new PliExecutionException("DEFINED with attributes other than the"
+                                + " base's is not supported yet: " + declaration.name());
+                    }
+                    array.elements.add(element);
+                    for (int d = rank - 1; d >= 0; d--) {
+                        if (++index[d] <= declaration.dimensions().get(d).high()) break;
+                        index[d] = declaration.dimensions().get(d).low();
+                    }
+                }
+                env.put(array);
+                return;
+            }
+            if (!declaration.dimensions().isEmpty() || base.dimensions != null
+                    || declaration.type() != PliSyntax.Type.CHAR || base.type != PliSyntax.Type.CHAR
+                    || declaration.varying() || base.varying) {
+                // 文字の重ね (string overlay defining) だけを持つ。配列の単純な定義と、
+                // 型の違う重ねは記憶域の並びの規則を確かめていないので断る
+                throw new PliExecutionException("only CHARACTER overlay DEFINED (with POSITION)"
+                        + " and iSUB DEFINED are supported yet: " + declaration.name());
+            }
+            int position = defined.position() == null ? 1
+                    : number(value(defined.position(), env)).intValue();
+            int length = byteLength(declaration);
+            if (position < 1 || position - 1 + length > base.view.length()) {
+                throw new PliExecutionException("DEFINED " + declaration.name() + " POSITION("
+                        + position + ") lies outside " + base.name);
+            }
+            env.put(new Var(declaration.name(), declaration.type(), declaration.precision(),
+                    declaration.scale(), base.view.subView(position - 1, length)));
+        }
+
+        private static PliPicture pictureOf(PliSyntax.Decl declaration) {
+            return declaration.type() == PliSyntax.Type.PICTURE && declaration.picture() != null
+                    ? PliPicture.parse(declaration.picture()) : null;
+        }
+
         private void declareScalar(PliSyntax.Decl declaration, Env env, DataView area,
                                    int offset, String alias) {
-            if (declaration.type() == PliSyntax.Type.ENTRY
+            if (declaration.defined() != null) {
+                declareDefined(declaration, env);
+                return;
+            }
+            if ((declaration.type() == PliSyntax.Type.ENTRY && declaration.precision() == 0)
                     || declaration.type() == PliSyntax.Type.FILE) {
                 return;
             }
             DataView view;
-            boolean parameter = parameters.containsKey(
-                    declaration.name().toUpperCase(Locale.ROOT));
+            String upper = declaration.name().toUpperCase(Locale.ROOT);
+            if (env.arguments.containsKey(upper)) {
+                bindParameter(declaration, env.arguments.get(upper), env);
+                return;
+            }
+            boolean parameter = parameters.containsKey(upper);
             if (declaration.type() == PliSyntax.Type.POINTER && parameter) {
                 return; // 入口引数の POINTER は、渡された記憶域の番号をもう持っている
             }
@@ -499,6 +1190,26 @@ public final class PliRuntime {
                 view = basedView(declaration.basedOn(), byteLength(declaration), env);
                 remember(declaration.basedOn(),
                         () -> declareScalar(declaration, env, area, offset, alias));
+            } else if (parameter && program.main() && declaration.type() == PliSyntax.Type.CHAR
+                    && declaration.precision() < 0) {
+                // 主手続きの CHAR(*) VARYING は PARM を受ける。PARM の頭の半語が長さで、
+                // 最初の '/' より前は実行時オプションである (LE の既定。Programming Guide
+                // "Passing an argument to the MAIN procedure")
+                DataView passed = parameters.get(upper);
+                int length = passed.length() < 2 ? 0
+                        : ((passed.get(0) & 0xFF) << 8) | (passed.get(1) & 0xFF);
+                String text = context.codePage().decode(
+                        passed.subView(2, Math.min(length, passed.length() - 2)).toByteArray());
+                int slash = program.noExecOps() ? -1 : text.indexOf('/');
+                text = slash < 0 ? text : text.substring(slash + 1);
+                byte[] encoded = context.codePage().encode(text);
+                view = Storage.allocate(encoded.length + 2).whole();
+                Var variable = new Var(declaration.name(), declaration.type(), encoded.length, 0,
+                        view);
+                variable.varying = true;
+                variable.write(text, context);
+                env.put(variable);
+                return;
             } else if (parameter) {
                 // 入口引数は参照で渡る。宣言した型で、渡された記憶域そのものを読む
                 view = argument(declaration.name(), byteLength(declaration));
@@ -510,6 +1221,9 @@ public final class PliRuntime {
             Var variable = new Var(declaration.name(), declaration.type(),
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
+            variable.unsigned = declaration.unsigned();
+            variable.picture = pictureOf(declaration);
+            variable.complex = declaration.complex();
             if (!declaration.dimensions().isEmpty()) {
                 declareElements(variable, declaration,
                         StructureMapping.unaligned(List.of(declaration), 0), 0);
@@ -543,6 +1257,9 @@ public final class PliRuntime {
                         declaration.precision(), declaration.scale(),
                         array.view.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
                 element.varying = declaration.varying();
+                element.picture = pictureOf(declaration);
+                element.complex = declaration.complex();
+                element.unsigned = declaration.unsigned();
                 array.elements.add(element);
             }
         }
@@ -623,8 +1340,43 @@ public final class PliRuntime {
         }
 
         private void assign(PliSyntax.Assign assignment, Env env) {
+            if (assignment.target().contains("->")) {
+                // 右辺は locator を入れ替える前に評価する。Q->A = NODE.A + 1 の NODE.A は
+                // 今の P が指すものである
+                Object value = value(assignment.value(), env);
+                located(assignment.target(), env, rest -> {
+                    assign(new PliSyntax.Assign(rest, assignment.subscripts(),
+                            new PliSyntax.Literal(value)), env);
+                    return null;
+                });
+                return;
+            }
+            String pseudo = assignment.target().toUpperCase(Locale.ROOT);
+            if ((pseudo.equals("ONSOURCE") || pseudo.equals("ONCHAR")) && !env.contains(pseudo)) {
+                // 擬似変数。CONVERSION の on-unit の中で、変換できなかった字の並びを直す
+                if (onSource == null) {
+                    throw new PliExecutionException(pseudo + " is assigned outside a"
+                            + " CONVERSION on-unit");
+                }
+                String value = display(value(assignment.value(), env));
+                if (pseudo.equals("ONSOURCE")) {
+                    repairedSource = value;
+                } else {
+                    String current = repairedSource != null ? repairedSource : onSource;
+                    int at = badCharacter(current);
+                    repairedSource = at < 0 ? current
+                            : current.substring(0, at) + (value.isEmpty() ? " " : value.substring(0, 1))
+                                    + current.substring(at + 1);
+                }
+                return;
+            }
             if (!assignment.subscripts().isEmpty()) {
                 Var array = arrayNamed(assignment.target(), env);
+                if (array != null && assignment.subscripts().stream().anyMatch(
+                        s -> s instanceof PliSyntax.Literal l && l.value() == PliSyntax.Asterisk.STAR)) {
+                    crossSection(array, assignment, env);
+                    return;
+                }
                 if (array != null) {
                     element(array, assignment.subscripts(), env)
                             .write(value(assignment.value(), env), context);
@@ -632,6 +1384,10 @@ public final class PliRuntime {
                 }
                 if (assignment.target().equals("SUBSTR") && !env.contains("SUBSTR")) {
                     substrPseudovariable(assignment, env);
+                    return;
+                }
+                if (assignment.target().equals("UNSPEC") && !env.contains("UNSPEC")) {
+                    unspecPseudovariable(assignment, env);
                     return;
                 }
                 throw new PliExecutionException(assignment.target() + " is not an array");
@@ -673,7 +1429,8 @@ public final class PliRuntime {
                 }
                 return;
             }
-            if (assignment.value() instanceof PliSyntax.Reference reference) {
+            if (assignment.value() instanceof PliSyntax.Reference reference
+                    && env.contains(reference.name())) {
                 Var source = env.require(reference.name());
                 if (target.type == PliSyntax.Type.GROUP && source.type == PliSyntax.Type.GROUP) {
                     copy(source.view, target.view, context.codePage().space());
@@ -717,6 +1474,26 @@ public final class PliRuntime {
                 putString(put, env);
                 return;
             }
+            if (put.file() != null) {
+                UserPrintFile file = printFiles.get(put.file().toUpperCase(Locale.ROOT));
+                if (file == null) {
+                    throw new PliExecutionException("PUT FILE(" + put.file() + ") needs an open"
+                            + " PRINT file; other stream files are not supported yet");
+                }
+                if (put.page()) file.page();
+                if (put.line() != null) file.line(number(value(put.line(), env)).intValue());
+                if (put.skip() > 0) file.skip(put.skip());
+                if (put.edit()) {
+                    edit(put, env, file::text);
+                } else {
+                    for (PliSyntax.Expr expression : put.values()) {
+                        for (Object item : items(expression, env)) {
+                            file.text(" " + listed(item));
+                        }
+                    }
+                }
+                return;
+            }
             // PAGE、SKIP、値の順に効く
             if (put.page()) {
                 sysprint.page();
@@ -749,6 +1526,11 @@ public final class PliRuntime {
          * 以前は構造の記憶域をそのまま文字として書いており、2 進の要素が文字化けしていた。
          */
         private List<Object> items(PliSyntax.Expr expression, Env env) {
+            if (expression instanceof PliSyntax.Reference reference
+                    && reference.name().contains("->")) {
+                return located(reference.name(), env,
+                        rest -> items(new PliSyntax.Reference(rest), env));
+            }
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
                 if (variable.dimensions != null) {
@@ -817,9 +1599,131 @@ public final class PliRuntime {
          * <p>以前はこの文を読み飛ばしていた。Bank-of-Z の {@code BNKSTMT} は明細の合計行を
          * この形で作っており、前の行の中身がそのまま印字されていた。
          */
+        /**
+         * {@code GET STRING}。EDIT は書式の欄ごとに字を取り (F は数、A は字、X は飛ばす)、LIST は
+         * 空白か ',' で区切った項目を順に受け取る (LRM "Edit-directed input", "List-directed
+         * input")。項目の字は代入の規則で受け取る側の型へ変換する。
+         */
+        private void getString(PliSyntax.Get get, Env env) {
+            String source = display(env.require(get.string()).read(context));
+            List<Var> targets = new ArrayList<>();
+            for (PliSyntax.Expr target : get.targets()) {
+                targets.add(dataReference(target, env, "GET"));
+            }
+            if (get.edit()) {
+                int at = 0;
+                int item = 0;
+                for (Var target : targets) {
+                    while (true) {
+                        if (item == get.format().size()) {
+                            throw new PliExecutionException("GET EDIT format list has fewer data"
+                                    + " items than targets");
+                        }
+                        PliSyntax.FormatItem next = get.format().get(item++);
+                        if (next.width() < 0) {
+                            throw new PliExecutionException("GET EDIT format item "
+                                    + next.code() + " needs a width");
+                        }
+                        String field = at >= source.length() ? ""
+                                : source.substring(at, Math.min(source.length(), at + next.width()));
+                        at += next.width();
+                        if (next.code() == 'X') {
+                            continue;
+                        }
+                        if (next.code() == 'F') {
+                            String digits = field.strip();
+                            if (digits.isEmpty()) {
+                                throw new Condition("CONVERSION", null, 600, field);
+                            }
+                            BigDecimal number;
+                            try {
+                                number = new BigDecimal(digits);
+                            } catch (NumberFormatException bad) {
+                                throw new Condition("CONVERSION", null, 600, field);
+                            }
+                            if (!digits.contains(".") && next.fraction() > 0) {
+                                // 点の無い欄は d 桁の小数を含むとみなす
+                                number = number.movePointLeft(next.fraction());
+                            }
+                            target.write(FixedValue.decimal(number, Math.max(1,
+                                    number.precision()), Math.max(0, number.scale())), context);
+                        } else {
+                            target.write(field, context);
+                        }
+                        break;
+                    }
+                }
+                return;
+            }
+            int at = 0;
+            for (Var target : targets) {
+                while (at < source.length() && source.charAt(at) == ' ') at++;
+                if (at >= source.length()) {
+                    throw new Condition("ENDFILE", null, 70, null);
+                }
+                String text;
+                if (source.charAt(at) == '\'') {
+                    StringBuilder quoted = new StringBuilder();
+                    at++;
+                    while (at < source.length()) {
+                        char c = source.charAt(at++);
+                        if (c == '\'') {
+                            if (at < source.length() && source.charAt(at) == '\'') {
+                                quoted.append(c);
+                                at++;
+                                continue;
+                            }
+                            break;
+                        }
+                        quoted.append(c);
+                    }
+                    text = quoted.toString();
+                    target.write(text, context);
+                } else {
+                    int end = at;
+                    while (end < source.length() && source.charAt(end) != ','
+                            && source.charAt(end) != ' ') end++;
+                    text = source.substring(at, end);
+                    at = end;
+                    if (!text.isEmpty()) {
+                        Object value = text;
+                        if (target.type == PliSyntax.Type.BINARY
+                                || target.type == PliSyntax.Type.DECIMAL) {
+                            try {
+                                BigDecimal number = new BigDecimal(text);
+                                value = FixedValue.decimal(number, Math.max(1, number.precision()),
+                                        Math.max(0, number.scale()));
+                            } catch (NumberFormatException bad) {
+                                throw new Condition("CONVERSION", null, 600, text);
+                            }
+                        }
+                        target.write(value, context);
+                    }
+                }
+                while (at < source.length() && source.charAt(at) == ' ') at++;
+                if (at < source.length() && source.charAt(at) == ',') at++;
+            }
+        }
+
         private void putString(PliSyntax.Put put, Env env) {
             StringBuilder text = new StringBuilder();
-            edit(put, env, text::append);
+            if (put.data()) {
+                // data-directed: 名=値 を空白で区切り、最後に ';' を置く (LRM "Data-directed
+                // output")。値の形は list-directed と同じにした。実機と突き合わせていない
+                for (PliSyntax.Expr expression : put.values()) {
+                    if (!(expression instanceof PliSyntax.Reference reference)) {
+                        throw new PliExecutionException("PUT DATA needs variable names");
+                    }
+                    for (Object item : items(expression, env)) {
+                        if (!text.isEmpty()) text.append(' ');
+                        text.append(reference.name().toUpperCase(Locale.ROOT)).append('=')
+                                .append(listed(item).strip());
+                    }
+                }
+                text.append(';');
+            } else {
+                edit(put, env, text::append);
+            }
             Var target = env.require(put.string());
             if (text.length() > target.capacity()) {
                 throw new PliExecutionException("ERROR: PUT STRING needs " + text.length()
@@ -898,23 +1802,164 @@ public final class PliRuntime {
             return display(value);
         }
 
+        /**
+         * 内部手続きを呼ぶ。
+         *
+         * <p>引数が変数の名前なら参照で渡る。式や定数なら、値を入れた仮の変数 (dummy argument) が
+         * 渡る (LRM "Passing arguments to procedures")。以前は名前しか受けず、
+         * {@code CALL P('ABC', X=1)} を断っていた。仮の変数の型は、手続きの中のパラメーターの
+         * 宣言が決める。型が合わない変数を渡したときも仮の変数になる。
+         *
+         * @return RETURN(値) の値。値を返さなければ {@code null}
+         */
+        private Object invoke(PliSyntax.Procedure procedure, List<PliSyntax.Expr> arguments,
+                              Env env) {
+            if (arguments.size() != procedure.parameters().size()) {
+                throw new PliExecutionException("procedure " + procedure.name() + " takes "
+                        + procedure.parameters().size() + " argument(s), but "
+                        + arguments.size() + " were passed");
+            }
+            // 名は手続きを宣言した場所の環境でたどる (静的な有効範囲。LRM "Scopes of
+            // declarations")。以前は呼んだ側の環境につないでいたので、呼んだ側の同じ名の
+            // 変数が見えていた (暫定判断 P-197)。on-unit は呼んだ側の鎖でたどる
+            String enclosing = program.enclosing().get(procedure.name());
+            java.util.ArrayDeque<Env> outer = enclosing == null ? null : activations.get(enclosing);
+            Env declared = outer == null || outer.isEmpty() ? globals : outer.peek();
+            Env local = new Env(declared, env, context);
+            for (int i = 0; i < arguments.size(); i++) {
+                String name = procedure.parameters().get(i).toUpperCase(Locale.ROOT);
+                PliSyntax.Expr argument = arguments.get(i);
+                if (argument instanceof PliSyntax.Reference reference
+                        && env.contains(reference.name())) {
+                    Var variable = env.require(reference.name());
+                    local.alias(name, variable);
+                    local.arguments.put(name, variable);
+                } else {
+                    local.arguments.put(name, value(argument, env));
+                }
+            }
+            returned = null;
+            String outerScope = scope;
+            scope = outerScope + "/" + procedure.name().toUpperCase(Locale.ROOT);
+            activations.computeIfAbsent(procedure.name(), k -> new java.util.ArrayDeque<>())
+                    .push(local);
+            try {
+                declareAll(procedure.body(), local);
+                execute(procedure.body(), local);
+            } catch (ReturnSignal ignored) {
+                // 内部プロシージャから呼出元へ戻る。
+            } finally {
+                scope = outerScope;
+                activations.get(procedure.name()).pop();
+            }
+            Object result = returned;
+            returned = null;
+            return result;
+        }
+
+        /** 内部手続きのパラメーターを、渡された引数に結ぶ。 */
+        private void bindParameter(PliSyntax.Decl declaration, Object argument, Env env) {
+            if (!declaration.dimensions().isEmpty() || declaration.level() > 0) {
+                if (argument instanceof Var) {
+                    return; // 配列と構造は、渡された変数そのものを使う (alias 済み)
+                }
+                throw new PliExecutionException("an array or structure parameter needs a variable"
+                        + " as its argument: " + declaration.name());
+            }
+            boolean star = declaration.type() == PliSyntax.Type.CHAR && declaration.precision() < 0;
+            if (argument instanceof Var variable && variable.type == declaration.type()
+                    && variable.varying == declaration.varying() && variable.dimensions == null
+                    && (star || declaration.type() == PliSyntax.Type.POINTER
+                        || (variable.precision == declaration.precision()
+                            && variable.scale == declaration.scale())
+                        || (declaration.type() == PliSyntax.Type.CHAR && !variable.varying
+                            && variable.view.length() == declaration.precision()))) {
+                env.alias(declaration.name(), variable);
+                return;
+            }
+            Object value = argument instanceof Var variable ? variable.read(context) : argument;
+            int precision = star ? display(value).length() : declaration.precision();
+            int length = switch (declaration.type()) {
+                case CHAR -> precision + (declaration.varying() ? 2 : 0);
+                default -> byteLength(declaration);
+            };
+            Var dummy = new Var(declaration.name(), declaration.type(), precision,
+                    declaration.scale(), Storage.allocate(length).whole());
+            dummy.varying = declaration.varying();
+            dummy.picture = pictureOf(declaration);
+            dummy.write(value, context);
+            env.alias(declaration.name(), dummy);
+        }
+
+        /** 入口の値が指す内部手続き。 */
+        private PliSyntax.Procedure entryProcedure(Object value) {
+            if (!(value instanceof EntryValue entry)) {
+                throw new PliExecutionException("an ENTRY variable without a value was called");
+            }
+            PliSyntax.Procedure procedure = program.procedures().get(entry.name());
+            if (procedure == null) {
+                throw new PliExecutionException("entry " + entry.name() + " is not an internal"
+                        + " procedure of this program");
+            }
+            return procedure;
+        }
+
+        /**
+         * GENERIC の選択 (LRM "GENERIC attribute")。引数の種類が記述に合う最初の選択肢を選ぶ。
+         * 合うものが無ければ誤りである。
+         */
+        private PliSyntax.Procedure generic(String name, List<PliSyntax.Expr> arguments, Env env) {
+            List<String> kinds = new ArrayList<>();
+            for (PliSyntax.Expr argument : arguments) {
+                Var variable = argument instanceof PliSyntax.Reference reference
+                        ? env.find(reference.name()) : null;
+                Object value = variable != null ? null : value(argument, env);
+                PliSyntax.Type type = variable != null ? variable.type : null;
+                kinds.add(type == PliSyntax.Type.BINARY || type == PliSyntax.Type.DECIMAL
+                        || type == PliSyntax.Type.PICTURE || value instanceof FixedValue
+                        || value instanceof Number ? "FIXED"
+                        : type == PliSyntax.Type.CHAR || value instanceof String ? "CHAR"
+                        : type == PliSyntax.Type.BIT || value instanceof PliSyntax.BitString
+                                || value instanceof Boolean ? "BIT"
+                        : type == PliSyntax.Type.POINTER || value instanceof PointerValue
+                                ? "POINTER" : "?");
+            }
+            for (PliSyntax.GenericAlternative alternative : program.generics().get(name)) {
+                if (alternative.matches(kinds)) {
+                    PliSyntax.Procedure procedure = program.procedures().get(alternative.entry());
+                    if (procedure == null) {
+                        throw new PliExecutionException("GENERIC " + name + " selects "
+                                + alternative.entry() + ", which is not an internal procedure");
+                    }
+                    return procedure;
+                }
+            }
+            throw new PliExecutionException("no GENERIC alternative of " + name + " matches "
+                    + kinds);
+        }
+
         private void call(PliSyntax.Call call, Env env) {
             PliSyntax.Procedure procedure = program.procedures().get(call.name());
+            if (procedure == null && program.generics().containsKey(call.name())) {
+                procedure = generic(call.name(), call.arguments(), env);
+            } else if (procedure == null && env.find(call.name()) != null
+                    && env.find(call.name()).type == PliSyntax.Type.ENTRY
+                    && env.find(call.name()).dimensions == null) {
+                procedure = entryProcedure(env.require(call.name()).read(context));
+            }
             if (procedure != null) {
-                Env local = new Env(env, context);
-                for (int i = 0; i < procedure.parameters().size(); i++) {
-                    if (i >= call.arguments().size()
-                            || !(call.arguments().get(i) instanceof PliSyntax.Reference reference)) {
-                        throw new PliExecutionException("internal procedure arguments must be references");
-                    }
-                    local.alias(procedure.parameters().get(i), env.require(reference.name()));
-                }
-                try {
-                    declareAll(procedure.body(), local);
-                    execute(procedure.body(), local);
-                } catch (ReturnSignal ignored) {
-                    // 内部プロシージャから呼出元へ戻る。
-                }
+                invoke(procedure, call.arguments(), env);
+                return;
+            }
+            if (call.name().equalsIgnoreCase("PLIFREE")
+                    && program.procedures().get("PLIFREE") == null) {
+                // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
+                // 解いたあとの参照が誤りであることは検出しない
+                return;
+            }
+            if (call.name().equalsIgnoreCase("PLIRETC")) {
+                // 戻りコードを決める (LRM "PLIRETC")
+                context.setReturnCode(number(value(call.arguments().get(0), env)).intValue());
                 return;
             }
             DataView[] arguments = new DataView[call.arguments().size()];
@@ -928,7 +1973,8 @@ public final class PliRuntime {
                     arguments[i] = Storage.wrap(encoded).whole();
                 }
             }
-            Ops.call(context, call.name(), loader, arguments);
+            Ops.call(context, fetched.getOrDefault(call.name().toUpperCase(Locale.ROOT),
+                    call.name()), loader, arguments);
             // 呼んだ先が POINTER の引数を書き換えたかもしれない。BASED の変数は参照のたびに
             // POINTER の値で決まる (LRM "BASED attribute") ので、渡した POINTER に重ねた変数を
             // 重ね直す。以前は同じプログラムの中の代入でしか重ね直さなかった (P-185 の 3 点目)
@@ -954,9 +2000,81 @@ public final class PliRuntime {
         }
 
         private void file(PliSyntax.FileOperation operation, Env env) {
-            DataSet dataSet = context.file(operation.file(), operation.file());
+            PliSyntax.FileInfo info = program.files().get(
+                    operation.file().toUpperCase(Locale.ROOT));
+            String name = operation.file().toUpperCase(Locale.ROOT);
+            if (operation.action() == PliSyntax.FileAction.OPEN) {
+                // TITLE はファイルを結ぶ DD 名を開くたびに決める。無ければファイルの名である
+                // (LRM "TITLE option")。同じ DD を別のファイルが開くこともあるので、用意した
+                // データセットは「ファイル名と DD 名の組」で引く
+                titles.put(name, operation.title() == null ? name
+                        : character(value(operation.title(), env)).strip().toUpperCase(Locale.ROOT));
+            }
+            String ddName = titles.getOrDefault(name, name);
+            String key = ddName.equals(name) ? name : name + "@" + ddName;
+            // RECSIZE を書いた FILE は、その形のレコードである。書いていなければ
+            // 割り当てた側 (DD) の形に任せる。V 形式の RECSIZE は 4 byte の RDW を含む
+            if (info != null && info.print()) {
+                printFile(operation, info, key, ddName, env);
+                return;
+            }
+            if (info != null && info.keyed()) {
+                DataSet indexed = context.file(key, ddName,
+                        dev.cobolonjava.runtime.file.RecordFormat.FIXED, info.recordSize(),
+                        List.of(new dev.cobolonjava.runtime.file.IndexedDataSet.Key(
+                                info.keyLocation() - 1, info.keyLength(), false)));
+                if (!(indexed instanceof dev.cobolonjava.runtime.file.IndexedDataSet ksds)) {
+                    throw new PliExecutionException(operation.file() + " was opened before as a"
+                            + " non-KEYED data set");
+                }
+                keyed(operation, info, ksds, env);
+                return;
+            }
+            if (operation.key() != null) {
+                throw new PliExecutionException("KEY / KEYFROM needs a KEYED file: "
+                        + operation.file());
+            }
+            if (operation.action() == PliSyntax.FileAction.LOCATE) {
+                locate(operation, key, env, info, ddName);
+                return;
+            }
+            if (operation.action() == PliSyntax.FileAction.WRITE
+                    || operation.action() == PliSyntax.FileAction.CLOSE) {
+                flushLocated(key, info, ddName);
+            }
+            if (operation.action() == PliSyntax.FileAction.REWRITE
+                    || operation.action() == PliSyntax.FileAction.DELETE) {
+                throw new PliExecutionException(operation.action() + " of a non-KEYED file is"
+                        + " not supported yet: " + operation.file());
+            }
+            DataSet dataSet = info != null && info.recordSize() > 0
+                    ? context.file(key, ddName,
+                            dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            info.variable() ? dev.cobolonjava.runtime.file.RecordFormat.VARIABLE
+                                    : dev.cobolonjava.runtime.file.RecordFormat.FIXED,
+                            info.variable() ? info.recordSize() - 4 : info.recordSize())
+                    : context.file(key, ddName);
             switch (operation.action()) {
-                case OPEN -> checkFileStatus(operation.file(), dataSet.open(OpenMode.INPUT, false), false);
+                case OPEN -> {
+                    // 向きは OPEN に書いたもの、無ければ宣言のもの、どちらも無ければ INPUT
+                    boolean output = operation.target() != null
+                            ? operation.target().equals("OUTPUT") : info != null && info.output();
+                    if ("UPDATE".equals(operation.target())) {
+                        throw new PliExecutionException("OPEN UPDATE is not supported yet: "
+                                + operation.file());
+                    }
+                    checkFileStatus(operation.file(),
+                            dataSet.open(output ? OpenMode.OUTPUT : OpenMode.INPUT, false), false);
+                }
+                case WRITE -> {
+                    Var source = env.require(operation.target());
+                    if (source.varying) {
+                        throw new PliExecutionException("WRITE FROM a VARYING string is not"
+                                + " supported yet: " + source.name);
+                    }
+                    checkFileStatus(operation.file(), dataSet.write(source.view.toByteArray()),
+                            false);
+                }
                 case CLOSE -> checkFileStatus(operation.file(), dataSet.close(), false);
                 case READ -> {
                     Var target = env.require(operation.target());
@@ -981,6 +2099,183 @@ public final class PliRuntime {
                     }
                 }
             }
+        }
+
+        /** 開いている PRINT ファイル。ファイル名ごと。 */
+        private final Map<String, UserPrintFile> printFiles = new HashMap<>();
+
+        /** PRINT ファイルの OPEN と CLOSE。LINESIZE と PAGESIZE の既定は 120 と 60。 */
+        private void printFile(PliSyntax.FileOperation operation, PliSyntax.FileInfo info,
+                               String key, String ddName, Env env) {
+            String name = operation.file().toUpperCase(Locale.ROOT);
+            switch (operation.action()) {
+                case OPEN -> {
+                    int lineSize = operation.lineSize() != null
+                            ? number(value(operation.lineSize(), env)).intValue()
+                            : info.recordSize() > 1 ? info.recordSize() - 1 : PrintFile.LINESIZE;
+                    int pageSize = operation.pageSize() != null
+                            ? number(value(operation.pageSize(), env)).intValue()
+                            : PrintFile.PAGESIZE;
+                    int recordLength = info.recordSize() > 0 ? info.recordSize() : lineSize + 1;
+                    if (lineSize + 1 > recordLength) {
+                        throw new PliExecutionException("LINESIZE(" + lineSize + ") does not fit"
+                                + " RECSIZE(" + recordLength + ") of " + name);
+                    }
+                    DataSet dataSet = context.file(key, ddName,
+                            dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            dev.cobolonjava.runtime.file.RecordFormat.FIXED, recordLength);
+                    checkFileStatus(name, dataSet.open(OpenMode.OUTPUT, false), false);
+                    printFiles.put(name, new UserPrintFile(dataSet, context.codePage(), lineSize,
+                            pageSize, recordLength, () -> endPage(name, env)));
+                }
+                case CLOSE -> {
+                    UserPrintFile file = printFiles.remove(name);
+                    if (file != null) {
+                        file.close();
+                    }
+                    checkFileStatus(name, context.file(key, ddName).close(), false);
+                }
+                default -> throw new PliExecutionException(operation.action()
+                        + " of the PRINT file " + name + " is not supported");
+            }
+        }
+
+        /** ENDPAGE の on-unit があれば動かして真を返す。PUT はそのあと続く。 */
+        private boolean endPage(String file, Env env) {
+            Env.Handler handler = env.handler(conditionKey("ENDPAGE", file));
+            if (handler == null || handler.system()) {
+                return false;
+            }
+            int savedCode = onCode;
+            onCode = 90;
+            try {
+                execute(handler.statements(), new Env(handler.established(), context));
+            } finally {
+                onCode = savedCode;
+            }
+            return true;
+        }
+
+        /** LOCATE で取ったまま、まだ書いていないバッファ。ファイルの鍵ごと。 */
+        private final Map<String, DataView> located = new HashMap<>();
+
+        /**
+         * {@code LOCATE}。出力のバッファを取って locator (SET か BASED(P) の P) に入れる。
+         * バッファは、そのファイルの次の WRITE・LOCATE・CLOSE の前に書き出す (LRM "LOCATE
+         * statement")。
+         */
+        private void locate(PliSyntax.FileOperation operation, String key, Env env,
+                            PliSyntax.FileInfo info, String ddName) {
+            flushLocated(key, info, ddName);
+            String name = operation.target().toUpperCase(Locale.ROOT);
+            List<PliSyntax.Decl> chunk = declaredChunks.get(name);
+            String locator = operation.title() instanceof PliSyntax.Reference set ? set.name()
+                    : chunk == null ? null : chunk.get(0).basedOn();
+            if (chunk == null || locator == null) {
+                throw new PliExecutionException("LOCATE " + name + " needs SET or BASED(pointer)");
+            }
+            int length;
+            try {
+                length = chunk.size() > 1 ? StructureMapping.map(chunk).size()
+                        : byteLength(chunk.get(0));
+            } catch (IllegalArgumentException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            DataView buffer = Storage.allocate(Math.max(1, length)).whole();
+            Var pointer = env.require(locator);
+            pointer.write(new PointerValue(address(buffer)), context);
+            rebase(pointer.name);
+            located.put(key, buffer);
+        }
+
+        private void flushLocated(String key, PliSyntax.FileInfo info, String ddName) {
+            DataView buffer = located.remove(key);
+            if (buffer == null) {
+                return;
+            }
+            DataSet dataSet = info != null && info.recordSize() > 0
+                    ? context.file(key, ddName,
+                            dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            dev.cobolonjava.runtime.file.RecordFormat.FIXED, info.recordSize())
+                    : context.file(key, ddName);
+            checkFileStatus(key, dataSet.write(buffer.toByteArray()), false);
+        }
+
+        /**
+         * KEYED のファイル (VSAM KSDS) の操作 (LRM "Keyed access")。鍵はレコードの中の
+         * KEYLOC から KEYLENGTH byte にある。鍵の無いレコードを読もうとすれば ONCODE 51、
+         * 重なる鍵を書こうとすれば 52 で KEY 条件を起こす (番号は Zeus と同じ。実機と
+         * 突き合わせていない)。
+         */
+        private void keyed(PliSyntax.FileOperation operation, PliSyntax.FileInfo info,
+                           dev.cobolonjava.runtime.file.IndexedDataSet dataSet, Env env) {
+            String file = operation.file().toUpperCase(Locale.ROOT);
+            byte[] key = operation.key() == null ? null : keyBytes(operation.key(), info, env);
+            switch (operation.action()) {
+                case OPEN -> {
+                    OpenMode mode = "UPDATE".equals(operation.target()) ? OpenMode.IO
+                            : "OUTPUT".equals(operation.target())
+                                    || (operation.target() == null && info.output())
+                                    ? OpenMode.OUTPUT : OpenMode.INPUT;
+                    checkFileStatus(operation.file(), dataSet.open(mode, false), false);
+                }
+                case CLOSE -> checkFileStatus(operation.file(), dataSet.close(), false);
+                case READ -> {
+                    if (key == null) {
+                        throw new PliExecutionException("sequential READ of a KEYED file is not"
+                                + " supported yet: " + operation.file());
+                    }
+                    Var target = env.require(operation.target());
+                    byte[] record = new byte[info.recordSize()];
+                    String status = dataSet.readKey(0, key, record);
+                    if ("23".equals(status)) {
+                        throw new Condition("KEY", file, 51, null);
+                    }
+                    checkFileStatus(operation.file(), status, false);
+                    copy(dev.cobolonjava.runtime.storage.Storage.wrap(record).whole(),
+                            target.view, context.codePage().space());
+                }
+                case WRITE, REWRITE -> {
+                    Var source = env.require(operation.target());
+                    byte[] record = new byte[info.recordSize()];
+                    java.util.Arrays.fill(record, context.codePage().space());
+                    byte[] data = source.view.toByteArray();
+                    System.arraycopy(data, 0, record, 0, Math.min(data.length, record.length));
+                    if (key != null && !java.util.Arrays.equals(key, java.util.Arrays.copyOfRange(
+                            record, info.keyLocation() - 1,
+                            info.keyLocation() - 1 + info.keyLength()))) {
+                        // 鍵がレコードの中にある (KEYLOC) とき、KEYFROM / KEY はその鍵と同じで
+                        // なければならない。違うときの扱いは確かめていないので断る
+                        throw new PliExecutionException("the KEY of " + operation.action()
+                                + " differs from the key in the record: " + operation.file());
+                    }
+                    boolean write = operation.action() == PliSyntax.FileAction.WRITE;
+                    String status = write ? dataSet.writeKey(record) : dataSet.rewriteKey(record);
+                    if (write && "22".equals(status)) {
+                        throw new Condition("KEY", file, 52, null);
+                    }
+                    if (!write && "23".equals(status)) {
+                        throw new Condition("KEY", file, 51, null);
+                    }
+                    checkFileStatus(operation.file(), status, false);
+                }
+                case DELETE -> {
+                    String status = dataSet.deleteKey(key);
+                    if ("23".equals(status)) {
+                        throw new Condition("KEY", file, 51, null);
+                    }
+                    checkFileStatus(operation.file(), status, false);
+                }
+            }
+        }
+
+        /** KEY / KEYFROM の値を、鍵の長さの文字にする (短ければ空白で埋める)。 */
+        private byte[] keyBytes(PliSyntax.Expr expression, PliSyntax.FileInfo info, Env env) {
+            byte[] encoded = context.codePage().encode(character(value(expression, env)));
+            byte[] key = new byte[info.keyLength()];
+            java.util.Arrays.fill(key, context.codePage().space());
+            System.arraycopy(encoded, 0, key, 0, Math.min(encoded.length, key.length));
+            return key;
         }
 
         private void sql(String source, Env env) {
@@ -1074,9 +2369,10 @@ public final class PliRuntime {
                     }
                 }
                 case PliSyntax.Reference reference -> {
-                    Var variable = env.contains(reference.name())
-                            ? env.require(reference.name()) : null;
-                    scanVariable(variable, wide);
+                    // 属性を見るだけで値は読まない。ALLOCATE していない CONTROLLED は
+                    // ALLOCATION(X) の引数に書けるので、ここで止めない
+                    Var variable = env.find(reference.name());
+                    scanVariable(variable == null || variable.unallocated ? null : variable, wide);
                 }
                 case PliSyntax.Unary unary -> scan(unary.operand(), env, wide);
                 case PliSyntax.Binary binary -> {
@@ -1113,6 +2409,16 @@ public final class PliRuntime {
                 }
                 return literal.value();
             }
+            if (expression instanceof PliSyntax.Reference reference
+                    && reference.name().contains("->")) {
+                return located(reference.name(), env,
+                        rest -> evaluate(new PliSyntax.Reference(rest), env));
+            }
+            if (expression instanceof PliSyntax.Reference reference && !env.contains(reference.name())
+                    && program.procedures().containsKey(reference.name())) {
+                // 手続きの名は入口の値である (入口の変数へ代入できる)
+                return new EntryValue(reference.name());
+            }
             if (expression instanceof PliSyntax.Reference reference) {
                 Var variable = env.require(reference.name());
                 if (variable.dimensions != null) {
@@ -1143,6 +2449,9 @@ public final class PliRuntime {
                             ? bitwise(bits.bits(), "", (x, y) -> x == '1' ? '0' : '1')
                             : !truth(operand);
                     case "-" -> operand instanceof FixedValue fixed ? fixed.negate()
+                            : operand instanceof PliSyntax.Complex z
+                                    ? new PliSyntax.Complex(z.real().negate(),
+                                            z.imaginary().negate())
                             : number(operand).negate();
                     case "+" -> operand instanceof FixedValue ? operand : number(operand);
                     default -> throw new PliExecutionException("unknown unary operator "
@@ -1170,6 +2479,7 @@ public final class PliRuntime {
                     case "|" -> truth(left) || truth(right);
                     case "&" -> truth(left) && truth(right);
                     case "||" -> display(left) + display(right);
+                    case "**" -> power(number(left), number(right));
                     case "+", "-", "*", "/" -> arithmetic(binary.operator(), left, right,
                             arithmetic == null ? new FixedValue.Arithmetic(options, false, false)
                                     : arithmetic);
@@ -1191,11 +2501,177 @@ public final class PliRuntime {
                 case "SIZE", "STORAGE", "STG" -> {
                     return size(function, env);
                 }
+                case "CURRENTSIZE", "CSTG", "CURRENTSTORAGE" -> {
+                    // 今の大きさ (LRM "CURRENTSIZE")。VARYING の文字なら今の長さ + 2、REFER の
+                    // 構造は今の形の大きさ (重ね直しで決まる) である
+                    Var target = dataReference(function.arguments().get(0), env, name);
+                    int size = target.type == PliSyntax.Type.CHAR && target.varying
+                            ? target.currentLength() + 2 : target.view.length();
+                    if (target.type == PliSyntax.Type.GROUP && elements(target).stream()
+                            .anyMatch(member -> member.varying)) {
+                        throw new PliExecutionException("CURRENTSIZE of a structure with VARYING"
+                                + " members is not supported yet: " + target.name);
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(size), 31, 0);
+                }
                 case "ADDR" -> {
                     return address(function, env);
                 }
+                // UNSPEC と HEX は値ではなく記憶域のビットを見る (LRM "UNSPEC", "HEX")
+                case "UNSPEC" -> {
+                    return new PliSyntax.BitString(bitsOf(storageOf(function, env)));
+                }
+                case "HEX" -> {
+                    return hexOf(function, env);
+                }
+                case "POINTER", "PTR" -> {
+                    if (env.contains(name)) {
+                        break;
+                    }
+                    // POINTER(offset, area): AREA の中の位置を指す POINTER (LRM "POINTER")
+                    Var area = dataReference(function.arguments().get(1), env, name);
+                    if (area.type != PliSyntax.Type.AREA) {
+                        throw new PliExecutionException(name + " needs an AREA: " + area.name);
+                    }
+                    int at = number(value(function.arguments().get(0), env)).intValue();
+                    if (at < AREA_HEADER || at > area.view.length()) {
+                        throw new PliExecutionException("offset " + at + " is outside the AREA "
+                                + area.name);
+                    }
+                    return new PointerValue(AddressSpace.of(context).addressOf(
+                            area.view.storage(), area.view.offset() + at));
+                }
+                case "OFFSET" -> {
+                    if (env.contains(name)) {
+                        break;
+                    }
+                    // OFFSET(pointer, area): POINTER が指す位置の AREA の頭からの位置
+                    Object pointer = value(function.arguments().get(0), env);
+                    Var area = dataReference(function.arguments().get(1), env, name);
+                    AddressSpace.Location location = pointer instanceof PointerValue p
+                            ? AddressSpace.of(context).locate(p.address()) : null;
+                    if (area.type != PliSyntax.Type.AREA || location == null
+                            || location.storage() != area.view.storage()
+                            || location.offset() < area.view.offset()
+                            || location.offset() > area.view.offset() + area.view.length()) {
+                        throw new PliExecutionException("OFFSET: the POINTER does not point into"
+                                + " the AREA");
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(
+                            location.offset() - area.view.offset()), 31, 0);
+                }
+                case "EMPTY" -> {
+                    return EMPTY_AREA;
+                }
+                case "HANDLE" -> {
+                    if (env.contains(name)) break;
+                    // 型つきの構造を指す値 (LRM "HANDLE")。ここでは POINTER と同じ番号である
+                    return address(function, env);
+                }
+                case "NEW" -> {
+                    if (env.contains(name)) break;
+                    // NEW(:T:) は型 T の記憶域を取る。翻訳で NEW('#T') に読み替えてある
+                    Object type = value(function.arguments().get(0), env);
+                    List<PliSyntax.Decl> chunk = type instanceof String text
+                            ? declaredChunks.get(text) : null;
+                    if (chunk == null) {
+                        throw new PliExecutionException("NEW needs a type defined by DEFINE"
+                                + " STRUCTURE");
+                    }
+                    int length;
+                    try {
+                        length = StructureMapping.map(chunk).size();
+                    } catch (IllegalArgumentException unsupported) {
+                        throw new PliExecutionException(unsupported.getMessage());
+                    }
+                    return new PointerValue(address(Storage.allocate(Math.max(1, length)).whole()));
+                }
+                case "LINENO", "PAGENO" -> {
+                    String file = function.arguments().get(0) instanceof PliSyntax.Reference r
+                            ? r.name().toUpperCase(Locale.ROOT) : "";
+                    UserPrintFile print = printFiles.get(file);
+                    if (print == null) {
+                        throw new PliExecutionException(name + " needs an open PRINT file other"
+                                + " than SYSPRINT yet: " + file);
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(name.equals("LINENO")
+                            ? print.lineNumber() : print.pageNumber()), 31, 0);
+                }
+                case "ALLOCATION", "ALLOCN" -> {
+                    // 世代の数 (LRM "ALLOCATION")。CONTROLLED でなければ誤りである
+                    PliSyntax.Expr argument = function.arguments().get(0);
+                    Var target = argument instanceof PliSyntax.Reference reference
+                            ? env.find(reference.name()) : null;
+                    if (target == null || target.generations == null) {
+                        throw new PliExecutionException("ALLOCATION needs a CONTROLLED variable");
+                    }
+                    return FixedValue.binary(BigDecimal.valueOf(target.generations.saved.size()),
+                            31, 0);
+                }
+                case "DIM", "HBOUND", "LBOUND" -> {
+                    Var array = dataReference(function.arguments().get(0), env, name);
+                    if (array.dimensions == null) {
+                        throw new PliExecutionException(name + " needs an array: " + array.name);
+                    }
+                    int dimension = function.arguments().size() > 1
+                            ? number(value(function.arguments().get(1), env)).intValue() : 1;
+                    if (dimension < 1 || dimension > array.dimensions.size()) {
+                        throw new PliExecutionException(name + ": " + array.name + " has no"
+                                + " dimension " + dimension);
+                    }
+                    PliSyntax.Bound bound = array.dimensions.get(dimension - 1);
+                    int result = switch (name) {
+                        case "DIM" -> bound.extent();
+                        case "HBOUND" -> bound.high();
+                        default -> bound.low();
+                    };
+                    return FixedValue.binary(BigDecimal.valueOf(result), 31, 0);
+                }
+                case "SUM" -> {
+                    // 結果は要素と同じ型 (LRM "SUM")。FIXED の要素だけを持つ
+                    Var array = dataReference(function.arguments().get(0), env, name);
+                    if (array.dimensions == null) {
+                        throw new PliExecutionException("SUM needs an array: " + array.name);
+                    }
+                    Object total = null;
+                    for (Var element : array.elements) {
+                        Object value = element.read(context);
+                        if (!(value instanceof FixedValue)) {
+                            throw new PliExecutionException("SUM of a non-FIXED array is not"
+                                    + " supported yet: " + array.name);
+                        }
+                        total = total == null ? value : arithmetic("+", total, value,
+                                new FixedValue.Arithmetic(options, false, false));
+                    }
+                    return total;
+                }
+                case "MAXLENGTH" -> {
+                    Var target = dataReference(function.arguments().get(0), env, "MAXLENGTH");
+                    return FixedValue.binary(BigDecimal.valueOf(target.capacity()), 31, 0);
+                }
                 default -> {
                 }
+            }
+            PliSyntax.Procedure procedure = program.procedures().get(function.name());
+            List<PliSyntax.Expr> callArguments = function.arguments();
+            if (function.name().equals("#APPLY")) {
+                // 入口の値を返した式を、続く引数で呼ぶ (TAB(1)(3))
+                procedure = entryProcedure(value(function.arguments().get(0), env));
+                callArguments = function.arguments().subList(1, function.arguments().size());
+            } else if (procedure == null && program.generics().containsKey(function.name())) {
+                procedure = generic(function.name(), callArguments, env);
+            } else if (procedure == null && env.find(function.name()) != null
+                    && env.find(function.name()).type == PliSyntax.Type.ENTRY
+                    && env.find(function.name()).dimensions == null) {
+                procedure = entryProcedure(env.require(function.name()).read(context));
+            }
+            if (procedure != null) {
+                Object result = invoke(procedure, callArguments, env);
+                if (result == null) {
+                    throw new PliExecutionException("procedure " + procedure.name()
+                            + " was used as a function but returned no value");
+                }
+                return result;
             }
             List<Object> arguments = function.arguments().stream().map(e -> value(e, env)).toList();
             return switch (name) {
@@ -1215,12 +2691,346 @@ public final class PliRuntime {
                 // 結果は x と同じ base・scale・precision を持つ (LRM "ABS")
                 case "ABS" -> arguments.get(0) instanceof FixedValue fixed
                         ? (fixed.value().signum() < 0 ? fixed.negate() : fixed)
+                        // 複素数の絶対値は実部と虚部の 2 乗の和の正の平方根 (LRM "ABS")
+                        : arguments.get(0) instanceof PliSyntax.Complex z
+                                ? z.real().multiply(z.real()).add(z.imaginary()
+                                        .multiply(z.imaginary()))
+                                        .sqrt(java.math.MathContext.DECIMAL64)
+                                        .stripTrailingZeros()
                         : number(arguments.get(0)).abs();
+                case "REAL" -> complex(arguments.get(0)).real();
+                case "IMAG" -> complex(arguments.get(0)).imaginary();
+                case "CONJG" -> new PliSyntax.Complex(complex(arguments.get(0)).real(),
+                        complex(arguments.get(0)).imaginary().negate());
+                case "COMPLEX", "CPLX" -> new PliSyntax.Complex(number(arguments.get(0)),
+                        number(arguments.get(1)));
                 // x を y 回<b>つなげ足す</b>ので y+1 個になる。y が 0 以下なら x そのもの (LRM "REPEAT")
                 case "REPEAT" -> display(arguments.get(0))
                         .repeat(Math.max(0, number(arguments.get(1)).intValue()) + 1);
+                default -> moreBuiltins(name, arguments);
+            };
+        }
+
+        /**
+         * 組み込み関数の続き。意味は Enterprise PL/I Language Reference の各頁に従い、
+         * 並びは Zeus (同じ権利者の処理系) の {@code vm/bif.rs} を見て決めた。
+         * 実機とは突き合わせていない。
+         */
+        private Object moreBuiltins(String name, List<Object> arguments) {
+            return switch (name) {
+                case "REVERSE" -> new StringBuilder(display(arguments.get(0))).reverse().toString();
+                // ORDINAL の組み込み関数。2 つ目の引数は翻訳で足した要素の表 (名=値,...) である
+                case "ORDINALNAME", "ORDINALSUCC", "ORDINALPRED" -> {
+                    int x = number(arguments.get(0)).intValue();
+                    List<String[]> members = new ArrayList<>();
+                    for (String member : display(arguments.get(1)).split(",")) {
+                        members.add(member.split("="));
+                    }
+                    int k = -1;
+                    for (int i = 0; i < members.size(); i++) {
+                        if (Integer.parseInt(members.get(i)[1]) == x) k = i;
+                    }
+                    int target = name.equals("ORDINALSUCC") ? k + 1
+                            : name.equals("ORDINALPRED") ? k - 1 : k;
+                    if (k < 0 || target < 0 || target >= members.size()) {
+                        throw new PliExecutionException(name + ": " + x + " has no such"
+                                + " ORDINAL member");
+                    }
+                    yield name.equals("ORDINALNAME") ? members.get(target)[0]
+                            : FixedValue.binary(new BigDecimal(members.get(target)[1]), 31, 0);
+                }
+                case "BINVALUE", "BINARYVALUE" -> arguments.get(0) instanceof PointerValue pointer
+                        ? FixedValue.binary(BigDecimal.valueOf(pointer.address()), 31, 0)
+                        : FixedValue.binary(number(arguments.get(0)).setScale(0,
+                                java.math.RoundingMode.DOWN), 31, 0);
+                case "UPPERCASE" -> display(arguments.get(0)).toUpperCase(Locale.ROOT);
+                case "LOWERCASE" -> display(arguments.get(0)).toLowerCase(Locale.ROOT);
+                // 見つかった位置 (1 から)。無ければ 0 (LRM "INDEX")
+                case "INDEX" -> FixedValue.binary(BigDecimal.valueOf(
+                        display(arguments.get(0)).indexOf(display(arguments.get(1))) + 1), 31, 0);
+                // 第 2 引数に無い字の最初の位置。全部あれば 0 (LRM "VERIFY")
+                case "VERIFY" -> {
+                    String text = display(arguments.get(0));
+                    String allowed = display(arguments.get(1));
+                    int at = 0;
+                    for (int i = 0; i < text.length(); i++) {
+                        if (allowed.indexOf(text.charAt(i)) < 0) {
+                            at = i + 1;
+                            break;
+                        }
+                    }
+                    yield FixedValue.binary(BigDecimal.valueOf(at), 31, 0);
+                }
+                // 第 2 引数の字のどれかの最初の位置 (LRM "SEARCH")
+                case "SEARCH" -> {
+                    String text = display(arguments.get(0));
+                    String wanted = display(arguments.get(1));
+                    int at = 0;
+                    for (int i = 0; i < text.length(); i++) {
+                        if (wanted.indexOf(text.charAt(i)) >= 0) {
+                            at = i + 1;
+                            break;
+                        }
+                    }
+                    yield FixedValue.binary(BigDecimal.valueOf(at), 31, 0);
+                }
+                // 重ならない出現の数 (LRM "TALLY")
+                case "TALLY" -> {
+                    String text = display(arguments.get(0));
+                    String part = display(arguments.get(1));
+                    int count = 0;
+                    for (int at = part.isEmpty() ? -1 : text.indexOf(part); at >= 0;
+                         at = text.indexOf(part, at + part.length())) {
+                        count++;
+                    }
+                    yield FixedValue.binary(BigDecimal.valueOf(count), 31, 0);
+                }
+                // TRANSLATE(x, 置き換える字, 置き換えられる字)。第 3 引数を省けば全 256 字
+                case "TRANSLATE" -> {
+                    String text = display(arguments.get(0));
+                    String to = display(arguments.get(1));
+                    String from = arguments.size() > 2 ? display(arguments.get(2)) : null;
+                    StringBuilder out = new StringBuilder();
+                    for (int i = 0; i < text.length(); i++) {
+                        char c = text.charAt(i);
+                        int at = from == null ? -1 : from.indexOf(c);
+                        out.append(at >= 0 ? (at < to.length() ? to.charAt(at) : ' ') : c);
+                    }
+                    yield out.toString();
+                }
+                case "COPY" -> display(arguments.get(0))
+                        .repeat(Math.max(0, number(arguments.get(1)).intValue()));
+                // LEFT(x, n[, 埋める字]) は左に寄せて右を埋める。RIGHT は右に寄せる
+                case "LEFT", "RIGHT" -> {
+                    String text = display(arguments.get(0));
+                    int length = number(arguments.get(1)).intValue();
+                    char pad = arguments.size() > 2 ? display(arguments.get(2)).charAt(0) : ' ';
+                    String padding = String.valueOf(pad).repeat(Math.max(0, length - text.length()));
+                    yield name.equals("LEFT")
+                            ? (text.length() >= length ? text.substring(0, length) : text + padding)
+                            : (text.length() >= length ? text.substring(text.length() - length)
+                                    : padding + text);
+                }
+                case "MAX", "MIN" -> {
+                    Object best = arguments.get(0);
+                    for (Object next : arguments.subList(1, arguments.size())) {
+                        int order = number(next).compareTo(number(best));
+                        if (name.equals("MAX") ? order > 0 : order < 0) {
+                            best = next;
+                        }
+                    }
+                    yield best;
+                }
+                // MOD の結果は第 2 引数と同じ符号を持たない: 0 以上で y より小さい (LRM "MOD")
+                case "MOD" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    BigDecimal y = number(arguments.get(1));
+                    BigDecimal r = x.remainder(y);
+                    if (r.signum() != 0 && r.signum() != y.signum()) {
+                        r = r.add(y);
+                    }
+                    yield r;
+                }
+                case "REM" -> number(arguments.get(0)).remainder(number(arguments.get(1)));
+                case "SIGN" -> FixedValue.binary(BigDecimal.valueOf(
+                        number(arguments.get(0)).signum()), 15, 0);
+                case "FLOOR" -> number(arguments.get(0)).setScale(0, java.math.RoundingMode.FLOOR);
+                case "CEIL" -> number(arguments.get(0)).setScale(0, java.math.RoundingMode.CEILING);
+                case "TRUNC" -> number(arguments.get(0)).setScale(0, java.math.RoundingMode.DOWN);
+                // ROUND(x, n) は小数点以下 n 桁へ、半分は 0 から遠いほうへ
+                case "ROUND" -> number(arguments.get(0)).setScale(
+                        number(arguments.get(1)).intValue(), java.math.RoundingMode.HALF_UP);
+                case "SQRT" -> number(arguments.get(0)).sqrt(java.math.MathContext.DECIMAL64);
+                // 浮動小数点の関数。結果は FLOAT であり、16 桁で返す。実機の HFP の桁とは
+                // 突き合わせていない
+                case "SIN", "COS", "TAN", "ATAN", "LOG", "LOG10", "EXP", "SINH", "COSH",
+                     "TANH", "ASIN", "ACOS" -> {
+                    double x = number(arguments.get(0)).doubleValue();
+                    double r = switch (name) {
+                        case "SIN" -> Math.sin(x);
+                        case "COS" -> Math.cos(x);
+                        case "TAN" -> Math.tan(x);
+                        case "ATAN" -> Math.atan(x);
+                        case "LOG" -> Math.log(x);
+                        case "LOG10" -> Math.log10(x);
+                        case "EXP" -> Math.exp(x);
+                        case "SINH" -> Math.sinh(x);
+                        case "COSH" -> Math.cosh(x);
+                        case "TANH" -> Math.tanh(x);
+                        case "ASIN" -> Math.asin(x);
+                        default -> Math.acos(x);
+                    };
+                    yield new BigDecimal(r, java.math.MathContext.DECIMAL64);
+                }
+                // 明示した精度で計算する (LRM "ADD", "MULTIPLY", "DIVIDE")
+                case "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    BigDecimal y = number(arguments.get(1));
+                    int p = number(arguments.get(2)).intValue();
+                    int q = arguments.size() > 3 ? number(arguments.get(3)).intValue() : 0;
+                    BigDecimal result = switch (name) {
+                        case "ADD" -> x.add(y);
+                        case "SUBTRACT" -> x.subtract(y);
+                        case "MULTIPLY" -> x.multiply(y);
+                        default -> x.divide(y, q, java.math.RoundingMode.DOWN);
+                    };
+                    yield FixedValue.decimal(result.setScale(q, java.math.RoundingMode.DOWN),
+                            p, q);
+                }
+                case "BIN", "BINARY", "DEC", "DECIMAL", "FIXED" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    boolean binary = name.startsWith("BIN");
+                    int p = arguments.size() > 1 ? number(arguments.get(1)).intValue()
+                            : binary ? 31 : 15;
+                    int q = arguments.size() > 2 ? number(arguments.get(2)).intValue() : 0;
+                    BigDecimal value = x.setScale(Math.max(q, 0), java.math.RoundingMode.DOWN);
+                    yield binary ? FixedValue.binary(value, p, q) : FixedValue.decimal(value, p, q);
+                }
+                // 戻りコード (PLIRETC で決めた値) を返す (LRM "PLIRETV")
+                case "PLIRETV" -> FixedValue.binary(BigDecimal.valueOf(context.returnCode()), 31, 0);
+                case "ONCODE" -> FixedValue.binary(BigDecimal.valueOf(onCode), 31, 0);
+                case "ONSOURCE" -> onSource == null ? "" : onSource;
+                // 変換できなかった最初の字 (LRM "ONCHAR")
+                case "ONCHAR" -> {
+                    String source = repairedSource != null ? repairedSource : onSource;
+                    int at = source == null ? -1 : badCharacter(source);
+                    yield at < 0 ? " " : String.valueOf(source.charAt(at));
+                }
+                // NULL は X'FF000000'、SYSNULL は 0 である (Enterprise PL/I Programming Guide
+                // "NULL and SYSNULL")。以前はどちらも 0 にしていた
+                case "SYSNULL" -> new PointerValue(0);
+                case "NULL" -> new PointerValue(NULL_ADDRESS);
+                case "POINTERADD", "PTRADD" -> {
+                    if (!(arguments.get(0) instanceof PointerValue pointer)) {
+                        throw new PliExecutionException(name + " needs a POINTER");
+                    }
+                    // POINTER の値は位置ごとに振った番号であり、番地の算術は効かない (P-150)。
+                    // 番号が指す記憶域の中で位置を進め、その位置の番号を求める
+                    AddressSpace.Location location = AddressSpace.of(context)
+                            .locate(pointer.address());
+                    int offset = location == null ? -1
+                            : location.offset() + number(arguments.get(1)).intValue();
+                    if (location == null || offset < 0 || offset > location.storage().size()) {
+                        throw new PliExecutionException(name + " leaves the storage the POINTER"
+                                + " points into; addresses outside it are not modelled (P-150)");
+                    }
+                    yield new PointerValue(AddressSpace.of(context)
+                            .addressOf(location.storage(), offset));
+                }
+                // DAYS(日付, 型) は 1582 年 10 月 15 日を 1 とする日の番号 (Lilian) である
+                case "DAYS" -> FixedValue.binary(BigDecimal.valueOf(
+                        lilian(display(arguments.get(0)), display(arguments.get(1)))), 31, 0);
+                case "DAYSTODATE" -> dateOf(number(arguments.get(0)).longValue(),
+                        display(arguments.get(1)));
+                case "BOOL" -> {
+                    String x = bitText(arguments.get(0));
+                    String y = bitText(arguments.get(1));
+                    String rule = bitText(arguments.get(2));
+                    int length = Math.max(x.length(), y.length());
+                    StringBuilder out = new StringBuilder();
+                    for (int i = 0; i < length; i++) {
+                        int a = i < x.length() ? x.charAt(i) - '0' : 0;
+                        int b = i < y.length() ? y.charAt(i) - '0' : 0;
+                        out.append(rule.charAt(a * 2 + b));
+                    }
+                    yield new PliSyntax.BitString(out.toString());
+                }
                 default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
             };
+        }
+
+        /** 数の字の並びのうち、数にならない最初の字の位置。無ければ -1。 */
+        private static int badCharacter(String text) {
+            String stripped = text.strip();
+            int offset = text.indexOf(stripped.isEmpty() ? " " : stripped);
+            boolean point = false;
+            for (int i = 0; i < stripped.length(); i++) {
+                char c = stripped.charAt(i);
+                if (Character.isDigit(c) || ((c == '+' || c == '-') && i == 0)) {
+                    continue;
+                }
+                if (c == '.' && !point) {
+                    point = true;
+                    continue;
+                }
+                return offset + i;
+            }
+            return -1;
+        }
+
+        /** 1582 年 10 月 14 日。DAYS はこの次の日を 1 とする。 */
+        private static final long LILIAN_ORIGIN =
+                java.time.LocalDate.of(1582, 10, 14).toEpochDay();
+
+        /** 型の YYYY / MM / DD を引いて日付にする。持たない型は断る。 */
+        private static long lilian(String date, String pattern) {
+            int y = pattern.indexOf("YYYY");
+            int m = pattern.indexOf("MM");
+            int d = pattern.indexOf("DD");
+            if (y < 0 || m < 0 || d < 0) {
+                throw new PliExecutionException("DAYS supports only patterns with YYYY, MM and DD: "
+                        + pattern);
+            }
+            java.time.LocalDate value = java.time.LocalDate.of(
+                    Integer.parseInt(date.substring(y, y + 4)),
+                    Integer.parseInt(date.substring(m, m + 2)),
+                    Integer.parseInt(date.substring(d, d + 2)));
+            return value.toEpochDay() - LILIAN_ORIGIN;
+        }
+
+        private static String dateOf(long lilian, String pattern) {
+            java.time.LocalDate value = java.time.LocalDate.ofEpochDay(lilian + LILIAN_ORIGIN);
+            return pattern.replace("YYYY", String.format("%04d", value.getYear()))
+                    .replace("MM", String.format("%02d", value.getMonthValue()))
+                    .replace("DD", String.format("%02d", value.getDayOfMonth()));
+        }
+
+        /** UNSPEC と HEX の引数の記憶域。変数なら記憶域、値なら値の内部の形。 */
+        private byte[] storageOf(PliSyntax.Function function, Env env) {
+            PliSyntax.Expr argument = function.arguments().get(0);
+            if (argument instanceof PliSyntax.Reference reference && env.contains(reference.name())) {
+                return env.require(reference.name()).view.toByteArray();
+            }
+            if (argument instanceof PliSyntax.Function element
+                    && arrayNamed(element.name(), env) != null) {
+                return element(arrayNamed(element.name(), env), element.arguments(), env)
+                        .view.toByteArray();
+            }
+            Object value = value(argument, env);
+            if (value instanceof PliSyntax.BitString bits) {
+                return bytesOfBits(bits.bits());
+            }
+            return context.codePage().encode(display(value));
+        }
+
+        private static String bitsOf(byte[] bytes) {
+            StringBuilder out = new StringBuilder(bytes.length * 8);
+            for (byte b : bytes) {
+                for (int i = 7; i >= 0; i--) {
+                    out.append((b >> i & 1) == 1 ? '1' : '0');
+                }
+            }
+            return out.toString();
+        }
+
+        private static byte[] bytesOfBits(String bits) {
+            byte[] out = new byte[(bits.length() + 7) / 8];
+            for (int i = 0; i < bits.length(); i++) {
+                if (bits.charAt(i) == '1') {
+                    out[i / 8] |= (byte) (0x80 >> (i % 8));
+                }
+            }
+            return out;
+        }
+
+        /** HEX(x): 記憶域 (ビット列なら 4 ビットずつ) を 16 進の字にする (LRM "HEX")。 */
+        private Object hexOf(PliSyntax.Function function, Env env) {
+            byte[] bytes = storageOf(function, env);
+            StringBuilder out = new StringBuilder();
+            for (byte b : bytes) {
+                out.append(String.format("%02X", b & 0xFF));
+            }
+            return out.toString();
         }
 
         /**
@@ -1232,6 +3042,28 @@ public final class PliRuntime {
                                          FixedValue.Arithmetic rules) {
             if (left instanceof NumericPicture picture) left = picture.fixed();
             if (right instanceof NumericPicture picture) right = picture.fixed();
+            if (left instanceof PliSyntax.Complex || right instanceof PliSyntax.Complex) {
+                // 複素数の演算。結果の精度の規則は持たず、値を切らずに運ぶ (実機と突き合わせていない)
+                PliSyntax.Complex x = complex(left);
+                PliSyntax.Complex y = complex(right);
+                BigDecimal a = x.real(), b = x.imaginary(), c = y.real(), d = y.imaginary();
+                return switch (operator) {
+                    case "+" -> new PliSyntax.Complex(a.add(c), b.add(d));
+                    case "-" -> new PliSyntax.Complex(a.subtract(c), b.subtract(d));
+                    case "*" -> new PliSyntax.Complex(a.multiply(c).subtract(b.multiply(d)),
+                            a.multiply(d).add(b.multiply(c)));
+                    default -> {
+                        BigDecimal norm = c.multiply(c).add(d.multiply(d));
+                        if (norm.signum() == 0) {
+                            throw new Condition("ZERODIVIDE", null, 320, null);
+                        }
+                        java.math.MathContext mc = java.math.MathContext.DECIMAL128;
+                        yield new PliSyntax.Complex(
+                                a.multiply(c).add(b.multiply(d)).divide(norm, mc),
+                                b.multiply(c).subtract(a.multiply(d)).divide(norm, mc));
+                    }
+                };
+            }
             if (left instanceof FixedValue a && right instanceof FixedValue b) {
                 return switch (operator) {
                     case "+" -> a.add(b, rules);
@@ -1248,6 +3080,29 @@ public final class PliRuntime {
                 case "*" -> a.multiply(b);
                 default -> a.divide(b, MathContext.DECIMAL128);
             };
+        }
+
+        /**
+         * べき乗。指数が整数なら掛け算を重ねて正確に出し、負なら逆数にする。整数でなければ
+         * 浮動小数点で近似する (LRM "Exponentiation")。結果の属性 (FIXED / FLOAT) は持たない。
+         */
+        private static Object power(BigDecimal base, BigDecimal exponent) {
+            if (exponent.stripTrailingZeros().scale() <= 0) {
+                int whole = exponent.intValueExact();
+                if (whole >= 0) {
+                    return base.pow(whole);
+                }
+                if (base.signum() == 0) {
+                    throw new Condition("ZERODIVIDE", null, 320, null);
+                }
+                return BigDecimal.ONE.divide(base.pow(-whole), MathContext.DECIMAL64);
+            }
+            if (base.signum() < 0) {
+                throw new PliExecutionException("ERROR: a negative number raised to a"
+                        + " non-integer power");
+            }
+            return new BigDecimal(Math.pow(base.doubleValue(), exponent.doubleValue()),
+                    MathContext.DECIMAL64);
         }
 
         private String filled(byte value, List<Object> arguments) {
@@ -1322,6 +3177,105 @@ public final class PliRuntime {
                 index = index * bound.extent() + (subscript - bound.low());
             }
             return array.elements.get(index);
+        }
+
+        /**
+         * 配列の断面への代入 {@code A(*,2) = 値} (LRM "Cross sections of arrays")。* の次元は
+         * すべての添字を、そうでない次元は書いた添字だけを取る。値はスカラーだけを持つ。
+         */
+        private void crossSection(Var array, PliSyntax.Assign assignment, Env env) {
+            List<PliSyntax.Expr> subscripts = assignment.subscripts();
+            if (subscripts.size() != array.dimensions.size()) {
+                throw new PliExecutionException(array.name + " has " + array.dimensions.size()
+                        + " dimension(s), but " + subscripts.size() + " subscript(s) were given");
+            }
+            if (containsArray(assignment.value(), env)) {
+                throw new PliExecutionException("assigning an array expression to a cross"
+                        + " section is not supported yet: " + array.name);
+            }
+            Integer[] fixed = new Integer[subscripts.size()];
+            for (int d = 0; d < subscripts.size(); d++) {
+                if (!(subscripts.get(d) instanceof PliSyntax.Literal literal
+                        && literal.value() == PliSyntax.Asterisk.STAR)) {
+                    fixed[d] = number(value(subscripts.get(d), env)).intValue();
+                    PliSyntax.Bound bound = array.dimensions.get(d);
+                    if (fixed[d] < bound.low() || fixed[d] > bound.high()) {
+                        throw new PliExecutionException("SUBSCRIPTRANGE: subscript " + fixed[d]
+                                + " of " + array.name);
+                    }
+                }
+            }
+            Object value = value(assignment.value(), env);
+            int rank = array.dimensions.size();
+            int[] index = new int[rank];
+            for (int d = 0; d < rank; d++) index[d] = array.dimensions.get(d).low();
+            for (Var element : array.elements) {
+                boolean selected = true;
+                for (int d = 0; d < rank; d++) {
+                    if (fixed[d] != null && fixed[d] != index[d]) selected = false;
+                }
+                if (selected) {
+                    element.write(value, context);
+                }
+                for (int d = rank - 1; d >= 0; d--) {
+                    if (++index[d] <= array.dimensions.get(d).high()) break;
+                    index[d] = array.dimensions.get(d).low();
+                }
+            }
+        }
+
+        /**
+         * 擬似変数 {@code UNSPEC(x) = ビット列} (LRM "UNSPEC pseudovariable")。値を x の記憶域の
+         * ビットの長さに右を 0 で埋めるか切って、記憶域へそのまま書く。
+         */
+        private void unspecPseudovariable(PliSyntax.Assign assignment, Env env) {
+            if (assignment.subscripts().size() != 1) {
+                throw new PliExecutionException("UNSPEC pseudovariable needs one argument");
+            }
+            Var target = dataReference(assignment.subscripts().get(0), env, "UNSPEC");
+            if (target.bitShift != 0 || target.dimensions != null) {
+                throw new PliExecutionException("UNSPEC pseudovariable on an unaligned bit or an"
+                        + " array is not supported yet: " + target.name);
+            }
+            String bits = bitText(value(assignment.value(), env));
+            int length = target.view.length() * 8;
+            bits = bits.length() >= length ? bits.substring(0, length)
+                    : bits + "0".repeat(length - bits.length());
+            byte[] bytes = new byte[target.view.length()];
+            for (int i = 0; i < bytes.length; i++) {
+                bytes[i] = (byte) Integer.parseInt(bits.substring(i * 8, i * 8 + 8), 2);
+            }
+            target.view.setBytes(bytes);
+        }
+
+        /**
+         * {@code Y = X, BY NAME;}。同じ名の要素どうしを、名の要素がともに構造なら入れ子で
+         * 代入する (LRM "BY NAME option")。名の合わない要素は変えない。
+         */
+        private void assignByName(Var target, Var source) {
+            if (target.type != PliSyntax.Type.GROUP || source.type != PliSyntax.Type.GROUP) {
+                throw new PliExecutionException("BY NAME needs structures: " + target.name
+                        + ", " + source.name);
+            }
+            for (Var member : target.members) {
+                for (Var from : source.members) {
+                    if (!from.name.equals(member.name) || member.name.equals("*")) {
+                        continue;
+                    }
+                    boolean group = member.type == PliSyntax.Type.GROUP;
+                    if (group != (from.type == PliSyntax.Type.GROUP)) {
+                        continue;
+                    }
+                    if (group) {
+                        assignByName(member, from);
+                    } else if (member.dimensions != null || from.dimensions != null) {
+                        throw new PliExecutionException("BY NAME with array members is not"
+                                + " supported yet: " + member.name);
+                    } else {
+                        member.write(from.read(context), context);
+                    }
+                }
+            }
         }
 
         /**
@@ -1407,6 +3361,13 @@ public final class PliRuntime {
         }
 
         private static int compare(Object left, Object right) {
+            if (left instanceof PliSyntax.Complex || right instanceof PliSyntax.Complex) {
+                // 複素数は等しいかどうかだけを比べられる。等しくなければ 0 でない値を返す
+                PliSyntax.Complex x = complex(left);
+                PliSyntax.Complex y = complex(right);
+                return x.real().compareTo(y.real()) == 0
+                        && x.imaginary().compareTo(y.imaginary()) == 0 ? 0 : 1;
+            }
             if (numeric(left) || numeric(right)) {
                 return number(left).compareTo(number(right));
             }
@@ -1432,11 +3393,18 @@ public final class PliRuntime {
 
         private static boolean numeric(Object value) {
             return value instanceof Number || value instanceof FixedValue
-                    || value instanceof NumericPicture;
+                    || value instanceof NumericPicture || value instanceof PliSyntax.Complex;
+        }
+
+        private static PliSyntax.Complex complex(Object value) {
+            return value instanceof PliSyntax.Complex z ? z
+                    : new PliSyntax.Complex(number(value), BigDecimal.ZERO);
         }
 
         private static BigDecimal number(Object value) {
             if (value instanceof FixedValue fixed) return fixed.value();
+            // 複素数を実数にすると虚部は捨てられる (LRM "Mode conversion")
+            if (value instanceof PliSyntax.Complex z) return z.real();
             if (value instanceof NumericPicture picture) return picture.fixed().value();
             // ビット列を数にすると、符号なしの 2 進の値になる (LRM "Target: Coded arithmetic", BIT)
             if (value instanceof PliSyntax.BitString bits) {
@@ -1445,7 +3413,9 @@ public final class PliRuntime {
             if (value instanceof BigDecimal decimal) return decimal;
             if (value instanceof Number numeric) return new BigDecimal(numeric.toString());
             if (value instanceof Boolean bool) return bool ? BigDecimal.ONE : BigDecimal.ZERO;
-            String text = display(value).strip();
+            String original = display(value);
+            String repaired = REPAIRED.get().get(original);
+            String text = (repaired != null ? repaired : original).strip();
             if (text.isEmpty()) {
                 // 空の文字列と空白だけの文字列は 0 になり、CONVERSION は起きない (LRM "Target: Coded
                 // arithmetic", CHARACTER)
@@ -1454,7 +3424,8 @@ public final class PliRuntime {
             try {
                 return new BigDecimal(text);
             } catch (NumberFormatException e) {
-                throw new PliExecutionException("value is not numeric: " + display(value));
+                // 字を数にできない。CONVERSION の条件である (ONCODE 600 番台)
+                throw new Condition("CONVERSION", null, 612, repaired != null ? repaired : original);
             }
         }
 
@@ -1502,9 +3473,19 @@ public final class PliRuntime {
         private final ProgramContext context;
         private final Map<String, Var> variables = new LinkedHashMap<>();
         private final Map<String, List<PliSyntax.Stmt>> endFileHandlers = new HashMap<>();
+        /** 内部手続きに渡された引数。変数 ({@link Var}) か、式の値。名は大文字。 */
+        private final Map<String, Object> arguments = new HashMap<>();
+
+        /** on-unit を探す鎖 (呼んだ側)。名を探す鎖 ({@link #parent}、宣言した場所) とは別である。 */
+        private final Env caller;
 
         Env(Env parent, ProgramContext context) {
+            this(parent, parent, context);
+        }
+
+        Env(Env parent, Env caller, ProgramContext context) {
             this.parent = parent;
+            this.caller = caller;
             this.context = context;
         }
 
@@ -1523,6 +3504,14 @@ public final class PliRuntime {
         Var require(String name) {
             Var value = find(name);
             if (value == null) throw new PliExecutionException("undeclared PL/I name: " + name);
+            if (value.unsupported != null) {
+                throw new PliExecutionException(value.unsupported + " is not supported yet: "
+                        + value.name);
+            }
+            if (value.unallocated) {
+                throw new PliExecutionException("CONTROLLED variable " + value.name
+                        + " is not allocated");
+            }
             if (value.unboundOn != null) {
                 throw new PliExecutionException("BASED on " + value.unboundOn
                         + ", which is a null pointer: " + name);
@@ -1534,15 +3523,50 @@ public final class PliRuntime {
             endFileHandlers.put(file.toUpperCase(Locale.ROOT), handler);
         }
 
-        List<PliSyntax.Stmt> endFile(String file) {
-            List<PliSyntax.Stmt> own = endFileHandlers.get(file.toUpperCase(Locale.ROOT));
-            return own != null ? own : parent == null ? null : parent.endFile(file);
+        /** 条件の on-unit と、それを確立した環境。SYSTEM なら handler は空で system が真。 */
+        record Handler(List<PliSyntax.Stmt> statements, Env established, boolean system) {
         }
 
-        private Var find(String name) {
+        private final Map<String, Handler> handlers = new HashMap<>();
+
+        void establish(String key, Handler handler) {
+            handlers.put(key, handler);
+        }
+
+        void revert(String key) {
+            handlers.remove(key);
+        }
+
+        /** 呼んだ側へたどって on-unit を探す (動的な有効範囲。LRM "Establishing an ON-unit")。 */
+        Handler handler(String key) {
+            Handler own = handlers.get(key);
+            return own != null ? own : caller == null ? null : caller.handler(key);
+        }
+
+        List<PliSyntax.Stmt> endFile(String file) {
+            List<PliSyntax.Stmt> own = endFileHandlers.get(file.toUpperCase(Locale.ROOT));
+            return own != null ? own : caller == null ? null : caller.endFile(file);
+        }
+
+        Var find(String name) {
             String normalized = name.toUpperCase(Locale.ROOT);
             Var own = variables.get(normalized);
             return own != null ? own : parent == null ? null : parent.find(normalized);
+        }
+    }
+
+    /**
+     * CONTROLLED の変数の世代 (LRM "CONTROLLED storage")。ALLOCATE するたびに宣言の環境で
+     * 宣言し直し、置き換えた束縛をここへ積む。FREE で 1 つ戻す。積んだ数が ALLOCATION である。
+     */
+    private static final class Generations {
+        final List<PliSyntax.Decl> chunk;
+        final Env owner;
+        final java.util.ArrayDeque<Map<String, Var>> saved = new java.util.ArrayDeque<>();
+
+        Generations(List<PliSyntax.Decl> chunk, Env owner) {
+            this.chunk = List.copyOf(chunk);
+            this.owner = owner;
         }
     }
 
@@ -1560,10 +3584,22 @@ public final class PliRuntime {
         String unboundOn;
         /** {@code CHAR(n) VARYING} なら真。記憶域の頭の半語が今の長さ、n は {@link #precision}。 */
         boolean varying;
+        /** {@code FIXED BIN UNSIGNED} なら真。記憶域を符号なしで読む。 */
+        boolean unsigned;
         /** 配列なら次元ごとの上下限、スカラーなら {@code null}。 */
         List<PliSyntax.Bound> dimensions;
         /** 配列の要素。行の順。 */
         final List<Var> elements = new ArrayList<>();
+        /** CONTROLLED なら、その世代の積み重ね。 */
+        Generations generations;
+        /** COMPLEX なら真。記憶域の前半が実部、後半が虚部である。 */
+        boolean complex;
+        /** 数の PICTURE なら、その指定。 */
+        PliPicture picture;
+        /** まだ持たない型の属性で宣言した名なら、その属性。参照すると止まる。 */
+        String unsupported;
+        /** CONTROLLED をまだ ALLOCATE していない印。参照すると止まる。 */
+        boolean unallocated;
 
         Var(String name, PliSyntax.Type type, int precision, int scale, DataView view) {
             this(name, type, precision, scale, view, 0);
@@ -1579,7 +3615,19 @@ public final class PliRuntime {
             this.view = view;
         }
 
+        /** 複素数の変数の実部 (0) か虚部 (1) を、同じ型の実数の変数として見る。 */
+        private Var part(int index) {
+            int half = view.length() / 2;
+            Var part = new Var(name, type, precision, scale, view.subView(index * half, half));
+            part.unsigned = unsigned;
+            return part;
+        }
+
         Object read(ProgramContext context) {
+            if (complex) {
+                return new PliSyntax.Complex(Executor.number(part(0).read(context)),
+                        Executor.number(part(1).read(context)));
+            }
             if (type == PliSyntax.Type.CHAR && varying) {
                 // 頭の半語が今の長さ (LRM Table 39)。宣言の長さを超える値は壊れた記憶域である
                 int length = currentLength();
@@ -1592,10 +3640,11 @@ public final class PliRuntime {
                 // 数の PICTURE は、出力では字をそのまま送り (LRM "For numeric character values, the
                 // character value is transmitted")、演算では FIXED DEC(p,q) として扱う
                 case PICTURE -> new NumericPicture(
-                        context.codePage().decode(view.toByteArray()), precision, scale);
+                        context.codePage().decode(view.toByteArray()), precision, scale, picture);
                 // FIXED BIN(p,q) の記憶域は 2 の補数の整数で、値はそれを 2 の q 乗で割ったもの
                 case BINARY -> FixedValue.binary(new BigDecimal(
-                        new java.math.BigInteger(view.toByteArray()))
+                        unsigned ? new java.math.BigInteger(1, view.toByteArray())
+                                : new java.math.BigInteger(view.toByteArray()))
                         .divide(BigDecimal.valueOf(2).pow(Math.max(0, scale)))
                         .multiply(BigDecimal.valueOf(2).pow(Math.max(0, -scale))),
                         precision, scale);
@@ -1603,8 +3652,104 @@ public final class PliRuntime {
                         NumProcMode.PFD).toBigDecimal(), precision, scale);
                 case POINTER -> new PointerValue(view.length() < 4 ? 0
                         : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt());
-                case FILE, ENTRY -> "";
+                case FLOAT -> hfpDecode();
+                case WIDECHAR -> new String(view.toByteArray(),
+                        java.nio.charset.StandardCharsets.UTF_16BE);
+                case GRAPHIC -> {
+                    // SBCS から直した字 (X'42' + SBCS の字、空白は X'4040') だけを文字に戻せる
+                    byte[] bytes = view.toByteArray();
+                    byte[] single = new byte[bytes.length / 2];
+                    for (int i = 0; i < single.length; i++) {
+                        int high = bytes[2 * i] & 0xFF;
+                        if (high == 0x40 && (bytes[2 * i + 1] & 0xFF) == 0x40) {
+                            single[i] = context.codePage().space();
+                        } else if (high == 0x42) {
+                            single[i] = bytes[2 * i + 1];
+                        } else {
+                            throw new PliExecutionException("GRAPHIC data other than converted"
+                                    + " SBCS characters cannot be read yet: " + name);
+                        }
+                    }
+                    yield context.codePage().decode(single);
+                }
+                case OFFSET -> FixedValue.binary(BigDecimal.valueOf(
+                        java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt()), 31, 0);
+                case AREA -> new AreaImage(view.toByteArray());
+                // 入口の変数。頭の 4 byte が AddressSpace の入口の番号である
+                case ENTRY -> {
+                    int number = view.length() < 4 ? 0
+                            : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt();
+                    String entry = number == 0 ? null
+                            : AddressSpace.of(context).entryNamed(number);
+                    yield entry == null ? "" : new EntryValue(entry);
+                }
+                case FILE -> "";
             };
+        }
+
+        /**
+         * FLOAT の値を 16 進浮動小数 (HFP) で書く。頭の byte は符号と 64 を足した 16 の指数、
+         * 残りは 16 進の小数である。入らない下の桁は切り捨てる。Enterprise PL/I の既定は
+         * DEFAULT(HEXADEC) である。IEEE (DEFAULT(IEEE)) と拡張精度 (16 byte) はまだ持たない。
+         * 実機と突き合わせていない。
+         */
+        private void hfpEncode(BigDecimal value) {
+            if (view.length() != 4 && view.length() != 8) {
+                throw new PliExecutionException("extended FLOAT is not supported yet: " + name);
+            }
+            byte[] bytes = new byte[view.length()];
+            if (value.signum() != 0) {
+                int digits = (view.length() - 1) * 2;
+                BigDecimal a = value.abs();
+                BigDecimal sixteen = BigDecimal.valueOf(16);
+                int exponent = 0;
+                while (a.compareTo(power16(exponent)) >= 0) exponent++;
+                while (a.compareTo(power16(exponent - 1)) < 0) exponent--;
+                java.math.BigInteger fraction = a.multiply(power16(digits - exponent))
+                        .setScale(0, java.math.RoundingMode.DOWN).toBigInteger();
+                if (exponent + 64 < 0 || exponent + 64 > 127) {
+                    throw new Condition(exponent > 0 ? "OVERFLOW" : "UNDERFLOW", null,
+                            exponent > 0 ? 300 : 330, null);
+                }
+                bytes[0] = (byte) ((value.signum() < 0 ? 0x80 : 0) | (exponent + 64));
+                byte[] raw = fraction.toByteArray();
+                for (int i = 0; i < raw.length && i < bytes.length - 1; i++) {
+                    bytes[bytes.length - 1 - i] = raw[raw.length - 1 - i];
+                }
+            }
+            view.setBytes(bytes);
+        }
+
+        private static BigDecimal power16(int exponent) {
+            BigDecimal power = BigDecimal.valueOf(16).pow(Math.abs(exponent));
+            return exponent >= 0 ? power : BigDecimal.ONE.divide(power);
+        }
+
+        private BigDecimal hfpDecode() {
+            if (view.length() != 4 && view.length() != 8) {
+                throw new PliExecutionException("extended FLOAT is not supported yet: " + name);
+            }
+            byte[] bytes = view.toByteArray();
+            java.math.BigInteger fraction = new java.math.BigInteger(1,
+                    java.util.Arrays.copyOfRange(bytes, 1, bytes.length));
+            if (fraction.signum() == 0) {
+                return BigDecimal.ZERO;
+            }
+            int exponent = (bytes[0] & 0x7F) - 64;
+            BigDecimal value = new BigDecimal(fraction)
+                    .multiply(power16(exponent - (bytes.length - 1) * 2));
+            return (bytes[0] & 0x80) != 0 ? value.negate() : value;
+        }
+
+        /** AREA の次の空きの位置 (AREA の頭から)。管理域が 0 なら空である。 */
+        int areaUsed() {
+            int used = java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt();
+            return used == 0 ? AREA_HEADER : used;
+        }
+
+        void areaUse(int used) {
+            byte[] bytes = java.nio.ByteBuffer.allocate(4).putInt(used).array();
+            for (int i = 0; i < 4; i++) view.set(i, bytes[i]);
         }
 
         /** VARYING の今の長さ。 */
@@ -1623,6 +3768,75 @@ public final class PliRuntime {
         }
 
         void write(Object value, ProgramContext context) {
+            if (complex) {
+                // 実数を入れると虚部は 0 になる
+                PliSyntax.Complex z = value instanceof PliSyntax.Complex c ? c
+                        : new PliSyntax.Complex(Executor.number(value), BigDecimal.ZERO);
+                part(0).write(z.real(), context);
+                part(1).write(z.imaginary(), context);
+                return;
+            }
+            if (type == PliSyntax.Type.AREA) {
+                // AREA への代入は、割り当てた部分と管理域を写す (LRM "Area assignment")。
+                // EMPTY() は空にする
+                if (value == EMPTY_AREA) {
+                    view.fill((byte) 0);
+                    return;
+                }
+                if (!(value instanceof AreaImage image)) {
+                    throw new PliExecutionException("only an AREA or EMPTY() can be assigned to"
+                            + " the AREA " + name);
+                }
+                int used = java.nio.ByteBuffer.wrap(image.bytes(), 0, 4).getInt();
+                int extent = used == 0 ? AREA_HEADER : used;
+                if (extent > view.length()) {
+                    throw new Condition("AREA", null, 360, null);
+                }
+                view.fill((byte) 0);
+                for (int i = 0; i < extent; i++) view.set(i, image.bytes()[i]);
+                return;
+            }
+            if (type == PliSyntax.Type.FLOAT) {
+                hfpEncode(Executor.number(value));
+                return;
+            }
+            if (type == PliSyntax.Type.WIDECHAR) {
+                // UTF-16 (big endian) で置き、足りない右を U+0020 で埋める (LRM "WIDECHAR")
+                String text = Executor.display(value);
+                byte[] bytes = new byte[view.length()];
+                for (int i = 0; i < bytes.length / 2; i++) {
+                    char c = i < text.length() ? text.charAt(i) : ' ';
+                    bytes[2 * i] = (byte) (c >> 8);
+                    bytes[2 * i + 1] = (byte) c;
+                }
+                view.setBytes(bytes);
+                return;
+            }
+            if (type == PliSyntax.Type.GRAPHIC) {
+                // SBCS の字は X'42' を前に付けた DBCS の字に、空白は X'4040' に直す
+                // (LRM "Converting to GRAPHIC")。SBCS に無い字 (漢字) はまだ持たない
+                String graphic = Executor.display(value);
+                byte[] single = context.codePage().encode(graphic);
+                if (!context.codePage().decode(single).equals(graphic)) {
+                    throw new PliExecutionException("GRAPHIC data that is not in the SBCS code"
+                            + " page is not supported yet: " + name);
+                }
+                byte[] bytes = new byte[view.length()];
+                for (int i = 0; i < bytes.length / 2; i++) {
+                    byte b = i < single.length ? single[i] : context.codePage().space();
+                    boolean space = b == context.codePage().space();
+                    bytes[2 * i] = (byte) (space ? 0x40 : 0x42);
+                    bytes[2 * i + 1] = space ? (byte) 0x40 : b;
+                }
+                view.setBytes(bytes);
+                return;
+            }
+            if (type == PliSyntax.Type.OFFSET) {
+                byte[] bytes = java.nio.ByteBuffer.allocate(4)
+                        .putInt(Executor.number(value).intValue()).array();
+                for (int i = 0; i < 4; i++) view.set(i, bytes[i]);
+                return;
+            }
             if (type == PliSyntax.Type.CHAR && varying) {
                 // 代入した値の長さが今の長さになる。最大を超えた右は落ちる (STRINGSIZE は既定で
                 // 無効。LRM "Assignment to character strings")
@@ -1635,7 +3849,8 @@ public final class PliRuntime {
             }
             switch (type) {
                 case CHAR -> writeText(Executor.display(value), context);
-                case BIT -> writeBits(Executor.display(value));
+                case BIT -> writeBits(Executor.numeric(value) && !(value instanceof String)
+                        ? arithmeticToBits(value) : Executor.display(value));
                 case PICTURE -> writeText(picture(value), context);
                 case GROUP -> {
                     if (Executor.numeric(value) && Executor.number(value).signum() == 0) {
@@ -1645,8 +3860,18 @@ public final class PliRuntime {
                     }
                 }
                 case BINARY -> writeBinary(Executor.number(value));
-                case DECIMAL -> view.setBytes(PackedDecimal.encode(
-                        Decimal.parse(Executor.number(value).toPlainString()), precision, scale, true));
+                case DECIMAL -> {
+                    BigDecimal number = Executor.number(value);
+                    if (SIZE_ENABLED.get() && number.setScale(Math.max(scale, 0),
+                            java.math.RoundingMode.DOWN).precision() - Math.max(scale, 0)
+                                    > precision - scale && number.abs().compareTo(
+                                    BigDecimal.TEN.pow(precision - scale)) >= 0) {
+                        // 整数部が入りきらない。SIZE を有効にしていれば条件になる
+                        throw new Condition("SIZE", null, 340, null);
+                    }
+                    view.setBytes(PackedDecimal.encode(
+                            Decimal.parse(number.toPlainString()), precision, scale, true));
+                }
                 // POINTER へは POINTER の値 (ADDR や別の POINTER) だけが入る (LRM "Non-computational targets")
                 case POINTER -> {
                     if (!(value instanceof PointerValue pointer)) {
@@ -1655,7 +3880,15 @@ public final class PliRuntime {
                     }
                     view.setBytes(java.nio.ByteBuffer.allocate(4).putInt(pointer.address()).array());
                 }
-                case FILE, ENTRY -> throw new PliExecutionException(
+                case ENTRY -> {
+                    if (!(value instanceof EntryValue entry) || view.length() < 4) {
+                        throw new PliExecutionException("only an entry can be assigned to the"
+                                + " ENTRY variable " + name);
+                    }
+                    view.setBytes(java.nio.ByteBuffer.allocate(view.length())
+                            .putInt(AddressSpace.of(context).entryOf(entry.name())).array());
+                }
+                case FILE -> throw new PliExecutionException(
                         "assignment to " + type + " is not supported: " + name);
             }
         }
@@ -1726,6 +3959,28 @@ public final class PliRuntime {
         }
 
         /**
+         * 算術の値をビット列にする (LRM "Arithmetic to bit-string conversion")。整数部の絶対値を
+         * 2 進にし、長さは FIXED BINARY にしたときの精度である。10 進の p 桁は
+         * {@code ceil(p * 3.32)} ビット (31 まで) になる。{@code B = 5} は FIXED DEC(1) なので
+         * 4 ビットの '0101' であり、BIT(8) へは右を 0 で埋めて '01010000' になる。
+         */
+        private static String arithmeticToBits(Object value) {
+            BigDecimal number = Executor.number(value).abs().setScale(0, java.math.RoundingMode.DOWN);
+            int bits;
+            if (value instanceof FixedValue fixed) {
+                bits = fixed.binary() ? fixed.precision()
+                        : Math.min((int) Math.ceil((fixed.precision() - fixed.scale()) * 3.32), 31);
+            } else {
+                bits = Math.max(1, number.toBigInteger().bitLength());
+            }
+            String text = number.toBigInteger().toString(2);
+            if (text.length() > bits) {
+                text = text.substring(text.length() - bits);
+            }
+            return "0".repeat(bits - text.length()) + text;
+        }
+
+        /**
          * ビット列へ入れる。'0' と '1' 以外の字は CONVERSION であり、短ければ右を 0 で埋め、
          * 長ければ右を落とす。以前は 1 ビットを 1 字として文字のまま置いていた。
          */
@@ -1751,6 +4006,20 @@ public final class PliRuntime {
          * 符号の字を持たない PICTURE に負の値は入らないので、黙って符号を落とさずに止める。
          */
         private String picture(Object value) {
+            if (picture != null) {
+                BigDecimal number = Executor.number(value);
+                if (number.signum() < 0 && !picture.signed()) {
+                    throw new PliExecutionException("a negative value cannot be stored in the"
+                            + " unsigned PICTURE of " + name + " yet: " + number);
+                }
+                PliPicture.Edited edited = picture.isFloat() ? picture.editFloat(number)
+                        : picture.edit(number);
+                if (edited.lost()) {
+                    throw new PliExecutionException("SIZE: " + number + " does not fit the"
+                            + " PICTURE of " + name);
+                }
+                return edited.text();
+            }
             BigDecimal number = Executor.number(value).setScale(scale, java.math.RoundingMode.DOWN);
             if (number.signum() < 0) {
                 throw new PliExecutionException("a negative value cannot be stored in the unsigned"
@@ -1775,6 +4044,39 @@ public final class PliRuntime {
     /**
      * POINTER の値。記憶域の位置に AddressSpace が振った番号で、0 は何も指さない (P-150)。
      */
+    /**
+     * STATIC の記憶域。実行単位 (特殊レジスタの置き場で見分ける。AddressSpace と同じ) ごとに、
+     * 「プログラム名.手続きの道.変数名」から宣言の束縛への表。
+     */
+    private static final Map<Object, Map<String, Map<String, Var>>> STATICS =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /** RELEASE したプログラムの STATIC を捨てる。 */
+    private static void releaseStatics(ProgramContext context, String program) {
+        Map<String, Map<String, Var>> statics = STATICS.get(context.registers());
+        if (statics != null) {
+            String prefix = program.toUpperCase(Locale.ROOT) + ".";
+            statics.keySet().removeIf(key -> key.startsWith(prefix));
+        }
+    }
+
+    /** 入口の値 (内部手続きの名)。 */
+    private record EntryValue(String name) {
+    }
+
+    /** AREA の管理域の大きさ。割り当ては管理域の後ろから始まる。 */
+    static final int AREA_HEADER = 16;
+
+    /** AREA の値 (記憶域の写し)。AREA への代入に使う。 */
+    private record AreaImage(byte[] bytes) {
+    }
+
+    /** EMPTY() の値。 */
+    private static final Object EMPTY_AREA = new Object();
+
+    /** NULL() の値 X'FF000000'。 */
+    private static final int NULL_ADDRESS = 0xFF000000;
+
     private record PointerValue(int address) {
     }
 
@@ -1782,9 +4084,23 @@ public final class PliRuntime {
      * 数の PICTURE の値。字の形を持ち、演算に使うときだけ FIXED DEC(p,q) に直す。出力は字を
      * 送るだけなので、数字でない字が入っていても書ける。
      */
-    private record NumericPicture(String text, int precision, int scale) {
+    private record NumericPicture(String text, int precision, int scale, PliPicture picture) {
         FixedValue fixed() {
-            return FixedValue.decimal(Executor.number(text).movePointLeft(scale), precision, scale);
+            if (picture == null) {
+                return FixedValue.decimal(Executor.number(text).movePointLeft(scale), precision,
+                        scale);
+            }
+            BigDecimal value;
+            try {
+                value = picture.value(text);
+            } catch (UnsupportedOperationException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            if (value == null) {
+                // 像が PICTURE に合わない。実機では CONVERSION になる
+                throw new Condition("CONVERSION", null, 600, text);
+            }
+            return FixedValue.decimal(value, precision, scale);
         }
     }
 
@@ -1793,6 +4109,26 @@ public final class PliRuntime {
 
         private ReturnSignal() {
             super(null, null, false, false);
+        }
+    }
+
+    private static final class StopSignal extends RuntimeException {
+        static final StopSignal INSTANCE = new StopSignal();
+
+        private StopSignal() {
+            super(null, null, false, false);
+        }
+    }
+
+    /** LEAVE (出る) と ITERATE (次の繰り返しへ)。 */
+    private static final class LoopSignal extends RuntimeException {
+        final boolean leave;
+        final String label;
+
+        LoopSignal(boolean leave, String label) {
+            super(null, null, false, false);
+            this.leave = leave;
+            this.label = label;
         }
     }
 

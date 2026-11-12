@@ -42,6 +42,60 @@ public final class Cpu {
 
     private final AddressSpace memory;
     private final int[] gpr = new int[REGISTERS];
+    /**
+     * 汎用レジスタの上位 32 ビット。
+     *
+     * <p>z/Architecture のレジスタは 64 ビットである。32 ビットの命令は下位だけを読み書きし、
+     * 上位には触らない。だから下位を今までどおり {@link #gpr} に置き、上位を別に持つ。
+     * こうしておけば、Hercules で裏づけた 32 ビットの命令の実装に手を入れずに済む。
+     */
+    private final int[] high = new int[REGISTERS];
+    /**
+     * 番地の幅。SAM24 で 24 ビット、SAM31 で 31 ビットになる。実効番地と分岐先をこれで切る。
+     * 24 ビットのときの BAL / BALR の連絡情報 (上位バイトに命令長・条件コード・マスクを置く) は
+     * 持たない。番地だけを置く。実機と突き合わせていない。
+     */
+    private int addressMask = 0x7FFFFFFF;
+    /** 浮動小数点のレジスターと FPC。 */
+    private final FloatingUnit floating = new FloatingUnit(this);
+
+    /** この CPU から外へ出る口 (外の記号への呼び出しと SVC)。無ければ {@code null}。 */
+    private Services services;
+
+    /**
+     * 機械の外にあるもの。機械語だけでは片づかない 2 つである。
+     */
+    public interface Services {
+
+        /** 外の記号の入口へ分岐した。名前のプログラムを呼び、戻りコードを R15 に置く。 */
+        void call(String name, Cpu cpu);
+
+        /** SVC 命令。 */
+        void supervisorCall(int number, Cpu cpu);
+    }
+
+    public void setServices(Services value) {
+        services = value;
+    }
+
+    /** 64 ビットのレジスタの値。 */
+    public long register64(int index) {
+        return (long) high[index] << 32 | (gpr[index] & 0xFFFFFFFFL);
+    }
+
+    public void setRegister64(int index, long value) {
+        high[index] = (int) (value >>> 32);
+        gpr[index] = (int) value;
+    }
+
+    public void setConditionCode(int value) {
+        conditionCode = value & 3;
+    }
+
+    /** 次に実行する命令の番地を変える。サービスが出口 (EODAD など) へ飛ばすのに使う。 */
+    public void branchTo(int address) {
+        instructionAddress = address & 0x7FFFFFFF;
+    }
     private final long stepLimit;
     private int conditionCode;
     /**
@@ -104,6 +158,14 @@ public final class Cpu {
                 throw new RunawayProgramException(stepLimit);
             }
             int at = instructionAddress;
+            String external = services == null ? null : memory.externalAt(at);
+            if (external != null) {
+                // 外の記号の入口。機械語は無い。名前で呼び、R14 へ戻る
+                int back = gpr[14] & 0x7FFFFFFF;
+                services.call(external, this);
+                instructionAddress = back;
+                continue;
+            }
             try {
                 step();
             } catch (MachineException failure) {
@@ -147,7 +209,7 @@ public final class Cpu {
                 int target = gpr[r2];
                 gpr[r1] = instructionAddress;
                 if (r2 != 0) {
-                    instructionAddress = target & 0x7FFFFFFF;
+                    instructionAddress = target & addressMask;
                 }
             }
             case 0x0D -> { // BASR
@@ -156,7 +218,7 @@ public final class Cpu {
                 int target = gpr[r2];
                 gpr[r1] = instructionAddress;
                 if (r2 != 0) {
-                    instructionAddress = target & 0x7FFFFFFF;
+                    instructionAddress = target & addressMask;
                 }
             }
             case 0x06 -> { // BCTR
@@ -164,14 +226,14 @@ public final class Cpu {
                 int r2 = r2(insn);
                 gpr[r1] = gpr[r1] - 1;
                 if (gpr[r1] != 0 && r2 != 0) {
-                    instructionAddress = gpr[r2] & 0x7FFFFFFF;
+                    instructionAddress = gpr[r2] & addressMask;
                 }
             }
             case 0x07 -> { // BCR
                 int mask = r1(insn);
                 int r2 = r2(insn);
                 if (r2 != 0 && selected(mask)) {
-                    instructionAddress = gpr[r2] & 0x7FFFFFFF;
+                    instructionAddress = gpr[r2] & addressMask;
                 }
             }
             case 0x10 -> { // LPR
@@ -212,9 +274,69 @@ public final class Cpu {
             case 0x1F -> subtractLogical(r1(insn), gpr[r2(insn)]); // SLR
 
             // --- I 形式 ---
-            case 0x0A -> throw new MachineException(MachineException.OPERATION,
-                    "SVC " + (insn[1] & 0xFF) + " is not supported yet;"
-                            + " operating system services come in a later increment");
+            case 0x0A -> {
+                if (services == null) {
+                    throw new MachineException(MachineException.OPERATION,
+                            "SVC " + (insn[1] & 0xFF) + " is not supported yet:"
+                                    + " this CPU runs without an operating system service");
+                }
+                services.supervisorCall(insn[1] & 0xFF, this);
+            }
+            case 0xB9 -> registerRegister64(insn);
+            // --- 浮動小数点 ---
+            case 0x28, 0x38, 0x29, 0x2A, 0x2B, 0x2C, 0x2D -> floating.registerRegister(insn);
+            case 0x68, 0x78, 0x60, 0x70, 0x69, 0x6A, 0x6B, 0x6C, 0x6D ->
+                    floating.registerStorage(insn, effective(insn));
+            case 0xB3 -> floating.extended(insn);
+            case 0x01 -> {
+                switch (insn[1] & 0xFF) {
+                    case 0x0A -> floating.performOperation(); // PFPO
+                    case 0x0C -> addressMask = 0x00FFFFFF; // SAM24
+                    case 0x0D -> addressMask = 0x7FFFFFFF; // SAM31
+                    // SAM64 は断る。番地空間が 31 ビットまでしか無い
+                    default -> throw new MachineException(MachineException.OPERATION,
+                            String.format("operation code 01%02X is not implemented",
+                                    insn[1] & 0xFF));
+                }
+            }
+            case 0xA7 -> registerImmediate(insn);
+            case 0xC0 -> registerImmediateLong(insn);
+            case 0xE3 -> registerStorage64(insn);
+            case 0xEB -> registerStorageExtended(insn);
+            case 0xEC -> rotateThenInsert(insn);
+            case 0xBF -> insertUnderMask(r1(insn), r3(insn), effectiveSi(insn), false); // ICM
+            case 0xBE -> { // STCM
+                int address = effectiveSi(insn);
+                int mask = r3(insn);
+                for (int bit = 0; bit < 4; bit++) {
+                    if ((mask & (8 >> bit)) != 0) {
+                        memory.set(address++, (byte) (gpr[r1(insn)] >>> (24 - 8 * bit)));
+                    }
+                }
+            }
+            case 0xBD -> { // CLM
+                int address = effectiveSi(insn);
+                int mask = r3(insn);
+                int result = 0;
+                for (int bit = 0; bit < 4 && result == 0; bit++) {
+                    if ((mask & (8 >> bit)) != 0) {
+                        result = compareUnsigned((gpr[r1(insn)] >>> (24 - 8 * bit)) & 0xFF,
+                                memory.get(address++) & 0xFF);
+                    }
+                }
+                conditionCode = result;
+            }
+            case 0xBA -> { // CS
+                int address = effectiveSi(insn);
+                int current = memory.getInt(address);
+                if (current == gpr[r1(insn)]) {
+                    memory.putInt(address, gpr[r3(insn)]);
+                    conditionCode = 0;
+                } else {
+                    gpr[r1(insn)] = current;
+                    conditionCode = 1;
+                }
+            }
 
             // --- RX 形式 ---
             case 0x41 -> gpr[r1(insn)] = effective(insn); // LA
@@ -326,7 +448,10 @@ public final class Cpu {
                 conditionCode = (value >>> 28) & 0x3;
                 programMask = (value >>> 24) & 0xF;
             }
-            case 0xB2 -> { // 2 バイトの命令コードの族。持つのは IPM だけである
+            case 0xB2 -> { // 2 バイトの命令コードの族
+                if (floating.control(insn, effectiveSi(insn))) {
+                    return;
+                }
                 if ((insn[1] & 0xFF) != 0x22) {
                     throw new MachineException(MachineException.OPERATION, String.format(
                             "operation code B2%02X is not implemented", insn[1] & 0xFF));
@@ -340,6 +465,368 @@ public final class Cpu {
             default -> throw new MachineException(MachineException.OPERATION,
                     String.format("operation code %02X is not implemented", opcode));
         }
+    }
+
+    // --- 64 ビットの命令 ---
+    //
+    // 意味は z/Architecture Principles of Operation (SA22-7832) の各命令の記述に従う。
+    // 命令の並びは Zeus (同じ権利者の処理系) の hlasm/execute.rs を見て決めた。
+    // <b>Hercules とは突き合わせていない</b> (32 ビットの命令は突き合わせてある)。
+
+    private static int compare64(long left, long right) {
+        return left == right ? 0 : left < right ? 1 : 2;
+    }
+
+    private static int compareUnsigned64(long left, long right) {
+        int c = Long.compareUnsigned(left, right);
+        return c == 0 ? 0 : c < 0 ? 1 : 2;
+    }
+
+    /** 64 ビットの符号つき加算。あふれたら条件コード 3。 */
+    private void add64(int r1, long left, long right) {
+        long result = left + right;
+        setRegister64(r1, result);
+        boolean overflow = ((left ^ result) & (right ^ result)) < 0;
+        conditionCode = overflow ? 3 : compare64(result, 0);
+        fixedOverflow();
+    }
+
+    private void subtract64(int r1, long left, long right) {
+        long result = left - right;
+        setRegister64(r1, result);
+        boolean overflow = ((left ^ right) & (left ^ result)) < 0;
+        conditionCode = overflow ? 3 : compare64(result, 0);
+        fixedOverflow();
+    }
+
+    /** 64 ビットの論理加算。条件コードは「結果が 0 か」と「繰り上がったか」で決まる。 */
+    private void addLogical64(int r1, long left, long right, int carryIn) {
+        long partial = left + right;
+        boolean carry = Long.compareUnsigned(partial, left) < 0;
+        long result = partial + carryIn;
+        carry |= carryIn != 0 && result == 0;
+        setRegister64(r1, result);
+        conditionCode = result == 0 ? (carry ? 2 : 0) : (carry ? 3 : 1);
+    }
+
+    private void logical64(int r1, long result) {
+        setRegister64(r1, result);
+        conditionCode = result == 0 ? 0 : 1;
+    }
+
+    /** B9xx。演算項は 2 つのレジスタ (3 つ目を持つものは 3 バイト目の上位)。 */
+    private void registerRegister64(byte[] insn) {
+        int r1 = (insn[3] >> 4) & 0x0F;
+        int r2 = insn[3] & 0x0F;
+        int r3 = (insn[2] >> 4) & 0x0F;
+        long a = register64(r1);
+        long b = register64(r2);
+        switch (insn[1] & 0xFF) {
+            case 0x04 -> setRegister64(r1, b); // LGR
+            case 0x02 -> { // LTGR
+                setRegister64(r1, b);
+                conditionCode = compare64(b, 0);
+            }
+            case 0x03 -> { // LCGR
+                setRegister64(r1, -b);
+                conditionCode = b == Long.MIN_VALUE ? 3 : compare64(-b, 0);
+                fixedOverflow();
+            }
+            case 0x00 -> { // LPGR
+                setRegister64(r1, Math.abs(b));
+                conditionCode = b == Long.MIN_VALUE ? 3 : b == 0 ? 0 : 2;
+                fixedOverflow();
+            }
+            case 0x01 -> { // LNGR
+                setRegister64(r1, -Math.abs(b));
+                conditionCode = b == 0 ? 0 : 1;
+            }
+            case 0x08 -> add64(r1, a, b); // AGR
+            case 0x09 -> subtract64(r1, a, b); // SGR
+            case 0x0A -> addLogical64(r1, a, b, 0); // ALGR
+            case 0x0B -> addLogical64(r1, a, ~b, 1); // SLGR
+            case 0x0C -> setRegister64(r1, a * b); // MSGR
+            case 0x0F -> setRegister64(r1, Long.reverseBytes(b)); // LRVGR
+            case 0x14 -> setRegister64(r1, (int) b); // LGFR
+            case 0x16 -> setRegister64(r1, b & 0xFFFFFFFFL); // LLGFR
+            case 0x18 -> add64(r1, a, (int) b); // AGFR
+            case 0x19 -> subtract64(r1, a, (int) b); // SGFR
+            case 0x20 -> conditionCode = compare64(a, b); // CGR
+            case 0x21 -> conditionCode = compareUnsigned64(a, b); // CLGR
+            case 0x80 -> logical64(r1, a & b); // NGR
+            case 0x81 -> logical64(r1, a | b); // OGR
+            case 0x82 -> logical64(r1, a ^ b); // XGR
+            case 0x83 -> { // FLOGR
+                requireEven(r1, "FLOGR");
+                if (b == 0) {
+                    setRegister64(r1, 64);
+                    setRegister64(r1 + 1, 0);
+                    conditionCode = 0;
+                } else {
+                    int zeros = Long.numberOfLeadingZeros(b);
+                    setRegister64(r1, zeros);
+                    setRegister64(r1 + 1, b & ~(0x8000000000000000L >>> zeros));
+                    conditionCode = 2;
+                }
+            }
+            // 繰り上がりは前の命令の条件コード (2 か 3) に入っている
+            case 0x88 -> addLogical64(r1, a, b, conditionCode >= 2 ? 1 : 0); // ALCGR
+            case 0x89 -> addLogical64(r1, a, ~b, conditionCode >= 2 ? 1 : 0); // SLBGR
+            case 0xE1 -> { // POPCNT: バイトごとに 1 の数を数え、そのバイトに置く
+                if ((insn[2] & 0x80) != 0) {
+                    // M3 の 8 のビットが立っていれば、64 ビット全体の 1 の数である
+                    logical64(r1, Long.bitCount(b));
+                    return;
+                }
+                long result = 0;
+                for (int k = 0; k < 8; k++) {
+                    result |= (long) Long.bitCount(b >>> (8 * k) & 0xFF) << (8 * k);
+                }
+                logical64(r1, result);
+            }
+            case 0xE8 -> add64(r1, b, register64(r3)); // AGRK
+            case 0xE9 -> subtract64(r1, b, register64(r3)); // SGRK
+            case 0xE4 -> logical64(r1, b & register64(r3)); // NGRK
+            case 0xE6 -> logical64(r1, b | register64(r3)); // OGRK
+            case 0xE7 -> logical64(r1, b ^ register64(r3)); // XGRK
+            default -> throw new MachineException(MachineException.OPERATION, String.format(
+                    "operation code B9%02X is not implemented", insn[1] & 0xFF));
+        }
+    }
+
+    /** A7x?。16 ビットの符号つき即値。 */
+    private void registerImmediate(byte[] insn) {
+        int r1 = r1(insn);
+        int immediate = (short) ((insn[2] & 0xFF) << 8 | (insn[3] & 0xFF));
+        switch (insn[1] & 0x0F) {
+            case 0x8 -> gpr[r1] = immediate; // LHI
+            case 0x9 -> setRegister64(r1, immediate); // LGHI
+            case 0xA -> add(r1, immediate); // AHI
+            case 0xB -> add64(r1, register64(r1), immediate); // AGHI
+            case 0xE -> conditionCode = compare(gpr[r1], immediate); // CHI
+            case 0xF -> conditionCode = compare64(register64(r1), immediate); // CGHI
+            default -> throw new MachineException(MachineException.OPERATION, String.format(
+                    "operation code A7x%X is not implemented", insn[1] & 0x0F));
+        }
+    }
+
+    /** C0x?。32 ビットの即値。 */
+    private void registerImmediateLong(byte[] insn) {
+        int r1 = r1(insn);
+        int immediate = (insn[2] & 0xFF) << 24 | (insn[3] & 0xFF) << 16
+                | (insn[4] & 0xFF) << 8 | (insn[5] & 0xFF);
+        switch (insn[1] & 0x0F) {
+            case 0x8 -> high[r1] = immediate; // IIHF
+            case 0x9 -> gpr[r1] = immediate; // IILF
+            case 0x1 -> setRegister64(r1, immediate); // LGFI
+            default -> throw new MachineException(MachineException.OPERATION, String.format(
+                    "operation code C0x%X is not implemented", insn[1] & 0x0F));
+        }
+    }
+
+    /** 20 ビットの符号つき変位。下位 12 ビットは 3〜4 バイト目、上位 8 ビットは 5 バイト目。 */
+    private static int longDisplacement(byte[] insn) {
+        return insn[4] << 12 | (insn[2] & 0x0F) << 8 | (insn[3] & 0xFF);
+    }
+
+    private int effectiveLong(byte[] insn, boolean indexed) {
+        int base = (insn[2] >> 4) & 0x0F;
+        int address = longDisplacement(insn);
+        if (base != 0) {
+            address += gpr[base];
+        }
+        int index = insn[1] & 0x0F;
+        if (indexed && index != 0) {
+            address += gpr[index];
+        }
+        return address & addressMask;
+    }
+
+    /** E3xx。レジスタと記憶域。 */
+    private void registerStorage64(byte[] insn) {
+        int r1 = r1(insn);
+        int address = effectiveLong(insn, true);
+        long a = register64(r1);
+        switch (insn[5] & 0xFF) {
+            case 0x04 -> setRegister64(r1, memory.getLong(address)); // LG
+            case 0x08 -> add64(r1, a, memory.getLong(address)); // AG
+            case 0x09 -> subtract64(r1, a, memory.getLong(address)); // SG
+            case 0x0F -> setRegister64(r1, Long.reverseBytes(memory.getLong(address))); // LRVG
+            case 0x14 -> setRegister64(r1, memory.getInt(address)); // LGF
+            case 0x15 -> setRegister64(r1, memory.getShort(address)); // LGH
+            case 0x16 -> setRegister64(r1, memory.getInt(address) & 0xFFFFFFFFL); // LLGF
+            case 0x20 -> conditionCode = compare64(a, memory.getLong(address)); // CG
+            case 0x21 -> conditionCode = compareUnsigned64(a, memory.getLong(address)); // CLG
+            case 0x24 -> memory.putLong(address, a); // STG
+            case 0x2F -> memory.putLong(address, Long.reverseBytes(a)); // STRVG
+            case 0x50 -> memory.putInt(address, gpr[r1]); // STY
+            case 0x58 -> gpr[r1] = memory.getInt(address); // LY
+            case 0x80 -> logical64(r1, a & memory.getLong(address)); // NG
+            case 0x81 -> logical64(r1, a | memory.getLong(address)); // OG
+            case 0x82 -> logical64(r1, a ^ memory.getLong(address)); // XG
+            case 0x90 -> setRegister64(r1, memory.get(address) & 0xFFL); // LLGC
+            case 0x91 -> setRegister64(r1, memory.getShort(address) & 0xFFFFL); // LLGH
+            default -> throw new MachineException(MachineException.OPERATION, String.format(
+                    "operation code E3%02X is not implemented", insn[5] & 0xFF));
+        }
+    }
+
+    /** EBxx。レジスタ 2 つ (またはレジスタとマスク) と記憶域。 */
+    private void registerStorageExtended(byte[] insn) {
+        int r1 = r1(insn);
+        int r3 = r3(insn);
+        int address = effectiveLong(insn, false);
+        int amount = address & 0x3F;
+        long source = register64(r3);
+        switch (insn[5] & 0xFF) {
+            case 0x04 -> { // LMG
+                for (int r = r1; ; r = (r + 1) % REGISTERS) {
+                    setRegister64(r, memory.getLong(address));
+                    address += 8;
+                    if (r == r3) {
+                        break;
+                    }
+                }
+            }
+            case 0x24 -> { // STMG
+                for (int r = r1; ; r = (r + 1) % REGISTERS) {
+                    memory.putLong(address, register64(r));
+                    address += 8;
+                    if (r == r3) {
+                        break;
+                    }
+                }
+            }
+            case 0x0C -> setRegister64(r1, source >>> amount); // SRLG
+            case 0x0D -> setRegister64(r1, source << amount); // SLLG
+            case 0x1C -> setRegister64(r1, Long.rotateLeft(source, amount)); // RLLG
+            case 0x0A -> { // SRAG
+                long result = source >> amount;
+                setRegister64(r1, result);
+                conditionCode = compare64(result, 0);
+            }
+            case 0x0B -> { // SLAG: 符号は保ち、押し出したビットが符号と違えばあふれである
+                long sign = source & 0x8000000000000000L;
+                long magnitude = source & 0x7FFFFFFFFFFFFFFFL;
+                boolean overflow = false;
+                for (int k = 0; k < amount; k++) {
+                    magnitude <<= 1;
+                    if ((magnitude & 0x8000000000000000L) != sign) {
+                        overflow = true;
+                    }
+                    magnitude &= 0x7FFFFFFFFFFFFFFFL;
+                }
+                long result = sign | magnitude;
+                setRegister64(r1, result);
+                conditionCode = overflow ? 3 : compare64(result, 0);
+                fixedOverflow();
+            }
+            case 0x30 -> { // CSG
+                long current = memory.getLong(address);
+                if (current == register64(r1)) {
+                    memory.putLong(address, source);
+                    conditionCode = 0;
+                } else {
+                    setRegister64(r1, current);
+                    conditionCode = 1;
+                }
+            }
+            case 0x80 -> insertUnderMask(r1, r3, address, true); // ICMH
+            case 0xE8 -> { // LAAG: 記憶域の値を R1 に取り、R3 を足して記憶域へ戻す
+                long current = memory.getLong(address);
+                long result = current + source;
+                memory.putLong(address, result);
+                setRegister64(r1, current);
+                boolean overflow = ((current ^ result) & (source ^ result)) < 0;
+                conditionCode = overflow ? 3 : compare64(result, 0);
+            }
+            case 0xC0 -> testDecimal(insn); // TP
+            default -> throw new MachineException(MachineException.OPERATION, String.format(
+                    "operation code EB%02X is not implemented", insn[5] & 0xFF));
+        }
+    }
+
+    /**
+     * ICM / ICMH。マスクの立っている桁へ、記憶域から順にバイトを入れる。
+     *
+     * <p>条件コードは、入れたビットがすべて 0 (またはマスクが 0) なら 0、いちばん左のビットが
+     * 1 なら 1、そうでなければ 2 である。
+     */
+    private void insertUnderMask(int r1, int mask, int address, boolean upper) {
+        int value = upper ? high[r1] : gpr[r1];
+        boolean any = false;
+        boolean first = true;
+        boolean leftmost = false;
+        for (int bit = 0; bit < 4; bit++) {
+            if ((mask & (8 >> bit)) == 0) {
+                continue;
+            }
+            int inserted = memory.get(address++) & 0xFF;
+            int shift = 24 - 8 * bit;
+            value = (value & ~(0xFF << shift)) | (inserted << shift);
+            if (first) {
+                leftmost = (inserted & 0x80) != 0;
+                first = false;
+            }
+            any |= inserted != 0;
+        }
+        if (upper) {
+            high[r1] = value;
+        } else {
+            gpr[r1] = value;
+        }
+        conditionCode = !any ? 0 : leftmost ? 1 : 2;
+    }
+
+    /**
+     * RISBG。R2 を左へ回し、選んだビットの範囲を R1 へ入れる。
+     *
+     * <p>範囲は I3 (始まり) から I4 (終わり) までで、始まりのほうが大きければ端を回り込む。
+     * I4 の最上位ビットが立っていれば、範囲の外を 0 にする。そうでなければ R1 の元の値を残す。
+     */
+    private void rotateThenInsert(byte[] insn) {
+        if ((insn[5] & 0xFF) != 0x55) {
+            throw new MachineException(MachineException.OPERATION, String.format(
+                    "operation code EC%02X is not implemented", insn[5] & 0xFF));
+        }
+        int r1 = r1(insn);
+        int r2 = r2(insn);
+        int start = insn[2] & 0x3F;
+        int end = insn[3] & 0x3F;
+        boolean zero = (insn[3] & 0x80) != 0;
+        long rotated = Long.rotateLeft(register64(r2), insn[4] & 0x3F);
+        long mask;
+        if (start <= end) {
+            mask = (-1L >>> start) & (-1L << (63 - end));
+        } else {
+            mask = (-1L >>> start) | (-1L << (63 - end));
+        }
+        long result = (rotated & mask) | (zero ? 0 : register64(r1) & ~mask);
+        setRegister64(r1, result);
+        conditionCode = compare64(result, 0);
+    }
+
+    /**
+     * TP。詰め 10 進として正しいかを調べる。条件コードは、正しければ 0、符号が違えば 1、
+     * 数字が違えば 2、両方違えば 3 である。
+     */
+    private void testDecimal(byte[] insn) {
+        int length = ((insn[1] >> 4) & 0x0F) + 1;
+        int base = (insn[2] >> 4) & 0x0F;
+        int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
+        int address = (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
+        byte[] field = memory.read(address, length);
+        boolean badDigit = false;
+        for (int k = 0; k < length; k++) {
+            if (((field[k] >> 4) & 0x0F) > 9) {
+                badDigit = true;
+            }
+            if (k < length - 1 && (field[k] & 0x0F) > 9) {
+                badDigit = true;
+            }
+        }
+        boolean badSign = (field[length - 1] & 0x0F) < 0x0A;
+        conditionCode = (badDigit ? 2 : 0) | (badSign ? 1 : 0);
     }
 
     // --- 命令語の欄 ---
@@ -368,28 +855,28 @@ public final class Cpu {
         if (index != 0) {
             address += gpr[index];
         }
-        return address & 0x7FFFFFFF;
+        return address & addressMask;
     }
 
     /** RS / SI 形式の実効番地 (指標を持たない)。 */
     private int effectiveSi(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** SS 形式の第 1 演算項の番地。 */
     private int ssFirst(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** SS 形式の第 2 演算項の番地。 */
     private int ssSecond(byte[] insn) {
         int base = (insn[4] >> 4) & 0x0F;
         int displacement = ((insn[4] & 0x0F) << 8) | (insn[5] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & 0x7FFFFFFF;
+        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
     }
 
     /** シフト量は実効番地の下位 6 ビットである。 */

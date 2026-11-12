@@ -54,8 +54,18 @@ public final class DataItem {
         this.origin = origin;
     }
 
-    /** 条件名 (88 レベル)。記憶域を占めず、直前の項目に付く。 */
-    public record ConditionName(String name, List<ValueRange> values, Origin origin) {
+    /**
+     * 条件名 (88 レベル)。記憶域を占めず、直前の項目に付く。
+     *
+     * @param whenFalse {@code WHEN SET TO FALSE} の値。{@code SET 条件名 TO FALSE} が親の項目に
+     *                  入れる。書かれていなければ {@code null}
+     */
+    public record ConditionName(String name, List<ValueRange> values, LiteralValue whenFalse,
+                                Origin origin) {
+
+        public ConditionName(String name, List<ValueRange> values, Origin origin) {
+            this(name, values, null, origin);
+        }
     }
 
     /** 条件名の値。{@code THRU} で範囲を書ける。範囲でなければ {@code to} は {@code null}。 */
@@ -185,6 +195,25 @@ public final class DataItem {
         this.pointer = true;
     }
 
+    /**
+     * {@code USAGE PROCEDURE-POINTER} / {@code FUNCTION-POINTER} と書かれたときの大きさ (byte)。
+     * そうでなければ 0。データを指す POINTER と違い、入れるのは<b>プログラムの入口</b>である。
+     */
+    private int entryPointerBytes;
+
+    public boolean isEntryPointer() {
+        return entryPointerBytes > 0;
+    }
+
+    public int entryPointerBytes() {
+        return entryPointerBytes;
+    }
+
+    void markEntryPointer(int bytes) {
+        this.pointer = true;
+        this.entryPointerBytes = bytes;
+    }
+
     public boolean isIndex() {
         return index;
     }
@@ -310,6 +339,28 @@ public final class DataItem {
     private boolean alias;
 
     /** 下位の項目を持たない項目かどうか。 */
+    private boolean groupNational;
+    private boolean display1;
+
+    /** {@code USAGE DISPLAY-1} を書いた。DBCS の項目である。 */
+    void markDisplay1() {
+        display1 = true;
+    }
+
+    public boolean isDisplay1() {
+        return display1;
+    }
+
+    /** {@code GROUP-USAGE NATIONAL} を書いた。 */
+    void markGroupNational() {
+        groupNational = true;
+    }
+
+    /** {@code GROUP-USAGE NATIONAL} の群か。その群は国字の群として扱う。 */
+    public boolean isGroupNational() {
+        return groupNational && !children().isEmpty();
+    }
+
     public boolean isElementary() {
         return children.isEmpty();
     }

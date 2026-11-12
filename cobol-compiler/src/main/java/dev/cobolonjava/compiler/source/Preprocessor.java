@@ -83,7 +83,7 @@ public final class Preprocessor {
         }
         NormalizedSource normalized = effective.normalize(fileName, scan.source());
         NormalizedSource expanded = new CopyExpander(resolver, effective).expand(normalized);
-        NormalizedSource replaced = ReplaceProcessor.apply(expanded);
+        NormalizedSource replaced = ListingDirectives.strip(ReplaceProcessor.apply(expanded));
         return DirectiveProcessor.apply(replaced, parameters);
     }
 

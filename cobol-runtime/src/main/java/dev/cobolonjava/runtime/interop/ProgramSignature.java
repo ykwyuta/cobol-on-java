@@ -71,8 +71,9 @@ public record ProgramSignature(
         for (int i = 0; i < arguments.length; i++) {
             DataView argument = arguments[i];
             if (argument == null) {
-                throw mismatch("argument " + (i + 1) + " (" + parameters.get(i).name()
-                        + ") is null; OMITTED is not supported by this ABI yet");
+                // CALL ... USING OMITTED。受ける側では、その項目の番地が NULL になる。
+                // 中身を読めば S0C4 で終わるのはホストと同じである
+                continue;
             }
             ProgramParameter parameter = parameters.get(i);
             int length = argument.length();

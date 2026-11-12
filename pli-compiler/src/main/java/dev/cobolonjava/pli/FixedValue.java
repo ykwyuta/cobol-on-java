@@ -84,18 +84,23 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
     }
 
     FixedValue add(FixedValue other, Arithmetic arithmetic) {
-        return additive(other, value.add(other.value), arithmetic);
+        return additive(other, false, arithmetic);
     }
 
     FixedValue subtract(FixedValue other, Arithmetic arithmetic) {
-        return additive(other, value.subtract(other.value), arithmetic);
+        return additive(other, true, arithmetic);
     }
 
-    /** 加減算: p = 1 + MAX(p1-q1, p2-q2) + q、q = MAX(q1, q2)。 */
-    private FixedValue additive(FixedValue other, BigDecimal result, Arithmetic arithmetic) {
+    /**
+     * 加減算: p = 1 + MAX(p1-q1, p2-q2) + q、q = MAX(q1, q2)。値は共通の基数に直した
+     * 被演算子で計算する。以前は直す前の値で計算しており、2 進へ直したときに切れる
+     * 小数部が結果に残っていた。
+     */
+    private FixedValue additive(FixedValue other, boolean subtract, Arithmetic arithmetic) {
         FixedValue[] pair = common(this, other, arithmetic);
         FixedValue a = pair[0];
         FixedValue b = pair[1];
+        BigDecimal result = subtract ? a.value.subtract(b.value) : a.value.add(b.value);
         int q = Math.max(a.scale, b.scale);
         int p = 1 + Math.max(a.precision - a.scale, b.precision - b.scale) + q;
         return a.result(result, p, q, b, arithmetic);
@@ -106,7 +111,7 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
         FixedValue[] pair = common(this, other, arithmetic);
         FixedValue a = pair[0];
         FixedValue b = pair[1];
-        return a.result(value.multiply(other.value), 1 + a.precision + b.precision,
+        return a.result(a.value.multiply(b.value), 1 + a.precision + b.precision,
                 a.scale + b.scale, b, arithmetic);
     }
 
@@ -120,7 +125,7 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
      */
     FixedValue divide(FixedValue other, Arithmetic arithmetic) {
         if (other.value.signum() == 0) {
-            throw new PliRuntime.PliExecutionException("ZERODIVIDE");
+            throw new PliRuntime.Condition("ZERODIVIDE", null, 320, null);
         }
         FixedValue[] pair = common(this, other, arithmetic);
         FixedValue a = pair[0];
@@ -130,8 +135,8 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
         int q = a.binary && arithmetic.options().ans() ? 0 : limit - a.precision + a.scale - b.scale;
         int decimalScale = a.binary ? (q == 0 ? 0 : Integer.MIN_VALUE) : q;
         BigDecimal quotient = decimalScale == Integer.MIN_VALUE
-                ? value.divide(other.value, java.math.MathContext.DECIMAL128)
-                : value.divide(other.value, decimalScale, RoundingMode.DOWN);
+                ? a.value.divide(b.value, java.math.MathContext.DECIMAL128)
+                : a.value.divide(b.value, decimalScale, RoundingMode.DOWN);
         return new FixedValue(quotient, a.binary, limit, q);
     }
 
@@ -164,8 +169,16 @@ record FixedValue(BigDecimal value, boolean binary, int precision, int scale) {
         if (binary) {
             return this;
         }
-        return new FixedValue(value, true, 1 + ceilTimes332(precision),
-                Integer.signum(scale) * ceilTimes332(Math.abs(scale)));
+        int q = Integer.signum(scale) * ceilTimes332(Math.abs(scale));
+        // 2 進へ直すと、小数部は q ビットで切れる (LRM "Converting decimal to binary"。
+        // 123.45 を 7 ビットにすると 123.4453125)。以前は値を切らずに持っていた
+        BigDecimal converted = value;
+        if (q > 0) {
+            BigDecimal unit = BigDecimal.valueOf(2).pow(q);
+            converted = new BigDecimal(value.multiply(unit).setScale(0, RoundingMode.DOWN)
+                    .toBigInteger()).divide(unit);
+        }
+        return new FixedValue(converted, true, 1 + ceilTimes332(precision), q);
     }
 
     private FixedValue toDecimal() {

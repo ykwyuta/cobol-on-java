@@ -56,6 +56,63 @@ public final class SequentialDataSet implements DataSet {
      * 実際に読めているからである。ホストも同じで、装置の誤りは読んだ時点で立つ。
      */
     private int damagedAt = -1;
+
+    /** 磁気テープか。巻の境目を持つ。 */
+    private boolean tape;
+    /** 2 本目からの各巻が始まるレコードの番号。書いたときに作り、開くときに読む。 */
+    private List<Integer> volumeStarts = new ArrayList<>();
+    /** 読んでいる巻 (0 から)。 */
+    private int volume;
+
+    @Override
+    public void tape(boolean value) {
+        tape = value;
+    }
+
+    /** 巻の境目を置くファイル。データの隣に置く。 */
+    private Path volumesFile() {
+        return path.resolveSibling(path.getFileName() + ".volumes");
+    }
+
+    private int volumeStart(int index) {
+        return index == 0 ? 0 : volumeStarts.get(index - 1);
+    }
+
+    private int volumeEnd(int index) {
+        return index < volumeStarts.size() ? volumeStarts.get(index) : records.size();
+    }
+
+    @Override
+    public String nextVolume() {
+        if (mode == null) {
+            return FileStatus.NOT_OPEN;
+        }
+        if (!tape) {
+            return FileStatus.NON_REEL;
+        }
+        if (mode.canWrite()) {
+            // 書いている巻を閉じ、次の巻を始める。何も書かずに閉じれば空の巻になる
+            volumeStarts.add(records.size());
+        } else {
+            // 読んでいる巻の残りを飛ばし、次の巻の頭へ。最後の巻の先は終わりである
+            volume++;
+            position = volume <= volumeStarts.size() ? volumeStart(volume) : records.size();
+            current = -1;
+        }
+        return FileStatus.OK;
+    }
+
+    @Override
+    public String reverse() {
+        if (!tape) {
+            return FileStatus.OPEN_CONFLICT;
+        }
+        // 逆から読む。巻の境目は逆にしても読む順には効かないので捨てる
+        records = new ArrayList<>(records);
+        java.util.Collections.reverse(records);
+        volumeStarts = new ArrayList<>();
+        return FileStatus.OK;
+    }
     /** ジョブが割り当てで決めたこと (要件 FR-113, FR-141)。 */
     private final DataSetAllocation allocation = new DataSetAllocation();
 
@@ -75,7 +132,29 @@ public final class SequentialDataSet implements DataSet {
      * @param declared プログラムが {@code SELECT} と {@code FD} に書いた様式
      */
     public static SequentialDataSet at(Path path, DataSetAttributes declared) {
-        return new SequentialDataSet(path, DataSetAttributes.read(path, declared));
+        SequentialDataSet file =
+                new SequentialDataSet(path, DataSetAttributes.read(path, declared));
+        file.declared = declared;
+        return file;
+    }
+
+    /** プログラムが宣言した様式。宣言を知らずに用意したファイルでは {@code null}。 */
+    private DataSetAttributes declared;
+
+    /**
+     * 置かれているファイルの属性が、宣言と食い違っているか。
+     *
+     * <p>様式 (固定長か可変長か) と、固定長のレコード長を見る。可変長の最大長は、宣言の
+     * ほうが短くても読めるレコードがあるので見ない。以前は置かれている属性を黙って使い、
+     * 9 byte と宣言したファイルで 8 byte のレコードを読んでいた (ZCVS の ZF109A)。
+     */
+    private boolean conflictsWithDeclaration() {
+        if (declared == null) {
+            return false;
+        }
+        return declared.format() != attributes.format()
+                || (declared.format() == RecordFormat.FIXED
+                    && declared.recordLength() != attributes.recordLength());
     }
 
     public DataSetAttributes attributes() {
@@ -147,6 +226,9 @@ public final class SequentialDataSet implements DataSet {
             return refused;
         }
         boolean missing = !Files.isReadable(path);
+        if (!missing && requested != OpenMode.OUTPUT && conflictsWithDeclaration()) {
+            return FileStatus.ATTRIBUTE_CONFLICT;
+        }
         damagedAt = -1;
         if (requested == OpenMode.OUTPUT || missing) {
             records = new ArrayList<>();
@@ -161,6 +243,19 @@ public final class SequentialDataSet implements DataSet {
             records = new ArrayList<>(framed.records());
             damagedAt = framed.damagedAt();
         }
+        volume = 0;
+        volumeStarts = new ArrayList<>();
+        if (tape && requested != OpenMode.OUTPUT && Files.isReadable(volumesFile())) {
+            try {
+                for (String line : Files.readAllLines(volumesFile())) {
+                    if (!line.isBlank()) {
+                        volumeStarts.add(Integer.parseInt(line.trim()));
+                    }
+                }
+            } catch (IOException e) {
+                throw new DataSetIoException("read", volumesFile(), e);
+            }
+        }
         mode = requested;
         // EXTEND は末尾から書き足す。ほかは先頭から
         position = requested == OpenMode.EXTEND ? records.size() : 0;
@@ -170,6 +265,39 @@ public final class SequentialDataSet implements DataSet {
         return missing && requested != OpenMode.OUTPUT
                 ? FileStatus.OPTIONAL_CREATED
                 : FileStatus.OK;
+    }
+
+    /** {@code CODE-SET} の変換の表。中の字 → 外の字、外の字 → 中の字。無ければ変換しない。 */
+    private byte[] toExternal;
+    private byte[] toInternal;
+
+    /**
+     * 外のレコードを ASCII にする ({@code CODE-SET IS} STANDARD-1 の符号系)。
+     *
+     * <p>書くときに実行時のコードページから ASCII へ、読むときに戻す。ASCII に無い字は
+     * 置換文字 (X'1A') になる。REWRITE は持たない (CODE-SET のファイルは順に読むか書くかで
+     * ある)。変換の表は実機と突き合わせていない。
+     */
+    public void codeSetAscii() {
+        toExternal = new byte[256];
+        toInternal = new byte[256];
+        java.util.Arrays.fill(toExternal, (byte) 0x1A);
+        java.util.Arrays.fill(toInternal, (byte) 0x3F);
+        for (int b = 0; b < 256; b++) {
+            char c = attributes.codePage().decode(new byte[] {(byte) b}).charAt(0);
+            if (c < 0x80) {
+                toExternal[b] = (byte) c;
+                toInternal[c] = (byte) b;
+            }
+        }
+    }
+
+    private static void translate(byte[] bytes, int length, byte[] table) {
+        if (table != null) {
+            for (int i = 0; i < length; i++) {
+                bytes[i] = table[bytes[i] & 0xFF];
+            }
+        }
     }
 
     /**
@@ -200,6 +328,10 @@ public final class SequentialDataSet implements DataSet {
             current = -1;
             return FileStatus.IO_ERROR;
         }
+        // 読み終えた巻 (空の巻も) は、次の巻へ自動で移る
+        while (volume < volumeStarts.size() && position >= volumeEnd(volume)) {
+            volume++;
+        }
         if (position >= records.size()) {
             atEnd = true;
             current = -1;
@@ -209,6 +341,7 @@ public final class SequentialDataSet implements DataSet {
         current = position - 1;
         int length = Math.min(record.length, into.length);
         System.arraycopy(record, 0, into, 0, length);
+        translate(into, length, toInternal);
         lastLength = length;
         if (attributes.format() == RecordFormat.VARIABLE) {
             // 可変長では受取領域の余りに触らない。規格上そこの中身は決まっていない
@@ -243,7 +376,9 @@ public final class SequentialDataSet implements DataSet {
         if (allocation.exceeded(written(), sizeOf(from))) {
             return FileStatus.NO_SPACE;
         }
-        records.add(from.clone());
+        byte[] record = from.clone();
+        translate(record, record.length, toExternal);
+        records.add(record);
         position = records.size();
         current = -1;
         lastLength = from.length;
@@ -260,8 +395,12 @@ public final class SequentialDataSet implements DataSet {
      * @return ファイル状態コード
      */
     public String rewrite(byte[] from) {
+        if (toExternal != null) {
+            throw new UnsupportedOperationException(
+                    "REWRITE on a CODE-SET file is not supported yet");
+        }
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.REWRITE_NOT_ALLOWED;
         }
         if (mode != OpenMode.IO) {
             return FileStatus.REWRITE_NOT_ALLOWED;
@@ -296,6 +435,11 @@ public final class SequentialDataSet implements DataSet {
                 Files.write(path, join(records), StandardOpenOption.CREATE,
                         StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
                 attributes.write(path);
+                if (tape) {
+                    StringBuilder text = new StringBuilder();
+                    volumeStarts.forEach(start -> text.append(start).append('\n'));
+                    Files.writeString(volumesFile(), text);
+                }
             } catch (IOException e) {
                 throw new DataSetIoException("write", path, e);
             }

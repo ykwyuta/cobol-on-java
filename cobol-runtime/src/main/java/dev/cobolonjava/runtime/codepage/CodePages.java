@@ -28,6 +28,15 @@ public final class CodePages {
     public static final CodePage IBM_939 = ebcdic("IBM-939", "x-IBM939");
 
     /** 検証・デバッグ用の ASCII。ホスト互換の対象ではない。 */
+    /**
+     * 日本語の拡張 (930 と 939 に英小文字とユーロ記号などを足したもの)。JDK に無いので、
+     * ICU の表から作った {@link TableCharset} で持つ。
+     */
+    public static final CodePage IBM_1390 = new CodePage("IBM-1390",
+            new TableCharset("x-IBM1390-table", "ibm-1390.sbcs", "ibm-16684.dbcs"), 0xF);
+    public static final CodePage IBM_1399 = new CodePage("IBM-1399",
+            new TableCharset("x-IBM1399-table", "ibm-1399.sbcs", "ibm-16684.dbcs"), 0xF);
+
     public static final CodePage ASCII = new CodePage("ASCII", Charset.forName("US-ASCII"), 0x3);
 
     /** 明示されない場合の既定 (要件 FR-050: 実行時の内部文字コードは EBCDIC)。 */
@@ -36,7 +45,8 @@ public final class CodePages {
     private static final Map<String, CodePage> BY_NAME = new ConcurrentHashMap<>();
 
     static {
-        for (CodePage cp : new CodePage[] {IBM_1047, IBM_037, IBM_930, IBM_939, ASCII}) {
+        for (CodePage cp : new CodePage[] {IBM_1047, IBM_037, IBM_930, IBM_939, IBM_1390,
+                IBM_1399, ASCII}) {
             BY_NAME.put(normalize(cp.name()), cp);
         }
         BY_NAME.put("1047", IBM_1047);
@@ -44,6 +54,8 @@ public final class CodePages {
         BY_NAME.put("037", IBM_037);
         BY_NAME.put("930", IBM_930);
         BY_NAME.put("939", IBM_939);
+        BY_NAME.put("1390", IBM_1390);
+        BY_NAME.put("1399", IBM_1399);
     }
 
     private CodePages() {

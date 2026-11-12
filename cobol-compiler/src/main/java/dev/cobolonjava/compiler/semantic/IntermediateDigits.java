@@ -250,7 +250,20 @@ public final class IntermediateDigits {
 
     private static int scaleOf(DataReference reference) {
         Picture picture = reference.item().picture();
-        return picture == null ? 0 : picture.scale();
+        if (picture == null) {
+            // 浮動小数点の受取側は小数部を持つ。0 桁として数えると、割り算とべき乗の商が
+            // 整数に切れてから入る (COMPUTE R = 1 / 8 が 0 になっていた)。短形式は有効 7 桁ほど、
+            // 長形式は 16 桁ほどなので、それを覆う桁数を取る
+            dev.cobolonjava.runtime.item.Usage usage = reference.item().usage();
+            if (usage == dev.cobolonjava.runtime.item.Usage.COMP_1) {
+                return 9;
+            }
+            if (usage == dev.cobolonjava.runtime.item.Usage.COMP_2) {
+                return 18;
+            }
+            return 0;
+        }
+        return picture.scale();
     }
 
     private static Decimal numberOf(LiteralValue value) {

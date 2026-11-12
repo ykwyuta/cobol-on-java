@@ -156,7 +156,65 @@ public final class CobolCompiler {
      * まとめると、関わりのない重なりを誤りとして報せてしまう。
      */
     public Result compile(String fileName, String source) {
+        // 続けて書いたプログラムの前の CBL / PROCESS 文は、そのプログラムからの指定である
+        // (Enterprise COBOL プログラミングの手引き "Compiling multiple programs (batch
+        // compilation)")。そこで原文を切り、切った先を別の指定で翻訳する。行番号がずれない
+        // ように、前のぶんは空行で埋める。以前は 2 本目の CBL 文を構文の誤りにしていた
+        String[] lines = source.split("\\R", -1);
+        boolean ended = false;
+        for (int i = 0; i < lines.length; i++) {
+            String text = lines[i].length() > 7 ? lines[i].substring(7).strip() : "";
+            boolean comment = lines[i].length() > 6 && "*/".indexOf(lines[i].charAt(6)) >= 0;
+            if (comment) {
+                continue;
+            }
+            String upper = text.toUpperCase(java.util.Locale.ROOT);
+            if (upper.startsWith("END PROGRAM ")) {
+                ended = true;
+            } else if (ended && (upper.startsWith("CBL ") || upper.startsWith("PROCESS "))) {
+                Result head = compileBatch(fileName,
+                        String.join("\n", java.util.Arrays.copyOfRange(lines, 0, i)));
+                if (!head.succeeded()) {
+                    return head;
+                }
+                String[] rest = lines.clone();
+                java.util.Arrays.fill(rest, 0, i, "");
+                Result tail = compile(fileName, String.join("\n", rest));
+                if (!tail.succeeded()) {
+                    return tail;
+                }
+                List<Diagnostic> all = new ArrayList<>(head.diagnostics());
+                all.addAll(tail.diagnostics());
+                List<Compiled> programs = new ArrayList<>(head.programs());
+                programs.addAll(tail.programs());
+                Compiled first = programs.get(0);
+                return new Result(first.className(), first.classFile(), first.layout(),
+                        first.programSignature(), first.procedureManifest(), List.copyOf(all),
+                        List.copyOf(programs));
+            }
+        }
+        return compileBatch(fileName, source);
+    }
+
+    /** 1 つの指定で翻訳するひとまとまり。 */
+    private Result compileBatch(String fileName, String source) {
         CompilerOptions effective = options.merge(preprocessor.optionsOf(source));
+        // 文字定数と初期値はこのコードページで作る。実行時のコードページと合っていなければ
+        // ならない (合わせるのは動かす側である)
+        try {
+            dev.cobolonjava.compiler.semantic.CompileCodePage.set(effective.value("CODEPAGE")
+                    .filter(OptionSupport::codePageSupported)
+                    .map(dev.cobolonjava.runtime.codepage.CodePages::forName).orElse(null));
+            dev.cobolonjava.compiler.semantic.CompileCodePage.setDbcsSymbol(effective
+                    .value("NSYMBOL").map(v -> v.equalsIgnoreCase("DBCS")).orElse(false));
+            return compileWith(fileName, source, effective);
+        } finally {
+            dev.cobolonjava.compiler.semantic.CompileCodePage.set(null);
+            dev.cobolonjava.compiler.semantic.CompileCodePage.setDbcsSymbol(false);
+        }
+    }
+
+    private Result compileWith(String fileName, String source, CompilerOptions effective) {
         // 効かないオプションを黙って受理しない (要件 FR-181)
         List<Diagnostic> optionDiagnostics = OptionSupport.check(effective);
         if (Diagnostic.blocking(optionDiagnostics)) {
@@ -170,6 +228,15 @@ public final class CobolCompiler {
         // 告げるだけの診断は翻訳を止めない。積んでおいて結果に載せる (要件 FR-183)
         List<Diagnostic> warnings = new ArrayList<>(optionDiagnostics);
         warnings.addAll(parsed.diagnostics());
+        List<Diagnostic> nesting = endProgramDiagnostics(parsed.tree().programUnit());
+        if (!nesting.isEmpty()) {
+            return failed(null, nesting);
+        }
+        List<Diagnostic> rerun = new ArrayList<>();
+        rerunDiagnostics(parsed.tree(), rerun);
+        if (!rerun.isEmpty()) {
+            return failed(null, rerun);
+        }
         List<Inherited> inherited = inheritedGlobals(parsed.tree().programUnit());
         // 囲む側の USE GLOBAL 宣言節。親は子より先に翻訳されるので、順に積める
         Map<String, List<ProcedureBuilder.GlobalDeclarative>> globals = new LinkedHashMap<>();
@@ -180,8 +247,7 @@ public final class CobolCompiler {
                 return one;
             }
             warnings.addAll(one.diagnostics());
-            programs.add(new Compiled(one.className(), one.classFile(), one.layout(),
-                    one.programSignature(), one.procedureManifest()));
+            programs.addAll(one.programs());
         }
         if (programs.isEmpty()) {
             return failed(null, List.of(new Diagnostic(null, "no program unit in " + fileName)));
@@ -262,6 +328,98 @@ public final class CobolCompiler {
                         && closed.equalsIgnoreCase(openSelects.peek().owner())) {
                     openSelects.pop();
                 }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * {@code RERUN} の形を見る。
+     *
+     * <p>再開の点そのものは取らない (実行時の資源管理の話である) が、書き方は見る。
+     * {@code EVERY n RECORDS} と {@code EVERY END OF REEL / UNIT} のあとには
+     * {@code OF ファイル名} が要る (Enterprise COBOL 言語解説書 "RERUN clause")。
+     * 以前は終止符まで読み飛ばしていたので、欠けていても通していた。
+     */
+    private static void rerunDiagnostics(org.antlr.v4.runtime.tree.ParseTree node,
+                                         List<Diagnostic> out) {
+        if (node instanceof CobolParser.IoControlEntryContext entry) {
+            if (!entry.getStart().getText().equalsIgnoreCase("RERUN")) {
+                return;
+            }
+            for (int i = 0; i < entry.getChildCount(); i++) {
+                String word = entry.getChild(i).getText().toUpperCase(java.util.Locale.ROOT);
+                if (!word.equals("RECORDS") && !word.equals("REEL") && !word.equals("UNIT")) {
+                    continue;
+                }
+                int next = i + 1;
+                if (next < entry.getChildCount()
+                        && entry.getChild(next).getText().equalsIgnoreCase("OF")) {
+                    next++;
+                }
+                if (next >= entry.getChildCount()) {
+                    out.add(new Diagnostic(
+                            dev.cobolonjava.compiler.semantic.ReferenceResolver.originOf(entry),
+                            "RERUN: a file name expected after " + word));
+                }
+            }
+            return;
+        }
+        if (node instanceof CobolParser.DataDivisionContext
+                || node instanceof CobolParser.ProcedureDivisionContext) {
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rerunDiagnostics(node.getChild(i), out);
+        }
+    }
+
+    /**
+     * {@code END PROGRAM} が、閉じるプログラムと合っているか確かめる。
+     *
+     * <p>入れ子は {@code END PROGRAM} の名前であとから組み立てている。名前が違えば、
+     * <b>どの囲みが閉じたのか決まらない</b>。別のプログラムを中に持つプログラムが
+     * 閉じられないまま終わるのも同じである。どちらも黙って通すと、GLOBAL の見え方が
+     * 書いた人の思ったものと違ってくる (ZCVS の ZE101N・ZE102N)。
+     *
+     * <p>最後のプログラムが {@code END PROGRAM} を持たず、中に何も持たないのは正しい。
+     */
+    private static List<Diagnostic> endProgramDiagnostics(
+            List<CobolParser.ProgramUnitContext> units) {
+        List<Diagnostic> out = new ArrayList<>();
+        Deque<String> names = new ArrayDeque<>();
+        // 別のプログラムを中に持ったことのあるプログラム
+        java.util.Set<String> containers = new java.util.HashSet<>();
+        for (CobolParser.ProgramUnitContext unit : units) {
+            if (!names.isEmpty()) {
+                containers.addAll(names);
+            }
+            names.push(programNameOf(unit));
+            for (CobolParser.EndProgramStatementContext end : unit.endProgramStatement()) {
+                String written = end.programName().getText();
+                if (written.length() >= 2 && (written.startsWith("'")
+                        || written.startsWith("\""))) {
+                    written = written.substring(1, written.length() - 1);
+                }
+                dev.cobolonjava.compiler.source.Origin origin = dev.cobolonjava.compiler.semantic.ReferenceResolver.originOf(end);
+                if (names.isEmpty()) {
+                    out.add(new Diagnostic(origin, "END PROGRAM " + written
+                            + " does not close any program"));
+                    continue;
+                }
+                String closed = names.pop();
+                if (!closed.equalsIgnoreCase(written)) {
+                    out.add(new Diagnostic(origin, "END PROGRAM " + written
+                            + " does not match PROGRAM-ID " + closed));
+                }
+            }
+        }
+        // 何も中に持たない最後のプログラムは閉じなくてよい。別のプログラムを中に持った
+        // プログラムは閉じなければならない
+        for (String open : names) {
+            if (containers.contains(open)) {
+                out.add(new Diagnostic(null, "END PROGRAM required for " + open
+                        + ", which contains another program"));
             }
         }
         return out;
@@ -421,7 +579,12 @@ public final class CobolCompiler {
         if (tree instanceof org.antlr.v4.runtime.tree.TerminalNode terminal) {
             var token = terminal.getSymbol();
             String text = token.getText();
-            if (token.getType() == CobolParser.NUMBER && text.indexOf('E') < 0
+            // 数字だけの手続き名は数字定数ではない。30 文字まで書ける。CCVS85 の NC107A が
+            // 「PERFORM 0000000000000000000000000001」と書いており、桁数の検査を入れた
+            // 増分のあと測り直していなかったので、断っていることに気付かなかった
+            boolean procedureName = terminal.getParent() instanceof CobolParser.ParagraphNameContext
+                    || terminal.getParent() instanceof CobolParser.ProcedureWordContext;
+            if (token.getType() == CobolParser.NUMBER && !procedureName && text.indexOf('E') < 0
                     && text.indexOf('e') < 0) {
                 long digits = text.chars().filter(Character::isDigit).count();
                 if (digits > limit) {
@@ -527,8 +690,17 @@ public final class CobolCompiler {
             return failed(data.layout(), generated.diagnostics());
         }
         warnings.addAll(generated.diagnostics());
+        List<Compiled> classes = new ArrayList<>();
+        classes.add(new Compiled(generated.className(), generated.classFile(), data.layout(),
+                signature, manifest));
+        for (ProcedureBuilder.Entry entry : procedure.entries()) {
+            // 副入口の名前で引けるクラス。本体へつなぐだけで、署名も手続き情報も持たない
+            classes.add(new Compiled(ProgramGenerator.classNameOf(entry.name()),
+                    ProgramGenerator.entryAlias(entry.name(), programNameOf(program)),
+                    data.layout(), null, null));
+        }
         return new Result(generated.className(), generated.classFile(), data.layout(), signature,
-                manifest, List.copyOf(warnings));
+                manifest, List.copyOf(warnings), List.copyOf(classes));
     }
 
     private static Result failed(DataLayout layout, List<Diagnostic> diagnostics) {

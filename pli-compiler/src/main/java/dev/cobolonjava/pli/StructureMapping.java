@@ -211,17 +211,39 @@ final class StructureMapping {
 
     /** 記憶域の大きさ (LRM Table 39)。 */
     static int length(PliSyntax.Decl decl) {
+        // 複素数は実部と虚部を続けて置く
+        return (decl.complex() ? 2 : 1) * realLength(decl);
+    }
+
+    private static int realLength(PliSyntax.Decl decl) {
         return switch (decl.type()) {
             // VARYING は今の長さを持つ半語が前に付く
             case CHAR -> Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0);
-            case PICTURE -> Math.max(1, decl.precision());
+            // 記憶域は編集した字の像の長さである (挿入の字、符号、通貨記号も字を取る)。
+            // 以前は数字の位置の数にしており、9 と V だけの PICTURE でしか合わなかった
+            case PICTURE -> decl.picture() != null ? PliPicture.parse(decl.picture()).length
+                    : Math.max(1, decl.precision());
             // ALIGNED のビット列は 8 ビットごとに 1 byte
             case BIT -> Math.max(1, (decl.precision() + 7) / 8);
-            case BINARY -> binaryLength(decl.precision());
+            case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
             case DECIMAL -> PackedDecimal.byteLength(Math.max(1, decl.precision()));
-            case POINTER -> 4;
-            case GROUP, FILE, ENTRY -> 0;
+            case POINTER, OFFSET -> 4;
+            case FLOAT -> floatLength(decl.precision(), decl.scale() == 1);
+            case WIDECHAR, GRAPHIC -> 2 * Math.max(1, decl.precision());
+            // AREA(n) は n byte と管理域の 16 byte
+            case AREA -> Math.max(0, decl.precision()) + PliRuntime.AREA_HEADER;
+            // 入口の変数は 8 byte (頭の 4 byte に入口の番号を置く。この処理系の約束)
+            case ENTRY -> decl.precision() > 0 ? 8 : 0;
+            case GROUP, FILE -> 0;
         };
+    }
+
+    /**
+     * FLOAT の大きさ (LRM Table 39)。10 進は p ≦ 6 で 4 byte、≦ 16 で 8 byte、2 進は p ≦ 21 で
+     * 4 byte、≦ 53 で 8 byte、それを超えれば 16 byte。
+     */
+    static int floatLength(int precision, boolean binary) {
+        return precision <= (binary ? 21 : 6) ? 4 : precision <= (binary ? 53 : 16) ? 8 : 16;
     }
 
     /** FIXED BINARY(p) の大きさ。p ≦ 7 は 1 byte、≦ 15 は半語、≦ 31 は全語、それを超えれば倍語。 */
@@ -232,8 +254,10 @@ final class StructureMapping {
     /** ALIGNED のときの境界合わせ (byte、LRM Table 39)。文字・PICTURE・10 進・ビット列は byte。 */
     static int alignment(PliSyntax.Decl decl) {
         return switch (decl.type()) {
-            case BINARY -> binaryLength(decl.precision());
-            case POINTER -> 4;
+            case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
+            case POINTER, OFFSET -> 4;
+            case FLOAT -> Math.min(8, floatLength(decl.precision(), decl.scale() == 1));
+            case AREA -> 8;
             // ALIGNED の VARYING は長さの半語の境界に置く
             case CHAR -> decl.varying() ? 2 : 1;
             default -> 1;

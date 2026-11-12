@@ -46,6 +46,11 @@ public final class PictureParser {
             throw new PictureSyntaxException("PICTURE character-string must not be empty");
         }
         List<String> symbols = expand(source.trim().toUpperCase(Locale.ROOT), currency);
+        String template = String.join("", symbols);
+        if (template.indexOf('E') >= 0 && ExternalFloating.matches(template)) {
+            // 外部浮動小数点。以前は E を知らない記号として断っていた
+            return Picture.externalFloating(source, template);
+        }
 
         boolean signed = false;
         if (!symbols.isEmpty() && symbols.get(0).equals("S")) {
@@ -69,6 +74,7 @@ public final class PictureParser {
         boolean anyAlpha = false;
         boolean anyAlnum = false;
         boolean anyNational = false;
+        boolean anyDbcs = false;
         boolean anyEditing = false;
         boolean anyInsertion = false;
         boolean anyNine = false;
@@ -151,6 +157,12 @@ public final class PictureParser {
                     size++;
                     anyNational = true;
                 }
+                case "G" -> {
+                    // DBCS の 1 字。N と同じに 1 字 2 バイトだが、符号の系が違う
+                    cells.add(new Cell(Kind.ALNUM, 'G', 1));
+                    size++;
+                    anyDbcs = true;
+                }
                 default -> {
                     char c = sym.charAt(0);
                     if (c == currency) {
@@ -225,11 +237,29 @@ public final class PictureParser {
         //   数字項目       — 9 S V P だけからなる
         // 国字項目は N だけからなる。国字編集 (N と B 0 /) と国字の数字 (USAGE NATIONAL の 9) は
         // まだ持たない。混ぜた PICTURE を英数字として読むと、1 文字 2 バイトの長さを取り違える
-        if (anyNational) {
-            if (anyAlnum || anyAlpha || anyEditing || anyNine || sawV || signed
+        if (anyDbcs) {
+            if (anyNational || anyAlnum || anyAlpha || anyEditing || anyNine || sawV || signed
                     || slotStored.size() > 0) {
+                throw new PictureSyntaxException("a DBCS PICTURE consists of G only: " + source);
+            }
+            return new Picture(source, String.join("", symbols), Category.DBCS, size, 0, 0,
+                    SignPosition.UNSIGNED, false, cells);
+        }
+        if (anyNational) {
+            // B / 0 / は anyEditing も立てる。国字の中に置けるのは挿入の字だけである
+            boolean onlyInsertion = cells.stream()
+                    .allMatch(c -> c.kind() == Kind.ALNUM || c.kind() == Kind.INSERT);
+            if (anyAlnum || anyAlpha || (anyEditing && !onlyInsertion) || anyNine || sawV
+                    || signed || slotStored.size() > 0) {
                 throw new PictureSyntaxException("national-edited PICTUREs (N mixed with other"
-                        + " symbols) are not supported yet: " + source);
+                        + " symbols than B, 0 and /) are not supported yet: " + source);
+            }
+            if (anyInsertion) {
+                // 国字編集 (N と B / 0 / の挿入)。挿入は英数字編集と同じに置き、1 字を
+                // UTF-16 で持つ (Enterprise COBOL 言語解説書 "National-edited items")
+                return new Picture(source, String.join("", symbols),
+                        Category.ALPHANUMERIC_EDITED, size, 0, 0, SignPosition.UNSIGNED, false,
+                        cells).asNational();
             }
             return new Picture(source, String.join("", symbols), Category.NATIONAL, size, 0, 0,
                     SignPosition.UNSIGNED, false, cells);

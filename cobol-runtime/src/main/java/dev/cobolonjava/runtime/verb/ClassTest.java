@@ -44,16 +44,34 @@ public final class ClassTest {
      * 「0〜9 の数字と、正しい作用符号だけからできているか」を見る。
      */
     public static boolean numeric(byte[] bytes, NumericItem item, CodePage codePage) {
+        return numeric(bytes, item, codePage, SIGNS_PRIMARY);
+    }
+
+    /** NUMPROC(NOPFD) か NUMPROC(MIG) と NUMCLS(PRIM): 符号つきは C・D・F。 */
+    public static final int SIGNS_PRIMARY = 0;
+    /** NUMCLS(ALT): 符号つきは A〜F。 */
+    public static final int SIGNS_ALTERNATE = 1;
+    /** NUMPROC(PFD): 符号つきは C・D と、値が 0 のときの F。 */
+    public static final int SIGNS_PREFERRED = 2;
+
+    /**
+     * @param signs 符号の表。翻訳オプション NUMPROC と NUMCLS が決める
+     *              ({@link #SIGNS_PRIMARY} ほか)
+     */
+    public static boolean numeric(byte[] bytes, NumericItem item, CodePage codePage,
+                                  int signs) {
         return switch (item.usage()) {
-            case DISPLAY -> zoned(bytes, item, codePage);
-            case COMP_3 -> packed(bytes);
+            case DISPLAY -> zoned(bytes, item, codePage, signs);
+            case NATIONAL -> zoned(item.fromNational(bytes), item, codePage, signs);
+            case COMP_3 -> packed(bytes, item.signPosition().isSigned(), signs);
             // 2 進項目はバイトの並びがそのまま数である。数でない形を取れない
             default -> true;
         };
     }
 
     /** ゾーン 10 進が数字か。符号の置き場によって見るところが変わる。 */
-    private static boolean zoned(byte[] bytes, NumericItem item, CodePage codePage) {
+    private static boolean zoned(byte[] bytes, NumericItem item, CodePage codePage,
+                                 int signs) {
         if (bytes.length == 0) {
             return false;
         }
@@ -78,7 +96,7 @@ public final class ClassTest {
                 return false;
             }
             if (i == embedded) {
-                if (!validSign(zone)) {
+                if (!validSign(zone, true, signs, zeroDigits(bytes, first, last, false))) {
                     return false;
                 }
                 continue;
@@ -92,7 +110,7 @@ public final class ClassTest {
     }
 
     /** 詰め 10 進が数字か。最後のニブルが符号である。 */
-    private static boolean packed(byte[] bytes) {
+    private static boolean packed(byte[] bytes, boolean signed, int signs) {
         if (bytes.length == 0) {
             return false;
         }
@@ -103,7 +121,8 @@ public final class ClassTest {
                 return false;
             }
             if (i == bytes.length - 1) {
-                if (!validSign(low)) {
+                if (!validSign(low, signed, signs,
+                        zeroDigits(bytes, 0, bytes.length - 1, true))) {
                     return false;
                 }
             } else if (low > 9) {
@@ -113,9 +132,57 @@ public final class ClassTest {
         return true;
     }
 
-    /** 作用符号として通るニブル。機械が受け付ける形と同じである。 */
-    private static boolean validSign(int nibble) {
-        return nibble >= 0x0A;
+    /**
+     * 級条件で数字として通る符号のニブル。
+     *
+     * <p><b>機械が受け付ける形 (A〜F) とは違う</b>。Enterprise COBOL は NUMPROC(NOPFD) と
+     * 導入時の既定 NUMCLS(PRIM) の下で、符号つきの項目には C・D・F だけを、符号なしの項目には
+     * F だけを数字として通す (プログラミングの手引きの「NUMERIC 級条件で有効な符号」の表)。
+     * 以前は A〜F をどれも通し、符号なしの詰め 10 進は符号を見ていなかったので、
+     * {@code PIC 9(5) COMP-3} に X'12345C' が入っていても NUMERIC になっていた
+     * (ZCVS の ZA106A で見つかった)。
+     *
+     * <p>NUMCLS(ALT) は符号つきの項目に A〜F を通す。NUMPROC(PFD) は優先符号だけを通し、
+     * F は値が 0 のときだけ通す。符号なしの項目はどの表でも F だけである。この 2 つの表は
+     * Zeus (同じ権利者の処理系) の {@code vm/eval.rs} と同じにした。実機と突き合わせていない。
+     *
+     * @param signed PICTURE に S があるか
+     * @param signs  符号の表
+     * @param zero   数字がすべて 0 か
+     */
+    private static boolean validSign(int nibble, boolean signed, int signs, boolean zero) {
+        if (!signed) {
+            return nibble == 0x0F;
+        }
+        return switch (signs) {
+            case SIGNS_PREFERRED -> nibble == 0x0C || nibble == 0x0D || (nibble == 0x0F && zero);
+            case SIGNS_ALTERNATE -> nibble >= 0x0A;
+            default -> nibble == 0x0F || nibble == 0x0C || nibble == 0x0D;
+        };
+    }
+
+    /** 数字のニブルがすべて 0 か。詰め 10 進は最後の下位ニブル (符号) を除く。 */
+    private static boolean zeroDigits(byte[] bytes, int first, int last, boolean packed) {
+        for (int i = first; i <= last; i++) {
+            if ((bytes[i] & 0x0F) != 0 && !(packed && i == last)) {
+                return false;
+            }
+            if (packed && (bytes[i] & 0xF0) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 外部浮動小数点の項目が数字か。字の並びがその形をしていればよい。 */
+    public static boolean externalFloatingNational(byte[] bytes, CodePage codePage) {
+        return externalFloating(dev.cobolonjava.runtime.data.National.toDisplay(bytes, codePage),
+                codePage);
+    }
+
+    public static boolean externalFloating(byte[] bytes, CodePage codePage) {
+        return dev.cobolonjava.runtime.picture.ExternalFloating.parse(
+                codePage.decode(bytes), 0) != null;
     }
 
     /** 英数字項目が数字か。すべてのバイトが 0〜9 でなければならない。 */

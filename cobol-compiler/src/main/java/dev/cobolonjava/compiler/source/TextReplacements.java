@@ -27,29 +27,122 @@ public final class TextReplacements {
         List<TextWord> out = new ArrayList<>();
         int i = 0;
         while (i < body.size()) {
-            TextReplacement matched = null;
-            int length = -1;
-            for (TextReplacement replacement : replacements) {
-                length = matchLength(body, i, replacement.from());
-                if (length >= 0) {
-                    matched = replacement;
-                    break;
+            i += replaceAt(body, i, replacements, out);
+        }
+        return out;
+    }
+
+    /**
+     * {@code at} の位置で最初に当たる置換を 1 つ適用し、結果を {@code out} へ足す。
+     * 当たらなければその語をそのまま足す。
+     *
+     * @return 消費した語の数
+     */
+    static int replaceAt(List<TextWord> body, int at, List<TextReplacement> replacements,
+                         List<TextWord> out) {
+        TextWord here = body.get(at);
+        for (TextReplacement replacement : replacements) {
+            if (replacement.part() != TextReplacement.Part.WHOLE) {
+                TextWord partial = partially(here, replacement);
+                if (partial != null) {
+                    out.add(partial);
+                    return 1;
                 }
-            }
-            if (matched == null) {
-                out.add(body.get(i));
-                i++;
                 continue;
             }
-            List<TextWord> to = matched.to();
+            int length = matchLength(body, at, replacement.from());
+            if (length < 0) {
+                continue;
+            }
+            List<TextWord> to = replacement.to();
             for (int k = 0; k < to.size(); k++) {
                 TextWord word = to.get(k);
                 // 差し込む列の先頭は、置き換えられた語の空白の扱いを引き継ぐ
-                out.add(k == 0 ? word.withPrecededBySpace(body.get(i).precededBySpace()) : word);
+                out.add(k == 0 ? word.withPrecededBySpace(here.precededBySpace()) : word);
             }
-            i += length;
+            // 読み飛ばした区切りのぶん、擬似テキストより長く消費することがある
+            return length;
         }
-        return out;
+        out.add(here);
+        return 1;
+    }
+
+    /**
+     * 語の頭・尻を置き換える。当たらなければ {@code null}。
+     *
+     * <p>語の全体が当たるときも置き換える。置換後が空で語がまるごと消えるときだけは
+     * 置き換えない——語が無くなると、置換ではなく削除になってしまう。
+     */
+    private static TextWord partially(TextWord word, TextReplacement replacement) {
+        if (word.kind() != TextWordKind.WORD) {
+            return null;
+        }
+        String from = replacement.from().get(0).text();
+        String to = replacement.to().isEmpty() ? "" : replacement.to().get(0).text();
+        String text = word.text();
+        boolean leading = replacement.part() == TextReplacement.Part.LEADING;
+        if (text.length() < from.length() || (to.isEmpty() && text.length() == from.length())
+                || !text.regionMatches(true, leading ? 0 : text.length() - from.length(),
+                        from, 0, from.length())) {
+            return null;
+        }
+        String replaced = leading ? to + text.substring(from.length())
+                : text.substring(0, text.length() - from.length()) + to;
+        Origin[] origins = new Origin[replaced.length()];
+        java.util.Arrays.fill(origins, word.origin());
+        return new TextWord(replaced, origins, TextWordKind.WORD, word.precededBySpace());
+    }
+
+    /**
+     * 置換の 1 組を読む。{@code [LEADING | TRAILING] 被演算子 BY 被演算子} である。
+     *
+     * @param statement 診断に書く文の名前 ({@code REPLACE} か {@code REPLACING})
+     * @param pseudoOnly 被演算子は擬似テキストに限るか ({@code REPLACE} はそうである。
+     *                   {@code COPY ... REPLACING} が 1 語の指定も許すのとは違う)
+     */
+    static Pair readPair(List<TextWord> words, int start, Origin origin, String statement,
+                         boolean pseudoOnly) {
+        int i = start;
+        TextReplacement.Part part = TextReplacement.Part.WHOLE;
+        if (words.get(i).isWord("LEADING") || words.get(i).isWord("TRAILING")) {
+            part = words.get(i).isWord("LEADING")
+                    ? TextReplacement.Part.LEADING : TextReplacement.Part.TRAILING;
+            i++;
+        }
+        boolean partial = part != TextReplacement.Part.WHOLE;
+        Operand from = operand(words, i, origin, statement, pseudoOnly || partial);
+        if (from.words().isEmpty()) {
+            // 空の擬似テキストは、どの語にも当たらない。書き間違いである
+            throw new SourceFormatException(origin,
+                    statement + ": pseudo-text to be replaced must not be empty");
+        }
+        i = from.endIndex() + 1;
+        if (i >= words.size() || !words.get(i).isWord("BY")) {
+            throw new SourceFormatException(origin, statement + " requires BY after an operand");
+        }
+        i++;
+        Operand to = operand(words, i, origin, statement, pseudoOnly || partial);
+        if (partial && (from.words().size() != 1 || to.words().size() > 1
+                || from.words().get(0).kind() != TextWordKind.WORD
+                || (!to.words().isEmpty() && to.words().get(0).kind() != TextWordKind.WORD))) {
+            throw new SourceFormatException(origin, statement
+                    + " LEADING / TRAILING requires a single partial word on each side");
+        }
+        return new Pair(new TextReplacement(from.words(), to.words(), part), to.endIndex());
+    }
+
+    private static Operand operand(List<TextWord> words, int at, Origin origin,
+                                   String statement, boolean pseudoOnly) {
+        if (pseudoOnly && (at >= words.size()
+                || words.get(at).kind() != TextWordKind.PSEUDO_DELIMITER)) {
+            throw new SourceFormatException(origin,
+                    statement + " operands must be pseudo-text enclosed in ==");
+        }
+        return readOperand(words, at, origin);
+    }
+
+    /** 読み取った 1 組と、その最後の語の位置。 */
+    record Pair(TextReplacement replacement, int endIndex) {
     }
 
     /** 指定位置から語の列が一致するかどうか。 */

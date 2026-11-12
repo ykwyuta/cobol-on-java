@@ -56,7 +56,8 @@ class CodePageTest {
     @Test
     @DisplayName("未対応のコードページは黙って既定へ倒さずエラーにする (FR-181)")
     void unsupportedCodePageIsReported() {
-        assertThrows(UnsupportedCharsetException.class, () -> CodePages.forName("IBM-1390"));
+        // 以前は IBM-1390 を例にしていた。表を持ったので、持っていない別のものを例にする
+        assertThrows(UnsupportedCharsetException.class, () -> CodePages.forName("IBM-1388"));
     }
 
     @Test

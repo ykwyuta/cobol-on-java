@@ -411,7 +411,7 @@ class DataDivisionBuilderTest {
     }
 
     @Test
-    @DisplayName("未対応の USAGE は黙って通さない (P-006)")
+    @DisplayName("PIC X に DISPLAY-1 は書けない (DBCS は PIC G か N)")
     void anUnsupportedUsageIsReported() {
         // POINTER は NULL だけを置ける 4 byte 項目として受けるようになった (暫定判断 P-123)
         DataDivisionBuilder.Result result = build(

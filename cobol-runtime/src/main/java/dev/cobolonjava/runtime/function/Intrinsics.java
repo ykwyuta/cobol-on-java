@@ -106,6 +106,172 @@ public final class Intrinsics {
         return value.rescale(0, CobolRounding.TOWARD_LESSER);
     }
 
+    /** {@code FUNCTION ABS}。 */
+    public static Decimal abs(Decimal value) {
+        return value.signum() < 0 ? value.negate() : value;
+    }
+
+    /**
+     * {@code FUNCTION TRIM}。前後の空白を削る。ぜんぶ空白なら長さ 0 になる。
+     *
+     * @param leading  頭を削るか
+     * @param trailing 尻を削るか
+     */
+    public static byte[] trim(byte[] value, boolean leading, boolean trailing,
+                              CodePage codePage) {
+        byte space = codePage.space();
+        int from = 0;
+        int to = value.length;
+        while (leading && from < to && value[from] == space) {
+            from++;
+        }
+        while (trailing && to > from && value[to - 1] == space) {
+            to--;
+        }
+        return java.util.Arrays.copyOfRange(value, from, to);
+    }
+
+    /** 国字の {@code TRIM}。空白は UTF-16 の U+0020 (2 byte) である。 */
+    public static byte[] trimNational(byte[] value, boolean leading, boolean trailing) {
+        int from = 0;
+        int to = value.length - value.length % 2;
+        while (leading && from < to && value[from] == 0 && value[from + 1] == 0x20) {
+            from += 2;
+        }
+        while (trailing && to > from && value[to - 2] == 0 && value[to - 1] == 0x20) {
+            to -= 2;
+        }
+        return java.util.Arrays.copyOfRange(value, from, to);
+    }
+
+    /** バイト列の文字の数。国字なら 1 文字 2 byte である。 */
+    public static Decimal countOf(byte[] value, int bytesPerCharacter) {
+        return Decimal.of(value.length / bytesPerCharacter, 0);
+    }
+
+    /** バイト列を文字の列に直す。 */
+    public static String text(byte[] value, CodePage codePage) {
+        return codePage.decode(value);
+    }
+
+    /** 国字 (UTF-16 ビッグエンディアン) を、プログラムのコードページのバイト列に直す。 */
+    public static byte[] fromNational(byte[] value, CodePage codePage) {
+        return codePage.encode(nationalText(value));
+    }
+
+    /** 国字 (UTF-16 ビッグエンディアン) を文字の列に直す。 */
+    public static String nationalText(byte[] value) {
+        return new String(value, java.nio.charset.StandardCharsets.UTF_16BE);
+    }
+
+    /**
+     * {@code FUNCTION TEST-NUMVAL} / {@code TEST-NUMVAL-C}。
+     *
+     * <p>{@code NUMVAL} が読める綴りなら 0。読めなければ<b>最初に誤っている文字の位置</b>
+     * (1 から)。足りないだけ (空白だけ、符号だけ) なら長さ + 1 である
+     * (Enterprise COBOL 言語解説書の TEST-NUMVAL)。
+     *
+     * <p>読める綴りは 2 通りである。
+     * <pre>
+     * 空白* [+|-] 空白* 数 空白*
+     * 空白* 数 空白* [+|-|CR|DB] 空白*
+     * </pre>
+     * 数は {@code 数字+ [小数点 数字*]} か {@code 小数点 数字+}。{@code -C} の形は、数の前に
+     * 通貨記号を 1 つ、数字のあいだに桁区切りを書ける。
+     *
+     * @param currency     通貨記号。空なら既定の {@code $}
+     * @param currencyForm {@code TEST-NUMVAL-C} か
+     * @param comma        {@code DECIMAL-POINT IS COMMA} か。小数点と桁区切りが入れ替わる
+     */
+    public static Decimal testNumval(String text, String currency, boolean currencyForm,
+                                     boolean comma) {
+        char point = comma ? ',' : '.';
+        char group = comma ? '.' : ',';
+        String symbol = currency.isBlank() ? "$" : currency.strip();
+        int n = text.length();
+        int i = 0;
+        boolean signed = false;
+        boolean seenCurrency = false;
+        // 数の前。空白、符号 1 つ、(-C なら) 通貨記号 1 つ
+        while (i < n) {
+            char c = text.charAt(i);
+            if (c == ' ') {
+                i++;
+            } else if ((c == '+' || c == '-') && !signed) {
+                signed = true;
+                i++;
+            } else if (currencyForm && !seenCurrency && text.startsWith(symbol, i)) {
+                seenCurrency = true;
+                i += symbol.length();
+            } else {
+                break;
+            }
+        }
+        int digits = 0;
+        boolean seenPoint = false;
+        while (i < n) {
+            char c = text.charAt(i);
+            if (c >= '0' && c <= '9') {
+                digits++;
+            } else if (c == point && !seenPoint) {
+                seenPoint = true;
+            } else if (currencyForm && c == group && !seenPoint && digits > 0) {
+                // 桁区切りは読み飛ばす
+            } else {
+                break;
+            }
+            i++;
+        }
+        if (digits == 0) {
+            // 数がまだ始まっていない。文字が残っていればそれが誤り、尽きていれば足りない
+            return Decimal.of(i < n ? i + 1 : n + 1, 0);
+        }
+        // 数のあと。空白、(前に符号が無ければ) 符号か CR / DB を 1 つ、空白
+        while (i < n && text.charAt(i) == ' ') {
+            i++;
+        }
+        if (i < n && !signed) {
+            if (text.charAt(i) == '+' || text.charAt(i) == '-') {
+                i++;
+            } else if (matches(text, i, "CR") || matches(text, i, "DB")) {
+                i += 2;
+            }
+        }
+        while (i < n && text.charAt(i) == ' ') {
+            i++;
+        }
+        return Decimal.of(i < n ? i + 1 : 0, 0);
+    }
+
+    /**
+     * 2 桁の年が入る 100 年の窓。窓の終わりは「今年 + window」である
+     * (Enterprise COBOL 言語解説書の YEAR-TO-YYYY)。
+     */
+    private static int windowed(int twoDigits, Decimal window, int currentYear) {
+        int last = currentYear + toIndex(window, "YEAR-TO-YYYY");
+        int year = twoDigits + 100 * Math.floorDiv(last, 100);
+        return year > last ? year - 100 : year;
+    }
+
+    /** {@code FUNCTION YEAR-TO-YYYY}。 */
+    public static Decimal yearToYyyy(Decimal year, Decimal window, int currentYear) {
+        return Decimal.of(windowed(toIndex(year, "YEAR-TO-YYYY"), window, currentYear), 0);
+    }
+
+    /** {@code FUNCTION DATE-TO-YYYYMMDD}。頭の 2 桁の年だけを 4 桁にする。 */
+    public static Decimal dateToYyyymmdd(Decimal date, Decimal window, int currentYear) {
+        int value = toIndex(date, "DATE-TO-YYYYMMDD");
+        return Decimal.of(windowed(value / 10000, window, currentYear) * 10000L
+                + value % 10000, 0);
+    }
+
+    /** {@code FUNCTION DAY-TO-YYYYDDD}。 */
+    public static Decimal dayToYyyyddd(Decimal day, Decimal window, int currentYear) {
+        int value = toIndex(day, "DAY-TO-YYYYDDD");
+        return Decimal.of(windowed(value / 1000, window, currentYear) * 1000L
+                + value % 1000, 0);
+    }
+
     /** {@code FUNCTION INTEGER-PART}。<b>0 の側へ</b>切り捨てる。 */
     public static Decimal integerPart(Decimal value) {
         return value.rescale(0, CobolRounding.TRUNCATION);
@@ -578,6 +744,25 @@ public final class Intrinsics {
             text = text.replace(symbol, "");
         }
         return parse(text, true);
+    }
+
+    /**
+     * {@code DECIMAL-POINT IS COMMA} の下の {@code NUMVAL}。小数点はコンマで書かれる。
+     * ZCVS の ZX109A で見つかった。ピリオドを小数点として読んでいたので、
+     * {@code NUMVAL('123,45')} が 12345 になっていた。
+     */
+    public static Decimal numvalComma(byte[] value, CodePage codePage) {
+        return parse(codePage.decode(value).replace(',', '.'), false);
+    }
+
+    /** コンマが小数点のときの {@code NUMVAL-C}。桁区切りはピリオドである。 */
+    public static Decimal numvalCComma(byte[] value, byte[] currency, CodePage codePage) {
+        String text = codePage.decode(value);
+        String symbol = codePage.decode(currency).trim();
+        if (!symbol.isEmpty()) {
+            text = text.replace(symbol, "");
+        }
+        return parse(text.replace(".", "").replace(',', '.'), true);
     }
 
     /**

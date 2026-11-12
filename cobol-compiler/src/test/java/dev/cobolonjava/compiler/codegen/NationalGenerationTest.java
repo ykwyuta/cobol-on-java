@@ -275,13 +275,13 @@ class NationalGenerationTest {
     }
 
     @Test
-    @DisplayName("1390 と 1399 は JDK に無いので断る (P-002)")
+    @DisplayName("持っていない CCSID は断る (P-002)。1390 と 1399 は表を持ったので例を変えた")
     void refusesUnsupportedCcsids() {
         String diagnostics = refusal(List.of(
                         "01 X PIC X(2).",
                         "01 N PIC N(2)."),
-                "MOVE FUNCTION NATIONAL-OF(X, 1399) TO N.");
-        assertTrue(diagnostics.contains("1399"), diagnostics);
+                "MOVE FUNCTION NATIONAL-OF(X, 1388) TO N.");
+        assertTrue(diagnostics.contains("1388"), diagnostics);
     }
 
     // --- INITIALIZE ---
@@ -304,20 +304,23 @@ class NationalGenerationTest {
                 "STRING N DELIMITED BY SIZE INTO X.").contains("cannot be used"));
     }
 
-    @Test
-    @DisplayName("国字の部分参照は断る (位置は文字で数えるため)")
-    void refusesReferenceModification() {
-        assertTrue(refusal(List.of("01 N PIC N(3).", "01 M PIC N(1)."),
-                "MOVE N(2:1) TO M.").contains("reference modification"));
-    }
+    // 「国字の部分参照は断る」はここにあった。位置を字で数えるようにしたので通す。
+    // 振る舞いは BatchAndInspectTest.countsNationalReferenceModificationInCharacters が測る
 
     @Test
-    @DisplayName("国字編集、国字の数字、DBCS (USAGE DISPLAY の PIC N) は断る")
+    @DisplayName("USAGE DISPLAY の PIC N と、N に挿入でない字を混ぜた PICTURE は断る")
     void refusesOtherNationalForms() {
-        assertFalse(compile(null, List.of("01 N PIC NBN."), "GOBACK.").succeeded());
-        assertFalse(compile(null, List.of("01 N PIC 9(3) USAGE NATIONAL."), "GOBACK.").succeeded());
+        // 国字編集 (PIC NBN) は以前ここで断っていた。持ったので通す。振る舞いは
+        // BatchAndInspectTest.editsNationalItems が測る
+        assertTrue(compile(null, List.of("01 N PIC NBN."), "GOBACK.").succeeded());
+        assertFalse(compile(null, List.of("01 N PIC NX."), "GOBACK.").succeeded());
+        // 国字の数字 (PIC 9 USAGE NATIONAL) は以前ここで断っていた。持ったので通す。
+        // 振る舞いは BatchAndInspectTest.storesNationalDecimalsInANationalGroup が測る
+        assertTrue(compile(null, List.of("01 N PIC 9(3) USAGE NATIONAL."), "GOBACK.").succeeded());
         assertFalse(compile(null, List.of("01 N PIC N(3) USAGE DISPLAY."), "GOBACK.").succeeded());
-        assertFalse(compile("NSYMBOL(DBCS)", List.of("01 N PIC N(3)."), "GOBACK.").succeeded());
+        // NSYMBOL(DBCS) は以前ここで断っていた。PIC N を DBCS として持ったので通す。
+        // 振る舞いは BatchAndInspectTest.treatsPictureNAsDbcsUnderNsymbolDbcs が測る
+        assertTrue(compile("NSYMBOL(DBCS)", List.of("01 N PIC N(3)."), "GOBACK.").succeeded());
         assertTrue(compile("NSYMBOL(NATIONAL)", List.of("01 N PIC N(3)."), "GOBACK.").succeeded());
     }
 }

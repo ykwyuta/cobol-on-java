@@ -29,7 +29,9 @@ public enum DataCategory {
      * 2 バイトを占める。英数字とは<b>バイトの意味が違う</b>ので、英数字のように扱ってはならない
      * ({@link #isAlphanumericLike} は偽)。
      */
-    NATIONAL;
+    NATIONAL,
+    /** DBCS。{@code PIC G} の項目と {@code G'..'} の定数。1 字 2 バイトで、SO / SI を持たない。 */
+    DBCS;
 
     /** 数値として扱う分類かどうか。 */
     public boolean isNumeric() {
@@ -49,8 +51,14 @@ public enum DataCategory {
      * それは数値ではなくバイトの並びである。
      */
     public static DataCategory of(DataReference reference) {
+        if (reference.item().isGroupNational()) {
+            // GROUP-USAGE NATIONAL の群は、文の中では国字の基本項目として扱う
+            // (言語解説書 "GROUP-USAGE clause")。中を下へ配るのは INITIALIZE だけである
+            return NATIONAL;
+        }
         if (reference.refMod() != null) {
-            return ALPHANUMERIC;
+            // 国字の項目の一部は国字のままである
+            return reference.characterWidth() == 2 ? NATIONAL : ALPHANUMERIC;
         }
         return of(reference.item());
     }
@@ -65,6 +73,11 @@ public enum DataCategory {
             return NUMERIC_NONINTEGER;
         }
         Picture picture = item.picture();
+        if (picture.isNationalEdited()
+                && picture.category() == Picture.Category.ALPHANUMERIC_EDITED) {
+            // 国字編集 (PIC NBN) は国字として転記・比較する。挿入は転記が置く
+            return NATIONAL;
+        }
         return switch (picture.category()) {
             case ALPHABETIC -> ALPHABETIC;
             case ALPHANUMERIC -> ALPHANUMERIC;
@@ -72,6 +85,7 @@ public enum DataCategory {
             case NUMERIC_EDITED -> NUMERIC_EDITED;
             case NUMERIC -> picture.scale() > 0 ? NUMERIC_NONINTEGER : NUMERIC_INTEGER;
             case NATIONAL -> NATIONAL;
+            case DBCS -> DBCS;
         };
     }
 
@@ -84,6 +98,9 @@ public enum DataCategory {
     public static DataCategory of(LiteralValue value, boolean numericReceiver) {
         if (value instanceof LiteralValue.National) {
             return NATIONAL;
+        }
+        if (value instanceof LiteralValue.Dbcs) {
+            return DBCS;
         }
         if (value instanceof LiteralValue.Number number) {
             return number.value().scale() > 0 ? NUMERIC_NONINTEGER : NUMERIC_INTEGER;

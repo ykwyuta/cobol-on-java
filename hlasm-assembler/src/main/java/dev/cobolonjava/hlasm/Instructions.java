@@ -47,7 +47,27 @@ public final class Instructions {
         /** {@code op D1(L1,B1),D2(L2,B2)} — 6 バイト。長さは 2 つ。 */
         SS_B(6),
         /** {@code op D1(L1,B1),D2(B2),I3} — 6 バイト。{@code SRP} だけが使う。 */
-        SS_C(6);
+        SS_C(6),
+        /** {@code op R1,R2} — 4 バイト。命令コードが 2 バイトある。 */
+        RRE(4),
+        /** {@code op R1,R2,R3} — 4 バイト。3 つ目のレジスタは 3 バイト目の上位に入る。 */
+        RRF(4),
+        /** {@code op R1,I2} — 4 バイト。16 ビットの符号つき即値。 */
+        RI(4),
+        /** {@code op R1,I2} — 6 バイト。32 ビットの即値。 */
+        RIL(6),
+        /** {@code op R1,D2(X2,B2)} — 6 バイト。20 ビットの符号つき変位。 */
+        RXY(6),
+        /** {@code op R1,R3,D2(B2)} — 6 バイト。20 ビットの符号つき変位。 */
+        RSY(6),
+        /** {@code op R1,R2,I3,I4[,I5]} — 6 バイト。ビットの範囲を取る命令。 */
+        RIE_F(6),
+        /** {@code op D1(L1,B1)} — 6 バイト。10 進の検査 ({@code TP}) が使う。 */
+        RSL(6),
+        /** {@code op D2(B2)} — 4 バイト。命令コードが 2 バイトある。 */
+        S(4),
+        /** 演算項なし — 2 バイト。 */
+        E(2);
 
         private final int length;
 
@@ -194,6 +214,120 @@ public final class Instructions {
         // 固定小数点のあふれを割込みにするかどうかを自分で決めるのに使う
         define("SPM", 0x04, Format.RR_R1);
         define("IPM", 0xB222, Format.RRE_R1);
+
+        // --- z/Architecture の 64 ビットの命令 ---
+        // 命令コードは「1 バイト目 << 8 | 残りの命令コード」で持つ。RI と RIL は残りが
+        // 4 ビット (1 バイト目の次のバイトの下位)、ほかは 1 バイトである。
+        // ZHVS (Zeus の HLASM 検査スイート) の HA / HM / HI / HD の区分が使うものを入れた
+        // 浮動小数点。HFP は長形式だけを持つ (短形式と拡張形式の演算は Cpu が断る)
+        define("LDR", 0x28, Format.RR);
+        define("LER", 0x38, Format.RR);
+        define("CDR", 0x29, Format.RR);
+        define("ADR", 0x2A, Format.RR);
+        define("SDR", 0x2B, Format.RR);
+        define("MDR", 0x2C, Format.RR);
+        define("DDR", 0x2D, Format.RR);
+        define("LD", 0x68, Format.RX);
+        define("LE", 0x78, Format.RX);
+        define("STD", 0x60, Format.RX);
+        define("STE", 0x70, Format.RX);
+        define("CD", 0x69, Format.RX);
+        define("AD", 0x6A, Format.RX);
+        define("SD", 0x6B, Format.RX);
+        define("MD", 0x6C, Format.RX);
+        define("DD", 0x6D, Format.RX);
+        define("SQDR", 0xB244, Format.RRE);
+        define("SQDBR", 0xB315, Format.RRE);
+        define("CDBR", 0xB319, Format.RRE);
+        define("ADBR", 0xB31A, Format.RRE);
+        define("SDBR", 0xB31B, Format.RRE);
+        define("MDBR", 0xB31C, Format.RRE);
+        define("DDBR", 0xB31D, Format.RRE);
+        define("MDTR", 0xB3D0, Format.RRF);
+        define("DDTR", 0xB3D1, Format.RRF);
+        define("ADTR", 0xB3D2, Format.RRF);
+        define("SDTR", 0xB3D3, Format.RRF);
+        define("CDTR", 0xB3E4, Format.RRE);
+        define("SFPC", 0xB384, Format.RRE_R1);
+        define("EFPC", 0xB38C, Format.RRE_R1);
+        define("STFPC", 0xB29C, Format.S);
+        define("LFPC", 0xB29D, Format.S);
+        define("PFPO", 0x010A, Format.E);
+        define("SAM24", 0x010C, Format.E);
+        define("SAM31", 0x010D, Format.E);
+        define("LGR", 0xB904, Format.RRE);
+        define("LTGR", 0xB902, Format.RRE);
+        define("LCGR", 0xB903, Format.RRE);
+        define("LPGR", 0xB900, Format.RRE);
+        define("LNGR", 0xB901, Format.RRE);
+        define("AGR", 0xB908, Format.RRE);
+        define("SGR", 0xB909, Format.RRE);
+        define("ALGR", 0xB90A, Format.RRE);
+        define("SLGR", 0xB90B, Format.RRE);
+        define("MSGR", 0xB90C, Format.RRE);
+        define("LGFR", 0xB914, Format.RRE);
+        define("LLGFR", 0xB916, Format.RRE);
+        define("AGFR", 0xB918, Format.RRE);
+        define("SGFR", 0xB919, Format.RRE);
+        define("CGR", 0xB920, Format.RRE);
+        define("CLGR", 0xB921, Format.RRE);
+        define("NGR", 0xB980, Format.RRE);
+        define("OGR", 0xB981, Format.RRE);
+        define("XGR", 0xB982, Format.RRE);
+        define("FLOGR", 0xB983, Format.RRE);
+        define("ALCGR", 0xB988, Format.RRE);
+        define("SLBGR", 0xB989, Format.RRE);
+        define("LRVGR", 0xB90F, Format.RRE);
+        define("POPCNT", 0xB9E1, Format.RRE);
+        define("AGRK", 0xB9E8, Format.RRF);
+        define("SGRK", 0xB9E9, Format.RRF);
+        define("NGRK", 0xB9E4, Format.RRF);
+        define("OGRK", 0xB9E6, Format.RRF);
+        define("XGRK", 0xB9E7, Format.RRF);
+        define("LHI", 0xA708, Format.RI);
+        define("LGHI", 0xA709, Format.RI);
+        define("AHI", 0xA70A, Format.RI);
+        define("AGHI", 0xA70B, Format.RI);
+        define("CHI", 0xA70E, Format.RI);
+        define("CGHI", 0xA70F, Format.RI);
+        define("IIHF", 0xC008, Format.RIL);
+        define("IILF", 0xC009, Format.RIL);
+        define("LGFI", 0xC001, Format.RIL);
+        define("LG", 0xE304, Format.RXY);
+        define("AG", 0xE308, Format.RXY);
+        define("SG", 0xE309, Format.RXY);
+        define("LRVG", 0xE30F, Format.RXY);
+        define("LGF", 0xE314, Format.RXY);
+        define("LGH", 0xE315, Format.RXY);
+        define("LLGF", 0xE316, Format.RXY);
+        define("CG", 0xE320, Format.RXY);
+        define("CLG", 0xE321, Format.RXY);
+        define("STG", 0xE324, Format.RXY);
+        define("STRVG", 0xE32F, Format.RXY);
+        define("STY", 0xE350, Format.RXY);
+        define("LY", 0xE358, Format.RXY);
+        define("NG", 0xE380, Format.RXY);
+        define("OG", 0xE381, Format.RXY);
+        define("XG", 0xE382, Format.RXY);
+        define("LLGC", 0xE390, Format.RXY);
+        define("LLGH", 0xE391, Format.RXY);
+        define("LMG", 0xEB04, Format.RSY);
+        define("SRAG", 0xEB0A, Format.RSY);
+        define("SLAG", 0xEB0B, Format.RSY);
+        define("SRLG", 0xEB0C, Format.RSY);
+        define("SLLG", 0xEB0D, Format.RSY);
+        define("RLLG", 0xEB1C, Format.RSY);
+        define("STMG", 0xEB24, Format.RSY);
+        define("CSG", 0xEB30, Format.RSY);
+        define("ICMH", 0xEB80, Format.RSY);
+        define("LAAG", 0xEBE8, Format.RSY);
+        define("RISBG", 0xEC55, Format.RIE_F);
+        define("TP", 0xEBC0, Format.RSL);
+        // 32 ビットだが増分 1 に無かったもの
+        define("ICM", 0xBF, Format.RS);
+        define("STCM", 0xBE, Format.RS);
+        define("CLM", 0xBD, Format.RS);
+        define("CS", 0xBA, Format.RS);
 
         // --- 拡張ニーモニック (BC / BCR のマスクを綴りに畳み込んだもの) ---
         // 算術の比較で立つ条件コードと、10 進・論理の比較で立つ条件コードで綴りが違う。

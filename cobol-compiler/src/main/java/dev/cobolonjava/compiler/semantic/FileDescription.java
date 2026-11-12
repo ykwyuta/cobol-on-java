@@ -32,12 +32,22 @@ import java.util.Map;
  * @param recordLength レコード長。{@code FD} 配下の記述から決まる
  * @param varying      可変長の指定。固定長なら {@code null}
  * @param linage       {@code LINAGE} の指定。書かれていなければ {@code null}
+ * @param ascii        {@code CODE-SET} が ASCII (STANDARD-1 / STANDARD-2) の符号系を指す。
+ *                     外に置くレコードは ASCII で、読み書きのたびに変換する
  */
 public record FileDescription(String name, String ddName, Organization organization,
                               RecordFormat format, Access access, DataReference status,
                               boolean optional, DataReference relativeKey, List<RecordKey> keys,
                               boolean sort, List<DataItem> records, int recordLength,
-                              Varying varying, Linage linage, Origin origin) {
+                              Varying varying, Linage linage, Origin origin,
+                              DataReference vsamStatus, boolean ascii) {
+
+    /**
+     * {@code FILE STATUS} の 2 つ目の項目の長さ。VSAM の戻りコード・機能コード・
+     * フィードバックコードを 2 進の halfword 3 つで受ける (Enterprise COBOL 言語解説書の
+     * FILE STATUS 句)。
+     */
+    public static final int VSAM_STATUS_LENGTH = 6;
 
     /**
      * 論理頁の形 (要件 FR-113)。
@@ -181,7 +191,8 @@ public record FileDescription(String name, String ddName, Organization organizat
     record Selected(String name, String ddName, Organization organization, RecordFormat format,
                     Access access, boolean optional, CobolParser.IdentifierContext status,
                     CobolParser.IdentifierContext relativeKey,
-                    List<SelectedKey> keys, Origin origin) {
+                    List<SelectedKey> keys, Origin origin,
+                    CobolParser.IdentifierContext vsamStatus) {
     }
 
     /** {@code RECORD KEY} と {@code ALTERNATE RECORD KEY} を読んだ途中の形。 */
@@ -253,11 +264,21 @@ public record FileDescription(String name, String ddName, Organization organizat
         RecordFormat format = RecordFormat.FIXED;
         Access access = Access.SEQUENTIAL;
         CobolParser.IdentifierContext status = null;
+        CobolParser.IdentifierContext vsamStatus = null;
         CobolParser.IdentifierContext relativeKey = null;
         List<SelectedKey> keys = new ArrayList<>();
         for (CobolParser.SelectClauseContext clause : entry.selectClause()) {
             // RESERVE は ALTERNATE を含むので、副鍵より先に外す。
             // PASSWORD は名前を持つが鍵ではない。どちらも翻訳の結果には効かない
+            if (clause.PADDING() != null && clause.literal() != null) {
+                // 埋め草は 1 文字である。翻訳の結果には効かないが、2 文字は書き間違いである
+                String text = clause.literal().getText();
+                boolean quoted = text.startsWith("'") || text.startsWith("\"");
+                if (quoted && text.length() != 3) {
+                    diagnostics.add(new Diagnostic(origin,
+                            "PADDING CHARACTER requires a one-character literal: " + text));
+                }
+            }
             if (clause.assignClause() != null || clause.RESERVE() != null
                     || clause.PASSWORD() != null || clause.PADDING() != null
                     || clause.DELIMITER() != null) {
@@ -273,6 +294,8 @@ public record FileDescription(String name, String ddName, Organization organizat
                 access = accessOf(clause);
             } else if (clause.STATUS() != null) {
                 status = clause.identifier();
+                vsamStatus = clause.vsamStatus() == null
+                        ? null : clause.vsamStatus().identifier();
             } else if (clause.RELATIVE() != null) {
                 // 裸の RELATIVE は編成の指定であり、鍵の名前ではない
                 if (clause.identifier() == null) {
@@ -291,7 +314,7 @@ public record FileDescription(String name, String ddName, Organization organizat
             }
         }
         return new Selected(name, ddName, organization, format, access, entry.OPTIONAL() != null,
-                status, relativeKey, keys, origin);
+                status, relativeKey, keys, origin, vsamStatus);
     }
 
     /**
@@ -313,7 +336,9 @@ public record FileDescription(String name, String ddName, Organization organizat
             if (!assign.LITERAL().isEmpty()) {
                 return unquote(assign.LITERAL(0).getText());
             }
-            return assign.IDENTIFIER(0).getText().toUpperCase(Locale.ROOT);
+            // IDENTIFIER とは限らない。割当て名の位置では予約語 REPORT も名前である
+            return assign.getChild(assign.TO() == null ? 1 : 2).getText()
+                    .toUpperCase(Locale.ROOT);
         }
         diagnostics.add(new Diagnostic(origin, "SELECT " + name + " has no ASSIGN clause"));
         return null;
@@ -339,14 +364,21 @@ public record FileDescription(String name, String ddName, Organization organizat
         return clause.DYNAMIC() != null ? Access.DYNAMIC : Access.SEQUENTIAL;
     }
 
-    /** {@code RECORDING MODE} の綴り。不定長 (U) はまだ扱わない。 */
+    /**
+     * {@code RECORDING MODE} の綴り。
+     *
+     * <p>S (ブロックをまたぐ可変長) と U (不定長) は、プログラムから見れば<b>レコードごとに
+     * 長さが違うファイル</b>である。違いはブロックへの詰め方 (セグメントに割るか、1 ブロック
+     * 1 レコードか) であり、この処理系はブロックを持たないので、どちらも可変長として置く。
+     * 以前は断っていた。置かれるバイト列はホストの形 (BDW・SDW) ではない。
+     */
     private static RecordFormat recordingOf(String text, RecordFormat current, Origin origin,
                                             List<Diagnostic> diagnostics) {
         String mode = text.trim().toUpperCase(Locale.ROOT);
         if (mode.equals("F") || mode.equals("FB")) {
             return RecordFormat.FIXED;
         }
-        if (mode.equals("V") || mode.equals("VB")) {
+        if (mode.equals("V") || mode.equals("VB") || mode.equals("S") || mode.equals("U")) {
             return RecordFormat.VARIABLE;
         }
         diagnostics.add(new Diagnostic(origin, "RECORDING MODE " + mode + " is not supported yet"));
@@ -379,6 +411,29 @@ public record FileDescription(String name, String ddName, Organization organizat
             String recording = recordingOf(entry);
             if (recording != null) {
                 format = recordingOf(recording, format, one.origin(), diagnostics);
+                // S はブロックをまたいで割るので、ブロックの大きさを字数で書かなければ
+                // ならない。U は 1 ブロックが 1 レコードなので、ブロックの大きさは書けない
+                // (Enterprise COBOL 言語解説書 "RECORDING MODE clause")
+                boolean blocked = false;
+                boolean inCharacters = false;
+                for (CobolParser.FileDescriptionClauseContext clause
+                        : entry.fileDescriptionClause()) {
+                    if (clause.BLOCK() != null) {
+                        blocked = true;
+                        inCharacters = clause.RECORDS() == null;
+                    }
+                }
+                if (recording.equalsIgnoreCase("S") && !(blocked && inCharacters)) {
+                    diagnostics.add(new Diagnostic(one.origin(),
+                            "RECORDING MODE S requires BLOCK CONTAINS in characters: "
+                                    + one.name()));
+                    continue;
+                }
+                if (recording.equalsIgnoreCase("U") && blocked) {
+                    diagnostics.add(new Diagnostic(one.origin(),
+                            "RECORDING MODE U cannot specify BLOCK CONTAINS: " + one.name()));
+                    continue;
+                }
             }
             Varying varying = varyingOf(entry, length, resolver, diagnostics);
             if (varying != null) {
@@ -393,6 +448,27 @@ public record FileDescription(String name, String ddName, Organization organizat
             if (status != null && status.constantLength().orElse(0) != 2) {
                 diagnostics.add(new Diagnostic(one.origin(),
                         "FILE STATUS requires a two-character item"));
+                continue;
+            }
+            DataReference vsamStatus = one.vsamStatus() == null
+                    ? null : resolver.resolve(one.vsamStatus());
+            if (one.vsamStatus() != null && vsamStatus == null) {
+                continue;
+            }
+            if (vsamStatus != null && one.organization() != Organization.INDEXED
+                    && one.organization() != Organization.RELATIVE
+                    && !one.ddName().startsWith("AS-")) {
+                // VSAM の戻りコードを受ける項目である。QSAM のファイルには入れるものが無い。
+                // 順編成でも割当て名が AS- で始まれば VSAM (ESDS) なので通す
+                diagnostics.add(new Diagnostic(one.origin(),
+                        "the second FILE STATUS item is allowed only for a VSAM file: "
+                                + one.name()));
+                continue;
+            }
+            if (vsamStatus != null
+                    && vsamStatus.constantLength().orElse(0) != VSAM_STATUS_LENGTH) {
+                diagnostics.add(new Diagnostic(one.origin(),
+                        "the second FILE STATUS item requires a six-byte item"));
                 continue;
             }
             DataReference relativeKey = relativeKeyOf(one, varying, resolver, diagnostics);
@@ -419,7 +495,8 @@ public record FileDescription(String name, String ddName, Organization organizat
                     new FileDescription(one.name(), one.ddName(), one.organization(), format,
                             one.access(), status, one.optional(), relativeKey, keys,
                             entry != null && entry.SD() != null, area, length,
-                            varying, linage, one.origin())) != null) {
+                            varying, linage, one.origin(), vsamStatus,
+                            asciiCodeSet(entry, area, diagnostics))) != null) {
                 diagnostics.add(new Diagnostic(one.origin(), "duplicate SELECT for " + one.name()));
             }
         }
@@ -657,6 +734,103 @@ public record FileDescription(String name, String ddName, Organization organizat
             }
         }
         return entries;
+    }
+
+    /**
+     * {@code CODE-SET} が ASCII を指すか (Enterprise COBOL 言語解説書 "CODE-SET clause")。
+     *
+     * <p>CODE-SET を書いたファイルのレコードは、字として外へ出せるものだけでできていなければ
+     * ならない。符号つきの数字項目は {@code SIGN IS SEPARATE} を要る (重ね打ちの符号は
+     * 変換すると数字でも符号でもない字になる)。以前は CODE-SET を読んで捨てていたので、
+     * EBCDIC のまま書いていた。
+     */
+    private static boolean asciiCodeSet(CobolParser.FileDescriptionEntryContext entry,
+                                        List<DataItem> area, List<Diagnostic> diagnostics) {
+        if (entry == null) {
+            return false;
+        }
+        String alphabet = null;
+        for (CobolParser.FileDescriptionClauseContext clause : entry.fileDescriptionClause()) {
+            if (clause.CODE_SET() != null) {
+                alphabet = clause.IDENTIFIER(0).getText();
+            }
+        }
+        if (alphabet == null) {
+            return false;
+        }
+        Origin origin = ReferenceResolver.originOf(entry);
+        for (DataItem record : area) {
+            DataItem offending = signedWithoutSeparateSign(record);
+            if (offending != null) {
+                diagnostics.add(new Diagnostic(origin, "CODE-SET requires SIGN IS SEPARATE for"
+                        + " the signed numeric item " + offending.name()));
+                return false;
+            }
+        }
+        org.antlr.v4.runtime.tree.ParseTree unit = entry;
+        while (unit != null && !(unit instanceof CobolParser.ProgramUnitContext)) {
+            unit = unit.getParent();
+        }
+        CobolParser.AlphabetClauseContext found = alphabetNamed(unit, alphabet);
+        if (found == null) {
+            diagnostics.add(new Diagnostic(origin, "CODE-SET names an alphabet that is not"
+                    + " defined in SPECIAL-NAMES: " + alphabet));
+            return false;
+        }
+        CobolParser.AlphabetSpecificationContext spec = found.alphabetSpecification();
+        if (spec.STANDARD_1() != null || spec.STANDARD_2() != null) {
+            return true;
+        }
+        if (spec.NATIVE() != null || spec.EBCDIC() != null) {
+            return false;
+        }
+        // 自分で並べた符号系へ変換する表は持っていない。黙って EBCDIC のまま書かない
+        diagnostics.add(new Diagnostic(origin,
+                "CODE-SET with a user-defined alphabet is not supported yet: " + alphabet));
+        return false;
+    }
+
+    private static DataItem signedWithoutSeparateSign(DataItem item) {
+        if (item.isElementary() && item.picture() != null && item.picture().isNumeric()
+                && item.picture().signPosition().isSigned()
+                && (item.usage() == null || item.usage() == dev.cobolonjava.runtime.item.Usage.DISPLAY)) {
+            // SIGN 句は集団に書いて下へ効かせることもできる
+            boolean separate = false;
+            for (DataItem at = item; at != null && !separate; at = at.parent()) {
+                separate = at.signPosition() != null && at.signPosition().isSeparate();
+            }
+            if (!separate) {
+                return item;
+            }
+        }
+        for (DataItem child : item.children()) {
+            DataItem found = signedWithoutSeparateSign(child);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static CobolParser.AlphabetClauseContext alphabetNamed(
+            org.antlr.v4.runtime.tree.ParseTree node, String name) {
+        if (node == null) {
+            return null;
+        }
+        if (node instanceof CobolParser.AlphabetClauseContext clause) {
+            return clause.IDENTIFIER().getText().equalsIgnoreCase(name) ? clause : null;
+        }
+        if (node instanceof CobolParser.DataDivisionContext
+                || node instanceof CobolParser.ProcedureDivisionContext) {
+            return null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CobolParser.AlphabetClauseContext found = alphabetNamed(node.getChild(i), name);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**

@@ -198,4 +198,41 @@ class ArrayTest {
         assertTrue(String.valueOf(expression.getMessage()).contains("assigned to an array"),
                 expression::getMessage);
     }
+
+    @Test
+    @DisplayName("断面 A(*,2) への代入は、その列のすべての要素だけを変える")
+    void crossSectionAssignment() throws Exception {
+        assertEquals("7 3 7 7 3 7", words(main("""
+                DCL A(2,3) FIXED BIN(31);
+                A = 7;
+                A(*,2) = 3;
+                PUT SKIP LIST(A(1,1), A(1,2), A(1,3), A(2,1), A(2,2), A(2,3));
+                """)));
+    }
+
+    @Test
+    @DisplayName("BY NAME は要素の並びによらず同じ名の要素どうしを代入し、名の合わない要素は変えない")
+    void assignmentByName() throws Exception {
+        assertEquals("17 OK KEEP", words(main("""
+                DCL 1 X, 2 FIRST FIXED BIN(31), 2 SECOND CHAR(2), 2 ONLYX CHAR(4);
+                DCL 1 Y, 2 SECOND CHAR(2), 2 FIRST FIXED BIN(31), 2 ONLYY CHAR(4);
+                X.FIRST = 17; X.SECOND = 'OK'; X.ONLYX = 'LOST'; Y.ONLYY = 'KEEP';
+                Y = X, BY NAME;
+                PUT SKIP LIST(Y.FIRST, Y.SECOND, Y.ONLYY);
+                """)));
+    }
+
+    @Test
+    @DisplayName("擬似変数 UNSPEC は値のビットを記憶域へそのまま書き、足りない右を 0 で埋める")
+    void unspecPseudovariable() throws Exception {
+        assertEquals("C1C20000", words(main("""
+                DCL S CHAR(4);
+                UNSPEC(S) = '1100000111000010'B;
+                PUT SKIP LIST(HEX(UNSPEC(S)));
+                """)));
+    }
+
+    private static String words(String text) {
+        return text.strip().replaceAll("\\s+", " ");
+    }
 }

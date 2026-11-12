@@ -78,13 +78,42 @@ public final class Ops {
     /** 数字編集項目への転記。 */
     public static void moveNumericEdited(Decimal value, Picture target, Storage storage, int offset,
                                          CodePage codePage) {
+        if (target.isNationalEdited()) {
+            // USAGE NATIONAL の数字編集。編集した字を UTF-16 にして置く
+            Storage scratch = Storage.allocate(target.size());
+            Move.toNumericEdited(value, target, scratch.whole(), codePage);
+            byte[] national = dev.cobolonjava.runtime.data.National.fromAlphanumeric(
+                    scratch.array(), codePage);
+            System.arraycopy(national, 0, storage.array(), offset, national.length);
+            return;
+        }
         Move.toNumericEdited(value, target, storage.view(offset, target.size()), codePage);
+    }
+
+    /** UTF-16 の字を、実行時のコードページの字にする。表せない字は数字でない字になる。 */
+    private static byte[] nationalToDisplay(byte[] national, CodePage codePage) {
+        return dev.cobolonjava.runtime.data.National.toDisplay(national, codePage);
+    }
+
+    /** USAGE NATIONAL の数字編集項目から編集を解いて値を取り出す。 */
+    public static Decimal deEditNational(Storage storage, int offset, int length, int scale,
+                                         CodePage codePage) {
+        byte[] display = nationalToDisplay(read(storage, offset, length), codePage);
+        return deEdit(Storage.wrap(display), 0, display.length, scale, codePage);
+    }
+
+    /** USAGE NATIONAL の外部浮動小数点から値を取り出す。 */
+    public static Decimal deEditFloatingNational(Storage storage, int offset, int length,
+                                                 int implied, CodePage codePage) {
+        byte[] display = nationalToDisplay(read(storage, offset, length), codePage);
+        return deEditFloating(Storage.wrap(display), 0, display.length, implied, codePage);
     }
 
     /** 英数字編集項目への転記。 */
     public static void moveAlphanumericEdited(byte[] source, Picture target, Storage storage,
                                               int offset, CodePage codePage) {
-        Move.toAlphanumericEdited(source, target, storage.view(offset, target.size()), codePage);
+        int length = target.isNationalEdited() ? target.size() * 2 : target.size();
+        Move.toAlphanumericEdited(source, target, storage.view(offset, length), codePage);
     }
 
     /**
@@ -305,6 +334,11 @@ public final class Ops {
         return InspectScan.tally(read(storage, offset, length), clauses);
     }
 
+    /** 関数の値など、項目でない値を数える走査。 */
+    public static int[] tallyValue(byte[] value, InspectScan.Clause... clauses) {
+        return InspectScan.tally(value, clauses);
+    }
+
     /** 置き換える走査。 */
     public static void replace(Storage storage, int offset, int length,
                                InspectScan.Clause... clauses) {
@@ -382,6 +416,45 @@ public final class Ops {
      * <p>時計は {@link ProgramContext} が持っている。実行のたびに変わる値を試験に
      * 書けるようにするためである。
      */
+    /**
+     * {@code FILE STATUS} の 2 つ目の項目 (VSAM の戻りコード) を入れる。
+     *
+     * <p>halfword 3 つである。戻りコード (レジスタ 15)、機能コード、フィードバックコード。
+     * VSAM まで届いて断られた要求だけが値を持ち、うまくいった要求と、VSAM へ届く前に
+     * COBOL のランタイムが断った要求 (開いていないファイルなど) は 0 である。
+     *
+     * <p>値は VSAM のマクロ命令の戻りコードの表 (DFSMS Macro Instructions for Data Sets の
+     * 「論理エラーのフィードバックコード」) から、入出力状態に対応するものを置く。
+     * この処理系は VSAM そのものを持たないので、<b>状態から逆に引いている</b>。
+     */
+    public static void vsamStatus(ProgramContext context, String name, String ddName,
+                                  byte[] status, Storage target, int offset) {
+        String code = context.codePage().decode(status);
+        int feedback = switch (code) {
+            case "10" -> 4;
+            case "21" -> 12;
+            case "22" -> 8;
+            case "23" -> 16;
+            case "24" -> 28;
+            default -> 0;
+        };
+        int returnCode = switch (code) {
+            case "10", "21", "22", "23", "24" -> 8;
+            default -> 0;
+        };
+        // 機能コードは、断られた要求が副索引を通っていたときだけ 2 になる
+        int function = returnCode != 0 && !context.neverOpened(name)
+                && context.file(name, ddName) instanceof IndexedDataSet indexed
+                ? indexed.vsamFunction() : 0;
+        target.view(offset, 6).setBytes(new byte[] {
+            0, (byte) returnCode, 0, (byte) function, 0, (byte) feedback});
+    }
+
+    /** 今年。2 桁の年を 4 桁にする関数の窓がこれを基準にする。 */
+    public static int currentYear(ProgramContext context) {
+        return java.time.ZonedDateTime.now(context.clock()).getYear();
+    }
+
     public static byte[] currentDate(ProgramContext context) {
         return Intrinsics.timestamp(java.time.ZonedDateTime.now(context.clock()),
                 context.codePage());
@@ -455,6 +528,11 @@ public final class Ops {
      *
      * @return ファイル状態コードのバイト列。2 バイトである
      */
+    /** そのファイルの外のレコードは ASCII である ({@code CODE-SET})。開く前に呼ぶ。 */
+    public static void codeSetAscii(ProgramContext context, String name) {
+        context.codeSetAscii(name);
+    }
+
     public static byte[] open(ProgramContext context, String name, String ddName, int mode,
                               int organization, int format, int recordLength, boolean optional) {
         if (context.isFileLocked(name)) {
@@ -474,6 +552,14 @@ public final class Ops {
      * 誤りのほうが伝えるべきことである (85 規格 VII-38, 4.2.4(3)F)。
      */
     public static byte[] nonReel(byte[] status, ProgramContext context) {
+        return nonReel(status, context, null);
+    }
+
+    /** 磁気テープなら巻き戻さずに開けるので、状態はそのままである。 */
+    public static byte[] nonReel(byte[] status, ProgramContext context, String ddName) {
+        if (ddName != null && context.catalog().isTape(ddName)) {
+            return status;
+        }
         return FileStatus.OK.equals(context.codePage().decode(status))
                 ? status(context, FileStatus.NON_REEL)
                 : status;
@@ -909,6 +995,12 @@ public final class Ops {
     }
 
     private static IndexedDataSet indexed(ProgramContext context, String name, String ddName) {
+        if (context.neverOpened(name)) {
+            // 開く前の要求。閉じたままの仮のファイルが、文ごとの状態 (47 / 48 / 49) を返す
+            return IndexedDataSet.at(context.catalog().resolve(ddName),
+                    dev.cobolonjava.runtime.file.DataSetAttributes.standard(),
+                    new IndexedDataSet.Key(0, 1, false), java.util.List.of());
+        }
         return (IndexedDataSet) context.file(name, ddName);
     }
 
@@ -958,6 +1050,9 @@ public final class Ops {
 
     /** 直前に読んだレコードを消す (要件 FR-102)。鍵で引く編成だけである。 */
     public static byte[] delete(ProgramContext context, String name, String ddName) {
+        if (context.neverOpened(name)) {
+            return status(context, FileStatus.REWRITE_NOT_ALLOWED);
+        }
         return status(context, ((KeyedDataSet) context.file(name, ddName)).delete());
     }
 
@@ -1015,6 +1110,10 @@ public final class Ops {
 
     /** 相対編成として引く。編成は翻訳時に決まっているので、ここは必ず当たる。 */
     private static RelativeDataSet relative(ProgramContext context, String name, String ddName) {
+        if (context.neverOpened(name)) {
+            return RelativeDataSet.at(context.catalog().resolve(ddName),
+                    dev.cobolonjava.runtime.file.DataSetAttributes.standard());
+        }
         return (RelativeDataSet) context.file(name, ddName);
     }
 
@@ -1065,7 +1164,19 @@ public final class Ops {
         if (!file.isOpen()) {
             return status(context, FileStatus.NOT_OPEN);
         }
-        return status(context, FileStatus.NON_REEL);
+        return status(context, file.nextVolume());
+    }
+
+    /**
+     * 逆から読む — {@code OPEN INPUT ... REVERSED}。開けたときだけ呼ぶ。逆から読めるのは
+     * 磁気テープだけである (QSAM の RDBACK)。ほかの媒体では 37 を返す。
+     */
+    public static byte[] reverse(byte[] opened, ProgramContext context, String name,
+                                 String ddName) {
+        if (!FileStatus.succeeded(context.codePage().decode(opened))) {
+            return opened;
+        }
+        return status(context, context.file(name, ddName).reverse());
     }
 
     /**
@@ -1077,6 +1188,10 @@ public final class Ops {
      */
     public static byte[] closeNoRewind(ProgramContext context, String name, String ddName) {
         String status = context.file(name, ddName).close();
+        if (context.catalog().isTape(ddName)) {
+            // 磁気テープは巻き戻さずに閉じられる
+            return status(context, status);
+        }
         return status(context, FileStatus.OK.equals(status) ? FileStatus.NON_REEL : status);
     }
 
@@ -1109,6 +1224,19 @@ public final class Ops {
      *
      * @param scale 編集した項目の小数の桁数
      */
+    /** 外部浮動小数点の項目から値を取り出す。形が崩れていればデータ例外である。 */
+    public static Decimal deEditFloating(Storage storage, int offset, int length, int implied,
+                                         CodePage codePage) {
+        String text = codePage.decode(read(storage, offset, length));
+        java.math.BigDecimal value =
+                dev.cobolonjava.runtime.picture.ExternalFloating.parse(text, implied);
+        if (value == null) {
+            throw new IllegalStateException(
+                    "S0C7: not an external floating-point value: " + text);
+        }
+        return Decimal.parse(value.toPlainString());
+    }
+
     public static Decimal deEdit(Storage storage, int offset, int length, int scale,
                                  CodePage codePage) {
         String text = codePage.decode(read(storage, offset, length));
@@ -1531,6 +1659,12 @@ public final class Ops {
         }
         // 異常終了で抜けたときは積まれたまま残す (要件 FR-142)
         context.leave();
+        if (target.program().initialProgram()) {
+            // 初期プログラムは次に呼ばれたとき初期状態から始まる。戻るたびに忘れればそうなる。
+            // 再帰の途中 (同じ名前がまだ積まれている) で忘れると外側の作業場所を失うが、
+            // 初期プログラムは再帰できない決まりである
+            context.forget(name);
+        }
     }
 
     /** 動的な {@code CALL}。呼び先の名前をデータ項目から読む。 */
@@ -1639,6 +1773,110 @@ public final class Ops {
             System.arraycopy(arguments, 0, slots, 0, passed);
         }
         return slots;
+    }
+
+    /**
+     * {@code SET ptr TO ADDRESS OF 連絡節の 01}。渡されていなければ NULL を置く。
+     *
+     * <p>{@code OMITTED} で呼ばれた側は、こうして番地を NULL と比べて「渡されたか」を調べる。
+     * 項目の中身を読むのと違い、番地を取るだけなら打ち切る理由が無い。
+     */
+    public static void setAddressOfLinkage(Storage target, int targetOffset, ProgramContext context,
+                                           DataView[] arguments, int index) {
+        DataView passed = arguments == null || index >= arguments.length ? null : arguments[index];
+        if (passed == null) {
+            target.view(targetOffset, 4).setBytes(new byte[4]);
+            return;
+        }
+        setAddressOf(target, targetOffset, context, passed.storage(), passed.offset());
+    }
+
+    /**
+     * {@code SET 手続きポインタ TO ENTRY 名前}。
+     *
+     * <p>入口の名前に振った番号を頭の 4 byte に置く。手続きポインタの残りの 4 byte は 0 である。
+     * 番号はこの実行単位の中でだけ意味を持つ。ホストの番地ではない (暫定判断 P-150 と同じ扱い)。
+     * 入口を探すのは呼ぶときである。
+     */
+    public static void setEntry(Storage target, int offset, int length, ProgramContext context,
+                                String name) {
+        int number = AddressSpace.of(context).entryOf(name.trim());
+        byte[] value = new byte[length];
+        value[0] = (byte) (number >>> 24);
+        value[1] = (byte) (number >>> 16);
+        value[2] = (byte) (number >>> 8);
+        value[3] = (byte) number;
+        target.view(offset, length).setBytes(value);
+    }
+
+    /** 入口の名前をデータ項目から読む {@code SET ... TO ENTRY}。 */
+    public static void setEntry(Storage target, int offset, int length, ProgramContext context,
+                                byte[] name) {
+        setEntry(target, offset, length, context, context.codePage().decode(name));
+    }
+
+    /**
+     * 手続きポインタ・関数ポインタ越しの {@code CALL}。
+     *
+     * <p>NULL のポインタや、{@code SET ... TO ENTRY} で置いたのでない値で呼べば、ホストでは
+     * 番地 0 や壊れた番地へ分岐して {@code S0C1} / {@code S0C4} で終わる。ここでは S0C4 にする。
+     *
+     * @param pointer ポインタの中身。頭の 4 byte が入口の番号である
+     */
+    public static void callEntry(ProgramContext context, byte[] pointer, ClassLoader loader,
+                                 DataView[] arguments) {
+        int number = ((pointer[0] & 0xFF) << 24) | ((pointer[1] & 0xFF) << 16)
+                | ((pointer[2] & 0xFF) << 8) | (pointer[3] & 0xFF);
+        String name = AddressSpace.of(context).entryNamed(number);
+        if (name == null) {
+            throw new Abend(AbendCode.S0C4, "CALL through a procedure pointer that holds X'"
+                    + String.format("%08X", number) + "', which is not an entry set by SET ... TO ENTRY");
+        }
+        call(context, name, loader, arguments);
+    }
+
+    /**
+     * 呼び出し 1 回ぶんの LOCAL-STORAGE を作り、枠に置く。
+     *
+     * <p>初期イメージのうち LOCAL-STORAGE の範囲だけを写す。写しは呼び出しごとに別なので、
+     * 前の呼び出しの値は残らず、再帰した呼び出しどうしも互いを壊さない。
+     *
+     * @param slot    置く枠の番号
+     * @param initial プログラムの初期イメージ
+     * @param from    LOCAL-STORAGE の始まり
+     * @param length  LOCAL-STORAGE の長さ
+     * @return 枠を足した配列。渡された配列は書き換えない
+     */
+    public static DataView[] withLocalStorage(DataView[] slots, int slot, byte[] initial,
+                                              int from, int length) {
+        int passed = slots == null ? 0 : slots.length;
+        DataView[] out = new DataView[Math.max(passed, slot + 1)];
+        if (passed > 0) {
+            System.arraycopy(slots, 0, out, 0, passed);
+        }
+        out[slot] = Storage.copyOf(java.util.Arrays.copyOfRange(initial, from, from + length))
+                .whole();
+        return out;
+    }
+
+    /** この呼び出しの LOCAL-STORAGE。 */
+    public static Storage localStorage(DataView[] slots, int slot) {
+        return slots[slot].storage();
+    }
+
+    /**
+     * 副入口の引数を、連絡節の項目の枠へ並べ替える。
+     *
+     * @param slots {@code slots[i]} は、i 番目の引数を受ける項目の枠の番号
+     * @param size  枠の数
+     */
+    public static DataView[] entrySlots(DataView[] arguments, int[] slots, int size) {
+        DataView[] out = new DataView[size];
+        int passed = arguments == null ? 0 : arguments.length;
+        for (int i = 0; i < slots.length && i < passed; i++) {
+            out[slots[i]] = arguments[i];
+        }
+        return out;
     }
 
     /** {@code SET ptr TO ADDRESS OF 項目}。項目の記憶域と位置に振った番号を POINTER の 4 byte に置く。 */

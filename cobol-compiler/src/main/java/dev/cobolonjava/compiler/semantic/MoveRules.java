@@ -42,7 +42,9 @@ public final class MoveRules {
          * {@code National.move}。国字の受取項目へ、国字の空白で埋めながら詰める。
          * 送り側が英数字なら、プログラムのコードページの文字として読んで国字に直す。
          */
-        NATIONAL
+        NATIONAL,
+        /** {@code Dbcs.move}。DBCS の受取項目へ、DBCS の空白で埋めながら詰める。 */
+        DBCS
     }
 
     /** 分類の組み合わせから転記の種類を決める。 */
@@ -52,6 +54,9 @@ public final class MoveRules {
         }
         if (receiver == DataCategory.NATIONAL) {
             return Kind.NATIONAL;
+        }
+        if (receiver == DataCategory.DBCS) {
+            return Kind.DBCS;
         }
         if (receiver.isNumeric()) {
             return Kind.NUMERIC;
@@ -80,6 +85,10 @@ public final class MoveRules {
             // 国字から英数字・数値への転記は書けない。英数字へ直すには DISPLAY-OF を使う
             return false;
         }
+        if (sender == DataCategory.DBCS) {
+            // DBCS は DBCS と国字へだけ移せる。国字へは字に直して移す (MOVE の表)
+            return receiver == DataCategory.DBCS || receiver == DataCategory.NATIONAL;
+        }
         return switch (receiver) {
             case ALPHABETIC -> sender == DataCategory.ALPHABETIC
                     || sender == DataCategory.ALPHANUMERIC
@@ -103,6 +112,7 @@ public final class MoveRules {
                     || sender == DataCategory.NUMERIC_EDITED
                     || sender == DataCategory.NUMERIC_INTEGER;
             case GROUP -> true;
+            case DBCS -> false;
         };
     }
 
@@ -111,6 +121,9 @@ public final class MoveRules {
         if (sender == DataCategory.NATIONAL) {
             return "a national item can be moved only to a national or group item"
                     + " (use FUNCTION DISPLAY-OF)";
+        }
+        if (sender == DataCategory.DBCS || receiver == DataCategory.DBCS) {
+            return "a DBCS item can be moved only to and from DBCS, national and group items";
         }
         if (receiver == DataCategory.NATIONAL) {
             return "a non-integer numeric item cannot be moved to a national item";
@@ -137,6 +150,7 @@ public final class MoveRules {
             case NUMERIC_EDITED -> "numeric-edited";
             case GROUP -> "group";
             case NATIONAL -> "national";
+            case DBCS -> "DBCS";
         };
     }
 }

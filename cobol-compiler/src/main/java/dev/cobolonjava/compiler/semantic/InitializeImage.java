@@ -45,6 +45,14 @@ public final class InitializeImage {
     private final byte highValue;
     private final byte lowValue;
 
+    /** {@code TO VALUE} の指定。無ければ {@code null}。 */
+    private Statement.Initialize.ToValue toValue;
+    private boolean toDefault;
+    /** プログラムの初期イメージ。VALUE 句の値はここに組み立ててある。 */
+    private byte[] initial;
+    /** 初期化する項目 (1 回分) の、初期イメージの中での位置。 */
+    private int initialBase;
+
     private InitializeImage(CodePage codePage, boolean withFiller, List<Replacing> replacing,
                             byte highValue, byte lowValue) {
         this.codePage = codePage;
@@ -65,7 +73,23 @@ public final class InitializeImage {
 
     /** {@code REPLACING} で書ける分類。 */
     public enum Category {
-        ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED;
+        ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED,
+        /** 国字の項目 ({@code PIC N})。国字の数字項目は NUMERIC に入る (言語解説書 "INITIALIZE")。 */
+        NATIONAL,
+        /** DBCS の項目 ({@code PIC G})。{@code EGCS} は同じ意味の古い綴りである。 */
+        DBCS,
+        /** 国字編集の項目 ({@code PIC NBN})。NATIONAL には入らない。 */
+        NATIONAL_EDITED;
+
+        /** 項目がこの分類に当たるか。国字編集は国字と分ける。 */
+        public boolean matches(DataItem item) {
+            boolean nationalEdited = item.picture() != null && item.picture().isNationalEdited()
+                    && DataCategory.of(item) == DataCategory.NATIONAL;
+            if (this == NATIONAL_EDITED) {
+                return nationalEdited;
+            }
+            return !nationalEdited && matches(DataCategory.of(item));
+        }
 
         /** 項目の分類がこれに当たるか。 */
         public boolean matches(DataCategory actual) {
@@ -75,6 +99,9 @@ public final class InitializeImage {
                 case ALPHANUMERIC_EDITED -> actual == DataCategory.ALPHANUMERIC_EDITED;
                 case NUMERIC -> actual.isNumeric();
                 case NUMERIC_EDITED -> actual == DataCategory.NUMERIC_EDITED;
+                case NATIONAL -> actual == DataCategory.NATIONAL;
+                case DBCS -> actual == DataCategory.DBCS;
+                case NATIONAL_EDITED -> false;
             };
         }
     }
@@ -119,8 +146,37 @@ public final class InitializeImage {
      */
     public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
                                CodePage codePage, byte highValue, byte lowValue) {
+        return build(item, withFiller, replacing, null, false, null, codePage, highValue,
+                lowValue);
+    }
+
+    /**
+     * {@code TO VALUE} と {@code TO DEFAULT} まで踏まえて組み立てる。
+     *
+     * <p>決め方は 3 段である (2002 規格 14.8.19 の一般規則、Enterprise COBOL 言語解説書の
+     * INITIALIZE 文)。
+     * <ol>
+     *   <li>{@code TO VALUE} が書かれ、分類が当たり、VALUE 句を持つ項目は<b>VALUE 句の値</b></li>
+     *   <li>残りのうち {@code REPLACING} の分類が当たる項目は、その値</li>
+     *   <li>残りは、{@code TO DEFAULT} が書かれたか、VALUE も REPLACING も書かれて
+     *       いなければ既定 (空白・0)。そうでなければ<b>変えない</b></li>
+     * </ol>
+     *
+     * <p>VALUE 句の値は<b>初期イメージのバイトをそのまま</b>写す。転記し直すと
+     * {@code JUSTIFIED} が効いてしまうが、VALUE 句の初期値に {@code JUSTIFIED} は効かない。
+     *
+     * @param initial プログラムの初期イメージ。{@code TO VALUE} を書かなければ {@code null} でよい
+     */
+    public static Result build(DataItem item, boolean withFiller, List<Replacing> replacing,
+                               Statement.Initialize.ToValue toValue, boolean toDefault,
+                               byte[] initial, CodePage codePage, byte highValue,
+                               byte lowValue) {
         InitializeImage builder = new InitializeImage(codePage, withFiller, replacing,
                 highValue, lowValue);
+        builder.toValue = toValue;
+        builder.toDefault = toDefault;
+        builder.initial = initial;
+        builder.initialBase = item.record().base() + item.offset();
         // 書かれた項目そのものは 1 回分である。表なら添字で 1 つに絞られている
         int length = item.length();
         byte[] image = new byte[length];
@@ -176,6 +232,17 @@ public final class InitializeImage {
             // FILLER は初期化の対象外である
             return;
         }
+        if (toValue != null && initial != null && item.initialValue() != null
+                && (toValue.category() == null
+                        || toValue.category().matches(DataCategory.of(item)))) {
+            int length = item.length();
+            int from = initialBase + at;
+            if (from + length <= initial.length && at + length <= image.length) {
+                System.arraycopy(initial, from, image, at, length);
+                Arrays.fill(written, at, at + length, true);
+            }
+            return;
+        }
         LiteralValue value = valueFor(item);
         if (value == null) {
             return;
@@ -192,14 +259,14 @@ public final class InitializeImage {
     private LiteralValue valueFor(DataItem item) {
         DataCategory category = DataCategory.of(item);
         for (Replacing rule : replacing) {
-            if (rule.category().matches(category)) {
+            if (rule.category().matches(item)) {
                 return rule.value();
             }
         }
-        if (replacing.isEmpty()) {
+        if (toDefault || (replacing.isEmpty() && toValue == null)) {
             return defaultFor(category);
         }
-        // REPLACING を書いたら、当たらなかった項目は変えない
+        // VALUE か REPLACING を書いたら、当たらなかった項目は変えない
         return null;
     }
 
@@ -229,7 +296,14 @@ public final class InitializeImage {
         Storage scratch = Storage.allocate(length);
         try {
             DataCategory category = DataCategory.of(item);
-            if (category == DataCategory.NATIONAL) {
+            if (category == DataCategory.DBCS) {
+                dev.cobolonjava.runtime.data.Dbcs.move(value instanceof LiteralValue.Dbcs dbcs
+                        ? dbcs.bytes() : new byte[0], scratch, 0, length);
+            } else if (category == DataCategory.NATIONAL && item.picture() != null
+                    && item.picture().isNationalEdited()) {
+                Ops.moveAlphanumericEdited(NationalLiterals.bytesOf(value, length, codePage),
+                        item.picture(), scratch, 0, codePage);
+            } else if (category == DataCategory.NATIONAL) {
                 dev.cobolonjava.runtime.data.National.move(
                         NationalLiterals.bytesOf(value, length, codePage), scratch, 0, length,
                         item.justified());
@@ -283,6 +357,12 @@ public final class InitializeImage {
         if (value instanceof LiteralValue.Figure figure
                 && figure.constant() == LiteralValue.FigurativeConstant.ZERO) {
             return Decimal.zero(scale);
+        }
+        if (value instanceof LiteralValue.Text text && !text.text().isEmpty()
+                && text.text().chars().allMatch(Character::isDigit)) {
+            // 英数字の定数を数値の受取側へ移すのは、符号なしの整数として読む転記である
+            // (MOVE の表)。REPLACING NUMERIC-EDITED BY '123' がこの形である
+            return Decimal.parse(text.text());
         }
         throw new IllegalArgumentException("a numeric item requires a numeric value");
     }

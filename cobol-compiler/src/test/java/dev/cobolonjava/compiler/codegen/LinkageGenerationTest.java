@@ -345,20 +345,20 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("BY VALUE はまだ書けないと報告する (FR-027)")
-    void byValueIsReportedAsUnsupported() {
+    @DisplayName("PROCEDURE DIVISION USING BY VALUE を受ける (FR-027)")
+    void byValueParametersAreAccepted() {
+        // 以前は「まだ書けない」と断ることを検査していた。受ける側は渡された写しに重ねて
+        // 読むだけであり、動きは SubprogramLinkageTest が見る
         CobolCompiler.Result result = compile(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. SUB.",
                 "DATA DIVISION.",
                 "LINKAGE SECTION.",
-                "01 LK-A PIC X(3).",
+                "01 LK-A PIC S9(9) COMP-5.",
                 "PROCEDURE DIVISION USING BY VALUE LK-A.",
                 "MAIN-START.",
                 "    CONTINUE."));
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("BY VALUE"),
-                result.diagnostics().toString());
+        assertTrue(result.succeeded(), result.diagnostics()::toString);
     }
 }

@@ -28,7 +28,9 @@ public final class ProcedureInvocation {
         this.sourceFile = sourceFile;
         this.sourceLine = sourceLine;
         this.workingStorage = Objects.requireNonNull(workingStorage, "workingStorage");
-        this.arguments = List.copyOf(arguments);
+        // 枠は空のことがある (USING に並ばない連絡節の 01、OMITTED)。List.copyOf は null を断る
+        this.arguments = java.util.Collections.unmodifiableList(
+                new java.util.ArrayList<>(arguments));
         this.context = Objects.requireNonNull(context, "context");
     }
 

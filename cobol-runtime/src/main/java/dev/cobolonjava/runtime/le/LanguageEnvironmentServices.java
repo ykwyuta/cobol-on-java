@@ -56,7 +56,214 @@ public final class LanguageEnvironmentServices {
         return builder
                 .javaProgram("CEEDAYS", () -> (context, arguments) -> ceedays(context.codePage(), arguments))
                 .javaProgram("CEELOCT", () -> (context, arguments) ->
-                        ceeloct(context.codePage(), context.clock(), arguments));
+                        ceeloct(context.codePage(), context.clock(), arguments))
+                .javaProgram("CEEDATE", () -> (context, arguments) ->
+                        format(context.codePage(), arguments, false))
+                .javaProgram("CEEDATM", () -> (context, arguments) ->
+                        format(context.codePage(), arguments, true))
+                .javaProgram("CEESECS", () -> (context, arguments) ->
+                        ceesecs(context.codePage(), arguments))
+                .javaProgram("CEENCOD", () -> (context, arguments) -> ceencod(arguments))
+                .javaProgram("CEEDCOD", () -> (context, arguments) -> ceedcod(arguments));
+    }
+
+    /**
+     * 実行単位がいつも持っているサービスの表。z/OS では LE がいつも在るので、
+     * 利用者のカタログに無い {@code CEE...} の名前はここから引く。
+     */
+    public static final ProgramCatalog BUILT_IN = register(ProgramCatalog.builder()).build();
+
+    private static final String[] MONTHS = {"JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+        "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"};
+    private static final String[] DAYS = {"SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+        "FRIDAY", "SATURDAY"};
+
+    /**
+     * Lilian の秒を絵文字列で字にする (CEEDATE と CEEDATM の共通の部分)。
+     *
+     * <p>持つ絵は YYYY・YY・MM・MMM/Mmm・DD・DDD・HH・MI・SS・WWW/Www と、ほかの字 (そのまま写す) で
+     * ある。並びは Zeus (同じ権利者の処理系) の {@code vm/le.rs} と同じにした。ほかの絵
+     * (時代、午前午後、小数の秒など) は断る。実機とは突き合わせていない。
+     */
+    static String formatLilian(long day, int secondOfDay, String picture) {
+        LocalDate date = LocalDate.ofEpochDay(day + LILIAN_ORIGIN);
+        // 1582 年 10 月 15 日 (Lilian の 1 日目) は金曜である
+        int weekday = (int) Math.floorMod(day + 4, 7L);
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < picture.length(); ) {
+            String rest = picture.substring(i);
+            if (rest.startsWith("YYYY")) {
+                out.append(String.format("%04d", date.getYear()));
+                i += 4;
+            } else if (rest.startsWith("YY")) {
+                out.append(String.format("%02d", date.getYear() % 100));
+                i += 2;
+            } else if (rest.startsWith("MMM") || rest.startsWith("Mmm")) {
+                out.append(named(MONTHS[date.getMonthValue() - 1], rest));
+                i += 3;
+            } else if (rest.startsWith("MM")) {
+                out.append(String.format("%02d", date.getMonthValue()));
+                i += 2;
+            } else if (rest.startsWith("MI")) {
+                out.append(String.format("%02d", secondOfDay % 3600 / 60));
+                i += 2;
+            } else if (rest.startsWith("DDD")) {
+                out.append(String.format("%03d", date.getDayOfYear()));
+                i += 3;
+            } else if (rest.startsWith("DD")) {
+                out.append(String.format("%02d", date.getDayOfMonth()));
+                i += 2;
+            } else if (rest.startsWith("HH")) {
+                out.append(String.format("%02d", secondOfDay / 3600));
+                i += 2;
+            } else if (rest.startsWith("SS")) {
+                out.append(String.format("%02d", secondOfDay % 60));
+                i += 2;
+            } else if (rest.startsWith("WWW") || rest.startsWith("Www")) {
+                out.append(named(DAYS[weekday], rest));
+                i += 3;
+            } else if (Character.isLetterOrDigit(picture.charAt(i))) {
+                throw new IllegalArgumentException(
+                        "this date/time picture string is not supported: " + picture);
+            } else {
+                out.append(picture.charAt(i));
+                i++;
+            }
+        }
+        return out.toString();
+    }
+
+    /** 名前の頭 3 字。絵の 2 字目が小文字なら頭だけ大文字にする。 */
+    private static String named(String name, String picture) {
+        String three = name.substring(0, 3);
+        return Character.isLowerCase(picture.charAt(1))
+                ? three.charAt(0) + three.substring(1).toLowerCase(java.util.Locale.ROOT) : three;
+    }
+
+    /**
+     * CEEDATE (input_Lilian_date, picture_string, output_char_date, fc) と
+     * CEEDATM (input_seconds, picture_string, output_timestamp, fc)。
+     * 出力は 80 字で、右は空白で埋める。
+     */
+    static void format(CodePage codePage, List<DataView> arguments, boolean seconds) {
+        String service = seconds ? "CEEDATM" : "CEEDATE";
+        requireArguments(arguments, 4, service);
+        String picture = vstring(codePage, arguments.get(1), service + " picture_string")
+                .stripTrailing();
+        DataView output = arguments.get(2);
+        DataView fc = requireLength(arguments.get(3), TOKEN_LENGTH, service + " fc");
+        long total;
+        if (seconds) {
+            DataView input = requireLength(arguments.get(0), Long.BYTES, "CEEDATM input_seconds");
+            total = Ops.readFloat(input.storage(), input.offset(), Long.BYTES).toBigDecimal()
+                    .setScale(0, java.math.RoundingMode.FLOOR).longValueExact();
+        } else {
+            DataView input = requireLength(arguments.get(0), Integer.BYTES,
+                    "CEEDATE input_Lilian_date");
+            total = java.nio.ByteBuffer.wrap(input.toByteArray()).getInt() * 86_400L;
+        }
+        byte[] text = new byte[output.length()];
+        java.util.Arrays.fill(text, codePage.space());
+        if (total < 86_400L) {
+            // 範囲の外。CEEDATM は CEE2EL、CEEDATE は CEE2EG を返し、出力は空白にする
+            output.setBytes(text);
+            token(codePage, fc, seconds ? CEE2EL : new Feedback("CEE2EG", 3, 2512));
+            return;
+        }
+        byte[] encoded = codePage.encode(formatLilian(total / 86_400L, (int) (total % 86_400L),
+                picture));
+        System.arraycopy(encoded, 0, text, 0, Math.min(encoded.length, text.length));
+        output.setBytes(text);
+        token(codePage, fc, CEE000);
+    }
+
+    /**
+     * CEESECS (input_timestamp, picture_string, output_seconds, fc)。日付の部分は CEEDAYS と
+     * 同じに検査し、HH・MI・SS を足す。
+     */
+    static void ceesecs(CodePage codePage, List<DataView> arguments) {
+        requireArguments(arguments, 4, "CEESECS");
+        String stamp = vstring(codePage, arguments.get(0), "CEESECS input_timestamp");
+        String picture = vstring(codePage, arguments.get(1), "CEESECS picture_string");
+        DataView output = requireLength(arguments.get(2), Long.BYTES, "CEESECS output_seconds");
+        DataView fc = requireLength(arguments.get(3), TOKEN_LENGTH, "CEESECS fc");
+        StringBuilder date = new StringBuilder();
+        StringBuilder datePicture = new StringBuilder();
+        int time = 0;
+        for (int i = 0; i < picture.length() && i < stamp.length(); i++) {
+            char c = picture.charAt(i);
+            if (c == 'Y' || c == 'D' || (c == 'M' && !picture.startsWith("MI", i))) {
+                date.append(stamp.charAt(i));
+                datePicture.append(c);
+            } else if (picture.startsWith("HH", i) || picture.startsWith("MI", i)
+                    || picture.startsWith("SS", i)) {
+                String field = stamp.substring(i, Math.min(stamp.length(), i + 2));
+                if (!field.chars().allMatch(Character::isDigit) || field.length() != 2) {
+                    output.setBytes(new byte[Long.BYTES]);
+                    token(codePage, fc, CEE2EO);
+                    return;
+                }
+                time += Integer.parseInt(field) * (c == 'H' ? 3600 : c == 'M' ? 60 : 1);
+                i++;
+            }
+        }
+        Feedback feedback = parse(date.toString(), datePicture.toString());
+        if (feedback != null) {
+            output.setBytes(new byte[Long.BYTES]);
+            token(codePage, fc, feedback);
+            return;
+        }
+        long lilian = lilianDate(date.toString(), datePicture.toString()) - LILIAN_ORIGIN;
+        Ops.storeFloat(Decimal.parse(Long.toString(lilian * 86_400L + time)), output.storage(),
+                output.offset(), Long.BYTES);
+        token(codePage, fc, CEE000);
+    }
+
+    /**
+     * CEENCOD (c_1, c_2, case, severity, control, facility_ID, i_s_info, cond_token, fc)。
+     * 条件トークンは 12 byte で、c_1 と c_2 の半語、case (2 ビット)・severity (3 ビット)・
+     * control (3 ビット) を詰めた 1 byte、facility の 3 字、i_s_info の全語である。
+     * 値の範囲の検査は持たない (範囲の外の値は断る)。
+     */
+    static void ceencod(List<DataView> arguments) {
+        requireArguments(arguments, 9, "CEENCOD");
+        int kind = half(arguments.get(2));
+        int severity = half(arguments.get(3));
+        int control = half(arguments.get(4));
+        if (kind < 1 || kind > 2 || severity < 0 || severity > 4 || control < 0 || control > 1) {
+            throw new IllegalArgumentException("CEENCOD with case " + kind + ", severity "
+                    + severity + ", control " + control + " is not supported yet");
+        }
+        byte[] token = new byte[TOKEN_LENGTH];
+        System.arraycopy(arguments.get(0).toByteArray(), 0, token, 0, 2);
+        System.arraycopy(arguments.get(1).toByteArray(), 0, token, 2, 2);
+        token[4] = (byte) (kind << 6 | severity << 3 | control);
+        System.arraycopy(arguments.get(5).toByteArray(), 0, token, 5, 3);
+        System.arraycopy(arguments.get(6).toByteArray(), 0, token, 8, 4);
+        requireLength(arguments.get(7), TOKEN_LENGTH, "CEENCOD cond_token").setBytes(token);
+        requireLength(arguments.get(8), TOKEN_LENGTH, "CEENCOD fc")
+                .setBytes(new byte[TOKEN_LENGTH]);
+    }
+
+    /** CEEDCOD (cond_token, c_1, c_2, case, severity, control, facility_ID, i_s_info, fc)。 */
+    static void ceedcod(List<DataView> arguments) {
+        requireArguments(arguments, 9, "CEEDCOD");
+        byte[] token = requireLength(arguments.get(0), TOKEN_LENGTH, "CEEDCOD cond_token")
+                .toByteArray();
+        arguments.get(1).setBytes(java.util.Arrays.copyOfRange(token, 0, 2));
+        arguments.get(2).setBytes(java.util.Arrays.copyOfRange(token, 2, 4));
+        arguments.get(3).setBytes(new byte[] {0, (byte) ((token[4] >> 6) & 3)});
+        arguments.get(4).setBytes(new byte[] {0, (byte) ((token[4] >> 3) & 7)});
+        arguments.get(5).setBytes(new byte[] {0, (byte) (token[4] & 7)});
+        arguments.get(6).setBytes(java.util.Arrays.copyOfRange(token, 5, 8));
+        arguments.get(7).setBytes(java.util.Arrays.copyOfRange(token, 8, 12));
+        requireLength(arguments.get(8), TOKEN_LENGTH, "CEEDCOD fc")
+                .setBytes(new byte[TOKEN_LENGTH]);
+    }
+
+    private static int half(DataView area) {
+        byte[] bytes = area.toByteArray();
+        return (short) (((bytes[0] & 0xFF) << 8) | (bytes[1] & 0xFF));
     }
 
     /**

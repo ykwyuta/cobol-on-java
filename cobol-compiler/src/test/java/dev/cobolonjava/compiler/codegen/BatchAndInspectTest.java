@@ -1,0 +1,494 @@
+package dev.cobolonjava.compiler.codegen;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.cobolonjava.compiler.CobolCompiler;
+import dev.cobolonjava.runtime.program.CobolProgram;
+import dev.cobolonjava.runtime.program.ProgramContext;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+/**
+ * ZCVS の残りを流して見つかった、狭く決めていた書き方と、通していた誤り。
+ *
+ * <p>期待値の根拠は Enterprise COBOL の言語解説書とプログラミングの手引きである。
+ * 実機とは突き合わせていない。
+ */
+@Tag("V1")
+class BatchAndInspectTest {
+
+    private static final class GeneratedLoader extends ClassLoader {
+
+        private GeneratedLoader() {
+            super(BatchAndInspectTest.class.getClassLoader());
+        }
+
+        Class<?> define(String name, byte[] classFile) {
+            return defineClass(name, classFile, 0, classFile.length);
+        }
+    }
+
+    private static CobolCompiler.Result compile(List<String> lines) {
+        StringBuilder source = new StringBuilder();
+        for (String line : lines) {
+            source.append("       ").append(line).append('\n');
+        }
+        return CobolCompiler.standard().compile("PGM.cbl", source.toString());
+    }
+
+    private static List<String> run(List<String> lines) {
+        CobolCompiler.Result result = compile(lines);
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        GeneratedLoader loader = new GeneratedLoader();
+        List<CobolProgram> loaded = new ArrayList<>();
+        for (CobolCompiler.Compiled program : result.programs()) {
+            try {
+                Class<?> type = loader.define(program.className(), program.classFile());
+                loaded.add((CobolProgram) type.getDeclaredConstructor().newInstance());
+            } catch (ReflectiveOperationException e) {
+                throw new AssertionError("cannot load the generated program", e);
+            }
+        }
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        loaded.get(0).runFresh(ProgramContext.capturing(sink));
+        return sink.toString(StandardCharsets.UTF_8).lines().toList();
+    }
+
+    /** 初期値の像をバイトの 16 進で返す。 */
+    private static String initialHex(List<String> lines) throws ReflectiveOperationException {
+        CobolCompiler.Result result = compile(lines);
+        assertTrue(result.succeeded(), () -> "unexpected diagnostics: " + result.diagnostics());
+        CobolProgram program = (CobolProgram) new GeneratedLoader()
+                .define(result.className(), result.classFile())
+                .getDeclaredConstructor().newInstance();
+        StringBuilder hex = new StringBuilder();
+        for (byte b : program.initialStorage()) {
+            hex.append(String.format("%02X", b & 0xFF));
+        }
+        return hex.toString();
+    }
+
+    @Test
+    @DisplayName("INSPECT は関数の値も数えられる。元の項目は変わらない")
+    void talliesAFunctionValue() {
+        // 'ABC  ' を逆さにすると頭に空白が 2 つ来る。後ろの空白の数を数える書き方である
+        assertEquals(List.of("02/ABC  "), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-TEXT PIC X(5) VALUE 'ABC'.",
+                "01 WS-N PIC 99 VALUE 0.",
+                "PROCEDURE DIVISION.",
+                "    INSPECT FUNCTION REVERSE(WS-TEXT)",
+                "        TALLYING WS-N FOR LEADING SPACES.",
+                "    DISPLAY WS-N '/' WS-TEXT.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("関数の値は書き換えられないので、REPLACING は断る")
+    void refusesToReplaceInAFunctionValue() {
+        CobolCompiler.Result result = compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-TEXT PIC X(5) VALUE 'ABC'.",
+                "PROCEDURE DIVISION.",
+                "    INSPECT FUNCTION REVERSE(WS-TEXT)",
+                "        REPLACING ALL 'A' BY 'B'.",
+                "    STOP RUN."));
+        assertFalse(result.succeeded());
+    }
+
+    @Test
+    @DisplayName("続けて書いたプログラムの前の CBL 文は、そのプログラムからの指定である")
+    void appliesAProcessStatementToTheFollowingProgram() {
+        // 1 本目は TRUNC(STD) で 4 桁に切れ、2 本目は TRUNC(BIN) で halfword まで入る
+        assertEquals(List.of("2345", "+12345"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-H PIC 9(4) COMP.",
+                "01 WS-BIG PIC 9(5) VALUE 12345.",
+                "PROCEDURE DIVISION.",
+                "    MOVE WS-BIG TO WS-H.",
+                "    DISPLAY WS-H.",
+                "    CALL 'SECOND'.",
+                "    STOP RUN.",
+                "END PROGRAM MAIN.",
+                "CBL TRUNC(BIN)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SECOND.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-H PIC S9(4) COMP.",
+                "01 WS-BIG PIC 9(5) VALUE 12345.",
+                "01 WS-OUT PIC +9(5).",
+                "PROCEDURE DIVISION.",
+                "    MOVE WS-BIG TO WS-H.",
+                "    MOVE WS-H TO WS-OUT.",
+                "    DISPLAY WS-OUT.",
+                "    GOBACK.",
+                "END PROGRAM SECOND.")));
+    }
+
+    private static List<String> withFile(String ioControl, String codeSet, String record) {
+        List<String> lines = new ArrayList<>(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "ENVIRONMENT DIVISION.",
+                "CONFIGURATION SECTION.",
+                "SPECIAL-NAMES.",
+                "    ALPHABET ASCII-CS IS STANDARD-1.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT F ASSIGN TO OUTFILE."));
+        if (ioControl != null) {
+            lines.add("I-O-CONTROL.");
+            lines.add("    " + ioControl);
+        }
+        lines.addAll(List.of(
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                codeSet == null ? "FD  F." : "FD  F " + codeSet,
+                "01  F-REC " + record,
+                "PROCEDURE DIVISION.",
+                "    STOP RUN."));
+        return lines;
+    }
+
+    @Test
+    @DisplayName("CODE-SET の下の符号つきの数字項目は SIGN IS SEPARATE を要る")
+    void requiresASeparateSignUnderCodeSet() {
+        CobolCompiler.Result refused =
+                compile(withFile(null, "CODE-SET IS ASCII-CS.", "PIC S9(4)."));
+        assertFalse(refused.succeeded());
+        assertTrue(refused.diagnostics().toString().contains("CODE-SET requires"),
+                () -> refused.diagnostics().toString());
+
+        CobolCompiler.Result accepted = compile(withFile(null, "CODE-SET IS ASCII-CS.",
+                "PIC S9(4) SIGN TRAILING SEPARATE."));
+        assertTrue(accepted.succeeded(), () -> accepted.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("RERUN の EVERY n RECORDS のあとには OF ファイル名が要る")
+    void requiresAFileNameInRerun() {
+        CobolCompiler.Result refused =
+                compile(withFile("RERUN ON F EVERY 100 RECORDS.", null, "PIC X(10)."));
+        assertFalse(refused.succeeded());
+        assertTrue(refused.diagnostics().toString().contains("name expected"),
+                () -> refused.diagnostics().toString());
+
+        CobolCompiler.Result accepted =
+                compile(withFile("RERUN ON F EVERY 100 RECORDS OF F.", null, "PIC X(10)."));
+        assertTrue(accepted.succeeded(), () -> accepted.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("外部浮動小数点は、左端の桁が 0 にならないように寄せて字で持つ")
+    void normalizesExternalFloatingItems() {
+        assertEquals(List.of("+00.00E+00/Y", "+12.50E-01", "-12.50E-01", "+12.34E+02",
+                "00123400000"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 EXT PIC +99.99E+99.",
+                "01 BACK PIC 9(5)V9(6).",
+                "01 FLAG PIC X VALUE 'N'.",
+                "PROCEDURE DIVISION.",
+                "    MOVE 0 TO EXT.",
+                "    IF EXT IS NUMERIC MOVE 'Y' TO FLAG.",
+                "    DISPLAY EXT '/' FLAG.",
+                "    MOVE 1.25 TO EXT.",
+                "    DISPLAY EXT.",
+                "    MOVE -1.25 TO EXT.",
+                "    DISPLAY EXT.",
+                "    MOVE 1234 TO EXT.",
+                "    DISPLAY EXT.",
+                "    MOVE 123.4 TO EXT.",
+                "    MOVE EXT TO BACK.",
+                "    DISPLAY BACK.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("外部浮動小数点に VALUE と 2 進の USAGE は書けない")
+    void refusesClausesAnExternalFloatingItemCannotHave() {
+        for (String clause : List.of("VALUE 1", "JUSTIFIED", "COMP")) {
+            CobolCompiler.Result result = compile(List.of(
+                    "IDENTIFICATION DIVISION.",
+                    "PROGRAM-ID. MAIN.",
+                    "DATA DIVISION.",
+                    "WORKING-STORAGE SECTION.",
+                    "01 EXT PIC +9.9E+99 " + clause + ".",
+                    "PROCEDURE DIVISION.",
+                    "    STOP RUN."));
+            assertFalse(result.succeeded(), clause);
+            assertTrue(result.diagnostics().toString().contains("external floating item"),
+                    () -> clause + ": " + result.diagnostics());
+        }
+    }
+
+    @Test
+    @DisplayName("浮動小数点の受取側へ入れる除算とべき乗は、小数部を落とさない")
+    void keepsTheFractionForAFloatingReceiver() {
+        // 以前は断っていた。断るのをやめただけでは、商が整数に切れて 0 が入る
+        assertEquals(List.of("0125000", "0125000", "2000000"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 R COMP-2.",
+                "01 D PIC 9V9(6).",
+                "PROCEDURE DIVISION.",
+                "    COMPUTE R = 1 / 8.",
+                "    COMPUTE D = R.",
+                "    DISPLAY D.",
+                "    COMPUTE R = 2 ** -3.",
+                "    COMPUTE D = R.",
+                "    DISPLAY D.",
+                "    COMPUTE R = 4 ** 0.5.",
+                "    COMPUTE D = R.",
+                "    DISPLAY D.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("SAME RECORD AREA は、あとに APPLY や RERUN を書いても効く")
+    void sharesTheRecordAreaEvenWithOtherEntries() {
+        // 以前は APPLY の指定も SAME として読み、そこに書いたファイルの共有を壊していた
+        assertEquals(List.of("[SHARED01]"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "ENVIRONMENT DIVISION.",
+                "INPUT-OUTPUT SECTION.",
+                "FILE-CONTROL.",
+                "    SELECT FILE-A ASSIGN TO DDA.",
+                "    SELECT FILE-B ASSIGN TO DDB.",
+                "I-O-CONTROL.",
+                "    SAME RECORD AREA FOR FILE-A FILE-B.",
+                "    APPLY WRITE-ONLY ON FILE-B.",
+                "DATA DIVISION.",
+                "FILE SECTION.",
+                "FD  FILE-A.",
+                "01  REC-A PIC X(8).",
+                "FD  FILE-B RECORDING MODE S BLOCK CONTAINS 16 CHARACTERS.",
+                "01  REC-B PIC X(8).",
+                "PROCEDURE DIVISION.",
+                "    MOVE 'SHARED01' TO REC-A.",
+                "    DISPLAY '[' REC-B ']'.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("RECORDING MODE S は BLOCK CONTAINS が要り、U には書けない")
+    void checksBlockingAgainstTheRecordingMode() {
+        CobolCompiler.Result spanned =
+                compile(withFile(null, "RECORDING MODE S.", "PIC X(20)."));
+        assertFalse(spanned.succeeded());
+        assertTrue(spanned.diagnostics().toString().contains("requires BLOCK CONTAINS"),
+                () -> spanned.diagnostics().toString());
+
+        CobolCompiler.Result undefined = compile(withFile(null,
+                "RECORDING MODE U BLOCK CONTAINS 80 CHARACTERS.", "PIC X(80)."));
+        assertFalse(undefined.succeeded());
+        assertTrue(undefined.diagnostics().toString().contains("cannot specify BLOCK"),
+                () -> undefined.diagnostics().toString());
+    }
+
+    @Test
+    @DisplayName("CODEPAGE で選んだコードページで、文字定数と初期値のバイト列を作る")
+    void encodesLiteralsInTheSelectedCodePage() throws ReflectiveOperationException {
+        // 英小文字の a は IBM-1047 で X'81'、IBM-930 (片仮名のコードページ) で X'62' である
+        for (String[] expected : new String[][] {{"1047", "81"}, {"930", "62"}}) {
+            CobolCompiler.Result result = compile(List.of(
+                    "CBL CODEPAGE(" + expected[0] + ")",
+                    "IDENTIFICATION DIVISION.",
+                    "PROGRAM-ID. MAIN.",
+                    "DATA DIVISION.",
+                    "WORKING-STORAGE SECTION.",
+                    "01 WS-A PIC X VALUE 'a'.",
+                    "PROCEDURE DIVISION.",
+                    "    STOP RUN."));
+            assertTrue(result.succeeded(), () -> result.diagnostics().toString());
+            CobolProgram program = (CobolProgram) new GeneratedLoader()
+                    .define(result.className(), result.classFile())
+                    .getDeclaredConstructor().newInstance();
+            assertEquals(expected[1],
+                    String.format("%02X", program.initialStorage()[0] & 0xFF), expected[0]);
+        }
+    }
+
+    @Test
+    @DisplayName("国字の部分参照は字で数え、結果は国字である")
+    void countsNationalReferenceModificationInCharacters() {
+        // 以前は断っていた。1 字は 2 byte なので、バイトで数えると字の途中を指す
+        assertEquals(List.of("LAST", "TAIL", "REPL"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 WS-N PIC N(4) USAGE NATIONAL.",
+                "01 WS-RAW REDEFINES WS-N PIC X(8).",
+                "01 WS-SHORT PIC N(2) USAGE NATIONAL.",
+                "01 WS-SRAW REDEFINES WS-SHORT PIC X(4).",
+                "01 WS-I PIC 9 VALUE 3.",
+                "PROCEDURE DIVISION.",
+                "    MOVE N'ABCD' TO WS-N.",
+                "    IF WS-N(4:1) = N'D' DISPLAY 'LAST'.",
+                "    MOVE WS-N(WS-I:) TO WS-SHORT.",
+                "    IF WS-SRAW = X'00430044' DISPLAY 'TAIL'.",
+                "    MOVE N'XY' TO WS-N(2:2).",
+                "    IF WS-RAW = X'0041005800590044' DISPLAY 'REPL'.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("国字の群の中の数字は、字ごとに UTF-16 で持つ国字の数字項目である")
+    void storesNationalDecimalsInANationalGroup() {
+        assertEquals(List.of("BYTES", "12", "SELECT"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 NAT-GROUP GROUP-USAGE NATIONAL.",
+                "    05 LETTERS PIC N(2).",
+                "    05 DIGITS-NUM PIC 99.",
+                "01 GROUP-RAW REDEFINES NAT-GROUP PIC X(8).",
+                "01 SHOWN PIC 99.",
+                "PROCEDURE DIVISION.",
+                "    MOVE N'AB12' TO NAT-GROUP.",
+                "    IF GROUP-RAW = X'0041004200310032' DISPLAY 'BYTES'.",
+                "    MOVE DIGITS-NUM TO SHOWN.",
+                "    DISPLAY SHOWN.",
+                "    INITIALIZE NAT-GROUP REPLACING NATIONAL BY N'XY'.",
+                "    IF LETTERS = N'XY' AND DIGITS-NUM = 12 DISPLAY 'SELECT'.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("符号つきの国字の数字は SIGN SEPARATE が要り、国字の群の中に別の USAGE は書けない")
+    void refusesNationalDecimalsThatCannotExist() {
+        for (List<String> items : List.of(
+                List.of("01 BAD PIC S9(3) NATIONAL."),
+                List.of("01 G GROUP-USAGE NATIONAL.", "    05 BAD PIC 9(4) BINARY."))) {
+            List<String> lines = new ArrayList<>(List.of(
+                    "IDENTIFICATION DIVISION.",
+                    "PROGRAM-ID. MAIN.",
+                    "DATA DIVISION.",
+                    "WORKING-STORAGE SECTION."));
+            lines.addAll(items);
+            lines.addAll(List.of("PROCEDURE DIVISION.", "    STOP RUN."));
+            assertFalse(compile(lines).succeeded(), items.toString());
+        }
+    }
+
+    @Test
+    @DisplayName("DBCS の項目は SO / SI を持たず、余りは X'4040' で埋まる")
+    void storesDbcsWithoutShiftCodes() throws ReflectiveOperationException {
+        // 日 は IBM-939 の 2 バイト文字 X'4562'。英数字の項目に書けば SO / SI で囲まれる
+        assertEquals("456240404562456240400E45620F", initialHex(List.of(
+                "CBL CODEPAGE(939)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 G1 PIC G(2) DISPLAY-1 VALUE G'日'.",
+                "01 G2 PIC G(3) DISPLAY-1 VALUE G'日日'.",
+                "01 X1 PIC X(4) VALUE '日'.",
+                "PROCEDURE DIVISION.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("NSYMBOL(DBCS) の下では PIC N と N'..' が DBCS である")
+    void treatsPictureNAsDbcsUnderNsymbolDbcs() throws ReflectiveOperationException {
+        assertEquals("45624040", initialHex(List.of(
+                "CBL CODEPAGE(939),NSYMBOL(DBCS)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 N1 PIC N(2) VALUE N'日'.",
+                "PROCEDURE DIVISION.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("DBCS を国字へ移すと字に直り、DBCS の空白は和字の空白になる")
+    void convertsDbcsToNational() {
+        assertEquals(List.of("65E53000"), run(List.of(
+                "CBL CODEPAGE(939)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 G1 PIC G(2) DISPLAY-1.",
+                "01 N1 PIC N(2) USAGE NATIONAL.",
+                "01 N1-RAW REDEFINES N1 PIC X(4).",
+                "PROCEDURE DIVISION.",
+                "    MOVE G'日' TO G1.",
+                "    MOVE G1 TO N1.",
+                "    IF N1-RAW = X'65E53000' DISPLAY '65E53000'.",
+                "    STOP RUN.")));
+    }
+
+    @Test
+    @DisplayName("DBCS は英数字へは移せない")
+    void refusesToMoveDbcsToAlphanumeric() {
+        assertFalse(compile(List.of(
+                "CBL CODEPAGE(939)",
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 G1 PIC G(2) DISPLAY-1.",
+                "01 X1 PIC X(4).",
+                "PROCEDURE DIVISION.",
+                "    MOVE G1 TO X1.",
+                "    STOP RUN.")).succeeded());
+    }
+
+    @Test
+    @DisplayName("国字編集は挿入の字を UTF-16 で置き、USAGE NATIONAL の数字編集は編集した字を UTF-16 で持つ")
+    void editsNationalItems() throws ReflectiveOperationException {
+        assertEquals(List.of("CHAR", "NUM", "BACK"), run(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 NED-CH PIC NBN/0N.",
+                "01 NED-NUM PIC ZZ9.99 NATIONAL.",
+                "01 NED-RAW REDEFINES NED-NUM PIC X(12).",
+                "01 BACK PIC S9(3)V99 SIGN LEADING SEPARATE.",
+                "PROCEDURE DIVISION.",
+                "    MOVE N'XYZ' TO NED-CH.",
+                "    IF NED-CH = N'X Y/0Z' DISPLAY 'CHAR'.",
+                "    MOVE 10.34 TO NED-NUM.",
+                "    IF NED-NUM = N' 10.34' DISPLAY 'NUM'.",
+                "    MOVE NED-NUM TO BACK.",
+                "    IF BACK = 10.34 DISPLAY 'BACK'.",
+                "    STOP RUN.")));
+        // VALUE は編集せずに字をそのまま UTF-16 で置く
+        assertEquals("0041002000420020", initialHex(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. MAIN.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 NED-CH PIC NBNN VALUE N'A B'.",
+                "PROCEDURE DIVISION.",
+                "    STOP RUN.")));
+    }
+}

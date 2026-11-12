@@ -254,7 +254,12 @@ public final class ProgramContext {
     /** 積まれたプログラムの記憶域と、その {@code EXTERNAL} の位置。 */
     private final java.util.Deque<ExternalFrame> externalFrames = new java.util.ArrayDeque<>();
 
-    private record ExternalFrame(String name, Storage storage, CobolProgram program) {
+    private record ExternalFrame(String name, Storage storage, CobolProgram program,
+                                 Map<String, byte[]> flushed) {
+
+        ExternalFrame(String name, Storage storage, CobolProgram program) {
+            this(name, storage, program, new java.util.HashMap<>());
+        }
 
         CobolProgram.ExternalRegion[] regions() {
             return program == null ? CobolProgram.NO_EXTERNAL_REGIONS : program.externalRegions();
@@ -302,8 +307,9 @@ public final class ProgramContext {
             return;
         }
         for (CobolProgram.ExternalRegion region : frame.regions()) {
-            externals.put(region.name(),
-                    frame.storage().view(region.offset(), region.length()).toByteArray());
+            byte[] bytes = frame.storage().view(region.offset(), region.length()).toByteArray();
+            externals.put(region.name(), bytes);
+            frame.flushed().put(region.name(), bytes);
         }
     }
 
@@ -324,6 +330,14 @@ public final class ProgramContext {
         }
         for (CobolProgram.ExternalRegion region : frame.regions()) {
             byte[] shared = externals.get(region.name());
+            // 写しが、自分が最後に書き出したときのままなら読み込まない。そのあいだに
+            // 自分の記憶域が変わっていれば、それは CALL に BY REFERENCE で渡した項目へ
+            // 呼ばれた側が書いたものである。以前はここで古い写しを書き戻し、
+            // 分け合う領域 (GLOBAL、EXTERNAL) の中の項目を渡すと、返ってきた値が消えていた
+            if (shared != null
+                    && java.util.Arrays.equals(shared, frame.flushed().get(region.name()))) {
+                continue;
+            }
             if (shared != null && shared.length == region.length()) {
                 frame.storage().view(region.offset(), region.length()).setBytes(shared);
             }
@@ -384,9 +398,24 @@ public final class ProgramContext {
         return file == null ? dev.cobolonjava.runtime.abend.AbendCode.S037 : file.spaceAbend();
     }
 
+    /**
+     * すでに用意したファイルを引く。
+     *
+     * <p>ファイルを宣言どおりの様式で用意するのは {@code OPEN} である。<b>開く前に</b>
+     * 読み書きや {@code CLOSE} をされたときは、閉じたままの仮のファイルを返し、
+     * <b>覚えておかない</b>。以前はここで既定の様式 (80 byte の順編成) のファイルを
+     * 作って覚えていたので、あとから {@code OPEN} しても宣言の様式にならず、8 byte の
+     * レコードが 80 byte で書かれていた (ZCVS の ZF113A で見つかった。開く前の READ が
+     * 47 になることを確かめたあと、同じファイルを開いて読み書きしている)。
+     */
     public DataSet file(String name, String ddName) {
-        return files.computeIfAbsent(name,
-                k -> allocated(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
+        DataSet known = files.get(name);
+        return known != null ? known : SequentialDataSet.at(catalog.resolve(ddName));
+    }
+
+    /** そのファイルがまだ用意されていないか。 */
+    public boolean neverOpened(String name) {
+        return !files.containsKey(name);
     }
 
     /**
@@ -403,10 +432,23 @@ public final class ProgramContext {
         return files.computeIfAbsent(name, k -> {
             DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage);
             Path path = catalog.resolve(ddName);
+            if (organization != Organization.RELATIVE && asciiFiles.contains(name)) {
+                SequentialDataSet file = SequentialDataSet.at(path, declared);
+                file.codeSetAscii();
+                return allocated(file, ddName);
+            }
             return allocated(organization == Organization.RELATIVE
                     ? RelativeDataSet.at(path, declared)
                     : SequentialDataSet.at(path, declared), ddName);
         });
+    }
+
+    /** {@code CODE-SET} で ASCII と決めたファイルの名前。 */
+    private final java.util.Set<String> asciiFiles = new java.util.HashSet<>();
+
+    /** そのファイルの外のレコードを ASCII にする。ファイルを用意する前に呼ぶ。 */
+    public void codeSetAscii(String name) {
+        asciiFiles.add(name);
     }
 
     /**
@@ -423,6 +465,7 @@ public final class ProgramContext {
         file.limit(catalog.limitOf(ddName));
         file.member(catalog.isMemberOfLibrary(ddName));
         file.secondary(catalog.hasSecondary(ddName));
+        file.tape(catalog.isTape(ddName));
         return file;
     }
 
@@ -743,7 +786,28 @@ public final class ProgramContext {
         if (existing != null) {
             return existing;
         }
-        CobolProgram program = programResolver.resolve(id, loader);
+        CobolProgram program;
+        try {
+            program = programResolver.resolve(id, loader);
+        } catch (ProgramNotFoundException missing) {
+            // LE の呼び出しサービスは、利用者が登録していなくてもいつも在る。
+            // 利用者の同じ名前のプログラムが先である
+            if (!dev.cobolonjava.runtime.le.LanguageEnvironmentServices.BUILT_IN
+                    .isResolvable(id, loader)) {
+                throw missing;
+            }
+            program = dev.cobolonjava.runtime.le.LanguageEnvironmentServices.BUILT_IN
+                    .resolve(id, loader);
+        }
+        if (program.entryOwner() != null) {
+            // 副入口。本体を引き、同じ作業場所のまま途中から入る口を返す
+            Loaded owner = resolve(program.entryOwner(), loader);
+            Loaded entry = new Loaded(new AlternateEntry(owner.program(), id.value()),
+                    owner.storage(), null);
+            loaded.put(id.value(), entry);
+            entryOwners.put(id.value(), ProgramId.of(program.entryOwner()).value());
+            return entry;
+        }
         dev.cobolonjava.runtime.interop.ProgramSignature catalogSignature =
                 programResolver.signature(id);
         dev.cobolonjava.runtime.interop.ProgramSignature embeddedSignature =
@@ -765,8 +829,22 @@ public final class ProgramContext {
      * <p>次に呼ばれたときは作業場所が初期状態から始まる。
      */
     public void forget(String name) {
-        loaded.remove(ProgramId.of(name).value());
+        String id = ProgramId.of(name).value();
+        // 副入口の名前で取り消しても、取り消されるのは本体である
+        String owner = entryOwners.getOrDefault(id, id);
+        loaded.remove(owner);
+        // 本体を忘れたら、その副入口も忘れる。残すと古い作業場所を見続ける
+        entryOwners.entrySet().removeIf(entry -> {
+            if (entry.getValue().equals(owner)) {
+                loaded.remove(entry.getKey());
+                return true;
+            }
+            return false;
+        });
     }
+
+    /** 引いたことのある副入口の名前と、その本体の名前。 */
+    private final Map<String, String> entryOwners = new java.util.HashMap<>();
 
     public CodePage codePage() {
         return codePage;

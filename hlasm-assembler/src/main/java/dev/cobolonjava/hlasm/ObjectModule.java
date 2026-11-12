@@ -18,7 +18,32 @@ import java.util.Map;
  */
 public record ObjectModule(String name, byte[] text, int entryOffset,
                            Map<String, Symbol> symbols, Map<String, Integer> dummySections,
-                           List<Line> listing) {
+                           List<Line> listing, List<Relocation> relocations,
+                           List<External> externals) {
+
+    /**
+     * 載せた番地を足す欄 ({@code A(記号)})。
+     *
+     * <p>組み立てた値は節の先頭からの変位である。載せる側が、載せた番地を足して番地にする。
+     * 以前はこの表を持たず、番地定数は変位のまま実行されていた。
+     *
+     * @param offset 欄の位置
+     * @param length 欄の長さ (3、4、8 byte)
+     */
+    public record Relocation(int offset, int length) {
+    }
+
+    /**
+     * 外の記号の番地を入れる欄 ({@code V(名前)})。載せる側が名前から入口を引いて入れる。
+     */
+    public record External(int offset, int length, String name) {
+    }
+
+    public ObjectModule(String name, byte[] text, int entryOffset,
+                        Map<String, Symbol> symbols, Map<String, Integer> dummySections,
+                        List<Line> listing) {
+        this(name, text, entryOffset, symbols, dummySections, listing, List.of(), List.of());
+    }
 
     /**
      * 組み立て表の 1 行。
@@ -52,6 +77,8 @@ public record ObjectModule(String name, byte[] text, int entryOffset,
         symbols = Map.copyOf(symbols);
         dummySections = Map.copyOf(dummySections);
         listing = List.copyOf(listing);
+        relocations = List.copyOf(relocations);
+        externals = List.copyOf(externals);
     }
 
     @Override

@@ -40,10 +40,7 @@ public final class NumericItem {
             throw new IllegalArgumentException(
                     "floating-point usage " + usage + " has no PICTURE; use FloatingItem instead");
         }
-        if (usage == Usage.NATIONAL) {
-            // 国字の数字 (PIC 9 USAGE NATIONAL) はまだ持たない (P-006)
-            throw new IllegalArgumentException("national numeric items are not supported yet");
-        }
+
         this.picture = picture;
         this.usage = usage;
         this.signPosition = signPosition;
@@ -115,8 +112,10 @@ public final class NumericItem {
             case DISPLAY -> ZonedDecimal.byteLength(picture.digits(), signPosition);
             case COMP_3 -> PackedDecimal.byteLength(picture.digits());
             case COMP, COMP_5 -> BinaryDecimal.byteLength(picture.digits());
-            case COMP_1, COMP_2, NATIONAL -> throw new IllegalStateException(
-                    "floating-point and national usages are rejected by the constructor");
+            // 国字の数字は、DISPLAY の字の 1 字ずつが UTF-16 の 2 byte になる
+            case NATIONAL -> 2 * ZonedDecimal.byteLength(picture.digits(), signPosition);
+            case COMP_1, COMP_2 -> throw new IllegalStateException(
+                    "floating-point usages are rejected by the constructor");
         };
     }
 
@@ -143,8 +142,12 @@ public final class NumericItem {
                     truncMode.resolve(undefinedBehavior));
             case COMP_5 -> BinaryDecimal.encode(value, picture.digits(), picture.scale(),
                     TruncMode.BIN);
-            case COMP_1, COMP_2, NATIONAL -> throw new IllegalStateException(
-                    "floating-point and national usages are rejected by the constructor");
+            // 国字の数字 (national decimal)。DISPLAY の形を作り、字ごとに UTF-16 へ写す。
+            // 組み立ては Zeus (同じ権利者の処理系) の vm/data.rs と同じである
+            case NATIONAL -> toNational(ZonedDecimal.encode(value, picture.digits(),
+                    picture.scale(), signPosition, codePage));
+            case COMP_1, COMP_2 -> throw new IllegalStateException(
+                    "floating-point usages are rejected by the constructor");
         };
     }
 
@@ -157,15 +160,54 @@ public final class NumericItem {
         return switch (usage) {
             case DISPLAY -> ZonedDecimal.decode(bytes, picture.scale(), signPosition, codePage, numProcMode);
             case COMP_3 -> PackedDecimal.decode(bytes, picture.scale(), numProcMode);
-            case COMP, COMP_5 -> BinaryDecimal.decode(bytes, picture.scale());
-            case COMP_1, COMP_2, NATIONAL -> throw new IllegalStateException(
-                    "floating-point and national usages are rejected by the constructor");
+            case COMP, COMP_5 -> BinaryDecimal.decode(bytes, picture.scale(),
+                    signPosition.isSigned());
+            case NATIONAL -> ZonedDecimal.decode(fromNational(bytes), picture.scale(),
+                    signPosition, codePage, numProcMode);
+            case COMP_1, COMP_2 -> throw new IllegalStateException(
+                    "floating-point usages are rejected by the constructor");
         };
     }
 
-    /** 値がこの項目に桁落ちなく収まるかどうか (要件 FR-043 の SIZE ERROR 判定)。 */
+    /** 実行時のコードページの字を UTF-16 (ビッグエンディアン) にする。 */
+    private byte[] toNational(byte[] display) {
+        String text = codePage.decode(display);
+        return text.getBytes(java.nio.charset.StandardCharsets.UTF_16BE);
+    }
+
+    /**
+     * UTF-16 を実行時のコードページの字にする。国字の数字の中に、そのコードページで
+     * 表せない字があれば数字でない字 (X'00') にする。DISPLAY の項目に数字でない
+     * バイトがあるのと同じ扱いになる。
+     */
+    public byte[] fromNational(byte[] national) {
+        byte[] display = new byte[national.length / 2];
+        for (int i = 0; i < display.length; i++) {
+            char c = (char) (((national[2 * i] & 0xFF) << 8) | (national[2 * i + 1] & 0xFF));
+            String one = String.valueOf(c);
+            display[i] = codePage.canEncode(one) ? codePage.encode(one)[0] : 0;
+        }
+        return display;
+    }
+
+    /**
+     * 値がこの項目に桁落ちなく収まるかどうか (要件 FR-043 の SIZE ERROR 判定)。
+     *
+     * <p>{@code COMP-5} と、{@code TRUNC(BIN)} の下の 2 進項目は<b>記憶域の幅</b>で決まる。
+     * PICTURE の桁数を超えていても、halfword / fullword / doubleword に入れば収まっている。
+     */
     public boolean fits(Decimal value) {
+        if (binaryCapacity()) {
+            return BinaryDecimal.fitsStorage(value, picture.digits(), picture.scale(),
+                    signPosition.isSigned());
+        }
         return value.fitsInDigits(picture.digits(), picture.scale());
+    }
+
+    /** 記憶域の幅いっぱいまで値を持てる 2 進項目か。 */
+    private boolean binaryCapacity() {
+        return usage == Usage.COMP_5
+                || (usage == Usage.COMP && truncMode.resolve(undefinedBehavior) == TruncMode.BIN);
     }
 
     public void store(DataView view, Decimal value) {

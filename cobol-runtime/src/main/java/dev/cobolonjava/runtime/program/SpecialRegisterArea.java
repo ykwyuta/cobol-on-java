@@ -23,4 +23,7 @@ public final class SpecialRegisterArea {
 
     /** {@code RETURN-CODE} の PICTURE。参照実装は 2 進の半語である。 */
     public static final String RETURN_CODE_PICTURE = "S9(4)";
+
+    /** {@code TALLY} の位置。PIC 9(5) COMP の 4 byte である。 */
+    public static final int TALLY_OFFSET = 4;
 }

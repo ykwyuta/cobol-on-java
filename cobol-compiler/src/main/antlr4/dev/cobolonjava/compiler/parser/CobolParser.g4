@@ -48,6 +48,19 @@ parser grammar CobolParser;
                 case AND: case OR: case PERIOD: case THEN: case ELSE: case END_IF:
                 case WHEN: case UNTIL: case ALSO:
                     return false;
+                // 文が始まれば条件は終わっている。ここで止めないと、<b>次の文の</b>比較を
+                // 見て「関係条件が続く」と読み違える。
+                //   IF A = 1 AND 条件名  SET X TO TRUE  IF B = 0 ...
+                // の 2 つ目の IF の「=」がそれである (ZCVS の ZX102A で見つかった)
+                case MOVE: case ADD: case SUBTRACT: case MULTIPLY: case DIVIDE: case COMPUTE:
+                case IF: case CONTINUE: case GO: case EXIT: case PERFORM: case CALL:
+                case CANCEL: case INITIALIZE: case SET: case ACCEPT: case SEARCH: case OPEN:
+                case CLOSE: case READ: case WRITE: case REWRITE: case DELETE: case START:
+                case SORT: case MERGE: case RELEASE: case RETURN: case EVALUATE: case STOP:
+                case GOBACK: case INSPECT: case STRING: case UNSTRING: case ALTER:
+                case DISPLAY: case NEXT: case EXEC_BLOCK: case INITIATE: case GENERATE:
+                case TERMINATE: case END_PERFORM: case END_EVALUATE: case END_SEARCH:
+                    return false;
                 case EQUAL_SIGN: case GREATER_SIGN: case LESS_SIGN:
                 case GREATER_EQUAL_SIGN: case LESS_EQUAL_SIGN: case NOT_EQUAL_SIGN:
                 case GREATER: case LESS: case EQUAL: case IS:
@@ -136,12 +149,12 @@ tokens {
     ADD, SUBTRACT, MULTIPLY, DIVIDE, FROM, GIVING, ROUNDED,
     SIZE, ERROR, END_ADD, END_SUBTRACT, END_MULTIPLY, END_DIVIDE, REMAINDER,
     COMPUTE, END_COMPUTE,
-    IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT,
+    IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT, CYCLE, PARAGRAPH,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING, USING, REFERENCE, CONTENT, LINES, PAGE,
-    CALL, END_CALL, CANCEL, EXCEPTION,
-    INITIALIZE, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
-    NUMERIC_EDITED, ALPHABETIC_LOWER, ALPHABETIC_UPPER, CLASS, SYMBOLIC,
+    CALL, END_CALL, CANCEL, EXCEPTION, RETURNING,
+    INITIALIZE, DEFAULT, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
+    NUMERIC_EDITED, NATIONAL_EDITED, ALPHABETIC_LOWER, ALPHABETIC_UPPER, CLASS, SYMBOLIC,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
     UP, DOWN, SEARCH, END_SEARCH, AT,
     OPEN, CLOSE, READ, WRITE, INPUT, OUTPUT, I_O, EXTEND,
@@ -173,7 +186,8 @@ tokens {
     GLOBAL, EXTERNAL, GROUP_USAGE,
 
     // 用途
-    DISPLAY, DISPLAY_1, BINARY, NATIONAL, INDEX, POINTER, PACKED_DECIMAL,
+    DISPLAY, DISPLAY_1, BINARY, NATIONAL, DBCS, EGCS, INDEX, POINTER, PACKED_DECIMAL,
+    PROCEDURE_POINTER, FUNCTION_POINTER,
     COMP, COMP_1, COMP_2, COMP_3, COMP_4, COMP_5,
     COMPUTATIONAL, COMPUTATIONAL_1, COMPUTATIONAL_2, COMPUTATIONAL_3,
     COMPUTATIONAL_4, COMPUTATIONAL_5,
@@ -278,7 +292,8 @@ selectClause
     | organizationName
     | ACCESS MODE? IS? (SEQUENTIAL | RANDOM | DYNAMIC)
     // FILE は省いてよい。CCVS85 は「STATUS IS X」とだけ書く
-    | FILE? STATUS IS? identifier
+    // 2 つ目の項目は VSAM の戻りコード (6 byte) を受ける。Enterprise COBOL の拡張である
+    | FILE? STATUS IS? identifier vsamStatus?
     | RECORDING MODE? IS? IDENTIFIER
     // 裸の RELATIVE は編成の指定、名前が続けば相対キーの指定である
     | RELATIVE (KEY? IS? identifier)?
@@ -292,8 +307,15 @@ selectClause
     | RECORD DELIMITER IS? (IDENTIFIER | STANDARD_1)
     ;
 
+vsamStatus
+    : identifier
+    ;
+
+// REPORT は報告書節の予約語だが、割当て名としても受ける。ZCVS の 93 本が
+// 「ASSIGN TO REPORT」と書いている。この位置に予約語 REPORT で始まる句は無いので、
+// 読み違えは起きない。<b>実機がこの綴りを受けるかは突き合わせていない</b>
 assignClause
-    : ASSIGN TO? (IDENTIFIER | LITERAL)+
+    : ASSIGN TO? (IDENTIFIER | LITERAL | REPORT)+
     ;
 
 // ORGANIZATION IS は省いてよい
@@ -626,6 +648,8 @@ pictureClause
 
 usageClause
     : (USAGE IS?)? usageName
+    // 群の中の基本項目をすべて国字にする (Enterprise COBOL 言語解説書 "GROUP-USAGE clause")
+    | GROUP_USAGE IS? NATIONAL
     ;
 
 usageName
@@ -635,6 +659,8 @@ usageName
     | NATIONAL
     | INDEX
     | POINTER
+    | PROCEDURE_POINTER
+    | FUNCTION_POINTER
     | PACKED_DECIMAL
     | COMP | COMPUTATIONAL
     | COMP_1 | COMPUTATIONAL_1
@@ -665,8 +691,11 @@ occursIndexedClause
 
 // 88 レベルの条件名は値を並べたり範囲で書いたりできる。
 // 通常のデータ項目の VALUE 句はその 1 個の場合にあたる
+// WHEN SET TO FALSE は条件名 (88 レベル) にだけ書ける。「SET 条件名 TO FALSE」で
+// 親の項目に入れる値である。ふつうの項目に書かれたら意味解析で断る
 valueClause
     : (VALUE | VALUES) (IS | ARE)? valueRange valueRange*
+      (WHEN? SET? TO? FALSE IS? literal)?
     ;
 
 valueRange
@@ -762,7 +791,8 @@ relativeOffset
 
 // USING に並べた項目が、呼ぶ側から渡される領域に対応する
 procedureDivision
-    : PROCEDURE DIVISION (USING procedureParameter+)? PERIOD procedureBody
+    : PROCEDURE DIVISION (USING procedureParameter+)? (RETURNING identifier)? PERIOD
+      procedureBody
     ;
 
 procedureParameter
@@ -892,6 +922,11 @@ statement
 // 受けるのは IMS が呼ぶ入口 (手続き部の先頭) だけで、ほかの位置は意味解析で断る
 entryStatement
     : {entryAhead()}? IDENTIFIER LITERAL (USING procedureParameter+)?
+    ;
+
+// 「SET 手続きポインタ TO ENTRY 名前」の ENTRY。予約語にしていないので綴りで見る
+entryKeyword
+    : {"ENTRY".equalsIgnoreCase(_input.LT(1).getText())}? IDENTIFIER
     ;
 
 // 通信の文は支えていない (制約 C-5)。文ごと受け取って意味解析で断る。
@@ -1048,8 +1083,10 @@ stringStatement
       overflowPhrases END_STRING?
     ;
 
+// DELIMITED を書かなければ SIZE である (2002 規格)。85 規格は必ず書かせるが、
+// 省いた資産を読めないよりは読めたほうがよく、意味は 1 通りに決まる
 stringSource
-    : arithmeticOperand+ DELIMITED BY? (SIZE | arithmeticOperand)
+    : arithmeticOperand+ (DELIMITED BY? (SIZE | arithmeticOperand))?
     ;
 
 // UNSTRING は送出項目を区切って複数の受取項目へ配る
@@ -1085,7 +1122,8 @@ notOnOverflowPhrase
 // INSPECT は 1 度の走査で、書かれた順に句を試す。
 // TALLYING と REPLACING は同じ文に並べられる
 inspectStatement
-    : INSPECT identifier (tallyingPhrase replacingPhrase? | replacingPhrase | convertingPhrase)
+    : INSPECT (identifier | functionCall)
+      (tallyingPhrase replacingPhrase? | replacingPhrase | convertingPhrase)
     ;
 
 tallyingPhrase
@@ -1216,7 +1254,7 @@ closeFile
 // では巻の操作が起きず、状態コード 07 が立つ。LOCK は錠を掛け、閉じたあと
 // <b>この実行単位では二度と開けなく</b>する
 closeOption
-    : (REEL | UNIT) (FOR? REMOVAL)?
+    : (REEL | UNIT) (FOR? REMOVAL | WITH? NO REWIND)?
     | WITH? NO REWIND
     | WITH? LOCK
     ;
@@ -1241,7 +1279,8 @@ notInvalidKeyPhrase
     ;
 
 writeStatement
-    : WRITE IDENTIFIER ((OF | IN) IDENTIFIER)? (FROM identifier)?
+    // FROM には定数も書ける (2002 規格)。レコードへ転記してから書く
+    : WRITE IDENTIFIER ((OF | IN) IDENTIFIER)? (FROM (identifier | literal))?
       advancingPhrase?
       atEndOfPagePhrase? notAtEndOfPagePhrase?
       invalidKeyPhrase? notInvalidKeyPhrase? END_WRITE?
@@ -1358,9 +1397,13 @@ acceptSource
     ;
 
 // INITIALIZE は配下の基本項目それぞれへの転記の集まりである
+// TO VALUE は VALUE 句の値へ戻す。REPLACING はそれで決まらなかった項目に効き、
+// TO DEFAULT は残りを既定 (空白・0) にする (2002 規格、Enterprise COBOL)
 initializeStatement
     : INITIALIZE identifier+ (WITH? FILLER)?
+      ((ALL | initializeCategory) TO? VALUE)?
       (THEN? REPLACING initializeReplacing+)?
+      (THEN? TO? DEFAULT)?
     ;
 
 initializeReplacing
@@ -1373,13 +1416,19 @@ initializeCategory
     | ALPHANUMERIC
     | NUMERIC_EDITED
     | NUMERIC
+    | NATIONAL_EDITED
+    | NATIONAL
+    | DBCS
+    | EGCS
     ;
 
 // SET は条件名を成り立たせる形と、指標名を動かす形の 2 つがある
 setStatement
-    : SET identifier+ TO TRUE
+    : SET identifier+ TO (TRUE | FALSE)
     // 外から立てる切り替えを、プログラムからも動かせる。続けて書ける
     | SET switchSetting+
+    // 手続きポインタに入口を置く。名前は定数でも、実行時に決まる項目でもよい
+    | SET identifier+ TO entryKeyword callTarget
     | SET identifier+ TO arithmeticOperand
     | SET identifier+ (UP | DOWN) BY arithmeticOperand
     ;
@@ -1390,7 +1439,8 @@ switchSetting
 
 // 呼び先は文字定数か、実行時に名前が決まるデータ項目である
 callStatement
-    : CALL callTarget (USING callArgument+)? callExceptionPhrases END_CALL?
+    : CALL callTarget (USING callArgument+)? (RETURNING identifier)?
+      callExceptionPhrases END_CALL?
     ;
 
 callTarget
@@ -1403,6 +1453,8 @@ callArgument
     : BY? (REFERENCE | CONTENT | VALUE)
     | identifier
     | literal
+    // 引数を渡さない。呼ばれた側では、その連絡節の項目の番地が NULL になる
+    | OMITTED
     ;
 
 callExceptionPhrases
@@ -1441,8 +1493,10 @@ goToStatement
 
 // EXIT は何もしない。PERFORM ... THRU の範囲の終わりに置く段落のためにある。
 // EXIT PROGRAM は別物で、呼ばれた側から戻る
+// EXIT PERFORM はその場に書いた PERFORM を抜け、CYCLE を付ければ次の回へ進む。
+// EXIT PARAGRAPH / EXIT SECTION は段落・章の終わりへ進む (2002 規格、Enterprise COBOL)
 exitStatement
-    : EXIT PROGRAM?
+    : EXIT (PROGRAM | PERFORM CYCLE? | PARAGRAPH | SECTION)?
     ;
 
 // 段落を呼ぶ形と、その場に本体を書く形の 2 つがある。
@@ -1458,7 +1512,8 @@ procedureReference
 
 performPhrase
     : arithmeticOperand TIMES
-    | performTest? UNTIL condition
+    // UNTIL EXIT は終わりの条件を持たない。抜けるのは EXIT PERFORM か GO TO である
+    | performTest? UNTIL (EXIT | condition)
     | performTest? varyingPhrase varyingAfterPhrase*
     ;
 
@@ -1561,7 +1616,9 @@ arithmeticOperand
 // 単項の符号は後ろに空白を置かない。したがって字句の切れ目に差が残り、
 // 「11, -5」は 2 個、「11 - 5」は 1 個の引数になる。
 functionCall
-    : FUNCTION functionName (LPAREN expression (COMMA? expression)* RPAREN)?
+    // TRIM は引数のあとに LEADING / TRAILING を書いて、削る側を選べる
+    : FUNCTION functionName
+      (LPAREN expression (COMMA? expression)* (LEADING | TRAILING)? RPAREN)?
     ;
 
 // 予約語と綴りが同じ関数名は、ここに並べて拾う

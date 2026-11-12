@@ -15,7 +15,12 @@ public final class Picture {
     public enum Category {
         ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC, NUMERIC_EDITED,
         /** 国字 ({@code PIC N}、{@code USAGE NATIONAL})。1 文字が UTF-16 の 2 バイトを占める。 */
-        NATIONAL
+        NATIONAL,
+        /**
+         * DBCS ({@code PIC G}、{@code USAGE DISPLAY-1})。1 字が 2 バイトの EBCDIC の 2 バイト文字で、
+         * SO / SI で囲まない。空白は {@code X'4040'} である。
+         */
+        DBCS
     }
 
     /** バイト位置 1 個 (または {@code CR} / {@code DB} の 2 個) の役割。 */
@@ -59,6 +64,55 @@ public final class Picture {
     private final SignPosition signPosition;
     private final boolean blankWhenZero;
     private final List<Cell> cells;
+    /**
+     * 1 字を UTF-16 の 2 バイトで持つ形 (国字編集)。{@code PIC NBN} と、
+     * {@code USAGE NATIONAL} の数字編集・外部浮動小数点である。記憶域は {@link #size} の 2 倍。
+     */
+    private boolean national;
+
+    /** 同じ編集の、1 字を UTF-16 で持つ形 (USAGE NATIONAL の数字編集)。 */
+    public Picture asNational() {
+        Picture changed = new Picture(source, expanded, category, size, digits, scale,
+                signPosition, blankWhenZero, cells);
+        changed.floating = floating;
+        changed.national = true;
+        return changed;
+    }
+
+    /** 国字編集か (1 字が UTF-16 の 2 バイト)。 */
+    public boolean isNationalEdited() {
+        return national;
+    }
+
+    /** 外部浮動小数点なら、繰り返しを展開した字の並び ({@code +99.99E+99})。違えば {@code null}。 */
+    private String floating;
+
+    /** 外部浮動小数点の PICTURE。種別は数字編集として扱う (字で持ち、編集して書き込む)。 */
+    static Picture externalFloating(String source, String template) {
+        Picture picture = new Picture(source, template, Category.NUMERIC_EDITED,
+                ExternalFloating.size(template),
+                ExternalFloating.integerDigits(template)
+                        + ExternalFloating.fractionDigits(template),
+                ExternalFloating.fractionDigits(template), SignPosition.UNSIGNED, false,
+                List.of());
+        picture.floating = template;
+        return picture;
+    }
+
+    /** 外部浮動小数点か。 */
+    public boolean isExternalFloating() {
+        return floating != null;
+    }
+
+    /** 外部浮動小数点の字の並び。 */
+    public String floatingTemplate() {
+        return floating;
+    }
+
+    /** {@code V} で書いた、字に出ない小数の桁数。 */
+    public int floatingImpliedScale() {
+        return floating != null && floating.indexOf('V') >= 0 ? scale : 0;
+    }
 
     Picture(String source, String expanded, Category category, int size, int digits, int scale,
             SignPosition signPosition, boolean blankWhenZero, List<Cell> cells) {
@@ -121,6 +175,12 @@ public final class Picture {
         return category == Category.NUMERIC;
     }
 
+    /** 同じ字数の DBCS の PICTURE。{@code PIC N} を {@code DISPLAY-1} と書いたときに使う。 */
+    public Picture asDbcs() {
+        return new Picture(source, expanded, Category.DBCS, size, 0, 0, SignPosition.UNSIGNED,
+                false, cells);
+    }
+
     public boolean isNumericEdited() {
         return category == Category.NUMERIC_EDITED;
     }
@@ -148,8 +208,11 @@ public final class Picture {
         int newSize = signPosition.isSigned() && !isNumericEdited()
                 ? digits + (newSignPosition.isSeparate() ? 1 : 0)
                 : size;
-        return new Picture(source, expanded, category, newSize, digits, scale,
+        Picture changed = new Picture(source, expanded, category, newSize, digits, scale,
                 newSignPosition, blankWhenZero, cells);
+        changed.floating = floating;
+        changed.national = national;
+        return changed;
     }
 
     /**
@@ -164,8 +227,11 @@ public final class Picture {
         Category newCategory = value && category == Category.NUMERIC
                 ? Category.NUMERIC_EDITED
                 : category;
-        return new Picture(source, expanded, newCategory, size, digits, scale,
+        Picture changed = new Picture(source, expanded, newCategory, size, digits, scale,
                 signPosition, value, cells);
+        changed.floating = floating;
+        changed.national = national;
+        return changed;
     }
 
     @Override

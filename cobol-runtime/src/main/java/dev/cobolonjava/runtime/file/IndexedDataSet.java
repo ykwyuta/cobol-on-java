@@ -203,6 +203,7 @@ public final class IndexedDataSet implements KeyedDataSet {
             Files.write(path, join(all), StandardOpenOption.CREATE, StandardOpenOption.WRITE,
                     StandardOpenOption.TRUNCATE_EXISTING);
             attributes.write(path);
+            saveArrivalOrder();
         } catch (IOException e) {
             throw new UncheckedIOException("cannot write " + path, e);
         }
@@ -224,6 +225,90 @@ public final class IndexedDataSet implements KeyedDataSet {
                         .add(entry.getKey());
             }
             indexes.add(index);
+        }
+        restoreArrivalOrder();
+    }
+
+    /** 同じ副鍵のレコードが<b>索引に入った順</b>を覚えておくファイル。 */
+    private Path arrivalOrderFile() {
+        return path.resolveSibling(path.getFileName() + ".aix");
+    }
+
+    /**
+     * 重複を許す副鍵の並びを残す (暫定判断 P-087 の解消)。
+     *
+     * <p>索引そのものはデータから導けるが、<b>同じ副鍵のレコードの並び</b>だけは導けない。
+     * ホストの副索引は入った順に返すので、閉じて開き直しても並びが変わらない。以前は
+     * 開き直すと主鍵の順に戻っていた (ZCVS の ZF108A・ZF112A で見つかった)。
+     *
+     * <p>残すのは並びだけである。副索引ごとに、主鍵を索引の順 (副鍵の順、同じ副鍵の中では
+     * 入った順) に 16 進で並べる。本体と食い違っても壊れない——読むときは本体から索引を
+     * 組み直し、<b>このファイルは同じ副鍵の中の順番を決めるためだけに使う</b>。
+     * ここに無いレコードは、その副鍵の並びの末尾に主鍵の順で付く。
+     */
+    private void saveArrivalOrder() throws IOException {
+        Path file = arrivalOrderFile();
+        boolean any = false;
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < alternates.size(); i++) {
+            if (!alternates.get(i).duplicates()) {
+                continue;
+            }
+            for (List<ByteKey> chain : indexes.get(i).values()) {
+                if (chain.size() < 2) {
+                    continue;
+                }
+                any = true;
+                for (ByteKey key : chain) {
+                    text.append(i).append(' ')
+                            .append(java.util.HexFormat.of().formatHex(key.bytes())).append('\n');
+                }
+            }
+        }
+        if (any) {
+            Files.writeString(file, text.toString(), java.nio.charset.StandardCharsets.US_ASCII);
+        } else {
+            Files.deleteIfExists(file);
+        }
+    }
+
+    private void restoreArrivalOrder() {
+        Path file = arrivalOrderFile();
+        if (!Files.isReadable(file)) {
+            return;
+        }
+        List<Map<ByteKey, Integer>> ordinals = new ArrayList<>();
+        for (int i = 0; i < alternates.size(); i++) {
+            ordinals.add(new java.util.HashMap<>());
+        }
+        try {
+            int ordinal = 0;
+            for (String line : Files.readAllLines(file,
+                    java.nio.charset.StandardCharsets.US_ASCII)) {
+                int space = line.indexOf(' ');
+                if (space <= 0) {
+                    continue;
+                }
+                int index = Integer.parseInt(line.substring(0, space));
+                if (index < ordinals.size()) {
+                    ordinals.get(index).put(new ByteKey(java.util.HexFormat.of()
+                            .parseHex(line.substring(space + 1).trim())), ordinal++);
+                }
+            }
+        } catch (IOException | IllegalArgumentException unreadable) {
+            // 並びが読めなくても、索引は本体から組み直してある。主鍵の順のまま使う
+            return;
+        }
+        for (int i = 0; i < indexes.size(); i++) {
+            Map<ByteKey, Integer> order = ordinals.get(i);
+            if (order.isEmpty()) {
+                continue;
+            }
+            for (List<ByteKey> chain : indexes.get(i).values()) {
+                // 安定な整列。覚えの無いレコードは末尾に主鍵の順で残る
+                chain.sort(java.util.Comparator.comparingInt(
+                        key -> order.getOrDefault(key, Integer.MAX_VALUE)));
+            }
         }
     }
 
@@ -330,6 +415,7 @@ public final class IndexedDataSet implements KeyedDataSet {
 
     @Override
     public String read(byte[] into) {
+        viaAlternate = active != 0;
         String checked = readable();
         if (checked != null) {
             return checked;
@@ -340,7 +426,57 @@ public final class IndexedDataSet implements KeyedDataSet {
             current = null;
             return FileStatus.AT_END;
         }
-        return take(key, into);
+        return moreWithSameKey(take(key, into));
+    }
+
+    /**
+     * 副鍵で読んだあと、同じ副鍵のレコードがまだ続くなら {@code 02} にする。
+     *
+     * <p>以前は {@code 00} だけを返していた。重複のある副鍵をたどる資産は、
+     * <b>02 のあいだ読み続け、00 で止める</b>と書く。00 しか返らないと 1 本目で止まる
+     * (ZCVS の ZF108A・ZF112A で見つかった)。
+     */
+    private String moreWithSameKey(String status) {
+        if (!FileStatus.OK.equals(status) || active == 0 || nextAlternate == null) {
+            return status;
+        }
+        List<ByteKey> keys = indexes.get(active - 1).get(nextAlternate);
+        return keys != null && nextWithin < keys.size()
+                ? FileStatus.DUPLICATE_ALTERNATE : status;
+    }
+
+    /** 直前の要求が副索引を通ったか。VSAM の機能コードになる。 */
+    private boolean viaAlternate;
+
+    /**
+     * 直前の要求の VSAM の機能コード。基本クラスタなら 0、副索引なら 2 である
+     * (DFSMS Macro Instructions for Data Sets の RPL の機能コード)。
+     *
+     * <p>副鍵で読んだ・位置付けたとき、副鍵の並びをたどって読んだとき、重複を許さない
+     * 副鍵がぶつかって断られたときが 2 である。<b>実機とは突き合わせていない</b>。
+     * ZCVS (Zeus) の期待値と同じ読みにしてある。
+     */
+    public int vsamFunction() {
+        return viaAlternate ? 2 : 0;
+    }
+
+    /** 書いたレコードが、重複を許す副鍵に同じ値を作ったか。 */
+    private boolean duplicatesAlternate(ByteKey primaryKey, byte[] record) {
+        for (int i = 0; i < alternates.size(); i++) {
+            if (!alternates.get(i).duplicates()) {
+                continue;
+            }
+            List<ByteKey> keys = indexes.get(i).get(keyOf(record, alternates.get(i)));
+            if (keys == null) {
+                continue;
+            }
+            for (ByteKey other : keys) {
+                if (!other.equals(primaryKey)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private ByteKey takeNextPrimary() {
@@ -371,6 +507,7 @@ public final class IndexedDataSet implements KeyedDataSet {
      * @param keyIndex {@code 0} が主鍵、{@code 1} 以降が {@code ALTERNATE RECORD KEY} の並び順
      */
     public String readKey(int keyIndex, byte[] key, byte[] into) {
+        viaAlternate = keyIndex != 0;
         String checked = readable();
         if (checked != null && !FileStatus.NOT_READABLE.equals(checked)) {
             return checked;
@@ -398,7 +535,7 @@ public final class IndexedDataSet implements KeyedDataSet {
         // 鍵で読んだあとの順次読みは、その索引の続きから始まる
         active = keyIndex;
         atEnd = false;
-        return take(found, into);
+        return moreWithSameKey(take(found, into));
     }
 
     /**
@@ -411,7 +548,10 @@ public final class IndexedDataSet implements KeyedDataSet {
     private String readable() {
         if (mode == null) {
             current = null;
-            return FileStatus.NOT_OPEN;
+            // 開いていないファイルへの要求は、文ごとに決まった状態になる (85 規格 VII の
+            // 入出力状態の表: READ / START は 47、WRITE は 48、REWRITE / DELETE は 49)。
+            // 42 は開いていないファイルを CLOSE したときだけである
+            return FileStatus.READ_NOT_ALLOWED;
         }
         if (!mode.canRead()) {
             current = null;
@@ -439,6 +579,7 @@ public final class IndexedDataSet implements KeyedDataSet {
 
     /** 位置だけを決める (要件 FR-101)。 */
     public String start(int keyIndex, byte[] key, KeyRelation relation) {
+        viaAlternate = keyIndex != 0;
         String checked = readable();
         if (checked != null && !FileStatus.NOT_READABLE.equals(checked)) {
             return checked;
@@ -517,6 +658,7 @@ public final class IndexedDataSet implements KeyedDataSet {
      */
     @Override
     public String write(byte[] from) {
+        viaAlternate = false;
         String checked = writable();
         if (checked != null) {
             return checked;
@@ -534,6 +676,7 @@ public final class IndexedDataSet implements KeyedDataSet {
 
     /** 乱アクセスで書く (要件 FR-101)。順序は問わない。 */
     public String writeKey(byte[] from) {
+        viaAlternate = false;
         String checked = writable();
         if (checked != null) {
             return checked;
@@ -553,11 +696,12 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (conflict != null) {
             return conflict;
         }
+        boolean duplicated = duplicatesAlternate(key, from);
         records.put(key, from.clone());
         indexInsert(key, records.get(key));
         lastLength = from.length;
         current = null;
-        return FileStatus.OK;
+        return duplicated ? FileStatus.DUPLICATE_ALTERNATE : FileStatus.OK;
     }
 
     /** いま書き出したとしたら何バイトになるか (要件 FR-141)。 */
@@ -588,6 +732,8 @@ public final class IndexedDataSet implements KeyedDataSet {
                 continue;
             }
             if (keys.size() > 1 || !keys.get(0).equals(primaryKey)) {
+                // 断ったのは副索引である
+                viaAlternate = true;
                 return FileStatus.DUPLICATE_KEY;
             }
         }
@@ -601,6 +747,7 @@ public final class IndexedDataSet implements KeyedDataSet {
      */
     @Override
     public String rewrite(byte[] from) {
+        viaAlternate = false;
         String checked = changeable();
         if (checked != null) {
             return checked;
@@ -616,6 +763,7 @@ public final class IndexedDataSet implements KeyedDataSet {
 
     /** 鍵で引いて書き換える (要件 FR-101)。レコードの中の主鍵が相手を決める。 */
     public String rewriteKey(byte[] from) {
+        viaAlternate = false;
         String checked = changeable();
         if (checked != null) {
             return checked;
@@ -631,15 +779,17 @@ public final class IndexedDataSet implements KeyedDataSet {
         if (conflict != null) {
             return conflict;
         }
+        boolean duplicated = duplicatesAlternate(key, from);
         byte[] previous = records.put(key, from.clone());
         indexUpdate(key, previous, records.get(key));
         lastLength = from.length;
         current = null;
-        return FileStatus.OK;
+        return duplicated ? FileStatus.DUPLICATE_ALTERNATE : FileStatus.OK;
     }
 
     @Override
     public String delete() {
+        viaAlternate = false;
         String checked = changeable();
         if (checked != null) {
             return checked;
@@ -653,6 +803,7 @@ public final class IndexedDataSet implements KeyedDataSet {
 
     /** 鍵で引いて消す (要件 FR-101)。 */
     public String deleteKey(byte[] key) {
+        viaAlternate = false;
         String checked = changeable();
         if (checked != null) {
             return checked;
@@ -675,14 +826,14 @@ public final class IndexedDataSet implements KeyedDataSet {
 
     private String writable() {
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.WRITE_NOT_ALLOWED;
         }
         return mode.canWrite() ? null : FileStatus.WRITE_NOT_ALLOWED;
     }
 
     private String changeable() {
         if (mode == null) {
-            return FileStatus.NOT_OPEN;
+            return FileStatus.REWRITE_NOT_ALLOWED;
         }
         return mode == OpenMode.IO ? null : FileStatus.REWRITE_NOT_ALLOWED;
     }

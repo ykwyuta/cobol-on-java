@@ -84,7 +84,7 @@ public final class InitialImage {
 
     /** 既定 (IBM-1047、図形定数 {@code QUOTE} は {@code "}、空白で充填) で組み立てる。 */
     public static Result build(DataLayout layout) {
-        return build(layout, CodePages.DEFAULT, '"');
+        return build(layout, CompileCodePage.current(), '"');
     }
 
     /**
@@ -94,7 +94,7 @@ public final class InitialImage {
      * 表すバイトが変わる。<b>並びのいちばん後ろに来る文字</b>だからである。
      */
     public static Result build(DataLayout layout, SpecialNames specialNames) {
-        return build(layout, CodePages.DEFAULT, '"',
+        return build(layout, CompileCodePage.current(), '"',
                 specialNames.highValue(), specialNames.lowValue());
     }
 
@@ -237,8 +237,24 @@ public final class InitialImage {
             writeNumeric(image, item, value, picture, usage == null ? Usage.DISPLAY : usage);
             return;
         }
-        if (picture.category() == Picture.Category.NATIONAL) {
+        if (picture.category() == Picture.Category.NATIONAL || picture.isNationalEdited()) {
+            // 国字編集の初期値も、編集せずに字を UTF-16 で置く (編集の項目の VALUE は
+            // 書いた字そのものである)
             writeNational(image, item, value);
+            return;
+        }
+        if (picture.category() == Picture.Category.DBCS) {
+            // DBCS の初期値は DBCS の定数か SPACE である。余りは DBCS の空白で埋める
+            // image はこの項目の分だけの切り出しである
+            byte[] bytes = value instanceof LiteralValue.Dbcs dbcs ? dbcs.bytes() : new byte[0];
+            if (bytes.length > image.length) {
+                report(item.origin(), "VALUE is longer than " + describe(item));
+                return;
+            }
+            for (int i = 0; i < image.length; i++) {
+                image[i] = i < (bytes.length & ~1) ? bytes[i]
+                        : dev.cobolonjava.runtime.data.Dbcs.SPACE;
+            }
             return;
         }
         // JUSTIFIED は<b>初期値には効かない</b>。規格がそう決めている

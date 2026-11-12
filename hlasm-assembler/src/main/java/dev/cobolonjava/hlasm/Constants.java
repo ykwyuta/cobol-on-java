@@ -40,6 +40,8 @@ public final class Constants {
             case 'F' -> new TypeRule(4, 4, false);
             case 'H' -> new TypeRule(2, 2, false);
             case 'A' -> new TypeRule(4, 4, false);
+            // V は外の記号の番地。値は載せる側が入れるので、組み立てでは 0 である
+            case 'V' -> new TypeRule(4, 4, false);
             case 'Y' -> new TypeRule(2, 2, false);
             case 'P' -> new TypeRule(1, 1, true);
             case 'Z' -> new TypeRule(1, 1, true);
@@ -52,7 +54,12 @@ public final class Constants {
 
     /** 組み立てた 1 演算項。 */
     public record Piece(int alignment, int length, int duplication, byte[] bytes,
-                        List<AddressReference> references) {
+                        List<AddressReference> references, Integer scale) {
+
+        public Piece(int alignment, int length, int duplication, byte[] bytes,
+                     List<AddressReference> references) {
+            this(alignment, length, duplication, bytes, references, null);
+        }
 
         public Piece {
             bytes = bytes == null ? null : bytes.clone();
@@ -71,7 +78,11 @@ public final class Constants {
     }
 
     /** {@code A(label)} のように、2 周目でなければ値が決まらない番地定数。 */
-    public record AddressReference(int offset, int length, String expression) {
+    public record AddressReference(int offset, int length, String expression, boolean external) {
+
+        public AddressReference(int offset, int length, String expression) {
+            this(offset, length, expression, false);
+        }
     }
 
     /**
@@ -98,6 +109,13 @@ public final class Constants {
         TypeRule rule = ruleOf(type, line);
         // 浮動小数点の型の拡張 (H: 16 進、B: 2 進、D: 10 進)。書かなければ 16 進である
         char extension = 'H';
+        if (type == 'F' && at < operand.length()
+                && Character.toUpperCase(operand.charAt(at)) == 'D') {
+            // FD は 8 バイトの固定小数点である (HLASM Language Reference "Fixed-point
+            // constants": 型の拡張 D は doubleword)
+            rule = new TypeRule(8, 8, false);
+            at++;
+        }
         if ((type == 'E' || type == 'D' || type == 'L') && at < operand.length()
                 && "HBD".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0) {
             extension = Character.toUpperCase(operand.charAt(at));
@@ -118,6 +136,19 @@ public final class Constants {
             if (explicitLength <= 0) {
                 throw new AssemblyException(line, "the length modifier must be positive: " + operand);
             }
+        }
+        // 固定小数点の位取り (S)。値に 2 の S 乗を掛けて整数にする
+        // (HLASM Language Reference "Scale modifier")。S' と I' の属性もここから決まる
+        Integer scale = type == 'F' || type == 'H' ? Integer.valueOf(0) : null;
+        if (scale != null && at + 1 < operand.length()
+                && Character.toUpperCase(operand.charAt(at)) == 'S'
+                && isModifierDigit(operand, at + 1)) {
+            int start = ++at;
+            at++;
+            while (at < operand.length() && Character.isDigit(operand.charAt(at))) {
+                at++;
+            }
+            scale = Integer.parseInt(operand.substring(start, at));
         }
         if (at < operand.length() && "SEP".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0
                 && at + 1 < operand.length() && isModifierDigit(operand, at + 1)) {
@@ -155,10 +186,12 @@ public final class Constants {
         int alignment = explicitLength == null ? rule.alignment() : 1;
         if (nominal == null) {
             int length = explicitLength != null ? explicitLength : rule.defaultLength();
-            return new Piece(alignment, length, duplication, null, List.of());
+            return new Piece(alignment, length, duplication, null, List.of(), scale);
         }
-        return build(type, extension, rule, explicitLength, alignment, duplication, nominal, values,
-                scope, line);
+        Piece built = build(type, extension, rule, explicitLength, alignment, duplication, nominal,
+                values, scope, line, scale == null ? 0 : scale);
+        return new Piece(built.alignment(), built.length(), built.duplication(), built.bytes(),
+                built.references(), scale);
     }
 
     private static boolean isModifierDigit(String operand, int at) {
@@ -168,7 +201,7 @@ public final class Constants {
 
     private static Piece build(char type, char extension, TypeRule rule, Integer explicitLength,
                                int alignment, int duplication, String nominal, boolean values, Scope scope,
-                               int line) {
+                               int line, int scale) {
         List<AddressReference> references = new ArrayList<>();
         List<byte[]> encoded = new ArrayList<>();
         // 1 つの定数に値を複数書ける。F'1,2,3' は 3 つの語であり、反復係数とは別に並ぶ
@@ -180,17 +213,18 @@ public final class Constants {
                 case 'X' -> hex(item, explicitLength, line);
                 case 'B' -> binary(item, explicitLength, line);
                 case 'F', 'H' -> integer(item, explicitLength == null
-                        ? rule.defaultLength() : explicitLength, line);
+                        ? rule.defaultLength() : explicitLength, scale, line);
                 case 'P' -> packed(item, explicitLength, line);
                 case 'Z' -> zoned(item, explicitLength, scope.codePage(), line);
-                case 'A', 'Y' -> new byte[explicitLength == null
+                case 'A', 'Y', 'V' -> new byte[explicitLength == null
                         ? rule.defaultLength() : explicitLength];
                 case 'E', 'D', 'L' -> FloatingConstants.encode(type, extension, item, line);
                 default -> throw new AssemblyException(line, "unsupported constant type: " + type);
             };
-            if (type == 'A' || type == 'Y') {
+            if (type == 'A' || type == 'Y' || type == 'V') {
                 references.add(new AddressReference(
-                        encoded.stream().mapToInt(b -> b.length).sum(), bytes.length, item));
+                        encoded.stream().mapToInt(b -> b.length).sum(), bytes.length, item,
+                        type == 'V'));
             }
             if (rule.lengthFromValue() && explicitLength == null) {
                 unit = bytes.length;
@@ -268,11 +302,21 @@ public final class Constants {
     }
 
     /** {@code F} と {@code H} は 2 の補数の big endian である。 */
-    private static byte[] integer(String text, int length, int line) {
+    private static byte[] integer(String text, int length, int scale, int line) {
         long value;
         try {
-            value = Long.parseLong(text.trim());
-        } catch (NumberFormatException failure) {
+            if (scale == 0) {
+                value = Long.parseLong(text.trim());
+            } else {
+                // 位取りつき。2 の scale 乗を掛け、半分は 0 から遠いほうへ丸める。
+                // 丸めの向きは実機と突き合わせていない
+                java.math.BigDecimal scaled = new java.math.BigDecimal(text.trim());
+                scaled = scale > 0
+                        ? scaled.multiply(java.math.BigDecimal.valueOf(2).pow(scale))
+                        : scaled.divide(java.math.BigDecimal.valueOf(2).pow(-scale));
+                value = scaled.setScale(0, java.math.RoundingMode.HALF_UP).longValueExact();
+            }
+        } catch (ArithmeticException | NumberFormatException failure) {
             throw new AssemblyException(line, "not an integer constant: " + text);
         }
         byte[] out = new byte[length];

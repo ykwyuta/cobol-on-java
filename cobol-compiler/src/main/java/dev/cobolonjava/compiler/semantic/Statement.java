@@ -600,7 +600,13 @@ public sealed interface Statement {
      * @param converting {@code CONVERTING} の指定。なければ {@code null}
      */
     record Inspect(DataReference target, List<InspectClause> clauses, Converting converting,
-                   Origin origin) implements Statement {
+                   Origin origin, Operand source) implements Statement {
+
+        /** 項目を調べる INSPECT。{@code source} は関数の値を調べるときだけ持つ。 */
+        public Inspect(DataReference target, List<InspectClause> clauses, Converting converting,
+                       Origin origin) {
+            this(target, clauses, converting, origin, null);
+        }
 
         public Inspect {
             clauses = List.copyOf(clauses);
@@ -778,8 +784,8 @@ public sealed interface Statement {
      * @param arguments 渡す引数。{@code USING} に並べた順
      * @param exception {@code ON EXCEPTION} の指定。なければ {@code null}
      */
-    record Call(Operand target, List<Argument> arguments, Overflow exception, Origin origin)
-            implements Statement {
+    record Call(Operand target, List<Argument> arguments, boolean returning, Overflow exception,
+                Origin origin) implements Statement {
 
         public Call {
             arguments = List.copyOf(arguments);
@@ -788,9 +794,72 @@ public sealed interface Statement {
         /**
          * 引数 1 個。
          *
+         * @param value     渡すもの。{@code OMITTED} なら {@code null}
          * @param byContent 写しを渡すかどうか。{@code false} なら領域そのものを渡す
+         * @param byValue   {@code BY VALUE} か。写しを渡すのは {@code BY CONTENT} と同じだが、
+         *                  整数の定数は 4 byte の 2 進数にして渡す
          */
-        public record Argument(Operand value, boolean byContent) {
+        public record Argument(Operand value, boolean byContent, boolean byValue) {
+
+            public Argument(Operand value, boolean byContent) {
+                this(value, byContent, false);
+            }
+
+            public boolean omitted() {
+                return value == null;
+            }
+        }
+    }
+
+    /**
+     * {@code EXIT PERFORM}、{@code EXIT PERFORM CYCLE}、{@code EXIT PARAGRAPH}、
+     * {@code EXIT SECTION}。
+     *
+     * <p>何もしない {@code EXIT} とは別物で、<b>制御を移す</b>。
+     */
+    record Exit(Kind kind, Origin origin) implements Statement {
+
+        /** どこへ抜けるか。 */
+        public enum Kind {
+            /** その場に書いた PERFORM の外へ。 */
+            PERFORM,
+            /** その場に書いた PERFORM の、次の回の判定へ。 */
+            CYCLE,
+            /** いまの段落の終わりへ。 */
+            PARAGRAPH,
+            /** いまの章の終わりへ。 */
+            SECTION
+        }
+    }
+
+    /**
+     * 副入口 {@code ENTRY '名前' USING ...}。
+     *
+     * <p>流れの中で達しても何もしない。呼ばれたときに<b>ここから始まる</b>という印である。
+     * 段落を組み立てるときにここで切り、切った後ろを入口として覚える。
+     *
+     * @param name       入口の名前
+     * @param parameters {@code USING} に並べた連絡節の 01。書かれた順
+     */
+    record EntryPoint(String name, List<DataItem> parameters, Origin origin)
+            implements Statement {
+
+        public EntryPoint {
+            parameters = List.copyOf(parameters);
+        }
+    }
+
+    /**
+     * {@code SET 手続きポインタ TO ENTRY 名前}。
+     *
+     * @param pointers 受け取る手続きポインタ・関数ポインタ
+     * @param target   入口の名前。文字定数か、実行時に名前が決まる項目
+     */
+    record SetEntry(List<DataReference> pointers, Operand target, Origin origin)
+            implements Statement {
+
+        public SetEntry {
+            pointers = List.copyOf(pointers);
         }
     }
 
@@ -900,13 +969,29 @@ public sealed interface Statement {
      * @param target     初期化する項目
      * @param withFiller {@code FILLER} も初期化するか
      * @param replacing  {@code REPLACING} の指定
+     * @param toValue    {@code TO VALUE} の指定。書かれていなければ {@code null}
+     * @param toDefault  {@code TO DEFAULT} が書かれたか
      */
     record Initialize(DataReference target, boolean withFiller,
-                      List<InitializeImage.Replacing> replacing, Origin origin)
+                      List<InitializeImage.Replacing> replacing, ToValue toValue,
+                      boolean toDefault, Origin origin)
             implements Statement {
+
+        public Initialize(DataReference target, boolean withFiller,
+                          List<InitializeImage.Replacing> replacing, Origin origin) {
+            this(target, withFiller, replacing, null, false, origin);
+        }
 
         public Initialize {
             replacing = List.copyOf(replacing);
+        }
+
+        /**
+         * {@code ALL TO VALUE} または {@code 分類 TO VALUE}。
+         *
+         * @param category 戻す分類。{@code ALL} なら {@code null}
+         */
+        public record ToValue(InitializeImage.Category category) {
         }
     }
 
@@ -930,10 +1015,15 @@ public sealed interface Statement {
          * @param debug    ファイル名が見張られているときに、開いたあとで動かす文 (要件 FR-193)
          */
         public record Opened(FileDescription file, OpenMode mode, boolean noRewind,
-                             List<Statement> debug) {
+                             List<Statement> debug, boolean reversed) {
 
             public Opened {
                 debug = List.copyOf(debug);
+            }
+
+            public Opened(FileDescription file, OpenMode mode, boolean noRewind,
+                          List<Statement> debug) {
+                this(file, mode, noRewind, debug, false);
             }
 
             public Opened(FileDescription file, OpenMode mode) {
@@ -1287,11 +1377,18 @@ public sealed interface Statement {
      * @param testAfter {@code WITH TEST AFTER} 指定。中身を 1 度実行してから条件を見る
      * @param varying   {@code VARYING} … {@code AFTER} …。外側から内側の順。指定がなければ空
      * @param body      その場に書いた文。段落を呼ぶ形では空
+     * @param forever   {@code UNTIL EXIT}。終わりの条件を持たずに繰り返す
      */
     record Perform(String target, String through, Operand times, Condition until,
                    boolean testAfter, List<Varying> varying, List<Statement> body,
-                   List<Statement> debug, Origin origin)
+                   List<Statement> debug, boolean forever, Origin origin)
             implements Statement {
+
+        public Perform(String target, String through, Operand times, Condition until,
+                       boolean testAfter, List<Varying> varying, List<Statement> body,
+                       List<Statement> debug, Origin origin) {
+            this(target, through, times, until, testAfter, varying, body, debug, false, origin);
+        }
 
         public Perform(String target, String through, Operand times, Condition until,
                        boolean testAfter, List<Varying> varying, List<Statement> body,

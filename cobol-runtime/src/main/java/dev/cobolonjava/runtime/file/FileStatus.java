@@ -13,6 +13,14 @@ public final class FileStatus {
 
     /** 成功。 */
     public static final String OK = "00";
+    /**
+     * うまくいったが、重複を許す副鍵に同じ値がある。
+     *
+     * <p>{@code READ} では、いま読んだレコードの次も同じ副鍵を持つとき。{@code WRITE} と
+     * {@code REWRITE} では、書いたレコードが副鍵の重複を作ったときである
+     * (85 規格 VII-3, 1.3.5(1)B)。誤りではない。続けて読めば同じ鍵がまだある、という知らせである。
+     */
+    public static final String DUPLICATE_ALTERNATE = "02";
     /** 省略可能なファイルがなかったので作った。 */
     public static final String OPTIONAL_CREATED = "05";
     /** レコード長が記述と合わない。 */
@@ -51,6 +59,12 @@ public final class FileStatus {
     /** {@code CLOSE ... WITH LOCK} で閉じたファイルを、もう一度開こうとした。 */
     public static final String CLOSED_WITH_LOCK = "38";
     /** すでに開いている。 */
+    /**
+     * 開こうとしたファイルの固定の属性が、プログラムの宣言と食い違っている
+     * (85 規格 VII-4, 1.3.5(3)I。様式とレコード長がここに入る)。
+     */
+    public static final String ATTRIBUTE_CONFLICT = "39";
+
     public static final String ALREADY_OPEN = "41";
     /** 開いていない。 */
     public static final String NOT_OPEN = "42";

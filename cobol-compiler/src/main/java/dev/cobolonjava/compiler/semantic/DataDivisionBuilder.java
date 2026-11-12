@@ -224,6 +224,15 @@ public final class DataDivisionBuilder {
                 specialRegisters(), builder.totalLength);
         // 回数を決める項目は表よりあとに書かれていてもよい。読み終えてから結び付ける
         layout.linkOccursDepending();
+        for (DataItem table : layout.all()) {
+            DataItem counter = table.occursDepending();
+            if (counter != null && counter.picture() != null
+                    && (!counter.picture().isNumeric() || counter.picture().scale() != 0)) {
+                // 個数は整数である。小数を持つ項目では「いま何個か」が決まらない
+                builder.report(table.origin(), "the OCCURS DEPENDING ON object must be an"
+                        + " integer item: " + counter.name());
+            }
+        }
         return new Result(layout,
                 Map.copyOf(builder.fileRecords), List.copyOf(builder.reports),
                 List.copyOf(builder.diagnostics));
@@ -444,6 +453,7 @@ public final class DataDivisionBuilder {
             return;
         }
         List<DataItem.ValueRange> values = new ArrayList<>();
+        LiteralValue whenFalse = null;
         for (CobolParser.DataClauseContext clause : entry.dataClause()) {
             if (clause.valueClause() == null) {
                 report(origin, "level 88 condition-name allows only a VALUE clause");
@@ -453,12 +463,16 @@ public final class DataDivisionBuilder {
                 values.add(new DataItem.ValueRange(literalOf(range.literal(0), origin),
                         range.literal().size() > 1 ? literalOf(range.literal(1), origin) : null));
             }
+            if (clause.valueClause().FALSE() != null) {
+                whenFalse = literalOf(clause.valueClause().literal(), origin);
+            }
         }
         if (values.isEmpty()) {
             report(origin, "level 88 condition-name requires a VALUE clause");
             return;
         }
-        previous.addConditionName(new DataItem.ConditionName(nameOf(entry), values, origin));
+        previous.addConditionName(
+                new DataItem.ConditionName(nameOf(entry), values, whenFalse, origin));
     }
 
     private static String nameOf(CobolParser.DataDescriptionEntryContext entry) {
@@ -470,6 +484,7 @@ public final class DataDivisionBuilder {
 
     private void applyClauses(DataItem item, CobolParser.DataDescriptionEntryContext entry,
                               Origin origin) {
+        boolean signWritten = false;
         for (CobolParser.DataClauseContext clause : entry.dataClause()) {
             if (clause.pictureClause() != null) {
                 applyPicture(item, clause.pictureClause(), origin);
@@ -477,6 +492,7 @@ public final class DataDivisionBuilder {
                 applyUsage(item, clause.usageClause(), origin);
             } else if (clause.signClause() != null) {
                 item.setSignPosition(signPositionOf(clause.signClause()));
+                signWritten = true;
             } else if (clause.occursClause() != null) {
                 applyOccurs(item, clause.occursClause(), origin);
             } else if (clause.redefinesClause() != null) {
@@ -487,6 +503,10 @@ public final class DataDivisionBuilder {
             } else if (clause.blankWhenZeroClause() != null) {
                 item.setBlankWhenZero(true);
             } else if (clause.valueClause() != null) {
+                if (clause.valueClause().FALSE() != null) {
+                    report(origin, "WHEN SET TO FALSE is allowed only on a level 88"
+                            + " condition-name: " + describe(item));
+                }
                 applyValue(item, clause.valueClause(), origin);
             } else if (clause.externalClause() != null) {
                 // 割り付けには効かないが、<b>どの領域を指すか</b>に効く (要件 FR-014)
@@ -501,6 +521,54 @@ public final class DataDivisionBuilder {
             }
         }
         applyBlankWhenZero(item, origin);
+        checkClauseCombinations(item, signWritten, origin);
+    }
+
+    /**
+     * 句と PICTURE の組み合わせを確かめる。
+     *
+     * <p>どれも規格と Enterprise COBOL の言語解説書が書けないと決めている組み合わせで
+     * ある。黙って通すと、句が<b>効かないまま</b>翻訳される。ZCVS の負系
+     * (ZE134N〜ZE136N、ZE143N、ZE109N、ZE145N) が断られることを確かめている。
+     */
+    private void checkClauseCombinations(DataItem item, boolean signWritten, Origin origin) {
+        Picture picture = item.picture();
+        if (picture != null && item.justified()
+                && (picture.isNumeric() || picture.isNumericEdited())) {
+            // 右詰めは英字・英数字の受取項目の話である。数字は元から小数点で揃う
+            report(origin, "JUSTIFIED requires an alphabetic or alphanumeric item: "
+                    + describe(item));
+        }
+        if (picture != null && picture.isExternalFloating()
+                && (item.initialValue() != null || item.justified() || item.blankWhenZero()
+                    || !(item.usage() == null || item.usage() == Usage.DISPLAY
+                         || item.usage() == Usage.NATIONAL))) {
+            // 外部浮動小数点は字で持つ。VALUE・JUSTIFIED・BLANK WHEN ZERO は書けず、
+            // USAGE は DISPLAY か NATIONAL に限る (言語解説書 "External floating-point items")
+            report(origin, "an external floating item requires USAGE DISPLAY or NATIONAL"
+                    + " and allows no VALUE, JUSTIFIED or BLANK WHEN ZERO: " + describe(item));
+        }
+        if (picture != null && item.blankWhenZero()) {
+            if (picture.signPosition().isSigned()) {
+                // 演算符号 S を持つ項目は、ゼロでも符号を持つ。空白にはできない
+                report(origin, "BLANK WHEN ZERO requires an item without the operational"
+                        + " sign S: " + describe(item));
+            } else if (picture.source().indexOf('*') >= 0) {
+                // 小切手保護の * は、ゼロのときに * で埋める。空白にするのと両立しない
+                report(origin, "BLANK WHEN ZERO requires a PICTURE without the asterisk"
+                        + " (*): " + describe(item));
+            }
+        }
+        if (picture != null && signWritten && picture.isNumeric()
+                && !picture.signPosition().isSigned()) {
+            report(origin, "SIGN requires a PICTURE with the operational sign S: "
+                    + describe(item));
+        }
+        if (item.external() && currentSection == DataSection.LOCAL_STORAGE) {
+            // EXTERNAL の領域は実行単位で 1 つである。呼び出しごとに作り直す
+            // LOCAL-STORAGE には置けない
+            report(origin, "LOCAL-STORAGE cannot specify EXTERNAL: " + describe(item));
+        }
     }
 
     /**
@@ -563,6 +631,12 @@ public final class DataDivisionBuilder {
      * (暫定判断 P-035)。同じ持ち方にすれば、{@code SET} も添字も同じ道を通る。
      */
     private void applyUsage(DataItem item, CobolParser.UsageClauseContext clause, Origin origin) {
+        if (clause.GROUP_USAGE() != null) {
+            // 群の USAGE として下へ配る。基本項目に書くのは誤りなので、木ができてから見る
+            item.setUsage(Usage.NATIONAL);
+            item.markGroupNational();
+            return;
+        }
         String name = clause.usageName().getText().toUpperCase(Locale.ROOT);
         if (name.equals("INDEX")) {
             // 群に書かれることもある。実体を作るのは木ができてからである
@@ -572,6 +646,12 @@ public final class DataDivisionBuilder {
         if (name.equals("POINTER")) {
             // 大きさを決めるのは木ができてからである (暫定判断 P-123)
             item.markPointer();
+            return;
+        }
+        if (name.equals("PROCEDURE-POINTER") || name.equals("FUNCTION-POINTER")) {
+            // 手続きポインタは 8 byte (入口と環境)、関数ポインタは 4 byte である
+            // (Enterprise COBOL 言語解説書の USAGE 句)
+            item.markEntryPointer(name.startsWith("PROCEDURE") ? 8 : 4);
             return;
         }
         Usage usage = switch (name) {
@@ -584,8 +664,12 @@ public final class DataDivisionBuilder {
             case "NATIONAL" -> Usage.NATIONAL;
             default -> null;
         };
+        if (name.equals("DISPLAY-1")) {
+            // DBCS。数字の USAGE ではないので Usage には持たず、PICTURE の種別で表す
+            item.markDisplay1();
+            return;
+        }
         if (usage == null) {
-            // DISPLAY-1 はランタイムが未対応 (暫定判断 P-006)
             report(origin, "USAGE " + name + " is not supported yet");
             return;
         }
@@ -613,7 +697,7 @@ public final class DataDivisionBuilder {
             report(item.origin(), "USAGE POINTER cannot have a PICTURE: " + describe(item));
             return;
         }
-        item.setPicture(PictureParser.parse("X(4)"));
+        item.setPicture(PictureParser.parse(item.entryPointerBytes() == 8 ? "X(8)" : "X(4)"));
         item.setUsage(Usage.DISPLAY);
     }
 
@@ -1506,6 +1590,15 @@ public final class DataDivisionBuilder {
         returnCode.setLength(returnCode.picture().size());
         Map<String, DataItem> registers = new LinkedHashMap<>();
         registers.put("RETURN-CODE", returnCode);
+        // TALLY は PIC 9(5) COMP の特殊レジスタである (Enterprise COBOL 言語解説書)。
+        // RETURN-CODE と同じ置き場に並べる
+        DataItem tally = new DataItem(INDEPENDENT_LEVEL, "TALLY", null);
+        tally.setPicture(PictureParser.parse("9(5)"));
+        tally.setUsage(Usage.COMP);
+        tally.setSection(DataSection.SPECIAL_REGISTER);
+        tally.setOffset(SpecialRegisterArea.TALLY_OFFSET);
+        tally.setLength(4);
+        registers.put("TALLY", tally);
         // 日時・task番号・端末のfieldは、出どころの無いときbinary zeroのままである (暫定判断 P-113)
         registers.put("EIBTIME", eibItem("EIBTIME", "S9(7)", Usage.COMP_3,
                 CicsEib.EIBTIME_OFFSET));
@@ -1595,7 +1688,11 @@ public final class DataDivisionBuilder {
         }
         for (CobolParser.IoControlEntryContext entry : program.environmentDivision()
                 .inputOutputSection().ioControlParagraph().ioControlEntry()) {
-            if (entry.SAME() == null || entry.SORT() != null || entry.SORT_MERGE() != null) {
+            // 指定の種類は<b>先頭の語</b>で見る。SAME() は「この規則のどこかに SAME が現れうる」
+            // ために並びを返し、無くても null にならない。以前は null と比べていたので、
+            // RERUN や APPLY の指定も SAME として読み、そこに書かれたファイルの共有を壊していた
+            if (!entry.getStart().getText().equalsIgnoreCase("SAME")
+                    || entry.SORT() != null || entry.SORT_MERGE() != null) {
                 continue;
             }
             String first = null;
@@ -1701,6 +1798,12 @@ public final class DataDivisionBuilder {
             return;
         }
         for (DataItem child : item.children()) {
+            if (item.isGroupNational() && child.usage() != null
+                    && child.usage() != Usage.NATIONAL) {
+                // 国字の群の中は国字だけである。別の USAGE を書けば誤り
+                report(child.origin(), "an item under GROUP-USAGE NATIONAL must not specify"
+                        + " another USAGE: " + describe(child));
+            }
             inheritUsage(child, usage, index);
         }
     }
@@ -1876,9 +1979,25 @@ public final class DataDivisionBuilder {
             report(item.origin(), "elementary item requires a PICTURE clause: " + describe(item));
             return 0;
         }
+        if (picture.category() == Picture.Category.NATIONAL
+                && (item.isDisplay1() || (CompileCodePage.dbcsSymbol() && usage == null))) {
+            // PIC N に DISPLAY-1 と書くか、NSYMBOL(DBCS) の下で USAGE を書かなければ DBCS である
+            picture = picture.asDbcs();
+            item.setPicture(picture);
+        }
+        if (item.isDisplay1() && picture.category() != Picture.Category.DBCS) {
+            report(item.origin(), "USAGE DISPLAY-1 requires PICTURE G or N: " + describe(item));
+            return picture.size();
+        }
+        if (picture.category() == Picture.Category.DBCS) {
+            if (usage != null && usage != Usage.DISPLAY) {
+                report(item.origin(), "a DBCS item (PICTURE G) requires USAGE DISPLAY-1: "
+                        + describe(item));
+            }
+            return picture.size() * 2;
+        }
         if (picture.category() == Picture.Category.NATIONAL) {
-            // PIC N は既定 (NSYMBOL(NATIONAL)) で国字である。USAGE DISPLAY と書けば DBCS
-            // (DISPLAY-1) の意味になるが、それはまだ持たない
+            // PIC N は既定 (NSYMBOL(NATIONAL)) で国字である
             if (usage != null && usage != Usage.NATIONAL) {
                 report(item.origin(), "PICTURE N requires USAGE NATIONAL (DBCS items are not"
                         + " supported yet): " + describe(item));
@@ -1887,9 +2006,38 @@ public final class DataDivisionBuilder {
             item.setUsage(Usage.NATIONAL);
             return picture.size() * 2;
         }
+        if (picture.isNationalEdited()) {
+            // 国字編集 (PIC NBN)。USAGE は NATIONAL だけである
+            if (usage != null && usage != Usage.NATIONAL) {
+                report(item.origin(), "a national-edited item requires USAGE NATIONAL: "
+                        + describe(item));
+            }
+            item.setUsage(Usage.NATIONAL);
+            return picture.size() * 2;
+        }
+        if (usage == Usage.NATIONAL && picture.isNumericEdited()) {
+            // USAGE NATIONAL の数字編集・外部浮動小数点。編集の字を UTF-16 で持つ
+            item.setPicture(picture.asNational());
+            return picture.size() * 2;
+        }
+        if (item.isGroupNational()) {
+            report(item.origin(), "GROUP-USAGE NATIONAL may be written only on a group item: "
+                    + describe(item));
+            return picture.size();
+        }
+        if (usage == Usage.NATIONAL && picture.isNumeric() && !picture.isExternalFloating()) {
+            // 国字の数字項目 (national decimal)。字の形は DISPLAY と同じで、1 字が UTF-16 の
+            // 2 byte である。符号を持つなら SIGN SEPARATE が要る (重ね打ちの符号は国字に無い)
+            if (picture.signPosition().isSigned() && !item.signPosition().isSeparate()) {
+                report(item.origin(), "a signed national numeric item requires SIGN SEPARATE: "
+                        + describe(item));
+                return picture.size() * 2;
+            }
+            return numericLength(item, picture, Usage.NATIONAL);
+        }
         if (usage == Usage.NATIONAL) {
-            report(item.origin(), "USAGE NATIONAL is supported only with PICTURE N (national"
-                    + " decimal and national-edited items are not supported yet): " + describe(item));
+            report(item.origin(), "USAGE NATIONAL requires a national or numeric PICTURE"
+                    + " (national-edited items are not supported yet): " + describe(item));
             return picture.size();
         }
         if (picture.isNumeric()) {

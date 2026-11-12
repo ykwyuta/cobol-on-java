@@ -719,4 +719,95 @@ class SequentialDataSetTest {
                 DataSetOpenException.class, () -> file.open(OpenMode.INPUT));
         assertEquals(AbendCode.S013, failure.abendCode());
     }
+
+    @Test
+    @DisplayName("置かれているファイルとレコード長の宣言が食い違えば、開くときに 39 になる")
+    void refusesToOpenWithConflictingAttributes(@TempDir Path directory) {
+        Path path = directory.resolve("CONFLICT");
+        DataSetAttributes eight =
+                new DataSetAttributes(RecordFormat.FIXED, 8, CodePages.DEFAULT);
+        SequentialDataSet writer = SequentialDataSet.at(path, eight);
+        assertEquals(FileStatus.OK, writer.open(OpenMode.OUTPUT));
+        assertEquals(FileStatus.OK, writer.write(CodePages.DEFAULT.encode("ORIGINAL")));
+        assertEquals(FileStatus.OK, writer.close());
+
+        // 9 byte と宣言して開く。以前は置かれている 8 byte を黙って使っていた
+        SequentialDataSet longer = SequentialDataSet.at(path,
+                new DataSetAttributes(RecordFormat.FIXED, 9, CodePages.DEFAULT));
+        assertEquals(FileStatus.ATTRIBUTE_CONFLICT, longer.open(OpenMode.INPUT));
+        // 様式が違っても同じである
+        SequentialDataSet variable = SequentialDataSet.at(path,
+                new DataSetAttributes(RecordFormat.VARIABLE, 8, CodePages.DEFAULT));
+        assertEquals(FileStatus.ATTRIBUTE_CONFLICT, variable.open(OpenMode.INPUT));
+        // 作り直す (OUTPUT) のは宣言どおりでよい。合っている宣言なら読める
+        SequentialDataSet same = SequentialDataSet.at(path, eight);
+        assertEquals(FileStatus.OK, same.open(OpenMode.INPUT));
+        byte[] record = new byte[8];
+        assertEquals(FileStatus.OK, same.read(record));
+        assertEquals("ORIGINAL", CodePages.DEFAULT.decode(record));
+    }
+
+    private static String readAll(SequentialDataSet file) {
+        StringBuilder out = new StringBuilder();
+        byte[] record = new byte[2];
+        while (FileStatus.OK.equals(file.read(record))) {
+            out.append(CodePages.DEFAULT.decode(record)).append(' ');
+        }
+        return out.toString().trim();
+    }
+
+    @Test
+    @DisplayName("磁気テープは CLOSE REEL で次の巻へ移り、読むときは巻をまたいで続く")
+    void switchesVolumesOnTape(@TempDir Path directory) {
+        Path path = directory.resolve("TAPE");
+        DataSetAttributes two = new DataSetAttributes(RecordFormat.FIXED, 2, CodePages.DEFAULT);
+        SequentialDataSet writer = SequentialDataSet.at(path, two);
+        writer.tape(true);
+        writer.open(OpenMode.OUTPUT);
+        writer.write(CodePages.DEFAULT.encode("A1"));
+        assertEquals(FileStatus.OK, writer.nextVolume());
+        writer.write(CodePages.DEFAULT.encode("B2"));
+        writer.nextVolume();
+        writer.nextVolume(); // 空の巻
+        writer.write(CodePages.DEFAULT.encode("D4"));
+        writer.close();
+
+        SequentialDataSet reader = SequentialDataSet.at(path, two);
+        reader.tape(true);
+        reader.open(OpenMode.INPUT);
+        assertEquals("A1 B2 D4", readAll(reader));
+        reader.close();
+
+        // 読んでいる巻の残りを飛ばす。空の巻は読むときに自動で越える
+        reader.open(OpenMode.INPUT);
+        byte[] record = new byte[2];
+        reader.nextVolume();
+        reader.read(record);
+        assertEquals("B2", CodePages.DEFAULT.decode(record));
+        reader.nextVolume();
+        reader.read(record);
+        assertEquals("D4", CodePages.DEFAULT.decode(record));
+        reader.nextVolume();
+        assertEquals(FileStatus.AT_END, reader.read(record));
+        reader.close();
+
+        // 逆から読む
+        reader.open(OpenMode.INPUT);
+        assertEquals(FileStatus.OK, reader.reverse());
+        assertEquals("D4 B2 A1", readAll(reader));
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("テープでない媒体は巻を持たず (07)、逆からは読めない (37)")
+    void refusesVolumeOperationsOffTape(@TempDir Path directory) {
+        Path path = directory.resolve("DISK");
+        SequentialDataSet file = SequentialDataSet.at(path,
+                new DataSetAttributes(RecordFormat.FIXED, 2, CodePages.DEFAULT));
+        file.open(OpenMode.OUTPUT);
+        assertEquals(FileStatus.NON_REEL, file.nextVolume());
+        file.close();
+        file.open(OpenMode.INPUT);
+        assertEquals(FileStatus.OPEN_CONFLICT, file.reverse());
+    }
 }
