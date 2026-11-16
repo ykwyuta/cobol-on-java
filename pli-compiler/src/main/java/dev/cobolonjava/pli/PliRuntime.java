@@ -1121,7 +1121,13 @@ public final class PliRuntime {
             control.write(start, context);
             int guard = 0;
             while (number(control.read(context)).compareTo(finish) * step.signum() <= 0) {
+                if (loop.whileCondition() != null && !truth(value(loop.whileCondition(), env))) {
+                    break;
+                }
                 if (!body(loop.body(), env, loop.label())) {
+                    break;
+                }
+                if (loop.untilCondition() != null && truth(value(loop.untilCondition(), env))) {
                     break;
                 }
                 BigDecimal current = number(control.read(context));
@@ -2235,6 +2241,13 @@ public final class PliRuntime {
          */
         private Object invoke(PliSyntax.Procedure procedure, List<PliSyntax.Expr> arguments,
                               Env env) {
+            List<PliSyntax.Expr> extra = List.of();
+            if (arguments.size() > procedure.parameters().size() && !procedure.parameters().isEmpty()
+                    && listParameter(procedure)) {
+                // LIST の仮引数の後ろは、数の決まらない引数である (LRM "LIST attribute")
+                extra = arguments.subList(procedure.parameters().size(), arguments.size());
+                arguments = arguments.subList(0, procedure.parameters().size());
+            }
             if (arguments.size() != procedure.parameters().size()) {
                 throw new PliExecutionException("procedure " + procedure.name() + " takes "
                         + procedure.parameters().size() + " argument(s), but "
@@ -2264,6 +2277,8 @@ public final class PliRuntime {
                 }
             }
             returned = null;
+            PointerValue savedVarglist = varglist;
+            varglist = variableArguments(procedure, extra, env);
             Object savedBlock = blockActivation;
             blockActivation = null;
             String outerScope = scope;
@@ -2278,11 +2293,76 @@ public final class PliRuntime {
             } finally {
                 scope = outerScope;
                 blockActivation = savedBlock;
+                varglist = savedVarglist;
                 activations.get(procedure.name()).pop();
             }
             Object result = returned;
             returned = null;
             return result;
+        }
+
+        /** いま動いている手続きの VARGLIST()。LIST の仮引数を持たなければ null。 */
+        private PointerValue varglist;
+
+        /** 最後の仮引数が LIST 属性を持つか。 */
+        private static boolean listParameter(PliSyntax.Procedure procedure) {
+            if (procedure.parameters().isEmpty()) return false;
+            String last = procedure.parameters().getLast().toUpperCase(Locale.ROOT);
+            for (PliSyntax.Stmt statement : procedure.body()) {
+                if (statement instanceof PliSyntax.Declare declare) {
+                    for (PliSyntax.Decl decl : declare.declarations()) {
+                        if (decl.name().equalsIgnoreCase(last) && decl.has("LIST")) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /**
+         * LIST の後ろの引数を並べた記憶域 (LRM "VARGLIST")。BYVALUE なら値を VARGSIZE の
+         * 大きさずつ、そうでなければ引数の番地を 4 byte ずつ並べる。
+         */
+        private PointerValue variableArguments(PliSyntax.Procedure procedure,
+                                               List<PliSyntax.Expr> extra, Env env) {
+            if (!listParameter(procedure)) {
+                return null;
+            }
+            List<DataView> views = new ArrayList<>();
+            for (PliSyntax.Expr argument : extra) {
+                if (argument instanceof PliSyntax.Reference reference && env.contains(reference.name())) {
+                    views.add(env.require(reference.name()).view);
+                } else {
+                    // 式は FIXED BIN(31) の仮の変数に入れる。ほかの型の式はまだ持たない
+                    Object value = value(argument, env);
+                    if (!(value instanceof FixedValue)) {
+                        throw new PliExecutionException("a LIST argument expression of this type is"
+                                + " not supported yet: " + value);
+                    }
+                    DataView dummy = heapAllocate(4);
+                    dummy.storage().array()[dummy.offset()] = 0;
+                    java.nio.ByteBuffer.wrap(dummy.storage().array(), dummy.offset(), 4)
+                            .putInt(number(value).intValue());
+                    views.add(dummy);
+                }
+            }
+            int length = 0;
+            for (DataView view : views) {
+                length += procedure.byValue() ? (view.length() + 3) / 4 * 4 : 4;
+            }
+            DataView list = heapAllocate(Math.max(4, length));
+            int at = 0;
+            for (DataView view : views) {
+                byte[] target = list.storage().array();
+                if (procedure.byValue()) {
+                    System.arraycopy(view.storage().array(), view.offset(), target,
+                            list.offset() + at, view.length());
+                    at += (view.length() + 3) / 4 * 4;
+                } else {
+                    java.nio.ByteBuffer.wrap(target, list.offset() + at, 4).putInt(address(view));
+                    at += 4;
+                }
+            }
+            return new PointerValue(address(list));
         }
 
         /** 省略した (* と書いた) 引数の印。 */
@@ -3377,6 +3457,22 @@ public final class PliRuntime {
                 }
                 case "SIZE", "STORAGE", "STG" -> {
                     return size(function, env);
+                }
+                // VARGSIZE: 値で渡したときに引数が取る大きさ。SIZE を 4 の倍数に切り上げる
+                case "VARGSIZE" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        int size = number(size(function, env)).intValue();
+                        return fixedBinary31((size + 3) / 4 * 4);
+                    }
+                }
+                case "VARGLIST" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        if (varglist == null) {
+                            throw new PliExecutionException("VARGLIST was used in a procedure"
+                                    + " without a LIST parameter");
+                        }
+                        return varglist;
+                    }
                 }
                 case "CURRENTSIZE", "CSTG", "CURRENTSTORAGE" -> {
                     // 今の大きさ (LRM "CURRENTSIZE")。VARYING の文字なら今の長さ + 2、REFER の
@@ -6104,6 +6200,12 @@ public final class PliRuntime {
 
         /** 変数の参照。名か、配列の要素 {@code A(I)} である。 */
         private Var dataReference(PliSyntax.Expr expression, Env env, String user) {
+            if (expression instanceof PliSyntax.Reference reference && reference.name().contains("->")
+                    && !env.contains(reference.name())) {
+                // P->X: その時の P の値で重ねた X (重ね直す前の変数を返す)
+                return located(reference.name(), env,
+                        rest -> dataReference(new PliSyntax.Reference(rest), env, user));
+            }
             if (expression instanceof PliSyntax.Reference reference) {
                 return env.require(reference.name());
             }

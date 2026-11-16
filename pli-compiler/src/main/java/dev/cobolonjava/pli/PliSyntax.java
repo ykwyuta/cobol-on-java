@@ -46,8 +46,8 @@ final class PliSyntax {
                     }
                 }
             }
-            return new Parser(fileName, expandTypes(qualify(repeatableDeclarations(
-                    scanned)))).parse();
+            return new Parser(fileName, implicitLocators(expandTypes(qualify(
+                    repeatableDeclarations(scanned))))).parse();
         } catch (ParseFailure failure) {
             return new ParseResult(null, List.of(new Diagnostic(Diagnostic.Severity.ERROR,
                     fileName, failure.token.line(), failure.token.column(), failure.getMessage())));
@@ -313,6 +313,81 @@ final class PliSyntax {
         List<Token> out = new ArrayList<>();
         kept.forEach(out::addAll);
         return out;
+    }
+
+    /**
+     * locator を書かない {@code BASED} (LRM "BASED attribute")。{@code P->X} のように必ず
+     * locator で修飾して参照する。隠れた POINTER {@code #X#P} を基にした宣言に読み替え、
+     * 同じ DECLARE にその POINTER を足す。
+     */
+    private static List<Token> implicitLocators(List<Token> tokens) {
+        if (tokens.stream().noneMatch(t -> t.kind() == Kind.IDENT && t.is("BASED"))) {
+            return tokens;
+        }
+        List<Token> out = new ArrayList<>();
+        int start = 0;
+        int depth = 0;
+        for (int i = 0; i < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.is("(")) depth++;
+            else if (t.is(")")) depth--;
+            else if ((t.is(";") && depth <= 0) || t.kind() == Kind.EOF) {
+                List<Token> statement = tokens.subList(start, i + 1);
+                int k = keywordAt(statement);
+                if (t.is(";") && k >= 0 && (statement.get(k).is("DCL") || statement.get(k).is("DECLARE"))) {
+                    // 隠れた POINTER は文の最後に足す (構造の要素の間に入れない)
+                    List<List<Token>> pointers = new ArrayList<>();
+                    List<Token> rewritten = rewriteParts(statement, k, part -> {
+                        List<List<Token>> r = implicitLocator(part);
+                        if (r.size() > 1) pointers.add(r.get(1));
+                        return List.of(r.get(0));
+                    });
+                    if (pointers.isEmpty()) {
+                        out.addAll(statement);
+                    } else {
+                        out.addAll(rewritten.subList(0, rewritten.size() - 1));
+                        for (List<Token> pointer : pointers) {
+                            out.add(new Token(Kind.SYMBOL, ",", t.line(), 0));
+                            out.addAll(pointer);
+                        }
+                        out.add(t);
+                    }
+                } else {
+                    out.addAll(statement);
+                }
+                start = i + 1;
+                depth = 0;
+            }
+        }
+        out.addAll(tokens.subList(start, tokens.size()));
+        return out;
+    }
+
+    private static List<List<Token>> implicitLocator(List<Token> part) {
+        int at = part.isEmpty() ? 0 : part.get(0).kind() == Kind.NUMBER ? 1 : 0;
+        if (at >= part.size() || part.get(at).kind() != Kind.IDENT) {
+            return List.of(part);
+        }
+        Token name = part.get(at);
+        int depth = 0;
+        for (int i = at + 1; i < part.size(); i++) {
+            Token t = part.get(i);
+            if (t.is("(")) depth++;
+            else if (t.is(")")) depth--;
+            else if (depth == 0 && t.kind() == Kind.IDENT && t.is("BASED")
+                    && (i + 1 >= part.size() || !part.get(i + 1).is("("))) {
+                String pointer = "#" + name.text().toUpperCase(Locale.ROOT) + "#P";
+                List<Token> rewritten = new ArrayList<>(part.subList(0, i + 1));
+                rewritten.add(new Token(Kind.SYMBOL, "(", t.line(), t.column()));
+                rewritten.add(new Token(Kind.IDENT, pointer, t.line(), t.column()));
+                rewritten.add(new Token(Kind.SYMBOL, ")", t.line(), t.column()));
+                rewritten.addAll(part.subList(i + 1, part.size()));
+                List<Token> locator = List.of(new Token(Kind.IDENT, pointer, t.line(), t.column()),
+                        new Token(Kind.IDENT, "POINTER", t.line(), t.column()));
+                return List.of(rewritten, locator);
+            }
+        }
+        return List.of(part);
     }
 
     /** 文の頭の名札を飛ばしたところ。無ければ -1。 */
@@ -831,7 +906,15 @@ final class PliSyntax {
                     int keyLength, int keyLocation, boolean print, boolean stream) {
     }
 
-    record Procedure(String name, List<String> parameters, List<Stmt> body) {
+    /**
+     * @param byValue {@code OPTIONS(BYVALUE)}。LIST の仮引数の後ろの引数を値で並べる
+     *                (VARGLIST が指す)。偽なら番地を並べる
+     */
+    record Procedure(String name, List<String> parameters, List<Stmt> body, boolean byValue) {
+
+        Procedure(String name, List<String> parameters, List<Stmt> body) {
+            this(name, parameters, body, false);
+        }
     }
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
@@ -1032,8 +1115,20 @@ final class PliSyntax {
             implements Stmt {
     }
 
+    /**
+     * 制御変数を進める do-group (LRM "DO statement" Type 3)。
+     *
+     * @param whileCondition 各回の前に調べる条件。無ければ {@code null}
+     * @param untilCondition 各回の後に調べる条件。無ければ {@code null}
+     */
     record IterativeLoop(String control, Expr start, Expr finish, Expr step,
-                         List<Stmt> body, String label) implements Stmt {
+                         List<Stmt> body, String label, Expr whileCondition, Expr untilCondition)
+            implements Stmt {
+
+        IterativeLoop(String control, Expr start, Expr finish, Expr step, List<Stmt> body,
+                      String label) {
+            this(control, start, finish, step, body, label, null, null);
+        }
     }
 
     record Call(String name, List<Expr> arguments) implements Stmt {
@@ -1544,6 +1639,8 @@ final class PliSyntax {
                             .anyMatch(token -> token.is("MAIN"));
                     result.noExecOps = attributes.subList(i + 2, close).stream()
                             .anyMatch(token -> token.is("NOEXECOPS"));
+                    result.byValue = attributes.subList(i + 2, close).stream()
+                            .anyMatch(token -> token.is("BYVALUE"));
                 }
             }
             while (!check(Kind.EOF)) {
@@ -2412,6 +2509,7 @@ final class PliSyntax {
                 if (token.is("VARYINGZ") || token.is("VARZ")) flags.add("VARYINGZ");
                 if (token.is("BYVALUE")) flags.add("BYVALUE");
                 if (token.is("OPTIONAL")) flags.add("OPTIONAL");
+                if (token.is("LIST")) flags.add("LIST");
             }
             return Set.copyOf(flags);
         }
@@ -2990,8 +3088,19 @@ final class PliSyntax {
                 Expr finish = expression();
                 Expr step = match("BY") ? expression()
                         : new Literal(java.math.BigDecimal.ONE);
+                // TO の後に WHILE と UNTIL を書ける (LRM "DO statement" Type 3)
+                Expr whileCondition = null;
+                Expr untilCondition = null;
+                for (int i = 0; i < 2; i++) {
+                    if (whileCondition == null && match("WHILE")) {
+                        whileCondition = parenthesizedExpression();
+                    } else if (untilCondition == null && match("UNTIL")) {
+                        untilCondition = parenthesizedExpression();
+                    }
+                }
                 expect(";");
-                return new IterativeLoop(control, start, finish, step, blockBody(), label);
+                return new IterativeLoop(control, start, finish, step, blockBody(), label,
+                        whileCondition, untilCondition);
             }
             if (match(";")) {
                 // Type 1。繰り返さず、1 度だけ実行する。以前は条件の無い繰り返しとして扱い、
@@ -3581,6 +3690,8 @@ final class PliSyntax {
         boolean main;
         /** {@code OPTIONS(NOEXECOPS)}。PARM に実行時オプションを書かない (全部が引数)。 */
         boolean noExecOps;
+        /** {@code OPTIONS(BYVALUE)}。 */
+        boolean byValue;
 
         ProcedureBuilder(String name, List<String> parameters) {
             this.name = name;
@@ -3588,7 +3699,7 @@ final class PliSyntax {
         }
 
         Procedure freeze() {
-            return new Procedure(name, parameters, List.copyOf(body));
+            return new Procedure(name, parameters, List.copyOf(body), byValue);
         }
     }
 

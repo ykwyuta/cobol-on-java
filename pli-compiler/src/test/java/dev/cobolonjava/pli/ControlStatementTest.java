@@ -148,11 +148,20 @@ class ControlStatementTest {
                 DCL A CHAR(3);
                 GET LIST(A);
                 """).contains("statement GET"));
-        assertTrue(rejection("""
+    }
+
+    @Test
+    @DisplayName("DO I = ... TO ... の後の WHILE は各回の前に、UNTIL は各回の後に調べる")
+    void iterativeLoopTakesWhileAndUntil() throws Exception {
+        assertEquals("1,2,1,2,3", run("""
                 DCL I FIXED BIN(31);
                 DO I = 1 TO 5 WHILE(I < 3);
+                  PUT SKIP LIST(I);
                 END;
-                """).contains("CTL.pli"));
+                DO I = 1 TO 5 UNTIL(I >= 3);
+                  PUT SKIP LIST(I);
+                END;
+                """));
     }
 
     @Test
