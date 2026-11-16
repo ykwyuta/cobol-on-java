@@ -2114,6 +2114,38 @@ final class PliSyntax {
             if (match("ASSERT")) {
                 return assertStatement();
             }
+            if (match("ATTACH")) {
+                // ATTACH 入口[(引数)] [THREAD(名)] [ENVIRONMENT(...)] [TSTACK(式)];
+                // (LRM "ATTACH statement")
+                Token entry = expect(Kind.IDENT, "entry name after ATTACH");
+                Expr called = check("(") ? new Function(entry.text(), arguments())
+                        : new Reference(entry.text());
+                Expr thread = new Literal(Asterisk.STAR);
+                while (!check(";")) {
+                    if (match("THREAD")) {
+                        thread = new Reference(parenthesizedExpressionName());
+                    } else if (match("ENVIRONMENT") || match("ENV") || match("TSTACK")) {
+                        skipBalanced();
+                    } else {
+                        throw fail(peek(), "ATTACH option " + peek().text() + " is not supported");
+                    }
+                }
+                expect(";");
+                return new Call("#ATTACH", List.of(called, thread));
+            }
+            if ((check("WAIT") || check("DETACH") || check("CANCEL")) && check(1, "THREAD")) {
+                // WAIT THREAD(t)、DETACH THREAD(t)、CANCEL THREAD(t)
+                String verb = next().text().toUpperCase(java.util.Locale.ROOT);
+                next();
+                Expr thread = new Reference(parenthesizedExpressionName());
+                expect(";");
+                return new Call("#" + verb + "THREAD", List.of(thread));
+            }
+            if (check("EXIT") && check(1, ";")) {
+                next();
+                next();
+                return new Call("#EXIT", List.of());
+            }
             if (match("REVERT") || match("SIGNAL")) {
                 boolean revert = previous().is("REVERT");
                 String condition = conditionName();
@@ -2863,7 +2895,8 @@ final class PliSyntax {
                 if (tokens.get(i).is("BIT")) {
                     return new TypeInfo(Type.BIT, parenthesizedInt(tokens, i + 1, 1), 0);
                 }
-                if (tokens.get(i).is("POINTER") || tokens.get(i).is("PTR")) {
+                // TASK はスレッドを指す。値は THREADID が返す番地である (LRM "TASK attribute")
+                if (tokens.get(i).is("POINTER") || tokens.get(i).is("PTR") || tokens.get(i).is("TASK")) {
                     return new TypeInfo(Type.POINTER, 0, 0);
                 }
                 if (tokens.get(i).is("AREA")) {
@@ -3016,7 +3049,7 @@ final class PliSyntax {
 
         /** まだ持たない型の属性。宣言は翻訳で通し、実行でその名を使うと止まる。 */
         private static final Set<String> UNSUPPORTED_TYPES = Set.of("LABEL", "FORMAT",
-                "TASK", "EVENT", "ORDINAL");
+                "EVENT", "ORDINAL");
 
         /**
          * 宣言に書かれた、まだ持たない型の属性の名。無ければ null。

@@ -196,6 +196,10 @@ public final class PliRuntime {
             this.loader = loader;
             this.globals = new Env(null, context);
             this.sysprint = PrintFile.of(context);
+            if (program.main() && program.parameters().isEmpty() && arguments.length == 1) {
+                // 仮引数の無い主手続きは PARM を受け取らない (実行時オプションだけの PARM もある)
+                arguments = new DataView[0];
+            }
             if (arguments.length != program.parameters().size()) {
                 throw new PliExecutionException("program " + program.name() + " expects "
                         + program.parameters().size() + " argument(s), but got " + arguments.length);
@@ -856,6 +860,10 @@ public final class PliRuntime {
                         // 正常に戻っても実行は終わる (LRM "ERROR condition")
                         if (!condition.name.equals("ERROR")) {
                             runErrorHandler(condition.code, env);
+                        }
+                        if (threadDepth > 0) {
+                            // 付けたスレッドの ERROR は、そのスレッドだけを終える
+                            throw ThreadEndSignal.INSTANCE;
                         }
                         throw new PliExecutionException(condition.name
                                 + (condition.source == null ? "" : ": '" + condition.source
@@ -2748,6 +2756,49 @@ public final class PliRuntime {
             }
         }
 
+        /** ATTACH で動かしているスレッドの深さ。主スレッドなら 0。 */
+        private int threadDepth;
+
+        /**
+         * ATTACH (LRM "ATTACH statement")。付けたスレッドを<b>その場で終わりまで動かす</b>。
+         * 並行には動かさない。付けたスレッドが先に終わる順序はありうる順序の 1 つなので、
+         * 共有の記憶域の結果はその順序のものになる。別のスレッドの EVENT を待つ書き方
+         * (EVENT はまだ持たない) では止まる。新しいスレッドは on-unit を受け継がない。
+         * on-unit の無い ERROR はそのスレッドだけを終える。引数は付ける側で評価する。
+         */
+        private void attach(List<PliSyntax.Expr> arguments, Env env) {
+            PliSyntax.Expr called = arguments.get(0);
+            String name = called instanceof PliSyntax.Function function ? function.name()
+                    : ((PliSyntax.Reference) called).name();
+            List<PliSyntax.Expr> given = called instanceof PliSyntax.Function function
+                    ? function.arguments() : List.of();
+            PliSyntax.Procedure procedure = program.procedures().get(name);
+            if (procedure == null && env.find(name) != null
+                    && env.find(name).type == PliSyntax.Type.ENTRY) {
+                procedure = entryProcedure(env.require(name).read(context));
+            }
+            if (procedure == null) {
+                throw new PliExecutionException("ATTACH needs an internal procedure: " + name);
+            }
+            List<PliSyntax.Expr> values = new ArrayList<>();
+            for (PliSyntax.Expr argument : given) {
+                values.add(new PliSyntax.Literal(value(argument, env)));
+            }
+            PointerValue id = new PointerValue(address(heapAllocate(8)));
+            if (arguments.get(1) instanceof PliSyntax.Reference thread) {
+                env.require(thread.name()).write(id, context);
+            }
+            threadDepth++;
+            try {
+                // caller の無い環境から呼ぶので、付けた側の on-unit は見えない
+                invoke(procedure, values, new Env(globals, null, context));
+            } catch (ThreadEndSignal ended) {
+                // EXIT か、on-unit の無い条件でスレッドが終わった
+            } finally {
+                threadDepth--;
+            }
+        }
+
         /** 省略した (* と書いた) 引数の印。 */
         private static final Object OMITTED_ARGUMENT = new Object();
 
@@ -2870,6 +2921,22 @@ public final class PliRuntime {
                 // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
                 // 解いたあとの参照が誤りであることは検出しない
                 return;
+            }
+            if (call.name().equals("#ATTACH")) {
+                attach(call.arguments(), env);
+                return;
+            }
+            if (call.name().equals("#WAITTHREAD") || call.name().equals("#DETACHTHREAD")
+                    || call.name().equals("#CANCELTHREAD")) {
+                // ATTACH がスレッドを終わりまで動かしているので、待つものも取り消すものも無い
+                env.require(((PliSyntax.Reference) call.arguments().get(0)).name());
+                return;
+            }
+            if (call.name().equals("#EXIT")) {
+                if (threadDepth == 0) {
+                    throw new PliExecutionException("EXIT in the main thread is not supported yet");
+                }
+                throw ThreadEndSignal.INSTANCE;
             }
             if (call.name().equals("#ACROSS")) {
                 assignAcross(call.arguments(), env);
@@ -5002,6 +5069,8 @@ public final class PliRuntime {
                 }
                 case "UUID4" -> java.util.UUID.randomUUID().toString().toUpperCase(Locale.ROOT);
                 case "ONSUBCODE2" -> fixedBinary31(onSubcode2);
+                // TASK の値はスレッドの番地である (LRM "THREADID")
+                case "THREADID" -> arguments.get(0);
                 case "ONLINE" -> fixedBinary31(onConditionName == null ? 0 : onLine);
                 case "ONSUBSCRIPT" -> fixedBinary31(onOriginal instanceof SubscriptOutOfRange r ? r.subscript() : 0);
                 case "ONLBOUND" -> fixedBinary31(onOriginal instanceof SubscriptOutOfRange r ? r.low() : 0);
@@ -8096,6 +8165,15 @@ public final class PliRuntime {
         static final ReturnSignal INSTANCE = new ReturnSignal();
 
         private ReturnSignal() {
+            super(null, null, false, false);
+        }
+    }
+
+    /** 付けたスレッドの終わり (EXIT、または処置されない ERROR)。 */
+    private static final class ThreadEndSignal extends RuntimeException {
+        static final ThreadEndSignal INSTANCE = new ThreadEndSignal();
+
+        private ThreadEndSignal() {
             super(null, null, false, false);
         }
     }
