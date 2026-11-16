@@ -17,6 +17,7 @@ Language Environment) 上での実行時の**振る舞い**を可能な限り忠
 - [設計: ZCVS で z/OS の決めごとを測る](docs/design/29-zcvs.md) — CCVS85 が測らない内部表現・翻訳オプション・副プログラムの連絡を、Zeus の検査スイートで測る。翻訳できて値が違っていたものの一覧
 - [設計: cobol-compiler のプリプロセッサ (P0-b)](docs/design/30-compiler-preprocessor.md)
 - [設計: cobol-compiler の構文解析 (P0-b)](docs/design/40-parser.md)
+- [設計: Java ソース出力](docs/design/92-java-source-output.md)
 - [設計: データ部の記憶域割り付け (P0-b)](docs/design/50-data-layout.md)
 - [設計: 手続き部と一意名の解決 (P0-b)](docs/design/60-procedure.md)
 - [設計: 報告書作成機能](docs/design/65-report-writer.md)
@@ -133,6 +134,38 @@ src/main/proclib      目録手続きと JCL の INCLUDE メンバ
 java -cp <classpath> dev.cobolonjava.compiler.Main -d out HELLO.cbl
 java -cp out:<classpath> cobol.generated.HELLO
 ```
+
+### Java ソースへ変換する
+
+`--emit-java` を指定すると、`-d` の下に UTF-8 の Java ソースを生成する。
+COBOL・PL/I・HLASM の CLI クラスパスには `cobol-java-source` を含める。
+COBOL は対応する `IF`、`PERFORM`、`MOVE`、`DISPLAY` などを意味解析済みの手続きから
+直接出力する。対応範囲外のプログラムの Java 出力には Vineflower を使う。
+生成した COBOL の Java では、段落名をメソッドと分岐先に、データ項目名を記憶域の
+オフセットと長さの定数に使う。
+PL/I は展開済みの原文をテキストブロックに保持し、HLASM は入口変位・再配置・外部参照を
+名前付きの定数と型付きの表にして、Java を直接生成する。
+JCL の `-p` で指定した目録手続きは生成時に展開される。
+
+```text
+java -cp <classpath> dev.cobolonjava.compiler.Main --emit-java -d generated HELLO.cbl
+java -cp <classpath> dev.cobolonjava.pli.Main --emit-java -d generated-pli -I includes HELLO.pli
+java -cp <classpath> dev.cobolonjava.hlasm.Main --emit-java -d generated -l BUMP.asm
+java -cp <classpath> dev.cobolonjava.job.Main --emit-java -d generated -p proclib PAYROLL.jcl
+```
+
+生成した Java を `javac --release 21 -encoding UTF-8` でコンパイルするときは、
+対象言語のランタイムをクラスパスに含める。COBOL・PL/I の配備カタログを使う場合は
+`META-INF/cobol/programs.json` をクラス出力先へコピーする。CLI を言語別に実行した場合は
+COBOL と PL/I のカタログを別の出力ディレクトリに保持できる。
+生成したジョブは `cobol.generated.job.Job_PAYROLL` のような名前で起動でき、
+実行時のクラス置き場・作業領域・データセットの基点を `-d`・`-w`・`-b` で指定できる。
+
+`cobol:compile` と `cobol:jcl` を設定済みの Maven プロジェクトでは
+`mvn process-classes -Dcobol.emitJava=true` で両ゴールの Java 出力を選べる。
+既定の出力先は `target/generated-sources/legacy` で、
+`-Dcobol.javaOutputDirectory=...` で変更できる。混在する COBOL・PL/I の配備カタログは
+Maven が一つにまとめる。このゴール構成で生成される Java は移行用のソースとして扱う。
 
 PL/I は別の入口を使う。生成クラスも同じ `CobolProgram` ABI を実装し、COBOL と<b>同じ
 名前空間</b> (`cobol.generated`) に置くので、ジョブの `EXEC PGM=`・COBOL の `CALL`・プログラムカタログ・

@@ -1,5 +1,6 @@
 package dev.cobolonjava.hlasm;
 
+import dev.cobolonjava.source.ProgramOutput;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -9,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * {@code hlasm [-d dir] [-I library] [-l] source...}。
+ * {@code hlasm [-d dir] [-I library] [-l] [--emit-java] source...}。
  *
  * <p>{@code -l} は組み立て表 (変位と機械語) を出す。これは<b>実行とは別に</b>組み立てそのものを
  * 突き合わせるためにある (設計 27 §3)。
@@ -30,6 +31,7 @@ public final class Main {
         Path output = Path.of(".");
         Path library = null;
         boolean listing = false;
+        ProgramOutput format = ProgramOutput.CLASS;
         List<Path> sources = new ArrayList<>();
         for (int k = 0; k < args.length; k++) {
             switch (args[k]) {
@@ -41,6 +43,7 @@ public final class Main {
                     output = Path.of(args[k]);
                 }
                 case "-l" -> listing = true;
+                case "--emit-java" -> format = ProgramOutput.JAVA;
                 case "-I" -> {
                     if (++k >= args.length) {
                         usage("-I requires a library directory");
@@ -60,7 +63,7 @@ public final class Main {
                 : HlasmCompiler.withLibrary(SourceLibrary.directory(library));
         int failures = 0;
         for (Path source : sources) {
-            HlasmCompiler.Result result = compiler.compile(source.getFileName().toString(),
+            HlasmCompiler.Assembly result = compiler.assemble(source.getFileName().toString(),
                     Files.readString(source, StandardCharsets.UTF_8));
             result.diagnostics().forEach(System.err::println);
             if (!result.succeeded()) {
@@ -70,9 +73,7 @@ public final class Main {
             if (listing) {
                 printListing(out, result.module());
             }
-            Path target = output.resolve(result.className().replace('.', '/') + ".class");
-            Files.createDirectories(target.getParent());
-            Files.write(target, result.classFile());
+            result.write(output, format);
         }
         if (failures > 0) {
             System.exit(1);
@@ -88,7 +89,7 @@ public final class Main {
 
     private static void usage(String message) {
         System.err.println(message);
-        System.err.println("usage: hlasm [-d dir] [-I library] [-l] source...");
+        System.err.println("usage: hlasm [-d dir] [-I library] [-l] [--emit-java] source...");
         System.exit(2);
     }
 }

@@ -303,7 +303,11 @@ public final class JobRunner {
                 utility.runFresh(context, arguments(step));
             } else {
                 ProgramContext.Loaded loaded = context.resolve(step.program(), loader);
-                DataView[] programArguments = parmFor(step, loaded.signature());
+                String parm = step.parm();
+                if (loaded.program().acceptsCobolBatchOptions()) {
+                    parm = dev.cobolonjava.runtime.program.BatchParm.applyRuntimeOptions(parm, context);
+                }
+                DataView[] programArguments = parmFor(step, parm, loaded.signature());
                 loaded.validateArguments(programArguments);
                 loaded.program().runFresh(context, programArguments);
             }
@@ -1008,7 +1012,7 @@ public final class JobRunner {
      * <p>いまは、連絡節の 1 つ目が宣言した長さまで領域を取り、頭に長さと PARM を置く。残りは
      * 空白である (ホストでは不定)。{@code USING} を書かないプログラムには何も渡さない。
      */
-    private DataView[] parmFor(Step step, ProgramSignature signature) {
+    private DataView[] parmFor(Step step, String parm, ProgramSignature signature) {
         if (signature == null) {
             return arguments(step);
         }
@@ -1016,7 +1020,7 @@ public final class JobRunner {
         if (parameters.isEmpty()) {
             return new DataView[0];
         }
-        byte[] text = step.parm() == null ? new byte[0] : codePage.encode(step.parm());
+        byte[] text = parm == null ? new byte[0] : codePage.encode(parm);
         int length = Math.max(text.length + 2, parameters.get(0).minimumBytes());
         Storage storage = Storage.allocate(length);
         storage.whole().fill(codePage.space());

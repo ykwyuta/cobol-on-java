@@ -302,7 +302,7 @@ class DirectiveProcessorTest {
     @Test
     @DisplayName(">>CALLINTERFACE は受理して出力から消える (FR-092, P-021)")
     void callInterfaceIsAcceptedAndRemoved() {
-        // 呼び出し規約の指定は CALL の生成まで効かない。いまは受理するだけである
+        // 指示文を除いた字面は変わらない。
         assertEquals("CALL 'SUB'.", process(
                 ">>CALLINTERFACE COBOL",
                 "CALL 'SUB'."));

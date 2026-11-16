@@ -730,7 +730,7 @@ class MacroProcessorTest {
                 "         DC    C'&TYPE&PTFTYPE&PARMTYP/&SYSM_HSEV'",
                 "         END");
         assertTrue(result.succeeded(), () -> result.diagnostics().toString());
-        assertEquals("INNER/OUTER/OPEN CODENUO/4", new String(result.module().text(),
+        assertEquals("INNER/OUTER/OPEN CODENUO/004", new String(result.module().text(),
                 dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.charset()));
     }
 
@@ -900,7 +900,7 @@ class MacroProcessorTest {
                 "         DC    C'&SYSM_SEV&SYSM_HSEV'",
                 "         END");
         assertTrue(result.succeeded(), () -> result.diagnostics().toString());
-        assertEquals("404", new String(result.module().text(),
+        assertEquals("004000004", new String(result.module().text(),
                 dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.charset()));
     }
 
@@ -928,14 +928,20 @@ class MacroProcessorTest {
                 "         MEMBER",
                 "         DC    C'&SYSLIB_MEMBER'",
                 "         MEND");
-        Assembler.Result result = Assembler.assemble("macro.asm", String.join("\n",
+        String source = String.join("\n",
                 "TEST     CSECT",
                 "         MEMBER",
-                "         END"),
+                "         END");
+        SourceLibrary library = name -> name.equals("MEMBER") ? member : null;
+        Assembler.Result result = Assembler.assemble("macro.asm", source,
                 dev.cobolonjava.runtime.codepage.CodePages.DEFAULT,
-                name -> name.equals("MEMBER") ? member : null);
+                library);
         assertTrue(result.succeeded(), () -> result.diagnostics().toString());
         assertEquals("MEMBER", new String(result.module().text(),
+                dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.charset()));
+        HlasmCompiler.Assembly compiled = HlasmCompiler.withLibrary(library).assemble("macro.asm", source);
+        assertTrue(compiled.succeeded(), () -> compiled.diagnostics().toString());
+        assertEquals("MEMBER", new String(compiled.module().text(),
                 dev.cobolonjava.runtime.codepage.CodePages.DEFAULT.charset()));
     }
 

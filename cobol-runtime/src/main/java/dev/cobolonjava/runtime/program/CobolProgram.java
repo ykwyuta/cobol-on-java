@@ -21,6 +21,11 @@ public interface CobolProgram {
     /** 作業場所の初期イメージ。{@code VALUE} 句から翻訳時に決まる。 */
     byte[] initialStorage();
 
+    /** 主プログラムの PARM を COBOL の実行時オプション付き形式で受け取るか。 */
+    default boolean acceptsCobolBatchOptions() {
+        return false;
+    }
+
     /**
      * 手続き部を実行する。
      *

@@ -48,6 +48,10 @@ public final class FloatingItem {
         return usage == Usage.COMP_1 ? HexFloat.encodeShort(value) : HexFloat.encodeLong(value);
     }
 
+    public byte[] encodeNearest(BigDecimal value) {
+        return usage == Usage.COMP_1 ? HexFloat.encodeShortNearest(value) : HexFloat.encodeLongNearest(value);
+    }
+
     public BigDecimal decode(byte[] bytes) {
         return usage == Usage.COMP_1 ? HexFloat.decodeShort(bytes) : HexFloat.decodeLong(bytes);
     }

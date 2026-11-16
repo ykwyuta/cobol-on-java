@@ -12,17 +12,28 @@ final class CopyExpander {
     private static final int MAX_DEPTH = 64;
     private static final Set<String> DIRECTIVES = Set.of(
             "CSECT", "START", "DSECT", "USING", "DROP", "DC", "DS", "EQU", "ORG",
+            "CCW", "CCW0", "CCW1",
             "LTORG", "END", "PRINT", "SPACE", "EJECT", "TITLE", "POP", "PUSH",
             "AMODE", "RMODE", "MACRO", "MEND", "MEXIT", "AIF", "AGO", "ANOP",
             "ACTR", "SETA", "SETB", "SETC", "GBLA", "GBLB", "GBLC", "LCLA",
             "LCLB", "LCLC", "MNOTE", "ENTRY", "EXTRN", "WXTRN", "COM", "RSECT",
-            "CNOP", "COPY", "ICTL", "OPSYN");
+            "CNOP", "COPY", "ICTL", "OPSYN", "*PROCESS");
 
     private CopyExpander() {
     }
 
-    static String expand(String source, SourceLibrary library) {
-        return loadLibraryMacros(expandCopies(source, library, new ArrayList<>()).source(), library);
+    record ProgramSource(String text, int libraryLines) {
+    }
+
+    static ProgramSource expand(String source, SourceLibrary library) {
+        String expanded = expandCopies(source, library, new ArrayList<>()).source();
+        List<Statement> statements = HlasmReader.read(expanded);
+        if (statements.stream().filter(s -> !s.operation().equals("*PROCESS")).findFirst()
+                .map(s -> s.operation().equals("ICTL")).orElse(false)) {
+            // ライブラリマクロは MacroProcessor が標準の桁で個別に読む。
+            return new ProgramSource(expanded, 0);
+        }
+        return loadLibraryMacros(expanded, library);
     }
 
     /** 展開中に名前が確定したマクロを読むときは、COPY だけを先に展開する。 */
@@ -101,7 +112,7 @@ final class CopyExpander {
     }
 
     /** ライブラリマクロは呼出し名と同じメンバから読む。依存マクロも閉包まで辿る。 */
-    private static String loadLibraryMacros(String source, SourceLibrary library) {
+    private static ProgramSource loadLibraryMacros(String source, SourceLibrary library) {
         StringBuilder definitions = new StringBuilder();
         Set<String> loaded = new HashSet<>();
         boolean changed;
@@ -144,7 +155,8 @@ final class CopyExpander {
                 changed = true;
             }
         } while (changed);
-        return definitions + source;
+        int libraryLines = (int) definitions.chars().filter(ch -> ch == '\n').count();
+        return new ProgramSource(definitions + source, libraryLines);
     }
 
     private static void append(String[] lines, int from, int to, StringBuilder out) {

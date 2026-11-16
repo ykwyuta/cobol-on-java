@@ -21,6 +21,11 @@ public final class CodePages {
     /** 米国・カナダ EBCDIC。 */
     public static final CodePage IBM_037 = ebcdic("IBM-037", "IBM037");
 
+    /** 米国・カナダ EBCDIC のユーロ対応版。 */
+    public static final CodePage IBM_1140 = ebcdic("IBM-1140", "IBM01140");
+    /** ドイツ向け EBCDIC のユーロ対応版。 */
+    public static final CodePage IBM_1141 = ebcdic("IBM-1141", "IBM01141");
+
     /** 日本語 (カタカナ) 混在 EBCDIC。 */
     public static final CodePage IBM_930 = ebcdic("IBM-930", "x-IBM930");
 
@@ -45,7 +50,7 @@ public final class CodePages {
     private static final Map<String, CodePage> BY_NAME = new ConcurrentHashMap<>();
 
     static {
-        for (CodePage cp : new CodePage[] {IBM_1047, IBM_037, IBM_930, IBM_939, IBM_1390,
+        for (CodePage cp : new CodePage[] {IBM_1047, IBM_037, IBM_1140, IBM_1141, IBM_930, IBM_939, IBM_1390,
                 IBM_1399, ASCII}) {
             BY_NAME.put(normalize(cp.name()), cp);
         }

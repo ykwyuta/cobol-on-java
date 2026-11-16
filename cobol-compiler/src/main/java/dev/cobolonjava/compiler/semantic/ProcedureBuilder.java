@@ -66,8 +66,8 @@ public final class ProcedureBuilder {
 
     private ProcedureBuilder(DataLayout layout, List<Diagnostic> diagnostics,
                              SpecialNames specialNames, Map<String, FileDescription> files,
-                             List<ReportDescription> reports) {
-        this.resolver = new ReferenceResolver(layout, diagnostics);
+                             List<ReportDescription> reports, boolean extendedQualification) {
+        this.resolver = new ReferenceResolver(layout, diagnostics, extendedQualification);
         this.resolver.expressions(context -> expressionOf(context,
                 ReferenceResolver.originOf(context)));
         this.layout = layout;
@@ -287,9 +287,15 @@ public final class ProcedureBuilder {
     public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
                                SpecialNames specialNames, Map<String, FileDescription> files,
                                List<ReportDescription> reports) {
+        return build(program, layout, specialNames, files, reports, false);
+    }
+
+    public static Result build(CobolParser.ProgramUnitContext program, DataLayout layout,
+                               SpecialNames specialNames, Map<String, FileDescription> files,
+                               List<ReportDescription> reports, boolean extendedQualification) {
         List<Diagnostic> diagnostics = new ArrayList<>();
         ProcedureBuilder builder = new ProcedureBuilder(layout, diagnostics, specialNames, files,
-                reports);
+                reports, extendedQualification);
         List<Paragraph> paragraphs = new ArrayList<>();
         List<Section> sections = new ArrayList<>();
         List<Declarative> declaratives = new ArrayList<>();
@@ -1714,6 +1720,20 @@ public final class ProcedureBuilder {
         }
         if (context.setStatement() != null) {
             return setOf(context.setStatement());
+        }
+        if (context.allocateStatement() != null) {
+            return allocateOf(context.allocateStatement());
+        }
+        if (context.freeStatement() != null) {
+            var free = context.freeStatement();
+            Origin origin = ReferenceResolver.originOf(free);
+            List<DataReference> pointers = new ArrayList<>();
+            for (var identifier : free.identifier()) {
+                DataReference pointer = allocationPointer(identifier, origin);
+                if (pointer == null) return null;
+                pointers.add(pointer);
+            }
+            return new Statement.Free(List.copyOf(pointers), origin);
         }
         if (context.callStatement() != null) {
             return callOf(context.callStatement());
@@ -3467,6 +3487,45 @@ public final class ProcedureBuilder {
      * <p>書き込むバイト列を翻訳時に組み立てる ({@link InitializeImage})。基本項目ごとの
      * 転記へ素直に展開すると、表の反復の数だけ転記が並んでしまう。
      */
+    private Statement allocateOf(CobolParser.AllocateStatementContext context) {
+        Origin origin = ReferenceResolver.originOf(context);
+        DataItem record = null;
+        Expression characters = null;
+        if (context.expression() != null) {
+            characters = expressionOf(context.expression(), origin);
+            if (characters == null) return null;
+            if (context.RETURNING() == null) {
+                report(origin, "ALLOCATE CHARACTERS requires RETURNING");
+                return null;
+            }
+        } else {
+            DataReference target = resolver.resolve(context.identifier(0));
+            if (target == null) return null;
+            record = target.item();
+            if (record.section() != DataSection.LINKAGE || record.record() != record
+                    || target.refMod() != null || !target.subscripts().isEmpty()) {
+                report(origin, "ALLOCATE requires a level 01 or 77 LINKAGE SECTION item");
+                return null;
+            }
+        }
+        DataReference returning = null;
+        if (context.RETURNING() != null) {
+            returning = allocationPointer(context.identifier().getLast(), origin);
+            if (returning == null) return null;
+        }
+        return new Statement.Allocate(record, characters, context.INITIALIZED() != null,
+                returning, origin);
+    }
+
+    private DataReference allocationPointer(CobolParser.IdentifierContext identifier, Origin origin) {
+        DataReference pointer = resolver.resolve(identifier);
+        if (pointer != null && (!pointer.item().isPointer() || pointer.refMod() != null)) {
+            report(origin, "ALLOCATE RETURNING and FREE require a data POINTER");
+            return null;
+        }
+        return pointer;
+    }
+
     private Statement initializeOf(CobolParser.InitializeStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
         boolean withFiller = context.FILLER() != null;
@@ -3677,6 +3736,17 @@ public final class ProcedureBuilder {
         if (context.entryKeyword() != null) {
             return entrySetOf(context, origin);
         }
+        if (context.TO() != null && context.identifier().size() == 1
+                && isLengthOf(context.identifier(0))) {
+            DataReference reference = lengthOfReference(context.identifier(0), origin);
+            if (reference == null) return null;
+            if (!reference.item().isDynamic() || context.identifier(0).subscripts() != null) {
+                report(origin, "SET LENGTH OF requires a dynamic-length elementary item");
+                return null;
+            }
+            Operand value = operandOf(context.arithmeticOperand(), origin);
+            return value == null ? null : new Statement.SetLength(reference, value, origin);
+        }
         return indexSetOf(context, origin);
     }
 
@@ -3864,6 +3934,10 @@ public final class ProcedureBuilder {
      */
     private Statement callOf(CobolParser.CallStatementContext context) {
         Origin origin = ReferenceResolver.originOf(context);
+        if (origin.callInterface() == Origin.CallInterface.DLL) {
+            report(origin, "DLL CALLINTERFACE is not supported yet");
+            return null;
+        }
         Operand target = callTargetOf(context.callTarget(), origin);
         if (target == null) {
             return null;
@@ -4538,8 +4612,8 @@ public final class ProcedureBuilder {
     private boolean collectRelation(CobolParser.RelationConditionContext context, boolean negated,
                                     List<Condition> terms, List<Boolean> conjunctions) {
         Origin origin = ReferenceResolver.originOf(context);
-        Expression left = expressionOf(context.expression(0), origin);
-        Expression right = expressionOf(context.expression(1), origin);
+        Expression left = comparisonExpression(context.expression(0), origin);
+        Expression right = comparisonExpression(context.expression(1), origin);
         if (left == null || right == null) {
             return false;
         }
@@ -4581,7 +4655,7 @@ public final class ProcedureBuilder {
             }
             Condition term = conditionNameTerm(next, origin);
             if (term == null) {
-                right = expressionOf(next.expression(), origin);
+                right = comparisonExpression(next.expression(), origin);
                 if (right == null) {
                     return false;
                 }
@@ -4594,6 +4668,18 @@ public final class ProcedureBuilder {
             terms.add(term);
         }
         return true;
+    }
+
+    private Expression comparisonExpression(CobolParser.ExpressionContext context, Origin origin) {
+        if (context instanceof CobolParser.ParenthesizedExpressionContext parenthesized) {
+            return comparisonExpression(parenthesized.expression(), origin);
+        }
+        if (context instanceof CobolParser.OperandExpressionContext operand
+                && isAddressOf(operand.arithmeticOperand().identifier())) {
+            DataReference reference = addressTarget(operand.arithmeticOperand().identifier(), origin);
+            return reference == null ? null : new Expression.Value(new Operand.Address(reference));
+        }
+        return expressionOf(context, origin);
     }
 
     /**
@@ -4723,6 +4809,9 @@ public final class ProcedureBuilder {
         if (operand instanceof Operand.Function function) {
             return function.returns().isNumeric();
         }
+        if (operand instanceof Operand.Address) {
+            return false;
+        }
         LiteralValue value = ((Operand.Literal) operand).value();
         return DataCategory.of(value, literalDefault).isNumeric();
     }
@@ -4766,6 +4855,39 @@ public final class ProcedureBuilder {
             return null;
         }
         Intrinsic.Result returns = intrinsic.returns();
+        if (intrinsic.unicode()) {
+            if (!(arguments.getFirst() instanceof Expression.Value value)
+                    || isNumeric(value.operand(), false)) {
+                report(origin, "FUNCTION " + spelling + " requires character data");
+                return null;
+            }
+            if (arguments.stream().skip(1).anyMatch(argument -> !isNumeric(argument, true))) {
+                report(origin, "FUNCTION " + spelling + " requires numeric positions");
+                return null;
+            }
+            if (intrinsic == Intrinsic.USUBSTR
+                    && categoryOf(value.operand(), DataCategory.ALPHANUMERIC) == DataCategory.NATIONAL) {
+                returns = Intrinsic.Result.NATIONAL;
+            }
+        }
+        if (intrinsic == Intrinsic.CONTENT_OF) {
+            if (!(arguments.getFirst() instanceof Expression.Value value)) {
+                report(origin, "FUNCTION CONTENT-OF requires an item or a literal");
+                return null;
+            }
+            Operand argument = value.operand();
+            boolean national = switch (argument) {
+                case Operand.Reference item -> DataCategory.of(item.reference()) == DataCategory.NATIONAL;
+                case Operand.Literal literal -> literal.value() instanceof LiteralValue.National;
+                case Operand.Function function -> function.returns() == Intrinsic.Result.NATIONAL;
+                case Operand.Address ignored -> false;
+            };
+            if (isNumeric(argument, false)) {
+                returns = Intrinsic.Result.NUMERIC;
+            } else if (national) {
+                returns = Intrinsic.Result.NATIONAL;
+            }
+        }
         if (intrinsic.takes() == Intrinsic.Argument.EITHER) {
             Boolean text = takesText(arguments, origin);
             if (text == null) {
@@ -4784,13 +4906,32 @@ public final class ProcedureBuilder {
         boolean numericArguments = intrinsic.takes() == Intrinsic.Argument.NUMERIC
                 || (intrinsic.takes() == Intrinsic.Argument.EITHER
                         && returns == intrinsic.returns());
-        if (!numericArguments && !plainOperands(arguments)) {
+        if (intrinsic.takes() == Intrinsic.Argument.FORMAT
+                && (!(arguments.getFirst() instanceof Expression.Value format)
+                    || isNumeric(format.operand(), true)
+                    || arguments.stream().skip(1).anyMatch(argument -> !isNumeric(argument, true)))) {
+            report(origin, "FUNCTION " + spelling + " requires a format followed by numeric arguments");
+            return null;
+        }
+        if (!numericArguments && !intrinsic.unicode()
+                && intrinsic.takes() != Intrinsic.Argument.FORMAT && !plainOperands(arguments)) {
             // 文字を受け取る関数の引数は項目か定数である。式を書いても足す先が無い
             report(origin, "FUNCTION " + intrinsic.spelling()
                     + " takes an item or a literal, not an arithmetic expression");
             return null;
         }
-        return new Operand.Function(intrinsic, arguments, returns, origin);
+        DataReference.RefMod refMod = null;
+        if (context.referenceModifier() != null) {
+            if (returns.isNumeric()) {
+                report(origin, "reference modification requires a character function result");
+                return null;
+            }
+            refMod = resolver.resolveRefMod(context.referenceModifier(), origin);
+            if (refMod == null) {
+                return null;
+            }
+        }
+        return new Operand.Function(intrinsic, arguments, returns, origin, refMod);
     }
 
     /**
@@ -5399,6 +5540,8 @@ public final class ProcedureBuilder {
         if (isWhenCompiled(context.identifier())) {
             return new Operand.Literal(new LiteralValue.Text(WHEN_COMPILED));
         }
+        Operand shift = shiftCharacter(context.identifier());
+        if (shift != null) return shift;
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
     }
@@ -5506,6 +5649,22 @@ public final class ProcedureBuilder {
      */
     private static final String WHEN_COMPILED = java.time.ZonedDateTime.now()
             .format(java.time.format.DateTimeFormatter.ofPattern("MM/dd/yyHH.mm.ss"));
+
+    private Operand shiftCharacter(CobolParser.IdentifierContext context) {
+        if (context == null || context.subscripts() != null || context.referenceModifier() != null
+                || context.qualifiedDataName().dataName().size() != 1) {
+            return null;
+        }
+        String name = context.qualifiedDataName().dataName(0).getText().toUpperCase(Locale.ROOT);
+        int value = switch (name) {
+            case "SHIFT-OUT" -> 0x0E;
+            case "SHIFT-IN" -> 0x0F;
+            default -> -1;
+        };
+        return value < 0 || !layout.findAll(name).isEmpty() ? null
+                : new Operand.Literal(new LiteralValue.Text(
+                        String.valueOf(LiteralValue.HEX_PLACEHOLDER), new byte[] {(byte) value}));
+    }
 
     private boolean isWhenCompiled(CobolParser.IdentifierContext context) {
         return context != null
@@ -5617,18 +5776,27 @@ public final class ProcedureBuilder {
         return resolver.resolveName(name, origin);
     }
 
-    private Operand lengthOfOperand(CobolParser.IdentifierContext context, Origin origin) {
+    private DataReference lengthOfReference(CobolParser.IdentifierContext context, Origin origin) {
         if (context.qualifiedDataName().dataName().size() != 2) {
             report(origin, "LENGTH OF a qualified name is not supported yet");
             return null;
         }
         String name = context.qualifiedDataName().dataName(1).getText().toUpperCase(Locale.ROOT);
-        DataReference reference = resolver.resolveName(name, origin);
+        return resolver.resolveName(name, origin);
+    }
+
+    private Operand lengthOfOperand(CobolParser.IdentifierContext context, Origin origin) {
+        DataReference reference = lengthOfReference(context, origin);
         if (reference == null) {
             return null;
         }
+        if (reference.item().isDynamic()) {
+            return new Operand.Function(Intrinsic.BYTE_LENGTH,
+                    List.of(new Expression.Value(new Operand.Reference(reference))),
+                    Intrinsic.Result.INTEGER, origin);
+        }
         if (reference.constantLength().isEmpty()) {
-            report(origin, "LENGTH OF requires an item with a fixed length: " + name);
+            report(origin, "LENGTH OF requires an item with a fixed length: " + reference.item().name());
             return null;
         }
         if (context.subscripts() == null && hasDependingTable(reference.item())) {
@@ -5860,7 +6028,9 @@ public final class ProcedureBuilder {
         }
         DataCategory receiver = DataCategory.of(target);
         DataCategory sender = categoryOf(source, receiver);
-        if (!MoveRules.isAllowed(sender, receiver)) {
+        boolean unicodeToUtf8 = target.item().isUtf8()
+                && (sender == DataCategory.NATIONAL || sender == DataCategory.DBCS);
+        if (!unicodeToUtf8 && !MoveRules.isAllowed(sender, receiver)) {
             report(origin, "MOVE to " + describe(target) + " is not allowed: "
                     + MoveRules.reason(sender, receiver));
             return null;
@@ -5878,7 +6048,7 @@ public final class ProcedureBuilder {
             return switch (function.returns()) {
                 case INTEGER -> DataCategory.NUMERIC_INTEGER;
                 case NUMERIC -> DataCategory.NUMERIC_NONINTEGER;
-                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP, WIDEST, FROM_NATIONAL ->
+                case SAME_LENGTH, ONE_CHARACTER, TIMESTAMP, UUID_TEXT, WIDEST, FROM_NATIONAL ->
                         DataCategory.ALPHANUMERIC;
                 case NATIONAL -> DataCategory.NATIONAL;
             };
@@ -5915,6 +6085,8 @@ public final class ProcedureBuilder {
         if (isWhenCompiled(context.identifier())) {
             return new Operand.Literal(new LiteralValue.Text(WHEN_COMPILED));
         }
+        Operand shift = shiftCharacter(context.identifier());
+        if (shift != null) return shift;
         DataReference reference = resolver.resolve(context.identifier());
         return reference == null ? null : new Operand.Reference(reference);
     }

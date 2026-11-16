@@ -17,16 +17,18 @@ import java.util.regex.Pattern;
  * @param binaryLow  {@code FIXEDBIN(n,m)} の n
  * @param binaryHigh {@code FIXEDBIN(n,m)} の m
  */
-record PliOptions(boolean ans, int decimalLow, int decimalHigh, int binaryLow, int binaryHigh) {
+record PliOptions(boolean ans, int decimalLow, int decimalHigh, int binaryLow, int binaryHigh,
+                  Integer ccsid) {
 
     /** 既定: RULES(IBM)、LIMITS(FIXEDDEC(15,31) FIXEDBIN(31,63))。 */
-    static final PliOptions DEFAULT = new PliOptions(false, 15, 31, 31, 63);
+    static final PliOptions DEFAULT = new PliOptions(false, 15, 31, 31, 63, null);
 
     static final String MARKER = "/*PLI-OPTIONS ";
 
     private static final Pattern NOTE = Pattern.compile("/\\*PLI-OPTIONS (.*?)\\*/",
             Pattern.DOTALL);
     private static final Pattern RULES = Pattern.compile("\\bRULES\\s*\\(([^)]*)\\)");
+    private static final Pattern CODEPAGE = Pattern.compile("\\bCODEPAGE\\s*\\(\\s*(\\d+)\\s*\\)");
     private static final Pattern FIXEDDEC = Pattern.compile(
             "\\bFIXEDDEC\\s*\\(\\s*(\\d+)\\s*(?:,\\s*(\\d+)\\s*)?\\)");
     private static final Pattern FIXEDBIN = Pattern.compile(
@@ -59,7 +61,13 @@ record PliOptions(boolean ans, int decimalLow, int decimalHigh, int binaryLow, i
         }
         int[] decimal = limits(FIXEDDEC.matcher(text), decimalLow, decimalHigh, 15, 31, "FIXEDDEC");
         int[] binary = limits(FIXEDBIN.matcher(text), binaryLow, binaryHigh, 31, 63, "FIXEDBIN");
-        return new PliOptions(rulesAns, decimal[0], decimal[1], binary[0], binary[1]);
+        Integer page = ccsid;
+        Matcher codepage = CODEPAGE.matcher(text);
+        while (codepage.find()) {
+            page = Integer.parseInt(codepage.group(1));
+            dev.cobolonjava.runtime.codepage.CodePages.forName(page.toString());
+        }
+        return new PliOptions(rulesAns, decimal[0], decimal[1], binary[0], binary[1], page);
     }
 
     private static int[] limits(Matcher matcher, int low, int high, int small, int large,

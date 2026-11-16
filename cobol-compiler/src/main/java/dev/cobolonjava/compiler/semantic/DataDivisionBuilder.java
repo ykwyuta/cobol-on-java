@@ -488,6 +488,23 @@ public final class DataDivisionBuilder {
         for (CobolParser.DataClauseContext clause : entry.dataClause()) {
             if (clause.pictureClause() != null) {
                 applyPicture(item, clause.pictureClause(), origin);
+            } else if (clause.dynamicClause() != null) {
+                var number = clause.dynamicClause().NUMBER();
+                try {
+                    int limit = number == null ? 999_999_999 : Integer.parseInt(number.getText());
+                    if (limit < 1 || limit > 999_999_999) throw new NumberFormatException();
+                    item.setDynamicLimit(limit);
+                } catch (NumberFormatException invalid) {
+                    report(origin, "DYNAMIC LIMIT must be an integer from 1 to 999999999");
+                }
+            } else if (clause.BYTE_LENGTH() != null) {
+                try {
+                    int length = Integer.parseInt(clause.NUMBER().getText());
+                    if (length <= 0) throw new NumberFormatException();
+                    item.setUtf8ByteLength(length);
+                } catch (NumberFormatException invalid) {
+                    report(origin, "BYTE-LENGTH must be a positive integer");
+                }
             } else if (clause.usageClause() != null) {
                 applyUsage(item, clause.usageClause(), origin);
             } else if (clause.signClause() != null) {
@@ -522,6 +539,20 @@ public final class DataDivisionBuilder {
         }
         applyBlankWhenZero(item, origin);
         checkClauseCombinations(item, signWritten, origin);
+        if (item.isDynamic()) {
+            boolean plainPicture = entry.dataClause().stream()
+                    .map(CobolParser.DataClauseContext::pictureClause)
+                    .filter(java.util.Objects::nonNull)
+                    .map(picture -> picture.PICTURE_STRING().getText())
+                    .anyMatch(spelling -> spelling.equalsIgnoreCase("X") || spelling.equalsIgnoreCase("U"));
+            if (!plainPicture || item.usage() != null || signWritten || entry.dataClause().stream()
+                    .anyMatch(clause -> clause.BYTE_LENGTH() != null || clause.occursClause() != null
+                            || clause.valueClause() != null) || item.redefinesName() != null
+                    || item.justified()) {
+                report(origin, "DYNAMIC LENGTH requires plain PICTURE X or U without "
+                        + "BYTE-LENGTH, OCCURS, VALUE, REDEFINES, SIGN or JUSTIFIED: " + describe(item));
+            }
+        }
     }
 
     /**
@@ -533,6 +564,11 @@ public final class DataDivisionBuilder {
      */
     private void checkClauseCombinations(DataItem item, boolean signWritten, Origin origin) {
         Picture picture = item.picture();
+        if (item.hasUtf8Clauses() && (!item.isUtf8() || item.usage() != null
+                || item.justified() || signWritten || item.utf8CharacterLimit() == 0 && picture.size() != 1)) {
+            report(origin, "UTF-8 requires PICTURE U, with optional BYTE-LENGTH on an unqualified U: "
+                    + describe(item));
+        }
         if (picture != null && item.justified()
                 && (picture.isNumeric() || picture.isNumericEdited())) {
             // 右詰めは英字・英数字の受取項目の話である。数字は元から小数点で揃う
@@ -616,7 +652,17 @@ public final class DataDivisionBuilder {
 
     private void applyPicture(DataItem item, CobolParser.PictureClauseContext clause, Origin origin) {
         try {
-            item.setPicture(PictureParser.parse(clause.PICTURE_STRING().getText(),
+            String spelling = clause.PICTURE_STRING().getText();
+            var utf8 = java.util.regex.Pattern.compile("(?i)U(?:\\(([0-9]+)\\))?").matcher(spelling);
+            if (utf8.matches()) {
+                int characters = utf8.group(1) == null ? 1 : Integer.parseInt(utf8.group(1));
+                if (characters <= 0 || characters > Integer.MAX_VALUE / 4) {
+                    throw new IllegalArgumentException("UTF-8 character count outside storage range");
+                }
+                item.setUtf8Characters(characters);
+                spelling = "X(" + characters + ")";
+            }
+            item.setPicture(PictureParser.parse(spelling,
                     specialNames.currency(), specialNames.decimalPoint()));
         } catch (RuntimeException e) {
             report(origin, "invalid PICTURE character-string: " + e.getMessage());
@@ -638,6 +684,10 @@ public final class DataDivisionBuilder {
             return;
         }
         String name = clause.usageName().getText().toUpperCase(Locale.ROOT);
+        if (name.equals("UTF-8")) {
+            item.markUtf8Usage();
+            return;
+        }
         if (name.equals("INDEX")) {
             // 群に書かれることもある。実体を作るのは木ができてからである
             item.markIndexDeclared();
@@ -1599,6 +1649,18 @@ public final class DataDivisionBuilder {
         tally.setOffset(SpecialRegisterArea.TALLY_OFFSET);
         tally.setLength(4);
         registers.put("TALLY", tally);
+        registers.put("SORT-RETURN", sortRegister("SORT-RETURN", "S9(4)", Usage.COMP,
+                SpecialRegisterArea.SORT_RETURN_OFFSET));
+        registers.put("SORT-CORE-SIZE", sortRegister("SORT-CORE-SIZE", "S9(8)", Usage.COMP,
+                SpecialRegisterArea.SORT_CORE_SIZE_OFFSET));
+        registers.put("SORT-FILE-SIZE", sortRegister("SORT-FILE-SIZE", "S9(8)", Usage.COMP,
+                SpecialRegisterArea.SORT_FILE_SIZE_OFFSET));
+        registers.put("SORT-MODE-SIZE", sortRegister("SORT-MODE-SIZE", "S9(5)", Usage.COMP,
+                SpecialRegisterArea.SORT_MODE_SIZE_OFFSET));
+        registers.put("SORT-CONTROL", sortRegister("SORT-CONTROL", "X(8)", Usage.DISPLAY,
+                SpecialRegisterArea.SORT_CONTROL_OFFSET));
+        registers.put("SORT-MESSAGE", sortRegister("SORT-MESSAGE", "X(8)", Usage.DISPLAY,
+                SpecialRegisterArea.SORT_MESSAGE_OFFSET));
         // 日時・task番号・端末のfieldは、出どころの無いときbinary zeroのままである (暫定判断 P-113)
         registers.put("EIBTIME", eibItem("EIBTIME", "S9(7)", Usage.COMP_3,
                 CicsEib.EIBTIME_OFFSET));
@@ -1633,16 +1695,26 @@ public final class DataDivisionBuilder {
     }
 
     private static DataItem eibItem(String name, String pictureText, Usage usage, int offset) {
+        DataItem item = specialRegister(name, pictureText, usage, offset, DataSection.CICS_EIB);
+        item.markReadOnly();
+        return item;
+    }
+
+    private static DataItem sortRegister(String name, String pictureText, Usage usage, int offset) {
+        return specialRegister(name, pictureText, usage, offset, DataSection.SPECIAL_REGISTER);
+    }
+
+    private static DataItem specialRegister(String name, String pictureText, Usage usage, int offset,
+                                            DataSection section) {
         DataItem item = new DataItem(INDEPENDENT_LEVEL, name, null);
         Picture picture = PictureParser.parse(pictureText);
         item.setPicture(picture);
         item.setUsage(usage);
-        item.setSection(DataSection.CICS_EIB);
+        item.setSection(section);
         item.setOffset(offset);
         item.setLength(picture.isNumeric()
                 ? NumericItem.of(pictureText, usage).byteLength()
                 : picture.size());
-        item.markReadOnly();
         return item;
     }
 
@@ -1740,6 +1812,10 @@ public final class DataDivisionBuilder {
                 // ならない。広げないと、次の 01 レベルが重なって<b>黙って壊れる</b>
                 // (CCVS85 の NC107A: MOVE SPACE TO REDEF12 が次の REDEF13 を潰していた)
                 DataItem target = redefinedRecord(record);
+                if (target != null && target.isDynamic()) {
+                    report(record.origin(), "REDEFINES cannot overlay a DYNAMIC LENGTH item: "
+                            + describe(target));
+                }
                 int at = target == null ? base : target.base();
                 record.setBase(at);
                 base = Math.max(base, at + record.totalLength());
@@ -1861,6 +1937,15 @@ public final class DataDivisionBuilder {
     private int layout(DataItem item, int offset) {
         int at = offset + slackBefore(item, offset);
         item.setOffset(at);
+        if (item.isDynamic() && (item.parent() != null || !item.isElementary()
+                || item.section() != DataSection.WORKING_STORAGE)) {
+            report(item.origin(), "DYNAMIC LENGTH requires an independent WORKING-STORAGE item: "
+                    + describe(item));
+        }
+        if (item.isDynamic() && (item.external() || item.globalOwner() != null)) {
+            report(item.origin(), "EXTERNAL and GLOBAL are not supported for DYNAMIC LENGTH: "
+                    + describe(item));
+        }
         item.setLength(item.isElementary() ? elementaryLength(item) : groupLength(item, at));
         return at - offset + item.totalLength();
     }
@@ -1966,6 +2051,8 @@ public final class DataDivisionBuilder {
     }
 
     private int elementaryLength(DataItem item) {
+        if (item.isDynamic()) return 12;
+        if (item.isUtf8()) return item.utf8StorageLength();
         Usage usage = item.usage();
         Picture picture = item.picture();
 

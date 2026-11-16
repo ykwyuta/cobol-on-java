@@ -10,6 +10,9 @@ public sealed interface Operand {
     record Reference(DataReference reference) implements Operand {
     }
 
+    record Address(DataReference reference) implements Operand {
+    }
+
     /** 定数。 */
     record Literal(LiteralValue value) implements Operand {
     }
@@ -25,6 +28,10 @@ public sealed interface Operand {
      *                関数そのものではなく<b>この呼び出し</b>が持つ
      */
     record Function(Intrinsic intrinsic, List<Expression> arguments, Intrinsic.Result returns,
-                    Origin origin) implements Operand {
+                    Origin origin, DataReference.RefMod refMod) implements Operand {
+        public Function(Intrinsic intrinsic, List<Expression> arguments, Intrinsic.Result returns,
+                        Origin origin) {
+            this(intrinsic, arguments, returns, origin, null);
+        }
     }
 }

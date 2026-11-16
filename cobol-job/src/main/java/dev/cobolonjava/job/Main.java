@@ -6,14 +6,13 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
-import java.util.List;
 
 /**
  * ジョブ実行のコマンドライン入口 (要件 FR-130, FR-132)。
  *
  * <pre>
  * cobolj [-d クラスの置き場] [-w 作業領域] [-b データセットの基点] [-p 手続きの入れ物]
- *        ジョブ記述
+ *        [--emit-java] ジョブ記述
  * </pre>
  *
  * <p>記述形式は拡張子で見分ける。{@code .jcl} なら JCL、それ以外は宣言的形式である。
@@ -28,52 +27,104 @@ public final class Main {
     }
 
     public static void main(String[] args) {
-        Path classes = Path.of(".");
-        Path work = Path.of("work");
-        Path base = Path.of(".");
-        Path procedures = null;
-        Path description = null;
-        for (int i = 0; i < args.length; i++) {
-            switch (args[i]) {
-                case "-d" -> classes = Path.of(args[++i]);
-                case "-w" -> work = Path.of(args[++i]);
-                case "-b" -> base = Path.of(args[++i]);
-                case "-p" -> procedures = Path.of(args[++i]);
-                default -> description = Path.of(args[i]);
-            }
-        }
-        if (description == null) {
+        Options options;
+        try {
+            options = Options.parse(args, false);
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
             System.err.println(
                     "usage: cobolj [-d classes] [-w work] [-b base] [-p proclib]"
-                            + " job-description");
+                            + " [--emit-java] job-description");
             System.exit(2);
             return;
         }
 
-        // 拡張子で記述形式を見分ける。どちらも同じ内部モデルへ落ちる (要件 FR-132)
-        JobDescription.Result parsed;
         try {
-            parsed = JobDescription.read(description, procedures);
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot read " + description, e);
-        }
-        Job job = parsed.job();
-        List<JobDiagnostic> diagnostics = parsed.diagnostics();
-        if (!diagnostics.isEmpty()) {
-            for (JobDiagnostic diagnostic : diagnostics) {
-                System.err.println(description + ":" + diagnostic);
+            JobDescription.Result parsed =
+                    JobDescription.read(options.description(), options.procedures());
+            if (!parsed.succeeded()) {
+                for (JobDiagnostic diagnostic : parsed.diagnostics()) {
+                    System.err.println(options.description() + ":" + diagnostic);
+                }
+                System.exit(2);
+                return;
             }
-            System.exit(2);
-            return;
+            if (options.emitJava()) {
+                JobJavaSource.write(options.directory(), parsed.job());
+                return;
+            }
+            System.exit(run(parsed.job(), options));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
+    }
 
-        JobRunner.Result result = JobRunner.at(work, loaderFor(classes), System.out)
-                .withBase(base)
+    /** 生成した Java の起動口。展開済みのジョブを同じ実行機構で流す。 */
+    public static int runGenerated(Job job, String[] args) {
+        Options options;
+        try {
+            options = Options.parse(args, true);
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
+            System.err.println("usage: [-d classes] [-w work] [-b base]");
+            return 2;
+        }
+        return run(job, options);
+    }
+
+    private static int run(Job job, Options options) {
+        JobRunner.Result result = JobRunner.at(options.work(), loaderFor(options.directory()), System.out)
+                .withBase(options.base())
                 .run(job);
         for (JobRunner.StepOutcome step : result.steps()) {
             System.err.println(describe(job.name(), step));
         }
-        System.exit(result.returnCode());
+        return result.returnCode();
+    }
+
+    private record Options(Path directory, Path work, Path base, Path procedures,
+                           Path description, boolean emitJava) {
+        static Options parse(String[] args, boolean generated) {
+            Path directory = Path.of(".");
+            Path work = Path.of("work");
+            Path base = Path.of(".");
+            Path procedures = null;
+            Path description = null;
+            boolean emitJava = false;
+            for (int i = 0; i < args.length; i++) {
+                String option = args[i];
+                switch (option) {
+                    case "-d" -> directory = path(args, ++i, option);
+                    case "-w" -> work = path(args, ++i, option);
+                    case "-b" -> base = path(args, ++i, option);
+                    case "-p" -> {
+                        if (generated) throw new IllegalArgumentException("unknown option: " + option);
+                        procedures = path(args, ++i, option);
+                    }
+                    case "--emit-java" -> {
+                        if (generated) throw new IllegalArgumentException("unknown option: " + option);
+                        emitJava = true;
+                    }
+                    default -> {
+                        if (generated || option.startsWith("-") || description != null) {
+                            throw new IllegalArgumentException("unexpected argument: " + option);
+                        }
+                        description = Path.of(option);
+                    }
+                }
+            }
+            if (!generated && description == null) {
+                throw new IllegalArgumentException("no job description given");
+            }
+            return new Options(directory, work, base, procedures, description, emitJava);
+        }
+
+        private static Path path(String[] args, int index, String option) {
+            if (index == args.length) {
+                throw new IllegalArgumentException(option + " requires a path");
+            }
+            return Path.of(args[index]);
+        }
     }
 
     /** ステップの結末を、ジョブログの 1 行として書く。 */

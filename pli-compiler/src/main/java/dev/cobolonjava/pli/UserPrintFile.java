@@ -99,6 +99,12 @@ final class UserPrintFile {
         }
     }
 
+    void flushPending() {
+        if (!current.isEmpty()) {
+            newline();
+        }
+    }
+
     private void newline() {
         flush();
         if (line + 1 > pageSize && !endPageRaised) {

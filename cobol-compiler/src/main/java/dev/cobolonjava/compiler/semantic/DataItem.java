@@ -25,6 +25,10 @@ public final class DataItem {
     private final Origin origin;
 
     private Picture picture;
+    private int utf8Characters;
+    private int utf8ByteLength;
+    private boolean utf8Usage;
+    private int dynamicLimit;
     private Usage usage;
     private SignPosition signPosition = SignPosition.UNSIGNED;
     private boolean justified;
@@ -99,6 +103,47 @@ public final class DataItem {
 
     public Picture picture() {
         return picture;
+    }
+
+    public boolean isUtf8() {
+        return utf8Characters > 0;
+    }
+
+    public boolean isDynamic() {
+        return dynamicLimit > 0;
+    }
+
+    public int dynamicLimit() {
+        return dynamicLimit;
+    }
+
+    void setDynamicLimit(int limit) {
+        dynamicLimit = limit;
+    }
+
+    /** 0 は BYTE-LENGTH で記憶域の大きさだけを指定した項目。 */
+    public int utf8CharacterLimit() {
+        return utf8ByteLength == 0 ? utf8Characters : 0;
+    }
+
+    int utf8StorageLength() {
+        return utf8ByteLength == 0 ? Math.multiplyExact(4, utf8Characters) : utf8ByteLength;
+    }
+
+    void setUtf8Characters(int value) {
+        utf8Characters = value;
+    }
+
+    void setUtf8ByteLength(int value) {
+        utf8ByteLength = value;
+    }
+
+    void markUtf8Usage() {
+        utf8Usage = true;
+    }
+
+    boolean hasUtf8Clauses() {
+        return isUtf8() || utf8Usage || utf8ByteLength != 0;
     }
 
     public Usage usage() {

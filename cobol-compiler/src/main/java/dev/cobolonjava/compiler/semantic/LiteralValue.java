@@ -41,7 +41,11 @@ public sealed interface LiteralValue {
      * @param text 文字。16 進定数ではバイト数と同じ長さの {@link #HEX_PLACEHOLDER} の並び
      * @param hex  16 進定数のバイト。文字定数では {@code null}
      */
-    record Text(String text, byte[] hex) implements LiteralValue {
+    record Text(String text, byte[] hex, boolean utf8) implements LiteralValue {
+
+        public Text(String text, byte[] hex) {
+            this(text, hex, false);
+        }
 
         public Text(String text) {
             this(text, null);
@@ -69,19 +73,19 @@ public sealed interface LiteralValue {
 
         @Override
         public boolean equals(Object other) {
-            return other instanceof Text that && text.equals(that.text)
+            return other instanceof Text that && utf8 == that.utf8 && text.equals(that.text)
                     && Arrays.equals(hex, that.hex);
         }
 
         @Override
         public int hashCode() {
-            return 31 * text.hashCode() + Arrays.hashCode(hex);
+            return 31 * (31 * text.hashCode() + Arrays.hashCode(hex)) + Boolean.hashCode(utf8);
         }
 
         @Override
         public String toString() {
             return hex == null ? "Text[" + text + "]"
-                    : "Text[X'" + HexFormat.of().withUpperCase().formatHex(hex) + "']";
+                    : "Text[" + (utf8 ? "UX'" : "X'") + HexFormat.of().withUpperCase().formatHex(hex) + "']";
         }
     }
 
@@ -267,6 +271,12 @@ public sealed interface LiteralValue {
      */
     static LiteralValue literalOf(String spelling) {
         char first = Character.toUpperCase(spelling.charAt(0));
+        if (first == 'U') {
+            byte[] bytes = Character.toUpperCase(spelling.charAt(1)) == 'X'
+                    ? HexFormat.of().parseHex(spelling, 3, spelling.length() - 1)
+                    : utf8Text(unquote(spelling.substring(1))).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            return new Text(String.valueOf(HEX_PLACEHOLDER).repeat(bytes.length), bytes, true);
+        }
         if (first == 'G' || (first == 'N' && CompileCodePage.dbcsSymbol()
                 && Character.toUpperCase(spelling.charAt(1)) != 'X')) {
             return Dbcs.of(unquote(spelling.substring(1)));
@@ -280,6 +290,28 @@ public sealed interface LiteralValue {
             return new National(text, text.getBytes(java.nio.charset.StandardCharsets.UTF_16BE));
         }
         return textOf(spelling);
+    }
+
+    private static String utf8Text(String text) {
+        StringBuilder result = new StringBuilder();
+        for (int at = 0; at < text.length();) {
+            char c = text.charAt(at++);
+            if (c != '\\' || at >= text.length() || "uU".indexOf(text.charAt(at)) < 0) {
+                result.append(c);
+                continue;
+            }
+            int width = text.charAt(at++) == 'u' ? 4 : 8;
+            if (width > text.length() - at) {
+                throw new IllegalArgumentException("incomplete Unicode escape in UTF-8 literal");
+            }
+            int codePoint = Integer.parseUnsignedInt(text.substring(at, at + width), 16);
+            if (!Character.isValidCodePoint(codePoint) || codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+                throw new IllegalArgumentException("invalid Unicode scalar in UTF-8 literal");
+            }
+            result.appendCodePoint(codePoint);
+            at += width;
+        }
+        return result.toString();
     }
 
     /**

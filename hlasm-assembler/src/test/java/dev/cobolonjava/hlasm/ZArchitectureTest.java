@@ -23,6 +23,33 @@ class ZArchitectureTest {
     }
 
     @Test
+    void compareSwapAndStoreWritesBothQuadwordsAndAlignsTheParameterAddress() {
+        assertEquals(0, returnCode(
+                "TEST     CSECT",
+                "         USING TEST,12",
+                "         LR    12,15",
+                "         LA    1,PARAM+3",
+                "         LGHI  0,1026",
+                "         LGHI  2,1",
+                "         LGHI  3,2",
+                "         CSST  FIRST,SECOND,2",
+                "         BNE   FAIL",
+                "         CLC   FIRST(16),PARAM",
+                "         BNE   FAIL",
+                "         CLC   SECOND(16),PARAM+16",
+                "         BNE   FAIL",
+                "         LGHI  15,0",
+                "         BR    14",
+                "FAIL     LGHI  15,8",
+                "         BR    14",
+                "         CNOP  0,16",
+                "FIRST    DC    FD'1,2'",
+                "SECOND   DC    FD'0,0'",
+                "PARAM    DC    FD'3,4,5,6'",
+                "         END"));
+    }
+
+    @Test
     @DisplayName("上位 32 ビットへ送った値が、戻したときに残っている")
     void keepsTheHighHalfOfARegister() {
         assertEquals(16, returnCode(

@@ -30,7 +30,11 @@ class SizeErrorGenerationTest {
     }
 
     private static String run(List<String> storage, String... procedure) {
-        StringBuilder sb = new StringBuilder();
+        return run("", storage, procedure);
+    }
+
+    private static String run(String processOptions, List<String> storage, String... procedure) {
+        StringBuilder sb = new StringBuilder(processOptions);
         for (String line : List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. HELLO.",
@@ -108,6 +112,20 @@ class SizeErrorGenerationTest {
                         "01 WS-R PIC X VALUE '-'."),
                 "DIVIDE WS-Z INTO WS-A",
                 "    ON SIZE ERROR MOVE 'E' TO WS-R",
+                "END-DIVIDE."));
+    }
+
+    @Test
+    void zeusDivisionByZeroContinuesWithoutOverwritingReceivers() {
+        assertEquals("900000007002E", run("       CBL COMPATIBILITY(ZEUS)\n",
+                List.of("01 WS-A PIC 9(3) VALUE 900.",
+                        "01 WS-Z PIC 9(3) VALUE 0.",
+                        "01 WS-Q PIC 9(3) VALUE 7.",
+                        "01 WS-M PIC 9(3) VALUE 2.",
+                        "01 WS-R PIC X VALUE '-'."),
+                "DIVIDE WS-Z INTO WS-A.",
+                "DIVIDE WS-A BY WS-Z GIVING WS-Q REMAINDER WS-M.",
+                "DIVIDE WS-Z INTO WS-A ON SIZE ERROR MOVE 'E' TO WS-R",
                 "END-DIVIDE."));
     }
 

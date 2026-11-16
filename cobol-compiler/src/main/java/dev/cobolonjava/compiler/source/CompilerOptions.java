@@ -62,6 +62,13 @@ public record CompilerOptions(Map<String, String> values) {
         return toggle("SSRANGE");
     }
 
+    /** 選択を要する Zeus の処理系固有の動作を使う。 */
+    public boolean zeusCompatibility() {
+        return value("COMPATIBILITY").map(String::strip)
+                .map(text -> text.equalsIgnoreCase("ZEUS") || text.equalsIgnoreCase("'ZEUS'"))
+                .orElse(false);
+    }
+
     /**
      * {@code ARITH(EXTEND)} が指定されているか (要件 FR-041)。既定は {@code COMPAT} である。
      */

@@ -32,7 +32,6 @@ final class MacroProcessor {
     private static final Pattern SEQUENCE = Pattern.compile("\\.[A-Z@$#][A-Z0-9@$#]*");
 
     private final Map<String, Macro> macros = new LinkedHashMap<>();
-    private final Set<String> libraryMacros = new HashSet<>();
     private final Map<String, String> globals = new HashMap<>();
     private final Map<String, Character> globalKinds = new HashMap<>();
     private final Map<String, String> systemGlobals = new HashMap<>();
@@ -50,6 +49,8 @@ final class MacroProcessor {
     private final CodePage codePage;
     private final String fileName;
     private final SourceLibrary library;
+    private final int libraryLines;
+    private final String objectName;
     private int steps;
     private int macroCalls;
     private int lookaheadStart;
@@ -58,7 +59,7 @@ final class MacroProcessor {
     private boolean ended;
 
     private record Macro(String name, String nameParameter, List<String> positional,
-                         Map<String, String> keywords, List<Statement> body) {
+                         Map<String, String> keywords, List<Statement> body, String libraryMember) {
     }
 
     /** IBM の SET 配列は宣言時の次元を越えても使えるため、値は疎に持つ。 */
@@ -96,17 +97,20 @@ final class MacroProcessor {
         }
     }
 
-    record Expansion(List<Statement> statements, List<Diagnostic> diagnostics) {
+    record Expansion(List<Statement> statements, List<Diagnostic> diagnostics, boolean dbcs) {
         Expansion {
             statements = List.copyOf(statements);
             diagnostics = List.copyOf(diagnostics);
         }
     }
 
-    private MacroProcessor(CodePage codePage, String fileName, SourceLibrary library) {
+    private MacroProcessor(CodePage codePage, String fileName, SourceLibrary library,
+                           int libraryLines, String objectName) {
         this.codePage = codePage;
         this.fileName = fileName;
         this.library = library;
+        this.libraryLines = libraryLines;
+        this.objectName = objectName;
         initializeSystemGlobals();
     }
 
@@ -121,8 +125,8 @@ final class MacroProcessor {
         systemGlobals.put("&SYSJOB", "(NOJOB)");
         systemGlobals.put("&SYSSTEP", "(NOSTEP)");
         systemGlobals.put("&SYSPARM", "");
-        systemGlobals.put("&SYSM_HSEV", "0");
-        systemGlobals.put("&SYSM_SEV", "0");
+        systemGlobals.put("&SYSM_HSEV", "000");
+        systemGlobals.put("&SYSM_SEV", "000");
         systemGlobals.put("&SYSSTMT", "1");
         systemGlobals.put("&SYS_HLASM_DATE", "00000000");
         systemGlobals.put("&SYS_HLASM_PTF", "");
@@ -141,8 +145,8 @@ final class MacroProcessor {
         systemGlobals.put("&SYSOPT_EBCDIC", ebcdicCcsid);
         systemGlobals.put("&SYSOPT_CU", "01200");
         systemGlobals.put("&SYSOPT_UNICODE", "01200");
-        systemGlobals.put("&SYSOPT_OPTABLE", "ESA");
-        systemGlobals.put("&SYSOPT_CURR_OPTABLE", "ESA");
+        systemGlobals.put("&SYSOPT_OPTABLE", "UNI");
+        systemGlobals.put("&SYSOPT_CURR_OPTABLE", "UNI");
         for (String name : List.copyOf(systemGlobals.keySet())) {
             String override = System.getProperty("hlasm.sysvar." + name.substring(1));
             if (override != null) {
@@ -151,16 +155,28 @@ final class MacroProcessor {
         }
     }
 
-    private void initializeLocalSystemValues(Map<String, String> values) {
+    private void initializeLocalSystemValues(Map<String, String> values, Macro macro) {
         values.put("&SYSIN_DSN", fileName);
         int slash = Math.max(fileName.lastIndexOf('/'), fileName.lastIndexOf('\\'));
         values.put("&SYSIN_MEMBER", fileName.substring(slash + 1));
         values.put("&SYSIN_VOLUME", "");
-        for (String prefix : List.of("SYSADATA", "SYSLIB", "SYSLIN", "SYSPRINT",
+        for (String prefix : List.of("SYSADATA", "SYSLIN", "SYSPRINT",
                 "SYSPUNCH", "SYSTERM")) {
             values.put("&" + prefix + "_DSN", "");
             values.put("&" + prefix + "_MEMBER", "");
             values.put("&" + prefix + "_VOLUME", "");
+        }
+        values.put("&SYSLIN_DSN", objectName);
+        values.put("&SYSPRINT_DSN", "NULLFILE");
+        for (String suffix : List.of("DSN", "MEMBER", "VOLUME")) {
+            String sysin = "SYSIN_" + suffix;
+            String inherited = System.getProperty("hlasm.sysvar." + sysin, values.get("&" + sysin));
+            values.put("&SYSLIB_" + suffix, inherited);
+        }
+        if (macro.libraryMember() != null) {
+            values.put("&SYSLIB_DSN", library.dataSetName(macro.libraryMember()));
+            values.put("&SYSLIB_MEMBER", macro.libraryMember());
+            values.put("&SYSLIB_VOLUME", "");
         }
         for (String key : List.copyOf(values.keySet())) {
             if (!key.startsWith("&SYS")) {
@@ -184,15 +200,28 @@ final class MacroProcessor {
     }
 
     static Expansion expand(List<Statement> source, CodePage codePage, String fileName) {
-        return expand(source, codePage, fileName, SourceLibrary.empty());
+        return expand(source, codePage, fileName, SourceLibrary.empty(), 0, "");
     }
 
     static Expansion expand(List<Statement> source, CodePage codePage, String fileName,
-                            SourceLibrary library) {
-        MacroProcessor processor = new MacroProcessor(codePage, fileName, library);
-        processor.indexForwardAttributes(source);
-        processor.process(source, new HashMap<>(), new HashMap<>(), 0, false);
-        return new Expansion(processor.output, processor.diagnostics);
+                            SourceLibrary library, int libraryLines, String objectName) {
+        MacroProcessor processor = new MacroProcessor(codePage, fileName, library, libraryLines, objectName);
+        List<Statement> statements = new ArrayList<>();
+        for (Statement statement : source) {
+            if (statement.operation().equals("*PROCESS")) {
+                for (String option : statement.operands().toUpperCase(Locale.ROOT).split("[,\\s]+")) {
+                    if (option.equals("DBCS") || option.equals("NODBCS")) {
+                        processor.systemGlobals.put("&SYSOPT_DBCS", option.equals("DBCS") ? "1" : "0");
+                    }
+                }
+            } else {
+                statements.add(statement);
+            }
+        }
+        processor.indexForwardAttributes(statements);
+        processor.process(statements, new HashMap<>(), new HashMap<>(), 0, false);
+        return new Expansion(processor.output, processor.diagnostics,
+                processor.systemGlobals.get("&SYSOPT_DBCS").equals("1"));
     }
 
     private void process(List<Statement> statements, Map<String, String> locals,
@@ -231,7 +260,10 @@ final class MacroProcessor {
             String operation = original.operation();
             if ("MACRO".equals(operation)) {
                 int end = matchingMend(statements, pc);
-                defineMacro(statements.subList(pc + 1, end), original.line());
+                // A macro defined inside another macro comes from the same source.
+                String member = inMacro ? locals.get("@LIBRARY-MEMBER")
+                        : original.line() <= libraryLines ? statements.get(pc + 1).operation() : null;
+                defineMacro(statements.subList(pc + 1, end), original.line(), member);
                 pc = end;
                 continue;
             }
@@ -378,6 +410,16 @@ final class MacroProcessor {
             if (operation.equals("AGO")) {
                 String target = substitute(original.operands(), locals, localArrays, original.line())
                         .trim().toUpperCase(Locale.ROOT);
+                if (target.startsWith("(")) {
+                    // 計算形 AGO の選択肢は 1 起点。範囲外では次の文へ進む (Zeus hlasm/macros.rs)。
+                    int close = closingParen(target, original.line());
+                    int index = arithmetic(target.substring(1, close), original.line());
+                    List<String> targets = Statement.split(target.substring(close + 1), original.line());
+                    if (index < 1 || index > targets.size()) {
+                        continue;
+                    }
+                    target = targets.get(index - 1).trim();
+                }
                 branchBudget = consumeBranch(branchBudget, original.line());
                 pc = sequenceIndex(sequences, target, original.line()) - 1;
                 continue;
@@ -414,14 +456,11 @@ final class MacroProcessor {
                         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS")));
                 arguments.put("&SYSSEQF", depth == 0 ? statement.identification()
                         : locals.getOrDefault("&SYSSEQF", ""));
-                initializeLocalSystemValues(arguments);
-                if (libraryMacros.contains(macro.name())
-                        && System.getProperty("hlasm.sysvar.SYSLIB_MEMBER") == null) {
-                    arguments.put("&SYSLIB_MEMBER", macro.name());
-                }
+                initializeLocalSystemValues(arguments, macro);
+                if (macro.libraryMember() != null) arguments.put("@LIBRARY-MEMBER", macro.libraryMember());
                 int savedLookaheadStart = lookaheadStart;
                 int firstDiagnostic = diagnostics.size();
-                systemGlobals.put("&SYSM_SEV", "0");
+                systemGlobals.put("&SYSM_SEV", "000");
                 process(macro.body(), arguments, new HashMap<>(), depth + 1, true);
                 int macroSeverity = 0;
                 for (Diagnostic diagnostic : diagnostics.subList(firstDiagnostic,
@@ -433,7 +472,7 @@ final class MacroProcessor {
                                 Integer.parseInt(mnote.group(1)));
                     }
                 }
-                systemGlobals.put("&SYSM_SEV", Integer.toString(macroSeverity));
+                systemGlobals.put("&SYSM_SEV", String.format(Locale.ROOT, "%03d", macroSeverity));
                 lookaheadStart = savedLookaheadStart;
             } else {
                 rememberType(statement);
@@ -477,8 +516,7 @@ final class MacroProcessor {
             throw new AssemblyException(line,
                     "library member " + name + " must define macro " + name);
         }
-        defineMacro(definition.subList(1, definition.size() - 1), line);
-        libraryMacros.add(name);
+        defineMacro(definition.subList(1, definition.size() - 1), line, name);
         return macros.get(name);
     }
 
@@ -495,7 +533,7 @@ final class MacroProcessor {
         throw new AssemblyException(statements.get(start).line(), "MACRO has no MEND");
     }
 
-    private void defineMacro(List<Statement> definition, int line) {
+    private void defineMacro(List<Statement> definition, int line, String libraryMember) {
         if (definition.isEmpty()) {
             throw new AssemblyException(line, "MACRO requires a prototype");
         }
@@ -538,7 +576,7 @@ final class MacroProcessor {
         }
         macros.put(prototype.operation(), new Macro(prototype.operation(), nameParameter,
                 List.copyOf(positional), Map.copyOf(keywords),
-                List.copyOf(definition.subList(1, definition.size()))));
+                List.copyOf(definition.subList(1, definition.size())), libraryMember));
     }
 
     private static Map<String, String> bind(Macro macro, Statement call) {
@@ -600,7 +638,7 @@ final class MacroProcessor {
         return new Statement(label,
                 substitute(source.operation(), locals, localArrays, source.line(), inMacro)
                         .toUpperCase(Locale.ROOT),
-                substitute(source.operands(), locals, localArrays, source.line(), inMacro),
+                substitute(source.operands(), locals, localArrays, source.line(), inMacro, false, true),
                 source.line(), source.identification());
     }
 
@@ -851,6 +889,13 @@ final class MacroProcessor {
     }
 
     private void rememberType(Statement statement) {
+        if (statement.operation().equals("WXTRN")) {
+            for (String operand : statement.operandList()) {
+                String name = attributeName(operand);
+                knownTypes.put(name, '$');
+                definedNames.add(name);
+            }
+        }
         if (Instructions.find(statement.operation()) != null) {
             for (String operand : statement.operandList()) {
                 String literal = Assembler.literalTermOf(operand);
@@ -887,7 +932,7 @@ final class MacroProcessor {
         }
         if ((statement.operation().equals("DC") || statement.operation().equals("DS"))
                 && !statement.operandList().isEmpty()) {
-            Matcher constant = Pattern.compile("^[0-9]*([ABCFHPXZEDLY])([HBD])?.*",
+            Matcher constant = Pattern.compile("^[0-9]*([ABCFGHPXZEDLY])([HBDQ])?.*",
                     Pattern.CASE_INSENSITIVE).matcher(statement.operandList().get(0).trim());
             if (constant.matches()) {
                 String extension = "EDL".contains(constant.group(1).toUpperCase(Locale.ROOT))
@@ -955,6 +1000,9 @@ final class MacroProcessor {
     }
 
     private ForwardAttribute attributeOf(Statement statement, int index) {
+        if (Set.of("CCW", "CCW0", "CCW1").contains(statement.operation())) {
+            return new ForwardAttribute(index, 'A', 8);
+        }
         Instructions.Definition instruction = Instructions.find(statement.operation());
         if (instruction != null) {
             return new ForwardAttribute(index, 'I', instruction.format().length());
@@ -978,9 +1026,9 @@ final class MacroProcessor {
         if (operands.isEmpty()) {
             return null;
         }
-        String first = operands.get(0).trim().toUpperCase(Locale.ROOT);
-        Matcher typed = Pattern.compile("^[0-9]*([ABCFHPXZEDLY])(?:[HBD])?"
-                + "(?=L[0-9]+|['(]|$)")
+        String first = operands.get(0).trim();
+        Matcher typed = Pattern.compile("^[0-9]*([ABCFGHPXZEDLY])(?:[HBDQ])?"
+                + "(?=L[0-9]+|['(]|$)", Pattern.CASE_INSENSITIVE)
                 .matcher(first);
         if (!typed.find()) {
             return null;
@@ -991,9 +1039,10 @@ final class MacroProcessor {
         } catch (AssemblyException ignored) {
             // Lookahead can establish a type even when its length depends on unresolved text.
         }
-        char type = typed.group(1).charAt(0);
-        boolean explicitLength = first.matches("^[0-9]*[A-Z](?:[HBD])?L[0-9]+.*");
-        char attributeType = explicitLength && "FH".indexOf(type) >= 0 ? 'G'
+        char type = Character.toUpperCase(typed.group(1).charAt(0));
+        boolean explicitLength = first.matches("(?i)^[0-9]*[A-Z](?:[HBDQ])?L[0-9]+.*");
+        char attributeType = type == 'G' ? '@'
+                : explicitLength && "FH".indexOf(type) >= 0 ? 'G'
                 : explicitLength && "EDL".indexOf(type) >= 0 ? 'K'
                 : explicitLength && "AY".indexOf(type) >= 0 ? 'R' : type;
         int scale = -1;
@@ -1276,7 +1325,7 @@ final class MacroProcessor {
         if (number < 0 || number > 255) {
             throw new AssemblyException(statement.line(), "MNOTE severity must be 0..255");
         }
-        systemGlobals.put("&SYSM_HSEV", Integer.toString(Math.max(number,
+        systemGlobals.put("&SYSM_HSEV", String.format(Locale.ROOT, "%03d", Math.max(number,
                 Integer.parseInt(systemGlobals.get("&SYSM_HSEV")))));
         String message = mnoteMessage(fields.get(1), statement.line());
         Diagnostic.Severity category = number >= 8 ? Diagnostic.Severity.ERROR

@@ -67,7 +67,7 @@ class OptionSupportTest {
 
         CobolCompiler.Result bank = compile("CICS,NODYNAM,NSYMBOL(NATIONAL),TRUNC(STD)");
         assertTrue(bank.succeeded(), () -> bank.diagnostics().toString());
-        assertTrue(warns(bank, "P-032"), () -> bank.diagnostics().toString());
+        assertFalse(warns(bank, "NODYNAM"), () -> bank.diagnostics().toString());
 
         CobolCompiler.Result advancing = compile("ADV");
         assertTrue(warns(advancing, "P-063"), () -> advancing.diagnostics().toString());

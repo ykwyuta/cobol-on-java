@@ -1,6 +1,8 @@
 package dev.cobolonjava.hlasm;
 
 import dev.cobolonjava.runtime.codepage.CodePage;
+import dev.cobolonjava.runtime.codepage.CodePageRepertoire;
+import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.data.PackedDecimal;
 import dev.cobolonjava.runtime.data.SignPosition;
 import dev.cobolonjava.runtime.data.ZonedDecimal;
@@ -35,6 +37,7 @@ public final class Constants {
     private static TypeRule ruleOf(char type, int line) {
         return switch (type) {
             case 'C' -> new TypeRule(1, 1, true);
+            case 'G' -> new TypeRule(2, 1, true);
             case 'X' -> new TypeRule(1, 1, true);
             case 'B' -> new TypeRule(1, 1, true);
             case 'F' -> new TypeRule(4, 4, false);
@@ -106,9 +109,24 @@ public final class Constants {
         }
         char type = Character.toUpperCase(operand.charAt(at));
         at++;
+        if (type == 'G' && !scope.graphicConstants()) {
+            throw new AssemblyException(line, "a graphic constant requires the DBCS option");
+        }
         TypeRule rule = ruleOf(type, line);
         // 浮動小数点の型の拡張 (H: 16 進、B: 2 進、D: 10 進)。書かなければ 16 進である
         char extension = 'H';
+        if (type == 'C' && at < operand.length()
+                && "AEU".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0) {
+            extension = Character.toUpperCase(operand.charAt(at++));
+            if (extension == 'U') {
+                rule = new TypeRule(2, 2, true);
+            }
+        }
+        if (type == 'A' && at < operand.length()
+                && Character.toUpperCase(operand.charAt(at)) == 'D') {
+            rule = new TypeRule(8, 8, false);
+            at++;
+        }
         if (type == 'F' && at < operand.length()
                 && Character.toUpperCase(operand.charAt(at)) == 'D') {
             // FD は 8 バイトの固定小数点である (HLASM Language Reference "Fixed-point
@@ -119,6 +137,12 @@ public final class Constants {
         if ((type == 'E' || type == 'D' || type == 'L') && at < operand.length()
                 && "HBD".indexOf(Character.toUpperCase(operand.charAt(at))) >= 0) {
             extension = Character.toUpperCase(operand.charAt(at));
+            at++;
+        }
+        if (type == 'L' && at < operand.length()
+                && Character.toUpperCase(operand.charAt(at)) == 'Q'
+                && Character.toUpperCase(operand.charAt(at - 1)) == 'L') {
+            rule = new TypeRule(16, 16, false);
             at++;
         }
 
@@ -205,11 +229,13 @@ public final class Constants {
         List<AddressReference> references = new ArrayList<>();
         List<byte[]> encoded = new ArrayList<>();
         // 1 つの定数に値を複数書ける。F'1,2,3' は 3 つの語であり、反復係数とは別に並ぶ
-        List<String> items = type == 'C' ? List.of(nominal) : Statement.split(nominal, line);
+        List<String> items = type == 'C' || type == 'G'
+                ? List.of(nominal) : Statement.split(nominal, line);
         int unit = explicitLength != null ? explicitLength : rule.defaultLength();
         for (String item : items) {
             byte[] bytes = switch (type) {
-                case 'C' -> character(item, explicitLength, scope.codePage());
+                case 'C' -> character(item, explicitLength, scope.codePage(), extension);
+                case 'G' -> graphic(item, explicitLength, scope.codePage(), line);
                 case 'X' -> hex(item, explicitLength, line);
                 case 'B' -> binary(item, explicitLength, line);
                 case 'F', 'H' -> integer(item, explicitLength == null
@@ -250,6 +276,33 @@ public final class Constants {
         return new Piece(alignment, bytes.length, duplication, bytes, references);
     }
 
+    private static byte[] graphic(String text, Integer length, CodePage page, int line) {
+        var encoding = CodePageRepertoire.of(page).shifted() ? page.charset() : CodePages.IBM_939.charset();
+        java.nio.ByteBuffer encoded;
+        try {
+            encoded = encoding.newEncoder().encode(java.nio.CharBuffer.wrap(text.replace("&&", "&")));
+        } catch (java.nio.charset.CharacterCodingException invalid) {
+            throw new AssemblyException(line, "unmappable character in graphic constant");
+        }
+        if (encoded.remaining() < 4 || (encoded.remaining() & 1) != 0
+                || encoded.get() != 0x0E || encoded.get(encoded.limit() - 1) != 0x0F) {
+            throw new AssemblyException(line, "a graphic constant requires double-byte characters");
+        }
+        for (int at = encoded.position(); at < encoded.limit() - 1; at++) {
+            if (encoded.get(at) == 0x0E || encoded.get(at) == 0x0F) {
+                throw new AssemblyException(line, "a graphic constant requires double-byte characters");
+            }
+        }
+        int size = length == null ? encoded.remaining() - 1 : length;
+        if ((size & 1) != 0) {
+            throw new AssemblyException(line, "the length of a graphic constant must be even");
+        }
+        byte[] bytes = new byte[size];
+        java.util.Arrays.fill(bytes, (byte) 0x40);
+        encoded.get(bytes, 0, Math.min(bytes.length, encoded.remaining() - 1));
+        return bytes;
+    }
+
     /**
      * {@code C} は左詰めで、余りはコードページの空白で埋める。長いほうは右を切る。
      *
@@ -258,11 +311,20 @@ public final class Constants {
      * していたので、後ろの定数の位置がすべて 1 つずれていた。引用符の重ねは {@link #readQuoted}
      * がすでに 1 字にしている。
      */
-    private static byte[] character(String text, Integer explicitLength, CodePage codePage) {
-        byte[] raw = text.replace("&&", "&").getBytes(codePage.charset());
+    private static byte[] character(String text, Integer explicitLength, CodePage codePage,
+                                    char extension) {
+        var charset = switch (extension) {
+            case 'A' -> java.nio.charset.StandardCharsets.US_ASCII;
+            case 'U' -> java.nio.charset.StandardCharsets.UTF_16BE;
+            default -> codePage.charset();
+        };
+        byte[] raw = text.replace("&&", "&").getBytes(charset);
         int length = explicitLength != null ? explicitLength : Math.max(raw.length, 0);
         byte[] out = new byte[length];
-        java.util.Arrays.fill(out, codePage.space());
+        byte[] space = " ".getBytes(charset);
+        for (int i = 0; i < length; i++) {
+            out[i] = space[i % space.length];
+        }
         System.arraycopy(raw, 0, out, 0, Math.min(raw.length, length));
         return out;
     }
@@ -305,17 +367,12 @@ public final class Constants {
     private static byte[] integer(String text, int length, int scale, int line) {
         long value;
         try {
-            if (scale == 0) {
-                value = Long.parseLong(text.trim());
-            } else {
-                // 位取りつき。2 の scale 乗を掛け、半分は 0 から遠いほうへ丸める。
-                // 丸めの向きは実機と突き合わせていない
-                java.math.BigDecimal scaled = new java.math.BigDecimal(text.trim());
-                scaled = scale > 0
-                        ? scaled.multiply(java.math.BigDecimal.valueOf(2).pow(scale))
-                        : scaled.divide(java.math.BigDecimal.valueOf(2).pow(-scale));
-                value = scaled.setScale(0, java.math.RoundingMode.HALF_UP).longValueExact();
-            }
+            // 位取りを適用してから、半分は 0 から遠いほうへ丸める。
+            java.math.BigDecimal scaled = new java.math.BigDecimal(text.trim());
+            scaled = scale >= 0
+                    ? scaled.multiply(java.math.BigDecimal.valueOf(2).pow(scale))
+                    : scaled.divide(java.math.BigDecimal.valueOf(2).pow(-scale));
+            value = scaled.setScale(0, java.math.RoundingMode.HALF_UP).longValueExact();
         } catch (ArithmeticException | NumberFormatException failure) {
             throw new AssemblyException(line, "not an integer constant: " + text);
         }
@@ -330,7 +387,7 @@ public final class Constants {
     private static byte[] packed(String text, Integer explicitLength, int line) {
         Decimal value = decimal(text, line);
         int digits = Math.max(1, value.magnitude().toString().length());
-        byte[] raw = PackedDecimal.encode(value, digits, 0, true);
+        byte[] raw = PackedDecimal.encode(value, digits, value.scale(), true);
         return explicitLength == null ? raw : rightJustify(raw, explicitLength);
     }
 
@@ -343,7 +400,7 @@ public final class Constants {
             // 以前は X'00' で埋めており、ZL4'7' が X'000000C7' になっていた
             digits = explicitLength;
         }
-        byte[] raw = ZonedDecimal.encode(value, digits, 0, SignPosition.TRAILING, codePage);
+        byte[] raw = ZonedDecimal.encode(value, digits, value.scale(), SignPosition.TRAILING, codePage);
         return explicitLength == null ? raw : rightJustify(raw, explicitLength);
     }
 
@@ -407,5 +464,9 @@ public final class Constants {
     /** 定数を組み立てるのに要る文脈。 */
     public interface Scope {
         CodePage codePage();
+
+        default boolean graphicConstants() {
+            return true; // マクロの長さ属性は命令の可否と独立に求める
+        }
     }
 }

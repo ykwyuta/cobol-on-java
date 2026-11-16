@@ -40,14 +40,16 @@ public final class InitialImage {
     /** 図形定数 {@code HIGH-VALUE} / {@code LOW-VALUE} が表すバイト (要件 FR-054)。 */
     private final byte highValue;
     private final byte lowValue;
+    private final boolean zeusCompatibility;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
 
     private InitialImage(CodePage codePage, char quoteCharacter, byte fill,
-                         byte highValue, byte lowValue) {
+                         byte highValue, byte lowValue, boolean zeusCompatibility) {
         this.codePage = codePage;
         this.quoteCharacter = quoteCharacter;
         this.fill = fill;
         this.highValue = highValue;
+        this.zeusCompatibility = zeusCompatibility;
         this.lowValue = lowValue;
     }
 
@@ -94,8 +96,12 @@ public final class InitialImage {
      * 表すバイトが変わる。<b>並びのいちばん後ろに来る文字</b>だからである。
      */
     public static Result build(DataLayout layout, SpecialNames specialNames) {
+        return build(layout, specialNames, false);
+    }
+
+    public static Result build(DataLayout layout, SpecialNames specialNames, boolean zeusCompatibility) {
         return build(layout, CompileCodePage.current(), '"',
-                specialNames.highValue(), specialNames.lowValue());
+                specialNames.highValue(), specialNames.lowValue(), zeusCompatibility);
     }
 
     /**
@@ -115,15 +121,21 @@ public final class InitialImage {
      */
     public static Result build(DataLayout layout, CodePage codePage, char quoteCharacter,
                                byte highValue, byte lowValue) {
+        return build(layout, codePage, quoteCharacter, highValue, lowValue, false);
+    }
+
+    private static Result build(DataLayout layout, CodePage codePage, char quoteCharacter,
+                                byte highValue, byte lowValue, boolean zeusCompatibility) {
         InitialImage builder = new InitialImage(codePage, quoteCharacter, codePage.space(),
-                highValue, lowValue);
+                highValue, lowValue, zeusCompatibility);
         List<RecordImage> images = new ArrayList<>();
         byte[] storage = new byte[layout.totalLength()];
         Arrays.fill(storage, codePage.space());
         for (DataItem record : layout.records()) {
             if (record.section() == DataSection.LINKAGE) {
-                // 連絡節の項目は記憶域を持たない。初期値を書く先がない
-                builder.checkNoInitialValue(record);
+                // 連絡節の VALUE は ALLOCATE INITIALIZED のイメージに使う。
+                // USING で渡された記憶域やプログラムの静的記憶域には書かない。
+                images.add(new RecordImage(record, builder.repeat(builder.imageOf(record), record)));
                 continue;
             }
             byte[] image = builder.repeat(builder.imageOf(record), record);
@@ -143,20 +155,6 @@ public final class InitialImage {
                     Math.min(image.length, storage.length - record.base()));
         }
         return new Result(List.copyOf(images), storage, List.copyOf(builder.diagnostics));
-    }
-
-    /**
-     * 連絡節に {@code VALUE} が書かれていないか確かめる。
-     *
-     * <p>初期化する先がないので、書かれていれば書き間違いである。規格も禁じている
-     * (88 レベルの条件名は別で、これは記憶域を占めない)。
-     */
-    private void checkNoInitialValue(DataItem item) {
-        if (hasInitialValue(item)) {
-            report(item.origin(), "VALUE is not allowed in the LINKAGE SECTION: "
-                    + describe(item));
-        }
-        item.children().forEach(this::checkNoInitialValue);
     }
 
     /** 項目 1 回分のイメージ。 */
@@ -220,16 +218,31 @@ public final class InitialImage {
     // ---- 基本項目 ----
 
     private void writeElementary(byte[] image, DataItem item) {
+        if (item.isDynamic()) {
+            if (zeusCompatibility) Arrays.fill(image, (byte) 0);
+            return;
+        }
         LiteralValue value = item.initialValue();
-        if (value == null) {
+        if (item.isUtf8()) {
+            try {
+                byte[] bytes = Utf8Literals.image(value, image.length, item.utf8CharacterLimit(),
+                        codePage, quoteCharacter);
+                System.arraycopy(bytes, 0, image, 0, bytes.length);
+            } catch (IllegalArgumentException invalid) {
+                report(item.origin(), invalid.getMessage());
+            }
             return;
         }
         Usage usage = item.usage();
+        Picture picture = item.picture();
+        if (value == null) {
+            if (zeusCompatibility) writeZeusDefault(image, item, usage, picture);
+            return;
+        }
         if (usage != null && usage.isFloatingPoint()) {
             writeFloating(image, item, value, usage);
             return;
         }
-        Picture picture = item.picture();
         if (picture == null) {
             return;
         }
@@ -261,6 +274,21 @@ public final class InitialImage {
         // (85 規格 JUSTIFIED 句の一般規則 (3))。右へ寄せるのは実行時の転記だけで
         // ある。X(3) JUST VALUE "XY" は "XY " になる (CCVS85 の NC107A)
         writeText(image, item, value);
+    }
+
+    private void writeZeusDefault(byte[] image, DataItem item, Usage usage, Picture picture) {
+        if (item.isPointer() || item.isIndex() || usage != null && usage.isFloatingPoint()) {
+            Arrays.fill(image, (byte) 0);
+        } else if (picture != null && picture.isNumeric()) {
+            writeNumeric(image, item, new LiteralValue.Figure(LiteralValue.FigurativeConstant.ZERO),
+                    picture, usage == null ? Usage.DISPLAY : usage);
+        } else if (picture != null && (picture.category() == Picture.Category.NATIONAL
+                || picture.isNationalEdited())) {
+            for (int i = 0; i + 1 < image.length; i += 2) {
+                image[i] = 0;
+                image[i + 1] = 0x20;
+            }
+        }
     }
 
     private void writeNumeric(byte[] image, DataItem item, LiteralValue value,
@@ -304,7 +332,8 @@ public final class InitialImage {
             return;
         }
         FloatingItem descriptor = usage == Usage.COMP_1 ? FloatingItem.comp1() : FloatingItem.comp2();
-        byte[] encoded = descriptor.encode(number.toBigDecimal().stripTrailingZeros());
+        var decimal = number.toBigDecimal().stripTrailingZeros();
+        byte[] encoded = zeusCompatibility ? descriptor.encodeNearest(decimal) : descriptor.encode(decimal);
         System.arraycopy(encoded, 0, image, 0, Math.min(encoded.length, image.length));
     }
 

@@ -171,7 +171,7 @@ class ControlStatementTest {
                 END;
                 SELECT;
                   WHEN(K < 4) T = 20;
-                  WHEN(K = 4) DO; T = 21; END;
+                  WHEN(K = 6) DO; T = 21; END;
                 END;
                 PUT SKIP LIST(T);
                 """));
@@ -193,9 +193,9 @@ class ControlStatementTest {
     }
 
     @Test
-    @DisplayName("読み込めないロードモジュールの FETCH は ONCODE 9251 の ERROR を起こす。RELEASE は誤りにならない")
+    @DisplayName("見つからないロードモジュールの FETCH は ONCODE 9250 の ERROR を起こす。RELEASE は誤りにならない")
     void fetchOfAMissingModuleRaisesError() throws Exception {
-        assertEquals("9251,DONE", run("""
+        assertEquals("9250,DONE", run("""
                 DCL NOWHERE ENTRY;
                 ON ERROR BEGIN; PUT SKIP LIST(ONCODE()); GO TO DONE; END;
                 RELEASE NOWHERE;

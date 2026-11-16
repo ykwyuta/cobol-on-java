@@ -405,8 +405,8 @@ PC104A の FETCH の奥にあったので数に出ていなかった。いまは
 手続きの道・変数名」で記憶域を持ち、`INITIAL` は最初の 1 度だけ効く。数は変わらない
 (64 / 68)。
 
-`FETCH` は呼ぶ前にロードモジュールを読み込み、読めなければ ONCODE 9251 の ERROR を起こす
-(番号は Zeus と同じ。実機と突き合わせていない)。`TITLE` は入口の名を別のロードモジュールへ
+`FETCH` は呼ぶ前にロードモジュールを読み込み、見つからなければ ONCODE 9250 の ERROR を起こす
+(現行の Zeus と同じ。実機と突き合わせていない)。`TITLE` は入口の名を別のロードモジュールへ
 結ぶ。`RELEASE` は読み込みを忘れ、そのプログラムの STATIC も捨てるので、次の `FETCH` は
 初めの状態から始まる。
 
@@ -519,4 +519,176 @@ Zeus の Hercules の道具 (`zeus-hercdiff zhvs`) は、この環境の Hercule
 後の戻りが 31 ビットのアドレスのまま 64 ビットで分岐する、などである。追加した
 ZHVS の期待値は Principles of Operation から手で定めたもので、Hercules では
 裏付けていない。
+
+## Zeus 6b14596 との比較 (2026-11-14)
+
+Zeus の `master` の `6b14596984b1bbac4bdf91ed679ab3d7d6a68a51` を取得し、同じソース一式を
+両方の処理系で実行した。表は同じプログラム母集団での合格本数であり、診断ケースを含む。
+
+| スイート | cobol-on-java 修正前 | cobol-on-java 修正後 | Zeus |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 167 / 188 | 177 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 71 / 119 | 75 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 128 / 166 | 142 / 166 | 166 / 166 |
+
+Zeus は `zeus-ccvs run --suite <suite> --toolchain <zeus|zpli|zas> --out <json>` で検証した。
+cobol-on-java は本書の `verify zcvs` で検証し、JCL が指定する順編成 DD の DCB と
+COBOL の PARM 実行時オプションも反映した。個別の判定件数は検証器の集計方法が異なるため、
+表ではプログラムの合否を比較した。
+
+- COBOL は関数結果の部分参照、`CONTENT-OF`、`UUID4`、Unicode 関数、`CODEPAGE(1140)`、
+  `QUALIFY(EXTEND)`、`INTDATE(LILIAN)`、`NOZWB`、`TRUNC(BIN)` での SIZE ERROR を確認した。
+  動的長、`NUMCHECK`、CALLINTERFACE、その他の組み込み関数に差が残った。
+  `ON SIZE ERROR` を省略したゼロ除算は既存の S0CB 動作を維持した。ZA123A の期待値は処理継続である。
+- PL/I は `FETCH` の ONCODE、リテラル、SHA、`DELAY` と `FLUSH FILE`、PACKAGE の MAIN 選択と
+  パッケージ変数の共有を確認した。条件処理、可変型、配列と構造体、前処理、組み込み関数、
+  パッケージ内の CONNECTED と DEFINED を含む組み合わせに差が残った。
+- HLASM は計算形 `AGO`、マクロ属性、長い文字列の命令、長変位命令、論理演算、回転とビット選択を確認した。
+  定数形式、ソース制御、浮動小数点、10 進・システム命令に差が残った。
+
+この測定では Zeus の通常実行経路を比較した。ネイティブ、OBJ/GOFF および IBM 実機との差分は未測定。
+
+### 追加の互換性改善
+
+同じ Zeus コミットで再測定した。
+
+| スイート | 前回 | 今回 | Zeus |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 177 / 188 | 179 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 75 / 119 | 79 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 142 / 166 | 146 / 166 | 166 / 166 |
+
+- ZF115A は短いレコード領域への行順 READ を継続し、ZA124A は不正な NUMVAL で RC 16 を返す。
+- ZPVS では PA106A の配列整列と検索、PC116A の NULLENTRY と ENTRYADDR、PC119A の
+  ALLCOMPARE、PD112A の UNION と CELL が通った。
+- ZHVS では HA106A の文字・番地定数と CCW、HA110A の ICTL、HD107A の固定小数点・
+  10 進定数、HI129A のメモリーオペランド付き BFP 命令が通った。
+- CCVS85 は実行された 8,723 判定のうち失敗 1 件で、前回と同じ OBNC1M の STOP 定数だった。
+
+### 条件処理・CALL・機械命令の互換性改善
+
+同じ Zeus コミットの全スイートで再測定した。
+
+| スイート | 前回 | 今回 | Zeus |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 179 / 188 | 181 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 79 / 119 | 82 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 146 / 166 | 150 / 166 | 166 / 166 |
+
+- COBOL は算術に渡す数値項目の NUMCHECK (ZA130A) と、CALLINTERFACE に応じた
+  CANCEL 後の作業域の保持・再初期化 (ZP115A) を確認した。静的 CALL の呼び先は
+  実行時に解決する。NUMCHECK の検証対象は算術で読み出す数値項目に限られる。
+- PL/I は条件コードと処理後の流れ (PC110A)、STRINGSIZE の ON-unit から正常復帰した
+  ときの切り詰め (PC111A)、ORDINAL と CONFORMANCE の条件前置き、反復付きビット定数
+  (PC117A) を確認した。
+- HLASM は逆バイト順のロード・ストア (HI118A)、相対分岐と条件付きロード (HI123A)、
+  比較交換、インターロック付きの記憶域更新、レジスター対のロード (HI124A)、
+  レジスター対を使う整数乗除算 (HI115A) を確認した。
+- CCVS85 は実行された 8,723 判定のうち失敗 1 件で、OBNC1M の STOP 定数だった。
+
+### 記憶域割当て・文字変換・図形定数 (2026-11-15)
+
+| スイート | 前回 | 今回 | Zeus 6b14596 |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 181 / 188 | 182 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 82 / 119 | 84 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 150 / 166 | 151 / 166 | 166 / 166 |
+
+- ZP117A は `ALLOCATE INITIALIZED` による連絡節の VALUE と FILLER の初期化、
+  `ALLOCATE CHARACTERS`、`ADDRESS OF` と POINTER の比較、`FREE` 後の NULL を確認した。
+  割当ての番地は実行単位内の番号であり、`LOC` 指定と 64 ビットポインターは扱っていない。
+- PM119A は `XMLCHAR` と `XMLSCRUB`/`XMLSCRUB16`、PC120A は `COLLATE`、`PLITRAN11`
+  から `PLITRAN22`、`UTF8STG` を確認した。
+- HD109A は `*PROCESS DBCS` と G 型の図形定数を確認した。指定コードページが
+  混在 EBCDIC でない場合は G 型の符号化に IBM-939 を使う。
+
+### PL/I の文字変換と HLASM の四倍語境界
+
+| スイート | 前回 | 今回 | Zeus 6b14596 |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 182 / 188 | 182 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 84 / 119 | 87 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 151 / 166 | 153 / 166 | 166 / 166 |
+
+- PC115A は `MEMCUxx` による UTF-8・UTF-16・UTF-32 の変換、サロゲート対、不正入力と
+  出力不足、`MEMCONVERT` による CCSID 1140 から 1141 への変換を確認した。
+- PC123A は `BEGIN OPTIONS(ORDER/REORDER)` の受理と ON-unit から見える値を確認した。
+  実行はソース順で、命令の並べ替えは行わない。
+- PM125A は `PLIASCII` / `PLIEBCDIC`、`PLIATTN` と `ON ATTENTION`、
+  括弧でまとめた HANDLE 宣言を確認した。`PLIDELETE` は `PLIFREE` と同じく解放を追跡せず、
+  `PLICANC` は自動再始動処理を持たないためそのまま戻る。
+- HD108A は拡張 16 進浮動小数点の `LQ` の 16 バイト境界と値を確認した。
+- HS105A は報告を出し終えた後に S0C7 で終了する。ZHVS 検証器は完結した報告と
+  データ例外がそろった場合に、Zeus のランチャーが返す RC 16 と照合する。
+
+### COBOL の組み込み関数と HLASM の短形式・長形式 HFP
+
+| スイート | 前回 | 今回 | Zeus 6b14596 |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 182 / 188 | 184 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 87 / 119 | 88 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 153 / 166 | 155 / 166 | 166 / 166 |
+
+- ZA125A は 16 進・ビット文字列変換、`NUMVAL-F`、日付の妥当性検査、日付・時刻の
+  書式化と逆変換、`E`、`PI`、`SIGN` を確認した。
+- ZS109A は `SHIFT-OUT` / `SHIFT-IN`、SORT 特殊レジスターの既定値、
+  `FORMATTED-CURRENT-DATE` を確認した。今回の SORT 対応はレジスターの定義と初期値までで、
+  SORT 処理への制御値の反映は未実装である。日付・時刻の書式は暦日・年内通算日・ISO 週日と
+  時分秒・小数秒に対応する。
+- PM122A は `SQRTF` を `SQRT` と同じ演算として評価することを確認した。
+- HI126A と HI127A は短・長形式の16進浮動小数点演算を確認した。正規化の有無、丸め、
+  短形式の乗算が長形式の結果を返すこと、条件コードを検査した。
+
+### COBOL のデータ属性、PL/I の配列検索、HLASM の拡張精度
+
+| スイート | 前回 | 今回 | Zeus 6b14596 |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 184 / 188 | 185 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 88 / 119 | 89 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 155 / 166 | 157 / 166 | 166 / 166 |
+
+- ZS108A は `VOLATILE` と `SECONDS-PAST-MIDNIGHT` を確認した。後者は Zeus と同じく
+  UTC の午前0時からの経過秒を百分の一秒単位で返す。
+- PM118A は多次元配列の `INARRAY`、`WCHARVAL` と `RANK`、`PICSPEC` の数値変換、
+  翻訳時の `CODEPAGE` を確認した。指定コードページの適用後は呼出元の設定へ戻る。
+- HI128A は拡張形式 HFP のレジスター対の転送と加減乗算、HI130A は BFP の精度拡張、
+  平方根、データ分類と浮動小数点制御レジスターの丸めモードを確認した。BFP の精度拡張は
+  有限値と無限大に対応し、NaN の変換と例外トラップは未対応である。
+
+### 固定長 UTF-8、PL/I の混在文字列、HLASM の DFP 分類
+
+| スイート | 前回 | 今回 | Zeus 6b14596 |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 185 / 188 | 186 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 89 / 119 | 90 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 157 / 166 | 158 / 166 | 166 / 166 |
+
+- ZN116A は `PIC U(n)`、`PIC U BYTE-LENGTH`、`U` / `UX` リテラル、
+  `VALUE` / `INITIALIZE`、文字境界を保つ転記、UTF-8 の照合と `NATIONAL-OF` /
+  `DISPLAY-OF` を確認した。固定長 UTF-8 項目の部分参照は未対応である。
+  Java ソース出力では UTF-8 項目と対象リテラルの処理に既存のラッパー経路を使う。
+- PM123A は `GRAPHIC`、`CHARGRAPHIC`、`MPSTR`、SO/SI を保つ切り詰めと、
+  SBCS へ変換できない図形文字で `CONVERSION` が発生することを確認した。
+- HI132A は短・長・拡張形式の DFP のデータグループを、指数・係数・符号から判定することを確認した。
+
+### COBOL の可変長項目、PL/I の値検査、HLASM のデータセット変数
+
+| スイート | 前回 | 今回 | Zeus 6b14596 |
+| --- | ---: | ---: | ---: |
+| ZCVS (COBOL) | 186 / 188 | 187 / 188 | 188 / 188 |
+| ZPVS (PL/I) | 90 / 119 | 91 / 119 | 119 / 119 |
+| ZHVS (HLASM) | 158 / 166 | 159 / 166 | 166 / 166 |
+
+- ZD116A は `PIC X` と `PIC U` の `DYNAMIC LENGTH` を15判定で確認した。
+  長さは初期状態で0であり、`MOVE` と `SET LENGTH OF` で変わる。UTF-8 の全体転記は
+  文字境界で切り詰め、`FUNCTION LENGTH` は文字数を、`LENGTH OF` と
+  `FUNCTION BYTE-LENGTH` はバイト数を返す。部分参照は現在長を基準にバイト単位で行う。
+  対応範囲は独立した WORKING-STORAGE 項目で、`EXTERNAL` / `GLOBAL` や
+  固定長の記憶域を要求する文での指定は未対応である。
+- PD116A は型別名から継承した `VALUERANGE`、`VALUELIST`、`VALIDVALUE` の
+  引数変換と序数型を5判定で確認した。反復型 `DO` は終了境界を越えた値を制御変数に残す。
+- HM110A は `SYSLIB_*` のソース内マクロとライブラリマクロにおける値、
+  `SYSLIN_*` と `SYSPRINT_*` の既定値を7判定で確認した。JVM クラスへの
+  翻訳では入力名の拡張子を `.class` に置き換えた論理名を `SYSLIN_DSN` に使い、
+  一覧出力の割り当てが無いときの `SYSPRINT_DSN` は `NULLFILE` とする。
 

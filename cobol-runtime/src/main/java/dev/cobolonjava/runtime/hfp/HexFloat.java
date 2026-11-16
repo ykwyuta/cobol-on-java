@@ -2,6 +2,7 @@ package dev.cobolonjava.runtime.hfp;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 
 /**
  * IBM 16 進浮動小数点数 (HFP) の表現 (要件 FR-032)。
@@ -132,12 +133,20 @@ public final class HexFloat {
 
     /** 値を短形式 (COMP-1) へ符号化する。 */
     public static byte[] encodeShort(BigDecimal value) {
-        return encode(value, SHORT_BYTES, SHORT_DIGITS);
+        return encode(value, SHORT_BYTES, SHORT_DIGITS, false);
+    }
+
+    public static byte[] encodeShortNearest(BigDecimal value) {
+        return encode(value, SHORT_BYTES, SHORT_DIGITS, true);
     }
 
     /** 値を長形式 (COMP-2) へ符号化する。 */
     public static byte[] encodeLong(BigDecimal value) {
-        return encode(value, LONG_BYTES, LONG_DIGITS);
+        return encode(value, LONG_BYTES, LONG_DIGITS, false);
+    }
+
+    public static byte[] encodeLongNearest(BigDecimal value) {
+        return encode(value, LONG_BYTES, LONG_DIGITS, true);
     }
 
     /** 短形式 (COMP-1) を値へ復号する。 */
@@ -153,13 +162,13 @@ public final class HexFloat {
     /**
      * 符号化する。
      *
-     * <p>小数部に収まらない桁は<b>切り捨てる</b>。HFP の演算が切り捨てを基本とすることに合わせている。
-     * ただし 10 進表記から HFP への変換をコンパイラがどう行うか (切り捨てか最近接か) は
-     * 未確認であり、provisional.md の P-018 に記録している。
+     * <p>既定の変換は小数部に収まらない桁を切り捨てる (暫定判断 P-018)。
+     * Zeus の変換は偶数丸めを使い、正規化できないほど小さい値を 0 にする。
      *
      * @throws ArithmeticException 指数が表現範囲を超える場合
      */
-    private static byte[] encode(BigDecimal value, int byteLength, int fractionDigits) {
+    private static byte[] encode(BigDecimal value, int byteLength, int fractionDigits,
+                                 boolean nearest) {
         if (value.signum() == 0) {
             // 真のゼロ。符号・特性・小数部のすべてがゼロ
             return new byte[byteLength];
@@ -178,6 +187,15 @@ public final class HexFloat {
             exponent--;
         }
 
+        if (nearest && exponent < -BIAS) return new byte[byteLength];
+        int fractionBits = fractionDigits * 4;
+        BigInteger fraction = magnitude.multiply(new BigDecimal(BigInteger.ONE.shiftLeft(fractionBits)))
+                .setScale(0, nearest ? RoundingMode.HALF_EVEN : RoundingMode.DOWN).toBigIntegerExact();
+        if (fraction.bitLength() > fractionBits) {
+            fraction = fraction.shiftRight(4);
+            exponent++;
+        }
+
         int characteristic = exponent + BIAS;
         if (characteristic > 127) {
             throw new ArithmeticException("HFP exponent overflow: characteristic " + characteristic);
@@ -186,18 +204,7 @@ public final class HexFloat {
             throw new ArithmeticException("HFP exponent underflow: characteristic " + characteristic);
         }
 
-        BigInteger fraction = magnitude
-                .multiply(new BigDecimal(BigInteger.valueOf(16).pow(fractionDigits)))
-                .toBigInteger();
-
-        byte[] out = new byte[byteLength];
-        BigInteger remaining = fraction;
-        for (int i = byteLength - 1; i >= 1; i--) {
-            out[i] = remaining.and(BigInteger.valueOf(0xFF)).byteValue();
-            remaining = remaining.shiftRight(8);
-        }
-        out[0] = (byte) ((negative ? 0x80 : 0x00) | (characteristic & 0x7F));
-        return out;
+        return fromParts(new Parts(negative, characteristic, fraction), byteLength);
     }
 
     private static BigDecimal decode(byte[] bytes, int byteLength, int fractionDigits) {

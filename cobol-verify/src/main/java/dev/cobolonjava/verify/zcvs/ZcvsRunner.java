@@ -5,9 +5,13 @@ import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.CopyBookResolver;
 import dev.cobolonjava.compiler.source.DirectoryCopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
+import dev.cobolonjava.hlasm.HlasmRuntime.HlasmExecutionException;
+import dev.cobolonjava.hlasm.MachineException;
 import dev.cobolonjava.runtime.codepage.CodePage;
 import dev.cobolonjava.runtime.codepage.CodePages;
 import dev.cobolonjava.runtime.file.DataSetCatalog;
+import dev.cobolonjava.runtime.file.DataSetAttributes;
+import dev.cobolonjava.runtime.file.RecordFormat;
 import dev.cobolonjava.runtime.program.CobolProgram;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
@@ -268,11 +272,12 @@ public final class ZcvsRunner {
 
     /** @return できたクラスの並び。断ったなら理由の文字列 */
     private Object cobol(String name, String text, ZcvsManifest.Entry entry) {
-        CobolCompiler compiler = new CobolCompiler(Preprocessor.with(resolver));
+        CompilerOptions options = new CompilerOptions(Map.of("COMPATIBILITY", "ZEUS"));
         if (entry.ccsid() != 0) {
-            compiler = compiler.withOptions(new CompilerOptions(
+            options = options.merge(new CompilerOptions(
                     Map.of("CODEPAGE", String.valueOf(entry.ccsid()))));
         }
+        CobolCompiler compiler = new CobolCompiler(Preprocessor.with(resolver), options);
         CobolCompiler.Result compiled = compiler.compile(name, text);
         if (!compiled.succeeded()) {
             return compiled.diagnostics().stream().filter(d -> !d.isWarning()).findFirst()
@@ -341,13 +346,12 @@ public final class ZcvsRunner {
             java.util.Set.of("3400", "3420", "3480", "3490", "3590", "TAPE", "CART");
 
     /**
-     * manifest が指す JCL から、磁気テープに割り当てた DD を拾う。
+     * manifest が指す JCL から、テープ割当てと明示の順編成 DCB を読み取る。
      *
-     * <p>JCL 全体は読まない。要るのは DD 名と {@code UNIT=} だけである。続きの行
-     * ({@code //} のあとが空白で始まる行) は前の DD の続きとして読む。
+     * <p>DD の続きの行を連結する。データセットは検査用ディレクトリの DD 名で扱う。
      */
-    private DataSetCatalog tapes(DataSetCatalog catalog, String module,
-                                 ZcvsManifest.Entry entry) {
+    private DataSetCatalog allocations(DataSetCatalog catalog, String module,
+                                       ZcvsManifest.Entry entry, CodePage codePage) {
         if (entry.jcl() == null) {
             return catalog;
         }
@@ -356,22 +360,46 @@ public final class ZcvsRunner {
             return catalog;
         }
         try {
-            String dd = null;
+            Map<String, StringBuilder> operands = new java.util.LinkedHashMap<>();
+            StringBuilder dd = null;
+            Pattern namedDd = Pattern.compile("^//(\\S+)\\s+DD\\b(.*)");
             for (String line : java.nio.file.Files.readAllLines(jcl)) {
                 if (!line.startsWith("//") || line.startsWith("//*")) {
                     continue;
                 }
-                java.util.regex.Matcher named =
-                        java.util.regex.Pattern.compile("^//(\\S+)\\s+DD\\b").matcher(line);
+                Matcher named = namedDd.matcher(line);
                 if (named.find()) {
-                    dd = named.group(1);
+                    dd = new StringBuilder(named.group(2).trim());
+                    operands.put(named.group(1), dd);
+                } else if (dd != null && line.startsWith("// ")) {
+                    dd.append(line.substring(2).trim());
                 } else if (!line.startsWith("// ")) {
                     dd = null;
                 }
-                java.util.regex.Matcher unit =
-                        java.util.regex.Pattern.compile("UNIT=([A-Z0-9]+)").matcher(line);
-                if (dd != null && unit.find() && TAPE_UNITS.contains(unit.group(1))) {
-                    catalog.tape(dd);
+            }
+            for (var allocation : operands.entrySet()) {
+                String name = allocation.getKey();
+                String data = allocation.getValue().toString();
+                Matcher unit = Pattern.compile("\\bUNIT=([A-Z0-9]+)").matcher(data);
+                if (unit.find() && TAPE_UNITS.contains(unit.group(1))) {
+                    catalog.tape(name);
+                }
+                Matcher dcb = Pattern.compile("\\bDCB=\\(([^)]*)\\)").matcher(data);
+                if (!dcb.find()) {
+                    continue;
+                }
+                Matcher format = Pattern.compile("\\bRECFM=(F|FB|V|VB)(?:,|$)").matcher(dcb.group(1));
+                Matcher length = Pattern.compile("\\bLRECL=([0-9]+)").matcher(dcb.group(1));
+                if (format.find() && length.find()) {
+                    RecordFormat recordFormat = RecordFormat.of(format.group(1));
+                    int recordLength = Integer.parseInt(length.group(1));
+                    if (recordFormat == RecordFormat.VARIABLE) {
+                        recordLength -= 4;
+                    }
+                    if (recordLength > 0) {
+                        new DataSetAttributes(recordFormat, recordLength, codePage)
+                                .write(catalog.resolve(name));
+                    }
                 }
             }
         } catch (java.io.IOException e) {
@@ -389,7 +417,7 @@ public final class ZcvsRunner {
                 // 標準入力は読ませない。道具の起動のしかたで結果が変わってはならない
                 .withInput(() -> null)
                 .withCodePage(codePage)
-                .withCatalog(tapes(new DataSetCatalog(directory), module, entry));
+                .withCatalog(allocations(new DataSetCatalog(directory), module, entry, codePage));
         Object thrown = limited("run-" + program, () -> {
             try {
                 Generated loader = new Generated();
@@ -398,8 +426,11 @@ public final class ZcvsRunner {
                     Class<?> type = loader.define(part.className(), part.classFile());
                     first = first == null ? type : first;
                 }
+                String argument = language == Language.COBOL
+                        ? dev.cobolonjava.runtime.program.BatchParm.applyRuntimeOptions(entry.parm(), context)
+                        : entry.parm();
                 ((CobolProgram) first.getDeclaredConstructor().newInstance())
-                        .runFresh(context, parm(entry.parm(), codePage));
+                        .runFresh(context, parm(argument, codePage));
                 return "";
             } catch (Throwable caught) {
                 return caught;
@@ -427,6 +458,15 @@ public final class ZcvsRunner {
         }
         int passed = Integer.parseInt(counts.group(1));
         int total = Integer.parseInt(counts.group(2));
+        // ZHVS のデータ例外は Zeus の zpli run-hlasm ではプロセス RC 16。
+        // 報告が完結し、マニフェストも RC 16 を要求する場合だけ照合する。
+        if (language == Language.HLASM && entry.exitCode() == 16
+                && thrown instanceof HlasmExecutionException interruption
+                && interruption.getCause() instanceof MachineException machine
+                && machine.code() == MachineException.DATA) {
+            return new Outcome(program, module, passed == total && total > 0
+                    ? Kind.PASSED : Kind.FAILED, passed, total, crash, failures);
+        }
         if (!crash.isEmpty()) {
             return new Outcome(program, module, Kind.CRASHED, passed, total, crash, failures);
         }

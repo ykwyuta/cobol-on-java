@@ -29,6 +29,7 @@ public final class ReferenceResolver {
 
     private final DataLayout layout;
     private final List<Diagnostic> diagnostics;
+    private final boolean extendedQualification;
     /**
      * 部分参照の算術式を解く道。式の解決 (関数や一意名を含む) は手続き部の組み立てが持つので、
      * そちらから差し込む。{@code null} なら式の部分参照は書けない。
@@ -42,8 +43,14 @@ public final class ReferenceResolver {
     }
 
     public ReferenceResolver(DataLayout layout, List<Diagnostic> diagnostics) {
+        this(layout, diagnostics, false);
+    }
+
+    public ReferenceResolver(DataLayout layout, List<Diagnostic> diagnostics,
+                             boolean extendedQualification) {
         this.layout = layout;
         this.diagnostics = diagnostics;
+        this.extendedQualification = extendedQualification;
     }
 
     /**
@@ -77,6 +84,10 @@ public final class ReferenceResolver {
 
         DataReference.RefMod refMod = null;
         if (context.referenceModifier() != null) {
+            if (item.isUtf8() && !item.isDynamic()) {
+                report(origin, "reference modification of UTF-8 items is not supported");
+                return null;
+            }
             refMod = resolveRefMod(context.referenceModifier(), origin);
             if (refMod == null) {
                 return null;
@@ -260,11 +271,30 @@ public final class ReferenceResolver {
             return null;
         }
         if (found.size() > 1) {
+            if (extendedQualification) {
+                List<DataItem> complete = found.stream()
+                        .filter(item -> completelyQualified(item, qualifiers)).toList();
+                if (complete.size() == 1) {
+                    return complete.getFirst();
+                }
+            }
             // どれか 1 個を選ぶと、書いた人の意図と違う項目を黙って使うことになる
             report(origin, target + " is ambiguous; qualify it with OF or IN");
             return null;
         }
         return found.get(0);
+    }
+
+    /** QUALIFY(EXTEND) の完全修飾では祖先を一段も飛ばさない (Zeus sema/data.rs)。 */
+    private static boolean completelyQualified(DataItem item, List<String> qualifiers) {
+        DataItem parent = item.parent();
+        for (String qualifier : qualifiers) {
+            if (parent == null || !qualifier.equals(parent.name())) {
+                return false;
+            }
+            parent = parent.parent();
+        }
+        return parent == null;
     }
 
     /**
@@ -408,7 +438,7 @@ public final class ReferenceResolver {
         return true;
     }
 
-    private DataReference.RefMod resolveRefMod(CobolParser.ReferenceModifierContext context,
+    DataReference.RefMod resolveRefMod(CobolParser.ReferenceModifierContext context,
                                                Origin origin) {
         DataReference.Subscript leftmost = resolvePosition(context.refModPosition(0), origin);
         if (leftmost == null) {
@@ -447,7 +477,7 @@ public final class ReferenceResolver {
         if (!(reference.refMod().leftmost() instanceof DataReference.Subscript.Constant leftmost)) {
             return;
         }
-        int size = reference.item().length();
+        int size = reference.item().isDynamic() ? reference.item().dynamicLimit() : reference.item().length();
         if (leftmost.value() < 1 || leftmost.value() > size) {
             report(origin, "reference modification starts at " + leftmost.value()
                     + " which is outside 1.." + size + " for " + describe(reference.item()));
@@ -455,7 +485,7 @@ public final class ReferenceResolver {
         }
         if (reference.refMod().length()
                 instanceof DataReference.Subscript.Constant length
-                && (length.value() < 1 || leftmost.value() + length.value() - 1 > size)) {
+                && (length.value() < 1 || length.value() > size - leftmost.value() + 1)) {
             report(origin, "reference modification of length " + length.value()
                     + " from " + leftmost.value() + " runs past the end of "
                     + describe(reference.item()));

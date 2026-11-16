@@ -2,11 +2,15 @@ package dev.cobolonjava.maven;
 
 import dev.cobolonjava.job.JobDescription;
 import dev.cobolonjava.job.JobDiagnostic;
+import dev.cobolonjava.job.JobJavaSource;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -30,8 +34,14 @@ final class JobCheck {
 
     static void run(SourceLayout layout, Path output, Report report)
             throws IOException, BuildFailure {
+        run(layout, output, false, report);
+    }
+
+    static void run(SourceLayout layout, Path output, boolean emitJava, Report report)
+            throws IOException, BuildFailure {
         List<Path> descriptions = layout.jobDescriptions();
         Path proclib = Files.isDirectory(layout.proclib()) ? layout.proclib() : null;
+        Set<String> jobClasses = new HashSet<>();
         int failures = 0;
         for (Path description : descriptions) {
             JobDescription.Result result = JobDescription.read(description, proclib);
@@ -42,9 +52,19 @@ final class JobCheck {
                 failures++;
                 continue;
             }
-            copy(layout.jcl(), description, output.resolve(JCL_RESOURCE));
+            if (emitJava) {
+                String className = JobJavaSource.className(result.job());
+                if (!jobClasses.add(className.toUpperCase(Locale.ROOT))) {
+                    report.error(description + ": generated job class already used: " + className);
+                    failures++;
+                    continue;
+                }
+                JobJavaSource.write(output, result.job());
+            } else {
+                copy(layout.jcl(), description, output.resolve(JCL_RESOURCE));
+            }
         }
-        if (proclib != null) {
+        if (!emitJava && proclib != null) {
             try (Stream<Path> members = Files.walk(proclib)) {
                 for (Path member : members.filter(Files::isRegularFile).sorted().toList()) {
                     copy(proclib, member, output.resolve(PROCLIB_RESOURCE));

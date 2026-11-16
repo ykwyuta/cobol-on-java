@@ -112,6 +112,34 @@ public enum Intrinsic {
     RANDOM(-3, Argument.NUMERIC, Result.NUMERIC),
     /** 絶対値。 */
     ABS(1, Argument.NUMERIC, Result.NUMERIC),
+    E(0, Argument.NUMERIC, Result.NUMERIC),
+    PI(0, Argument.NUMERIC, Result.NUMERIC),
+    SIGN(1, Argument.NUMERIC, Result.INTEGER),
+    HEX_OF(1, Argument.ANY, Result.SAME_LENGTH),
+    BIT_OF(1, Argument.ANY, Result.SAME_LENGTH),
+    HEX_TO_CHAR(1, Argument.ALPHANUMERIC, Result.SAME_LENGTH),
+    BIT_TO_CHAR(1, Argument.ALPHANUMERIC, Result.SAME_LENGTH),
+    NUMVAL_F(1, Argument.ALPHANUMERIC, Result.NUMERIC),
+    TEST_NUMVAL_F(1, Argument.ALPHANUMERIC, Result.INTEGER),
+    TEST_DATE_YYYYMMDD(1, Argument.NUMERIC, Result.INTEGER),
+    TEST_DAY_YYYYDDD(1, Argument.NUMERIC, Result.INTEGER),
+    COMBINED_DATETIME(2, Argument.NUMERIC, Result.NUMERIC),
+    FORMATTED_DATE(2, Argument.FORMAT, Result.SAME_LENGTH),
+    FORMATTED_TIME(2, Argument.FORMAT, Result.SAME_LENGTH),
+    FORMATTED_DATETIME(3, Argument.FORMAT, Result.SAME_LENGTH),
+    FORMATTED_CURRENT_DATE(1, Argument.FORMAT, Result.SAME_LENGTH),
+    SECONDS_PAST_MIDNIGHT(0, Argument.ANY, Result.NUMERIC),
+    TEST_FORMATTED_DATETIME(2, Argument.ALPHANUMERIC, Result.INTEGER),
+    INTEGER_OF_FORMATTED_DATE(2, Argument.ALPHANUMERIC, Result.INTEGER),
+    SECONDS_FROM_FORMATTED_TIME(2, Argument.ALPHANUMERIC, Result.NUMERIC),
+    CONTENT_OF(1, Argument.ANY, Result.SAME_LENGTH),
+    UUID4(0, Argument.ANY, Result.UUID_TEXT),
+    ULENGTH(1, Argument.ANY, Result.INTEGER),
+    UPOS(2, Argument.ANY, Result.INTEGER),
+    UWIDTH(2, Argument.ANY, Result.INTEGER),
+    USUPPLEMENTARY(1, Argument.ANY, Result.INTEGER),
+    UVALID(1, Argument.ANY, Result.INTEGER),
+    USUBSTR(3, Argument.ANY, Result.SAME_LENGTH),
     /** NUMVAL が読める綴りなら 0、読めなければ最初に誤っている文字の位置。 */
     TEST_NUMVAL(1, Argument.ALPHANUMERIC, Result.INTEGER),
     TEST_NUMVAL_C(-2, Argument.ALPHANUMERIC, Result.INTEGER),
@@ -135,6 +163,13 @@ public enum Intrinsic {
         return this == TRIM || this == TRIM_LEADING || this == TRIM_TRAILING;
     }
 
+    public boolean unicode() {
+        return switch (this) {
+            case ULENGTH, UPOS, UWIDTH, USUPPLEMENTARY, UVALID, USUBSTR -> true;
+            default -> false;
+        };
+    }
+
     /** 引数の受け取り方。 */
     public enum Argument {
         /** 数値として読む。 */
@@ -144,7 +179,9 @@ public enum Intrinsic {
         /** 読まない。項目の長さだけを見る。 */
         ANY,
         /** 引数がどちらでもよい。書かれたものを見て決める。 */
-        EITHER
+        EITHER,
+        /** 形式を表す文字列の後に日付・時刻の数値を取る。 */
+        FORMAT
     }
 
     /** 戻り値の分類。 */
@@ -159,6 +196,7 @@ public enum Intrinsic {
         ONE_CHARACTER,
         /** {@code YYYYMMDDhhmmsscc±hhmm} の 21 文字。 */
         TIMESTAMP,
+        UUID_TEXT,
         /** いちばん長い引数と同じ長さのバイト列。 */
         WIDEST,
         /** 国字。引数の 1 バイトが 1 文字になる (1 バイトのコードページなら長さは 2 倍)。 */

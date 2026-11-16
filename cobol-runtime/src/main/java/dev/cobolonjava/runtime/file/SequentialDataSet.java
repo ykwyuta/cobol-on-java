@@ -38,6 +38,7 @@ public final class SequentialDataSet implements DataSet {
     private OpenMode mode;
     private List<byte[]> records;
     private int position;
+    private int lineOffset;
     private boolean atEnd;
     /**
      * 直前に読んだレコードの番号。{@code REWRITE} が書き換える相手である。
@@ -259,6 +260,7 @@ public final class SequentialDataSet implements DataSet {
         mode = requested;
         // EXTEND は末尾から書き足す。ほかは先頭から
         position = requested == OpenMode.EXTEND ? records.size() : 0;
+        lineOffset = 0;
         atEnd = false;
         current = -1;
         lastLength = 0;
@@ -339,6 +341,22 @@ public final class SequentialDataSet implements DataSet {
         }
         byte[] record = records.get(position++);
         current = position - 1;
+        if (attributes.format() == RecordFormat.LINE) {
+            int remaining = record.length - lineOffset;
+            int length = Math.min(remaining, into.length);
+            System.arraycopy(record, lineOffset, into, 0, length);
+            translate(into, length, toInternal);
+            Arrays.fill(into, length, into.length, attributes.codePage().space());
+            lastLength = length;
+            // z/OS UNIX の LINE SEQUENTIAL は短い領域に収まらない分を次の READ に回す。
+            if (length < remaining && length != 0) {
+                lineOffset += length;
+                position--;
+            } else {
+                lineOffset = 0;
+            }
+            return FileStatus.OK;
+        }
         int length = Math.min(record.length, into.length);
         System.arraycopy(record, 0, into, 0, length);
         translate(into, length, toInternal);

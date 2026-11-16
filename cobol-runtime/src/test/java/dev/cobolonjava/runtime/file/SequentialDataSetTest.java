@@ -100,12 +100,26 @@ class SequentialDataSetTest {
 
         file.open(OpenMode.INPUT);
         byte[] record = area(5);
-        assertEquals(FileStatus.LENGTH_MISMATCH, file.read(record));
+        assertEquals(FileStatus.OK, file.read(record));
         assertEquals("one  ", decode(record));
         file.read(record);
         assertEquals("two  ", decode(record));
         file.read(record);
         assertEquals("three", decode(record));
+        assertEquals(FileStatus.AT_END, file.read(record));
+    }
+
+    @Test
+    void shortLineAreaContinuesTheSamePhysicalLine() throws IOException {
+        Path path = write("SHORT.DAT", "abcdefghij\nxy\n");
+        SequentialDataSet file = new SequentialDataSet(path,
+                new DataSetAttributes(RecordFormat.LINE, 10, CodePages.DEFAULT));
+        file.open(OpenMode.INPUT);
+        byte[] record = area(4);
+        for (String expected : new String[] {"abcd", "efgh", "ij  ", "xy  "}) {
+            assertEquals(FileStatus.OK, file.read(record));
+            assertEquals(expected, decode(record));
+        }
         assertEquals(FileStatus.AT_END, file.read(record));
     }
 

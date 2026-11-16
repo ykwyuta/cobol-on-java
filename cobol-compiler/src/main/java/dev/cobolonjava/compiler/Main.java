@@ -2,6 +2,7 @@ package dev.cobolonjava.compiler;
 
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.ProcessStatement;
+import dev.cobolonjava.source.ProgramOutput;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -11,10 +12,12 @@ import java.util.List;
  * 処理系の起動口 (要件 FR-180)。
  *
  * <pre>
- * cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ]... [--free] [-q オプション] ソース...
+ * cobolc [-d 出力ディレクトリ] [-I コピー句ディレクトリ]... [--free] [-q オプション]
+ *        [--emit-java] ソース...
  * </pre>
  *
  * <p>翻訳したクラスファイルと {@code META-INF/cobol/programs.json} を書き出す。
+ * {@code --emit-java} はクラスファイルに代えて Java ソースを書き出す。
  * 生成したクラスは {@code main} を持つので、そのまま {@code java} で起動できる。
  *
  * <p>{@code -I} は何度でも書ける。書いた順に探し、先に見つかったものを使う。ホストの
@@ -39,14 +42,14 @@ public final class Main {
         } catch (IllegalArgumentException e) {
             System.err.println(e.getMessage());
             System.err.println("usage: cobolc [-d dir] [-I copybook-dir]... [--free]"
-                    + " [-q options] source...");
+                    + " [-q options] [--emit-java] source...");
             System.exit(2);
             return;
         }
 
         CobolBuild.Result result = CobolBuild.run(new CobolBuild.Request(options.sources(),
                         options.output(), options.copybooks(), options.freeFormat(),
-                        options.compilerOptions()),
+                        options.compilerOptions()), options.format(),
                 (source, diagnostic) -> System.err.println(diagnostic));
         if (!result.succeeded()) {
             System.exit(1);
@@ -55,7 +58,7 @@ public final class Main {
 
     /** 起動時の指定。 */
     private record Options(List<Path> sources, Path output, List<Path> copybooks,
-                           boolean freeFormat, CompilerOptions compilerOptions) {
+                           boolean freeFormat, CompilerOptions compilerOptions, ProgramOutput format) {
 
         static Options parse(String[] args) {
             List<Path> sources = new ArrayList<>();
@@ -63,12 +66,14 @@ public final class Main {
             List<Path> copybooks = new ArrayList<>();
             boolean freeFormat = false;
             CompilerOptions compilerOptions = CompilerOptions.NONE;
+            ProgramOutput format = ProgramOutput.CLASS;
 
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
                     case "-d" -> output = Path.of(next(args, ++i, "-d"));
                     case "-I" -> copybooks.add(Path.of(next(args, ++i, "-I")));
                     case "--free" -> freeFormat = true;
+                    case "--emit-java" -> format = ProgramOutput.JAVA;
                     case "-q" -> compilerOptions = compilerOptions.merge(
                             ProcessStatement.parse(next(args, ++i, "-q")));
                     default -> {
@@ -83,7 +88,7 @@ public final class Main {
                 throw new IllegalArgumentException("no source file given");
             }
             return new Options(List.copyOf(sources), output, List.copyOf(copybooks), freeFormat,
-                    compilerOptions);
+                    compilerOptions, format);
         }
 
         private static String next(String[] args, int index, String option) {

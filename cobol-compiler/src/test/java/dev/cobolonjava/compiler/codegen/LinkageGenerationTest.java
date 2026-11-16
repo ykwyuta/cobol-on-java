@@ -207,9 +207,9 @@ class LinkageGenerationTest {
     }
 
     @Test
-    @DisplayName("連絡節に VALUE を書いたら誤りとして報告する (FR-027)")
-    void aValueClauseInLinkageIsReported() {
-        CobolCompiler.Result result = compile(List.of(
+    @DisplayName("連絡節の VALUE は呼出元の記憶域を初期化しない (FR-027)")
+    void aLinkageValueDoesNotInitializeAnArgument() {
+        CobolProgram program = load(compile(List.of(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. SUB.",
                 "DATA DIVISION.",
@@ -217,11 +217,32 @@ class LinkageGenerationTest {
                 "01 LK-A PIC X(3) VALUE 'abc'.",
                 "PROCEDURE DIVISION USING LK-A.",
                 "MAIN-START.",
-                "    CONTINUE."));
+                "    CONTINUE.")));
+        Storage caller = callerStorage("xyz");
+        assertEquals("xyz", call(program, caller, caller.whole()));
+    }
 
-        assertFalse(result.succeeded());
-        assertTrue(result.diagnostics().get(0).message().contains("VALUE is not allowed"),
-                result.diagnostics().toString());
+    @Test
+    @DisplayName("FREE で解放した記憶域は連絡節に番地が残っていてもアクセスできない")
+    void freedStorageCannotBeUsedThroughLinkage() {
+        CobolProgram program = load(compile(List.of(
+                "IDENTIFICATION DIVISION.",
+                "PROGRAM-ID. SUB.",
+                "DATA DIVISION.",
+                "WORKING-STORAGE SECTION.",
+                "01 P USAGE POINTER.",
+                "LINKAGE SECTION.",
+                "01 LK-A PIC X(3).",
+                "PROCEDURE DIVISION.",
+                "MAIN-START.",
+                "    ALLOCATE LK-A RETURNING P",
+                "    FREE P",
+                "    MOVE 'abc' TO LK-A",
+                "    GOBACK.")));
+
+        var abend = assertThrows(dev.cobolonjava.runtime.abend.Abend.class,
+                () -> program.runFresh(ProgramContext.standard(), new DataView[0]));
+        assertTrue(abend.getMessage().contains("storage has been freed"));
     }
 
     @Test

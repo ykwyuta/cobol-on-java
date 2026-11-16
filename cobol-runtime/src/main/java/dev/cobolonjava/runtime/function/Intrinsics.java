@@ -111,6 +111,14 @@ public final class Intrinsics {
         return value.signum() < 0 ? value.negate() : value;
     }
 
+    public static Decimal sign(Decimal value) {
+        return Decimal.of(value.signedUnscaled().signum(), 0);
+    }
+
+    public static byte[] uuid4(CodePage codePage) {
+        return codePage.encode(java.util.UUID.randomUUID().toString());
+    }
+
     /**
      * {@code FUNCTION TRIM}。前後の空白を削る。ぜんぶ空白なら長さ 0 になる。
      *
@@ -560,10 +568,34 @@ public final class Intrinsics {
      * @return 日付として読めなければ 0
      */
     public static Decimal integerOfDate(Decimal yyyymmdd) {
+        return integerOfDate(yyyymmdd, false);
+    }
+
+    public static Decimal integerOfDate(Decimal yyyymmdd, boolean lilian) {
         long value = toLong(yyyymmdd, "INTEGER-OF-DATE");
-        LocalDate date = dateOf((int) (value / 10000), (int) (value / 100 % 100),
-                (int) (value % 100));
-        return date == null ? Decimal.zero(0) : Decimal.of(dayNumber(date), 0);
+        try {
+            LocalDate date = LocalDate.of((int) (value / 10000), (int) (value / 100 % 100),
+                    (int) (value % 100));
+            return dayNumber(date, lilian);
+        } catch (java.time.DateTimeException invalid) {
+            return Decimal.zero(0);
+        }
+    }
+
+    public static Decimal integerOfDateZeus(Decimal yyyymmdd, boolean lilian) {
+        long value = toLong(yyyymmdd, "INTEGER-OF-DATE");
+        long year = value / 10000;
+        long month = value / 100 % 100;
+        long day = value % 100;
+        // Count from March so overflow in the day field carries into the next month.
+        if (month <= 2) year--;
+        long era = Math.floorDiv(year, 400);
+        long eraYear = year - era * 400;
+        long marchMonth = month > 2 ? month - 3 : month + 9;
+        long eraDay = eraYear * 365 + eraYear / 4 - eraYear / 100
+                + (153 * marchMonth + 2) / 5 + day - 1;
+        long epoch = (lilian ? LILIAN : EPOCH).toEpochDay();
+        return Decimal.of(era * 146_097 + eraDay - 719_468 - epoch + 1, 0);
     }
 
     /**
@@ -572,17 +604,18 @@ public final class Intrinsics {
      * @return 日付として読めなければ 0
      */
     public static Decimal integerOfDay(Decimal yyyyddd) {
+        return integerOfDay(yyyyddd, false);
+    }
+
+    public static Decimal integerOfDay(Decimal yyyyddd, boolean lilian) {
         long value = toLong(yyyyddd, "INTEGER-OF-DAY");
         int year = (int) (value / 1000);
         int day = (int) (value % 1000);
-        if (year < FIRST_YEAR || year > LAST_YEAR || day < 1) {
+        try {
+            return dayNumber(LocalDate.ofYearDay(year, day), lilian);
+        } catch (java.time.DateTimeException invalid) {
             return Decimal.zero(0);
         }
-        LocalDate first = LocalDate.of(year, 1, 1);
-        if (day > first.lengthOfYear()) {
-            return Decimal.zero(0);
-        }
-        return Decimal.of(dayNumber(first.plusDays(day - 1L)), 0);
     }
 
     /**
@@ -591,7 +624,11 @@ public final class Intrinsics {
      * @return 範囲の外なら 0
      */
     public static Decimal dateOfInteger(Decimal days) {
-        LocalDate date = dateOf(toLong(days, "DATE-OF-INTEGER"));
+        return dateOfInteger(days, false);
+    }
+
+    public static Decimal dateOfInteger(Decimal days, boolean lilian) {
+        LocalDate date = dateOf(toLong(days, "DATE-OF-INTEGER"), lilian);
         return date == null
                 ? Decimal.zero(0)
                 : Decimal.of(date.getYear() * 10000L
@@ -604,7 +641,11 @@ public final class Intrinsics {
      * @return 範囲の外なら 0
      */
     public static Decimal dayOfInteger(Decimal days) {
-        LocalDate date = dateOf(toLong(days, "DAY-OF-INTEGER"));
+        return dayOfInteger(days, false);
+    }
+
+    public static Decimal dayOfInteger(Decimal days, boolean lilian) {
+        LocalDate date = dateOf(toLong(days, "DAY-OF-INTEGER"), lilian);
         return date == null
                 ? Decimal.zero(0)
                 : Decimal.of(date.getYear() * 1000L + date.getDayOfYear(), 0);
@@ -612,30 +653,24 @@ public final class Intrinsics {
 
     /** 規格が数えはじめる日。 */
     private static final LocalDate EPOCH = LocalDate.of(1601, 1, 1);
-    private static final int FIRST_YEAR = 1601;
+    private static final LocalDate LILIAN = LocalDate.of(1582, 10, 15);
     private static final int LAST_YEAR = 9999;
     private static final Decimal TWO = Decimal.of(2, 0);
 
-    private static long dayNumber(LocalDate date) {
-        return date.toEpochDay() - EPOCH.toEpochDay() + 1;
+    private static Decimal dayNumber(LocalDate date, boolean lilian) {
+        LocalDate epoch = lilian ? LILIAN : EPOCH;
+        return date.isBefore(epoch) || date.getYear() > LAST_YEAR
+                ? Decimal.zero(0) : Decimal.of(date.toEpochDay() - epoch.toEpochDay() + 1, 0);
     }
 
     /** 通日から日付へ。範囲の外なら {@code null}。 */
-    private static LocalDate dateOf(long dayNumber) {
-        if (dayNumber < 1) {
+    private static LocalDate dateOf(long dayNumber, boolean lilian) {
+        LocalDate epoch = lilian ? LILIAN : EPOCH;
+        long last = LocalDate.of(LAST_YEAR, 12, 31).toEpochDay() - epoch.toEpochDay() + 1;
+        if (dayNumber < 1 || dayNumber > last) {
             return null;
         }
-        LocalDate date = EPOCH.plusDays(dayNumber - 1);
-        return date.getYear() > LAST_YEAR ? null : date;
-    }
-
-    /** 年月日から日付へ。暦に無い日なら {@code null}。 */
-    private static LocalDate dateOf(int year, int month, int day) {
-        if (year < FIRST_YEAR || year > LAST_YEAR || month < 1 || month > 12 || day < 1) {
-            return null;
-        }
-        LocalDate first = LocalDate.of(year, month, 1);
-        return day > first.lengthOfMonth() ? null : first.withDayOfMonth(day);
+        return epoch.plusDays(dayNumber - 1);
     }
 
     private static long toLong(Decimal value, String function) {

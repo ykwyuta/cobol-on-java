@@ -83,7 +83,8 @@ public final class DirectiveProcessor {
                 continue;
             }
             if (outputting()) {
-                out.add(word);
+                out.add(word.isWord("CALL") && state.callInterface != Origin.CallInterface.DEFAULT
+                        ? word.withCallInterface(state.callInterface) : word);
             }
             i++;
         }
@@ -140,9 +141,15 @@ public final class DirectiveProcessor {
                     pop(origin);
                 }
             }
-            case "CALLINTERFACE" -> {
+            case "CALLINTERFACE", "CALLINT" -> {
                 if (outputting()) {
-                    state.callInterface = joined(operands).toUpperCase(Locale.ROOT);
+                    state.callInterface = switch (joined(operands).toUpperCase(Locale.ROOT)) {
+                        case "", "COBOL" -> Origin.CallInterface.DEFAULT;
+                        case "STATIC" -> Origin.CallInterface.STATIC;
+                        case "DYNAMIC" -> Origin.CallInterface.DYNAMIC;
+                        case "DLL" -> Origin.CallInterface.DLL;
+                        default -> throw new SourceFormatException(origin, "invalid CALLINTERFACE");
+                    };
                 }
             }
             default -> throw new SourceFormatException(origin,
@@ -447,7 +454,7 @@ public final class DirectiveProcessor {
     private static final class State {
 
         private Map<String, Value> constants = new HashMap<>();
-        private String callInterface;
+        private Origin.CallInterface callInterface = Origin.CallInterface.DEFAULT;
 
         State copy() {
             State copy = new State();

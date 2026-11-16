@@ -52,6 +52,47 @@ class IntrinsicFunctionTest {
         return run(ProgramContext.standard().withClock(FIXED), storage, procedure);
     }
 
+    @Test
+    void functionResultCanBeSlicedWithComputedAndOmittedLengths() {
+        assertEquals("BC2026", run(List.of(
+                        "01 PART PIC X(2).",
+                        "01 YEAR-NUMBER PIC 9(4)."),
+                "MOVE FUNCTION UPPER-CASE('abc')(1 + 1:) TO PART.",
+                "MOVE FUNCTION CURRENT-DATE(1:4) TO YEAR-NUMBER."));
+    }
+
+    @Test
+    void dynamicItemsGrowWithinTheirLimitsAndSupportByteSlices() {
+        assertTrue(run(List.of(
+                        "01 WS-X PIC X DYNAMIC LENGTH LIMIT 5.",
+                        "01 WS-U PIC U DYNAMIC LIMIT 5.",
+                        "01 OUT-X PIC X(5).",
+                        "01 OUT-U PIC X(10).",
+                        "01 OUT-SIZE PIC 9."),
+                "MOVE 'ABCD' TO WS-X.",
+                "SET LENGTH OF WS-X TO 2.",
+                "SET LENGTH OF WS-X TO 100.",
+                "MOVE 'Y' TO WS-X(4:).",
+                "MOVE WS-X TO OUT-X.",
+                "MOVE UX'41C3A9' TO WS-U.",
+                "MOVE FUNCTION HEX-OF(WS-U(2:)) TO OUT-U.",
+                "MOVE FUNCTION BYTE-LENGTH(WS-U) TO OUT-SIZE.")
+                .endsWith("ABCY C3A9      3"));
+    }
+
+    @Test
+    void figurativeComparisonsUseTheCurrentDynamicLength() {
+        assertTrue(run(List.of("01 WS-X PIC X DYNAMIC LENGTH.",
+                        "01 WS-U PIC U DYNAMIC LENGTH.", "01 RESULT-FLAG PIC X."),
+                "SET LENGTH OF WS-X TO 20.",
+                "MOVE ALL 'AB' TO WS-X.",
+                "SET LENGTH OF WS-U TO 9.",
+                "MOVE HIGH-VALUES TO WS-U.",
+                "IF ALL 'AB' = WS-X AND WS-U = HIGH-VALUES",
+                "    MOVE 'Y' TO RESULT-FLAG",
+                "END-IF.").endsWith("Y"));
+    }
+
     private static String run(ProgramContext context, List<String> storage,
                               String... procedure) {
         CobolCompiler.Result result = compile(storage, procedure);

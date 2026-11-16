@@ -2,6 +2,7 @@ package dev.cobolonjava.maven;
 
 import dev.cobolonjava.compiler.source.CompilerOptions;
 import dev.cobolonjava.compiler.source.ProcessStatement;
+import dev.cobolonjava.source.ProgramOutput;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
@@ -26,6 +27,13 @@ public class CompileMojo extends AbstractMojo {
 
     @Parameter(defaultValue = "${project.build.outputDirectory}", required = true)
     private File outputDirectory;
+
+    @Parameter(property = "cobol.emitJava", defaultValue = "false")
+    private boolean emitJava;
+
+    @Parameter(property = "cobol.javaOutputDirectory",
+            defaultValue = "${project.build.directory}/generated-sources/legacy")
+    private File javaOutputDirectory;
 
     /** COBOL の原文の置き場。拡張子 {@code .cbl} / {@code .cob} / {@code .cobol}。 */
     @Parameter(property = "cobol.sourceDirectory",
@@ -88,8 +96,9 @@ public class CompileMojo extends AbstractMojo {
         CompilerOptions options = compilerOptions == null || compilerOptions.isBlank()
                 ? CompilerOptions.NONE : ProcessStatement.parse(compilerOptions);
         try {
-            ProgramBuild.run(layout, outputDirectory.toPath(), freeFormat, options,
-                    MavenReport.of(getLog()));
+            File destination = emitJava ? javaOutputDirectory : outputDirectory;
+            ProgramBuild.run(layout, destination.toPath(), freeFormat, options,
+                    emitJava ? ProgramOutput.JAVA : ProgramOutput.CLASS, MavenReport.of(getLog()));
         } catch (BuildFailure e) {
             throw new MojoFailureException(e.getMessage(), e);
         } catch (IOException e) {

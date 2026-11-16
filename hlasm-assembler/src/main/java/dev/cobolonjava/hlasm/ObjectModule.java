@@ -45,6 +45,12 @@ public record ObjectModule(String name, byte[] text, int entryOffset,
         this(name, text, entryOffset, symbols, dummySections, listing, List.of(), List.of());
     }
 
+    /** 生成した Java が保持する、実行に必要なオブジェクトモジュール。 */
+    public ObjectModule(String name, byte[] text, int entryOffset,
+                        List<Relocation> relocations, List<External> externals) {
+        this(name, text, entryOffset, Map.of(), Map.of(), List.of(), relocations, externals);
+    }
+
     /**
      * 組み立て表の 1 行。
      *

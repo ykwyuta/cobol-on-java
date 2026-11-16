@@ -378,7 +378,20 @@ final class PliSyntax {
                     + " STRUCTURE");
         }
         int name = levelOf(part) > 0 ? 1 : 0;
-        handles.put(part.get(name).text(), part.get(typeAt).text());
+        String type = part.get(typeAt).text();
+        if (part.get(name).is("(")) {
+            // Factored declarations share the HANDLE attribute.
+            for (int i = name + 1; i < at && !part.get(i).is(")"); i += 2) {
+                Token member = part.get(i);
+                if (member.kind() != Kind.IDENT
+                        || i + 1 >= at || (!part.get(i + 1).is(",") && !part.get(i + 1).is(")"))) {
+                    throw new ParseFailure(member, "expected a name in factored HANDLE declaration");
+                }
+                handles.put(member.text(), type);
+            }
+        } else {
+            handles.put(part.get(name).text(), type);
+        }
         List<Token> out = new ArrayList<>(part.subList(0, at));
         out.add(new Token(Kind.IDENT, "POINTER", part.get(at).line(), part.get(at).column()));
         out.addAll(part.subList(typeAt + (typeAt == at + 2 ? 2 : 1), part.size()));
@@ -451,6 +464,13 @@ final class PliSyntax {
                                                 Map<String, Map<String, Integer>> ordinals,
                                                 Map<String, String> ordinalVariables) {
         int at = indexAtDepth0(part, "TYPE");
+        if (at < 0) {
+            int ordinal = indexAtDepth0(part, "ORDINAL");
+            if (ordinal >= 0 && ordinal + 1 < part.size()
+                    && ordinals.containsKey(part.get(ordinal + 1).text())) {
+                at = ordinal;
+            }
+        }
         if (at < 0 || at + 1 >= part.size() || part.get(at + 1).kind() != Kind.IDENT) {
             return List.of(part);
         }
@@ -566,7 +586,7 @@ final class PliSyntax {
                    Map<String, Procedure> procedures, boolean main,
                    Map<String, FileInfo> files, boolean noExecOps,
                    Map<String, List<GenericAlternative>> generics,
-                   Map<String, String> enclosing) {
+                   Map<String, String> enclosing, String packageName, List<Stmt> packageBody) {
     }
 
     /**
@@ -597,7 +617,7 @@ final class PliSyntax {
 
     sealed interface Stmt permits Declare, Assign, Put, If, Loop, IterativeLoop, Call, Return,
             Block, GoTo, Label, OnEndFile, FileOperation, Sql, Leave, Iterate, Stop, Group, OnCondition, Revert, Signal,
-            Prefixed, Select, Allocate, Free, AssignByName, Get, Fetch, Release {
+            Prefixed, Select, Allocate, Free, AssignByName, Get, Fetch, Release, Delay, Flush {
     }
 
     /** {@code 構造 = 構造, BY NAME;} (LRM "Structure assignment BY NAME")。 */
@@ -651,13 +671,13 @@ final class PliSyntax {
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
                 List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
                 String storage, Defined defined, String unsupported, String picture,
-                boolean complex) {
+                boolean complex, boolean union, ValueSet valueSet) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
-                    dimensions, initialItems, false, null, null, null, null, false);
+                    dimensions, initialItems, false, null, null, null, null, false, false, null);
         }
 
         boolean controlled() {
@@ -668,7 +688,7 @@ final class PliSyntax {
         Decl withDimensions(List<Bound> bounds) {
             return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
                     varying, List.copyOf(bounds), initialItems, unsigned, storage, defined,
-                    unsupported, picture, complex);
+                    unsupported, picture, complex, union, valueSet);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -677,6 +697,9 @@ final class PliSyntax {
             for (Bound bound : dimensions) count *= bound.extent();
             return count;
         }
+    }
+
+    record ValueSet(boolean range, List<Expr> expressions) {
     }
 
     /**
@@ -803,6 +826,12 @@ final class PliSyntax {
     record Stop() implements Stmt {
     }
 
+    record Delay(Expr milliseconds) implements Stmt {
+    }
+
+    record Flush(String file) implements Stmt {
+    }
+
     record Block(List<Stmt> body) implements Stmt {
     }
 
@@ -893,13 +922,18 @@ final class PliSyntax {
     }
 
     /** {@code '...'B} の値。'0' と '1' のほかの字は誤りである。 */
-    private static Object bitLiteral(Token token) {
-        String bits = token.text();
-        if (!bits.chars().allMatch(c -> c == '0' || c == '1')) {
-            throw new ParseFailure(token, "bit string constant '" + bits + "'B has a character"
-                    + " other than 0 and 1");
+    private static Object bitLiteral(Token token, int width) {
+        StringBuilder bits = new StringBuilder();
+        for (char c : token.text().replace("_", "").toCharArray()) {
+            int digit = Character.digit(c, 1 << width);
+            if (digit < 0) {
+                throw new ParseFailure(token, "invalid digit in bit string constant: " + token.text());
+            }
+            for (int bit = width - 1; bit >= 0; bit--) {
+                bits.append((digit >>> bit) & 1);
+            }
         }
-        return bits.length() == 1 ? (Object) bits.equals("1") : new BitString(bits);
+        return bits.length() == 1 ? (Object) (bits.charAt(0) == '1') : new BitString(bits.toString());
     }
 
     /**
@@ -912,7 +946,7 @@ final class PliSyntax {
 
     /** {@code '...'X} の値。16 進の字が偶数個でなければ誤りである。 */
     private static HexString hexLiteral(Token token) {
-        String digits = token.text();
+        String digits = token.text().replace("_", "");
         if (digits.length() % 2 != 0
                 || !digits.chars().allMatch(c -> Character.digit(c, 16) >= 0)) {
             throw new ParseFailure(token, "hexadecimal constant '" + digits
@@ -937,7 +971,7 @@ final class PliSyntax {
     record Function(String name, List<Expr> arguments) implements Expr {
     }
 
-    private enum Kind { IDENT, NUMBER, STRING, SYMBOL, EOF }
+    private enum Kind { IDENT, NUMBER, FLOAT_NUMBER, STRING, SYMBOL, EOF }
 
     private record Token(Kind kind, String text, int line, int column) {
         boolean is(String value) {
@@ -1037,7 +1071,21 @@ final class PliSyntax {
                     advance(source.charAt(at));
                 }
             }
-            tokens.add(new Token(Kind.NUMBER, source.substring(start, at), tokenLine, tokenColumn));
+            Kind kind = Kind.NUMBER;
+            if (at < source.length() && (source.charAt(at) == 'E' || source.charAt(at) == 'e')) {
+                int sign = peek(1) == '+' || peek(1) == '-' ? 1 : 0;
+                if (Character.isDigit(peek(1 + sign))) {
+                    kind = Kind.FLOAT_NUMBER;
+                    advance(source.charAt(at));
+                    if (sign != 0) {
+                        advance(source.charAt(at));
+                    }
+                    while (at < source.length() && Character.isDigit(source.charAt(at))) {
+                        advance(source.charAt(at));
+                    }
+                }
+            }
+            tokens.add(new Token(kind, source.substring(start, at), tokenLine, tokenColumn));
         }
 
         private void identifier() {
@@ -1101,13 +1149,49 @@ final class PliSyntax {
 
         ParseResult parse() {
             collectDefaults();
+            String packageName = null;
+            List<Stmt> packageBody = new ArrayList<>();
             while (!check(Kind.EOF) && !procedureAhead()) {
+                if (check(Kind.IDENT) && check(1, ":") && check(2, "PACKAGE")) {
+                    packageName = next().text();
+                    expect(":");
+                    expect("PACKAGE");
+                    collectToSemicolon();
+                    break;
+                }
                 at++;
             }
-            if (check(Kind.EOF)) {
+            ProcedureBuilder main = null;
+            if (packageName == null && procedureAhead()) {
+                main = parseProcedure();
+            } else if (packageName != null) {
+                List<ProcedureBuilder> procedures = new ArrayList<>();
+                while (!check(Kind.EOF) && !check("END")) {
+                    if (procedureAhead()) {
+                        procedures.add(parseProcedure());
+                    } else {
+                        packageBody.add(labelled());
+                    }
+                }
+                expect("END");
+                if (check(packageName)) {
+                    next();
+                }
+                expect(";");
+                main = procedures.stream().filter(procedure -> procedure.main)
+                        .findFirst().orElse(procedures.isEmpty() ? null : procedures.getFirst());
+                if (main != null) {
+                    for (ProcedureBuilder procedure : procedures) {
+                        if (procedure != main) {
+                            main.procedures.put(procedure.name, procedure.freeze());
+                            main.procedures.putAll(procedure.procedures);
+                        }
+                    }
+                }
+            }
+            if (main == null) {
                 throw fail(peek(), "a labeled PROCEDURE was not found");
             }
-            ProcedureBuilder main = parseProcedure();
             // LIKE と OFFSET が指す名は、あとに書かれていてもよい。全部読んでから確かめる
             for (NamedReference reference : namedReferences) {
                 Boolean structure = declaredNames.get(reference.name.toUpperCase(Locale.ROOT));
@@ -1157,7 +1241,7 @@ final class PliSyntax {
             return new ParseResult(new Program(main.name, main.parameters,
                     List.copyOf(main.body), Map.copyOf(main.procedures), main.main,
                     Map.copyOf(files), main.noExecOps, Map.copyOf(generics),
-                    Map.copyOf(enclosing)), List.of());
+                    Map.copyOf(enclosing), packageName, List.copyOf(packageBody)), List.of());
         }
 
         /** FILE の宣言の属性。名は大文字。 */
@@ -1296,6 +1380,7 @@ final class PliSyntax {
                 return loop();
             }
             if (match("BEGIN")) {
+                beginOptions();
                 expect(";");
                 return new Block(blockBody());
             }
@@ -1376,11 +1461,28 @@ final class PliSyntax {
             if (match("WRITE")) {
                 return fileOperation(FileAction.WRITE);
             }
-            if (match("GO")) {
-                match("TO");
+            if (check("GO") || check("GOTO")) {
+                if (match("GO")) {
+                    expect("TO");
+                } else {
+                    expect("GOTO");
+                }
                 String target = expect(Kind.IDENT, "label after GO TO").text();
                 expect(";");
                 return new GoTo(target);
+            }
+            if (match("DELAY")) {
+                Expr milliseconds = parenthesizedExpression();
+                expect(";");
+                return new Delay(milliseconds);
+            }
+            if (match("FLUSH")) {
+                expect("FILE");
+                expect("(");
+                String file = match("*") ? null : expect(Kind.IDENT, "file name").text();
+                expect(")");
+                expect(";");
+                return new Flush(file);
             }
             if (match("ON")) {
                 return onCondition();
@@ -1779,7 +1881,39 @@ final class PliSyntax {
                     dimensions.isEmpty() ? List.of() : initialItems(part), unsigned, storage,
                     defined(part), floatByDefault ? "FLOAT" : unsupportedAttribute(part),
                     info.type == Type.PICTURE ? pictureSpecification(part) : null,
-                    part.stream().anyMatch(t -> t.is("COMPLEX") || t.is("CPLX")));
+                    part.stream().anyMatch(t -> t.is("COMPLEX") || t.is("CPLX")),
+                    part.stream().anyMatch(t -> t.is("UNION") || t.is("CELL")), valueSet(part));
+        }
+
+        private ValueSet valueSet(List<Token> declaration) {
+            int name = declaration.getFirst().kind() == Kind.NUMBER ? 1 : 0;
+            int firstAttribute = declaration.get(name).is("(")
+                    ? findClosing(declaration, name) + 1 : name + 1;
+            List<Token> attributes = declaration.subList(firstAttribute, declaration.size());
+            int list = indexAtDepth0(attributes, "VALUELIST");
+            int range = indexAtDepth0(attributes, "VALUERANGE");
+            if (list < 0 && range < 0) return null;
+            int at = Math.max(list, range) + firstAttribute;
+            Token attribute = declaration.get(at);
+            if (list >= 0 && range >= 0) {
+                throw fail(attribute, "VALUELIST and VALUERANGE cannot be combined");
+            }
+            if (at + 1 >= declaration.size() || !declaration.get(at + 1).is("(")) {
+                throw fail(attribute, attribute.text() + " requires a parenthesized value set");
+            }
+            int close = findClosing(declaration, at + 1);
+            Token end = declaration.get(close);
+            List<Token> inner = new ArrayList<>(declaration.subList(at + 2, close));
+            inner.add(new Token(Kind.EOF, "<EOF>", end.line(), end.column()));
+            Parser values = new Parser(fileName, inner);
+            List<Expr> expressions = new ArrayList<>();
+            do {
+                expressions.add(values.expression());
+            } while (values.match(","));
+            if (!values.check(Kind.EOF) || (range >= 0 && expressions.size() != 2)) {
+                throw fail(attribute, "invalid " + attribute.text() + " value set");
+            }
+            return new ValueSet(range >= 0, List.copyOf(expressions));
         }
 
         /**
@@ -2510,7 +2644,9 @@ final class PliSyntax {
         /** 持っている条件。ほかの条件は断る。 */
         private static final java.util.Set<String> CONDITIONS = java.util.Set.of(
                 "ENDFILE", "ENDPAGE", "KEY", "CONVERSION", "CONV", "ZERODIVIDE", "ZDIV", "SIZE",
-                "FIXEDOVERFLOW", "FOFL", "CONDITION", "COND", "ERROR");
+                "FIXEDOVERFLOW", "FOFL", "CONDITION", "COND", "ERROR",
+                "OVERFLOW", "UNDERFLOW", "STRINGSIZE", "STRINGRANGE", "SUBSCRIPTRANGE",
+                "UNDEFINEDFILE", "CONFORMANCE", "ATTENTION");
 
         private String conditionName() {
             Token name = expect(Kind.IDENT, "condition name");
@@ -2555,6 +2691,7 @@ final class PliSyntax {
             }
             List<Stmt> handler;
             if (match("BEGIN")) {
+                beginOptions();
                 expect(";");
                 handler = blockBody();
             } else {
@@ -2565,6 +2702,16 @@ final class PliSyntax {
                 return new OnEndFile(qualifier, handler);
             }
             return new OnCondition(condition, qualifier, handler, false);
+        }
+
+        private void beginOptions() {
+            if (match("OPTIONS")) {
+                expect("(");
+                if (!match("ORDER") && !match("REORDER")) {
+                    throw fail(peek(), "BEGIN OPTIONS supports ORDER and REORDER");
+                }
+                expect(")");
+            }
         }
 
         private Stmt fileOperation(FileAction action) {
@@ -2662,21 +2809,52 @@ final class PliSyntax {
         }
 
         private Expr primary() {
+            if (check("(") && check(1, Kind.NUMBER) && check(2, ")")
+                    && check(3, Kind.STRING) && token(1).text().matches("[0-9]+")) {
+                next();
+                Token factor = next();
+                expect(")");
+                Object value = stringLiteral();
+                int repetitions;
+                try {
+                    repetitions = Integer.parseInt(factor.text());
+                    int length = switch (value) {
+                        case Boolean bit -> 1;
+                        case BitString bits -> bits.bits().length();
+                        case HexString hex -> hex.bytes().length;
+                        case String text -> text.length();
+                        default -> throw new IllegalStateException("unexpected string literal");
+                    };
+                    if (Math.multiplyExact(repetitions, length) > 16_777_216) {
+                        throw fail(factor, "repeated string is too long");
+                    }
+                } catch (NumberFormatException | ArithmeticException tooLong) {
+                    throw fail(factor, "repeated string is too long");
+                }
+                return new Literal(switch (value) {
+                    case Boolean bit -> repetitions == 1 ? bit
+                            : new BitString((bit ? "1" : "0").repeat(repetitions));
+                    case BitString bits -> new BitString(bits.bits().repeat(repetitions));
+                    case HexString hex -> repeatHex(hex, repetitions);
+                    case String text -> text.repeat(repetitions);
+                    default -> throw new IllegalStateException("unexpected string literal");
+                });
+            }
             if (match("(")) {
                 Expr value = expression();
                 expect(")");
                 return value;
             }
             if (check(Kind.STRING)) {
+                return new Literal(stringLiteral());
+            }
+            if (check(Kind.FLOAT_NUMBER)) {
                 Token literal = next();
-                String value = literal.text();
-                if (match("B")) {
-                    return new Literal(bitLiteral(literal));
+                try {
+                    return new Literal(new java.math.BigDecimal(literal.text()));
+                } catch (NumberFormatException invalid) {
+                    throw new ParseFailure(literal, "invalid floating-point constant: " + literal.text());
                 }
-                if (match("X")) {
-                    return new Literal(hexLiteral(literal));
-                }
-                return new Literal(value);
             }
             if (check(Kind.NUMBER)) {
                 Token number = next();
@@ -2710,6 +2888,35 @@ final class PliSyntax {
                 return new Literal(Asterisk.STAR);
             }
             throw fail(peek(), "expression expected, found " + peek().text());
+        }
+
+        private Object stringLiteral() {
+            Token literal = next();
+            if (match("B") || match("B1")) {
+                return bitLiteral(literal, 1);
+            }
+            if (match("B2")) {
+                return bitLiteral(literal, 2);
+            }
+            if (match("B3")) {
+                return bitLiteral(literal, 3);
+            }
+            if (match("B4") || match("BX")) {
+                return bitLiteral(literal, 4);
+            }
+            if (match("X")) {
+                return hexLiteral(literal);
+            }
+            return literal.text();
+        }
+
+        private static HexString repeatHex(HexString hex, int repetitions) {
+            byte[] source = hex.bytes();
+            byte[] result = new byte[source.length * repetitions];
+            for (int offset = 0; offset < result.length; offset += source.length) {
+                System.arraycopy(source, 0, result, offset, source.length);
+            }
+            return new HexString(result);
         }
 
         private String qualifiedName() {

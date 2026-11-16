@@ -2,6 +2,7 @@ package dev.cobolonjava.compiler;
 
 import dev.cobolonjava.compiler.parser.Diagnostic;
 import dev.cobolonjava.compiler.source.CompilerOptions;
+import dev.cobolonjava.runtime.program.NumCheck;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -22,11 +23,11 @@ import java.util.Set;
  * <ul>
  *   <li><b>黙って通す</b>: 効いているもの (SOURCEFORMAT、SSRANGE、CICS、SQL)、と
  *       この処理系の振る舞いと同じ値 (ARITH(COMPAT) と ARITH(EXTEND)、TRUNC(STD)、NUMPROC(NOPFD)、
- *       FLOAT(HEX)、CODEPAGE(1047)、DYNAM、QUOTE)</li>
+ *       FLOAT(HEX)、CODEPAGE(1047)、DYNAM/NODYNAM、QUOTE)</li>
  *   <li><b>警告して通す</b>: プログラムが計算する値を変えないもの。リスト、最適化、
  *       デバッグ情報、再入可能性 (RENT)。振る舞いの差が暫定判断に書いてあるもの
- *       (ADV は P-063、NODYNAM は P-032、NUMBER は P-080) もここに入れる。止めると、
- *       実資産 (Bank-of-Z の {@code CBL LIST,MAP,XREF} や {@code PROCESS NODYNAM})
+ *       (ADV は P-063、NUMBER は P-080) もここに入れる。止めると、
+ *       実資産 (Bank-of-Z の {@code CBL LIST,MAP,XREF} など)
  *       がそれだけで翻訳できなくなる</li>
  *   <li><b>断る</b>: 計算する値や記憶域のバイトを変えるのに、その値を実装していないもの。
  *       黙って既定で翻訳すると、実機と違う値を黙って返す (CLAUDE.md の増分の型 3)</li>
@@ -42,12 +43,13 @@ final class OptionSupport {
     /** 効いているオプション。値を問わない。 */
     private static final Set<String> EFFECTIVE = Set.of(
             "SOURCEFORMAT", "SSRANGE", "NOSSRANGE", "CICS", "NOCICS", "SQL", "NOSQL",
-            "DYNAM");
+            "DYNAM", "NODYNAM");
 
     /** 値によって、この処理系の振る舞いと同じなら黙って通すオプション。 */
     private static final Map<String, Set<String>> IMPLEMENTED_VALUES = Map.ofEntries(
             Map.entry("ARITH", Set.of("COMPAT", "C", "EXTEND", "E")),
             Map.entry("TRUNC", Set.of("STD", "BIN", "OPT")),
+            Map.entry("COMPATIBILITY", Set.of("DEFAULT", "ZEUS")),
             // PFD と MIG は NUMERIC の級条件の表を変える。演算は、符号が優先符号 (C・D・F) で
             // あるかぎり NOPFD と同じ結果になる。優先符号でない入力の PFD の結果は
             // 言語解説書が「予測できない」としているので、NOPFD と同じに扱ってよい
@@ -59,9 +61,12 @@ final class OptionSupport {
             // 930 / 939 / 1390 / 1399 は日本語の EBCDIC (SBCS と、SO / SI で囲む DBCS)。
             // 1390 と 1399 は ICU の表から作った文字集合で持つ
             Map.entry("CODEPAGE", Set.of("1047", "01047", "IBM-1047", "37", "037",
-                    "930", "939", "1390", "1399")),
+                    "930", "939", "1140", "IBM-1140", "1390", "1399")),
+            Map.entry("QUALIFY", Set.of("COMPAT", "EXTEND", "C", "E")),
             Map.entry("PGMNAME", Set.of("COMPAT", "CO")),
-            Map.entry("INTDATE", Set.of("ANSI")),
+            Map.entry("INTDATE", Set.of("ANSI", "LILIAN")),
+            Map.entry("ZWB", Set.of("")),
+            Map.entry("NOZWB", Set.of("")),
             Map.entry("NSYMBOL", Set.of("NATIONAL", "NAT", "DBCS")),
             Map.entry("QUOTE", Set.of("")),
             Map.entry("Q", Set.of("")));
@@ -69,25 +74,25 @@ final class OptionSupport {
     /** 値を変えるのに実装していない値を持ちうるオプション。値が違えば断る。 */
     private static final Set<String> RESULT_CHANGING = Set.of(
             "ARITH", "TRUNC", "NUMPROC", "NUMCLS", "FLOAT", "CODEPAGE", "APOST", "APOSTROPHE",
-            "ZONEDATA", "NUMCHECK", "INTDATE", "PGMNAME", "CURRENCY",
+            "COMPATIBILITY",
+            "ZONEDATA", "INTDATE", "PGMNAME", "CURRENCY", "QUALIFY",
             // NSYMBOL(DBCS) は PIC N を DBCS (DISPLAY-1) にする。持っていない
             "NSYMBOL");
 
     /** 計算する値を変えないので、警告して通すオプション。{@code NO} の付いた形も同じ。 */
     private static final Set<String> NO_EFFECT = Set.of(
             "LIST", "MAP", "XREF", "SOURCE", "OFFSET", "FLAG", "OPTIMIZE", "OPT", "TEST",
-            "RENT", "NUMBER", "ADV", "DYNAM", "SEQ", "SEQUENCE", "OBJECT", "NAME", "LIB",
+            "RENT", "NUMBER", "ADV", "SEQ", "SEQUENCE", "OBJECT", "NAME", "LIB",
             "COMPILE", "TERMINAL", "TERM", "LINECOUNT", "SPACE", "WORD", "DATA", "DECK",
             "STGOPT", "THREAD", "VBREF", "EXIT", "DUMP", "ADATA", "MDECK", "INVDATA",
             "RULES", "SUPPRMSG", "DISPSIGN", "HGPR", "AFP", "ARCH", "TUNE", "MAXPCF",
-            "QUALIFY", "DLL", "EXPORTALL", "WSCLEAR", "LANGUAGE", "LANG", "BUFSIZE",
+            "DLL", "EXPORTALL", "WSCLEAR", "LANGUAGE", "LANG", "BUFSIZE",
             "SIZE", "INITCHECK", "VLR", "SQLCCSID", "SQLIMS", "SERVICE");
 
     /** {@code NUMBER} のように、効いていない理由を暫定判断が書いているもの。 */
     private static final Map<String, String> REASONS = Map.of(
             "ADV", "carriage control is written as blank lines (P-063)",
             "NOADV", "carriage control is written as blank lines (P-063)",
-            "NODYNAM", "every CALL is resolved at run time (P-032)",
             "NUMBER", "DEBUG-LINE is the line counted by this compiler (P-080)",
             "NORENT",
             "working storage is initialised the same way for RENT and NORENT (P-025)");
@@ -103,6 +108,18 @@ final class OptionSupport {
             String value = unquote(option.getValue()).toUpperCase(Locale.ROOT);
             String written = value.isEmpty() ? name : name + "(" + option.getValue() + ")";
             if (EFFECTIVE.contains(name)) {
+                continue;
+            }
+            if (name.equals("NUMCHECK") || name.equals("NONUMCHECK")) {
+                try {
+                    if (name.equals("NUMCHECK")) {
+                        NumCheck.options(value);
+                    } else if (!value.isEmpty()) {
+                        throw new IllegalArgumentException("NONUMCHECK takes no suboptions");
+                    }
+                } catch (IllegalArgumentException invalid) {
+                    diagnostics.add(new Diagnostic(null, invalid.getMessage()));
+                }
                 continue;
             }
             Set<String> implemented = IMPLEMENTED_VALUES.get(name);

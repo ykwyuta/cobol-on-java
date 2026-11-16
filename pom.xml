@@ -30,6 +30,7 @@
     <module>cobol-spring-boot-4-autoconfigure</module>
     <module>cobol-spring-boot-4-bms-thymeleaf</module>
     <module>cobol-oracle</module>
+    <module>cobol-java-source</module>
     <module>cobol-compiler</module>
     <module>pli-compiler</module>
     <module>hlasm-assembler</module>

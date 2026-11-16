@@ -58,6 +58,7 @@ import java.util.function.Supplier;
 public final class ProgramContext {
 
     private final CodePage codePage;
+    private final ThreadLocal<CodePage> programCodePage = new ThreadLocal<>();
     private final OutputStream out;
     private final OutputStream error;
     private final Charset outputCharset;
@@ -90,7 +91,7 @@ public final class ProgramContext {
     /** 照合順序を決めて用意する。{@code null} ならコードページの並びである。 */
     public SortWork sortWork(String name, List<SortKey> keys,
                              dev.cobolonjava.runtime.codepage.CollatingSequence sequence) {
-        SortWork work = new SortWork(keys, codePage, sequence);
+        SortWork work = new SortWork(keys, codePage(), sequence);
         sorts.put(name, work);
         return work;
     }
@@ -413,6 +414,12 @@ public final class ProgramContext {
         return known != null ? known : SequentialDataSet.at(catalog.resolve(ddName));
     }
 
+    /** 宣言にレコード属性のないファイルを、DD の属性で用意して後続の入出力へ引き継ぐ。 */
+    public DataSet openUndeclaredFile(String name, String ddName) {
+        return files.computeIfAbsent(name,
+                key -> allocated(SequentialDataSet.at(catalog.resolve(ddName)), ddName));
+    }
+
     /** そのファイルがまだ用意されていないか。 */
     public boolean neverOpened(String name) {
         return !files.containsKey(name);
@@ -430,7 +437,7 @@ public final class ProgramContext {
     public DataSet file(String name, String ddName, Organization organization,
                         RecordFormat format, int recordLength) {
         return files.computeIfAbsent(name, k -> {
-            DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage);
+            DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage());
             Path path = catalog.resolve(ddName);
             if (organization != Organization.RELATIVE && asciiFiles.contains(name)) {
                 SequentialDataSet file = SequentialDataSet.at(path, declared);
@@ -480,7 +487,7 @@ public final class ProgramContext {
     public DataSet file(String name, String ddName, RecordFormat format, int recordLength,
                         List<IndexedDataSet.Key> keys) {
         return files.computeIfAbsent(name, k -> allocated(IndexedDataSet.at(
-                catalog.resolve(ddName), new DataSetAttributes(format, recordLength, codePage),
+                catalog.resolve(ddName), new DataSetAttributes(format, recordLength, codePage()),
                 keys.get(0), keys.subList(1, keys.size())), ddName));
     }
 
@@ -593,7 +600,7 @@ public final class ProgramContext {
     public static ProgramContext standard() {
         return new ProgramContext(CodePages.DEFAULT, System.out, System.err,
                 Charset.defaultCharset(), new HashMap<>(), Clock.systemDefaultZone(),
-                ProgramContext::readStandardInput, Storage.allocate(SpecialRegisterArea.SIZE),
+                ProgramContext::readStandardInput, SpecialRegisterArea.create(),
                 DataSetCatalog.standard(), new HashMap<>(), LegacyClassNameResolver.INSTANCE,
                 ProcedureHook.NOOP, RuntimeServices.EMPTY);
     }
@@ -602,7 +609,7 @@ public final class ProgramContext {
     public static ProgramContext capturing(ByteArrayOutputStream sink) {
         return new ProgramContext(CodePages.DEFAULT, sink, sink, StandardCharsets.UTF_8,
                 new HashMap<>(), Clock.systemDefaultZone(), ProgramContext::readStandardInput,
-                Storage.allocate(SpecialRegisterArea.SIZE), DataSetCatalog.standard(),
+                SpecialRegisterArea.create(), DataSetCatalog.standard(),
                 new HashMap<>(), LegacyClassNameResolver.INSTANCE, ProcedureHook.NOOP,
                 RuntimeServices.EMPTY);
     }
@@ -650,6 +657,8 @@ public final class ProgramContext {
      * 実行の全体で 1 つ持つのは、種を与えない呼び出しが<b>前の続き</b>を返すためである。
      */
     private java.util.Random random;
+    private static final long ZEUS_RANDOM_SEED_MASK = 0x0005_DEEC_E66DL;
+    private long zeusRandomState = ZEUS_RANDOM_SEED_MASK;
 
     /**
      * {@code CLOSE ... WITH LOCK} で閉じたファイル (要件 FR-102)。
@@ -749,6 +758,15 @@ public final class ProgramContext {
         return random.nextDouble();
     }
 
+    void seedZeusRandom(long seed) {
+        zeusRandomState = seed ^ ZEUS_RANDOM_SEED_MASK;
+    }
+
+    long nextZeusRandomBits() {
+        zeusRandomState = zeusRandomState * 6364136223846793005L + 1442695040888963407L;
+        return Math.max(1L, zeusRandomState >>> 8);
+    }
+
     /**
      * {@code ACCEPT} が読む 1 行。
      *
@@ -843,11 +861,41 @@ public final class ProgramContext {
         });
     }
 
+    private final java.util.Set<String> staticPrograms = new java.util.HashSet<>();
+
+    void retainStatic(String name) {
+        String id = ProgramId.of(name).value();
+        staticPrograms.add(entryOwners.getOrDefault(id, id));
+    }
+
+    void cancel(String name) {
+        String id = ProgramId.of(name).value();
+        if (!staticPrograms.contains(entryOwners.getOrDefault(id, id))) {
+            forget(name);
+        }
+    }
+
     /** 引いたことのある副入口の名前と、その本体の名前。 */
     private final Map<String, String> entryOwners = new java.util.HashMap<>();
 
     public CodePage codePage() {
-        return codePage;
+        CodePage local = programCodePage.get();
+        return local == null ? codePage : local;
+    }
+
+    /** プログラムの翻訳時 CODEPAGE を、同じ実行単位の状態を保ったまま適用する。 */
+    public void runWithCodePage(CodePage value, Runnable action) {
+        CodePage previous = programCodePage.get();
+        programCodePage.set(value);
+        try {
+            action.run();
+        } finally {
+            if (previous == null) {
+                programCodePage.remove();
+            } else {
+                programCodePage.set(previous);
+            }
+        }
     }
 
     /**
@@ -868,7 +916,7 @@ public final class ProgramContext {
      * @param toError 標準エラー出力へ出すかどうか
      */
     public void display(byte[] bytes, boolean advancing, boolean toError) {
-        String text = codePage.decode(bytes) + (advancing ? System.lineSeparator() : "");
+        String text = codePage().decode(bytes) + (advancing ? System.lineSeparator() : "");
         write(text, toError ? error : out);
     }
 

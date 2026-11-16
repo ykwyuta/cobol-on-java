@@ -55,6 +55,7 @@ parser grammar CobolParser;
                 case MOVE: case ADD: case SUBTRACT: case MULTIPLY: case DIVIDE: case COMPUTE:
                 case IF: case CONTINUE: case GO: case EXIT: case PERFORM: case CALL:
                 case CANCEL: case INITIALIZE: case SET: case ACCEPT: case SEARCH: case OPEN:
+                case ALLOCATE: case FREE:
                 case CLOSE: case READ: case WRITE: case REWRITE: case DELETE: case START:
                 case SORT: case MERGE: case RELEASE: case RETURN: case EVALUATE: case STOP:
                 case GOBACK: case INSPECT: case STRING: case UNSTRING: case ALTER:
@@ -152,7 +153,7 @@ tokens {
     IF, THEN, ELSE, END_IF, NEXT, SENTENCE, CONTINUE, GO, EXIT, CYCLE, PARAGRAPH,
     PERFORM, END_PERFORM, UNTIL, VARYING, WITH, TEST, BEFORE, AFTER,
     UPON, NO, ADVANCING, USING, REFERENCE, CONTENT, LINES, PAGE,
-    CALL, END_CALL, CANCEL, EXCEPTION, RETURNING,
+    CALL, END_CALL, CANCEL, EXCEPTION, RETURNING, ALLOCATE, FREE, INITIALIZED,
     INITIALIZE, DEFAULT, SET, ALPHABETIC, ALPHANUMERIC, ALPHANUMERIC_EDITED, NUMERIC,
     NUMERIC_EDITED, NATIONAL_EDITED, ALPHABETIC_LOWER, ALPHABETIC_UPPER, CLASS, SYMBOLIC,
     ACCEPT, DATE, DAY, DAY_OF_WEEK, TIME, YYYYMMDD, YYYYDDD,
@@ -183,10 +184,10 @@ tokens {
     SIGN, LEADING, TRAILING, SEPARATE, CHARACTER,
     JUSTIFIED, JUST, RIGHT, LEFT,
     BLANK, WHEN, SYNCHRONIZED, SYNC,
-    GLOBAL, EXTERNAL, GROUP_USAGE,
+    GLOBAL, EXTERNAL, GROUP_USAGE, VOLATILE,
 
     // 用途
-    DISPLAY, DISPLAY_1, BINARY, NATIONAL, DBCS, EGCS, INDEX, POINTER, PACKED_DECIMAL,
+    DISPLAY, DISPLAY_1, BINARY, NATIONAL, DBCS, EGCS, INDEX, POINTER, PACKED_DECIMAL, UTF_8, BYTE_LENGTH,
     PROCEDURE_POINTER, FUNCTION_POINTER,
     COMP, COMP_1, COMP_2, COMP_3, COMP_4, COMP_5,
     COMPUTATIONAL, COMPUTATIONAL_1, COMPUTATIONAL_2, COMPUTATIONAL_3,
@@ -631,6 +632,17 @@ dataClause
     | synchronizedClause
     | globalClause
     | externalClause
+    | VOLATILE
+    | BYTE_LENGTH IS? NUMBER
+    | dynamicClause
+    ;
+
+dynamicClause
+    : DYNAMIC lengthKeyword? (LIMIT IS? NUMBER)?
+    ;
+
+lengthKeyword
+    : {"LENGTH".equalsIgnoreCase(_input.LT(1).getText())}? IDENTIFIER
     ;
 
 redefinesClause
@@ -662,6 +674,7 @@ usageName
     | PROCEDURE_POINTER
     | FUNCTION_POINTER
     | PACKED_DECIMAL
+    | UTF_8
     | COMP | COMPUTATIONAL
     | COMP_1 | COMPUTATIONAL_1
     | COMP_2 | COMPUTATIONAL_2
@@ -891,6 +904,8 @@ statement
     | cancelStatement
     | initializeStatement
     | setStatement
+    | allocateStatement
+    | freeStatement
     | acceptStatement
     | searchStatement
     | openStatement
@@ -1474,6 +1489,14 @@ cancelStatement
     : CANCEL callTarget+
     ;
 
+allocateStatement
+    : ALLOCATE (expression CHARACTERS | identifier) INITIALIZED? (RETURNING identifier)?
+    ;
+
+freeStatement
+    : FREE identifier+
+    ;
+
 // GO TO は段落の途中から別の段落へ飛ぶ。PERFORM と違い、戻ってこない
 // ALTER は GO TO だけを書いた段落の飛び先を、実行時に書き換える (要件 FR-063)
 alterStatement
@@ -1619,6 +1642,7 @@ functionCall
     // TRIM は引数のあとに LEADING / TRAILING を書いて、削る側を選べる
     : FUNCTION functionName
       (LPAREN expression (COMMA? expression)* (LEADING | TRAILING)? RPAREN)?
+      referenceModifier?
     ;
 
 // 予約語と綴りが同じ関数名は、ここに並べて拾う
@@ -1628,6 +1652,8 @@ functionName
     | DATE
     | DAY
     | SUM
+    | SIGN
+    | BYTE_LENGTH
     ;
 
 // GIVING がなければ受取項目になるため、ROUNDED を書ける

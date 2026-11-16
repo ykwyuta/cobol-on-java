@@ -229,6 +229,10 @@ public final class AddressSpace {
         return out;
     }
 
+    void requireRange(int address, int length) {
+        regionOf(address, length);
+    }
+
     public void write(int address, byte[] bytes) {
         Region region = regionOf(address, bytes.length);
         System.arraycopy(bytes, 0, region.bytes(), address - region.base(), bytes.length);

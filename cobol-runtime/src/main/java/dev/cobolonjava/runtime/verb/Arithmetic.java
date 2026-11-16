@@ -50,7 +50,9 @@ public final class Arithmetic {
     public static boolean storeChecked(NumericItem target, DataView view, Decimal value,
                                        CobolRounding rounding) {
         Decimal rounded = value.rescale(target.picture().scale(), rounding);
-        if (!target.fits(rounded)) {
+        // BINARY の SIZE ERROR は TRUNC(BIN) でも PICTURE の桁数で判定する。
+        // 通常格納と相対キーの範囲検査は NumericItem の記憶域幅を引き続き使う。
+        if (!rounded.fitsInDigits(target.picture().digits(), target.picture().scale())) {
             return true;
         }
         target.store(view, rounded);

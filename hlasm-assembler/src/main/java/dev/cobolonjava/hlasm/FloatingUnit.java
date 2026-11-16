@@ -6,6 +6,7 @@ import dev.cobolonjava.hlasm.FloatingPoint.Encoded;
 import dev.cobolonjava.hlasm.FloatingPoint.Finite;
 import dev.cobolonjava.hlasm.FloatingPoint.HexResult;
 import dev.cobolonjava.hlasm.FloatingPoint.Infinity;
+import dev.cobolonjava.hlasm.FloatingPoint.NotANumber;
 import dev.cobolonjava.hlasm.FloatingPoint.Radix;
 import dev.cobolonjava.hlasm.FloatingPoint.Ratio;
 import dev.cobolonjava.hlasm.FloatingPoint.Rounding;
@@ -21,7 +22,7 @@ import java.math.BigInteger;
  * {@code hlasm/execute/floating/} から移した。<b>実機とも Hercules とも突き合わせていない。</b>
  *
  * <p>持たないものは断る。IEEE の割り込みを許したとき (FPC のマスク) の振る舞い、NaN と
- * 無限大の演算、短形式と拡張形式の HFP の演算である。値を作れないのに近い値を返すと、
+ * 無限大を含む一部の IEEE 演算である。値を作れないのに近い値を返すと、
  * 計算の結果が黙って変わる。
  */
 final class FloatingUnit {
@@ -84,11 +85,26 @@ final class FloatingUnit {
     void registerRegister(byte[] insn) {
         int r1 = (insn[1] >> 4) & 0x0F;
         int r2 = insn[1] & 0x0F;
-        switch (insn[0] & 0xFF) {
-            case 0x28 -> registers[r1] = registers[r2]; // LDR
-            case 0x38 -> write(r1, 4, read(r2, 4)); // LER
-            default -> hexadecimal((insn[0] & 0x0F) | 0x60, r1, unsigned(registers[r2]));
+        int opcode = insn[0] & 0xFF;
+        switch (opcode) {
+            case 0x26 -> {
+                hexMultiply(r1, read(r2, 16), 16, 16);
+                return;
+            }
+            case 0x27 -> {
+                hexMultiply(r1, read(r2, 8), 8, 16);
+                return;
+            }
+            case 0x36, 0x37 -> {
+                hexadecimal(opcode == 0x36 ? 0xA : 0xB, 16, r1, read(r2, 16));
+                return;
+            }
+            default -> { }
         }
+        int width = opcode < 0x30 ? 8 : 4;
+        int operation = opcode & 0x0F;
+        int sourceWidth = operation == 5 ? width * 2 : width;
+        hexadecimal(operation, width, r1, read(r2, sourceWidth));
     }
 
     /** RX 形式。{@code address} は第 2 演算項の番地。 */
@@ -96,58 +112,108 @@ final class FloatingUnit {
         int r1 = (insn[1] >> 4) & 0x0F;
         AddressSpace memory = cpu.memory();
         switch (insn[0] & 0xFF) {
+            case 0x67 -> hexMultiply(r1, unsigned(memory.getLong(address)), 8, 16); // MXD
             case 0x68 -> registers[r1] = memory.getLong(address); // LD
             case 0x78 -> write(r1, 4, BigInteger.valueOf(memory.getInt(address) & 0xFFFFFFFFL)); // LE
             case 0x60 -> memory.putLong(address, registers[r1]); // STD
             case 0x70 -> memory.putInt(address, (int) (registers[r1] >>> 32)); // STE
-            default -> hexadecimal(insn[0] & 0xFF, r1, unsigned(memory.getLong(address)));
+            default -> {
+                int opcode = insn[0] & 0xFF;
+                int width = opcode < 0x70 ? 8 : 4;
+                BigInteger source = width == 8 ? unsigned(memory.getLong(address))
+                        : BigInteger.valueOf(Integer.toUnsignedLong(memory.getInt(address)));
+                hexadecimal(opcode & 0x0F, width, r1, source);
+            }
         }
     }
 
-    /**
-     * 長形式の HFP の演算。{@code operation} は RX 形式の命令コードで表す
-     * (69: 比較、6A: 加算、6B: 減算、6C: 乗算、6D: 除算)。
-     */
-    private void hexadecimal(int operation, int r1, BigInteger second) {
-        BigInteger first = read(r1, 8);
-        Ratio a = FloatingPoint.decodeHex(first, 8);
-        Ratio b = FloatingPoint.decodeHex(second, 8);
+    private void hexadecimal(int operation, int width, int r1, BigInteger second) {
+        if (operation <= 3) {
+            int signBit = width * 8 - 1;
+            BigInteger raw = switch (operation) {
+                case 0 -> second.clearBit(signBit);
+                case 1 -> second.setBit(signBit);
+                case 3 -> second.flipBit(signBit);
+                default -> second;
+            };
+            write(r1, width, raw);
+            cpu.setConditionCode(signOf(FloatingPoint.decodeHex(raw, width)));
+            return;
+        }
+        if (operation == 8) {
+            write(r1, width, second);
+            return;
+        }
+        if (operation == 5) {
+            storeHex(r1, FloatingPoint.decodeHex(second, width * 2), width,
+                    FloatingPoint.hexExponent(second, width * 2), Rounding.NEAREST_AWAY);
+            return;
+        }
+        BigInteger first = read(r1, width);
+        Ratio a = FloatingPoint.decodeHex(first, width);
+        Ratio b = FloatingPoint.decodeHex(second, width);
         Ratio result;
+        Integer exponent = null;
+        boolean addSubtract = false;
         switch (operation) {
-            case 0x69 -> {
+            case 4 -> result = b.divide(Ratio.binary(false, BigInteger.TWO, 0)); // HER/HDR
+            case 9 -> {
                 cpu.setConditionCode(compare(a, b));
                 return;
             }
-            case 0x6A, 0x6B -> {
-                if (operation == 0x6B) {
+            case 0xA, 0xB, 0xE, 0xF -> {
+                addSubtract = true;
+                if ((operation & 1) != 0) {
                     b = b.negate();
                 }
-                int exponent = Math.max(FloatingPoint.hexExponent(first, 8),
-                        FloatingPoint.hexExponent(second, 8));
-                result = a.addWithHexGuard(b, exponent, 56);
+                int alignedExponent = Math.max(FloatingPoint.hexExponent(first, width),
+                        FloatingPoint.hexExponent(second, width));
+                result = a.addWithHexGuard(b, alignedExponent, FloatingPoint.hexPrecision(width));
+                if (operation >= 0xE) exponent = alignedExponent;
+                if (result.isZero() && (cpu.programMask() & 1) != 0) {
+                    write(r1, width, FloatingPoint.hexRaw(false, BigInteger.ZERO, alignedExponent, width));
+                    cpu.setConditionCode(0);
+                    throw new MachineException(MachineException.HFP_SIGNIFICANCE, "HFP significance exception");
+                }
             }
-            case 0x6C -> result = a.multiply(b);
-            case 0x6D -> {
+            case 0xC -> {
+                hexMultiply(r1, second, width, 8);
+                return;
+            }
+            case 0xD -> {
                 if (b.isZero()) {
-                    throw new MachineException(MachineException.DATA, "HFP divide by zero");
+                    throw new MachineException(MachineException.HFP_DIVIDE, "HFP divide by zero");
                 }
                 result = a.divide(b);
             }
             default -> throw new MachineException(MachineException.OPERATION,
                     String.format("operation code %02X is not implemented", operation));
         }
-        storeHex(r1, result);
-        if (operation == 0x6A || operation == 0x6B) {
-            cpu.setConditionCode(signOf(FloatingPoint.decodeHex(read(r1, 8), 8)));
+        storeHex(r1, result, width, exponent, Rounding.ZERO);
+        if (addSubtract) {
+            cpu.setConditionCode(signOf(FloatingPoint.decodeHex(read(r1, width), width)));
         }
     }
 
+    private void hexMultiply(int register, BigInteger second, int width, int destination) {
+        if (destination == 16) pair(register);
+        Ratio left = FloatingPoint.decodeHex(read(register, width), width);
+        Ratio right = FloatingPoint.decodeHex(second, width);
+        storeHex(register, left.multiply(right), destination, null, Rounding.ZERO);
+    }
+
     private void storeHex(int r1, Ratio result) {
-        HexResult packed = FloatingPoint.packHex(result, 8, null, Rounding.ZERO,
+        storeHex(r1, result, 8, null, Rounding.ZERO);
+    }
+
+    private void storeHex(int r1, Ratio result, int width, Integer exponent, Rounding rounding) {
+        HexResult packed = FloatingPoint.packHex(result, width, exponent, rounding,
                 (cpu.programMask() & 2) != 0);
-        write(r1, 8, packed.raw());
+        write(r1, width, packed.raw());
         if (packed.exception() != null) {
-            throw new MachineException(MachineException.DATA, packed.exception());
+            int code = packed.exception().endsWith("underflow")
+                    ? MachineException.HFP_EXPONENT_UNDERFLOW : MachineException.HFP_EXPONENT_OVERFLOW;
+            throw new MachineException(code, packed.exception());
         }
     }
 
@@ -181,6 +247,9 @@ final class FloatingUnit {
             }
             case 0x9C -> cpu.memory().putInt(address, control); // STFPC
             case 0x9D -> setControl(cpu.memory().getInt(address)); // LFPC
+            case 0x99 -> control = (control & ~7) | (address & 3); // SRNM
+            case 0xB8 -> setControl((control & ~7) | (address & 7)); // SRNMB
+            case 0xB9 -> control = (control & ~0x70) | ((address & 7) << 4); // SRNMT
             default -> {
                 return false;
             }
@@ -203,6 +272,7 @@ final class FloatingUnit {
         int r3 = (insn[2] >> 4) & 0x0F;
         int operation = insn[1] & 0xFF;
         switch (operation) {
+            case 0x65 -> write(r1, 16, read(r2, 16)); // LXR
             case 0x84 -> setControl(cpu.register(r1)); // SFPC
             case 0x8C -> cpu.setRegister(r1, control); // EFPC
             case 0x1A, 0x1B, 0x1C, 0x1D, 0x15, 0x19 -> binary(operation, r1, r2);
@@ -230,22 +300,107 @@ final class FloatingUnit {
 
     /** 長形式の BFP。1A: 加算、1B: 減算、1C: 乗算、1D: 除算、15: 平方根、19: 比較。 */
     private void binary(int operation, int r1, int r2) {
+        binary(operation, r1, read(r2, 8), 8);
+    }
+
+    /** RXE / RXF の BFP はレジスター形式と同じ丸め・例外処理を使う。 */
+    void binaryStorage(byte[] insn, int address) {
+        int operation = insn[5] & 0xFF;
+        int source = (insn[1] >>> 4) & 0xF;
+        if (operation >= 0x50 && operation <= 0x59 && (operation & 2) == 0) {
+            int width = 4 << ((operation - 0x50) >>> 2);
+            int mask = FloatingPoint.decimalClassMask(read(source, width), width, (operation & 1) != 0);
+            cpu.setConditionCode((mask & address) != 0 ? 1 : 0);
+            return;
+        }
+        if (operation >= 0x10 && operation <= 0x12) {
+            int width = 4 << (operation - 0x10);
+            int mask = FloatingPoint.binaryClassMask(read(source, width), width);
+            cpu.setConditionCode((mask & address) != 0 ? 1 : 0);
+            return;
+        }
+        int width = switch (operation) {
+            case 0x05, 0x07, 0x15, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F -> 8;
+            default -> 4;
+        };
+        var memory = cpu.memory();
+        BigInteger operand = width == 4 ? BigInteger.valueOf(Integer.toUnsignedLong(memory.getInt(address)))
+                : unsigned(memory.getLong(address));
+        switch (operation) {
+            case 0x04, 0x05, 0x06, 0x07, 0x0C -> {
+                binaryWiden(source, operand, width, (operation == 0x04 || operation == 0x0C) ? 8 : 16,
+                        operation == 0x07 || operation == 0x0C);
+                return;
+            }
+            default -> { }
+        }
+        int normalized = switch (operation) {
+            case 0x08, 0x09, 0x18, 0x19 -> 0x19;
+            case 0x0A, 0x1A -> 0x1A;
+            case 0x0B, 0x1B -> 0x1B;
+            case 0x17, 0x1C -> 0x1C;
+            case 0x0D, 0x1D -> 0x1D;
+            case 0x14, 0x15 -> 0x15;
+            case 0x0E, 0x0F, 0x1E, 0x1F -> operation;
+            default -> throw new MachineException(MachineException.OPERATION,
+                    String.format("operation code ED%02X is not implemented", operation));
+        };
+        if (normalized == 0x19) {
+            boolean signal = operation == 0x08 || operation == 0x18;
+            compareBinary(FloatingPoint.decodeBinary(read(source, width), width),
+                    FloatingPoint.decodeBinary(operand, width), signal);
+        } else if (normalized == 0x0E || normalized == 0x0F
+                || normalized == 0x1E || normalized == 0x1F) {
+            int destination = (insn[4] >>> 4) & 0xF;
+            Rounding mode = FloatingPoint.binaryRounding(control);
+            Ratio product = finite(FloatingPoint.decodeBinary(read(source, width), width))
+                    .multiply(finite(FloatingPoint.decodeBinary(operand, width)));
+            Ratio accumulator = finite(FloatingPoint.decodeBinary(read(destination, width), width));
+            Encoded result = FloatingPoint.encodeBinary(product.add(
+                    (operation & 1) == 0 ? accumulator : accumulator.negate(),
+                    mode == Rounding.NEGATIVE), width, mode);
+            write(destination, width, result.raw());
+            raise(result.flags());
+        } else {
+            binary(normalized, source, operand, width);
+        }
+    }
+
+    private void binaryWiden(int register, BigInteger operand, int width, int destination,
+                             boolean multiply) {
+        if (destination == 16) pair(register);
+        Value source = FloatingPoint.decodeBinary(operand, width);
+        if (!multiply && source instanceof Infinity infinity) {
+            write(register, destination, FloatingPoint.binaryInfinity(infinity.negative(), destination));
+            return;
+        }
+        Ratio result = finite(source);
+        if (multiply) {
+            result = finite(FloatingPoint.decodeBinary(read(register, width), width)).multiply(result);
+        }
+        Encoded encoded = FloatingPoint.encodeBinary(result, destination, FloatingPoint.binaryRounding(control));
+        write(register, destination, encoded.raw());
+        raise(encoded.flags());
+    }
+
+    private void binary(int operation, int r1, BigInteger operand, int width) {
         Rounding mode = FloatingPoint.binaryRounding(control);
-        Ratio b = finite(FloatingPoint.decodeBinary(read(r2, 8), 8));
+        Value second = FloatingPoint.decodeBinary(operand, width);
+        if (operation == 0x19) {
+            compareBinary(FloatingPoint.decodeBinary(read(r1, width), width), second, false);
+            return;
+        }
+        Ratio b = finite(second);
         if (operation == 0x15) {
             if (b.negative() && !b.isZero()) {
                 throw unsupported("the BFP square root of a negative value");
             }
-            Encoded root = FloatingPoint.squareRootBinary(b, 8, mode);
-            write(r1, 8, root.raw());
+            Encoded root = FloatingPoint.squareRootBinary(b, width, mode);
+            write(r1, width, root.raw());
             raise(root.flags());
             return;
         }
-        Ratio a = finite(FloatingPoint.decodeBinary(read(r1, 8), 8));
-        if (operation == 0x19) {
-            cpu.setConditionCode(compare(a, b));
-            return;
-        }
+        Ratio a = finite(FloatingPoint.decodeBinary(read(r1, width), width));
         Ratio result = switch (operation) {
             case 0x1A -> a.add(b, mode == Rounding.NEGATIVE);
             case 0x1B -> a.add(b.negate(), mode == Rounding.NEGATIVE);
@@ -257,11 +412,30 @@ final class FloatingUnit {
                 yield a.divide(b);
             }
         };
-        Encoded encoded = FloatingPoint.encodeBinary(result, 8, mode);
-        write(r1, 8, encoded.raw());
+        Encoded encoded = FloatingPoint.encodeBinary(result, width, mode);
+        write(r1, width, encoded.raw());
         raise(encoded.flags());
         if (operation == 0x1A || operation == 0x1B) {
             cpu.setConditionCode(signOf(result));
+        }
+    }
+
+    private void compareBinary(Value left, Value right, boolean signal) {
+        if (left instanceof NotANumber || right instanceof NotANumber) {
+            boolean signaling = (left instanceof NotANumber a && a.signaling())
+                    || (right instanceof NotANumber b && b.signaling());
+            if (signal || signaling) {
+                raise(FloatingPoint.INVALID);
+            }
+            cpu.setConditionCode(3);
+        } else if (left instanceof Infinity a && right instanceof Infinity b) {
+            cpu.setConditionCode(a.negative() == b.negative() ? 0 : a.negative() ? 1 : 2);
+        } else if (left instanceof Infinity a) {
+            cpu.setConditionCode(a.negative() ? 1 : 2);
+        } else if (right instanceof Infinity b) {
+            cpu.setConditionCode(b.negative() ? 2 : 1);
+        } else {
+            cpu.setConditionCode(compare(finite(left), finite(right)));
         }
     }
 

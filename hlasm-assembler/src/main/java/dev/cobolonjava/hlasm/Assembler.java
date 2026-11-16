@@ -27,6 +27,7 @@ public final class Assembler implements Constants.Scope {
 
     private final String fileName;
     private final CodePage codePage;
+    private boolean dbcs;
     private final List<Diagnostic> diagnostics = new ArrayList<>();
     private final Map<String, Symbol> symbols = new LinkedHashMap<>();
     private final Map<String, Section> sections = new LinkedHashMap<>();
@@ -88,6 +89,11 @@ public final class Assembler implements Constants.Scope {
         return codePage;
     }
 
+    @Override
+    public boolean graphicConstants() {
+        return dbcs;
+    }
+
     /** 組み立ての結果。診断があれば機械語は作らない。 */
     public record Result(ObjectModule module, List<Diagnostic> diagnostics) {
 
@@ -109,12 +115,17 @@ public final class Assembler implements Constants.Scope {
         return assemble(fileName, source, codePage, SourceLibrary.empty());
     }
 
+    static Result assemble(String fileName, String source, CodePage codePage, SourceLibrary library) {
+        return assemble(fileName, source, codePage, library, 0, "");
+    }
+
     static Result assemble(String fileName, String source, CodePage codePage,
-                           SourceLibrary library) {
+                           SourceLibrary library, int libraryLines, String objectName) {
         Assembler assembler = new Assembler(fileName, codePage);
         try {
             MacroProcessor.Expansion expansion = MacroProcessor.expand(
-                    HlasmReader.read(source), codePage, fileName, library);
+                    HlasmReader.read(source), codePage, fileName, library, libraryLines, objectName);
+            assembler.dbcs = expansion.dbcs();
             assembler.diagnostics.addAll(expansion.diagnostics());
             List<Statement> statements = expansion.statements();
             assembler.pass(statements, false);
@@ -207,6 +218,7 @@ public final class Assembler implements Constants.Scope {
             case "USING" -> using(statement);
             case "DROP" -> drop(statement);
             case "DC" -> constants(statement, true);
+            case "CCW", "CCW0", "CCW1" -> channelCommandWord(statement);
             case "DS" -> constants(statement, false);
             case "EQU" -> equate(statement);
             case "ORG" -> org(statement);
@@ -236,7 +248,8 @@ public final class Assembler implements Constants.Scope {
             case "POST" -> post(statement);
             case "LINK" -> link(statement);
             case "GET" -> getPut(statement, SVC_GET);
-            case "COM", "RSECT", "COPY", "ICTL" ->
+            case "ICTL" -> { } // HlasmReader が適用済み
+            case "COM", "RSECT", "COPY" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
@@ -359,6 +372,23 @@ public final class Assembler implements Constants.Scope {
             throw new AssemblyException(statement.line(),
                     statement.operation() + " requires at least one operand");
         }
+    }
+
+    /** CCW の 2 形式は既存の番地定数の再配置で表現する (Zeus hlasm/macros.rs)。 */
+    private void channelCommandWord(Statement statement) {
+        List<String> operands = statement.operandList();
+        require(operands, 4, statement);
+        boolean formatOne = statement.operation().equals("CCW1");
+        String command = operands.get(0);
+        String address = operands.get(1);
+        String flags = operands.get(2);
+        String count = operands.get(3);
+        align(requireSection(statement.line()), 8);
+        defineLabel(statement, 8);
+        String data = formatOne
+                ? "AL1(" + command + "),AL1(" + flags + "),AL2(" + count + "),AL4(" + address + ")"
+                : "AL1(" + command + "),AL3(" + address + "),AL1(" + flags + "),AL1(0),AL2(" + count + ")";
+        constants(new Statement(null, "DC", data, statement.line()), true);
     }
 
     private void emitRepeated(Section section, Constants.Piece piece, Statement statement) {
@@ -994,6 +1024,10 @@ public final class Assembler implements Constants.Scope {
                 if (definition.opcode() == 0x1C || definition.opcode() == 0x1D) {
                     evenRegister(operands.get(0), line);
                 }
+                if (definition.opcode() == 0x0E || definition.opcode() == 0x0F) {
+                    evenRegister(operands.get(0), line);
+                    evenRegister(operands.get(1), line);
+                }
                 yield rr(definition.opcode(), register(operands.get(0), line),
                         register(operands.get(1), line));
             }
@@ -1061,8 +1095,10 @@ public final class Assembler implements Constants.Scope {
                 Addr second = address(operands.get(1), false, false, line);
                 int length = first.length() == null ? lengthAttributeOf(operands.get(0))
                         : first.length();
-                yield ss(definition.opcode(),
-                        checkRange(length, 1, 256, line, "the length") - 1, first, second);
+                // EX が長さ欄を補うよう、明示の長さ 0 は全ビットを 0 にする。
+                int encoded = first.length() != null && length == 0 ? 0
+                        : checkRange(length, 1, 256, line, "the length") - 1;
+                yield ss(definition.opcode(), encoded, first, second);
             }
             case SS_B -> {
                 require(operands, 2, statement);
@@ -1094,24 +1130,64 @@ public final class Assembler implements Constants.Scope {
                         (byte) (register(operands.get(0), line) << 4
                                 | register(operands.get(1), line))};
             }
+            case RRF_MASK, RRF_SELECT -> {
+                boolean select = definition.format() == Instructions.Format.RRF_SELECT;
+                require(operands, select ? 4 : 3, statement);
+                int mask = checkRange(absolute(operands.getLast(), line), 0, 15, line, "the mask");
+                int third = select ? register(operands.get(2), line) << 4 | mask : mask << 4;
+                yield new byte[] {(byte) (definition.opcode() >>> 8), (byte) definition.opcode(),
+                        (byte) third, (byte) (register(operands.getFirst(), line) << 4
+                                | register(operands.get(1), line))};
+            }
             case RI -> {
                 require(operands, 2, statement);
                 // 符号つきの 16 ビットである。32768 は入らない (以前は 65535 まで通していた)
-                int immediate = checkRange(absolute(operands.get(1), line), -32768, 32767, line,
+                boolean unsigned = (definition.opcode() >>> 8) == 0xA5
+                        || (definition.opcode() & 0xFFFC) == 0xA700;
+                int immediate = checkRange(absolute(operands.get(1), line),
+                        unsigned ? 0 : -32768, unsigned ? 65535 : 32767, line,
                         "the immediate operand");
                 yield new byte[] {(byte) (definition.opcode() >> 8),
                         (byte) (register(operands.get(0), line) << 4
                                 | (definition.opcode() & 0x0F)),
                         (byte) (immediate >> 8), (byte) immediate};
             }
+            case REL16, REL32 -> {
+                require(operands, 2, statement);
+                int first = register(operands.getFirst(), line);
+                int displacement = relativeDisplacement(operands.getLast(), line);
+                int opcode = definition.opcode();
+                byte prefix = (byte) (opcode >>> 8);
+                byte second = (byte) (first << 4 | (opcode & 0xF));
+                if (definition.format() == Instructions.Format.REL16) {
+                    checkRange(displacement, Short.MIN_VALUE, Short.MAX_VALUE, line,
+                            "the relative displacement");
+                    yield new byte[] {prefix, second, (byte) (displacement >> 8), (byte) displacement};
+                }
+                yield new byte[] {prefix, second, (byte) (displacement >> 24),
+                        (byte) (displacement >> 16), (byte) (displacement >> 8), (byte) displacement};
+            }
             case RIL -> {
                 require(operands, 2, statement);
-                int immediate = absolute(operands.get(1), line);
+                int immediate;
+                if (definition.opcode() == 0xC000) {
+                    immediate = relativeDisplacement(operands.get(1), line);
+                } else {
+                    immediate = absolute(operands.get(1), line);
+                }
                 yield new byte[] {(byte) (definition.opcode() >> 8),
                         (byte) (register(operands.get(0), line) << 4
                                 | (definition.opcode() & 0x0F)),
                         (byte) (immediate >> 24), (byte) (immediate >> 16),
                         (byte) (immediate >> 8), (byte) immediate};
+            }
+            case SIY -> {
+                require(operands, 2, statement);
+                int immediate = checkRange(absolute(operands.get(1), line), 0, 255, line,
+                        "the immediate operand");
+                byte[] encoded = longForm(definition.opcode(), 0, operands.get(0), false, line, 0);
+                encoded[1] = (byte) immediate;
+                yield encoded;
             }
             case RXY -> {
                 require(operands, 2, statement);
@@ -1141,6 +1217,30 @@ public final class Assembler implements Constants.Scope {
                                 "the end bit"),
                         (byte) i5, (byte) definition.opcode()};
             }
+            case RSY_MASK -> {
+                require(operands, 3, statement);
+                int mask = checkRange(absolute(operands.getLast(), line), 0, 15, line, "the mask");
+                yield longForm(definition.opcode(), register(operands.getFirst(), line),
+                        operands.get(1), false, line, mask);
+            }
+            case RIE_COND -> {
+                require(operands, 3, statement);
+                int mask = checkRange(absolute(operands.getLast(), line), 0, 15, line, "the mask");
+                int immediate = checkRange(absolute(operands.get(1), line), Short.MIN_VALUE,
+                        Short.MAX_VALUE, line, "the immediate operand");
+                yield new byte[] {(byte) 0xEC, (byte) (register(operands.getFirst(), line) << 4 | mask),
+                        (byte) (immediate >> 8), (byte) immediate, 0, (byte) definition.opcode()};
+            }
+            case RXE, RXF -> {
+                boolean fused = definition.format() == Instructions.Format.RXF;
+                require(operands, fused ? 3 : 2, statement);
+                int destination = register(operands.getFirst(), line);
+                int source = fused ? register(operands.get(1), line) : destination;
+                Addr address = address(operands.getLast(), true, false, line);
+                byte[] prefix = rx(definition.opcode() >>> 8, source, address);
+                yield new byte[] {prefix[0], prefix[1], prefix[2], prefix[3],
+                        (byte) (fused ? destination << 4 : 0), (byte) definition.opcode()};
+            }
             case RSL -> {
                 require(operands, 1, statement);
                 Addr first = address(operands.get(0), false, true, line);
@@ -1154,9 +1254,25 @@ public final class Assembler implements Constants.Scope {
             case S -> {
                 require(operands, 1, statement);
                 Addr address = address(operands.get(0), false, false, line);
-                yield new byte[] {(byte) (definition.opcode() >> 8), (byte) definition.opcode(),
+                int opcode = definition.opcode();
+                int prefix = opcode <= 0xFF ? opcode << 8 : opcode;
+                yield new byte[] {(byte) (prefix >> 8), (byte) prefix,
                         (byte) (address.base() << 4 | address.displacement() >> 8),
                         (byte) address.displacement()};
+            }
+            case SSF -> {
+                require(operands, 3, statement);
+                if (definition.opcode() == 0xC802) {
+                    Addr first = address(operands.get(0), false, false, line);
+                    Addr second = address(operands.get(1), false, false, line);
+                    yield ss(0xC8, register(operands.get(2), line) << 4 | 2, first, second);
+                }
+                evenRegister(operands.getFirst(), line);
+                Addr first = address(operands.get(1), false, false, line);
+                Addr second = address(operands.get(2), false, false, line);
+                yield ss(definition.opcode() >>> 8,
+                        register(operands.getFirst(), line) << 4 | (definition.opcode() & 0xF),
+                        first, second);
             }
             case E -> {
                 require(operands, 0, statement);
@@ -1202,6 +1318,18 @@ public final class Assembler implements Constants.Scope {
 
     private static byte[] rr(int opcode, int first, int second) {
         return new byte[] {(byte) opcode, (byte) (first << 4 | second)};
+    }
+
+    private int relativeDisplacement(String operand, int line) {
+        Value target = evaluate(operand, line);
+        if (target.isAbsolute() || !current.name.equals(target.section())) {
+            throw new AssemblyException(line, "a relative target must be in the current section");
+        }
+        long displacement = (long) target.value() - current.location;
+        if ((displacement & 1) != 0) {
+            throw new AssemblyException(line, "a relative target must be on a halfword boundary");
+        }
+        return (int) (displacement / 2);
     }
 
     private static byte[] rx(int opcode, int first, Addr address) {

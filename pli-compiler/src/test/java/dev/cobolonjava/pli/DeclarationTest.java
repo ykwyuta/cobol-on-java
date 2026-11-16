@@ -55,6 +55,16 @@ class DeclarationTest {
     }
 
     @Test
+    void validValueUsesEachDeclaredTypeWithoutChangingTheVariable() throws Exception {
+        assertEquals("ABC\n", main("""
+                DCL (A, B) CHAR(3) VALUELIST('ABC', 'DEF');
+                A = 'ABC';
+                IF VALIDVALUE(A) & VALIDVALUE(B, 'DEFG') & ^VALIDVALUE(B) THEN
+                  PUT SKIP LIST(A);
+                """));
+    }
+
+    @Test
     @DisplayName("INIT の負の数は負のまま入る (以前は 0 になっていた)")
     void negativeInitialValues() throws Exception {
         // FIXED BIN(31) は幅 14、FIXED DEC(5) は幅 8 の欄に右寄せ
@@ -449,6 +459,16 @@ class DeclarationTest {
                 DCL G GRAPHIC(3);
                 W = 'AB'; G = 'AB';
                 PUT SKIP LIST(HEX(UNSPEC(W)), HEX(UNSPEC(G)));
+                """).strip().split("\\s+")));
+    }
+
+    @Test
+    @DisplayName("RANK は WIDECHAR をコードページ変換せずに読む")
+    void rankOfWideCharacter() throws Exception {
+        assertEquals("4660 193", String.join(" ", main("""
+                DCL W WIDECHAR(1);
+                W = WCHARVAL(4660);
+                PUT SKIP LIST(RANK(W), RANK('A'));
                 """).strip().split("\\s+")));
     }
 }

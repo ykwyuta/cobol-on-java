@@ -9,6 +9,7 @@ import dev.cobolonjava.hlasm.HlasmCompiler;
 import dev.cobolonjava.hlasm.SourceLibrary;
 import dev.cobolonjava.pli.PliBuild;
 import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
+import dev.cobolonjava.source.ProgramOutput;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -41,6 +42,12 @@ final class ProgramBuild {
     static void run(SourceLayout layout, Path output, boolean freeFormat,
                     CompilerOptions compilerOptions, Report report)
             throws IOException, BuildFailure {
+        run(layout, output, freeFormat, compilerOptions, ProgramOutput.CLASS, report);
+    }
+
+    static void run(SourceLayout layout, Path output, boolean freeFormat,
+                    CompilerOptions compilerOptions, ProgramOutput format, Report report)
+            throws IOException, BuildFailure {
         List<Path> cobol = layout.cobolSources();
         List<Path> pli = layout.pliSources();
         List<Path> hlasm = layout.hlasmSources();
@@ -50,7 +57,7 @@ final class ProgramBuild {
         List<DeployCatalogManifest> catalogs = new ArrayList<>();
         if (!cobol.isEmpty()) {
             CobolBuild.Result result = CobolBuild.run(new CobolBuild.Request(cobol, output,
-                    layout.copybookSearchPath(), freeFormat, compilerOptions),
+                    layout.copybookSearchPath(), freeFormat, compilerOptions), format,
                     (source, diagnostic) -> report(diagnostic, report));
             report.info("COBOL: " + result.programIds().size() + " program(s) from "
                     + cobol.size() + " source(s)");
@@ -59,7 +66,7 @@ final class ProgramBuild {
         }
         if (!pli.isEmpty()) {
             PliBuild.Result result = PliBuild.run(new PliBuild.Request(pli, output,
-                    layout.pliIncludeSearchPath()), diagnostic -> {
+                    layout.pliIncludeSearchPath()), format, diagnostic -> {
                         if (diagnostic.severity() == dev.cobolonjava.pli.Diagnostic.Severity.ERROR) {
                             report.error(diagnostic.toString());
                         } else {
@@ -85,7 +92,7 @@ final class ProgramBuild {
                 failures++;
             }
         }
-        failures += assemble(hlasm, layout.hlasmLibrary(), output, catalogs, report);
+        failures += assemble(hlasm, layout.hlasmLibrary(), output, format, catalogs, report);
         if (cobol.isEmpty() && pli.isEmpty() && hlasm.isEmpty()) {
             report.info("no COBOL, PL/I or HLASM sources in " + layout.cobol() + " / "
                     + layout.pli() + " / " + layout.hlasm());
@@ -103,7 +110,8 @@ final class ProgramBuild {
      * @return 失敗した原文の数
      */
     private static int assemble(List<Path> sources, Path library, Path output,
-                                List<DeployCatalogManifest> catalogs, Report report)
+                                ProgramOutput format, List<DeployCatalogManifest> catalogs,
+                                Report report)
             throws IOException {
         if (sources.isEmpty()) {
             return 0;
@@ -115,7 +123,7 @@ final class ProgramBuild {
         int failures = 0;
         int assembled = 0;
         for (Path source : sources) {
-            HlasmCompiler.Result result = compiler.compile(source.getFileName().toString(),
+            HlasmCompiler.Assembly result = compiler.assemble(source.getFileName().toString(),
                     Files.readString(source, StandardCharsets.UTF_8));
             for (dev.cobolonjava.hlasm.Diagnostic diagnostic : result.diagnostics()) {
                 if (diagnostic.severity() == dev.cobolonjava.hlasm.Diagnostic.Severity.ERROR) {
@@ -138,9 +146,7 @@ final class ProgramBuild {
                 failures++;
                 continue;
             }
-            Path target = output.resolve(result.className().replace('.', '/') + ".class");
-            Files.createDirectories(target.getParent());
-            Files.write(target, result.classFile());
+            result.write(output, format);
             assembled++;
         }
         report.info("HLASM: " + assembled + " module(s), not in the deploy catalog");

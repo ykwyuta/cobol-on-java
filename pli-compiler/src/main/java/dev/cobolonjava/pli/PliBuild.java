@@ -4,6 +4,8 @@ import dev.cobolonjava.runtime.interop.CatalogRevision;
 import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
 import dev.cobolonjava.runtime.interop.GeneratedProgramArtifact;
 import dev.cobolonjava.runtime.program.ProgramSupport;
+import dev.cobolonjava.source.JavaSource;
+import dev.cobolonjava.source.ProgramOutput;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -68,42 +70,55 @@ public final class PliBuild {
     /** すべてのソースを翻訳する。1 本が失敗しても残りは翻訳し、診断をすべて出す。 */
     public static Result run(Request request, Consumer<Diagnostic> diagnostics)
             throws IOException {
+        return run(request, ProgramOutput.CLASS, diagnostics);
+    }
+
+    public static Result run(Request request, ProgramOutput output,
+                             Consumer<Diagnostic> diagnostics) throws IOException {
         PliCompiler compiler = new PliCompiler(
                 new PliPreprocessor(member -> include(request.includes(), member)));
         List<Path> failed = new ArrayList<>();
-        List<PliCompiler.Result> compiled = new ArrayList<>();
+        List<BuiltProgram> compiled = new ArrayList<>();
         for (Path source : request.sources()) {
-            PliCompiler.Result result = compiler.compile(source.getFileName().toString(),
+            String fileName = source.getFileName().toString();
+            PliCompiler.Translation result = compiler.translate(fileName,
                     Files.readString(source, StandardCharsets.UTF_8));
             result.diagnostics().forEach(diagnostics);
             if (!result.succeeded()) {
                 failed.add(source);
                 continue;
             }
-            Path target = request.output()
-                    .resolve(result.className().replace('.', '/') + ".class");
-            Files.createDirectories(target.getParent());
-            Files.write(target, result.classFile());
-            compiled.add(result);
+            byte[] contents;
+            if (output == ProgramOutput.JAVA) {
+                String java = PliJavaSource.generate(result.className(), fileName, result.source());
+                JavaSource.write(request.output(), result.className(), java);
+                contents = java.getBytes(StandardCharsets.UTF_8);
+            } else {
+                contents = result.classFile(fileName);
+                output.write(request.output(), result.className(), contents);
+            }
+            compiled.add(new BuiltProgram(new GeneratedProgramArtifact(
+                    result.signature().programId(), result.className(), result.signature(),
+                    result.procedures().procedureHash()), contents));
         }
         // 全件失敗でも空catalogを書き、以前の成功ビルドのcatalogを残さない。
         DeployCatalogManifest catalog = writeCatalog(request.output(), compiled);
         return new Result(failed, compiled.stream()
-                .map(result -> result.programSignature().programId().value())
+                .map(program -> program.artifact().programId().value())
                 .toList(), catalog);
     }
 
-    private static DeployCatalogManifest writeCatalog(Path output, List<PliCompiler.Result> compiled)
+    private record BuiltProgram(GeneratedProgramArtifact artifact, byte[] contents) {
+    }
+
+    private static DeployCatalogManifest writeCatalog(Path output, List<BuiltProgram> compiled)
             throws IOException {
         MessageDigest revision = sha256();
         List<GeneratedProgramArtifact> artifacts = new ArrayList<>();
         compiled.stream().sorted(Comparator.comparing(
-                result -> result.programSignature().programId().value())).forEach(result -> {
-                    revision.update(result.classFile());
-                    artifacts.add(new GeneratedProgramArtifact(
-                            result.programSignature().programId(), result.className(),
-                            result.programSignature(),
-                            result.procedureManifest().procedureHash()));
+                program -> program.artifact().programId().value())).forEach(program -> {
+                    revision.update(program.contents());
+                    artifacts.add(program.artifact());
                 });
         DeployCatalogManifest manifest = new DeployCatalogManifest(
                 DeployCatalogManifest.CURRENT_FORMAT_VERSION,

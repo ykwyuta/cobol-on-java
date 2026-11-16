@@ -14,11 +14,16 @@ public interface SourceLibrary {
 
     String find(String member);
 
+    /** 呼び出したマクロを収めるライブラリの名前。 */
+    default String dataSetName(String member) {
+        return member;
+    }
+
     static SourceLibrary empty() {
         return member -> null;
     }
 
-    /** UTF-8 のファイルを、拡張子なしまたは .asm / .hlasm / .inc のメンバとして読む。 */
+    /** UTF-8 のファイルを、拡張子なしまたは .asm / .hlasm / .inc / .mac のメンバとして読む。 */
     static SourceLibrary directory(Path directory) throws IOException {
         if (!Files.isDirectory(directory)) {
             return empty();
@@ -30,7 +35,7 @@ public interface SourceLibrary {
                 int dot = file.lastIndexOf('.');
                 String suffix = dot < 0 ? "" : file.substring(dot + 1).toLowerCase(Locale.ROOT);
                 if (!suffix.isEmpty() && !suffix.equals("asm") && !suffix.equals("hlasm")
-                        && !suffix.equals("inc")) {
+                        && !suffix.equals("inc") && !suffix.equals("mac")) {
                     continue;
                 }
                 String member = (dot < 0 ? file : file.substring(0, dot))
@@ -43,15 +48,23 @@ public interface SourceLibrary {
                 }
             }
         }
-        return member -> {
-            Path path = members.get(member.toUpperCase(Locale.ROOT));
-            if (path == null) {
-                return null;
+        return new SourceLibrary() {
+            @Override
+            public String find(String member) {
+                Path path = members.get(member.toUpperCase(Locale.ROOT));
+                if (path == null) {
+                    return null;
+                }
+                try {
+                    return Files.readString(path, StandardCharsets.UTF_8);
+                } catch (IOException failure) {
+                    throw new IllegalStateException("cannot read HLASM member " + member, failure);
+                }
             }
-            try {
-                return Files.readString(path, StandardCharsets.UTF_8);
-            } catch (IOException failure) {
-                throw new IllegalStateException("cannot read HLASM member " + member, failure);
+
+            @Override
+            public String dataSetName(String member) {
+                return directory.toString();
             }
         };
     }

@@ -20,25 +20,44 @@ public final class PliCompiler {
     }
 
     public Result compile(String fileName, String source) {
+        Translation translation = translate(fileName, source);
+        if (!translation.succeeded()) {
+            return new Result(null, null, null, null, translation.diagnostics());
+        }
+        return new Result(translation.className(), translation.classFile(fileName),
+                translation.signature(), translation.procedures(), translation.diagnostics());
+    }
+
+    Translation translate(String fileName, String source) {
         PliPreprocessor.Result preprocessed = preprocessor.process(fileName, source);
         if (!preprocessed.succeeded()) {
-            return new Result(null, null, null, null, preprocessed.diagnostics());
+            return new Translation(null, null, null, null, preprocessed.diagnostics());
         }
         PliSyntax.ParseResult parsed = PliSyntax.parse(fileName, preprocessed.source());
         if (!parsed.succeeded()) {
-            return new Result(null, null, null, null, parsed.diagnostics());
+            return new Translation(null, null, null, null, parsed.diagnostics());
         }
         List<Diagnostic> layout = structureDiagnostics(fileName, parsed.program());
         if (!layout.isEmpty()) {
-            return new Result(null, null, null, null, layout);
+            return new Translation(null, null, null, null, layout);
         }
         // COBOL と同じ名前空間に置く。ホストでは COBOL と PL/I のロードモジュールが同じロード
         // ライブラリに入り、CALL も EXEC PGM= も言語を問わず名前で引く (暫定判断 P-182 の解消)
         String className = ProgramSupport.classNameOf(parsed.program().name());
-        byte[] classFile = PliClassGenerator.generate(className, fileName, preprocessed.source());
         ProgramSignature signature = PliRuntime.signature(fileName, preprocessed.source());
         ProcedureManifest procedures = PliRuntime.procedureManifest(fileName, preprocessed.source());
-        return new Result(className, classFile, signature, procedures, List.of());
+        return new Translation(className, preprocessed.source(), signature, procedures, List.of());
+    }
+
+    record Translation(String className, String source, ProgramSignature signature,
+                       ProcedureManifest procedures, List<Diagnostic> diagnostics) {
+        boolean succeeded() {
+            return className != null;
+        }
+
+        byte[] classFile(String fileName) {
+            return PliClassGenerator.generate(className, fileName, source);
+        }
     }
 
     /**

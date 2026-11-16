@@ -58,6 +58,15 @@ public final class TextWord {
         return new TextWord(text, origins, kind, value);
     }
 
+    TextWord withCallInterface(Origin.CallInterface value) {
+        Origin[] tagged = new Origin[origins.length];
+        for (int i = 0; i < origins.length; i++) {
+            Origin origin = origins[i];
+            tagged[i] = new Origin(origin.fileName(), origin.line(), origin.column(), value);
+        }
+        return new TextWord(text, tagged, kind, precededBySpace);
+    }
+
     /**
      * 照合。COBOL 語は大文字と小文字を区別せず、文字定数と区切り文字は区別する。
      */

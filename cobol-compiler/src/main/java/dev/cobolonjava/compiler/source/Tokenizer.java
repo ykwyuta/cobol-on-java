@@ -78,12 +78,12 @@ public final class Tokenizer {
                 emit(SourceTokenKind.LITERAL, i, end);
                 continue;
             }
-            if (isNationalLiteralStart(i)) {
+            if (isPrefixedLiteralStart(i)) {
                 boolean hex = text.charAt(i + 1) == 'X' || text.charAt(i + 1) == 'x';
                 int end = scanLiteral(i + (hex ? 2 : 1));
                 if (hex) {
                     // NX の中身は符号単位 (2 バイト) の並びなので、16 進の桁は 4 の倍数である
-                    requireHexDigits(i + 1, end, 4);
+                    requireHexDigits(i + 1, end, c == 'U' || c == 'u' ? 2 : 4);
                 }
                 emit(SourceTokenKind.LITERAL, i, end);
                 continue;
@@ -258,9 +258,9 @@ public final class Tokenizer {
     /**
      * 位置 {@code j} から国字定数 ({@code N'..'} か {@code NX'..'}) が始まるか。
      */
-    private boolean isNationalLiteralStart(int j) {
+    private boolean isPrefixedLiteralStart(int j) {
         char c = text.charAt(j);
-        if (c != 'N' && c != 'n' && c != 'G' && c != 'g' || j + 1 >= text.length()) {
+        if ("NnGgUu".indexOf(c) < 0 || j + 1 >= text.length()) {
             return false;
         }
         if (c == 'G' || c == 'g') {

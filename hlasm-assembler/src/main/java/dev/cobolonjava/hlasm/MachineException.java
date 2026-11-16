@@ -27,6 +27,10 @@ public final class MachineException extends RuntimeException {
     public static final int FIXED_OVERFLOW = 0x08;
     /** 固定小数点除算例外。 */
     public static final int FIXED_DIVIDE = 0x09;
+    public static final int HFP_EXPONENT_OVERFLOW = 0x0C;
+    public static final int HFP_EXPONENT_UNDERFLOW = 0x0D;
+    public static final int HFP_SIGNIFICANCE = 0x0E;
+    public static final int HFP_DIVIDE = 0x0F;
     /** アドレッシング例外。存在しない記憶域。 */
     public static final int ADDRESSING = 0x05;
 

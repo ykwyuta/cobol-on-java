@@ -1,6 +1,8 @@
 package dev.cobolonjava.runtime.storage;
 
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -13,6 +15,7 @@ import java.util.Objects;
 public final class Storage {
 
     private final byte[] bytes;
+    private Map<Integer, DynamicField> dynamicFields;
 
     private Storage(byte[] bytes) {
         this.bytes = bytes;
@@ -38,6 +41,11 @@ public final class Storage {
 
     public int size() {
         return bytes.length;
+    }
+
+    synchronized DynamicField dynamicField(int offset) {
+        if (dynamicFields == null) dynamicFields = new HashMap<>();
+        return dynamicFields.computeIfAbsent(offset, ignored -> new DynamicField());
     }
 
     /** 内部配列への直接参照を返す。呼び出し側による変更は領域に反映される。 */

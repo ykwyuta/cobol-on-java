@@ -176,7 +176,8 @@ public final class InitializeImage {
         builder.toValue = toValue;
         builder.toDefault = toDefault;
         builder.initial = initial;
-        builder.initialBase = item.record().base() + item.offset();
+        builder.initialBase = (item.section() == DataSection.LINKAGE ? 0 : item.record().base())
+                + item.offset();
         // 書かれた項目そのものは 1 回分である。表なら添字で 1 つに絞られている
         int length = item.length();
         byte[] image = new byte[length];
@@ -296,7 +297,10 @@ public final class InitializeImage {
         Storage scratch = Storage.allocate(length);
         try {
             DataCategory category = DataCategory.of(item);
-            if (category == DataCategory.DBCS) {
+            if (item.isUtf8()) {
+                scratch.whole().setBytes(Utf8Literals.image(value, length, item.utf8CharacterLimit(),
+                        codePage, '"'));
+            } else if (category == DataCategory.DBCS) {
                 dev.cobolonjava.runtime.data.Dbcs.move(value instanceof LiteralValue.Dbcs dbcs
                         ? dbcs.bytes() : new byte[0], scratch, 0, length);
             } else if (category == DataCategory.NATIONAL && item.picture() != null

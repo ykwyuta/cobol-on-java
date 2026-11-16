@@ -12,7 +12,13 @@ package dev.cobolonjava.compiler.source;
  * @param line     行番号 (1 起点)
  * @param column   桁 (1 起点)
  */
-public record Origin(String fileName, int line, int column) {
+public record Origin(String fileName, int line, int column, CallInterface callInterface) {
+
+    public enum CallInterface { DEFAULT, STATIC, DYNAMIC, DLL }
+
+    public Origin(String fileName, int line, int column) {
+        this(fileName, line, column, CallInterface.DEFAULT);
+    }
 
     @Override
     public String toString() {

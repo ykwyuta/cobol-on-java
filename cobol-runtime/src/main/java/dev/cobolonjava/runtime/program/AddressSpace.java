@@ -32,6 +32,9 @@ public final class AddressSpace {
     }
 
     private final Map<Storage, Map<Integer, Integer>> numbers = new IdentityHashMap<>();
+    private final java.util.Set<Storage> allocations =
+            Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Map<Storage, Boolean> released = new WeakHashMap<>();
     private final List<Location> locations = new ArrayList<>();
 
     private AddressSpace() {
@@ -44,6 +47,10 @@ public final class AddressSpace {
 
     /** 記憶域の位置に番号を振る。同じ位置には同じ番号を返す。 */
     public synchronized int addressOf(Storage storage, int offset) {
+        if (isReleased(storage)) {
+            throw new dev.cobolonjava.runtime.abend.Abend(
+                    dev.cobolonjava.runtime.abend.AbendCode.S0C4, "storage has been freed");
+        }
         Map<Integer, Integer> offsets = numbers.computeIfAbsent(storage, ignored -> new java.util.HashMap<>());
         Integer known = offsets.get(offset);
         if (known != null) {
@@ -65,6 +72,28 @@ public final class AddressSpace {
             return null;
         }
         return locations.get((int) index);
+    }
+
+    synchronized void allocated(Storage storage) {
+        allocations.add(storage);
+    }
+
+    synchronized boolean free(int address) {
+        Location location = locate(address);
+        if (location == null || location.offset() != 0 || !allocations.remove(location.storage())) {
+            return false;
+        }
+        Storage storage = location.storage();
+        released.put(storage, Boolean.TRUE);
+        Map<Integer, Integer> offsets = numbers.remove(storage);
+        for (int number : offsets.values()) {
+            locations.set((number - FIRST) / STEP, null);
+        }
+        return true;
+    }
+
+    synchronized boolean isReleased(Storage storage) {
+        return released.containsKey(storage);
     }
 
     /**

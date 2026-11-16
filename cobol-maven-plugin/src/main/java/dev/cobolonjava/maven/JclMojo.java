@@ -23,6 +23,13 @@ public class JclMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.build.outputDirectory}", required = true)
     private File outputDirectory;
 
+    @Parameter(property = "cobol.emitJava", defaultValue = "false")
+    private boolean emitJava;
+
+    @Parameter(property = "cobol.javaOutputDirectory",
+            defaultValue = "${project.build.directory}/generated-sources/legacy")
+    private File javaOutputDirectory;
+
     /** ジョブ記述の置き場。{@code .jcl} は JCL、{@code .job} は宣言的形式。 */
     @Parameter(property = "cobol.jclDirectory", defaultValue = "${project.basedir}/src/main/jcl")
     private File jclDirectory;
@@ -46,7 +53,8 @@ public class JclMojo extends AbstractMojo {
                 standard.bms(), standard.pli(), standard.pliIncludes(), standard.hlasm(),
                 jclDirectory.toPath(), proclibDirectory.toPath());
         try {
-            JobCheck.run(layout, outputDirectory.toPath(), MavenReport.of(getLog()));
+            File destination = emitJava ? javaOutputDirectory : outputDirectory;
+            JobCheck.run(layout, destination.toPath(), emitJava, MavenReport.of(getLog()));
         } catch (BuildFailure e) {
             throw new MojoFailureException(e.getMessage(), e);
         } catch (IOException e) {

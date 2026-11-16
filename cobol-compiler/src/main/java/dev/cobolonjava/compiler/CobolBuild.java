@@ -12,12 +12,16 @@ import dev.cobolonjava.compiler.source.FreeFormatReader;
 import dev.cobolonjava.compiler.source.LanguageEnvironmentCopyBookResolver;
 import dev.cobolonjava.compiler.source.Preprocessor;
 import dev.cobolonjava.runtime.interop.DeployCatalogManifest;
+import dev.cobolonjava.source.JavaSource;
+import dev.cobolonjava.source.ProgramOutput;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiConsumer;
@@ -75,15 +79,20 @@ public final class CobolBuild {
      */
     public static Result run(Request request, BiConsumer<Path, Diagnostic> diagnostics)
             throws IOException {
+        return run(request, ProgramOutput.CLASS, diagnostics);
+    }
+
+    public static Result run(Request request, ProgramOutput output,
+                             BiConsumer<Path, Diagnostic> diagnostics) throws IOException {
         Preprocessor preprocessor = new Preprocessor(resolver(request.copybooks()),
                 request.freeFormat() ? FreeFormatReader.standard() : FixedFormatReader.standard());
         List<Path> failed = new ArrayList<>();
         List<CobolCompiler.Compiled> deployed = new ArrayList<>();
+        CobolCompiler compiler = new CobolCompiler(preprocessor, request.compilerOptions(),
+                output == ProgramOutput.JAVA);
         for (Path source : request.sources()) {
-            CobolCompiler.Result result = new CobolCompiler(preprocessor,
-                    request.compilerOptions())
-                    .compile(source.getFileName().toString(),
-                            Files.readString(source, StandardCharsets.UTF_8));
+            CobolCompiler.Result result = compiler.compile(source.getFileName().toString(),
+                    Files.readString(source, StandardCharsets.UTF_8));
             for (Diagnostic diagnostic : result.diagnostics()) {
                 diagnostics.accept(source, diagnostic);
             }
@@ -92,13 +101,23 @@ public final class CobolBuild {
                 continue;
             }
             // 1 本のソースにプログラムが何本あってもよい。その数だけクラスを出す
-            for (CobolCompiler.Compiled program : result.programs()) {
-                Path target = request.output()
-                        .resolve(program.className().replace('.', '/') + ".class");
-                Files.createDirectories(target.getParent());
-                Files.write(target, program.classFile());
-                deployed.add(program);
+            Map<String, CobolCompiler.Compiled> programs = new LinkedHashMap<>();
+            result.programs().forEach(program -> programs.put(program.className(), program));
+            Map<String, byte[]> classes = new LinkedHashMap<>();
+            for (CobolCompiler.Compiled program : programs.values()) {
+                if (program.javaSource() == null) {
+                    classes.put(program.className(), program.classFile());
+                }
             }
+            if (!classes.isEmpty()) {
+                output.write(request.output(), classes);
+            }
+            for (CobolCompiler.Compiled program : programs.values()) {
+                if (program.javaSource() != null) {
+                    JavaSource.write(request.output(), program.className(), program.javaSource());
+                }
+            }
+            deployed.addAll(result.programs());
         }
         // 全件失敗でも空catalogを書き、以前の成功ビルドのcatalogを残さない。
         Path catalog = request.output().resolve(DeployCatalogManifest.RESOURCE_NAME);

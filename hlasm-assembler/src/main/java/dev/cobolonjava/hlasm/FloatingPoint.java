@@ -234,6 +234,24 @@ final class FloatingPoint {
                 BigInteger.valueOf(2L * binaryBias(width) + 1).shiftLeft(binaryFraction(width)));
     }
 
+    /** TEST DATA CLASS の 12 ビットのマスク。各クラスの正のビットの右が負である。 */
+    static int binaryClassMask(BigInteger raw, int width) {
+        int fraction = binaryFraction(width);
+        int maximumExponent = 2 * binaryBias(width) + 1;
+        int exponent = raw.shiftRight(fraction).intValue() & maximumExponent;
+        BigInteger significand = raw.and(mask(fraction));
+        int positiveMask;
+        if (exponent == 0) {
+            positiveMask = significand.signum() == 0 ? 0x800 : 0x080;
+        } else if (exponent == maximumExponent) {
+            positiveMask = significand.signum() == 0 ? 0x020
+                    : significand.testBit(fraction - 1) ? 0x008 : 0x002;
+        } else {
+            positiveMask = 0x200;
+        }
+        return raw.testBit(width * 8 - 1) ? positiveMask >>> 1 : positiveMask;
+    }
+
     static Encoded encodeBinary(Ratio v, int width, Rounding mode) {
         int precision = binaryFraction(width);
         int bias = binaryBias(width);
@@ -492,6 +510,37 @@ final class FloatingPoint {
 
     static BigInteger decimalInfinity(boolean negative, int width) {
         return sign(negative, width).or(BigInteger.valueOf(30).shiftLeft(width * 8 - 6));
+    }
+
+    /** DFP TEST DATA CLASS / GROUP の、符号込みの選択ビット。 */
+    static int decimalClassMask(BigInteger raw, int width, boolean group) {
+        DecimalValue decoded = decodeDecimal(raw, width);
+        int category;
+        if (decoded.value() instanceof Finite finite) {
+            Ratio value = finite.value();
+            int minimum = -decimalBias(width);
+            int precision = decimalPrecision(width);
+            int exponent = decoded.exponent();
+            if (group) {
+                boolean extreme = exponent == minimum || exponent == decimalMaximumExponent(width);
+                if (value.isZero()) {
+                    category = extreme ? 1 : 0;
+                } else if (extreme) {
+                    category = 2;
+                } else {
+                    category = value.floorLog10() - exponent + 1 < precision ? 3 : 4;
+                }
+            } else {
+                category = value.isZero() ? 0 : value.floorLog10() < minimum + precision - 1 ? 1 : 2;
+            }
+        } else if (group) {
+            category = 5;
+        } else if (decoded.value() instanceof NotANumber nan) {
+            category = nan.signaling() ? 5 : 4;
+        } else {
+            category = 3;
+        }
+        return 0x800 >>> (category * 2 + (raw.testBit(width * 8 - 1) ? 1 : 0));
     }
 
     static BigInteger packDecimal(boolean negative, BigInteger coefficient, int exponent,

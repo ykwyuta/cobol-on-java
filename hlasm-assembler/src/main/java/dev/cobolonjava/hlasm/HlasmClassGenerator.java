@@ -54,20 +54,27 @@ final class HlasmClassGenerator implements Opcodes {
         method.visitEnd();
     }
 
-    /** HLASM は作業場所を自分の制御節に持つので、呼ぶ側の記憶域は要らない。 */
-    /** 機械語を Base64 の文字列として積む。長い文字列は定数プールに入らないので切って継ぐ。 */
+    /** 機械語を Base64 で積む。長い文字列は Java の再コンパイルでも定数一つにならないように継ぐ。 */
     private static void pushEncodedText(MethodVisitor method, ObjectModule module) {
         String encoded = java.util.Base64.getEncoder().encodeToString(module.text());
-        method.visitTypeInsn(NEW, "java/lang/StringBuilder");
-        method.visitInsn(DUP);
-        method.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
-        for (int offset = 0; offset < encoded.length(); offset += 16_000) {
-            method.visitLdcInsn(encoded.substring(offset, Math.min(encoded.length(), offset + 16_000)));
-            method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "append",
-                    "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        int chunkSize = 16_000;
+        if (encoded.length() <= chunkSize) {
+            method.visitLdcInsn(encoded);
+            return;
         }
-        method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString",
-                "()Ljava/lang/String;", false);
+        int chunks = Math.ceilDiv(encoded.length(), chunkSize);
+        method.visitLdcInsn("");
+        method.visitLdcInsn(chunks);
+        method.visitTypeInsn(ANEWARRAY, "java/lang/CharSequence");
+        for (int index = 0; index < chunks; index++) {
+            int offset = index * chunkSize;
+            method.visitInsn(DUP);
+            method.visitLdcInsn(index);
+            method.visitLdcInsn(encoded.substring(offset, Math.min(encoded.length(), offset + chunkSize)));
+            method.visitInsn(AASTORE);
+        }
+        method.visitMethodInsn(INVOKESTATIC, "java/lang/String", "join",
+                "(Ljava/lang/CharSequence;[Ljava/lang/CharSequence;)Ljava/lang/String;", false);
     }
 
     /**

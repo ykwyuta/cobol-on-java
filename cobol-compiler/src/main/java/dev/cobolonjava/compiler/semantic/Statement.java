@@ -16,6 +16,9 @@ public sealed interface Statement {
     /** ソース上の位置。 */
     Origin origin();
 
+    record SetLength(DataReference item, Operand value, Origin origin) implements Statement {
+    }
+
     /** 専用translatorが解析した最小EXEC CICS command。 */
     record Cics(
             CicsOperation operation,
@@ -44,6 +47,13 @@ public sealed interface Statement {
 
     /** {@code SET POINTER 項目 TO ADDRESS OF 項目} (設計 85 §6、暫定判断 P-150)。 */
     record SetPointer(List<DataReference> pointers, DataReference addressOf, Origin origin) implements Statement {
+    }
+
+    record Allocate(DataItem record, Expression characters, boolean initialized,
+                    DataReference returning, Origin origin) implements Statement {
+    }
+
+    record Free(List<DataReference> pointers, Origin origin) implements Statement {
     }
 
     /** EXEC CICS ASSIGNの1つのoption。受取域へ置く値の種類と長さ。 */

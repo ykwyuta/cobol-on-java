@@ -48,7 +48,11 @@ final class DeployCatalogGenerator {
             update(revision, "\u0000");
             update(revision, program.procedureManifest().procedureHash());
             update(revision, "\u0000");
-            revision.update(program.classFile());
+            if (program.javaSource() == null) {
+                revision.update(program.classFile());
+            } else {
+                update(revision, program.javaSource());
+            }
             update(revision, "\n");
         }
         return new DeployCatalogManifest(DeployCatalogManifest.CURRENT_FORMAT_VERSION,

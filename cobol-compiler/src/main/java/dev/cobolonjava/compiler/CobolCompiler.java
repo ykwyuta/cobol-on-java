@@ -1,5 +1,6 @@
 package dev.cobolonjava.compiler;
 
+import dev.cobolonjava.compiler.codegen.CobolJavaSource;
 import dev.cobolonjava.compiler.codegen.ProgramGenerator;
 import dev.cobolonjava.compiler.parser.CobolParser;
 import dev.cobolonjava.compiler.parser.CobolParsing;
@@ -47,14 +48,20 @@ public final class CobolCompiler {
 
     private final Preprocessor preprocessor;
     private final CompilerOptions options;
+    private final boolean forJavaSource;
 
     public CobolCompiler(Preprocessor preprocessor) {
         this(preprocessor, CompilerOptions.NONE);
     }
 
     public CobolCompiler(Preprocessor preprocessor, CompilerOptions options) {
+        this(preprocessor, options, false);
+    }
+
+    CobolCompiler(Preprocessor preprocessor, CompilerOptions options, boolean forJavaSource) {
         this.preprocessor = preprocessor;
         this.options = options;
+        this.forJavaSource = forJavaSource;
     }
 
     /**
@@ -64,7 +71,7 @@ public final class CobolCompiler {
      * ソースに書いた指定が起動時の指定を上書きするのが参照実装の規則である。
      */
     public CobolCompiler withOptions(CompilerOptions values) {
-        return new CobolCompiler(preprocessor, values);
+        return new CobolCompiler(preprocessor, values, forJavaSource);
     }
 
     /** コピー句を持たない構成。 */
@@ -135,7 +142,12 @@ public final class CobolCompiler {
      */
     public record Compiled(String className, byte[] classFile, DataLayout layout,
                            ProgramSignature programSignature,
-                           ProcedureManifest procedureManifest) {
+                           ProcedureManifest procedureManifest, String javaSource) {
+
+        public Compiled(String className, byte[] classFile, DataLayout layout,
+                        ProgramSignature programSignature, ProcedureManifest procedureManifest) {
+            this(className, classFile, layout, programSignature, procedureManifest, null);
+        }
 
         /** ABI署名導入前の呼出側向け互換入口。 */
         public Compiled(String className, byte[] classFile, DataLayout layout,
@@ -648,20 +660,24 @@ public final class CobolCompiler {
 
         // SELECT と FD は離れて書かれる。両方を読み終えてから突き合わせる
         List<Diagnostic> fileDiagnostics = new ArrayList<>();
+        boolean extendedQualification = effective.value("QUALIFY")
+                .map(value -> value.equalsIgnoreCase("EXTEND") || value.equalsIgnoreCase("E"))
+                .orElse(false);
         FileDescription.Result declared = FileDescription.build(program,
                 FileDescription.select(program, inherited.selects(), fileDiagnostics),
                 data.fileRecords(),
-                new ReferenceResolver(data.layout(), fileDiagnostics), fileDiagnostics);
+                new ReferenceResolver(data.layout(), fileDiagnostics, extendedQualification),
+                fileDiagnostics);
         if (!declared.succeeded()) {
             return failed(data.layout(), declared.diagnostics());
         }
         warnings.addAll(declared.diagnostics());
 
         List<Diagnostic> diagnostics = new ArrayList<>();
-        InitialImage.Result image = InitialImage.build(data.layout(), specialNames);
+        InitialImage.Result image = InitialImage.build(data.layout(), specialNames, effective.zeusCompatibility());
         diagnostics.addAll(image.diagnostics());
         ProcedureBuilder.Result procedure = ProcedureBuilder.build(program, data.layout(),
-                specialNames, declared.files(), data.reports());
+                specialNames, declared.files(), data.reports(), extendedQualification);
         diagnostics.addAll(procedure.diagnostics());
         for (ProcedureBuilder.Paragraph paragraph : procedure.paragraphs()) {
             diagnostics.addAll(dev.cobolonjava.compiler.semantic.NationalGuard.check(
@@ -685,14 +701,18 @@ public final class CobolCompiler {
         ProcedureManifest manifest = procedureManifest(programNameOf(program), procedure);
         ProgramGenerator.Result generated = ProgramGenerator.generate(
                 programNameOf(program), fileName, procedure, image, data.layout(),
-                effective, specialNames, visible, signature, manifest);
+                effective, specialNames, visible, signature, manifest, forJavaSource);
         if (!generated.succeeded()) {
             return failed(data.layout(), generated.diagnostics());
         }
         warnings.addAll(generated.diagnostics());
+        String java = forJavaSource && inherited.ancestors().isEmpty()
+                ? CobolJavaSource.generate(programNameOf(program), generated.className(), procedure,
+                        data.layout(), image, specialNames, effective, manifest).orElse(null)
+                : null;
         List<Compiled> classes = new ArrayList<>();
         classes.add(new Compiled(generated.className(), generated.classFile(), data.layout(),
-                signature, manifest));
+                signature, manifest, java));
         for (ProcedureBuilder.Entry entry : procedure.entries()) {
             // 副入口の名前で引けるクラス。本体へつなぐだけで、署名も手続き情報も持たない
             classes.add(new Compiled(ProgramGenerator.classNameOf(entry.name()),

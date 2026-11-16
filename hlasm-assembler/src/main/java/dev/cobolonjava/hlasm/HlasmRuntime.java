@@ -5,6 +5,7 @@ import dev.cobolonjava.runtime.interop.ProgramSignature;
 import dev.cobolonjava.runtime.procedure.ProcedureManifest;
 import dev.cobolonjava.runtime.program.ProgramContext;
 import dev.cobolonjava.runtime.storage.DataView;
+import dev.cobolonjava.runtime.storage.Storage;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -68,7 +69,7 @@ public final class HlasmRuntime {
      * @param externals   外の記号の番地を入れる欄。{@code 位置:長さ:名前;...}
      * @param loader      このプログラムを読み込んだもの。外の記号をここから引く
      */
-    public static void executeLoaded(String name, dev.cobolonjava.runtime.storage.Storage storage,
+    public static void executeLoaded(String name, Storage storage,
                                      String encodedText, int entryOffset, String relocations,
                                      String externals, ProgramContext context,
                                      DataView[] arguments, ClassLoader loader) {
@@ -90,8 +91,25 @@ public final class HlasmRuntime {
             // モジュールの中の値は呼び出しをまたいで残らない
             text = decode(encodedText);
         }
-        int returnCode = run(name, text, entryOffset, fields, outside, context, arguments,
-                loader);
+        executeLoaded(name, text, entryOffset, fields, outside, context, arguments, loader);
+    }
+
+    /** Java の生成クラスが保持する組み立て済みモジュールを実行する。 */
+    public static void executeLoaded(ObjectModule module, Storage storage, ProgramContext context,
+                                     DataView[] arguments, ClassLoader loader) {
+        byte[] text = storage.array();
+        if (text.length == 0 && module.length() != 0) {
+            text = module.text();
+        }
+        executeLoaded(module.name(), text, module.entryOffset(), module.relocations(),
+                module.externals(), context, arguments, loader);
+    }
+
+    private static void executeLoaded(String name, byte[] text, int entryOffset,
+                                      List<ObjectModule.Relocation> relocations,
+                                      List<ObjectModule.External> externals, ProgramContext context,
+                                      DataView[] arguments, ClassLoader loader) {
+        int returnCode = run(name, text, entryOffset, relocations, externals, context, arguments, loader);
         if (context != null) {
             // R15 は RETURN-CODE になる。ホストでも、呼ばれた側が R15 に置いた値を呼んだ
             // COBOL が RETURN-CODE として読む。以前は捨てていた

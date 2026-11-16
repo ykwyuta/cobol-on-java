@@ -18,17 +18,19 @@ import java.util.Locale;
  * <p>同じ規則の実装をこの処理系が 3 つ持つことになるが、{@code cobol-ims} と {@code cobol-cics} が
  * この層に依存する形にはしていない。共通化はまだ行っていない (P-170)。
  *
- * <p>桁の割当てを変える {@code ICTL} は受け取らない。固定形式の 1/16/71/72 桁を前提にした読み方を
- * 黙って適用すると、原文と違う文を組み立ててしまうためである。
+ * <p>最初の命令に {@code ICTL} があれば、そのソースの桁の割当てを変更する。
  */
 public final class HlasmReader {
 
-    /** 文の最後の桁 (71 桁)。 */
-    private static final int STATEMENT_COLUMNS = 71;
-    /** 続きの印を書く桁 (72 桁) の添字。 */
-    private static final int CONTINUATION_INDEX = 71;
-    /** 続きの行が書き始める桁 (16 桁) の添字。 */
-    private static final int CONTINUED_START = 15;
+    private record Columns(int begin, int end, int continuation) {
+        String body(String line, int start) {
+            return line.length() <= start ? "" : line.substring(start, Math.min(end, line.length()));
+        }
+
+        boolean continued(String line) {
+            return end < 80 && line.length() > end && line.charAt(end) != ' ';
+        }
+    }
 
     private HlasmReader() {
     }
@@ -36,16 +38,19 @@ public final class HlasmReader {
     public static List<Statement> read(String source) {
         String[] lines = source.split("\r?\n", -1);
         List<Statement> out = new ArrayList<>();
+        Columns columns = new Columns(0, 71, 15);
+        boolean firstStatement = true;
         int i = 0;
         while (i < lines.length) {
             String raw = lines[i];
-            if (raw.isBlank() || raw.startsWith("*") || raw.startsWith(".*")) {
+            int first = i + 1;
+            String body = columns.body(raw, columns.begin());
+            if (body.toUpperCase(Locale.ROOT).matches("^\\*PROCESS\\s+.*")) {
+                out.add(new Statement(null, "*PROCESS", body.substring(8).strip(), first));
                 i++;
                 continue;
             }
-            int first = i + 1;
-            String body = statementPart(raw);
-            if (body.isBlank()) {
+            if (body.isBlank() || body.startsWith("*") || body.startsWith(".*")) {
                 i++;
                 continue;
             }
@@ -62,31 +67,44 @@ public final class HlasmReader {
             int operationEnd = blankOrEnd(body, p);
             String operation = body.substring(p, operationEnd).toUpperCase(Locale.ROOT);
             if ("ICTL".equals(operation)) {
-                throw new AssemblyException(first, "ICTL is not supported: "
-                        + "this reader assumes the fixed columns 1/16/71/72");
+                if (!firstStatement || label != null || columns.continued(raw)) {
+                    throw new AssemblyException(first, "ICTL must be the first statement and have no label");
+                }
+                String operands = body.substring(operationEnd).strip();
+                columns = inputColumns(operands, first);
+                out.add(new Statement(null, operation, operands, first));
+                firstStatement = false;
+                i++;
+                continue;
             }
+            firstStatement = false;
 
             OperandField field = new OperandField();
             // 条件付きアセンブリの式は引用符の外にも空白を含む。
             boolean expression = "AIF".equals(operation) || "SETA".equals(operation)
                     || "SETB".equals(operation) || "SETC".equals(operation);
             field.take(body, skipBlanks(body, operationEnd), expression);
-            boolean continued = continued(raw);
+            boolean continued = columns.continued(raw);
             while (continued) {
+                if (columns.continuation() < 0) {
+                    throw new AssemblyException(first, "continuation disabled by ICTL");
+                }
                 i++;
                 if (i >= lines.length) {
                     throw new AssemblyException(i, "the continuation line is missing");
                 }
                 String next = lines[i];
-                String part = statementPart(next);
-                if (!part.substring(0, Math.min(CONTINUED_START, part.length())).isBlank()) {
+                String part = columns.body(next, 0);
+                int from = columns.continuation();
+                if (part.length() > columns.begin()
+                        && !part.substring(columns.begin(), Math.min(from, part.length())).isBlank()) {
                     throw new AssemblyException(i + 1,
-                            "a continuation line must start in column 16");
+                            "a continuation line must start in column " + (from + 1));
                 }
-                if (field.continues() && part.length() > CONTINUED_START) {
-                    field.take(part, CONTINUED_START, expression);
+                if (field.continues() && part.length() > from) {
+                    field.take(part, from, expression);
                 }
-                continued = continued(next);
+                continued = columns.continued(next);
             }
             if (field.quoted) {
                 throw new AssemblyException(first, "a quoted string is not closed");
@@ -101,14 +119,33 @@ public final class HlasmReader {
         return out;
     }
 
-    /** 1〜71 桁。73 桁以降の識別・順序欄は読まない。 */
-    private static String statementPart(String line) {
-        return line.length() <= STATEMENT_COLUMNS ? line : line.substring(0, STATEMENT_COLUMNS);
+    private static Columns inputColumns(String operands, int line) {
+        String[] fields = operands.split("\\s+", 2)[0].split(",", -1);
+        if (fields.length > 3 || operands.isEmpty()) {
+            throw new AssemblyException(line, "ICTL requires begin[,end[,continue]]");
+        }
+        int begin = column(fields, 0, 1, line);
+        int end = column(fields, 1, 71, line);
+        int continuation = column(fields, 2, 0, line);
+        if (begin < 1 || begin > 40 || end < 41 || end > 80 || end < begin + 5
+                || (continuation != 0 && (continuation <= begin || continuation > 40))) {
+            throw new AssemblyException(line, "invalid ICTL columns");
+        }
+        return new Columns(begin - 1, end, end == 80 ? -1 : continuation - 1);
     }
 
-    /** 72 桁が空白でなければ次の行へ続く。 */
-    private static boolean continued(String line) {
-        return line.length() > CONTINUATION_INDEX && line.charAt(CONTINUATION_INDEX) != ' ';
+    private static int column(String[] fields, int index, int fallback, int line) {
+        if (index >= fields.length || fields[index].isEmpty()) {
+            return fallback;
+        }
+        try {
+            if (!fields[index].matches("[0-9]+")) {
+                throw new NumberFormatException();
+            }
+            return Integer.parseInt(fields[index]);
+        } catch (NumberFormatException invalid) {
+            throw new AssemblyException(line, "invalid ICTL column: " + fields[index]);
+        }
     }
 
     private static int blankOrEnd(String text, int from) {

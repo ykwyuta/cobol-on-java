@@ -97,7 +97,21 @@ final class StructureMapping {
             int childEnd = i + 1;
             while (childEnd < end && tree.get(childEnd).level() > tree.get(i).level()) childEnd++;
             Unit member = unit(tree, i, childEnd, effective);
-            combined = combined == null ? member : pair(combined, member);
+            if (decl.union()) {
+                // UNION の基点から各メンバーを独立に配置する。内部の境界合わせは構造と同じ。
+                int lead = member.start() % member.alignment();
+                Map<Integer, Integer> offsets = new HashMap<>();
+                if (combined != null) {
+                    offsets.putAll(combined.offsets());
+                }
+                member.offsets().forEach((child, offset) -> offsets.put(child, lead + offset));
+                combined = new Unit(0,
+                        Math.max(lead + member.length(), combined == null ? 0 : combined.length()),
+                        Math.max(member.alignment(), combined == null ? 1 : combined.alignment()),
+                        offsets);
+            } else {
+                combined = combined == null ? member : pair(combined, member);
+            }
             i = childEnd;
         }
         if (combined == null) {

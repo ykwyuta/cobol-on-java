@@ -172,6 +172,18 @@ public final class Ops {
         throw new ProgramStop();
     }
 
+    /** NUMVAL の不正な引数は Zeus と同じ RC 16 で実行単位を終える。 */
+    public static Decimal checkedNumval(byte[] value, CodePage codePage, ProgramContext context,
+                                        boolean comma) {
+        if (!dev.cobolonjava.runtime.function.Intrinsics.testNumval(
+                codePage.decode(value), "", false, comma).isZero()) {
+            context.setReturnCode(16);
+            stopRun();
+        }
+        return comma ? dev.cobolonjava.runtime.function.Intrinsics.numvalComma(value, codePage)
+                : dev.cobolonjava.runtime.function.Intrinsics.numval(value, codePage);
+    }
+
     /**
      * {@code GOBACK} と手続き部の終わり。<b>呼んだ側へ戻る</b> (要件 FR-067)。
      *
@@ -460,6 +472,11 @@ public final class Ops {
                 context.codePage());
     }
 
+    public static Decimal secondsPastMidnight(ProgramContext context) {
+        long nanos = java.time.LocalTime.now(context.clock().withZone(java.time.ZoneOffset.UTC)).toNanoOfDay();
+        return Decimal.of(nanos / 10_000_000, 2);
+    }
+
     /**
      * {@code FUNCTION RANDOM} (要件 FR-070)。
      *
@@ -473,6 +490,24 @@ public final class Ops {
     public static Decimal random(Decimal seed, ProgramContext context) {
         context.seedRandom(seed.toBigDecimal().longValue());
         return Intrinsics.randomValue(context.nextRandom());
+    }
+
+    private static final java.math.BigInteger ZEUS_RANDOM_SCALE_FACTOR =
+            java.math.BigInteger.valueOf(5).pow(56);
+
+    public static Decimal zeusRandom(ProgramContext context) {
+        // Zeus produces a fraction with denominator 2^56.
+        return Decimal.of(java.math.BigInteger.valueOf(context.nextZeusRandomBits())
+                .multiply(ZEUS_RANDOM_SCALE_FACTOR), 56);
+    }
+
+    public static Decimal zeusRandom(Decimal seed, ProgramContext context) {
+        var value = seed.toBigDecimal();
+        if (value.signum() < 0 || value.stripTrailingZeros().scale() > 0) {
+            throw new IllegalArgumentException("RANDOM seed must be a nonnegative integer");
+        }
+        context.seedZeusRandom(value.toBigIntegerExact().longValue());
+        return zeusRandom(context);
     }
 
     /**
@@ -1645,7 +1680,19 @@ public final class Ops {
      */
     public static void call(ProgramContext context, String name, ClassLoader loader,
                             DataView[] arguments) {
+        invoke(context, name, context.resolve(name, loader), arguments);
+    }
+
+    /** 静的な CALL の作業域は CANCEL では解放しない。 */
+    public static void callStatic(ProgramContext context, String name, ClassLoader loader,
+                                  DataView[] arguments) {
         ProgramContext.Loaded target = context.resolve(name, loader);
+        context.retainStatic(name);
+        invoke(context, name, target, arguments);
+    }
+
+    private static void invoke(ProgramContext context, String name, ProgramContext.Loaded target,
+                               DataView[] arguments) {
         target.validateArguments(arguments);
         context.enterCall(name, target.storage(), target.program().storageMap(), target.program());
         try {
@@ -1706,7 +1753,7 @@ public final class Ops {
      * 始まる。呼んでいないプログラムを取り消しても誤りではない。
      */
     public static void cancel(ProgramContext context, String name) {
-        context.forget(name);
+        context.cancel(name);
     }
 
     /** 動的な {@code CANCEL}。取り消す名前をデータ項目から読む。 */
@@ -1758,6 +1805,14 @@ public final class Ops {
                     "the caller did not pass an argument, and no address was set, for " + item);
         }
         return arguments[index];
+    }
+
+    public static DataView linkage(ProgramContext context, DataView[] arguments, int index, String item) {
+        DataView view = linkage(arguments, index, item);
+        if (AddressSpace.of(context).isReleased(view.storage())) {
+            throw new Abend(AbendCode.S0C4, "storage has been freed for " + item);
+        }
+        return view;
     }
 
     /**
@@ -1887,15 +1942,63 @@ public final class Ops {
             (byte) (address >>> 24), (byte) (address >>> 16), (byte) (address >>> 8), (byte) address});
     }
 
+    public static void allocate(ProgramContext context, DataView[] slots, int index, Decimal size,
+                                byte[] initial, Storage returning, int returningOffset) {
+        int length;
+        try {
+            length = size.toBigDecimal().max(java.math.BigDecimal.ZERO)
+                    .setScale(0, java.math.RoundingMode.CEILING).intValueExact();
+        } catch (ArithmeticException invalid) {
+            throw new Abend(AbendCode.S0C4, "ALLOCATE size exceeds supported storage");
+        }
+        DataView destination = returning == null ? null : returning.view(returningOffset, 4);
+        DataView allocated = null;
+        int address = 0;
+        if (length > 0) {
+            Storage storage = Storage.allocate(length);
+            if (initial != null) {
+                System.arraycopy(initial, 0, storage.array(), 0, length);
+            }
+            AddressSpace space = AddressSpace.of(context);
+            address = space.addressOf(storage, 0);
+            space.allocated(storage);
+            allocated = storage.whole();
+        }
+        if (index >= 0) {
+            slots[index] = allocated;
+        }
+        if (destination != null) {
+            destination.setBytes(java.nio.ByteBuffer.allocate(4).putInt(address).array());
+        }
+    }
+
+    public static void free(ProgramContext context, Storage pointer, int offset) {
+        DataView field = pointer.view(offset, 4);
+        if (AddressSpace.of(context).free(dataPointer(pointer, offset))) {
+            field.fill((byte) 0);
+        }
+    }
+
+    public static int dataPointer(Storage storage, int offset) {
+        return java.nio.ByteBuffer.wrap(storage.array(), offset, 4).getInt();
+    }
+
+    public static int storageAddress(ProgramContext context, Storage storage, int offset) {
+        return AddressSpace.of(context).addressOf(storage, offset);
+    }
+
+    public static int linkageAddress(ProgramContext context, DataView[] arguments, int index) {
+        DataView view = index >= 0 && index < arguments.length ? arguments[index] : null;
+        return view == null ? 0 : storageAddress(context, view.storage(), view.offset());
+    }
+
     /**
      * {@code SET ADDRESS OF 連絡節 TO ptr}。POINTER が NULL なら null (番地を外す) を返す。
      * この実行単位で振った番号でなければ、ホストで壊れた番地を使うのと同じに S0C4 で止める。
      */
     public static DataView addressed(ProgramContext context, Storage pointer, int pointerOffset, int length,
                                      String item) {
-        byte[] value = pointer.view(pointerOffset, 4).toByteArray();
-        int address = ((value[0] & 0xFF) << 24) | ((value[1] & 0xFF) << 16) | ((value[2] & 0xFF) << 8)
-                | (value[3] & 0xFF);
+        int address = dataPointer(pointer, pointerOffset);
         if (address == 0) {
             return null;
         }
@@ -1948,12 +2051,24 @@ public final class Ops {
             throw new RangeCheckException("reference modification starts at " + leftmost
                     + " which is outside 1.." + size + " for " + name);
         }
-        if (length < 1 || leftmost + length - 1 > size) {
+        if (length < 1 || length > size - leftmost + 1) {
             throw new RangeCheckException("reference modification of length " + length
                     + " at " + leftmost + " runs past the end of " + name
                     + " (" + size + " bytes)");
         }
         return leftmost;
+    }
+
+    /** 関数を一度評価して得たバイト列から、1 起点の文字位置で部分参照する。 */
+    public static byte[] sliceFunctionResult(byte[] value, int start, int length,
+                                             boolean toEnd, int width, String name) {
+        int size = value.length / width;
+        if (toEnd && start >= 1 && start <= size) {
+            length = size - start + 1;
+        }
+        checkRefMod(start, length, size, name);
+        int from = (start - 1) * width;
+        return Arrays.copyOfRange(value, from, from + length * width);
     }
 
     // ---- 算術 ----
@@ -2037,6 +2152,11 @@ public final class Ops {
     /** 浮動小数点項目へ格納する。表せない桁は切り捨てる (暫定判断 P-018)。 */
     public static void storeFloat(Decimal value, Storage storage, int offset, int length) {
         storage.view(offset, length).setBytes(floating(length).encode(value.toBigDecimal()));
+    }
+
+    public static void storeFloatNearest(Decimal value, Storage storage, int offset, int length) {
+        storage.view(offset, length).setBytes(
+                floating(length).encodeNearest(value.toBigDecimal()));
     }
 
     private static dev.cobolonjava.runtime.item.FloatingItem floating(int length) {

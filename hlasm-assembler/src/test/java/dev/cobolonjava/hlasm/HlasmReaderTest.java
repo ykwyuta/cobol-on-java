@@ -60,15 +60,19 @@ class HlasmReaderTest {
         assertEquals("14", statements.get(0).operands());
     }
 
-    /**
-     * ICTL は桁の割当てを変える。黙って既定の桁で読むと、原文と違う文を組み立てる。
-     * 道具が処理系の失敗を作らないよう、読めないことを断る。
-     */
     @Test
-    @DisplayName("ICTL は断る")
-    void rejectsIctl() {
+    @DisplayName("ICTL は読み始める桁を変える")
+    void appliesIctl() {
+        List<Statement> statements = HlasmReader.read(
+                "         ICTL  2,71,16\n9VALUE    DC    F'42'\n * コメント\n");
+        assertEquals(2, statements.size());
+        assertEquals("VALUE", statements.getLast().label());
+    }
+
+    @Test
+    void rejectsInvalidIctl() {
         AssemblyException failure = assertThrows(AssemblyException.class,
-                () -> HlasmReader.read("         ICTL  1,71,16"));
+                () -> HlasmReader.read("         ICTL  2,71,2"));
         assertTrue(failure.getMessage().contains("ICTL"));
     }
 
