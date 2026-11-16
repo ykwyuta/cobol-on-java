@@ -39,14 +39,18 @@ final class PliMacroProcessor {
      * {@code raw} は原文の綴り、{@code leading} は前にある空白と注記である。
      */
     private record Tok(Kind kind, String text, String raw, String leading, int line,
-                       String suffix) {
+                       String suffix, int column) {
+
+        Tok(Kind kind, String text, String raw, String leading, int line, String suffix) {
+            this(kind, text, raw, leading, line, suffix, 0);
+        }
 
         boolean is(String value) {
             return (kind == Kind.OP || kind == Kind.IDENT) && text.equals(value);
         }
 
         Tok at(int newLine, String newLeading) {
-            return new Tok(kind, text, raw, newLeading, newLine, suffix);
+            return new Tok(kind, text, raw, newLeading, newLine, suffix, column);
         }
     }
 
@@ -132,6 +136,10 @@ final class PliMacroProcessor {
     /** 最後に書き出した字句。文の形の手続きの呼び出しが文の頭にあるかを見る。 */
     private Tok lastOut;
     private int depth;
+    /** いちばん外のマクロの呼び出しが始まる桁 (MACCOL)。 */
+    private int maccol;
+    /** 前処理の配列の名と、次元ごとの [下限, 上限]。要素は vars に「名(i,j)」で置く。 */
+    private final Map<String, long[][]> arrays = new HashMap<>();
     private int counter;
     private long gotos;
 
@@ -211,6 +219,7 @@ final class PliMacroProcessor {
         List<Tok> tokens = new ArrayList<>();
         int at = 0;
         int line = firstLine;
+        int lineStart = 0;
         int n = source.length();
         while (true) {
             int start = at;
@@ -230,6 +239,8 @@ final class PliMacroProcessor {
             }
             String leading = source.substring(start, at);
             line += count(leading, '\n');
+            int lastNewline = source.lastIndexOf('\n', at - 1);
+            if (lastNewline >= start) lineStart = lastNewline + 1;
             if (at >= n) {
                 break;
             }
@@ -293,7 +304,7 @@ final class PliMacroProcessor {
                 text = source.substring(tokenStart, at).replace('¬', '^');
             }
             String raw = source.substring(tokenStart, at);
-            tokens.add(new Tok(kind, text, raw, leading, line, suffix));
+            tokens.add(new Tok(kind, text, raw, leading, line, suffix, tokenStart - lineStart + 1));
             line += count(raw, '\n');
         }
         return tokens;
@@ -397,6 +408,9 @@ final class PliMacroProcessor {
         int next = i + 1;
         Proc proc = procs.get(name);
         if (proc != null) {
+            if (depth == 0) {
+                maccol = tok.column;
+            }
             List<String> args = new ArrayList<>();
             int j = i + 1;
             if (j < end && t.get(j).is("(")) {
@@ -612,7 +626,7 @@ final class PliMacroProcessor {
                 next[0] = se + 1;
                 return new Flow(keyword, label, null);
             }
-            case "PROCEDURE", "PROC" -> {
+            case "PROCEDURE", "PROC", "XPROCEDURE", "XPROC" -> {
                 int[] ends = groupEnd(t, se + 1, end);
                 next[0] = ends[0];
                 if (labels.isEmpty()) {
@@ -643,6 +657,10 @@ final class PliMacroProcessor {
                     if (!t.get(j).is("%")) {
                         body.add(t.get(j));
                     }
+                }
+                // %XPROCEDURE で定義済みの名をもう一度定義しても無視する (LRM "%XPROCEDURE")
+                if (keyword.startsWith("X") && procs.containsKey(labels.get(0))) {
+                    return Flow.NEXT;
                 }
                 procs.put(labels.get(0), new Proc(List.copyOf(params), returnsChar,
                         statementForm, List.copyOf(body)));
@@ -818,6 +836,7 @@ final class PliMacroProcessor {
         int i = from;
         while (i < to) {
             List<String> names = new ArrayList<>();
+            long[][] bounds = null;
             if (t.get(i).is("(")) {
                 i++;
                 while (i < to && !t.get(i).is(")")) {
@@ -830,6 +849,26 @@ final class PliMacroProcessor {
             } else if (t.get(i).kind == Kind.IDENT) {
                 names.add(t.get(i).text);
                 i++;
+                if (i < to && t.get(i).is("(")) {
+                    // 次元。上下限は式で書け、ほかの配列の HBOUND なども使える
+                    int close = closing(t, i, to);
+                    List<long[]> dims = new ArrayList<>();
+                    int startDim = i + 1;
+                    int level = 0;
+                    for (int k = i + 1; k <= close; k++) {
+                        if (k < close && t.get(k).is("(")) level++;
+                        if (k < close && t.get(k).is(")")) level--;
+                        if (k == close || (t.get(k).is(",") && level == 0)) {
+                            int colon = indexAtDepth0(t, startDim, k, ":");
+                            long low = colon < 0 ? 1 : eval(t, startDim, colon, null).num();
+                            long high = eval(t, colon < 0 ? startDim : colon + 1, k, null).num();
+                            dims.add(new long[] {low, high});
+                            startDim = k + 1;
+                        }
+                    }
+                    bounds = dims.toArray(new long[0][]);
+                    i = close + 1;
+                }
             } else {
                 throw error(at, "invalid %DECLARE");
             }
@@ -857,9 +896,6 @@ final class PliMacroProcessor {
                     int close = closing(t, i + 1, to);
                     initial = eval(t, i + 2, close, null);
                     i = close;
-                } else if (word.is("(")) {
-                    // 次元 (配列) はまだ持たない
-                    throw error(word, "preprocessor arrays are not supported yet");
                 } else {
                     throw error(word, "unsupported %DECLARE attribute " + word.raw);
                 }
@@ -867,6 +903,16 @@ final class PliMacroProcessor {
             }
             i++;
             for (String name : names) {
+                if (bounds != null) {
+                    // 配列: 要素を既定の値で置く
+                    arrays.put(name, bounds);
+                    if (character) chars.add(name);
+                    for (String key : elementKeys(name, bounds)) {
+                        if (character) chars.add(key);
+                        vars.put(key, character ? Val.of("") : Val.of(0L));
+                    }
+                    continue;
+                }
                 if (!entry) {
                     Val value = initial != null ? initial
                             : character ? Val.of("") : Val.of(0L);
@@ -952,6 +998,15 @@ final class PliMacroProcessor {
             assign(keyword, eval(t, equals + 1, se, locals), locals);
             next[0] = se + 1;
             return Flow.NEXT;
+        }
+        if (arrays.containsKey(keyword) && k + 1 < se && t.get(k + 1).is("(")) {
+            int close = closing(t, k + 1, se);
+            if (close + 1 < se && t.get(close + 1).is("=")) {
+                String key = elementKey(keyword, t, k + 1, close, locals);
+                assign(key, eval(t, close + 2, se, locals), locals);
+                next[0] = se + 1;
+                return Flow.NEXT;
+            }
         }
         switch (keyword) {
             case "DECLARE", "DCL" -> {
@@ -1209,6 +1264,32 @@ final class PliMacroProcessor {
         if (tok.kind != Kind.IDENT) {
             throw error(tok, "invalid preprocessor expression");
         }
+        if (arrays.containsKey(tok.text) && at[0] < to && t.get(at[0]).is("(")) {
+            int close = closing(t, at[0], to);
+            String key = elementKey(tok.text, t, at[0], close, locals);
+            at[0] = close + 1;
+            return lookup(key, locals);
+        }
+        if ((tok.is("HBOUND") || tok.is("LBOUND") || tok.is("DIMENSION") || tok.is("DIM"))
+                && at[0] + 1 < to && t.get(at[0]).is("(") && arrays.containsKey(t.get(at[0] + 1).text)) {
+            // 配列を調べる関数 (LRM "Preprocessor built-in functions")。次元は省けば 1
+            int close = closing(t, at[0], to);
+            long[][] bounds = arrays.get(t.get(at[0] + 1).text);
+            int comma = indexAtDepth0(t, at[0] + 2, close, ",");
+            int dimension = comma < 0 ? 1 : (int) eval(t, comma + 1, close, locals).num();
+            at[0] = close + 1;
+            if (dimension < 1 || dimension > bounds.length) {
+                throw error(tok, tok.text + ": no dimension " + dimension);
+            }
+            long[] bound = bounds[dimension - 1];
+            return Val.of(tok.is("HBOUND") ? bound[1] : tok.is("LBOUND") ? bound[0]
+                    : bound[1] - bound[0] + 1);
+        }
+        if (tok.is("MACCOL") && !(at[0] < to && t.get(at[0]).is("("))
+                && (locals == null || !locals.containsKey("MACCOL")) && !vars.containsKey("MACCOL")) {
+            // いちばん外のマクロの呼び出しが始まる桁 (LRM "MACCOL")
+            return Val.of(maccol);
+        }
         List<Val> args = new ArrayList<>();
         boolean called = false;
         if (at[0] < to && t.get(at[0]).is("(")) {
@@ -1245,6 +1326,52 @@ final class PliMacroProcessor {
         }
         // Zeus は宣言していない名を空の文字にする。こちらは断る
         throw error(tok, "preprocessor variable " + name + " is not declared");
+    }
+
+    /** 配列の要素の名 (「名(i,j)」)。添字が範囲の外なら断る。 */
+    private String elementKey(String name, List<Tok> t, int open, int close, Map<String, Val> locals) {
+        long[][] bounds = arrays.get(name);
+        List<Long> subscripts = new ArrayList<>();
+        int start = open + 1;
+        int level = 0;
+        for (int k = open + 1; k <= close; k++) {
+            if (k < close && t.get(k).is("(")) level++;
+            if (k < close && t.get(k).is(")")) level--;
+            if (k == close || (t.get(k).is(",") && level == 0)) {
+                subscripts.add(eval(t, start, k, locals).num());
+                start = k + 1;
+            }
+        }
+        if (subscripts.size() != bounds.length) {
+            throw error(t.get(open), name + " has " + bounds.length + " dimension(s)");
+        }
+        StringBuilder key = new StringBuilder(name).append('(');
+        for (int d = 0; d < bounds.length; d++) {
+            long value = subscripts.get(d);
+            if (value < bounds[d][0] || value > bounds[d][1]) {
+                throw error(t.get(open), "subscript " + value + " of " + name + " is out of range");
+            }
+            key.append(d == 0 ? "" : ",").append(value);
+        }
+        return key.append(')').toString();
+    }
+
+    /** 配列のすべての要素の名。 */
+    private static List<String> elementKeys(String name, long[][] bounds) {
+        List<String> keys = new ArrayList<>();
+        long[] index = new long[bounds.length];
+        for (int d = 0; d < bounds.length; d++) index[d] = bounds[d][0];
+        while (true) {
+            StringBuilder key = new StringBuilder(name).append('(');
+            for (int d = 0; d < bounds.length; d++) key.append(d == 0 ? "" : ",").append(index[d]);
+            keys.add(key.append(')').toString());
+            int d = bounds.length - 1;
+            while (d >= 0 && ++index[d] > bounds[d][1]) {
+                index[d] = bounds[d][0];
+                d--;
+            }
+            if (d < 0) return keys;
+        }
     }
 
     private long integer(Tok number) {

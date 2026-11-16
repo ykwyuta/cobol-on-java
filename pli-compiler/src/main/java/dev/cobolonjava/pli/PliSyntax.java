@@ -19,11 +19,59 @@ final class PliSyntax {
     static ParseResult parse(String fileName, String source) {
         DFP.set(PliOptions.fromSource(source).dfp());
         try {
-            return new Parser(fileName, expandTypes(new Lexer(fileName, source).scan())).parse();
+            return new Parser(fileName, expandTypes(repeatableDeclarations(
+                    new Lexer(fileName, source).scan()))).parse();
         } catch (ParseFailure failure) {
             return new ParseResult(null, List.of(new Diagnostic(Diagnostic.Severity.ERROR,
                     fileName, failure.token.line(), failure.token.column(), failure.getMessage())));
         }
+    }
+
+    /**
+     * {@code XDECLARE} / {@code XDCL} と {@code XDEFINE} (LRM "XDECLARE", "XDEFINE")。
+     * DECLARE と DEFINE と同じだが、すでに宣言・定義した名をもう一度書いたものは受けて無視する
+     * (include ファイルが同じ名を何度も宣言できるように)。最初のものを DECLARE / DEFINE に
+     * 書き換え、2 度目からを落とす。属性が同じかは確かめていない。
+     */
+    private static List<Token> repeatableDeclarations(List<Token> tokens) {
+        if (tokens.stream().noneMatch(t -> t.kind() == Kind.IDENT
+                && (t.is("XDECLARE") || t.is("XDCL") || t.is("XDEFINE")))) {
+            return tokens;
+        }
+        List<Token> out = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        int start = 0;
+        int depth = 0;
+        for (int i = 0; i < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.is("(")) depth++;
+            else if (t.is(")")) depth--;
+            boolean last = t.kind() == Kind.EOF || (t.is(";") && depth == 0);
+            if (!last) continue;
+            List<Token> statement = tokens.subList(start, Math.min(i + 1, tokens.size()));
+            start = i + 1;
+            Token head = statement.isEmpty() ? null : statement.get(0);
+            if (head != null && head.kind() == Kind.IDENT
+                    && (head.is("XDECLARE") || head.is("XDCL") || head.is("XDEFINE"))) {
+                boolean define = head.is("XDEFINE");
+                String key = null;
+                for (int k = define ? 2 : 1; k < statement.size(); k++) {
+                    if (statement.get(k).kind() == Kind.IDENT) {
+                        key = (define ? "DEFINE " : "DECLARE ") + statement.get(k).text();
+                        break;
+                    }
+                }
+                if (key != null && !seen.add(key)) {
+                    continue;
+                }
+                out.add(new Token(Kind.IDENT, define ? "DEFINE" : "DECLARE", head.line(),
+                        head.column()));
+                out.addAll(statement.subList(1, statement.size()));
+                continue;
+            }
+            out.addAll(statement);
+        }
+        return List.copyOf(out);
     }
 
     /**
