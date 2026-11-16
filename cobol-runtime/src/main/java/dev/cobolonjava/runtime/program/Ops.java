@@ -564,6 +564,11 @@ public final class Ops {
      * @return ファイル状態コードのバイト列。2 バイトである
      */
     /** そのファイルの外のレコードは ASCII である ({@code CODE-SET})。開く前に呼ぶ。 */
+    /** そのファイルを印刷ファイルにする (1: ASA 制御文字、2: 機械制御文字)。 */
+    public static void carriage(ProgramContext context, String name, int mode) {
+        context.carriage(name, mode);
+    }
+
     public static void codeSetAscii(ProgramContext context, String name) {
         context.codeSetAscii(name);
     }
@@ -652,8 +657,15 @@ public final class Ops {
             return refused;
         }
         int actual = clamp(length, minimum, maximum);
+        DataSet file = context.file(name, ddName);
+        int carriage = context.carriageOf(name, file);
+        if (carriage != 0) {
+            // 印刷ファイルの ADVANCING を書かない WRITE は AFTER ADVANCING 1 LINE と同じである
+            return status(context, lengthChecked(Carriage.write(file, carriage,
+                    read(storage, offset, actual), 1, false, actual), actual, length));
+        }
         return status(context, lengthChecked(
-                context.file(name, ddName).write(read(storage, offset, actual)), actual, length));
+                file.write(read(storage, offset, actual)), actual, length));
     }
 
     /** 頁の先頭へ送ることを表す行数。行数と同じ引数に載せるための負の値である。 */
@@ -686,6 +698,11 @@ public final class Ops {
         int actual = clamp(length, minimum, maximum);
         DataSet file = context.file(name, ddName);
         byte[] record = read(storage, offset, actual);
+        int carriage = context.carriageOf(name, file);
+        if (carriage != 0) {
+            return status(context, lengthChecked(Carriage.write(file, carriage, record, lines,
+                    before, actual), actual, length));
+        }
         String status = before ? FileStatus.OK : advance(file, lines, actual);
         if (status.equals(FileStatus.OK)) {
             status = file.write(record);
@@ -748,6 +765,7 @@ public final class Ops {
         }
         int actual = clamp(length, minimum, maximum);
         DataSet file = context.file(name, ddName);
+        int carriage = context.carriageOf(name, file);
         byte[] record = read(storage, offset, actual);
         // 開いた直後の LINAGE-COUNTER は 1 だが、まだ 1 行も置いていない。
         // 数だけでは頁を送った直後と見分けられないので、別の置き場で覚えてある
@@ -756,7 +774,7 @@ public final class Ops {
         String status = FileStatus.OK;
         if (!started) {
             // まだ 1 行も置いていない頁である。上の余白を先に送る
-            status = blanks(file, top, actual);
+            status = blanks(file, top, actual, carriage);
         }
         int used = lines == PAGE ? 1 : lines;
         // 頁送りは書かれたとおりの送りであって、はみ出しではない。
@@ -764,14 +782,14 @@ public final class Ops {
         boolean turning = lines == PAGE ? started : placed + used > page;
         boolean overflow = lines != PAGE && turning;
         if (turning && status.equals(FileStatus.OK)) {
-            status = endPage(file, placed, page, bottom, top, actual);
+            status = endPage(file, placed, page, bottom, top, actual, carriage);
             placed = 0;
             used = 1;
         }
         if (status.equals(FileStatus.OK)) {
             status = before
-                    ? placeBefore(file, record, used, actual)
-                    : placeAfter(file, record, used, actual);
+                    ? placeBefore(file, record, used, actual, carriage)
+                    : placeAfter(file, record, used, actual, carriage);
         }
         int counter = placed + used;
         writeCounter(storage, counterAt, counter);
@@ -781,32 +799,34 @@ public final class Ops {
     }
 
     /** 書いてから送る。レコードはいまの行に乗り、残りは空行である。 */
-    private static String placeBefore(DataSet file, byte[] record, int used, int width) {
-        String status = file.write(record);
-        return status.equals(FileStatus.OK) ? blanks(file, used - 1, width) : status;
+    private static String placeBefore(DataSet file, byte[] record, int used, int width,
+                                      int carriage) {
+        String status = Carriage.line(file, carriage, record);
+        return status.equals(FileStatus.OK) ? blanks(file, used - 1, width, carriage) : status;
     }
 
     /** 送ってから書く。レコードは送った先の行に乗る。 */
-    private static String placeAfter(DataSet file, byte[] record, int used, int width) {
-        String status = blanks(file, used - 1, width);
-        return status.equals(FileStatus.OK) ? file.write(record) : status;
+    private static String placeAfter(DataSet file, byte[] record, int used, int width,
+                                     int carriage) {
+        String status = blanks(file, used - 1, width, carriage);
+        return status.equals(FileStatus.OK) ? Carriage.line(file, carriage, record) : status;
     }
 
     /** 本文の残りと下の余白を送り、次の頁の上の余白まで進める。 */
     private static String endPage(DataSet file, int counter, int page, int bottom, int top,
-                                  int width) {
-        String status = blanks(file, page - counter, width);
+                                  int width, int carriage) {
+        String status = blanks(file, page - counter, width, carriage);
         if (status.equals(FileStatus.OK)) {
-            status = blanks(file, bottom, width);
+            status = blanks(file, bottom, width, carriage);
         }
-        return status.equals(FileStatus.OK) ? blanks(file, top, width) : status;
+        return status.equals(FileStatus.OK) ? blanks(file, top, width, carriage) : status;
     }
 
     /** 空行を {@code count} 行送る。 */
-    private static String blanks(DataSet file, int count, int width) {
+    private static String blanks(DataSet file, int count, int width, int carriage) {
         String status = FileStatus.OK;
         for (int i = 0; i < count && status.equals(FileStatus.OK); i++) {
-            status = file.write(blankLine(file, width));
+            status = Carriage.line(file, carriage, blankLine(file, width));
         }
         return status;
     }

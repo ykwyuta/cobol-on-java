@@ -437,7 +437,10 @@ public final class ProgramContext {
     public DataSet file(String name, String ddName, Organization organization,
                         RecordFormat format, int recordLength) {
         return files.computeIfAbsent(name, k -> {
-            DataSetAttributes declared = new DataSetAttributes(format, recordLength, codePage());
+            // 印刷ファイルのレコードは制御文字の 1 バイトだけ長い (Programming Guide, ADV)
+            int length = carriageFiles.containsKey(name) && format != RecordFormat.LINE
+                    ? recordLength + 1 : recordLength;
+            DataSetAttributes declared = new DataSetAttributes(format, length, codePage());
             Path path = catalog.resolve(ddName);
             if (organization != Organization.RELATIVE && asciiFiles.contains(name)) {
                 SequentialDataSet file = SequentialDataSet.at(path, declared);
@@ -448,6 +451,23 @@ public final class ProgramContext {
                     ? RelativeDataSet.at(path, declared)
                     : SequentialDataSet.at(path, declared), ddName);
         });
+    }
+
+    /** 印刷ファイルの名前と、制御文字の種類 (1: ASA、2: 機械制御文字)。 */
+    private final java.util.Map<String, Integer> carriageFiles = new java.util.HashMap<>();
+
+    /** そのファイルを印刷ファイルにする。ファイルを用意する前に呼ぶ。 */
+    public void carriage(String name, int mode) {
+        carriageFiles.put(name, mode);
+    }
+
+    /**
+     * そのファイルの制御文字の種類。印刷ファイルでなければ 0。行の並び (LINE) の
+     * データセットは改行と改頁の字で行を表すので、制御文字を付けない。
+     */
+    public int carriageOf(String name, DataSet file) {
+        Integer mode = carriageFiles.get(name);
+        return mode == null || file.attributes().format() == RecordFormat.LINE ? 0 : mode;
     }
 
     /** {@code CODE-SET} で ASCII と決めたファイルの名前。 */

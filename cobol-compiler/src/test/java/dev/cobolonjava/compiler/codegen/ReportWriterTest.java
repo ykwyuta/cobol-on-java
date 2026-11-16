@@ -111,18 +111,25 @@ class ReportWriterTest {
      * 書き出した紙。行の切れ目を {@code |}、改頁を {@code ^} で表す。
      *
      * <p>データセットは決まった長さのレコードの並びで、行の区切り文字を持たない。
-     * だから幅で切る。中身はホストの符号系なので、読むときも同じ符号系で読む。
-     * 改頁は改頁文字だけのレコードである (暫定判断 P-063)。
+     * 報告書のファイルは印刷ファイルなので、レコードは幅より 1 バイト長く、頭が ASA の
+     * 制御文字である (空白は 1 行、0 は 2 行、- は 3 行送ってから印字、1 は改頁)。
+     * 送った分の空行と改頁を行に戻して読む。中身はホストの符号系で読む。
      */
     private String paper() {
         try {
             byte[] bytes = Files.readAllBytes(directory.resolve("RPTDD"));
             StringBuilder out = new StringBuilder();
-            for (int at = 0; at < bytes.length; at += WIDTH) {
-                byte[] record = new byte[Math.min(WIDTH, bytes.length - at)];
+            for (int at = 0; at < bytes.length; at += WIDTH + 1) {
+                byte[] record = new byte[Math.min(WIDTH + 1, bytes.length - at)];
                 System.arraycopy(bytes, at, record, 0, record.length);
-                out.append(CodePages.DEFAULT.decode(record).replace("\f", "^").stripTrailing())
-                        .append('|');
+                String line = CodePages.DEFAULT.decode(record);
+                out.append(switch (line.charAt(0)) {
+                    case '1' -> "^|";
+                    case '0' -> "|";
+                    case '-' -> "||";
+                    default -> "";
+                });
+                out.append(line.substring(1).stripTrailing()).append('|');
             }
             return out.toString();
         } catch (IOException e) {

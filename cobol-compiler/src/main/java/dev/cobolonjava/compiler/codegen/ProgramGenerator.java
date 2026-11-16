@@ -2513,6 +2513,15 @@ public final class ProgramGenerator {
             List<Runnable> watched = planStatements(opened.debug());
             boolean ascii = file.ascii();
             body.add(() -> {
+                int carriage = carriageModes.getOrDefault(file.name(), 0);
+                if (carriage != 0) {
+                    // 印刷ファイル。開く前に、制御文字の種類を実行単位へ告げる
+                    run.visitVarInsn(Opcodes.ALOAD, 2);
+                    run.visitLdcInsn(file.name());
+                    push(carriage);
+                    run.visitMethodInsn(Opcodes.INVOKESTATIC, OPS, "carriage",
+                            "(" + CONTEXT + "Ljava/lang/String;I)V", false);
+                }
                 if (ascii) {
                     // CODE-SET。開く前に、外のレコードが ASCII であることを実行単位へ告げる
                     run.visitVarInsn(Opcodes.ALOAD, 2);
@@ -2813,7 +2822,19 @@ public final class ProgramGenerator {
      * <p>{@code FROM} はレコード記述への転記に展開されている。転記が先で、
      * 書き出しがあとである。
      */
+    /**
+     * 印刷ファイルの制御文字の種類。ADVANCING を書いた WRITE があるファイルは印刷ファイルで
+     * あり、AFTER だけなら ASA 制御文字 (1)、BEFORE があれば機械制御文字 (2) を使う
+     * (Language Reference, WRITE statement, ADVANCING phrase)。段落をすべて組み立ててから
+     * 命令を出すので、OPEN の命令を出すときには全部の WRITE を見たあとである。
+     */
+    private final Map<String, Integer> carriageModes = new java.util.HashMap<>();
+
     private void planWrite(Statement.Write statement, List<Runnable> body) {
+        if (statement.advancing() != null && !statement.file().access().isKeyed()) {
+            carriageModes.merge(statement.file().name(), statement.advancing().before() ? 2 : 1,
+                    Math::max);
+        }
         planRecordOutput(statement.file(), statement.record(), statement.from(),
                 statement.keyCheck(), "write", statement.advancing(), statement.debug(),
                 statement.origin(), body);

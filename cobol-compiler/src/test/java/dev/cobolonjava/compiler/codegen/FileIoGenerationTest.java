@@ -730,8 +730,8 @@ class FileIoGenerationTest {
     }
 
     @Test
-    @DisplayName("決まった長さのレコードなら空行も空白で埋める (FR-102)")
-    void aFixedLengthBlankLineIsSpaces(@TempDir Path directory) {
+    @DisplayName("印刷ファイルのレコードは頭に ASA の制御文字を持つ (FR-102)")
+    void aPrintRecordStartsWithAnAsaControlCharacter(@TempDir Path directory) {
         run(directory, source(
                 "IDENTIFICATION DIVISION.",
                 "PROGRAM-ID. FIXEDPRT.",
@@ -750,8 +750,9 @@ class FileIoGenerationTest {
                 "    CLOSE PRINT-FILE.",
                 "    STOP RUN."));
 
-        // 行の切れ目を持たない様式では、空行は空白のレコードである
-        assertArrayEquals(ebcdic("   ONE"), bytesOf(directory.resolve("FIXDD")));
+        // 印刷ファイルのレコードは 1 バイト長く、頭が ASA の制御文字である。
+        // 2 行送ってから印字するのは 0 であり、空のレコードは足さない
+        assertArrayEquals(ebcdic("0ONE"), bytesOf(directory.resolve("FIXDD")));
     }
 
     @Test
