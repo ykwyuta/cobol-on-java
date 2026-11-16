@@ -242,7 +242,8 @@ final class StructureMapping {
             case BINARY -> binaryLength(decl.unsigned() ? decl.precision() - 1 : decl.precision());
             case DECIMAL -> PackedDecimal.byteLength(Math.max(1, decl.precision()));
             case POINTER, OFFSET -> 4;
-            case FLOAT -> floatLength(decl.precision(), decl.scale() == 1);
+            case FLOAT -> decl.decimalFloat() ? PliFloat.decimalLength(decl.precision())
+                    : floatLength(decl.precision(), decl.scale() == 1);
             case WIDECHAR, GRAPHIC -> 2 * Math.max(1, decl.precision());
             // AREA(n) は n byte と管理域の 16 byte
             case AREA -> Math.max(0, decl.precision()) + PliRuntime.AREA_HEADER;

@@ -13,7 +13,11 @@ final class PliSyntax {
     private PliSyntax() {
     }
 
+    /** 翻訳オプション FLOAT(DFP) が効いているか。原文の注記から読む。 */
+    private static final ThreadLocal<Boolean> DFP = ThreadLocal.withInitial(() -> false);
+
     static ParseResult parse(String fileName, String source) {
+        DFP.set(PliOptions.fromSource(source).dfp());
         try {
             return new Parser(fileName, expandTypes(new Lexer(fileName, source).scan())).parse();
         } catch (ParseFailure failure) {
@@ -671,13 +675,20 @@ final class PliSyntax {
                 Expr initial, String basedOn, Boolean aligned, boolean varying,
                 List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
                 String storage, Defined defined, String unsupported, String picture,
-                boolean complex, boolean union, ValueSet valueSet) {
+                boolean complex, boolean union, ValueSet valueSet, String byteOrder,
+                String floatFormat) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
-                    dimensions, initialItems, false, null, null, null, null, false, false, null);
+                    dimensions, initialItems, false, null, null, null, null, false, false, null,
+                    null, null);
+        }
+
+        /** 10 進の IEEE (DFP) で持つ FLOAT か。 */
+        boolean decimalFloat() {
+            return "DFP".equals(floatFormat);
         }
 
         boolean controlled() {
@@ -688,7 +699,7 @@ final class PliSyntax {
         Decl withDimensions(List<Bound> bounds) {
             return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
                     varying, List.copyOf(bounds), initialItems, unsigned, storage, defined,
-                    unsupported, picture, complex, union, valueSet);
+                    unsupported, picture, complex, union, valueSet, byteOrder, floatFormat);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -1901,7 +1912,8 @@ final class PliSyntax {
                     defined(part), floatByDefault ? "FLOAT" : unsupportedAttribute(part),
                     info.type == Type.PICTURE ? pictureSpecification(part) : null,
                     part.stream().anyMatch(t -> t.is("COMPLEX") || t.is("CPLX")),
-                    part.stream().anyMatch(t -> t.is("UNION") || t.is("CELL")), valueSet(part));
+                    part.stream().anyMatch(t -> t.is("UNION") || t.is("CELL")), valueSet(part),
+                    byteOrder(part), floatFormat(part, info));
         }
 
         private ValueSet valueSet(List<Token> declaration) {
@@ -2084,6 +2096,30 @@ final class PliSyntax {
                 }
             }
             return false;
+        }
+
+        /**
+         * バイト順 (LRM "BIGENDIAN and LITTLEENDIAN")。z/OS の NATIVE は BIGENDIAN である。
+         * 書いていなければ null (構造の要素は親から受け継ぐ)。
+         */
+        private static String byteOrder(List<Token> part) {
+            for (Token token : part) {
+                if (token.is("LITTLEENDIAN") || token.is("NONNATIVE")) return "LITTLE";
+                if (token.is("BIGENDIAN") || token.is("NATIVE")) return "BIG";
+            }
+            return null;
+        }
+
+        /**
+         * FLOAT の記憶域の形式 (LRM "HEXADEC and IEEE attributes")。既定は HEXADEC であり、
+         * FLOAT(DFP) のもとでは FLOAT DECIMAL が DFP になる。
+         */
+        private static String floatFormat(List<Token> part, TypeInfo info) {
+            for (Token token : part) {
+                if (token.is("IEEE")) return "IEEE";
+                if (token.is("HEXADEC")) return "HEXADEC";
+            }
+            return info.type == Type.FLOAT && info.scale == 0 && DFP.get() ? "DFP" : null;
         }
 
         private static Boolean alignment(List<Token> part) {
@@ -2889,6 +2925,12 @@ final class PliSyntax {
             if (check(Kind.IDENT)) {
                 Token first = peek();
                 String name = qualifiedName();
+                if (!DFP.get() && check("(") && (name.equals("ISZERO") || name.equals("ISINF")
+                        || name.equals("ISNAN") || name.equals("ISFINITE") || name.equals("ISNORMAL")
+                        || name.equals("ISSIGNED"))) {
+                    // 10 進の IEEE の値を調べる関数は FLOAT(DFP) のもとでしか使えない
+                    throw fail(first, name + " requires the FLOAT(DFP) compiler option");
+                }
                 if (name.equals("SOURCELINE") && check("(") && check(1, ")")) {
                     // 書いた行は翻訳のときに決まる (LRM "SOURCELINE")
                     next();

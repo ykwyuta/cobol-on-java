@@ -1023,6 +1023,7 @@ public final class PliRuntime {
                 area = Storage.allocate(length).whole();
             }
             Var group = new Var(root.name(), PliSyntax.Type.GROUP, length, 0, area);
+            group.littleEndian = "LITTLE".equals(root.byteOrder());
             env.put(group);
             // BASED の構造は自分の記憶域を持たず、別のものの上に重ねる。INITIAL は ALLOCATE で
             // 記憶域を取ったときにしか効かないので、宣言で重ねた先を書き換えてはならない。
@@ -1121,6 +1122,10 @@ public final class PliRuntime {
                         child.scale(), view, mapping.bitShift(i));
                 variable.varying = child.varying();
                 variable.unsigned = child.unsigned();
+                // 構造に書いたバイト順は、自分で書いていない要素へ受け継がれる
+                variable.littleEndian = child.byteOrder() == null ? group.littleEndian
+                        : child.byteOrder().equals("LITTLE");
+                variable.floatFormat = child.floatFormat();
                 variable.picture = pictureOf(child);
                 variable.valueSet = child.valueSet();
                 variable.complex = child.complex();
@@ -1331,6 +1336,8 @@ public final class PliRuntime {
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
             variable.unsigned = declaration.unsigned();
+            variable.littleEndian = "LITTLE".equals(declaration.byteOrder());
+            variable.floatFormat = declaration.floatFormat();
             variable.picture = pictureOf(declaration);
             variable.valueSet = declaration.valueSet();
             variable.complex = declaration.complex();
@@ -1367,6 +1374,8 @@ public final class PliRuntime {
                         declaration.precision(), declaration.scale(),
                         array.view.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
                 element.varying = declaration.varying();
+                element.littleEndian = array.littleEndian;
+                element.floatFormat = declaration.floatFormat();
                 element.picture = pictureOf(declaration);
                 element.valueSet = declaration.valueSet();
                 element.complex = declaration.complex();
@@ -3044,6 +3053,25 @@ public final class PliRuntime {
                         return storeClock(name, function.arguments(), env);
                     }
                 }
+                // 10 進の IEEE の値の種類 (LRM "ISZERO" ほか)。翻訳で FLOAT(DFP) を確かめてある
+                case "ISZERO", "ISINF", "ISNAN", "ISFINITE", "ISNORMAL" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        Var target = dataReference(function.arguments().get(0), env, name);
+                        byte[] bytes = target.view.toByteArray();
+                        PliFloat.Kind kind = "DFP".equals(target.floatFormat)
+                                ? PliFloat.classifyDecimal(bytes)
+                                : "IEEE".equals(target.floatFormat) ? PliFloat.classifyBinary(bytes)
+                                : number(target.read(context)).signum() == 0 ? PliFloat.Kind.ZERO
+                                : PliFloat.Kind.NORMAL;
+                        return switch (name) {
+                            case "ISZERO" -> kind == PliFloat.Kind.ZERO;
+                            case "ISINF" -> kind == PliFloat.Kind.INFINITE;
+                            case "ISNAN" -> kind == PliFloat.Kind.NAN;
+                            case "ISFINITE" -> kind != PliFloat.Kind.INFINITE && kind != PliFloat.Kind.NAN;
+                            default -> kind == PliFloat.Kind.NORMAL;
+                        };
+                    }
+                }
                 case "POLY" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         return polynomial(function.arguments(), env);
@@ -4592,7 +4620,7 @@ public final class PliRuntime {
         private byte[] storageOf(PliSyntax.Function function, Env env) {
             PliSyntax.Expr argument = function.arguments().get(0);
             if (argument instanceof PliSyntax.Reference reference && env.contains(reference.name())) {
-                return env.require(reference.name()).view.toByteArray();
+                return env.require(reference.name()).logicalBytes();
             }
             if (argument instanceof PliSyntax.Function element
                     && arrayNamed(element.name(), env) != null) {
@@ -5019,6 +5047,19 @@ public final class PliRuntime {
             }
             BigDecimal a = number(left);
             BigDecimal b = number(right);
+            if (rules != null && rules.options().dfp()) {
+                // FLOAT(DFP): 10 進の IEEE の長形式 (16 桁、最も近い値へ、同じなら偶数へ) で計算する
+                MathContext dfp = MathContext.DECIMAL64;
+                return switch (operator) {
+                    case "+" -> a.add(b, dfp);
+                    case "-" -> a.subtract(b, dfp);
+                    case "*" -> a.multiply(b, dfp);
+                    default -> {
+                        if (b.signum() == 0) throw new Condition("ZERODIVIDE", null, 320, null);
+                        yield a.divide(b, dfp);
+                    }
+                };
+            }
             return switch (operator) {
                 case "+" -> a.add(b);
                 case "-" -> a.subtract(b);
@@ -5574,6 +5615,43 @@ public final class PliRuntime {
         boolean varying;
         /** {@code FIXED BIN UNSIGNED} なら真。記憶域を符号なしで読む。 */
         boolean unsigned;
+        /** LITTLEENDIAN なら真。2 進の整数と VARYING の長さを逆のバイト順で置く。 */
+        boolean littleEndian;
+        /** FLOAT の形式 ("IEEE"、"DFP"、"HEXADEC"、null は HEXADEC)。 */
+        String floatFormat;
+
+        /** 2 進の整数の記憶域を、大きい桁が先の順で読む。 */
+        private byte[] bigEndianBytes() {
+            byte[] bytes = view.toByteArray();
+            return littleEndian ? reversed(bytes) : bytes;
+        }
+
+        private static byte[] reversed(byte[] bytes) {
+            byte[] out = new byte[bytes.length];
+            for (int i = 0; i < bytes.length; i++) out[i] = bytes[bytes.length - 1 - i];
+            return out;
+        }
+
+        /** HEX と UNSPEC が見る記憶域。LITTLEENDIAN の整数は大きい桁が先の形にする (LRM "HEX")。 */
+        byte[] logicalBytes() {
+            return littleEndian && type == PliSyntax.Type.BINARY ? bigEndianBytes() : view.toByteArray();
+        }
+
+        private BigDecimal floatRead() {
+            if ("IEEE".equals(floatFormat)) return PliFloat.decodeBinary(view.toByteArray());
+            if ("DFP".equals(floatFormat)) return PliFloat.decodeDecimal(view.toByteArray());
+            return hfpDecode();
+        }
+
+        private void floatWrite(BigDecimal value) {
+            if ("IEEE".equals(floatFormat)) {
+                view.setBytes(PliFloat.encodeBinary(value, view.length()));
+            } else if ("DFP".equals(floatFormat)) {
+                view.setBytes(PliFloat.encodeDecimal(value, view.length()));
+            } else {
+                hfpEncode(value);
+            }
+        }
         /** 配列なら次元ごとの上下限、スカラーなら {@code null}。 */
         List<PliSyntax.Bound> dimensions;
         /** 配列の要素。行の順。 */
@@ -5632,8 +5710,8 @@ public final class PliRuntime {
                         context.codePage().decode(view.toByteArray()), precision, scale, picture);
                 // FIXED BIN(p,q) の記憶域は 2 の補数の整数で、値はそれを 2 の q 乗で割ったもの
                 case BINARY -> FixedValue.binary(new BigDecimal(
-                        unsigned ? new java.math.BigInteger(1, view.toByteArray())
-                                : new java.math.BigInteger(view.toByteArray()))
+                        unsigned ? new java.math.BigInteger(1, bigEndianBytes())
+                                : new java.math.BigInteger(bigEndianBytes()))
                         .divide(BigDecimal.valueOf(2).pow(Math.max(0, scale)))
                         .multiply(BigDecimal.valueOf(2).pow(Math.max(0, -scale))),
                         precision, scale);
@@ -5641,7 +5719,7 @@ public final class PliRuntime {
                         NumProcMode.PFD).toBigDecimal(), precision, scale);
                 case POINTER -> new PointerValue(view.length() < 4 ? 0
                         : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt());
-                case FLOAT -> hfpDecode();
+                case FLOAT -> floatRead();
                 case WIDECHAR -> new String(view.toByteArray(),
                         java.nio.charset.StandardCharsets.UTF_16BE);
                 case GRAPHIC -> new PliGraphic(view.toByteArray(), context.codePage());
@@ -5729,7 +5807,8 @@ public final class PliRuntime {
 
         /** VARYING の今の長さ。 */
         int currentLength() {
-            int length = ((view.get(0) & 0xFF) << 8) | (view.get(1) & 0xFF);
+            int length = littleEndian ? ((view.get(1) & 0xFF) << 8) | (view.get(0) & 0xFF)
+                    : ((view.get(0) & 0xFF) << 8) | (view.get(1) & 0xFF);
             if (length > precision) {
                 throw new PliExecutionException("the current length " + length + " of " + name
                         + " exceeds its maximum length " + precision);
@@ -5772,7 +5851,7 @@ public final class PliRuntime {
                 return;
             }
             if (type == PliSyntax.Type.FLOAT) {
-                hfpEncode(Executor.number(value));
+                floatWrite(Executor.number(value));
                 return;
             }
             if (type == PliSyntax.Type.WIDECHAR) {
@@ -5944,7 +6023,7 @@ public final class PliRuntime {
                 int from = full.length - bytes.length + i;
                 bytes[i] = from < 0 ? fill : full[from];
             }
-            view.setBytes(bytes);
+            view.setBytes(littleEndian ? reversed(bytes) : bytes);
         }
 
         /** ビット列を '0' と '1' の並びとして読む。 */
@@ -6047,8 +6126,8 @@ public final class PliRuntime {
 
         private void writeVarying(byte[] encoded) {
             int length = Math.min(encoded.length, precision);
-            view.set(0, (byte) (length >> 8));
-            view.set(1, (byte) length);
+            view.set(littleEndian ? 1 : 0, (byte) (length >> 8));
+            view.set(littleEndian ? 0 : 1, (byte) length);
             for (int i = 0; i < length; i++) view.set(2 + i, encoded[i]);
         }
 
