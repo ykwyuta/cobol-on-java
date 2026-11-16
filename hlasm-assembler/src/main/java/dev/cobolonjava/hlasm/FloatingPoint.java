@@ -508,6 +508,32 @@ final class FloatingPoint {
                 exponent);
     }
 
+    /** DFP の係数。無限大と NaN は先頭の桁を 0 として、続きの欄だけを読む。 */
+    static BigInteger decimalCoefficient(BigInteger raw, int width) {
+        int precision = decimalPrecision(width);
+        int trailing = (precision - 1) / 3 * 10;
+        int combination = raw.shiftRight(width * 8 - 6).intValue() & 31;
+        int leading = combination >= 30 ? 0 : combination < 24 ? combination & 7 : 8 | (combination & 1);
+        BigInteger coefficient = BigInteger.valueOf(leading);
+        BigInteger thousand = BigInteger.valueOf(1000);
+        for (int at = trailing / 10 - 1; at >= 0; at--) {
+            coefficient = coefficient.multiply(thousand).add(BigInteger.valueOf(
+                    undeclet(raw.shiftRight(at * 10).intValue() & 1023)));
+        }
+        return coefficient;
+    }
+
+    /** 有限の DFP の指数 (偏りを除いた値)。 */
+    static int decimalExponent(BigInteger raw, int width) {
+        int precision = decimalPrecision(width);
+        int expbits = decimalExponentBits(width);
+        int trailing = (precision - 1) / 3 * 10;
+        int combination = raw.shiftRight(width * 8 - 6).intValue() & 31;
+        int high = combination < 24 ? combination >> 3 : (combination >> 1) & 3;
+        return ((high << expbits) | (raw.shiftRight(trailing).intValue() & ((1 << expbits) - 1)))
+                - decimalBias(width);
+    }
+
     static BigInteger decimalInfinity(boolean negative, int width) {
         return sign(negative, width).or(BigInteger.valueOf(30).shiftLeft(width * 8 - 6));
     }

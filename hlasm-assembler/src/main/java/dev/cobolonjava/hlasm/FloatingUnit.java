@@ -277,8 +277,141 @@ final class FloatingUnit {
             case 0x8C -> cpu.setRegister(r1, control); // EFPC
             case 0x1A, 0x1B, 0x1C, 0x1D, 0x15, 0x19 -> binary(operation, r1, r2);
             case 0xD0, 0xD1, 0xD2, 0xD3, 0xE4 -> decimal(operation, r1, r2, r3);
+            case 0xEC -> cpu.setConditionCode(compare( // CXTR
+                    finite(FloatingPoint.decodeDecimal(read(r1, 16), 16).value()),
+                    finite(FloatingPoint.decodeDecimal(read(r2, 16), 16).value())));
+            // LPDFR / LNDFR / LCDFR: 符号のビットだけを変える。条件コードは変えない
+            case 0x70 -> registers[r1] = registers[r2] & Long.MAX_VALUE;
+            case 0x71 -> registers[r1] = registers[r2] | Long.MIN_VALUE;
+            case 0x73 -> registers[r1] = registers[r2] ^ Long.MIN_VALUE;
             default -> throw new MachineException(MachineException.OPERATION,
                     String.format("operation code B3%02X is not implemented", operation));
+        }
+    }
+
+
+    /**
+     * SLDT / SRDT / SLXT / SRXT (RXF)。係数を 10 進の桁で動かし、指数はそのまま残す。
+     * 左へはみ出た桁は捨てる。無限大と NaN は係数の続きの欄だけを動かす (先頭の桁を持たない)。
+     * 手順は Zeus の {@code hlasm/execute/floating/decimal.rs} の {@code shift} を移した。
+     */
+    void decimalShift(byte[] insn, int address) {
+        int operation = insn[5] & 0xFF;
+        int width = operation >= 0x48 ? 16 : 8;
+        boolean left = (operation & 1) == 0;
+        int r1 = (insn[4] >>> 4) & 0x0F;
+        int r3 = (insn[1] >>> 4) & 0x0F;
+        if (width == 16) {
+            pair(r1);
+        }
+        BigInteger raw = read(r3, width);
+        int count = address & 63;
+        int precision = FloatingPoint.decimalPrecision(width);
+        int trailing = (precision - 1) / 3 * 10;
+        int combination = raw.shiftRight(width * 8 - 6).intValue() & 31;
+        boolean special = combination >= 30;
+        int capacity = special ? precision - 1 : precision;
+        BigInteger digits = FloatingPoint.decimalCoefficient(raw, width);
+        digits = left ? digits.multiply(FloatingPoint.pow10(count)).mod(FloatingPoint.pow10(capacity))
+                : digits.divide(FloatingPoint.pow10(count));
+        boolean negative = raw.testBit(width * 8 - 1);
+        BigInteger result;
+        if (special) {
+            BigInteger payload = FloatingPoint.packDecimal(false, digits, 0, width)
+                    .and(BigInteger.ONE.shiftLeft(trailing).subtract(BigInteger.ONE));
+            result = raw.shiftRight(width * 8 - 7).shiftLeft(width * 8 - 7).or(payload);
+        } else {
+            result = FloatingPoint.packDecimal(negative, digits,
+                    FloatingPoint.decimalExponent(raw, width), width);
+        }
+        write(r1, width, result);
+    }
+
+    /**
+     * CDPT / CXPT / CPDT / CPXT / CDZT / CXZT / CZDT / CZXT (RSL-b)。DFP と記憶域の
+     * パック 10 進・ゾーン 10 進のあいだの変換。M3 の 8 が符号つき、4 がゾーンを 3 にする (ASCII)、
+     * 2 が正の符号を F にする、1 が (パックでは) 符号を見ない / (逆向きでは) 負の 0 を正にする。
+     *
+     * <p>DFP へは指数 0 の整数にする。記憶域へは係数を右詰めで書き、入りきらない上の桁は捨てて
+     * 条件コード 3 (プログラムマスクが許せば 10 進オーバーフロー) にする。手順は Zeus の
+     * {@code hlasm/execute/floating/decimal/memory.rs} を移した。
+     */
+    void decimalMemory(byte[] insn, int address, boolean decimalOverflowEnabled) {
+        int operation = insn[5] & 0xFF;
+        boolean zoned = operation < 0xAC;
+        boolean toDecimal = (operation & 2) != 0;
+        int width = (operation & 1) != 0 ? 16 : 8;
+        int r1 = (insn[4] >>> 4) & 0x0F;
+        int m3 = insn[4] & 0x0F;
+        int length = (insn[1] & 0xFF) + 1;
+        if (width == 16) {
+            pair(r1);
+        }
+        int maximum = zoned ? (width == 8 ? 16 : 34) : (width == 8 ? 9 : 18);
+        if (length > maximum) {
+            throw new MachineException(MachineException.SPECIFICATION,
+                    "the field of a DFP memory conversion is longer than " + maximum + " bytes");
+        }
+        var memory = cpu.memory();
+        boolean signed = (m3 & 8) != 0;
+        int digitCount = zoned ? length : length * 2 - (signed ? 1 : 0);
+        if (toDecimal) {
+            byte[] data = memory.read(address, length);
+            int sign = zoned ? (data[length - 1] >> 4) & 15 : data[length - 1] & 15;
+            boolean negative = false;
+            if (signed && (zoned || (m3 & 1) == 0)) {
+                if (sign < 10) {
+                    throw new MachineException(MachineException.DATA, "invalid decimal sign");
+                }
+                negative = sign == 11 || sign == 13;
+            }
+            BigInteger digits = BigInteger.ZERO;
+            for (int position = 0; position < digitCount; position++) {
+                int digit = zoned ? data[position] & 15
+                        : (data[position / 2] >> (position % 2 == 0 ? 4 : 0)) & 15;
+                if (digit > 9) {
+                    throw new MachineException(MachineException.DATA, "invalid decimal digit");
+                }
+                digits = digits.multiply(BigInteger.TEN).add(BigInteger.valueOf(digit));
+            }
+            if (digits.toString().length() > FloatingPoint.decimalPrecision(width)) {
+                throw new MachineException(MachineException.DATA, "nonzero unused packed digit");
+            }
+            write(r1, width, FloatingPoint.packDecimal(negative, digits, 0, width));
+            return;
+        }
+        BigInteger source = read(r1, width);
+        BigInteger original = FloatingPoint.decimalCoefficient(source, width);
+        BigInteger limit = FloatingPoint.pow10(digitCount);
+        boolean lost = original.compareTo(limit) >= 0;
+        BigInteger digits = original.mod(limit);
+        boolean negative = source.testBit(width * 8 - 1);
+        boolean special = (source.shiftRight(width * 8 - 6).intValue() & 31) >= 30;
+        byte[] data = new byte[length];
+        String text = digits.toString();
+        text = "0".repeat(digitCount - text.length()) + text;
+        for (int position = 0; position < digitCount; position++) {
+            int digit = text.charAt(position) - '0';
+            if (zoned) {
+                data[position] = (byte) (((m3 & 4) != 0 ? 0x30 : 0xF0) | digit);
+            } else {
+                data[position / 2] |= (byte) (digit << (position % 2 == 0 ? 4 : 0));
+            }
+        }
+        if (signed) {
+            boolean minus = negative && !((m3 & 1) != 0 && digits.signum() == 0);
+            int sign = minus ? 13 : (m3 & 2) != 0 ? 15 : 12;
+            if (zoned) {
+                data[length - 1] = (byte) ((data[length - 1] & 15) | (sign << 4));
+            } else {
+                data[length - 1] |= (byte) sign;
+            }
+        }
+        memory.write(address, data);
+        cpu.setConditionCode(special || lost ? 3 : original.signum() == 0 ? 0 : negative ? 1 : 2);
+        if (lost && decimalOverflowEnabled) {
+            throw new MachineException(MachineException.DECIMAL_OVERFLOW,
+                    "the DFP coefficient does not fit in the decimal field");
         }
     }
 

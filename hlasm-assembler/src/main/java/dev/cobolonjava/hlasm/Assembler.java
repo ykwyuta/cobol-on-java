@@ -35,7 +35,7 @@ public final class Assembler implements Constants.Scope {
     /** まだ置いていないリテラル。{@code LTORG} か {@code END} でまとめて置く。 */
     private final List<String> pendingLiterals = new ArrayList<>();
     /** 置いたリテラルの変位。綴りごとに 1 つだけ作る。1 周目で決め、2 周目でも使う。 */
-    private final Map<String, Integer> placedLiterals = new LinkedHashMap<>();
+    private final Map<String, Value> placedLiterals = new LinkedHashMap<>();
     /** どのリテラルがどのプールに入るか。1 周目で決めた順に 2 周目が取り出す。 */
     private final List<List<String>> pools = new ArrayList<>();
     private int poolIndex;
@@ -48,6 +48,24 @@ public final class Assembler implements Constants.Scope {
 
     private Section current;
     private Section mainSection;
+    /**
+     * 所在カウンタの、制御節の先頭からの位置。前の 1 周目の結果である。1 周目は配置が
+     * 落ち着くまでやり直すので、落ち着いたときにはこの値が本当の位置になる。
+     */
+    private final Map<String, Integer> counterOrigins;
+    /** 制御節の、モジュールの先頭からの位置。配置を決めたあとで入る。 */
+    private final Map<String, Integer> controlOrigins = new LinkedHashMap<>();
+    /** 制御節ごとの所在カウンタ (定義した順)。最初の 1 つは制御節と同じ名前である。 */
+    private final Map<String, List<Section>> controls = new LinkedHashMap<>();
+    /** 制御節ごとに、最後に使った所在カウンタ。同じ制御節に戻るとそこから続く。 */
+    private final Map<String, String> lastCounter = new java.util.HashMap<>();
+    /** この周で始めた制御節。周の最初の CSECT は最初の所在カウンタから始める。 */
+    private final java.util.Set<String> startedControls = new java.util.HashSet<>();
+    private int moduleSize;
+    /** EXTRN と WXTRN で宣言した外の記号。値は弱い参照 (WXTRN) かどうか。 */
+    private final Map<String, Boolean> externalNames = new LinkedHashMap<>();
+    /** 外部ダミー節 (DXD) の長さと境界。定義した順に並べ、Q 型定数がその中の位置を引く。 */
+    private final Map<String, int[]> externalDummies = new LinkedHashMap<>();
     private byte[] text = new byte[0];
     private int entryOffset;
     private boolean emitting;
@@ -56,13 +74,28 @@ public final class Assembler implements Constants.Scope {
     /** 制御節の状態。ダミー節 ({@code DSECT}) はバイト列を持たない。 */
     private static final class Section {
         private final String name;
+        /** この所在カウンタが属する制御節の名前。記号の値はこの制御節に属する。 */
+        private final String control;
         private final boolean dummy;
+        /** 制御節の先頭からの、この所在カウンタの始まり。 */
+        private final int origin;
+        /** 制御節の先頭からの今の位置 (所在カウンタの値)。 */
         private int location;
         private int highWater;
+        /** この所在カウンタで求められたいちばん大きい境界。 */
+        private int alignment = 1;
 
-        Section(String name, boolean dummy) {
+        Section(String name, String control, boolean dummy, int origin) {
             this.name = name;
+            this.control = control;
             this.dummy = dummy;
+            this.origin = origin;
+            this.location = origin;
+            this.highWater = origin;
+        }
+
+        int length() {
+            return highWater - origin;
         }
 
         void advance(int bytes) {
@@ -79,9 +112,10 @@ public final class Assembler implements Constants.Scope {
     private record Addr(int displacement, int base, int index, Integer length) {
     }
 
-    private Assembler(String fileName, CodePage codePage) {
+    private Assembler(String fileName, CodePage codePage, Map<String, Integer> counterOrigins) {
         this.fileName = fileName;
         this.codePage = codePage;
+        this.counterOrigins = counterOrigins;
     }
 
     @Override
@@ -121,14 +155,33 @@ public final class Assembler implements Constants.Scope {
 
     static Result assemble(String fileName, String source, CodePage codePage,
                            SourceLibrary library, int libraryLines, String objectName) {
-        Assembler assembler = new Assembler(fileName, codePage);
+        Assembler assembler = new Assembler(fileName, codePage, Map.of());
         try {
             MacroProcessor.Expansion expansion = MacroProcessor.expand(
-                    HlasmReader.read(source), codePage, fileName, library, libraryLines, objectName);
-            assembler.dbcs = expansion.dbcs();
-            assembler.diagnostics.addAll(expansion.diagnostics());
+                    HlasmReader.read(source), codePage, fileName, library, libraryLines, objectName,
+                    source.split("\r?\n", -1));
             List<Statement> statements = expansion.statements();
-            assembler.pass(statements, false);
+            // 所在カウンタ (LOCTR) と 2 つ目からの制御節の位置は、前にあるものの長さで決まる。
+            // 長さは境界の詰め物で位置に依存するので、位置が変わらなくなるまで 1 周目をやり直す
+            Map<String, Integer> origins = Map.of();
+            for (int attempt = 0; ; attempt++) {
+                assembler = new Assembler(fileName, codePage, origins);
+                assembler.dbcs = expansion.dbcs();
+                assembler.diagnostics.addAll(expansion.diagnostics());
+                assembler.pass(statements, false);
+                Map<String, Integer> next = assembler.layout();
+                boolean settled = true;
+                for (Map.Entry<String, Integer> entry : next.entrySet()) {
+                    settled &= entry.getValue().equals(origins.getOrDefault(entry.getKey(), 0));
+                }
+                if (settled) {
+                    break;
+                }
+                if (attempt == 8) {
+                    throw new AssemblyException(1, "the location counters did not settle");
+                }
+                origins = next;
+            }
             assembler.resolveDeferredEquates();
             assembler.prepareText();
             assembler.pass(statements, true);
@@ -144,26 +197,74 @@ public final class Assembler implements Constants.Scope {
 
     private ObjectModule module() {
         Map<String, Integer> dummies = new LinkedHashMap<>();
-        sections.values().stream().filter(s -> s.dummy)
-                .forEach(s -> dummies.put(s.name, s.highWater));
-        return new ObjectModule(mainSection == null ? fileName : mainSection.name, text,
+        controls.forEach((name, counters) -> {
+            if (counters.get(0).dummy) {
+                dummies.put(name, counters.stream().mapToInt(s -> s.highWater).max().orElse(0));
+            }
+        });
+        return new ObjectModule(mainSection == null ? fileName : mainSection.control, text,
                 entryOffset, symbols, dummies, listing, relocations, externals);
+    }
+
+    /**
+     * 所在カウンタと制御節を並べる。
+     *
+     * <p>1 つの制御節の所在カウンタは、定義した順に続けて置く (HLASM Language Reference
+     * "LOCTR instruction")。所在カウンタの始まりは、その中で求められたいちばん大きい境界に
+     * そろえる。こうすれば、所在カウンタの中で決めた境界が制御節の中でも保たれる。
+     * Zeus はそろえずに詰め、境界は位置の余りで保っている。HLASM が詰め物を入れるかは
+     * 確かめていない。制御節はモジュールの中に 8 バイト (それより大きい境界を求めていれば
+     * その境界) にそろえて定義した順に並べる。
+     *
+     * @return 所在カウンタの名前と、制御節の先頭からの位置
+     */
+    private Map<String, Integer> layout() {
+        Map<String, Integer> origins = new LinkedHashMap<>();
+        int total = 0;
+        for (Map.Entry<String, List<Section>> control : controls.entrySet()) {
+            int running = 0;
+            int alignment = 8;
+            for (Section counter : control.getValue()) {
+                int unit = Math.max(1, counter.alignment);
+                running = roundUp(running, unit);
+                origins.put(counter.name, running);
+                running += counter.length();
+                alignment = Math.max(alignment, unit);
+            }
+            if (!control.getValue().get(0).dummy) {
+                total = roundUp(total, alignment);
+                controlOrigins.put(control.getKey(), total);
+                total += running;
+            }
+        }
+        moduleSize = total;
+        return origins;
+    }
+
+    private static int roundUp(int value, int unit) {
+        return (value + unit - 1) / unit * unit;
+    }
+
+    /** 制御節の中の位置を、モジュールの中の位置にする。ダミー節は 0 から数える。 */
+    private int moduleOffset(String control, int offset) {
+        return controlOrigins.getOrDefault(control, 0) + offset;
     }
 
     private void prepareText() {
         if (mainSection == null) {
             throw new AssemblyException(1, "the source defines no control section");
         }
-        text = new byte[mainSection.highWater];
+        text = new byte[moduleSize];
         // 2 周目は状態を作り直す。USING は翻訳時の状態であり、1 周目の残りを持ち越してはならない
         Arrays.fill(usings, null);
         synonyms.clear();
         // 最高位置も戻す。残すと、2 周目の演算項なしの ORG が節の末尾 (1 周目の最高位置) へ
         // 飛んでしまい、そのあとの定数が節の外へ出る
         sections.values().forEach(section -> {
-            section.location = 0;
-            section.highWater = 0;
+            section.location = section.origin;
+            section.highWater = section.origin;
         });
+        startedControls.clear();
         pendingLiterals.clear();
         // 置き場は 1 周目で決まっている。2 周目はそれを使うので消さない
         poolIndex = 0;
@@ -213,7 +314,10 @@ public final class Assembler implements Constants.Scope {
                 synonyms.put(statement.label().toUpperCase(Locale.ROOT),
                         synonyms.getOrDefault(target, target));
             }
-            case "CSECT", "START" -> startSection(statement, false);
+            case "CSECT", "START", "RSECT" -> startSection(statement, false);
+            case "LOCTR" -> locationCounter(statement);
+            case "DXD" -> externalDummy(statement);
+            case "CXD" -> cumulativeExternalDummy(statement);
             case "DSECT" -> startSection(statement, true);
             case "USING" -> using(statement);
             case "DROP" -> drop(statement);
@@ -237,7 +341,13 @@ public final class Assembler implements Constants.Scope {
                             "the macro and conditional assembly language is not supported yet: "
                                     + statement.operation());
             // 外の記号の宣言。V 型の定数が名前で引くので、宣言そのものは何も置かない
-            case "ENTRY", "EXTRN", "WXTRN" -> { }
+            case "ENTRY" -> { }
+            case "EXTRN", "WXTRN" -> {
+                for (String operand : statement.operandList()) {
+                    externalNames.put(operand.trim().toUpperCase(Locale.ROOT),
+                            statement.operation().equals("WXTRN"));
+                }
+            }
             case "CNOP" -> cnop(statement);
             case "DCB" -> dataControlBlock(statement);
             case "OPEN" -> openClose(statement, true);
@@ -249,7 +359,7 @@ public final class Assembler implements Constants.Scope {
             case "LINK" -> link(statement);
             case "GET" -> getPut(statement, SVC_GET);
             case "ICTL" -> { } // HlasmReader が適用済み
-            case "COM", "RSECT", "COPY" ->
+            case "COM", "COPY" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
@@ -271,24 +381,124 @@ public final class Assembler implements Constants.Scope {
                     "START with a nonzero origin is not supported; the loader decides the address");
         }
         // 同じ名前の CSECT / DSECT をもう一度書くと、その節の続きに戻る
-        // (HLASM Language Reference "CSECT instruction")。名前を定義するのは最初の 1 回だけである
-        boolean resumed = sections.containsKey(name);
-        Section section = sections.computeIfAbsent(name, key -> new Section(key, dummy));
+        // (HLASM Language Reference "CSECT instruction")。名前を定義するのは最初の 1 回だけである。
+        // 続きは、その節で最後に使った所在カウンタである
+        boolean resumed = controls.containsKey(name);
+        Section section;
+        if (resumed) {
+            List<Section> counters = controls.get(name);
+            section = startedControls.contains(name)
+                    ? sections.get(lastCounter.get(name)) : counters.get(0);
+        } else {
+            if (sections.containsKey(name)) {
+                throw new AssemblyException(statement.line(),
+                        name + " is already a location counter of another section");
+            }
+            section = new Section(name, name, dummy, 0);
+            sections.put(name, section);
+            controls.put(name, new ArrayList<>(List.of(section)));
+        }
         if (section.dummy != dummy) {
             throw new AssemblyException(statement.line(),
                     name + " is already defined as a different kind of section");
         }
+        startedControls.add(name);
         current = section;
+        lastCounter.put(name, section.name);
         if (!dummy && mainSection == null) {
             mainSection = section;
-        }
-        if (!dummy && mainSection != section) {
-            throw new AssemblyException(statement.line(),
-                    "more than one control section is not supported yet: " + name);
         }
         if (!emitting && !resumed) {
             define(name, new Symbol(name, Value.in(name, 0), 1), statement.line());
         }
+    }
+
+    /**
+     * {@code LOCTR}。今の制御節に所在カウンタを足すか、前の所在カウンタへ戻る。制御節の名前を
+     * 書けば、その制御節の最初の所在カウンタへ戻る。
+     */
+    private void locationCounter(Statement statement) {
+        Section section = requireSection(statement.line());
+        String name = statement.label();
+        if (name == null) {
+            throw new AssemblyException(statement.line(), "LOCTR requires a name");
+        }
+        Section counter = sections.get(name);
+        if (counter == null) {
+            counter = new Section(name, section.control, section.dummy,
+                    counterOrigins.getOrDefault(name, 0));
+            sections.put(name, counter);
+            controls.get(section.control).add(counter);
+            if (!emitting) {
+                define(name, new Symbol(name, Value.in(section.control, counter.origin), 1),
+                        statement.line());
+            }
+        } else if (!counter.control.equals(section.control) && !counter.name.equals(counter.control)) {
+            throw new AssemblyException(statement.line(),
+                    name + " is a location counter of another control section");
+        }
+        current = counter;
+        startedControls.add(counter.control);
+        lastCounter.put(counter.control, counter.name);
+    }
+
+    /**
+     * {@code DXD}。外部ダミー節を定義する。長さと境界は {@code DS} と同じ演算項で決まる。
+     * 位置は結合のときに決まるが、この処理系は 1 つのモジュールしか結合しないので、
+     * このモジュールの外部ダミー節を定義した順に並べる。
+     */
+    private void externalDummy(Statement statement) {
+        if (statement.label() == null) {
+            throw new AssemblyException(statement.line(), "DXD requires a name");
+        }
+        if (emitting) {
+            return;
+        }
+        int length = 0;
+        int alignment = 1;
+        for (String operand : statement.operandList()) {
+            Constants.Piece piece = Constants.parse(operand, false, this, statement.line());
+            if (length == 0) {
+                alignment = piece.alignment();
+            }
+            length = roundUp(length, piece.alignment()) + piece.totalLength();
+        }
+        externalDummies.put(statement.label().toUpperCase(Locale.ROOT),
+                new int[] {length, alignment});
+    }
+
+    /** 外部ダミー節の中の位置。並べ方は {@link #externalDummy} のとおり。 */
+    private int externalDummyOffset(String name, int line) {
+        int running = 0;
+        for (Map.Entry<String, int[]> entry : externalDummies.entrySet()) {
+            running = roundUp(running, entry.getValue()[1]);
+            if (entry.getKey().equals(name)) {
+                return running;
+            }
+            running += entry.getValue()[0];
+        }
+        throw new AssemblyException(line, "a Q-type constant requires an external dummy section: "
+                + name);
+    }
+
+    /** {@code CXD}。外部ダミー節をすべて並べた長さを語で置く。 */
+    private void cumulativeExternalDummy(Statement statement) {
+        if (statement.hasOperands()) {
+            throw new AssemblyException(statement.line(), "CXD takes no operands");
+        }
+        Section section = requireSection(statement.line());
+        align(section, 4);
+        defineLabel(statement, 4);
+        if (emitting && !section.dummy) {
+            int running = 0;
+            for (int[] dummy : externalDummies.values()) {
+                running = roundUp(running, dummy[1]) + dummy[0];
+            }
+            byte[] word = new byte[4];
+            writeInt(word, 0, 4, running);
+            write(section, section.location, word);
+        }
+        section.advance(4);
     }
 
     private String defaultSectionName() {
@@ -362,8 +572,8 @@ public final class Assembler implements Constants.Scope {
                 emitRepeated(section, piece, statement);
             } else {
                 if (emitting && !section.dummy) {
-                    listing.add(new ObjectModule.Line(statement.line(), section.location,
-                            new byte[0]));
+                    listing.add(new ObjectModule.Line(statement.line(),
+                            moduleOffset(section.control, section.location), new byte[0]));
                 }
                 section.advance(piece.totalLength());
             }
@@ -393,14 +603,15 @@ public final class Assembler implements Constants.Scope {
 
     private void emitRepeated(Section section, Constants.Piece piece, Statement statement) {
         byte[] unit = piece.bytes();
-        int start = section.location;
+        int start = moduleOffset(section.control, section.location);
         for (int repeat = 0; repeat < piece.duplication(); repeat++) {
-            resolveReferences(unit, piece, section.location, statement.line());
-            write(section.location, unit);
+            resolveReferences(unit, piece, moduleOffset(section.control, section.location),
+                    statement.line());
+            write(section, section.location, unit);
             section.advance(unit.length);
         }
         listing.add(new ObjectModule.Line(statement.line(), start,
-                Arrays.copyOfRange(text, start, section.location)));
+                Arrays.copyOfRange(text, start, moduleOffset(section.control, section.location))));
     }
 
     /**
@@ -414,18 +625,74 @@ public final class Assembler implements Constants.Scope {
      */
     private void resolveReferences(byte[] unit, Constants.Piece piece, int location, int line) {
         for (Constants.AddressReference reference : piece.references()) {
-            if (reference.external()) {
+            String name = reference.expression().trim().toUpperCase(Locale.ROOT);
+            switch (reference.kind()) {
+                case 'S' -> {
+                    baseDisplacementConstant(unit, reference, line);
+                    continue;
+                }
+                case 'Q', 'q' -> {
+                    int offset = externalDummyOffset(name, line);
+                    if (reference.kind() == 'q') {
+                        // QY は 20 ビットの変位の形: DL の上 4 ビット、DL の下 8 ビット、DH
+                        unit[reference.offset()] = (byte) ((offset >> 8) & 0x0F);
+                        unit[reference.offset() + 1] = (byte) offset;
+                        unit[reference.offset() + 2] = (byte) (offset >> 12);
+                    } else {
+                        writeInt(unit, reference.offset(), reference.length(), offset);
+                    }
+                    continue;
+                }
+                default -> { }
+            }
+            Symbol local = symbols.get(name);
+            boolean declared = externalNames.containsKey(name) && local == null;
+            if (Boolean.TRUE.equals(externalNames.get(name)) && local == null) {
+                // WXTRN の記号は自動呼出しを起こさない。この処理系は 1 つのモジュールしか
+                // 結合しないので、弱い参照はいつも解決されず 0 になる (HLASM Language Reference
+                // "WXTRN instruction")
+                writeInt(unit, reference.offset(), reference.length(), 0);
+                continue;
+            }
+            if ((reference.external() && (local == null || local.value().isAbsolute())) || declared) {
+                // 外の記号。ENTRY やこの原文の名前を指す V 型は、外ではなくここの番地になる
                 externals.add(new ObjectModule.External(location + reference.offset(),
-                        reference.length(), reference.expression().trim()
-                                .toUpperCase(Locale.ROOT)));
+                        reference.length(), name));
                 continue;
             }
             Value value = evaluate(reference.expression(), line);
-            writeInt(unit, reference.offset(), reference.length(), value.value());
+            int number = value.value();
+            if (value.isRelocatable()) {
+                number = moduleOffset(value.section(), number);
+            }
+            writeInt(unit, reference.offset(), reference.length(), number);
             if (value.isRelocatable() && reference.length() >= 3) {
                 relocations.add(new ObjectModule.Relocation(location + reference.offset(),
                         reference.length()));
             }
+        }
+    }
+
+    /**
+     * {@code S(X)} / {@code SY(X)}。X を USING でベースと変位に解き、命令の演算項と同じ形で置く。
+     * S は 2 バイト (ベース 4 ビット・変位 12 ビット)、SY は 3 バイト (そのあとに変位の上位
+     * 8 ビット)。指標は書けない (HLASM Language Reference "S-type address constant")。
+     */
+    private void baseDisplacementConstant(byte[] unit, Constants.AddressReference reference, int line) {
+        boolean wide = reference.length() == 3;
+        boolean saved = longDisplacement;
+        longDisplacement = wide;
+        Addr address;
+        try {
+            address = address(reference.expression(), false, false, line);
+        } finally {
+            longDisplacement = saved;
+        }
+        int displacement = address.displacement();
+        unit[reference.offset()] = (byte) (address.base() << 4 | ((displacement >> 8) & 0x0F));
+        unit[reference.offset() + 1] = (byte) displacement;
+        if (wide) {
+            unit[reference.offset() + 2] = (byte) (displacement >> 12);
         }
     }
 
@@ -441,6 +708,7 @@ public final class Assembler implements Constants.Scope {
         if (alignment <= 1) {
             return;
         }
+        section.alignment = Math.max(section.alignment, alignment);
         int pad = (alignment - section.location % alignment) % alignment;
         section.advance(pad);
     }
@@ -461,9 +729,10 @@ public final class Assembler implements Constants.Scope {
         }
         align(section, 2);
         defineLabel(statement, 2);
+        section.alignment = Math.max(section.alignment, boundary);
         while (section.location % boundary != offset) {
             if (emitting) {
-                write(section.location, new byte[] {0x07, 0x00});
+                write(section, section.location, new byte[] {0x07, 0x00});
             }
             section.advance(2);
         }
@@ -658,9 +927,11 @@ public final class Assembler implements Constants.Scope {
                 case "EODAD", "SYNAD" -> {
                     int field = keyword.equals("EODAD") ? 33 : 57;
                     Value exit = evaluate(value, statement.line());
-                    writeInt(block, field, 3, exit.value());
+                    writeInt(block, field, 3, exit.isRelocatable()
+                            ? moduleOffset(exit.section(), exit.value()) : exit.value());
                     if (exit.isRelocatable()) {
-                        relocations.add(new ObjectModule.Relocation(start + field, 3));
+                        relocations.add(new ObjectModule.Relocation(
+                                moduleOffset(section.control, start) + field, 3));
                     }
                 }
                 // 配置と編成の指定。順編成しか持たないので、読むだけである
@@ -669,9 +940,10 @@ public final class Assembler implements Constants.Scope {
                         "DCB keyword " + keyword + " is not supported yet");
             }
         }
-        write(start, block);
+        write(section, start, block);
         section.advance(DCB_LENGTH);
-        listing.add(new ObjectModule.Line(statement.line(), start, block));
+        listing.add(new ObjectModule.Line(statement.line(), moduleOffset(section.control, start),
+                block));
     }
 
     /**
@@ -744,7 +1016,7 @@ public final class Assembler implements Constants.Scope {
         if (emitting) {
             return;
         }
-        Value counter = current == null ? null : Value.in(current.name, current.location);
+        Value counter = current == null ? null : Value.in(current.control, current.location);
         if (!defineEquate(statement, counter)) {
             // まだ定義されていない記号を使っている。あとで定義されるなら値は決まるので、
             // 1 周目の終わりまで待つ (HLASM は EQU の前方参照を許している)。
@@ -854,7 +1126,7 @@ public final class Assembler implements Constants.Scope {
             return;
         }
         Value value = evaluate(statement.operands(), statement.line());
-        if (value.isAbsolute() || !value.section().equals(section.name)) {
+        if (value.isAbsolute() || !value.section().equals(section.control)) {
             throw new AssemblyException(statement.line(),
                     "ORG requires an address in the current control section");
         }
@@ -863,14 +1135,18 @@ public final class Assembler implements Constants.Scope {
     }
 
     private void end(Statement statement) {
+        // END で置くリテラルは、最初の制御節の (最後に使った所在カウンタの) 末尾に置く
+        if (mainSection != null) {
+            current = sections.get(lastCounter.get(mainSection.control));
+        }
         placeLiterals(statement.line());
         if (statement.hasOperands()) {
             Value value = evaluate(statement.operands(), statement.line());
-            if (value.isAbsolute() || !value.section().equals(mainSection.name)) {
+            if (value.isAbsolute() || !controlOrigins.containsKey(value.section())) {
                 throw new AssemblyException(statement.line(),
-                        "the END operand must name a place in the control section");
+                        "the END operand must name a place in a control section");
             }
-            entryOffset = value.value();
+            entryOffset = moduleOffset(value.section(), value.value());
         }
         ended = true;
     }
@@ -895,25 +1171,25 @@ public final class Assembler implements Constants.Scope {
             pools.add(pool);
         }
         pendingLiterals.clear();
-        Section section = mainSection;
+        Section section = current != null && !current.dummy ? current : mainSection;
         for (String literal : pool) {
             Constants.Piece piece = Constants.parse(literal.substring(1), true, this, line);
             align(section, piece.alignment());
             if (!emitting) {
-                placedLiterals.put(literal, section.location);
+                placedLiterals.put(literal, Value.in(section.control, section.location));
                 section.advance(piece.totalLength());
                 continue;
             }
             byte[] unit = piece.bytes();
-            int start = section.location;
+            int start = moduleOffset(section.control, section.location);
             for (int repeat = 0; repeat < piece.duplication(); repeat++) {
                 // リテラルの番地定数 (=A(X)、=V(X)) も、DC と同じに値を入れて欄を控える
-                resolveReferences(unit, piece, section.location, line);
-                write(section.location, unit);
+                resolveReferences(unit, piece, moduleOffset(section.control, section.location), line);
+                write(section, section.location, unit);
                 section.advance(unit.length);
             }
             listing.add(new ObjectModule.Line(line, start,
-                    Arrays.copyOfRange(text, start, section.location)));
+                    Arrays.copyOfRange(text, start, moduleOffset(section.control, section.location))));
         }
     }
 
@@ -969,13 +1245,13 @@ public final class Assembler implements Constants.Scope {
                 pendingLiterals.add(operand);
             }
             // 1 周目は置き場が決まっていない。長さだけが要るので節の先頭を返す
-            return Value.in(mainSection.name, 0);
+            return Value.in(mainSection.control, 0);
         }
-        Integer offset = placedLiterals.get(operand);
-        if (offset == null) {
+        Value place = placedLiterals.get(operand);
+        if (place == null) {
             throw new AssemblyException(line, "the literal has no place: " + operand);
         }
-        return Value.in(mainSection.name, offset);
+        return place;
     }
 
     // --- 機械命令 ---
@@ -1005,9 +1281,10 @@ public final class Assembler implements Constants.Scope {
             return;
         }
         byte[] bytes = encode(definition, statement);
-        write(start, bytes);
+        write(section, start, bytes);
         section.advance(bytes.length);
-        listing.add(new ObjectModule.Line(statement.line(), start, bytes));
+        listing.add(new ObjectModule.Line(statement.line(), moduleOffset(section.control, start),
+                bytes));
     }
 
     private byte[] encode(Instructions.Definition definition, Statement statement) {
@@ -1251,6 +1528,19 @@ public final class Assembler implements Constants.Scope {
                         (byte) (first.base() << 4 | first.displacement() >> 8),
                         (byte) first.displacement(), 0, (byte) definition.opcode()};
             }
+            case RSL_B -> {
+                require(operands, 3, statement);
+                Addr second = address(operands.get(1), false, true, line);
+                int length = second.length() == null ? lengthAttributeOf(operands.get(1))
+                        : second.length();
+                int mask = checkRange(absolute(operands.get(2), line), 0, 15, line, "the mask");
+                yield new byte[] {(byte) (definition.opcode() >> 8),
+                        (byte) (checkRange(length, 1, 256, line, "the length") - 1),
+                        (byte) (second.base() << 4 | second.displacement() >> 8),
+                        (byte) second.displacement(),
+                        (byte) (register(operands.getFirst(), line) << 4 | mask),
+                        (byte) definition.opcode()};
+            }
             case S -> {
                 require(operands, 1, statement);
                 Addr address = address(operands.get(0), false, false, line);
@@ -1322,7 +1612,7 @@ public final class Assembler implements Constants.Scope {
 
     private int relativeDisplacement(String operand, int line) {
         Value target = evaluate(operand, line);
-        if (target.isAbsolute() || !current.name.equals(target.section())) {
+        if (target.isAbsolute() || !current.control.equals(target.section())) {
             throw new AssemblyException(line, "a relative target must be in the current section");
         }
         long displacement = (long) target.value() - current.location;
@@ -1536,7 +1826,7 @@ public final class Assembler implements Constants.Scope {
         }
         Section section = current;
         Value value = section == null ? Value.absolute(0)
-                : Value.in(section.name, section.location);
+                : Value.in(section.control, section.location);
         define(statement.label(), new Symbol(statement.label(), value, length, scale),
                 statement.line());
     }
@@ -1552,7 +1842,7 @@ public final class Assembler implements Constants.Scope {
         if (trimmed.startsWith("=")) {
             return literal(trimmed, line);
         }
-        Value counter = current == null ? null : Value.in(current.name, current.location);
+        Value counter = current == null ? null : Value.in(current.control, current.location);
         return Expressions.evaluate(inlineLiteralLengths(trimmed), counter, symbols::get, codePage,
                 line);
     }
@@ -1590,7 +1880,8 @@ public final class Assembler implements Constants.Scope {
         return 1;
     }
 
-    private void write(int offset, byte[] bytes) {
-        System.arraycopy(bytes, 0, text, offset, bytes.length);
+    /** 制御節の中の位置 {@code offset} へ書く。 */
+    private void write(Section section, int offset, byte[] bytes) {
+        System.arraycopy(bytes, 0, text, moduleOffset(section.control, offset), bytes.length);
     }
 }

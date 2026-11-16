@@ -114,6 +114,76 @@ final class MacroProcessor {
         initializeSystemGlobals();
     }
 
+    /** 原文の物理的な行 (AREAD が読む)。無ければ {@code null}。 */
+    private String[] records;
+    /** 開いたコードで、AREAD が次に読む物理的な行 (0 起点)。外側のマクロ呼出しの間だけ意味を持つ。 */
+    private int areadNext = -1;
+    /** AINSERT で入れた行。外側のマクロ呼出しが終わると、開いたコードの次の文になる。 */
+    private final java.util.Deque<String> inserted = new java.util.ArrayDeque<>();
+
+    /** 文の最後の物理的な行 (0 起点)。72 桁目が空白でない行は次の行へ続く。 */
+    private int lastRecordOf(Statement statement) {
+        int at = statement.line() - 1;
+        while (records != null && at + 1 < records.length && records[at].length() > 71
+                && records[at].charAt(71) != ' ') {
+            at++;
+        }
+        return at;
+    }
+
+    /**
+     * AINSERT で入れた行を、開いたコードの文として処理する。1 行ずつ取り出すので、
+     * 処理の中でさらに入れた行 (FRONT なら先頭) もこの順に続く。
+     */
+    private void drainInserted(Map<String, String> locals, Map<String, SetArray> localArrays,
+                               int line) {
+        while (!inserted.isEmpty() && !ended) {
+            String record = inserted.pollFirst();
+            List<Statement> parsed = new ArrayList<>();
+            for (Statement statement : HlasmReader.read(record)) {
+                parsed.add(new Statement(statement.label(), statement.operation(),
+                        statement.operands(), line, statement.identification()));
+            }
+            int savedLookahead = lookaheadStart;
+            process(parsed, locals, localArrays, 0, false);
+            lookaheadStart = savedLookahead;
+        }
+    }
+
+    /**
+     * AREAD。AINSERT で入れた行があればその先頭を、無ければ外側のマクロ呼出しのあとの原文の
+     * 行を 80 桁で読む (順序欄を含む)。読んだ原文の行は組み立てない。CLOCKB / CLOCKD は
+     * 時刻を返す (HLASM Language Reference "AREAD instruction")。
+     */
+    private String aread(Statement statement, Map<String, String> locals,
+                         Map<String, SetArray> localArrays) {
+        String option = substitute(statement.operands(), locals, localArrays, statement.line())
+                .trim().toUpperCase(Locale.ROOT);
+        if (option.equals("CLOCKB") || option.equals("CLOCKD")) {
+            java.time.LocalTime now = java.time.LocalTime.now();
+            if (option.equals("CLOCKD")) {
+                return String.format(Locale.ROOT, "%02d%02d%02d%02d", now.getHour(),
+                        now.getMinute(), now.getSecond(), now.getNano() / 10_000_000);
+            }
+            return String.format(Locale.ROOT, "%08d", now.toSecondOfDay() * 100L
+                    + now.getNano() / 10_000_000);
+        }
+        if (!option.isEmpty() && !option.equals("NOSTMT") && !option.equals("NOPRINT")) {
+            throw new AssemblyException(statement.line(), "unknown AREAD operand: " + option);
+        }
+        String record;
+        if (!inserted.isEmpty()) {
+            record = inserted.pollFirst();
+        } else {
+            if (records == null || areadNext < 0 || areadNext >= records.length) {
+                throw new AssemblyException(statement.line(), "AREAD has no record to read");
+            }
+            record = records[areadNext++];
+        }
+        record = record.length() > 80 ? record.substring(0, 80) : record;
+        return String.format("%-80s", record);
+    }
+
     private void initializeSystemGlobals() {
         LocalDateTime started = LocalDateTime.now();
         systemGlobals.put("&SYSDATC", started.format(DateTimeFormatter.BASIC_ISO_DATE));
@@ -205,7 +275,14 @@ final class MacroProcessor {
 
     static Expansion expand(List<Statement> source, CodePage codePage, String fileName,
                             SourceLibrary library, int libraryLines, String objectName) {
+        return expand(source, codePage, fileName, library, libraryLines, objectName, null);
+    }
+
+    static Expansion expand(List<Statement> source, CodePage codePage, String fileName,
+                            SourceLibrary library, int libraryLines, String objectName,
+                            String[] records) {
         MacroProcessor processor = new MacroProcessor(codePage, fileName, library, libraryLines, objectName);
+        processor.records = records;
         List<Statement> statements = new ArrayList<>();
         for (Statement statement : source) {
             if (statement.operation().equals("*PROCESS")) {
@@ -431,6 +508,45 @@ final class MacroProcessor {
                 mnote(original, locals, localArrays);
                 continue;
             }
+            if (operation.equals("AINSERT")) {
+                List<String> fields = Statement.split(substitute(original.operands(), locals,
+                        localArrays, original.line(), true), original.line());
+                if (fields.size() != 2 || !fields.get(0).trim().startsWith("'")) {
+                    throw new AssemblyException(original.line(),
+                            "AINSERT requires 'record',FRONT or BACK");
+                }
+                String record = unquote(fields.get(0), original.line());
+                String where = fields.get(1).trim().toUpperCase(Locale.ROOT);
+                if (where.equals("FRONT")) {
+                    inserted.addFirst(record);
+                } else if (where.equals("BACK")) {
+                    inserted.addLast(record);
+                } else {
+                    throw new AssemblyException(original.line(), "AINSERT requires FRONT or BACK");
+                }
+                if (depth == 0) {
+                    drainInserted(locals, localArrays, original.line());
+                }
+                continue;
+            }
+            if (operation.equals("AREAD")) {
+                if (!inMacro) {
+                    throw new AssemblyException(original.line(), "AREAD is allowed only in a macro");
+                }
+                SetReference reference = setReference(original.label(), original.line());
+                String key = reference.name();
+                if (reference.subscript() != null) {
+                    throw new AssemblyException(original.line(),
+                            "AREAD into a SET array is not supported yet: " + key);
+                }
+                String value = aread(original, locals, localArrays);
+                (globals.containsKey(key) && !locals.containsKey(key) ? globals : locals)
+                        .put(key, value);
+                if (!(globals.containsKey(key) && !locals.containsKey(key))) {
+                    locals.put("@KIND:" + key, "C");
+                }
+                continue;
+            }
 
             Statement statement = model(original, locals, localArrays, inMacro);
             Macro macro = macros.get(statement.operation());
@@ -461,7 +577,18 @@ final class MacroProcessor {
                 int savedLookaheadStart = lookaheadStart;
                 int firstDiagnostic = diagnostics.size();
                 systemGlobals.put("&SYSM_SEV", "000");
+                if (depth == 0) {
+                    areadNext = lastRecordOf(original) + 1;
+                }
                 process(macro.body(), arguments, new HashMap<>(), depth + 1, true);
+                if (depth == 0) {
+                    // AREAD が読んだ原文の行は組み立てない
+                    while (pc + 1 < statements.size()
+                            && statements.get(pc + 1).line() - 1 < areadNext) {
+                        pc++;
+                    }
+                    areadNext = -1;
+                }
                 int macroSeverity = 0;
                 for (Diagnostic diagnostic : diagnostics.subList(firstDiagnostic,
                         diagnostics.size())) {
@@ -889,10 +1016,11 @@ final class MacroProcessor {
     }
 
     private void rememberType(Statement statement) {
-        if (statement.operation().equals("WXTRN")) {
+        // 型属性は EXTRN の記号なら T、WXTRN なら $ (HLASM Language Reference "Type attribute")
+        if (statement.operation().equals("WXTRN") || statement.operation().equals("EXTRN")) {
             for (String operand : statement.operandList()) {
                 String name = attributeName(operand);
-                knownTypes.put(name, '$');
+                knownTypes.put(name, statement.operation().equals("EXTRN") ? 'T' : '$');
                 definedNames.add(name);
             }
         }

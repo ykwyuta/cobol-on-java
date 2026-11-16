@@ -46,6 +46,9 @@ public final class Constants {
             // V は外の記号の番地。値は載せる側が入れるので、組み立てでは 0 である
             case 'V' -> new TypeRule(4, 4, false);
             case 'Y' -> new TypeRule(2, 2, false);
+            // S はベースと変位、Q は外部ダミー節の中の位置。どちらも値は組み立てで入れる
+            case 'S' -> new TypeRule(2, 2, false);
+            case 'Q' -> new TypeRule(4, 4, false);
             case 'P' -> new TypeRule(1, 1, true);
             case 'Z' -> new TypeRule(1, 1, true);
             case 'E' -> new TypeRule(4, 4, false);
@@ -81,10 +84,15 @@ public final class Constants {
     }
 
     /** {@code A(label)} のように、2 周目でなければ値が決まらない番地定数。 */
-    public record AddressReference(int offset, int length, String expression, boolean external) {
+    public record AddressReference(int offset, int length, String expression, char kind) {
 
         public AddressReference(int offset, int length, String expression) {
-            this(offset, length, expression, false);
+            this(offset, length, expression, 'A');
+        }
+
+        /** V 型。値は載せる側が入れる外の記号の番地である。 */
+        public boolean external() {
+            return kind == 'V';
         }
     }
 
@@ -122,9 +130,16 @@ public final class Constants {
                 rule = new TypeRule(2, 2, true);
             }
         }
-        if (type == 'A' && at < operand.length()
+        // AD / VD / QD は 8 バイト、SY と QY は 20 ビットの変位の形で 3 バイトである
+        char kind = type;
+        if ((type == 'A' || type == 'V' || type == 'Q') && at < operand.length()
                 && Character.toUpperCase(operand.charAt(at)) == 'D') {
             rule = new TypeRule(8, 8, false);
+            at++;
+        } else if ((type == 'S' || type == 'Q') && at < operand.length()
+                && Character.toUpperCase(operand.charAt(at)) == 'Y') {
+            rule = new TypeRule(3, 2, false);
+            kind = type == 'Q' ? 'q' : 'S';
             at++;
         }
         if (type == 'F' && at < operand.length()
@@ -212,8 +227,12 @@ public final class Constants {
             int length = explicitLength != null ? explicitLength : rule.defaultLength();
             return new Piece(alignment, length, duplication, null, List.of(), scale);
         }
-        Piece built = build(type, extension, rule, explicitLength, alignment, duplication, nominal,
-                values, scope, line, scale == null ? 0 : scale);
+        if ((type == 'S' && explicitLength != null && explicitLength != rule.defaultLength())
+                || (kind == 'q' && explicitLength != null && explicitLength != 3)) {
+            throw new AssemblyException(line, "an S or QY constant takes no other length: " + operand);
+        }
+        Piece built = build(type, kind, extension, rule, explicitLength, alignment, duplication,
+                nominal, values, scope, line, scale == null ? 0 : scale);
         return new Piece(built.alignment(), built.length(), built.duplication(), built.bytes(),
                 built.references(), scale);
     }
@@ -223,7 +242,8 @@ public final class Constants {
                 || operand.charAt(at) == '+';
     }
 
-    private static Piece build(char type, char extension, TypeRule rule, Integer explicitLength,
+    private static Piece build(char type, char kind, char extension, TypeRule rule,
+                               Integer explicitLength,
                                int alignment, int duplication, String nominal, boolean values, Scope scope,
                                int line, int scale) {
         List<AddressReference> references = new ArrayList<>();
@@ -242,15 +262,15 @@ public final class Constants {
                         ? rule.defaultLength() : explicitLength, scale, line);
                 case 'P' -> packed(item, explicitLength, line);
                 case 'Z' -> zoned(item, explicitLength, scope.codePage(), line);
-                case 'A', 'Y', 'V' -> new byte[explicitLength == null
+                case 'A', 'Y', 'V', 'S', 'Q' -> new byte[explicitLength == null
                         ? rule.defaultLength() : explicitLength];
                 case 'E', 'D', 'L' -> FloatingConstants.encode(type, extension, item, line);
                 default -> throw new AssemblyException(line, "unsupported constant type: " + type);
             };
-            if (type == 'A' || type == 'Y' || type == 'V') {
+            if ("AYVSQ".indexOf(type) >= 0) {
                 references.add(new AddressReference(
                         encoded.stream().mapToInt(b -> b.length).sum(), bytes.length, item,
-                        type == 'V'));
+                        type == 'Y' ? 'A' : kind));
             }
             if (rule.lengthFromValue() && explicitLength == null) {
                 unit = bytes.length;

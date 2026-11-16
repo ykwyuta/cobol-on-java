@@ -57,6 +57,10 @@ public final class Cpu {
      * 持たない。番地だけを置く。実機と突き合わせていない。
      */
     private int addressMask = 0x7FFFFFFF;
+    /** 64 ビットのアドレス方式 ({@code SAM64})。番地空間そのものは 31 ビットのままである。 */
+    private boolean amode64;
+    /** アクセスレジスタ。{@code LAM} / {@code STAM} が出し入れするだけで、番地の変換には使わない。 */
+    private final int[] access = new int[REGISTERS];
     /** 浮動小数点のレジスターと FPC。 */
     private final FloatingUnit floating = new FloatingUnit(this);
 
@@ -225,6 +229,13 @@ public final class Cpu {
                 }
             }
             case 0x0E, 0x0F -> longString(insn, opcode == 0x0E);
+            case 0x0B -> branchAndSetMode(r1(insn), r2(insn), false); // BSM
+            case 0x0C -> branchAndSetMode(r1(insn), r2(insn), true); // BASSM
+            case 0x71 -> gpr[r1(insn)] *= memory.getInt(effective(insn)); // MS
+            case 0x9A -> transferAccess(r1(insn), r3(insn), effectiveSi(insn), true); // LAM
+            case 0x9B -> transferAccess(r1(insn), r3(insn), effectiveSi(insn), false); // STAM
+            case 0xA8, 0xA9 -> longStringExtended(insn, opcode == 0xA8); // MVCLE / CLCLE
+            case 0xD0 -> translateAndTestReverse(insn); // TRTR
             case 0x06 -> { // BCTR
                 int r1 = r1(insn);
                 int r2 = r2(insn);
@@ -296,13 +307,25 @@ public final class Cpu {
                     0x70, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F ->
                     floating.registerStorage(insn, effective(insn));
             case 0xB3 -> floating.extended(insn);
-            case 0xED -> floating.binaryStorage(insn, effective(insn));
+            case 0xED -> {
+                int operation = insn[5] & 0xFF;
+                if (operation >= 0xA8 && operation <= 0xAF) {
+                    // RSL-b: 2 バイト目は長さであり、指標レジスタではない
+                    floating.decimalMemory(insn, effectiveSi(insn),
+                            (programMask & MASK_DECIMAL_OVERFLOW) != 0);
+                } else if (operation == 0x40 || operation == 0x41 || operation == 0x48
+                        || operation == 0x49) {
+                    floating.decimalShift(insn, effective(insn));
+                } else {
+                    floating.binaryStorage(insn, effective(insn));
+                }
+            }
             case 0x01 -> {
                 switch (insn[1] & 0xFF) {
                     case 0x0A -> floating.performOperation(); // PFPO
-                    case 0x0C -> addressMask = 0x00FFFFFF; // SAM24
-                    case 0x0D -> addressMask = 0x7FFFFFFF; // SAM31
-                    // SAM64 は断る。番地空間が 31 ビットまでしか無い
+                    case 0x0C -> setAddressingMode(24); // SAM24
+                    case 0x0D -> setAddressingMode(31); // SAM31
+                    case 0x0E -> setAddressingMode(64); // SAM64
                     default -> throw new MachineException(MachineException.OPERATION,
                             String.format("operation code 01%02X is not implemented",
                                     insn[1] & 0xFF));
@@ -386,7 +409,14 @@ public final class Cpu {
             }
 
             // --- RX 形式 ---
-            case 0x41 -> gpr[r1(insn)] = effective(insn); // LA
+            case 0x41 -> { // LA
+                if (amode64) {
+                    setRegister64(r1(insn), wideAddress((insn[2] >> 4) & 0x0F, insn[1] & 0x0F,
+                            ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF)));
+                } else {
+                    gpr[r1(insn)] = effective(insn);
+                }
+            }
             case 0x58 -> gpr[r1(insn)] = memory.getInt(effective(insn)); // L
             case 0x50 -> memory.putInt(effective(insn), gpr[r1(insn)]); // ST
             case 0x48 -> gpr[r1(insn)] = memory.getShort(effective(insn)); // LH
@@ -910,15 +940,8 @@ public final class Cpu {
 
     private int effectiveLong(byte[] insn, boolean indexed) {
         int base = (insn[2] >> 4) & 0x0F;
-        int address = longDisplacement(insn);
-        if (base != 0) {
-            address += gpr[base];
-        }
-        int index = insn[1] & 0x0F;
-        if (indexed && index != 0) {
-            address += gpr[index];
-        }
-        return address & addressMask;
+        int index = indexed ? insn[1] & 0x0F : 0;
+        return address(base, index, longDisplacement(insn));
     }
 
     /** E3xx。レジスタと記憶域。 */
@@ -928,6 +951,12 @@ public final class Cpu {
         long a = register64(r1);
         switch (insn[5] & 0xFF) {
             case 0x04 -> setRegister64(r1, memory.getLong(address)); // LG
+            case 0x06 -> gpr[r1] = packedToBinary(address, 8, 31).intValue(); // CVBY
+            case 0x0E -> setRegister64(r1, packedToBinary(address, 16, 63).longValue()); // CVBG
+            case 0x26 -> memory.write(address, PackedDecimal.encode( // CVDY
+                    Decimal.of(BigInteger.valueOf(gpr[r1]), 0), 15, 0, true));
+            case 0x2E -> memory.write(address, PackedDecimal.encode( // CVDG
+                    Decimal.of(BigInteger.valueOf(a), 0), 31, 0, true));
             case 0x08 -> add64(r1, a, memory.getLong(address)); // AG
             case 0x09 -> subtract64(r1, a, memory.getLong(address)); // SG
             case 0x0A -> addLogical64(r1, a, memory.getLong(address), 0); // ALG
@@ -1074,6 +1103,7 @@ public final class Cpu {
             case 0x31 -> compareAndSwap(r1, r3, address, 4, true); // CDSY
             case 0x3E -> compareAndSwap(r1, r3, address, 8, true); // CDSG
             case 0x51 -> testUnderMask(address, insn[1] & 0xFF); // TMY
+            case 0x52 -> memory.set(address, insn[1]); // MVIY
             case 0x54 -> immediate(address, insn[1], (a, b) -> (byte) (a & b)); // NIY
             case 0x55 -> conditionCode = compare(memory.get(address) & 0xFF, insn[1] & 0xFF); // CLIY
             case 0x56 -> immediate(address, insn[1], (a, b) -> (byte) (a | b)); // OIY
@@ -1374,40 +1404,72 @@ public final class Cpu {
         int index = insn[1] & 0x0F;
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        int address = displacement;
+        return address(base, index, displacement);
+    }
+
+    /**
+     * 実効番地。24 / 31 ビットの方式ではレジスタの下位 32 ビットを足して切る。
+     *
+     * <p>64 ビットの方式 ({@code SAM64}) ではレジスタの 64 ビットを足す。この処理系の番地空間は
+     * 31 ビットまでしか無いので、それを超えた番地は近い番地へ丸めずに番地指定例外にする。
+     */
+    private int address(int base, int index, int displacement) {
+        if (!amode64) {
+            int address = displacement;
+            if (base != 0) {
+                address += gpr[base];
+            }
+            if (index != 0) {
+                address += gpr[index];
+            }
+            return address & addressMask;
+        }
+        long address = wideAddress(base, index, displacement);
+        if (address < 0 || address > 0x7FFFFFFFL) {
+            throw new MachineException(MachineException.ADDRESSING, String.format(
+                    "address %016X is beyond the 31-bit address space", address));
+        }
+        return (int) address;
+    }
+
+    /** 64 ビットの方式の実効番地 (切らない)。{@code LA} はこの値をそのままレジスタに置く。 */
+    private long wideAddress(int base, int index, long displacement) {
+        long address = displacement;
         if (base != 0) {
-            address += gpr[base];
+            address += register64(base);
         }
         if (index != 0) {
-            address += gpr[index];
+            address += register64(index);
         }
-        return address & addressMask;
+        return address;
     }
 
     /** RS / SI 形式の実効番地 (指標を持たない)。 */
     private int effectiveSi(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
+        return address(base, 0, displacement);
     }
 
     /** SS 形式の第 1 演算項の番地。 */
     private int ssFirst(byte[] insn) {
         int base = (insn[2] >> 4) & 0x0F;
         int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
+        return address(base, 0, displacement);
     }
 
     /** SS 形式の第 2 演算項の番地。 */
     private int ssSecond(byte[] insn) {
         int base = (insn[4] >> 4) & 0x0F;
         int displacement = ((insn[4] & 0x0F) << 8) | (insn[5] & 0xFF);
-        return (base == 0 ? displacement : gpr[base] + displacement) & addressMask;
+        return address(base, 0, displacement);
     }
 
     /** シフト量は実効番地の下位 6 ビットである。 */
     private int shift(byte[] insn) {
-        return effectiveSi(insn) & 0x3F;
+        int base = (insn[2] >> 4) & 0x0F;
+        int displacement = ((insn[2] & 0x0F) << 8) | (insn[3] & 0xFF);
+        return ((base == 0 ? 0 : gpr[base]) + displacement) & 0x3F;
     }
 
     private void conditionalLoad(int operation, int register, long value) {
@@ -1906,6 +1968,158 @@ public final class Cpu {
     private void convertToDecimal(byte[] insn) {
         Decimal value = Decimal.of(BigInteger.valueOf(gpr[r1(insn)]), 0);
         memory.write(effective(insn), PackedDecimal.encode(value, 15, 0, true));
+    }
+
+    /**
+     * 10 進数を 2 進数へ。入りきらなければ固定小数点除算例外である (CVB と同じ)。
+     *
+     * @param bits 符号を除いたビット数 (32 ビットなら 31)
+     */
+    private BigInteger packedToBinary(int address, int length, int bits) {
+        BigInteger signed = readPacked(address, length).signedUnscaled();
+        if (signed.bitLength() > bits) {
+            throw new MachineException(MachineException.FIXED_DIVIDE,
+                    "the decimal value does not fit in " + (bits + 1) + " bits");
+        }
+        return signed;
+    }
+
+    private void setAddressingMode(int bits) {
+        amode64 = bits == 64;
+        addressMask = bits == 24 ? 0x00FFFFFF : 0x7FFFFFFF;
+    }
+
+    /**
+     * BSM / BASSM。R1 に今のアドレス方式を記録し (BASSM は戻り番地も)、R2 のビットで方式を
+     * 変えて分岐する。R2 が 0 なら分岐しない。
+     *
+     * <p>記録は、64 ビットの方式ならビット 63 を 1、そうでなければビット 32 を方式のビット
+     * (31 ビットなら 1) にする。R2 はビット 63 が 1 なら 64 ビットの方式、そうでなければ
+     * ビット 32 で 24 / 31 ビットを選ぶ (Principles of Operation)。
+     */
+    private void branchAndSetMode(int r1, int r2, boolean link) {
+        long target = register64(r2);
+        if (r1 != 0) {
+            if (link) {
+                if (amode64) {
+                    setRegister64(r1, (instructionAddress & 0xFFFFFFFFL) | 1);
+                } else {
+                    gpr[r1] = instructionAddress | (addressMask == 0x7FFFFFFF ? 0x80000000 : 0);
+                }
+            } else if (amode64) {
+                setRegister64(r1, register64(r1) | 1);
+            } else {
+                gpr[r1] = (gpr[r1] & 0x7FFFFFFF) | (addressMask == 0x7FFFFFFF ? 0x80000000 : 0);
+            }
+        }
+        if (r2 == 0) {
+            return;
+        }
+        if ((target & 1) != 0) {
+            setAddressingMode(64);
+            long address = target & ~1L;
+            if (address > 0x7FFFFFFFL || address < 0) {
+                throw new MachineException(MachineException.ADDRESSING, String.format(
+                        "branch address %016X is beyond the 31-bit address space", address));
+            }
+            instructionAddress = (int) address;
+        } else {
+            setAddressingMode((target & 0x80000000L) != 0 ? 31 : 24);
+            instructionAddress = (int) target & addressMask;
+        }
+    }
+
+    /** LAM / STAM。R1 から R3 まで (15 の次は 0) のアクセスレジスタを語単位で出し入れする。 */
+    private void transferAccess(int r1, int r3, int address, boolean load) {
+        if ((address & 3) != 0) {
+            throw new MachineException(MachineException.SPECIFICATION, "LAM/STAM need a word boundary");
+        }
+        for (int r = r1; ; r = (r + 1) % REGISTERS) {
+            if (load) {
+                access[r] = memory.getInt(address);
+            } else {
+                memory.putInt(address, access[r]);
+            }
+            address += 4;
+            if (r == r3) {
+                break;
+            }
+        }
+    }
+
+    /**
+     * MVCLE / CLCLE。長さは 32 ビット (24 / 31 ビットの方式) で、詰め字は第 2 演算項の番地の
+     * 下位 8 ビットである。実機は途中で条件コード 3 を返して区切ってよいが、ここでは 1 度で
+     * 終える (区切る量はモデル依存であり、プログラムは 3 で繰り返すので結果は同じ)。
+     */
+    private void longStringExtended(byte[] insn, boolean move) {
+        int r1 = r1(insn);
+        int r3 = r3(insn);
+        if (((r1 | r3) & 1) != 0) {
+            throw new MachineException(MachineException.SPECIFICATION, "long strings require even registers");
+        }
+        int pad = effectiveSi(insn) & 0xFF;
+        int a = gpr[r1] & addressMask;
+        int b = gpr[r3] & addressMask;
+        long n1 = gpr[r1 + 1] & 0xFFFFFFFFL;
+        long n2 = gpr[r3 + 1] & 0xFFFFFFFFL;
+        if (move) {
+            long copied = Math.min(n1, n2);
+            conditionCode = n1 == n2 ? 0 : n1 < n2 ? 1 : 2;
+            for (long i = 0; i < n1; i++) {
+                int value = i < copied ? memory.get(b) : pad;
+                memory.set(a, (byte) value);
+                a = (a + 1) & addressMask;
+                if (i < copied) {
+                    b = (b + 1) & addressMask;
+                }
+            }
+            n2 -= copied;
+            n1 = 0;
+        } else {
+            conditionCode = 0;
+            while (n1 != 0 || n2 != 0) {
+                int left = n1 != 0 ? memory.get(a) & 0xFF : pad;
+                int right = n2 != 0 ? memory.get(b) & 0xFF : pad;
+                if (left != right) {
+                    conditionCode = compare(left, right);
+                    break;
+                }
+                if (n1 != 0) {
+                    a = (a + 1) & addressMask;
+                    n1--;
+                }
+                if (n2 != 0) {
+                    b = (b + 1) & addressMask;
+                    n2--;
+                }
+            }
+        }
+        gpr[r1] = a;
+        gpr[r3] = b;
+        gpr[r1 + 1] = (int) n1;
+        gpr[r3 + 1] = (int) n2;
+    }
+
+    /**
+     * TRTR。TRT と同じだが、第 1 演算項の番地は右端のバイトを指し、右から左へ調べる。
+     * 条件コードは、見つけたのが最後に調べるバイト (左端) なら 2、それ以外なら 1 である。
+     */
+    private void translateAndTestReverse(byte[] insn) {
+        int rightmost = ssFirst(insn);
+        int table = ssSecond(insn);
+        int length = ssLength(insn);
+        for (int k = 0; k < length; k++) {
+            int at = (rightmost - k) & addressMask;
+            int function = memory.get(table + (memory.get(at) & 0xFF)) & 0xFF;
+            if (function != 0) {
+                gpr[1] = (gpr[1] & 0x80000000) | (at & 0x7FFFFFFF);
+                gpr[2] = (gpr[2] & 0xFFFFFF00) | function;
+                conditionCode = k == length - 1 ? 2 : 1;
+                return;
+            }
+        }
+        conditionCode = 0;
     }
 
     private void convertToBinary(byte[] insn) {

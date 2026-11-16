@@ -71,6 +71,8 @@ public final class Instructions {
         RIE_F(6),
         /** {@code op D1(L1,B1)} — 6 バイト。10 進の検査 ({@code TP}) が使う。 */
         RSL(6),
+        /** {@code op R1,D2(L2,B2),M3} — 6 バイト。長さは 8 ビット。DFP と 10 進の変換が使う。 */
+        RSL_B(6),
         SSF(6),
         RXE(6),
         RXF(6),
@@ -350,6 +352,38 @@ public final class Instructions {
         define("PFPO", 0x010A, Format.E);
         define("SAM24", 0x010C, Format.E);
         define("SAM31", 0x010D, Format.E);
+        define("SAM64", 0x010E, Format.E);
+        // ZHVS HI125A の変換・長い転送・アドレス方式の命令 (Principles of Operation による)
+        define("BSM", 0x0B, Format.RR);
+        define("BASSM", 0x0C, Format.RR);
+        define("MS", 0x71, Format.RX);
+        define("LAM", 0x9A, Format.RS);
+        define("STAM", 0x9B, Format.RS);
+        define("MVCLE", 0xA8, Format.RS);
+        define("CLCLE", 0xA9, Format.RS);
+        define("TRTR", 0xD0, Format.SS_A);
+        define("CVBY", 0xE306, Format.RXY);
+        define("CVBG", 0xE30E, Format.RXY);
+        define("CVDY", 0xE326, Format.RXY);
+        define("CVDG", 0xE32E, Format.RXY);
+        define("MVIY", 0xEB52, Format.SIY);
+        // ZHVS HI131A の DFP の変換とシフト
+        define("CDPT", 0xEDAE, Format.RSL_B);
+        define("CXPT", 0xEDAF, Format.RSL_B);
+        define("CPDT", 0xEDAC, Format.RSL_B);
+        define("CPXT", 0xEDAD, Format.RSL_B);
+        define("CDZT", 0xEDAA, Format.RSL_B);
+        define("CXZT", 0xEDAB, Format.RSL_B);
+        define("CZDT", 0xEDA8, Format.RSL_B);
+        define("CZXT", 0xEDA9, Format.RSL_B);
+        define("SLDT", 0xED40, Format.RXF);
+        define("SRDT", 0xED41, Format.RXF);
+        define("SLXT", 0xED48, Format.RXF);
+        define("SRXT", 0xED49, Format.RXF);
+        define("CXTR", 0xB3EC, Format.RRE);
+        define("LPDFR", 0xB370, Format.RRE);
+        define("LNDFR", 0xB371, Format.RRE);
+        define("LCDFR", 0xB373, Format.RRE);
         define("LGR", 0xB904, Format.RRE);
         define("LBR", 0xB926, Format.RRE);
         define("LGBR", 0xB906, Format.RRE);
