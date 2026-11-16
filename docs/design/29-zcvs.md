@@ -723,3 +723,29 @@ Zeus の `master` が `308d2f5` (6b14596 から 28 コミット) へ進んだの
 WXTRN の弱い参照は、いつも解決されずに 0 になる (この処理系は 1 つのモジュールしか
 結合しない)。LOCTR の始まりはその所在カウンタの境界にそろえるが、Zeus はそろえずに
 詰める。どちらも実機と突き合わせていない。
+
+### ZPVS を 97 から 124 へ (2026-11-16、Zeus 308d2f5)
+
+| スイート | 前回 | 今回 | Zeus 308d2f5 |
+| --- | ---: | ---: | ---: |
+| ZPVS (PL/I) | 97 / 147 | 124 / 147 | 147 / 147 |
+
+- 組み込み関数: 数学・整数のビット操作・16 進浮動小数点の模型、記憶域を番地と長さで
+  受ける関数 (MEM 系・BASE64・HEX 系)、文字列 (COLLAPSE・REPLACE など)、日付と時刻
+  (型 Table 65 を 1 つの仕組みで読み書きする)、REGEX (POSIX の最も左で最も長い一致)、
+  Unicode (ULENGTH 系・UTF8 系・UVALID)、CHECKSUM、STACKADDR・GTCA、UUID
+- 型と記憶域: UCHAR、WIDECHAR・GRAPHIC・UCHAR の VARYING、LITTLEENDIAN、FLOAT の IEEE
+  と FLOAT(DFP)、UNSIGNED の FIXED BIN(64)
+- 条件: ONCONDID・ONCONDCOND・ONPROCEDURE・ONFILE・ONSUBCODE・ONSUBCODE2 (VSAM の
+  R15 と理由コード)・ON の U/W/G 系。ONOFFSET は機械語の変位を持たないので、条件が
+  起きた文の手続きの中の番号で表す
+- 前処理: 配列、%XPROCEDURE、MACCOL、%PROCESS・%PROCINC・%LINE (LINEDIR)、
+  %INSCAN・%XINCLUDE、ANSWER と CALL、組み込み関数。本文の XDECLARE / XDEFINE
+- ジョブ: GETJCLSYMBOL・GETSYSWORD のため、実行時の文脈がジョブの値を持つ。ZCVS の
+  検証器が JCL の JOB・EXEC・SET・EXPORT から読む。ジョブ番号・ASID・システム名は
+  この処理系の決めた値である
+
+見つかった不具合: 組み込み関数がバイトの値を返すと比較が record の toString を読んで
+いた (COLLATE)。%INCLUDE で差し込んだ行数だけ後ろの行番号がずれていた。括弧でまとめた
+宣言が名前ごとの次元を捨てていた。Java の UTF-16 の復号が対になっていないサロゲートを
+置換文字に変えていた。いずれも測った次の増分で見つかった。
