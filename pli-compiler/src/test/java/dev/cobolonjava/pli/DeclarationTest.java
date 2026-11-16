@@ -348,7 +348,7 @@ class DeclarationTest {
     }
 
     @Test
-    @DisplayName("COMPLEX FLOAT などまだ持たない型の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
+    @DisplayName("ORDINAL などまだ持たない型の宣言は翻訳で通し、使ったときに止める (前の項目の型を受け継がない)")
     void unsupportedTypesStopWhenUsed() throws Exception {
         assertEquals("OK", main("""
                 DCL L LABEL;
@@ -357,12 +357,12 @@ class DeclarationTest {
                 """).strip());
         Exception failure = assertThrows(Exception.class, () -> main("""
                 DCL 1 S, 2 C CHAR(1);
-                DCL Z COMPLEX FLOAT DEC(6);
+                DCL Z ORDINAL;
                 Z = 1;
                 """));
         Throwable cause = failure;
         while (cause.getCause() != null) cause = cause.getCause();
-        assertTrue(String.valueOf(cause.getMessage()).contains("COMPLEX FLOAT is not supported yet"),
+        assertTrue(String.valueOf(cause.getMessage()).contains("ORDINAL is not supported yet"),
                 cause::toString);
     }
 

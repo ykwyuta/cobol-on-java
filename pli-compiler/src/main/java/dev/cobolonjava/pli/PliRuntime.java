@@ -123,6 +123,13 @@ public final class PliRuntime {
         }
     }
 
+    /** RESIGNAL 文。on-unit を抜けて、前の on-unit へ条件を渡す。 */
+    static final class ResignalSignal extends RuntimeException {
+        ResignalSignal() {
+            super(null, null, false, false);
+        }
+    }
+
     /** CONVERSION の on-unit が直した字の並び。変換をやり直すときに、元の並びの代わりに使う。 */
     private static final ThreadLocal<Map<String, String>> REPAIRED =
             ThreadLocal.withInitial(HashMap::new);
@@ -822,7 +829,21 @@ public final class PliRuntime {
                     onConditionQualifier = condition.qualifier;
                     repairedSource = null;
                     try {
-                        execute(handler.statements(), new Env(handler.established(), context));
+                        // RESIGNAL なら、この on-unit を張る前に有効だった on-unit へ渡す
+                        // (LRM "RESIGNAL statement")。無ければ既定の処置である
+                        Env.Handler current = handler;
+                        while (true) {
+                            try {
+                                execute(current.statements(), new Env(current.established(), context));
+                                break;
+                            } catch (ResignalSignal resignal) {
+                                current = current.previous();
+                                if (current == null || current.system()) {
+                                    throw new PliExecutionException(condition.name
+                                            + " was resignaled and has no other on-unit");
+                                }
+                            }
+                        }
                     } finally {
                         onCode = savedCode;
                         onSource = savedSource;
@@ -964,8 +985,8 @@ public final class PliRuntime {
                     throw new Condition("ERROR", null, 3, null);
                 }
             } else if (statement instanceof PliSyntax.OnCondition on) {
-                env.establish(conditionKey(on.condition(), on.qualifier()),
-                        new Env.Handler(on.handler(), env, on.system()));
+                String key = conditionKey(on.condition(), on.qualifier());
+                env.establish(key, new Env.Handler(on.handler(), env, on.system(), env.handler(key)));
             } else if (statement instanceof PliSyntax.Revert revert) {
                 env.revert(conditionKey(revert.condition(), revert.qualifier()));
             } else if (statement instanceof PliSyntax.Signal signal) {
@@ -1035,13 +1056,16 @@ public final class PliRuntime {
             } else if (statement instanceof PliSyntax.Stop) {
                 throw StopSignal.INSTANCE;
             } else if (statement instanceof PliSyntax.Block block) {
-                // BEGIN ブロックは自分の活性化を持つ (STACKADDR が別の番地を返す)
+                // BEGIN ブロックは自分の活性化を持つ (STACKADDR が別の番地を返す)。ブロックの中で
+                // 張った on-unit はブロックを出ると取り消される (LRM "ON statement")
                 Object saved = blockActivation;
                 blockActivation = new Object();
+                Map<String, Env.Handler> handlers = env.saveHandlers();
                 try {
                     execute(block.body(), env);
                 } finally {
                     blockActivation = saved;
+                    env.restoreHandlers(handlers);
                 }
             } else if (statement instanceof PliSyntax.Group group) {
                 try {
@@ -2383,6 +2407,9 @@ public final class PliRuntime {
                 // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
                 // 解いたあとの参照が誤りであることは検出しない
                 return;
+            }
+            if (call.name().equals("#RESIGNAL")) {
+                throw new ResignalSignal();
             }
             if (call.name().equals("#DISPLAY")) {
                 // DISPLAY 文。運用者の画面の代わりに、実行単位の表示の出口 (COBOL の DISPLAY と
@@ -3737,7 +3764,8 @@ public final class PliRuntime {
                                                 hex.bytes().length - number(arguments.get(1))
                                                         .intValue() + 1), 31, 0)))))
                         : substring(arguments);
-                case "DATETIME" -> ZonedDateTime.now(context.clock()).format(DATETIME);
+                case "DATETIME" -> arguments.isEmpty() ? ZonedDateTime.now(context.clock()).format(DATETIME)
+                        : microsToDate(nowMicros(false), display(arguments.get(0)).stripTrailing());
                 // PACKAGE が無ければ、いちばん外の手続きの名である (LRM "PACKAGENAME")
                 case "PACKAGENAME" -> program.packageName() == null
                         ? program.name().toUpperCase(Locale.ROOT) : program.packageName();
@@ -4404,6 +4432,20 @@ public final class PliRuntime {
                     randomState ^= randomState << 17;
                     yield new BigDecimal((double) (randomState >>> 11) / (double) (1L << 53));
                 }
+                // PRECISION(x, p[, q]): 精度を変えた FIXED。小数の端は切り捨てる (LRM "PRECISION")
+                case "PRECISION", "PREC" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    int p = number(arguments.get(1)).intValue();
+                    int q = arguments.size() > 2 ? number(arguments.get(2)).intValue() : 0;
+                    yield arguments.get(0) instanceof FixedValue fixed && fixed.binary()
+                            ? FixedValue.binary(x.setScale(Math.max(q, 0), java.math.RoundingMode.DOWN), p, q)
+                            : FixedValue.decimal(x.setScale(Math.max(q, 0), java.math.RoundingMode.DOWN), p, q);
+                }
+                case "FLOAT" -> number(arguments.get(0));
+                // on-unit の外では 0。入れ子の条件を数えることはまだしない (LRM "ONCOUNT")
+                case "ONCOUNT" -> fixedBinary31(onConditionName == null ? 0 : 1);
+                case "DATE" -> microsToDate(nowMicros(false), "YYMMDD");
+                case "TIME" -> microsToDate(nowMicros(false), "HHMISS999");
                 case "GETJCLSYMBOL" -> java.util.Objects.requireNonNullElse(context.jobAttribute(
                         "JCLSYMBOL:" + display(arguments.get(0)).strip().toUpperCase(Locale.ROOT)), "");
                 case "ISJCLSYMBOL" -> context.jobAttribute(
@@ -6502,7 +6544,15 @@ public final class PliRuntime {
         }
 
         /** 条件の on-unit と、それを確立した環境。SYSTEM なら handler は空で system が真。 */
-        record Handler(List<PliSyntax.Stmt> statements, Env established, boolean system) {
+        /**
+         * @param previous この on-unit を張る前に有効だった on-unit (RESIGNAL が渡す先)。無ければ null
+         */
+        record Handler(List<PliSyntax.Stmt> statements, Env established, boolean system,
+                       Handler previous) {
+
+            Handler(List<PliSyntax.Stmt> statements, Env established, boolean system) {
+                this(statements, established, system, null);
+            }
         }
 
         private final Map<String, Handler> handlers = new HashMap<>();
@@ -6516,6 +6566,15 @@ public final class PliRuntime {
         }
 
         /** 呼んだ側へたどって on-unit を探す (動的な有効範囲。LRM "Establishing an ON-unit")。 */
+        Map<String, Handler> saveHandlers() {
+            return new HashMap<>(handlers);
+        }
+
+        void restoreHandlers(Map<String, Handler> saved) {
+            handlers.clear();
+            handlers.putAll(saved);
+        }
+
         Handler handler(String key) {
             Handler own = handlers.get(key);
             return own != null ? own : caller == null ? null : caller.handler(key);
@@ -6640,6 +6699,9 @@ public final class PliRuntime {
             int half = view.length() / 2;
             Var part = new Var(name, type, precision, scale, view.subView(index * half, half));
             part.unsigned = unsigned;
+            // COMPLEX FLOAT の実部と虚部は、それぞれが同じ形式の FLOAT である
+            part.floatFormat = floatFormat;
+            part.littleEndian = littleEndian;
             return part;
         }
 

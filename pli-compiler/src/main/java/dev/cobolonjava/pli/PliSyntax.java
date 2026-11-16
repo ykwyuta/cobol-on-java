@@ -20,12 +20,34 @@ final class PliSyntax {
     private static final ThreadLocal<Map<String, Integer>> INDICATORS =
             ThreadLocal.withInitial(java.util.HashMap::new);
 
+    /** {@code 名: FORMAT(...)} の書式並びの字句 (R(名) の書式項目が引く)。 */
+    private static final ThreadLocal<Map<String, List<Token>>> FORMATS =
+            ThreadLocal.withInitial(java.util.HashMap::new);
+
     static ParseResult parse(String fileName, String source) {
         DFP.set(PliOptions.fromSource(source).dfp());
         INDICATORS.get().clear();
+        FORMATS.get().clear();
         try {
+            List<Token> scanned = new Lexer(fileName, source).scan();
+            // FORMAT 文は参照より後に書けるので、先に集めておく (LRM "FORMAT statement")
+            for (int i = 0; i + 3 < scanned.size(); i++) {
+                if (scanned.get(i).kind() == Kind.IDENT && scanned.get(i + 1).is(":")
+                        && scanned.get(i + 2).is("FORMAT") && scanned.get(i + 3).is("(")) {
+                    int depth = 0;
+                    for (int k = i + 3; k < scanned.size(); k++) {
+                        if (scanned.get(k).is("(")) depth++;
+                        if (scanned.get(k).is(")") && --depth == 0) {
+                            List<Token> list = new ArrayList<>(scanned.subList(i + 3, k + 1));
+                            list.add(new Token(Kind.EOF, "<EOF>", scanned.get(k).line(), 0));
+                            FORMATS.get().put(scanned.get(i).text().toUpperCase(Locale.ROOT), list);
+                            break;
+                        }
+                    }
+                }
+            }
             return new Parser(fileName, expandTypes(qualify(repeatableDeclarations(
-                    new Lexer(fileName, source).scan())))).parse();
+                    scanned)))).parse();
         } catch (ParseFailure failure) {
             return new ParseResult(null, List.of(new Diagnostic(Diagnostic.Severity.ERROR,
                     fileName, failure.token.line(), failure.token.column(), failure.getMessage())));
@@ -1772,6 +1794,17 @@ final class PliSyntax {
                 expect(";");
                 return new Select(subject, List.copyOf(whens), otherwise);
             }
+            if (check("FORMAT") && check(1, "(")) {
+                // 遠隔の書式並び。R(名) が読むので、ここでは何もしない文である
+                next();
+                skipBalanced();
+                expect(";");
+                return new Group(null, List.of());
+            }
+            if (match("RESIGNAL")) {
+                expect(";");
+                return new Call("#RESIGNAL", List.of());
+            }
             if (match("REVERT") || match("SIGNAL")) {
                 boolean revert = previous().is("REVERT");
                 String condition = conditionName();
@@ -2676,11 +2709,6 @@ final class PliSyntax {
                             && tokens.stream().anyMatch(x -> x.is("VARYINGZ"))) {
                         return "VARYINGZ " + t.text();
                     }
-                    if ((t.is("COMPLEX") || t.is("CPLX")) && tokens.stream()
-                            .noneMatch(x -> x.is("FIXED"))) {
-                        // 複素数は FIXED だけを持つ
-                        return "COMPLEX FLOAT";
-                    }
                     base |= t.is("BIN") || t.is("BINARY") || t.is("DEC") || t.is("DECIMAL");
                     fixed |= t.is("FIXED");
                     picture |= t.is("PIC") || t.is("PICTURE");
@@ -2887,6 +2915,18 @@ final class PliSyntax {
             List<FormatItem> items = new ArrayList<>();
             do {
                 Token item = expect(Kind.IDENT, "format item");
+                if (item.is("R") && check("(")) {
+                    // R(名): FORMAT 文の書式並びをここに置く
+                    expect("(");
+                    Token label = expect(Kind.IDENT, "FORMAT label");
+                    expect(")");
+                    List<Token> remote = FORMATS.get().get(label.text().toUpperCase(Locale.ROOT));
+                    if (remote == null) {
+                        throw fail(label, "no FORMAT statement named " + label.text());
+                    }
+                    items.addAll(new Parser(fileName, remote).formatList());
+                    continue;
+                }
                 int width = -1;
                 int fraction = 0;
                 boolean fractionGiven = false;
