@@ -749,3 +749,23 @@ WXTRN の弱い参照は、いつも解決されずに 0 になる (この処理
 いた (COLLATE)。%INCLUDE で差し込んだ行数だけ後ろの行番号がずれていた。括弧でまとめた
 宣言が名前ごとの次元を捨てていた。Java の UTF-16 の復号が対になっていないサロゲートを
 置換文字に変えていた。いずれも測った次の増分で見つかった。
+
+### ZPVS を 124 から 131 へ (2026-11-16、Zeus 308d2f5)
+
+EXTERNAL / RESERVED の共有、DEFINED(基) と CONNECTED の配列への重ね、LIMITED の入口、
+DISPLAY 文、VARYINGZ・BYVALUE・OPTIONAL、次元の制限式 INDICATORS と REPATTERN、
+QUALIFY のブロック、TYPE(h) と locator で修飾した構造の代入を足した。
+
+残る 16 本と、それぞれに要るもの:
+
+| 本 | 要るもの |
+| --- | --- |
+| PC112A | ASSERT 文、ON ASSERTION・ANYCONDITION・FINISH・INVALIDOP、ONLINE (実行時の文の行) |
+| PC126A | LIST の仮引数と VARGLIST / VARGSIZE (可変個の引数)、反復 DO の WHILE |
+| PD109A | LABEL の変数 |
+| PD111A | ON AREA と ALLOCATE IN の AREA の不足 |
+| PD115A・PS110A | 構造の配列 (DIMACROSS、BY DIMACROSS、OFFSET と LOCATES) |
+| PF107A〜PF110A | KEYTO、ファイルの属性、ON NAME (GET DATA)、TYPE(U) のファイル |
+| PM110A | FORMAT の書式項目 |
+| PM129A〜PM132A | PLISRTx・PLIPARSE・PLIDUMP・PLICKPT |
+| PS109A | ATTACH・WAIT・DETACH・EXIT (スレッド) |
