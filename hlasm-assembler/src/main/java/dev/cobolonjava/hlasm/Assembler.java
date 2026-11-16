@@ -62,6 +62,20 @@ public final class Assembler implements Constants.Scope {
     /** この周で始めた制御節。周の最初の CSECT は最初の所在カウンタから始める。 */
     private final java.util.Set<String> startedControls = new java.util.HashSet<>();
     private int moduleSize;
+    /**
+     * 共通セクション (COM) の名前。COM は記憶域を組み立てず (中の DC は置かれない)、実行単位で
+     * 名前ごとに 1 つの 0 で埋めた領域を共有する (HLASM Language Reference "COM instruction")。
+     * 中の記号を指す番地定数は、その領域の番地を載せるときに入れる外の記号として控える。
+     */
+    private final java.util.Set<String> commons = new java.util.HashSet<>();
+    /** 制御節とクラスの長さ。配置を決めたときに入る。J 型定数がクラスの長さを引く。 */
+    private final Map<String, Integer> controlLengths = new LinkedHashMap<>();
+    /** XATTR PSECT で結んだ記号と、その PSECT の名前。R 型定数が引く。 */
+    private final Map<String, String> psects = new LinkedHashMap<>();
+    /** 共通セクションの長さ。配置を決めたときに入る。 */
+    private final Map<String, Integer> commonLengths = new LinkedHashMap<>();
+    /** 名前の無い COM (blank common) の内部の名前。HLASM の名前には書けない字を使う。 */
+    private static final String BLANK_COMMON = "$BLANK";
     /** EXTRN と WXTRN で宣言した外の記号。値は弱い参照 (WXTRN) かどうか。 */
     private final Map<String, Boolean> externalNames = new LinkedHashMap<>();
     /** 外部ダミー節 (DXD) の長さと境界。定義した順に並べ、Q 型定数がその中の位置を引く。 */
@@ -231,6 +245,11 @@ public final class Assembler implements Constants.Scope {
                 running += counter.length();
                 alignment = Math.max(alignment, unit);
             }
+            controlLengths.put(control.getKey(), running);
+            if (commons.contains(control.getKey())) {
+                commonLengths.put(control.getKey(), control.getValue().stream()
+                        .mapToInt(s -> s.highWater).max().orElse(0));
+            }
             if (!control.getValue().get(0).dummy) {
                 total = roundUp(total, alignment);
                 controlOrigins.put(control.getKey(), total);
@@ -359,7 +378,10 @@ public final class Assembler implements Constants.Scope {
             case "LINK" -> link(statement);
             case "GET" -> getPut(statement, SVC_GET);
             case "ICTL" -> { } // HlasmReader が適用済み
-            case "COM", "COPY" ->
+            case "COM" -> startSection(statement, true);
+            case "CATTR" -> classAttributes(statement);
+            case "XATTR" -> externalAttributes(statement);
+            case "COPY" ->
                     throw new AssemblyException(statement.line(),
                             statement.operation() + " is not supported yet");
             default -> machine(statement);
@@ -369,8 +391,9 @@ public final class Assembler implements Constants.Scope {
     // --- 制御節 ---
 
     private void startSection(Statement statement, boolean dummy) {
+        boolean common = statement.operation().equals("COM");
         String name = statement.label() != null ? statement.label()
-                : dummy ? null : defaultSectionName();
+                : common ? BLANK_COMMON : dummy ? null : defaultSectionName();
         if (name == null) {
             throw new AssemblyException(statement.line(), "DSECT requires a name");
         }
@@ -396,6 +419,9 @@ public final class Assembler implements Constants.Scope {
             }
             section = new Section(name, name, dummy, 0);
             sections.put(name, section);
+            if (common) {
+                commons.add(name);
+            }
             controls.put(name, new ArrayList<>(List.of(section)));
         }
         if (section.dummy != dummy) {
@@ -410,6 +436,42 @@ public final class Assembler implements Constants.Scope {
         }
         if (!emitting && !resumed) {
             define(name, new Symbol(name, Value.in(name, 0), 1), statement.line());
+        }
+    }
+
+    /**
+     * {@code CATTR}。名前のクラスへ切り替える。クラスはテキストを持つ節として、制御節と同じに
+     * モジュールの中へ並べる。{@code ALIGN(n)} は 2 の n 乗の境界、{@code RMODE} などの
+     * 結合の属性は読むだけである (載せる番地は 31 ビットの番地空間が決める)。
+     * GOFF のクラスは結合プログラムが別々の要素として集めるが、この処理系は 1 つの
+     * モジュールしか結合しないので、定義した順に並べる。
+     */
+    private void classAttributes(Statement statement) {
+        if (statement.label() == null) {
+            throw new AssemblyException(statement.line(), "CATTR requires a class name");
+        }
+        int alignment = 8;
+        for (String operand : statement.operandList()) {
+            String text = operand.trim().toUpperCase(Locale.ROOT);
+            if (text.startsWith("ALIGN(") && text.endsWith(")")) {
+                alignment = 1 << absolute(text.substring(6, text.length() - 1), statement.line());
+            }
+        }
+        startSection(new Statement(statement.label(), "CSECT", "", statement.line()), false);
+        current.alignment = Math.max(current.alignment, alignment);
+    }
+
+    /** {@code XATTR}。PSECT(名前) だけを控え、ほかの属性は読むだけである。 */
+    private void externalAttributes(Statement statement) {
+        if (statement.label() == null) {
+            throw new AssemblyException(statement.line(), "XATTR requires a symbol name");
+        }
+        for (String operand : statement.operandList()) {
+            String text = operand.trim().toUpperCase(Locale.ROOT);
+            if (text.startsWith("PSECT(") && text.endsWith(")")) {
+                psects.put(statement.label().toUpperCase(Locale.ROOT),
+                        text.substring(6, text.length() - 1).trim());
+            }
         }
     }
 
@@ -631,6 +693,21 @@ public final class Assembler implements Constants.Scope {
                     baseDisplacementConstant(unit, reference, line);
                     continue;
                 }
+                case 'J' -> {
+                    // 外部ダミー節かクラスの長さ (結合のときに決まる値)
+                    int length;
+                    if (externalDummies.containsKey(name)) {
+                        length = externalDummies.get(name)[0];
+                    } else if (controlLengths.containsKey(name)) {
+                        length = controlLengths.get(name);
+                    } else {
+                        throw new AssemblyException(line,
+                                "a J-type constant requires an external dummy section or a class: "
+                                        + name);
+                    }
+                    writeInt(unit, reference.offset(), reference.length(), length);
+                    continue;
+                }
                 case 'Q', 'q' -> {
                     int offset = externalDummyOffset(name, line);
                     if (reference.kind() == 'q') {
@@ -644,6 +721,17 @@ public final class Assembler implements Constants.Scope {
                     continue;
                 }
                 default -> { }
+            }
+            if (reference.kind() == 'R') {
+                // XATTR PSECT で結んだ PSECT の番地
+                String psect = psects.get(name);
+                if (psect == null) {
+                    throw new AssemblyException(line,
+                            "an R-type constant requires a symbol with XATTR PSECT: " + name);
+                }
+                name = psect;
+                reference = new Constants.AddressReference(reference.offset(), reference.length(),
+                        psect, 'A');
             }
             Symbol local = symbols.get(name);
             boolean declared = externalNames.containsKey(name) && local == null;
@@ -662,6 +750,14 @@ public final class Assembler implements Constants.Scope {
             }
             Value value = evaluate(reference.expression(), line);
             int number = value.value();
+            if (value.isRelocatable() && commons.contains(value.section())) {
+                // 共通セクションの中の位置を欄に置き、載せる側が領域の番地を足す
+                writeInt(unit, reference.offset(), reference.length(), number);
+                externals.add(new ObjectModule.External(location + reference.offset(),
+                        reference.length(), ObjectModule.commonName(value.section(),
+                                commonLengths.getOrDefault(value.section(), 0))));
+                continue;
+            }
             if (value.isRelocatable()) {
                 number = moduleOffset(value.section(), number);
             }
@@ -1140,7 +1236,8 @@ public final class Assembler implements Constants.Scope {
             current = sections.get(lastCounter.get(mainSection.control));
         }
         placeLiterals(statement.line());
-        if (statement.hasOperands()) {
+        // 制御節の位置は 1 周目の終わりに決まるので、入口は 2 周目で決める
+        if (statement.hasOperands() && emitting) {
             Value value = evaluate(statement.operands(), statement.line());
             if (value.isAbsolute() || !controlOrigins.containsKey(value.section())) {
                 throw new AssemblyException(statement.line(),

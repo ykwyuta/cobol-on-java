@@ -49,6 +49,8 @@ public final class Constants {
             // S はベースと変位、Q は外部ダミー節の中の位置。どちらも値は組み立てで入れる
             case 'S' -> new TypeRule(2, 2, false);
             case 'Q' -> new TypeRule(4, 4, false);
+            // J は外部ダミー節かクラスの長さ、R は PSECT の番地 (GOFF の結合のときに決まる)
+            case 'J', 'R' -> new TypeRule(4, 4, false);
             case 'P' -> new TypeRule(1, 1, true);
             case 'Z' -> new TypeRule(1, 1, true);
             case 'E' -> new TypeRule(4, 4, false);
@@ -132,7 +134,8 @@ public final class Constants {
         }
         // AD / VD / QD は 8 バイト、SY と QY は 20 ビットの変位の形で 3 バイトである
         char kind = type;
-        if ((type == 'A' || type == 'V' || type == 'Q') && at < operand.length()
+        if ((type == 'A' || type == 'V' || type == 'Q' || type == 'J' || type == 'R')
+                && at < operand.length()
                 && Character.toUpperCase(operand.charAt(at)) == 'D') {
             rule = new TypeRule(8, 8, false);
             at++;
@@ -262,12 +265,12 @@ public final class Constants {
                         ? rule.defaultLength() : explicitLength, scale, line);
                 case 'P' -> packed(item, explicitLength, line);
                 case 'Z' -> zoned(item, explicitLength, scope.codePage(), line);
-                case 'A', 'Y', 'V', 'S', 'Q' -> new byte[explicitLength == null
+                case 'A', 'Y', 'V', 'S', 'Q', 'J', 'R' -> new byte[explicitLength == null
                         ? rule.defaultLength() : explicitLength];
                 case 'E', 'D', 'L' -> FloatingConstants.encode(type, extension, item, line);
                 default -> throw new AssemblyException(line, "unsupported constant type: " + type);
             };
-            if ("AYVSQ".indexOf(type) >= 0) {
+            if ("AYVSQJR".indexOf(type) >= 0) {
                 references.add(new AddressReference(
                         encoded.stream().mapToInt(b -> b.length).sum(), bytes.length, item,
                         type == 'Y' ? 'A' : kind));

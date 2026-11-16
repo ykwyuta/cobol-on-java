@@ -114,6 +114,42 @@ public final class AddressSpace {
         }
     }
 
+    /** 共通セクションのために取っておく番地の幅。 */
+    private static final int COMMON_RESERVE = 1 << 20;
+
+    /** 共通セクションの名前と、その区画。 */
+    private final java.util.Map<String, Region> commons = new java.util.HashMap<>();
+
+    /**
+     * 共通セクションの番地。実行単位で名前ごとに 1 つの 0 で埋めた領域であり、長さは
+     * それを宣言したモジュールのうちいちばん長いものになる (HLASM Language Reference
+     * "COM instruction")。結合は動的に起こるので、あとから長いものが来たら同じ番地のまま
+     * 広げる。そのために 1 MiB の番地を取っておき、それを超える長さは断る。
+     */
+    public synchronized int commonAddress(String name, int length) {
+        Region region = commons.get(name);
+        if (region == null) {
+            int base = next;
+            region = new Region("COM " + name, base, new byte[length]);
+            regions.add(region);
+            next = base + COMMON_RESERVE;
+            commons.put(name, region);
+            return base;
+        }
+        if (length > region.length()) {
+            if (length > COMMON_RESERVE) {
+                throw new IllegalStateException("the common section " + name
+                        + " is longer than " + COMMON_RESERVE + " bytes");
+            }
+            Region wider = new Region(region.name(), region.base(),
+                    java.util.Arrays.copyOf(region.bytes(), length));
+            regions.set(regions.indexOf(region), wider);
+            commons.put(name, wider);
+            region = wider;
+        }
+        return region.base();
+    }
+
     /** 外の記号の入口の番地。同じ名前には同じ番地を返す。 */
     public synchronized int externalAddress(String name) {
         int index = externalNames.indexOf(name);

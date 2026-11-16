@@ -37,6 +37,28 @@ public record ObjectModule(String name, byte[] text, int entryOffset,
      * 外の記号の番地を入れる欄 ({@code V(名前)})。載せる側が名前から入口を引いて入れる。
      */
     public record External(int offset, int length, String name) {
+
+        /** 共通セクションなら真。欄にはその中の位置が入っており、領域の番地を足す。 */
+        public boolean common() {
+            return name.startsWith(COMMON_PREFIX);
+        }
+
+        /** 共通セクションの名前。 */
+        public String commonSection() {
+            return name.substring(COMMON_PREFIX.length(), name.lastIndexOf('/'));
+        }
+
+        /** このモジュールが見た共通セクションの長さ。 */
+        public int commonLength() {
+            return Integer.parseInt(name.substring(name.lastIndexOf('/') + 1));
+        }
+    }
+
+    /** 共通セクションを指す外の記号の名前の頭。HLASM の名前には書けない字を使う。 */
+    static final String COMMON_PREFIX = "=COM/";
+
+    static String commonName(String section, int length) {
+        return COMMON_PREFIX + section + "/" + length;
     }
 
     public ObjectModule(String name, byte[] text, int entryOffset,

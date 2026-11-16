@@ -81,7 +81,7 @@ public final class HlasmRuntime {
         }
         List<ObjectModule.External> outside = new ArrayList<>();
         for (String one : externals.isEmpty() ? new String[0] : externals.split(";")) {
-            String[] parts = one.split(":");
+            String[] parts = one.split(":", 3);
             outside.add(new ObjectModule.External(Integer.parseInt(parts[0]),
                     Integer.parseInt(parts[1]), parts[2]));
         }
@@ -143,8 +143,10 @@ public final class HlasmRuntime {
                         read(text, field.offset(), field.length()) + textBase);
             }
             for (ObjectModule.External field : externals) {
-                patch(text, field.offset(), field.length(),
-                        memory.externalAddress(field.name()));
+                patch(text, field.offset(), field.length(), field.common()
+                        ? memory.commonAddress(field.commonSection(), field.commonLength())
+                                + read(text, field.offset(), field.length())
+                        : memory.externalAddress(field.name()));
             }
         }
         int saveBase = memory.place("SAVEAREA", saveArea);
