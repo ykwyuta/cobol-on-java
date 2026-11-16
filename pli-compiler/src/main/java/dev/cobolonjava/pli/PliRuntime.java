@@ -1312,7 +1312,25 @@ public final class PliRuntime {
                 env.put(array);
                 return;
             }
-            if (!declaration.dimensions().isEmpty() || base.dimensions != null
+            DataView baseView = base.view;
+            if (base.dimensions != null && base.type == PliSyntax.Type.CHAR && !base.varying
+                    && !base.elements.isEmpty()) {
+                // 文字の配列に重ねる (LRM "String overlay defining")。要素が 1 つの記憶域に
+                // 隙間なく並んでいる (CONNECTED) ときだけ、その並び全体を基にする
+                DataView first = base.elements.get(0).view;
+                int expected = first.offset();
+                boolean connected = true;
+                for (Var element : base.elements) {
+                    connected &= element.view.storage() == first.storage()
+                            && element.view.offset() == expected;
+                    expected += element.view.length();
+                }
+                if (connected) {
+                    baseView = first.storage().view(first.offset(), expected - first.offset());
+                }
+            }
+            if (!declaration.dimensions().isEmpty()
+                    || (base.dimensions != null && baseView == base.view)
                     || declaration.type() != PliSyntax.Type.CHAR || base.type != PliSyntax.Type.CHAR
                     || declaration.varying() || base.varying) {
                 // 文字の重ね (string overlay defining) だけを持つ。配列の単純な定義と、
@@ -1323,12 +1341,12 @@ public final class PliRuntime {
             int position = defined.position() == null ? 1
                     : number(value(defined.position(), env)).intValue();
             int length = byteLength(declaration);
-            if (position < 1 || position - 1 + length > base.view.length()) {
+            if (position < 1 || position - 1 + length > baseView.length()) {
                 throw new PliExecutionException("DEFINED " + declaration.name() + " POSITION("
                         + position + ") lies outside " + base.name);
             }
             Var overlay = new Var(declaration.name(), declaration.type(), declaration.precision(),
-                    declaration.scale(), base.view.subView(position - 1, length));
+                    declaration.scale(), baseView.subView(position - 1, length));
             overlay.valueSet = declaration.valueSet();
             env.put(overlay);
         }
@@ -2152,6 +2170,13 @@ public final class PliRuntime {
                     && program.procedures().get("PLIFREE") == null) {
                 // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
                 // 解いたあとの参照が誤りであることは検出しない
+                return;
+            }
+            if (call.name().equals("#DISPLAY")) {
+                // DISPLAY 文。運用者の画面の代わりに、実行単位の表示の出口 (COBOL の DISPLAY と
+                // 同じもの) へ 1 行を書く
+                context.display(context.codePage().encode(character(value(call.arguments().get(0),
+                        env))), true);
                 return;
             }
             if (call.name().equalsIgnoreCase("PLIRETC")) {

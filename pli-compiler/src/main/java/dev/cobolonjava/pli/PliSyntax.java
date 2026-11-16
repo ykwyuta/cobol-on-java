@@ -1480,6 +1480,26 @@ final class PliSyntax {
             if (match("CALL")) {
                 return call();
             }
+            if (check("DISPLAY") && check(1, "(")) {
+                // DISPLAY(式) [ROUTCDE(...)] [DESC(...)]: 運用者への通知 (LRM "DISPLAY statement")。
+                // 経路と記述子の番号は読むだけである。REPLY は応答を待つので、まだ持たない
+                Token verb = next();
+                expect("(");
+                Expr message = expression();
+                expect(")");
+                while (!check(";")) {
+                    Token option = next();
+                    if (option.is("REPLY") || option.is("EVENT")) {
+                        throw fail(option, "DISPLAY with " + option.text() + " is not supported yet");
+                    }
+                    if (!(option.is("ROUTCDE") || option.is("DESC")) || !check("(")) {
+                        throw fail(option, "ROUTCDE(...) or DESC(...) expected in DISPLAY");
+                    }
+                    skipBalanced();
+                }
+                expect(";");
+                return new Call("#DISPLAY", List.of(message));
+            }
             if (match("RETURN")) {
                 Expr value = null;
                 if (check("(") && !returnsValue) {
@@ -2291,8 +2311,9 @@ final class PliSyntax {
                 }
                 if (tokens.get(i).is("ENTRY")) {
                     // VARIABLE なら入口の値を持つ変数 (精度 1 で印す)。そうでなければ入口の宣言
+                    // LIMITED の入口も変数である (LRM "LIMITED attribute")
                     return new TypeInfo(Type.ENTRY, tokens.stream()
-                            .anyMatch(t -> t.is("VARIABLE")) ? 1 : 0, 0);
+                            .anyMatch(t -> t.is("VARIABLE") || t.is("LIMITED")) ? 1 : 0, 0);
                 }
                 if (tokens.get(i).is("GENERIC")) {
                     return new TypeInfo(Type.ENTRY, 0, 0);
@@ -2486,6 +2507,14 @@ final class PliSyntax {
             }
             if (at < 0) {
                 return null;
+            }
+            if (at + 1 < tokens.size() && tokens.get(at + 1).is("(")) {
+                // DEFINED(基) の書き方 (LRM "DEFINED attribute")。括弧を外して読む
+                int close = findClosing(tokens, at + 1);
+                List<Token> unwrapped = new ArrayList<>(tokens.subList(0, at + 1));
+                unwrapped.addAll(tokens.subList(at + 2, close));
+                unwrapped.addAll(tokens.subList(close + 1, tokens.size()));
+                return defined(unwrapped);
             }
             if (at + 1 >= tokens.size() || tokens.get(at + 1).kind() != Kind.IDENT) {
                 throw new ParseFailure(tokens.get(at), "DEFINED needs a base variable");
