@@ -2468,6 +2468,15 @@ final class PliSyntax {
                         // CHAR(*) は引数の長さを受け継ぐ (LRM "Parameter attributes")。長さ -1 で表す
                         return new TypeInfo(Type.CHAR, -1, 0);
                     }
+                    if (!(i + 1 < tokens.size() && tokens.get(i + 1).is("("))) {
+                        // 長さを省いた CHAR の VALUE は、値の長さを取る (LRM "VALUE attribute")
+                        for (int v = i + 1; v + 3 < tokens.size(); v++) {
+                            if (tokens.get(v).is("VALUE") && tokens.get(v + 1).is("(")
+                                    && tokens.get(v + 2).kind() == Kind.STRING && tokens.get(v + 3).is(")")) {
+                                return new TypeInfo(Type.CHAR, Math.max(1, tokens.get(v + 2).text().length()), 0);
+                            }
+                        }
+                    }
                     return new TypeInfo(Type.CHAR, parenthesizedInt(tokens, i + 1, 1), 0);
                 }
                 if (tokens.get(i).is("UCHAR")) {

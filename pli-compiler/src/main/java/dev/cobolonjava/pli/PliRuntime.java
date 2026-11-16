@@ -2289,6 +2289,21 @@ public final class PliRuntime {
                     List<Object> a = call.arguments().stream().map(e -> value(e, env)).toList();
                     memoryWrite(a.get(0), memoryRead(a.get(1), number(a.get(2)).intValue()));
                 }
+                // PLIDUMP(選択, 見出し): 記憶域の写しは持たないので、見出しを表示の出口へ書く。
+                // S なら実行を止め、ほか (C が既定) は続ける (Programming Guide "PLIDUMP")
+                case "PLIDUMP" -> {
+                    String options = call.arguments().isEmpty() ? ""
+                            : character(value(call.arguments().get(0), env)).toUpperCase(Locale.ROOT);
+                    String title = call.arguments().size() > 1
+                            ? character(value(call.arguments().get(1), env)) : "";
+                    context.display(context.codePage().encode("PLIDUMP " + title.strip()), true);
+                    if (options.contains("S")) {
+                        throw new PliExecutionException("PLIDUMP with S stopped the program: " + title);
+                    }
+                }
+                case "PLICKPT" -> checkpoint(call, env);
+                case "PLISRTA", "PLISRTB", "PLISRTC", "PLISRTD" -> sort(call, env);
+                case "PLIPARSE" -> parse(call, env);
                 case "PLITRAN11" -> translateBuffer(call, env, 1, 1);
                 case "PLITRAN12" -> translateBuffer(call, env, 1, 2);
                 case "PLITRAN21" -> translateBuffer(call, env, 2, 1);
@@ -2324,6 +2339,211 @@ public final class PliRuntime {
                     }
                 }
             }
+        }
+
+        /**
+         * PLISRTA〜D (Programming Guide "Using the PL/I sort program")。引数は SORT 文、RECORD 文、
+         * 記憶域の大きさ (読むだけ)、戻りコード、そして B と D は入力の手続き (E15)、C と D は
+         * 出力の手続き (E35)。A と C は SORTIN を読み、A と B は SORTOUT へ書く。
+         *
+         * <p>E15 は PLIRETC で 12 (このレコードを入れる)、8 (入力の終わり)、16 (打ち切り) を返す。
+         * E35 は 4 (次を渡せ)、8 (もう要らない)、16 (打ち切り) を返す。打ち切れば戻りコードは 16。
+         * キーの形式は CH・BI (符号なしの比較)、FI (符号つきの 2 進)、PD、ZD を持つ。
+         * 同じキーのレコードは入力の順を保つ (EQUALS)。DFSORT と突き合わせていない。
+         */
+        private void sort(PliSyntax.Call call, Env env) {
+            List<PliSyntax.Expr> args = call.arguments();
+            String control = character(value(args.get(0), env)).toUpperCase(Locale.ROOT);
+            String recordSpec = character(value(args.get(1), env)).toUpperCase(Locale.ROOT);
+            Matcher lengthMatch = java.util.regex.Pattern.compile("LENGTH=\\(?(\\d+)").matcher(recordSpec);
+            if (!lengthMatch.find()) {
+                throw new PliExecutionException("PLISRT needs RECORD TYPE=F,LENGTH=(n): " + recordSpec);
+            }
+            int length = Integer.parseInt(lengthMatch.group(1));
+            Matcher fields = java.util.regex.Pattern.compile("FIELDS=\\(([^)]*)\\)").matcher(control);
+            if (!fields.find()) {
+                throw new PliExecutionException("PLISRT needs SORT FIELDS=(...): " + control);
+            }
+            String[] items = fields.group(1).split(",");
+            if (items.length % 4 != 0) {
+                throw new PliExecutionException("SORT FIELDS needs start,length,format,order: " + control);
+            }
+            java.util.Comparator<byte[]> order = (a, b) -> 0;
+            for (int k = 0; k < items.length; k += 4) {
+                int start = Integer.parseInt(items[k].strip()) - 1;
+                int size = Integer.parseInt(items[k + 1].strip());
+                String format = items[k + 2].strip();
+                boolean descending = items[k + 3].strip().equals("D");
+                java.util.Comparator<byte[]> key = (a, b) -> {
+                    byte[] x = java.util.Arrays.copyOfRange(a, start, start + size);
+                    byte[] y = java.util.Arrays.copyOfRange(b, start, start + size);
+                    return switch (format) {
+                        case "CH", "BI" -> java.util.Arrays.compareUnsigned(x, y);
+                        case "FI" -> new java.math.BigInteger(x).compareTo(new java.math.BigInteger(y));
+                        case "PD" -> PackedDecimal.decode(x, 0, NumProcMode.PFD).toBigDecimal()
+                                .compareTo(PackedDecimal.decode(y, 0, NumProcMode.PFD).toBigDecimal());
+                        case "ZD" -> zoned(x).compareTo(zoned(y));
+                        default -> throw new PliExecutionException("SORT format " + format
+                                + " is not supported yet");
+                    };
+                };
+                order = order.thenComparing(descending ? key.reversed() : key);
+            }
+            boolean inputRoutine = call.name().equals("PLISRTB") || call.name().equals("PLISRTD");
+            boolean outputRoutine = call.name().equals("PLISRTC") || call.name().equals("PLISRTD");
+            int routine = 4;
+            List<byte[]> records = new ArrayList<>();
+            int code = 0;
+            if (inputRoutine) {
+                PliSyntax.Procedure e15 = sortExit(args.get(routine++));
+                while (true) {
+                    context.setReturnCode(0);
+                    Object returned = invoke(e15, List.of(), env);
+                    int rc = context.returnCode();
+                    if (rc == 8) break;
+                    if (rc == 16) {
+                        code = 16;
+                        break;
+                    }
+                    if (rc != 12) {
+                        throw new PliExecutionException("the E15 routine returned " + rc
+                                + "; 8, 12 or 16 expected");
+                    }
+                    records.add(java.util.Arrays.copyOf(characterBytes(returned), length));
+                }
+            } else {
+                DataSet input = context.file("#PLISRT-SORTIN", "SORTIN",
+                        dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                        dev.cobolonjava.runtime.file.RecordFormat.FIXED, length);
+                checkOpenStatus("SORTIN", input.open(OpenMode.INPUT, false));
+                while (true) {
+                    byte[] record = new byte[length];
+                    String status = input.read(record);
+                    if (!status.startsWith("0")) break;
+                    records.add(record);
+                }
+                input.close();
+            }
+            if (code == 0) {
+                records.sort(order);
+                if (outputRoutine) {
+                    PliSyntax.Procedure e35 = sortExit(args.get(routine));
+                    for (byte[] record : records) {
+                        context.setReturnCode(0);
+                        invoke(e35, List.of(new PliSyntax.Literal(context.codePage().decode(record))), env);
+                        int rc = context.returnCode();
+                        if (rc == 8) break;
+                        if (rc == 16) {
+                            code = 16;
+                            break;
+                        }
+                    }
+                } else {
+                    DataSet output = context.file("#PLISRT-SORTOUT", "SORTOUT",
+                            dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            dev.cobolonjava.runtime.file.RecordFormat.FIXED, length);
+                    checkOpenStatus("SORTOUT", output.open(OpenMode.OUTPUT, false));
+                    for (byte[] record : records) output.write(record);
+                    output.close();
+                }
+            }
+            // 並べ替えの戻りコードは引数で返す。出口の PLIRETC は呼んだ側の PLIRETV に残さない
+            context.setReturnCode(0);
+            if (args.size() > 3 && args.get(3) instanceof PliSyntax.Reference reference) {
+                env.require(reference.name()).write(fixedBinary31(code), context);
+            }
+        }
+
+        private PliSyntax.Procedure sortExit(PliSyntax.Expr expression) {
+            if (expression instanceof PliSyntax.Reference reference) {
+                PliSyntax.Procedure procedure = program.procedures().get(reference.name().toUpperCase(Locale.ROOT));
+                if (procedure == null) procedure = program.procedures().get(reference.name());
+                if (procedure != null) return procedure;
+            }
+            throw new PliExecutionException("a PLISRT exit must be an internal procedure");
+        }
+
+        private static BigDecimal zoned(byte[] bytes) {
+            StringBuilder digits = new StringBuilder();
+            for (byte b : bytes) digits.append((char) ('0' + (b & 0x0F)));
+            boolean negative = bytes.length > 0 && ((bytes[bytes.length - 1] >> 4) & 0x0F) == 0x0D;
+            BigDecimal value = new BigDecimal(digits.toString());
+            return negative ? value.negate() : value;
+        }
+
+        /**
+         * PLICKPT(DD 名, 識別子, 編成, 戻りコード) (Programming Guide "Requesting a checkpoint
+         * record")。DD 名を省けば SYSCHK。編成は PS か PO で、ほかなら 8。DD が無ければ 12。
+         * チェックポイントのレコードとして識別子を書くが、プログラムの状態は持たないので
+         * 再始動はできない (Zeus と同じ)。
+         */
+        private void checkpoint(PliSyntax.Call call, Env env) {
+            List<PliSyntax.Expr> args = call.arguments();
+            java.util.function.IntFunction<String> text = k -> k < args.size()
+                    ? character(value(args.get(k), env)).strip().toUpperCase(Locale.ROOT) : "";
+            String dd = text.apply(0).isEmpty() ? "SYSCHK" : text.apply(0);
+            String organization = text.apply(2).isEmpty() ? "PS" : text.apply(2);
+            int code;
+            if (!organization.equals("PS") && !organization.equals("PO")) {
+                code = 8;
+            } else if (context.jobAttribute("DD:" + dd) == null && !context.catalog().isAssigned(dd)) {
+                code = 12;
+            } else {
+                try {
+                    java.nio.file.Files.write(context.catalog().resolve(dd),
+                            context.codePage().encode(text.apply(1)));
+                    code = 0;
+                } catch (java.io.IOException failed) {
+                    code = 12;
+                }
+            }
+            if (args.size() > 3 && args.get(3) instanceof PliSyntax.Reference reference) {
+                env.require(reference.name()).write(fixedBinary31(code), context);
+            }
+        }
+
+        /**
+         * PLIPARSE(入力, 受け 1, 区切り 1, ..., [最後の受け]) (LRM "PLIPARSE")。受けは区切りの
+         * 前までを受ける。見つからない区切りの受けは残りの全部を、それより後の受けは空を受ける。
+         * 最後の受けは最後の区切りの後を受ける。受けを * と書けば捨てる。
+         */
+        private void parse(PliSyntax.Call call, Env env) {
+            List<PliSyntax.Expr> args = call.arguments();
+            String rest = character(value(args.get(0), env));
+            boolean done = false;
+            int k = 1;
+            while (k + 1 < args.size()) {
+                PliSyntax.Expr target = args.get(k);
+                if (done) {
+                    parseAssign(target, "", env);
+                    k += 2;
+                    continue;
+                }
+                String separator = character(value(args.get(k + 1), env));
+                int at = separator.isEmpty() ? -1 : rest.indexOf(separator);
+                if (at >= 0) {
+                    parseAssign(target, rest.substring(0, at), env);
+                    rest = rest.substring(at + separator.length());
+                } else {
+                    parseAssign(target, rest, env);
+                    rest = "";
+                    done = true;
+                }
+                k += 2;
+            }
+            if (k < args.size()) {
+                parseAssign(args.get(k), done ? "" : rest, env);
+            }
+        }
+
+        private void parseAssign(PliSyntax.Expr target, String text, Env env) {
+            if (target instanceof PliSyntax.Literal literal && literal.value() == PliSyntax.Asterisk.STAR) {
+                return;
+            }
+            if (!(target instanceof PliSyntax.Reference reference)) {
+                throw new PliExecutionException("PLIPARSE needs variables as its targets");
+            }
+            assign(new PliSyntax.Assign(reference.name(), List.of(), new PliSyntax.Literal(text)), env);
         }
 
         private void translateBuffer(PliSyntax.Call call, Env env, int from, int to) {

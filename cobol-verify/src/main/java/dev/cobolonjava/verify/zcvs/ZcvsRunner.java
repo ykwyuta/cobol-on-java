@@ -384,7 +384,7 @@ public final class ZcvsRunner {
         }
         Map<String, String> symbols = new java.util.HashMap<>();
         java.util.Set<String> exported = new java.util.HashSet<>();
-        Pattern statement = Pattern.compile("^//(\\S*)\\s+(JOB|EXEC|SET|EXPORT)\\b\\s*(.*)$");
+        Pattern statement = Pattern.compile("^//(\\S*)\\s+(JOB|EXEC|SET|EXPORT|DD)\\b\\s*(.*)$");
         for (int i = 0; i < statements.size(); i++) {
             String text = statements.get(i).toString();
             Matcher matcher = statement.matcher(text);
@@ -410,6 +410,10 @@ public final class ZcvsRunner {
                     if (!name.isEmpty() && operands.contains("PGM=" + program)) {
                         values.put("STEPNAME", name);
                     }
+                }
+                case "DD" -> {
+                    // JCL に書いた DD (PLICKPT が DD の有無を見る)
+                    if (!name.isEmpty()) values.put("DD:" + name.toUpperCase(java.util.Locale.ROOT), "");
                 }
                 case "EXPORT" -> {
                     Matcher list = Pattern.compile("SYMLIST=\\(?([^)\\s]*)\\)?").matcher(operands);
