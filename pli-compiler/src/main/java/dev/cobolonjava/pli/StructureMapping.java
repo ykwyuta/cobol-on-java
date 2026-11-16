@@ -244,7 +244,8 @@ final class StructureMapping {
             case POINTER, OFFSET -> 4;
             case FLOAT -> decl.decimalFloat() ? PliFloat.decimalLength(decl.precision())
                     : floatLength(decl.precision(), decl.scale() == 1);
-            case WIDECHAR, GRAPHIC -> 2 * Math.max(1, decl.precision());
+            case WIDECHAR, GRAPHIC -> 2 * Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0);
+            case UCHAR -> 4 * Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0);
             // AREA(n) は n byte と管理域の 16 byte
             case AREA -> Math.max(0, decl.precision()) + PliRuntime.AREA_HEADER;
             // 入口の変数は 8 byte (頭の 4 byte に入口の番号を置く。この処理系の約束)

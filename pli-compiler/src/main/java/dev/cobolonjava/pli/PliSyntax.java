@@ -655,7 +655,9 @@ final class PliSyntax {
         /** FLOAT。精度は桁数、位取りは底 (1 なら 2 進、0 なら 10 進)。記憶域は HFP である。 */
         FLOAT,
         /** WIDECHAR(n) は UTF-16 の n 字、GRAPHIC(n) は DBCS の n 字。どちらも 2n byte。 */
-        WIDECHAR, GRAPHIC }
+        WIDECHAR, GRAPHIC,
+        /** UCHAR(n) は UTF-8 の n 字。記憶域は 4n byte (LRM "UCHAR attribute")。 */
+        UCHAR }
 
     /**
      * 宣言 1 つ。
@@ -957,6 +959,22 @@ final class PliSyntax {
 
     /** WIDECHAR の値 (UTF-16)。{@code '...'WX} の定数と WHIGH / WLOW が作る。 */
     record WideString(String text) {
+    }
+
+    /**
+     * UTF-16 (big endian) のバイトを、単位ごとにそのまま字にする。Java の復号は対に
+     * なっていないサロゲートを置換文字に変えるので使わない (UVALID がそれを見つける)。
+     */
+    static String utf16(byte[] bytes) {
+        char[] units = new char[bytes.length / 2];
+        for (int i = 0; i < units.length; i++) {
+            units[i] = (char) (((bytes[2 * i] & 0xFF) << 8) | (bytes[2 * i + 1] & 0xFF));
+        }
+        return new String(units);
+    }
+
+    /** UCHAR の値 (UTF-8 の字の並び)。{@code '...'UX} の定数と UCHAR の変数が作る。 */
+    record Utf8String(String text) {
     }
 
     /** {@code '...'X} の値。16 進の字が偶数個でなければ誤りである。 */
@@ -2094,7 +2112,8 @@ final class PliSyntax {
                 Token token = part.get(i);
                 if (token.is("VARYING") || token.is("VAR")) {
                     // BIT VARYING はまだ持たない。黙って固定長にせず断る
-                    if (part.stream().noneMatch(t -> t.is("CHAR") || t.is("CHARACTER"))) {
+                    if (part.stream().noneMatch(t -> t.is("CHAR") || t.is("CHARACTER")
+                            || t.is("WCHAR") || t.is("WIDECHAR") || t.is("GRAPHIC") || t.is("UCHAR"))) {
                         throw new ParseFailure(token, "VARYING is supported only for"
                                 + " CHARACTER yet");
                     }
@@ -2190,6 +2209,9 @@ final class PliSyntax {
                         return new TypeInfo(Type.CHAR, -1, 0);
                     }
                     return new TypeInfo(Type.CHAR, parenthesizedInt(tokens, i + 1, 1), 0);
+                }
+                if (tokens.get(i).is("UCHAR")) {
+                    return new TypeInfo(Type.UCHAR, parenthesizedInt(tokens, i + 1, 1), 0);
                 }
                 if (tokens.get(i).is("WIDECHAR") || tokens.get(i).is("WCHAR")) {
                     return new TypeInfo(Type.WIDECHAR, parenthesizedInt(tokens, i + 1, 1), 0);
@@ -2380,9 +2402,9 @@ final class PliSyntax {
                     if (UNSUPPORTED_TYPES.contains(t.text())) {
                         return t.text();
                     }
-                    if ((t.is("WIDECHAR") || t.is("WCHAR") || t.is("GRAPHIC")) && tokens.stream()
-                            .anyMatch(x -> x.is("VARYING") || x.is("VAR") || x.is("VARYINGZ"))) {
-                        return "VARYING " + t.text();
+                    if ((t.is("WIDECHAR") || t.is("WCHAR") || t.is("GRAPHIC") || t.is("UCHAR"))
+                            && tokens.stream().anyMatch(x -> x.is("VARYINGZ"))) {
+                        return "VARYINGZ " + t.text();
                     }
                     if ((t.is("COMPLEX") || t.is("CPLX")) && tokens.stream()
                             .noneMatch(x -> x.is("FIXED"))) {
@@ -2983,12 +3005,12 @@ final class PliSyntax {
             }
             if (match("WX")) {
                 // UTF-16 の 16 進 (LRM "WIDECHAR constants")
-                return new WideString(new String(hexLiteral(literal).bytes(),
-                        java.nio.charset.StandardCharsets.UTF_16BE));
+                return new WideString(utf16(hexLiteral(literal).bytes()));
             }
             if (match("UX")) {
                 // UTF-8 の 16 進 (LRM "UCHAR constants")。値は字の並びとして持つ
-                return new String(hexLiteral(literal).bytes(), java.nio.charset.StandardCharsets.UTF_8);
+                return new Utf8String(new String(hexLiteral(literal).bytes(),
+                        java.nio.charset.StandardCharsets.UTF_8));
             }
             return literal.text();
         }

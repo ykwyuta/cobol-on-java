@@ -97,6 +97,10 @@ public final class PliRuntime {
         String procedure;
         /** VSAM の入出力の誤りなら、R15 と理由コードを xxxxyyyy の形にした値 (ONSUBCODE2)。 */
         int subcode2;
+        /** CONVERSION の元の値 (UCHAR・WIDECHAR・GRAPHIC の ONUSOURCE などが返す)。 */
+        Object original;
+        /** 条件が起きた文の、手続きの中の番号 (ONOFFSET)。 */
+        int offset;
 
         /** VSAM の要求が R15 と理由コードを返した KEY 条件。 */
         static Condition key(String file, int code, int reason) {
@@ -608,6 +612,7 @@ public final class PliRuntime {
             int pc = 0;
             while (pc < statements.size()) {
                 try {
+                    statementOrdinal = pc + 1;
                     execute(statements.get(pc), env);
                     pc++;
                 } catch (GoToSignal jump) {
@@ -634,6 +639,12 @@ public final class PliRuntime {
         private String onProcedureName;
         /** 入出力の誤りの R15 と理由コード (ONSUBCODE2)。誤りでなければ 0。 */
         private int onSubcode2;
+        /** CONVERSION の元の値。 */
+        private Object onOriginal;
+        /** 条件が起きた文の番号 (ONOFFSET)。条件の外では 0。 */
+        private int onOffset;
+        /** いま動いている文の、その文の並びの中の番号 (1 から)。 */
+        private int statementOrdinal;
         /** on-unit が ONSOURCE / ONCHAR に入れた直し。正常に戻れば変換をやり直す。 */
         private String repairedSource;
 
@@ -677,6 +688,11 @@ public final class PliRuntime {
                     String savedProcedure = onProcedureName;
                     int savedSubcode2 = onSubcode2;
                     onSubcode2 = condition.subcode2;
+                    Object savedOriginal = onOriginal;
+                    onOriginal = condition.original;
+                    int savedOffset = onOffset;
+                    if (condition.offset == 0) condition.offset = Math.max(1, statementOrdinal);
+                    onOffset = condition.offset;
                     if (condition.procedure == null) condition.procedure = currentProcedure();
                     onProcedureName = condition.procedure;
                     onCode = condition.code;
@@ -693,6 +709,8 @@ public final class PliRuntime {
                         onConditionQualifier = savedQualifier;
                         onProcedureName = savedProcedure;
                         onSubcode2 = savedSubcode2;
+                        onOriginal = savedOriginal;
+                        onOffset = savedOffset;
                     }
                     if (!condition.name.equals("CONVERSION") || repairedSource == null
                             || attempt > 16) {
@@ -3253,7 +3271,7 @@ public final class PliRuntime {
                         .repeat(Math.max(0, number(arguments.get(1)).intValue()) + 1);
                 default -> moreBuiltins(name, arguments);
             };
-            return builtin instanceof PliSyntax.HexString hex
+            return builtin instanceof PliSyntax.HexString hex && !name.equals("UTF8")
                     ? context.codePage().decode(hex.bytes()) : builtin;
         }
 
@@ -3696,6 +3714,164 @@ public final class PliRuntime {
                     }
                     yield FixedValue.binary(BigDecimal.valueOf(sum), 32, 0);
                 }
+                // --- Unicode (LRM "ULENGTH" ほか)。CHARACTER は UTF-8 のバイト、WIDECHAR は
+                // UTF-16 の単位として読む。位置と幅は、CHARACTER ならバイト、WIDECHAR なら単位で数える
+                case "ULENGTH", "ULENGTH8", "ULENGTH16", "USUPPLEMENTARY" -> {
+                    String text = unicodeText(arguments.get(0));
+                    yield fixedBinary31(switch (name) {
+                        case "ULENGTH" -> text.codePointCount(0, text.length());
+                        case "ULENGTH8" -> arguments.get(0) instanceof PliSyntax.WideString
+                                ? text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                                : characterBytes(arguments.get(0)).length;
+                        case "ULENGTH16" -> text.length();
+                        default -> {
+                            int found = 0;
+                            int index = 0;
+                            for (int at = 0; at < text.length(); at += Character.charCount(text.codePointAt(at))) {
+                                index++;
+                                if (Character.isSupplementaryCodePoint(text.codePointAt(at))) {
+                                    found = index;
+                                    break;
+                                }
+                            }
+                            yield found;
+                        }
+                    });
+                }
+                case "UPOS", "UWIDTH" -> {
+                    String text = unicodeText(arguments.get(0));
+                    boolean wide = arguments.get(0) instanceof PliSyntax.WideString;
+                    int wanted = number(arguments.get(1)).intValue();
+                    int count = text.codePointCount(0, text.length());
+                    if (wanted < 1 || wanted > count) yield fixedBinary31(0);
+                    int at = text.offsetByCodePoints(0, wanted - 1);
+                    int point = text.codePointAt(at);
+                    int width = wide ? Character.charCount(point)
+                            : new String(Character.toChars(point)).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                    int position = wide ? at + 1
+                            : text.substring(0, at).getBytes(java.nio.charset.StandardCharsets.UTF_8).length + 1;
+                    yield fixedBinary31(name.equals("UPOS") ? position : width);
+                }
+                case "USUBSTR" -> {
+                    String text = unicodeText(arguments.get(0));
+                    int from = number(arguments.get(1)).intValue();
+                    int count = text.codePointCount(0, text.length());
+                    int length = arguments.size() > 2 ? number(arguments.get(2)).intValue() : count - from + 1;
+                    if (from < 1 || length < 0 || from - 1 + length > count) {
+                        // 字の数を超えた位置は ERROR である (LRM "USUBSTR")
+                        throw new Condition("ERROR", null, 3, null);
+                    }
+                    String part = text.substring(text.offsetByCodePoints(0, from - 1),
+                            text.offsetByCodePoints(0, from - 1 + length));
+                    yield arguments.get(0) instanceof PliSyntax.WideString ? new PliSyntax.WideString(part)
+                            : new PliSyntax.HexString(part.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                // 正しくない最初の字の位置。正しければ 0 (LRM "UVALID")
+                case "UVALID" -> fixedBinary31(arguments.get(0) instanceof PliSyntax.WideString wide
+                        ? invalidUtf16(wide.text()) : invalidUtf8(characterBytes(arguments.get(0))));
+                case "MEMUVALID8" -> fixedBinary31(invalidUtf8(
+                        memoryRead(arguments.get(0), number(arguments.get(1)).intValue())));
+                case "MEMUVALID16" -> {
+                    byte[] bytes = memoryRead(arguments.get(0), number(arguments.get(1)).intValue());
+                    int bad = invalidUtf16(PliSyntax.utf16(bytes));
+                    yield fixedBinary31(bad == 0 ? 0 : 2 * bad - 1);
+                }
+                // UTF8(x[, コードページ]): CHARACTER はそのコードページ (省けば CODEPAGE オプション)、
+                // WIDECHAR は UTF-16 として読み、UTF-8 のバイトにする (LRM "UTF8")
+                case "UTF8" -> {
+                    Object source = arguments.get(0);
+                    String text;
+                    if (source instanceof PliSyntax.WideString wide) {
+                        text = wide.text();
+                    } else if (source instanceof PliSyntax.Utf8String utf8) {
+                        text = utf8.text();
+                    } else {
+                        byte[] bytes = characterBytes(source);
+                        text = arguments.size() > 1 ? dev.cobolonjava.runtime.codepage.CodePages.forName(
+                                String.valueOf(number(arguments.get(1)).intValue())).decode(bytes)
+                                : context.codePage().decode(bytes);
+                    }
+                    yield new PliSyntax.HexString(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                case "UTF8TOCHAR", "UTF8TOWCHAR" -> {
+                    String text = decodeUtf8(characterBytes(arguments.get(0)));
+                    if (name.equals("UTF8TOWCHAR")) yield new PliSyntax.WideString(text);
+                    var page = arguments.size() > 1 ? dev.cobolonjava.runtime.codepage.CodePages.forName(
+                            String.valueOf(number(arguments.get(1)).intValue())) : context.codePage();
+                    yield new PliSyntax.HexString(page.encode(text));
+                }
+                case "BYTELENGTH" -> fixedBinary31(switch (arguments.get(0)) {
+                    case PliSyntax.Utf8String utf8 -> utf8.text().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                    case PliSyntax.WideString wide -> wide.text().length() * 2;
+                    default -> characterBytes(arguments.get(0)).length;
+                });
+                // ASCII の英字だけ、Latin-1 の英字だけを変える (LRM "UPPERASCII", "UPPERLATIN1")
+                case "UPPERASCII", "LOWERASCII", "UPPERLATIN1", "LOWERLATIN1" -> {
+                    String text = unicodeText(arguments.get(0));
+                    boolean upper = name.startsWith("UPPER");
+                    boolean latin = name.endsWith("LATIN1");
+                    StringBuilder out = new StringBuilder();
+                    for (char c : text.toCharArray()) {
+                        boolean ascii = upper ? c >= 'a' && c <= 'z' : c >= 'A' && c <= 'Z';
+                        boolean latin1 = latin && (upper ? c >= 0xE0 && c <= 0xFE && c != 0xF7
+                                : c >= 0xC0 && c <= 0xDE && c != 0xD7);
+                        out.append(ascii || latin1 ? (char) (upper ? c - 0x20 : c + 0x20) : c);
+                    }
+                    yield sameKind(arguments.get(0), out.toString());
+                }
+                // 大文字と小文字を区別しない比較。完全な畳み込みは ß を SS にし、単純な畳み込みは
+                // 1 字ずつ比べる (LRM "FOLDEDFULLMATCH", "FOLDEDSIMPLEMATCH")。等しければ 0
+                case "FOLDEDFULLMATCH" -> fixedBinary31(Integer.signum(
+                        display(arguments.get(0)).toUpperCase(Locale.ROOT).toLowerCase(Locale.ROOT)
+                                .compareTo(display(arguments.get(1)).toUpperCase(Locale.ROOT)
+                                        .toLowerCase(Locale.ROOT))));
+                case "FOLDEDSIMPLEMATCH" -> {
+                    String a = display(arguments.get(0));
+                    String b = display(arguments.get(1));
+                    int result = a.length() == b.length() ? 0 : Integer.signum(a.length() - b.length());
+                    for (int i = 0; result == 0 && i < a.length(); i++) {
+                        result = Integer.signum(Character.toLowerCase(Character.toUpperCase(a.charAt(i)))
+                                - Character.toLowerCase(Character.toUpperCase(b.charAt(i))));
+                    }
+                    yield fixedBinary31(result);
+                }
+                // UTF-8 のいちばん高い字 (U+10FFFF) といちばん低い字 (U+0000) を n 個 (LRM "UHIGH")
+                case "UHIGH", "ULOW" -> new PliSyntax.Utf8String(new String(Character.toChars(
+                        name.equals("UHIGH") ? 0x10FFFF : 0)).repeat(Math.max(0, number(arguments.get(0)).intValue())));
+                // 版 5 の UUID。LRM は名前空間も名前も決めていないので、毎回の新しい乱数の UUID を
+                // SHA-1 にかける (Zeus と同じ)
+                case "UUID" -> {
+                    try {
+                        byte[] hash = java.security.MessageDigest.getInstance("SHA-1").digest(
+                                java.util.UUID.randomUUID().toString().getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                        hash[6] = (byte) ((hash[6] & 0x0F) | 0x50);
+                        hash[8] = (byte) ((hash[8] & 0x3F) | 0x80);
+                        String hex = java.util.HexFormat.of().formatHex(hash, 0, 16);
+                        yield hex.substring(0, 8) + "-" + hex.substring(8, 12) + "-" + hex.substring(12, 16)
+                                + "-" + hex.substring(16, 20) + "-" + hex.substring(20, 32);
+                    } catch (java.security.NoSuchAlgorithmException missing) {
+                        throw new IllegalStateException(missing);
+                    }
+                }
+                case "ONUCHAR", "ONWCHAR" -> {
+                    boolean utf8 = name.equals("ONUCHAR");
+                    String source = (utf8 ? onOriginal instanceof PliSyntax.Utf8String
+                            : onOriginal instanceof PliSyntax.WideString) ? onSource : null;
+                    int at = source == null ? -1 : badCharacter(source);
+                    String text = at < 0 ? " " : String.valueOf(source.charAt(at));
+                    yield name.equals("ONUCHAR") ? new PliSyntax.Utf8String(text) : new PliSyntax.WideString(text);
+                }
+                case "ONUSOURCE" -> onOriginal instanceof PliSyntax.Utf8String utf8 ? utf8
+                        : new PliSyntax.Utf8String("");
+                case "ONWSOURCE" -> onOriginal instanceof PliSyntax.WideString wide ? wide
+                        : new PliSyntax.WideString("");
+                case "ONGSOURCE" -> onOriginal instanceof PliGraphic graphic ? graphic
+                        : new PliGraphic(new byte[0], context.codePage());
+                // 変換できなかった字の位置 (LRM "ONSUBCODE")。CONVERSION のときだけ意味を持つ
+                case "ONSUBCODE" -> fixedBinary31(onSource == null ? 0 : badCharacter(onSource) + 1);
+                // 手続きの中の文の番号 (1 から)。機械語の変位は持たないので、条件が起きた文の
+                // 順番で表す (LRM "ONOFFSET" は変位を返す)
+                case "ONOFFSET" -> fixedBinary31(onOffset);
                 case "GETJCLSYMBOL" -> java.util.Objects.requireNonNullElse(context.jobAttribute(
                         "JCLSYMBOL:" + display(arguments.get(0)).strip().toUpperCase(Locale.ROOT)), "");
                 case "ISJCLSYMBOL" -> context.jobAttribute(
@@ -3963,6 +4139,77 @@ public final class PliRuntime {
         private Object blockActivation;
         /** GTCA が返す番地。 */
         private PointerValue commonAnchor;
+
+        /** Unicode の関数が読む字の並び。CHARACTER のバイトは UTF-8 として読む。 */
+        private String unicodeText(Object value) {
+            if (value instanceof PliSyntax.WideString wide) return wide.text();
+            if (value instanceof PliSyntax.Utf8String utf8) return utf8.text();
+            return new String(characterBytes(value), java.nio.charset.StandardCharsets.UTF_8);
+        }
+
+        /** 引数と同じ種類の値にする (UCHAR なら UCHAR、WIDECHAR なら WIDECHAR)。 */
+        private static Object sameKind(Object argument, String text) {
+            if (argument instanceof PliSyntax.WideString) return new PliSyntax.WideString(text);
+            if (argument instanceof PliSyntax.Utf8String) return new PliSyntax.Utf8String(text);
+            return text;
+        }
+
+        /** 正しい UTF-8 だけを字にする。正しくなければ ERROR である (LRM "UTF8TOWCHAR")。 */
+        private static String decodeUtf8(byte[] bytes) {
+            if (invalidUtf8(bytes) != 0) {
+                throw new Condition("ERROR", null, 3, null);
+            }
+            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        }
+
+        /** 正しくない UTF-8 の最初のバイトの位置 (1 から)。正しければ 0。長すぎる符号化も誤り。 */
+        private static int invalidUtf8(byte[] bytes) {
+            int i = 0;
+            while (i < bytes.length) {
+                int b = bytes[i] & 0xFF;
+                if (b < 0x80) {
+                    i++;
+                    continue;
+                }
+                int need;
+                int low = 0x80;
+                int high = 0xBF;
+                if (b >= 0xC2 && b <= 0xDF) {
+                    need = 1;
+                } else if (b >= 0xE0 && b <= 0xEF) {
+                    need = 2;
+                    if (b == 0xE0) low = 0xA0;
+                    if (b == 0xED) high = 0x9F;
+                } else if (b >= 0xF0 && b <= 0xF4) {
+                    need = 3;
+                    if (b == 0xF0) low = 0x90;
+                    if (b == 0xF4) high = 0x8F;
+                } else {
+                    return i + 1;
+                }
+                for (int k = 1; k <= need; k++) {
+                    if (i + k >= bytes.length) return i + 1;
+                    int c = bytes[i + k] & 0xFF;
+                    if (c < (k == 1 ? low : 0x80) || c > (k == 1 ? high : 0xBF)) return i + 1;
+                }
+                i += need + 1;
+            }
+            return 0;
+        }
+
+        /** 対になっていないサロゲートの位置 (UTF-16 の単位で 1 から)。正しければ 0。 */
+        private static int invalidUtf16(String text) {
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (Character.isHighSurrogate(c)) {
+                    if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) return i + 1;
+                    i++;
+                } else if (Character.isLowSurrogate(c)) {
+                    return i + 1;
+                }
+            }
+            return 0;
+        }
 
         /** PUTENV で置いた環境変数。実行単位をまたいで残る (プロセスの環境と同じ)。 */
         private static final Map<String, String> ENVIRONMENT = new java.util.concurrent.ConcurrentHashMap<>();
@@ -4419,6 +4666,7 @@ public final class PliRuntime {
         private static int characterLength(Object value) {
             return switch (value) {
                 case PliSyntax.HexString hex -> hex.bytes().length;
+                case PliSyntax.Utf8String utf8 -> utf8.text().codePointCount(0, utf8.text().length());
                 case PliGraphic graphic -> graphic.bytes().length / 2;
                 case MixedCharacters mixed -> mixed.bytes().length;
                 default -> display(value).length();
@@ -5593,7 +5841,13 @@ public final class PliRuntime {
                 return new BigDecimal(text);
             } catch (NumberFormatException e) {
                 // 字を数にできない。CONVERSION の条件である (ONCODE 600 番台)
-                throw new Condition("CONVERSION", null, 612, repaired != null ? repaired : original);
+                Condition conversion = new Condition("CONVERSION", null, 612,
+                        repaired != null ? repaired : original);
+                if (value instanceof PliSyntax.Utf8String || value instanceof PliSyntax.WideString
+                        || value instanceof PliGraphic) {
+                    conversion.original = value;
+                }
+                throw conversion;
             }
         }
 
@@ -5617,6 +5871,7 @@ public final class PliRuntime {
             if (value instanceof NumericPicture picture) return picture.text();
             if (value instanceof WideCharacter wide) return Character.toString(wide.unit());
             if (value instanceof PliSyntax.WideString wide) return wide.text();
+            if (value instanceof PliSyntax.Utf8String utf8) return utf8.text();
             if (value instanceof PliGraphic graphic) return graphic.characters();
             if (value instanceof MixedCharacters mixed) return mixed.page().decode(mixed.bytes());
             // ビット列から文字への変換は '1' と '0' になる
@@ -5843,6 +6098,27 @@ public final class PliRuntime {
                 int length = currentLength();
                 return context.codePage().decode(view.subView(2, length).toByteArray());
             }
+            if (type == PliSyntax.Type.WIDECHAR) {
+                // 長さは UTF-16 の単位の数である
+                byte[] bytes = varying ? view.subView(2, currentLength() * 2).toByteArray()
+                        : view.toByteArray();
+                return new PliSyntax.WideString(PliSyntax.utf16(bytes));
+            }
+            if (type == PliSyntax.Type.GRAPHIC && varying) {
+                return new PliGraphic(view.subView(2, currentLength() * 2).toByteArray(),
+                        context.codePage());
+            }
+            if (type == PliSyntax.Type.UCHAR) {
+                // VARYING の長さは UTF-8 のバイトの数である。固定長は n 字を読み、残りは空白である
+                if (varying) {
+                    return new PliSyntax.Utf8String(new String(view.subView(2, currentLength())
+                            .toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+                }
+                String text = new String(view.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+                int end = text.offsetByCodePoints(0, Math.min(precision,
+                        text.codePointCount(0, text.length())));
+                return new PliSyntax.Utf8String(text.substring(0, end));
+            }
             return switch (type) {
                 case CHAR, GROUP -> context.codePage().decode(view.toByteArray());
                 // ビット列は 8 ビットごとに 1 byte、左詰め (LRM Table 39)。値は '0' と '1' の並び
@@ -5863,8 +6139,7 @@ public final class PliRuntime {
                 case POINTER -> new PointerValue(view.length() < 4 ? 0
                         : java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt());
                 case FLOAT -> floatRead();
-                case WIDECHAR -> new String(view.toByteArray(),
-                        java.nio.charset.StandardCharsets.UTF_16BE);
+                case WIDECHAR, UCHAR -> throw new IllegalStateException("read above");
                 case GRAPHIC -> new PliGraphic(view.toByteArray(), context.codePage());
                 case OFFSET -> FixedValue.binary(BigDecimal.valueOf(
                         java.nio.ByteBuffer.wrap(view.toByteArray(), 0, 4).getInt()), 31, 0);
@@ -5952,16 +6227,19 @@ public final class PliRuntime {
         int currentLength() {
             int length = littleEndian ? ((view.get(1) & 0xFF) << 8) | (view.get(0) & 0xFF)
                     : ((view.get(0) & 0xFF) << 8) | (view.get(1) & 0xFF);
-            if (length > precision) {
+            int limit = type == PliSyntax.Type.UCHAR ? precision * 4 : precision;
+            if (length > limit) {
                 throw new PliExecutionException("the current length " + length + " of " + name
-                        + " exceeds its maximum length " + precision);
+                        + " exceeds its maximum length " + limit);
             }
             return length;
         }
 
         /** 文字として入る字の数。VARYING なら宣言の最大の長さ。 */
         int capacity() {
-            return type == PliSyntax.Type.CHAR && varying ? precision : view.length();
+            if (varying || type == PliSyntax.Type.UCHAR) return precision;
+            if (type == PliSyntax.Type.WIDECHAR || type == PliSyntax.Type.GRAPHIC) return view.length() / 2;
+            return view.length();
         }
 
         void write(Object value, ProgramContext context) {
@@ -5995,6 +6273,53 @@ public final class PliRuntime {
             }
             if (type == PliSyntax.Type.FLOAT) {
                 floatWrite(Executor.number(value));
+                return;
+            }
+            if (type == PliSyntax.Type.UCHAR) {
+                // UTF-8 で置く。固定長は n 字に切るか空白で埋め、残りのバイトも空白にする。
+                // VARYING は n 字までを置き、長さはバイトの数である
+                String text = value instanceof PliSyntax.HexString hex
+                        ? new String(hex.bytes(), java.nio.charset.StandardCharsets.UTF_8)
+                        : Executor.display(value);
+                int count = text.codePointCount(0, text.length());
+                if (count > precision) {
+                    text = text.substring(0, text.offsetByCodePoints(0, precision));
+                } else if (!varying) {
+                    text = text + " ".repeat(precision - count);
+                }
+                byte[] encoded = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                if (varying) {
+                    view.set(littleEndian ? 1 : 0, (byte) (encoded.length >> 8));
+                    view.set(littleEndian ? 0 : 1, (byte) encoded.length);
+                    for (int i = 0; i < encoded.length; i++) view.set(2 + i, encoded[i]);
+                } else {
+                    view.fill((byte) 0x20);
+                    for (int i = 0; i < encoded.length; i++) view.set(i, encoded[i]);
+                }
+                return;
+            }
+            if (type == PliSyntax.Type.WIDECHAR && varying) {
+                String text = Executor.display(value);
+                if (text.length() > precision) text = text.substring(0, precision);
+                view.set(littleEndian ? 1 : 0, (byte) (text.length() >> 8));
+                view.set(littleEndian ? 0 : 1, (byte) text.length());
+                for (int i = 0; i < text.length(); i++) {
+                    view.set(2 + 2 * i, (byte) (text.charAt(i) >> 8));
+                    view.set(3 + 2 * i, (byte) text.charAt(i));
+                }
+                return;
+            }
+            if (type == PliSyntax.Type.GRAPHIC && varying) {
+                byte[] bytes = value instanceof PliGraphic graphic ? graphic.bytes()
+                        : new PliGraphic(new byte[0], context.codePage()).bytes();
+                if (!(value instanceof PliGraphic) && !Executor.display(value).isEmpty()) {
+                    throw new PliExecutionException("only GRAPHIC values can be assigned to the"
+                            + " GRAPHIC VARYING " + name + " yet");
+                }
+                int length = Math.min(bytes.length / 2, precision);
+                view.set(littleEndian ? 1 : 0, (byte) (length >> 8));
+                view.set(littleEndian ? 0 : 1, (byte) length);
+                for (int i = 0; i < length * 2; i++) view.set(2 + i, bytes[i]);
                 return;
             }
             if (type == PliSyntax.Type.WIDECHAR) {
