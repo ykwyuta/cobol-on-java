@@ -107,8 +107,12 @@ final class PliMacroProcessor {
 
     private enum Scan { RESCAN, ONCE }
 
+    /**
+     * 前処理の手続き。{@code returns} が偽なら RETURNS を書いていない手続きで、値は ANSWER で
+     * 作った字の並びである (LRM "ANSWER statement")。
+     */
     private record Proc(List<String> params, boolean returnsChar, boolean statement,
-                        List<Tok> body) {
+                        List<Tok> body, boolean returns) {
     }
 
     /** 文の実行のあとどこへ行くか。 */
@@ -136,6 +140,14 @@ final class PliMacroProcessor {
     /** 最後に書き出した字句。文の形の手続きの呼び出しが文の頭にあるかを見る。 */
     private Tok lastOut;
     private int depth;
+    private IncludeResolver includes = name -> java.util.Optional.empty();
+    /** 取り込んだメンバー。X の付く取り込み (%XINCLUDE、%XINSCAN) は 2 度目を取り込まない。 */
+    private Set<String> included = new HashSet<>();
+    private boolean linedir;
+    /** 動いている前処理の手続きの名 (MACNAME)。 */
+    private final java.util.ArrayDeque<String> macroNames = new java.util.ArrayDeque<>();
+    /** ANSWER で作っている字の並び。手続きの呼び出しごとに 1 つ。 */
+    private final java.util.ArrayDeque<StringBuilder> answers = new java.util.ArrayDeque<>();
     /** いちばん外のマクロの呼び出しが始まる桁 (MACCOL)。 */
     private int maccol;
     /** 前処理の配列の名と、次元ごとの [下限, 上限]。要素は vars に「名(i,j)」で置く。 */
@@ -152,6 +164,12 @@ final class PliMacroProcessor {
 
     /** 前処理を実行する。前処理の文が無ければ原文をそのまま返す。 */
     static Result process(String fileName, String source) {
+        return process(fileName, source, name -> java.util.Optional.empty(), new HashSet<>(), false);
+    }
+
+    /** 取り込みの道 (%INSCAN、%XINCLUDE) と、すでに取り込んだメンバーと、LINEDIR を受けて実行する。 */
+    static Result process(String fileName, String source, IncludeResolver includes,
+                          Set<String> included, boolean linedir) {
         List<Tok> tokens;
         try {
             tokens = tokenize(source, 1);
@@ -163,6 +181,9 @@ final class PliMacroProcessor {
             return new Result(source, List.of());
         }
         PliMacroProcessor processor = new PliMacroProcessor(fileName);
+        processor.includes = includes;
+        processor.included = included;
+        processor.linedir = linedir;
         List<Diagnostic> diagnostics = new ArrayList<>();
         try {
             Flow flow = processor.run(tokens, 0, tokens.size());
@@ -565,6 +586,37 @@ final class PliMacroProcessor {
                 next[0] = se + 1;
                 return Flow.NEXT;
             }
+            case "LINE" -> {
+                // %LINE(行, ファイル) は LINEDIR のもとでだけ書ける。行の番号はこの処理系の
+                // 診断には使わない
+                if (!linedir) {
+                    throw error(at, "%LINE requires the LINEDIR compiler option");
+                }
+                next[0] = se + 1;
+                return Flow.NEXT;
+            }
+            case "INSCAN", "XINSCAN", "INCLUDE", "XINCLUDE" -> {
+                // %INSCAN は前処理の変数の値を名とするメンバーを取り込む。X の付くものは
+                // 取り込んだことのあるメンバーを取り込まない (LRM "%INSCAN", "%XINCLUDE")
+                String member = keyword.endsWith("INSCAN")
+                        ? eval(t, k + 1, se, null).text().strip().toUpperCase(Locale.ROOT)
+                        : tokensText(t, k + 1, se).replace(" ", "").toUpperCase(Locale.ROOT);
+                next[0] = se + 1;
+                if (keyword.startsWith("X") && included.contains(member)) {
+                    return Flow.NEXT;
+                }
+                String text = includes.resolve(member).orElse(null);
+                if (text == null) {
+                    throw error(at, "include member not found: " + member);
+                }
+                included.add(member);
+                List<Tok> inserted = new ArrayList<>();
+                for (Tok tok : tokenize(text, at.line)) {
+                    String leading = tok.leading.replace('\n', ' ').replace('\r', ' ');
+                    inserted.add(tok.at(at.line, leading.isEmpty() ? " " : leading));
+                }
+                return run(inserted, 0, inserted.size());
+            }
             case "IF" -> {
                 int then = findPercent(t, k + 1, end, "THEN");
                 if (then < 0) {
@@ -662,8 +714,10 @@ final class PliMacroProcessor {
                 if (keyword.startsWith("X") && procs.containsKey(labels.get(0))) {
                     return Flow.NEXT;
                 }
+                boolean returns = false;
+                for (int j = k + 1; j < se; j++) returns |= t.get(j).is("RETURNS");
                 procs.put(labels.get(0), new Proc(List.copyOf(params), returnsChar,
-                        statementForm, List.copyOf(body)));
+                        statementForm, List.copyOf(body), returns));
                 return Flow.NEXT;
             }
             case "GO", "GOTO" -> {
@@ -936,9 +990,15 @@ final class PliMacroProcessor {
     // ---------------------------------------------------------------- 手続き
 
     private Val call(Proc proc, List<Val> args, Tok at) {
+        return call(proc, args, at, at.text);
+    }
+
+    private Val call(Proc proc, List<Val> args, Tok at, String name) {
         if (++depth > 100) {
             throw error(at, "preprocessor procedures nested too deeply");
         }
+        macroNames.push(name);
+        answers.push(new StringBuilder());
         try {
             Map<String, Val> locals = new HashMap<>();
             for (int i = 0; i < proc.params.size(); i++) {
@@ -948,9 +1008,14 @@ final class PliMacroProcessor {
             if (flow.kind.equals("GOTO")) {
                 throw error(at, "GO TO " + flow.label + ": no such label");
             }
+            if (!proc.returns) {
+                return Val.of(answers.peek().toString());
+            }
             Val value = flow.kind.equals("RETURN") ? flow.value : Val.of("");
             return proc.returnsChar ? Val.of(value.text()) : Val.of(value.num());
         } finally {
+            answers.pop();
+            macroNames.pop();
             depth--;
         }
     }
@@ -1018,6 +1083,52 @@ final class PliMacroProcessor {
                 next[0] = se + 1;
                 Val value = se > k + 1 ? eval(t, k + 1, se, locals) : Val.of("");
                 return new Flow("RETURN", null, value);
+            }
+            case "ANSWER", "ANS" -> {
+                // ANSWER(字の式) [SKIP] [COLUMN(n)] [MARGINS]: 呼び出しの置き換えに字を足す
+                if (k + 1 >= se || !t.get(k + 1).is("(")) {
+                    throw error(at, "ANSWER(expression) expected");
+                }
+                int close = closing(t, k + 1, se);
+                String text = eval(t, k + 2, close, locals).text();
+                StringBuilder answer = answers.peek();
+                if (answer == null) {
+                    throw error(at, "ANSWER outside a preprocessor procedure");
+                }
+                for (int j = close + 1; j < se; j++) {
+                    if (t.get(j).is("SKIP") && !answer.isEmpty()) answer.append('\n');
+                }
+                answer.append(text).append(' ');
+                next[0] = se + 1;
+                return Flow.NEXT;
+            }
+            case "CALL" -> {
+                // 前処理の手続きを呼ぶ。呼んだ手続きの ANSWER は呼んだ側の置き換えに続く
+                Tok name = t.get(k + 1);
+                Proc proc = procs.get(name.text);
+                if (proc == null) {
+                    throw error(name, "preprocessor procedure " + name.text + " is not defined");
+                }
+                List<Val> args = new ArrayList<>();
+                if (k + 2 < se && t.get(k + 2).is("(")) {
+                    int close = closing(t, k + 2, se);
+                    int start = k + 3;
+                    int level = 0;
+                    for (int j = k + 3; j <= close; j++) {
+                        if (j < close && t.get(j).is("(")) level++;
+                        if (j < close && t.get(j).is(")")) level--;
+                        if (j == close || (t.get(j).is(",") && level == 0)) {
+                            if (j > start) args.add(eval(t, start, j, locals));
+                            start = j + 1;
+                        }
+                    }
+                }
+                Val answered = call(proc, args, name, name.text);
+                if (!proc.returns && answers.peek() != null) {
+                    answers.peek().append(answered.text());
+                }
+                next[0] = se + 1;
+                return Flow.NEXT;
             }
             case "IF" -> {
                 int then = keywordAtDepth0(t, k + 1, se + 1, "THEN");
@@ -1410,12 +1521,14 @@ final class PliMacroProcessor {
                         : (int) Math.max(0, n.apply(2));
                 yield Val.of(text.substring(start, Math.min(text.length(), start + length)));
             }
-            case "INDEX" -> Val.of(s.apply(0).indexOf(s.apply(1)) + 1);
+            case "INDEX" -> Val.of(s.apply(0).indexOf(s.apply(1),
+                    (int) Math.max(0, (n.apply(2) == null ? 1 : n.apply(2)) - 1)) + 1);
             case "VERIFY" -> {
                 String text = s.apply(0);
                 String set = s.apply(1);
                 int position = 0;
-                for (int i = 0; i < text.length(); i++) {
+                for (int i = (int) Math.max(0, (n.apply(2) == null ? 1 : n.apply(2)) - 1);
+                     i < text.length(); i++) {
                     if (set.indexOf(text.charAt(i)) < 0) {
                         position = i + 1;
                         break;
@@ -1423,7 +1536,42 @@ final class PliMacroProcessor {
                 }
                 yield Val.of(position);
             }
-            case "TRIM" -> Val.of(s.apply(0).strip());
+            // TRIM(x, y, z): 左から y の字を、右から z の字を落とす (省けば空白)
+            case "TRIM" -> {
+                String text = s.apply(0);
+                String left = a.size() > 1 ? s.apply(1) : " ";
+                String right = a.size() > 2 ? s.apply(2) : left;
+                int from = 0;
+                int to = text.length();
+                while (from < to && left.indexOf(text.charAt(from)) >= 0) from++;
+                while (to > from && right.indexOf(text.charAt(to - 1)) >= 0) to--;
+                yield Val.of(text.substring(from, to));
+            }
+            case "COLLATE" -> {
+                StringBuilder all = new StringBuilder();
+                for (int c = 0; c < 256; c++) all.append((char) c);
+                yield Val.of(all.toString());
+            }
+            // 既定の MARGINS(2,72) (Programming Guide "MARGINS")
+            case "MACLMAR" -> Val.of(2L);
+            case "MACRMAR" -> Val.of(72L);
+            case "SYSDIMSIZE", "SYSOFFSETSIZE", "SYSPOINTERSIZE" -> Val.of(4L);
+            case "SYSTEM" -> Val.of("MVS");
+            case "SYSPARM" -> Val.of("");
+            // z/OS の形で 22 字に埋める (Zeus と同じ)
+            case "SYSVERSION" -> Val.of(String.format(Locale.ROOT, "%-22s", "PL/I for z/OS V6.R1.M0"));
+            case "COMPILEDATE" -> Val.of(java.time.LocalDateTime.now().format(
+                    java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS")));
+            // DD.MMM.YY HH.MM.SS。日の頭の 0 は空白にする
+            case "COMPILETIME" -> {
+                java.time.LocalDateTime now = java.time.LocalDateTime.now();
+                String text = now.format(java.time.format.DateTimeFormatter.ofPattern(
+                        "dd.MMM.yy HH.mm.ss", Locale.ENGLISH)).toUpperCase(Locale.ROOT);
+                yield Val.of(text.startsWith("0") ? " " + text.substring(1) : text);
+            }
+            // COMMENT(x): x の中の /* と */ を /> と </ にして注記にする
+            case "COMMENT" -> Val.of("/*" + s.apply(0).replace("/*", "/>").replace("*/", "</") + "*/");
+            case "MACNAME" -> Val.of(macroNames.isEmpty() ? "" : macroNames.peek());
             case "UPPERCASE" -> Val.of(s.apply(0).toUpperCase(Locale.ROOT));
             case "LOWERCASE" -> Val.of(s.apply(0).toLowerCase(Locale.ROOT));
             case "COPY" -> Val.of(s.apply(0).repeat((int) Math.max(0, n.apply(1))));
