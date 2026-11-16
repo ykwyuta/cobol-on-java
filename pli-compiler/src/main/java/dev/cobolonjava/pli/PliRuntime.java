@@ -3228,6 +3228,13 @@ public final class PliRuntime {
                         return name.equals("PRESENT") != parameter.omitted;
                     }
                 }
+                // 構造のすぐ下の要素の数 (LRM "INDICATORS")
+                case "INDICATORS" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        Var structure = dataReference(function.arguments().get(0), env, name);
+                        return fixedBinary31(structure.members.size());
+                    }
+                }
                 case "POLY" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         return polynomial(function.arguments(), env);
@@ -3636,6 +3643,22 @@ public final class PliRuntime {
                         BigDecimal.valueOf(hexExponent(number(arguments.getFirst()))), 31, 0);
                 case "SCALE" -> number(arguments.getFirst())
                         .multiply(Var.power16(number(arguments.get(1)).intValueExact()));
+                // REPATTERN(日付, 書く型, 読む型, 窓): 読む型を省けば YYYYMMDDHHMISS999。
+                // 2 桁の年に書くとき、窓に入らない年は ERROR である (LRM "REPATTERN")
+                case "REPATTERN" -> {
+                    int window = window(arguments, 3);
+                    long micros = lilianMicros(display(arguments.get(0)),
+                            pattern(arguments, 2, SECONDS_PATTERN), window);
+                    String target = pattern(arguments, 1, SECONDS_PATTERN);
+                    if (target.contains("YY") && !target.contains("YYYY")) {
+                        int year = java.time.LocalDate.ofEpochDay(
+                                Math.floorDiv(micros, MICROS_PER_DAY) + LILIAN_ORIGIN).getYear();
+                        if (year < window || year > window + 99) {
+                            throw new Condition("ERROR", null, 3, null);
+                        }
+                    }
+                    yield microsToDate(micros, target);
+                }
                 case "DAYSTOMICROSECS", "MICROSECSTODAYS", "MICROSECS", "MICROSECSTODATE", "SECS",
                      "MAXDATE", "MINDATE", "STCKTODATE", "STCKETODATE", "JULIANTOSMF", "SMFTOJULIAN",
                      "TIMESTAMP", "UTCDATETIME", "UTCSECS", "UTCMICROSECS" -> dateBuiltin(name, arguments);

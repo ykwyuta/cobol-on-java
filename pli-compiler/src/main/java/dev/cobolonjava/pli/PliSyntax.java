@@ -16,8 +16,13 @@ final class PliSyntax {
     /** 翻訳オプション FLOAT(DFP) が効いているか。原文の注記から読む。 */
     private static final ThreadLocal<Boolean> DFP = ThreadLocal.withInitial(() -> false);
 
+    /** 宣言した構造の、すぐ下の要素の数 (INDICATORS)。次元の制限式が使う。 */
+    private static final ThreadLocal<Map<String, Integer>> INDICATORS =
+            ThreadLocal.withInitial(java.util.HashMap::new);
+
     static ParseResult parse(String fileName, String source) {
         DFP.set(PliOptions.fromSource(source).dfp());
+        INDICATORS.get().clear();
         try {
             return new Parser(fileName, expandTypes(repeatableDeclarations(
                     new Lexer(fileName, source).scan()))).parse();
@@ -1805,6 +1810,19 @@ final class PliSyntax {
         private List<Decl> parseDeclarations(List<Token> declaration) {
             List<Decl> decls = parseDeclarationList(declaration);
             checkRefer(decls, declaration.isEmpty() ? peek() : declaration.get(0));
+            // 構造のすぐ下の要素の数を控える (INDICATORS は制限式として次元に書ける)
+            for (int i = 0; i < decls.size(); i++) {
+                Decl root = decls.get(i);
+                int count = 0;
+                int childLevel = -1;
+                for (int j = i + 1; j < decls.size() && decls.get(j).level() > root.level(); j++) {
+                    if (childLevel < 0) childLevel = decls.get(j).level();
+                    if (decls.get(j).level() == childLevel) count++;
+                }
+                if (count > 0) {
+                    INDICATORS.get().put(root.name().toUpperCase(Locale.ROOT), count);
+                }
+            }
             for (int i = 0; i < decls.size(); i++) {
                 boolean structure = decls.get(i).level() > 0 && i + 1 < decls.size()
                         && decls.get(i + 1).level() > decls.get(i).level();
@@ -2130,8 +2148,20 @@ final class PliSyntax {
             }
         }
 
-        /** 次元の上限か下限。符号つきの整数だけを読む。{@code *} や式はまだ持たない。 */
+        /**
+         * 次元の上限か下限。符号つきの整数と、制限式の INDICATORS(構造) を読む
+         * (LRM "Restricted expressions")。ほかの式はまだ持たない。
+         */
         private static int bound(List<Token> tokens, Token where) {
+            if (tokens.size() == 4 && tokens.get(0).is("INDICATORS") && tokens.get(1).is("(")
+                    && tokens.get(2).kind() == Kind.IDENT && tokens.get(3).is(")")) {
+                Integer count = INDICATORS.get().get(tokens.get(2).text().toUpperCase(Locale.ROOT));
+                if (count == null) {
+                    throw new ParseFailure(where, "INDICATORS needs a structure declared before: "
+                            + tokens.get(2).text());
+                }
+                return count;
+            }
             if (tokens.size() == 1 && tokens.get(0).kind() == Kind.NUMBER
                     && !tokens.get(0).text().contains(".")) {
                 return Integer.parseInt(tokens.get(0).text());
