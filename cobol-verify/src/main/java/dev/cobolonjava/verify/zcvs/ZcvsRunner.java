@@ -341,6 +341,116 @@ public final class ZcvsRunner {
         }
     }
 
+    /**
+     * ジョブの値を JCL から読む (PL/I の GETSYSWORD と GETJCLSYMBOL が見る)。
+     *
+     * <p>JOB 文の名前・会計情報・CLASS・MSGCLASS、EXEC 文のステップ名、EXPORT した SET の
+     * 記号を読む。JES が振るジョブ番号と ASID、システム名はこの処理系の決めた値である。
+     * JCL が無ければ、ジョブ名をプログラム名とする。
+     */
+    private Map<String, String> jobAttributes(String module, ZcvsManifest.Entry entry, String program) {
+        Map<String, String> values = new java.util.HashMap<>();
+        values.put("JOBNAME", program);
+        values.put("STEPNAME", "STEP1");
+        values.put("SYSNAME", "COBJAVA");
+        values.put("JOBNUMBER", "JOB00001");
+        values.put("ASID", "0001");
+        values.put("JOBCLASS", "A");
+        values.put("MSGCLASS", "A");
+        values.put("ACTINFO", "");
+        if (entry.jcl() == null) {
+            return values;
+        }
+        Path jcl = suite.resolve(module).resolve(entry.jcl());
+        if (!java.nio.file.Files.isReadable(jcl)) {
+            return values;
+        }
+        List<StringBuilder> statements = new ArrayList<>();
+        try {
+            for (String line : java.nio.file.Files.readAllLines(jcl)) {
+                if (!line.startsWith("//") || line.startsWith("//*")) {
+                    continue;
+                }
+                String text = (line.length() > 71 ? line.substring(0, 71) : line).stripTrailing();
+                StringBuilder last = statements.isEmpty() ? null : statements.get(statements.size() - 1);
+                if (last != null && text.startsWith("// ") && last.toString().endsWith(",")) {
+                    last.append(text.substring(2).strip());
+                } else {
+                    statements.add(new StringBuilder(text));
+                }
+            }
+        } catch (java.io.IOException e) {
+            return values;
+        }
+        Map<String, String> symbols = new java.util.HashMap<>();
+        java.util.Set<String> exported = new java.util.HashSet<>();
+        Pattern statement = Pattern.compile("^//(\\S*)\\s+(JOB|EXEC|SET|EXPORT)\\b\\s*(.*)$");
+        for (int i = 0; i < statements.size(); i++) {
+            String text = statements.get(i).toString();
+            Matcher matcher = statement.matcher(text);
+            if (!matcher.find()) {
+                continue;
+            }
+            String name = matcher.group(1);
+            String operands = matcher.group(3);
+            switch (matcher.group(2)) {
+                case "JOB" -> {
+                    if (!name.isEmpty()) values.put("JOBNAME", name);
+                    if (operands.startsWith("(")) {
+                        int close = closing(operands, 0);
+                        String accounting = operands.substring(1, close).replace("'", "");
+                        values.put("ACTINFO", accounting);
+                    }
+                    Matcher jobClass = Pattern.compile("\\bCLASS=(\\w)").matcher(operands);
+                    if (jobClass.find()) values.put("JOBCLASS", jobClass.group(1));
+                    Matcher messageClass = Pattern.compile("\\bMSGCLASS=(\\w)").matcher(operands);
+                    if (messageClass.find()) values.put("MSGCLASS", messageClass.group(1));
+                }
+                case "EXEC" -> {
+                    if (!name.isEmpty() && operands.contains("PGM=" + program)) {
+                        values.put("STEPNAME", name);
+                    }
+                }
+                case "EXPORT" -> {
+                    Matcher list = Pattern.compile("SYMLIST=\\(?([^)\\s]*)\\)?").matcher(operands);
+                    if (list.find()) {
+                        for (String symbol : list.group(1).split(",")) {
+                            exported.add(symbol.strip());
+                        }
+                    }
+                }
+                default -> {
+                    Matcher assignment = Pattern.compile("(\\w+)=('(?:[^']|'')*'|[^,\\s]*)").matcher(operands);
+                    while (assignment.find()) {
+                        String value = assignment.group(2);
+                        if (value.startsWith("'")) {
+                            value = value.substring(1, value.length() - 1).replace("''", "'");
+                        }
+                        symbols.put(assignment.group(1), value);
+                    }
+                }
+            }
+        }
+        for (var symbol : symbols.entrySet()) {
+            if (exported.contains("*") || exported.contains(symbol.getKey())) {
+                values.put("JCLSYMBOL:" + symbol.getKey(), symbol.getValue());
+            }
+        }
+        return values;
+    }
+
+    private static int closing(String text, int open) {
+        int depth = 0;
+        boolean quoted = false;
+        for (int i = open; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\'') quoted = !quoted;
+            else if (!quoted && c == '(') depth++;
+            else if (!quoted && c == ')' && --depth == 0) return i;
+        }
+        return text.length();
+    }
+
     /** 磁気テープの装置の型番。JCL の UNIT= にこれを書いた DD はテープである。 */
     private static final java.util.Set<String> TAPE_UNITS =
             java.util.Set.of("3400", "3420", "3480", "3490", "3590", "TAPE", "CART");
@@ -417,7 +527,8 @@ public final class ZcvsRunner {
                 // 標準入力は読ませない。道具の起動のしかたで結果が変わってはならない
                 .withInput(() -> null)
                 .withCodePage(codePage)
-                .withCatalog(allocations(new DataSetCatalog(directory), module, entry, codePage));
+                .withCatalog(allocations(new DataSetCatalog(directory), module, entry, codePage))
+                .withJobAttributes(jobAttributes(module, entry, program));
         Object thrown = limited("run-" + program, () -> {
             try {
                 Generated loader = new Generated();

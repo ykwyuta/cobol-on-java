@@ -3072,6 +3072,11 @@ public final class PliRuntime {
                         };
                     }
                 }
+                case "REGEX" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return regex(function.arguments(), env);
+                    }
+                }
                 case "POLY" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         return polynomial(function.arguments(), env);
@@ -3623,6 +3628,23 @@ public final class PliRuntime {
                 case "ONPROCEDURE", "ONLOC" -> onProcedureName == null ? "" : onProcedureName;
                 case "ONFILE" -> onConditionQualifier == null || onConditionName == null
                         || onConditionName.equals("CONDITION") ? "" : onConditionQualifier;
+                // ジョブが EXPORT した JCL の記号 (LRM "GETJCLSYMBOL", "ISJCLSYMBOL")
+                case "GETJCLSYMBOL" -> java.util.Objects.requireNonNullElse(context.jobAttribute(
+                        "JCLSYMBOL:" + display(arguments.get(0)).strip().toUpperCase(Locale.ROOT)), "");
+                case "ISJCLSYMBOL" -> context.jobAttribute(
+                        "JCLSYMBOL:" + display(arguments.get(0)).strip().toUpperCase(Locale.ROOT)) != null;
+                // ジョブとシステムの値 (LRM "GETSYSWORD", "GETSYSINT")
+                case "GETSYSWORD" -> java.util.Objects.requireNonNullElse(context.jobAttribute(
+                        display(arguments.get(0)).strip().toUpperCase(Locale.ROOT)), "");
+                case "GETSYSINT" -> {
+                    String key = display(arguments.get(0)).strip().toUpperCase(Locale.ROOT);
+                    if (key.equals("MAXACTINFO")) {
+                        String accounting = java.util.Objects.requireNonNullElse(
+                                context.jobAttribute("ACTINFO"), "");
+                        yield fixedBinary31(accounting.isEmpty() ? 0 : accounting.split(",", -1).length);
+                    }
+                    throw new PliExecutionException("GETSYSINT does not know " + key + " yet");
+                }
                 case "BETWEENEXCLUSIVE", "BETWEENLEFTEXCLUSIVE", "BETWEENRIGHTEXCLUSIVE" -> {
                     int low = compare(arguments.get(0), arguments.get(1));
                     int high = compare(arguments.get(0), arguments.get(2));
@@ -3819,6 +3841,53 @@ public final class PliRuntime {
                 }
                 default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
             };
+        }
+
+        /**
+         * REGEX(i, j, 正規表現, 文字列[, n]) (LRM "REGEX")。POSIX の拡張正規表現で、n の位置から
+         * 探し、最も左の一致のうち最も長いものを取る。i と j に位置と長さを入れる。i と j が
+         * 配列なら、1 番目に全体、2 番目からに括弧の部分式を入れる。戻りは 0 が一致、1 が
+         * 不一致 (n が範囲の外も)、2 が正規表現の誤り。Java の正規表現で照合するので、POSIX と
+         * 書き方の違う表現 (文字の類の [[:alpha:]] など) は持たない。
+         */
+        private Object regex(List<PliSyntax.Expr> arguments, Env env) {
+            Var index = dataReference(arguments.get(0), env, "REGEX");
+            Var length = dataReference(arguments.get(1), env, "REGEX");
+            String expression = display(value(arguments.get(2), env));
+            String text = display(value(arguments.get(3), env));
+            int from = arguments.size() > 4 ? number(value(arguments.get(4), env)).intValue() : 1;
+            java.util.function.BiConsumer<Integer, int[]> store = (count, values) -> { };
+            List<Var> indexes = index.dimensions == null ? List.of(index) : index.elements;
+            List<Var> lengths = length.dimensions == null ? List.of(length) : length.elements;
+            for (Var element : indexes) element.write(FixedValue.binary(BigDecimal.ZERO, 31, 0), context);
+            for (Var element : lengths) element.write(FixedValue.binary(BigDecimal.ZERO, 31, 0), context);
+            java.util.regex.Pattern pattern;
+            try {
+                pattern = java.util.regex.Pattern.compile(expression);
+            } catch (java.util.regex.PatternSyntaxException invalid) {
+                return fixedBinary31(2);
+            }
+            if (from < 1 || from > text.length() + 1) {
+                return fixedBinary31(1);
+            }
+            java.util.regex.Matcher matcher = pattern.matcher(text);
+            for (int start = from - 1; start <= text.length(); start++) {
+                for (int end = text.length(); end >= start; end--) {
+                    matcher.region(start, end);
+                    if (matcher.matches()) {
+                        for (int group = 0; group <= matcher.groupCount() && group < indexes.size(); group++) {
+                            boolean found = matcher.start(group) >= 0;
+                            indexes.get(group).write(fixedBinary31(found ? matcher.start(group) + 1 : 0), context);
+                            if (group < lengths.size()) {
+                                lengths.get(group).write(fixedBinary31(found
+                                        ? matcher.end(group) - matcher.start(group) : 0), context);
+                            }
+                        }
+                        return fixedBinary31(0);
+                    }
+                }
+            }
+            return fixedBinary31(1);
         }
 
         /** PUTENV で置いた環境変数。実行単位をまたいで残る (プロセスの環境と同じ)。 */

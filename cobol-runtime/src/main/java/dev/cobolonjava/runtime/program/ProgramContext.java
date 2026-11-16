@@ -654,6 +654,28 @@ public final class ProgramContext {
                 registers, catalog, files, programResolver, procedureHook, services);
     }
 
+    /**
+     * ジョブが決めた値 (JCL の EXPORT した記号、ジョブ名、ステップ名、クラスなど)。
+     * 実行単位の構成のコピーは同じ特殊レジスタの記憶域を共有するので、それをキーに引く。
+     */
+    private static final Map<Storage, Map<String, String>> JOB_ATTRIBUTES =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /**
+     * ジョブの値を渡す。キーはジョブ名なら {@code JOBNAME}、EXPORT した JCL の記号なら
+     * {@code JCLSYMBOL:名前} である。PL/I の GETSYSWORD と GETJCLSYMBOL が読む。
+     */
+    public ProgramContext withJobAttributes(Map<String, String> values) {
+        JOB_ATTRIBUTES.put(registers, Map.copyOf(values));
+        return this;
+    }
+
+    /** ジョブの値。渡されていなければ {@code null}。 */
+    public String jobAttribute(String key) {
+        Map<String, String> values = JOB_ATTRIBUTES.get(registers);
+        return values == null ? null : values.get(key);
+    }
+
     /** {@code DISPLAY} が出力へ書くときの文字コード。出力を受け取る側が読み戻すために要る。 */
     public Charset outputCharset() {
         return outputCharset;

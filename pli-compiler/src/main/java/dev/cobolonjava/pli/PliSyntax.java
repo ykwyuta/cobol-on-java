@@ -1744,14 +1744,20 @@ final class PliSyntax {
                 if (part.get(p).is("(")) {
                     // 名前リストは、同じ属性を各名前へ適用する。
                     int close = findClosing(part, p);
-                    List<String> names = part.subList(p + 1, close).stream()
-                            .filter(t -> t.kind() == Kind.IDENT).map(Token::text).toList();
                     List<Bound> dimensions = dimensions(part, close + 1, level);
                     TypeInfo info = typeInfo(part, close + 1, level > 0 ? inheritedType : null,
                             inheritedPrecision, inheritedScale);
-                    for (String name : names) {
+                    // 名前ごとに次元を書ける: DCL (A(7), B(7)) FIXED BIN (LRM "Factoring of
+                    // attributes")。以前は名前だけを拾っていたので、A と B が配列でなくなっていた
+                    for (List<Token> item : split(part.subList(p + 1, close), ",")) {
+                        if (item.isEmpty() || item.get(0).kind() != Kind.IDENT) {
+                            continue;
+                        }
+                        String name = item.get(0).text();
+                        List<Bound> own = item.size() > 1 && item.get(1).is("(")
+                                ? dimensions(item, 1, level) : dimensions;
                         out.add(declaration(name, level, info.type == null
-                                ? defaulted(name, part) : info, part, dimensions));
+                                ? defaulted(name, part) : info, part, own));
                     }
                     if (info.type == null) {
                         continue;
