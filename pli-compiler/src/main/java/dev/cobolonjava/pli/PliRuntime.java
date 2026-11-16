@@ -525,6 +525,23 @@ public final class PliRuntime {
                         placeholder.generations = new Generations(chunk, env);
                         placeholder.unallocated = true;
                         env.put(placeholder);
+                    } else if ("EXTERNAL".equals(chunk.get(0).storage())
+                            && !env.arguments.containsKey(chunk.get(0).name().toUpperCase(Locale.ROOT))) {
+                        // EXTERNAL / RESERVED: 同じ名の宣言はすべて 1 つの変数を指す (LRM
+                        // "EXTERNAL attribute", "RESERVED attribute")。最初の宣言が記憶域と
+                        // INITIAL を持ち、あとの宣言はその別名になる。RESERVES を書いた
+                        // パッケージの宣言は手続きより先に動くので、そこが初期値を決める
+                        String name = chunk.get(0).name().toUpperCase(Locale.ROOT);
+                        Var shared = externals.get(name);
+                        if (shared == null) {
+                            declare(chunk, env);
+                            externals.put(name, env.require(name));
+                        } else {
+                            env.alias(name, shared);
+                            for (Var member : shared.members) {
+                                aliasMembers(env, member);
+                            }
+                        }
                     } else if ("STATIC".equals(chunk.get(0).storage())
                             && !env.arguments.containsKey(
                                     chunk.get(0).name().toUpperCase(Locale.ROOT))) {
@@ -542,6 +559,16 @@ public final class PliRuntime {
                 if (chunk.get(0).basedOn() != null || chunk.get(0).defined() != null) {
                     declare(chunk, env);
                 }
+            }
+        }
+
+        /** EXTERNAL / RESERVED の変数。名ごとに 1 つ。 */
+        private final Map<String, Var> externals = new HashMap<>();
+
+        private static void aliasMembers(Env env, Var member) {
+            env.alias(member.name, member);
+            for (Var child : member.members) {
+                aliasMembers(env, child);
             }
         }
 

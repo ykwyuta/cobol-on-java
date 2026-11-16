@@ -1963,6 +1963,9 @@ final class PliSyntax {
                     && part.stream().anyMatch(token -> token.is("UNSIGNED"));
             String storage = part.stream().anyMatch(t -> t.is("CONTROLLED") || t.is("CTL"))
                     ? "CONTROLLED" : part.stream().anyMatch(t -> t.is("BASED")) ? "BASED"
+                    // EXTERNAL と RESERVED は実行単位で 1 つの変数である (STATIC でもある)
+                    : level <= 1 && part.stream().anyMatch(t -> t.is("EXTERNAL") || t.is("EXT")
+                            || t.is("RESERVED")) ? "EXTERNAL"
                     : part.stream().anyMatch(t -> t.is("STATIC")) ? "STATIC" : null;
             if (dimensions.contains(Bound.STAR) && !"CONTROLLED".equals(storage)
                     && !parameterNames.contains(name.toUpperCase(Locale.ROOT))) {
@@ -1972,7 +1975,8 @@ final class PliSyntax {
             }
             if (level <= 1) {
                 storageClasses.put(name.toUpperCase(Locale.ROOT),
-                        storage == null || storage.equals("STATIC") ? "" : storage);
+                        storage == null || storage.equals("STATIC") || storage.equals("EXTERNAL")
+                                ? "" : storage);
                 if (part.stream().anyMatch(t -> t.is("AREA"))) {
                     areaNames.add(name.toUpperCase(Locale.ROOT));
                 }
