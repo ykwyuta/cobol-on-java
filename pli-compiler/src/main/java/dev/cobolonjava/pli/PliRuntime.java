@@ -264,7 +264,13 @@ public final class PliRuntime {
                 return;
             }
             Map<String, Var> before = new HashMap<>(env.variables);
-            declare(chunk, env);
+            boolean savedStatic = declaringStatic;
+            declaringStatic = true;
+            try {
+                declare(chunk, env);
+            } finally {
+                declaringStatic = savedStatic;
+            }
             Map<String, Var> bindings = new HashMap<>();
             for (Map.Entry<String, Var> entry : env.variables.entrySet()) {
                 if (before.get(entry.getKey()) != entry.getValue()) {
@@ -1490,15 +1496,30 @@ public final class PliRuntime {
             }
         }
 
+        /** STATIC の宣言を処理している間は真。 */
+        private boolean declaringStatic;
+
         private void initialize(Var variable, PliSyntax.Expr initial, Env env) {
+            boolean zero = declaringStatic && initial == null;
             if (deferredInits != null) {
-                deferredInits.add(() -> initializeNow(variable, initial, env));
+                deferredInits.add(() -> initializeNow(variable, initial, env, zero));
                 return;
             }
-            initializeNow(variable, initial, env);
+            initializeNow(variable, initial, env, zero);
         }
 
         private void initializeNow(Var variable, PliSyntax.Expr initial, Env env) {
+            initializeNow(variable, initial, env, false);
+        }
+
+        /**
+         * @param zero INITIAL の無い STATIC。記憶域を 0 のまま残す (LRM は値を決めていない。
+         *             Zeus と同じにした。実機と突き合わせていない)
+         */
+        private void initializeNow(Var variable, PliSyntax.Expr initial, Env env, boolean zero) {
+            if (zero) {
+                return;
+            }
             if (variable.type == PliSyntax.Type.CHAR || variable.type == PliSyntax.Type.PICTURE) {
                 variable.view.fill(context.codePage().space());
             }
@@ -1670,6 +1691,14 @@ public final class PliRuntime {
                 rebase(target.name);
                 return;
             }
+            if (target.type == PliSyntax.Type.CHAR && assignment.value() instanceof PliSyntax.Reference r
+                    && env.contains(r.name()) && env.require(r.name()).type == PliSyntax.Type.FLOAT) {
+                // FLOAT を文字にすると E 形式になる (LRM "Arithmetic to character conversion")
+                Var source = env.require(r.name());
+                int digits = source.scale == 1 ? (int) Math.ceil(source.precision / 3.32) : source.precision;
+                target.write(floatCharacter(number(value), digits), context);
+                return;
+            }
             if (target.type == PliSyntax.Type.GROUP && !target.members.isEmpty()) {
                 // 構造へ単一の値を代入すると、要素ごとの代入に展開される (LRM "Aggregate
                 // assignments")。要素ごとにその型へ変換するので、INPUT_AREA = 0 は数の要素を 0 に、
@@ -1701,6 +1730,24 @@ public final class PliRuntime {
                 return source != null && source.type == PliSyntax.Type.GROUP
                         ? source.view.toByteArray() : null;
             });
+        }
+
+        /**
+         * FLOAT を文字にする。符号の桁、1 桁と小数点と p-1 桁、E、符号、4 桁の指数
+         * (Zeus と同じ形。指数の桁数は実機と突き合わせていない)。
+         */
+        private static String floatCharacter(BigDecimal value, int digits) {
+            if (value.signum() == 0) {
+                return " " + "0." + "0".repeat(Math.max(0, digits - 1)) + "E+0000";
+            }
+            BigDecimal rounded = value.abs().round(new java.math.MathContext(digits,
+                    java.math.RoundingMode.HALF_UP));
+            int exponent = rounded.precision() - rounded.scale() - 1;
+            String mantissa = rounded.unscaledValue().toString();
+            mantissa = (mantissa + "0".repeat(digits)).substring(0, digits);
+            return (value.signum() < 0 ? "-" : " ") + mantissa.charAt(0) + "."
+                    + mantissa.substring(1) + "E" + (exponent < 0 ? "-" : "+")
+                    + String.format("%04d", Math.abs(exponent));
         }
 
         /** 構造の記憶域へバイトを写す。短ければ残りを空白で埋める。 */
@@ -3581,7 +3628,11 @@ public final class PliRuntime {
                 case "TRIM" -> display(arguments.get(0)).strip();
                 // バイトの値 (COLLATE、'..'X) はバイトのまま切る。文字にしてから切ると
                 // コードページの往復で長さが変わりうる
-                case "SUBSTR" -> arguments.get(0) instanceof PliSyntax.HexString hex
+                case "SUBSTR" -> arguments.get(0) instanceof PliSyntax.BitString bits
+                        ? new PliSyntax.BitString(substring(List.of(bits.bits(),
+                                arguments.get(1), arguments.size() > 2 ? arguments.get(2)
+                                        : fixedBinary31(bits.bits().length() - number(arguments.get(1)).intValue() + 1))))
+                        : arguments.get(0) instanceof PliSyntax.HexString hex
                         ? new PliSyntax.HexString(context.codePage().encode(substring(List.of(
                                 context.codePage().decode(hex.bytes()), arguments.get(1),
                                 arguments.size() > 2 ? arguments.get(2)
@@ -4248,6 +4299,14 @@ public final class PliRuntime {
                 // 手続きの中の文の番号 (1 から)。機械語の変位は持たないので、条件が起きた文の
                 // 順番で表す (LRM "ONOFFSET" は変位を返す)
                 case "ONOFFSET" -> fixedBinary31(onOffset);
+                // 擬似乱数 (LRM "RANDOM")。LRM は手順を決めていない。Zeus と同じ xorshift で、
+                // 種の引数は読まない (実機と突き合わせていない)
+                case "RANDOM" -> {
+                    randomState ^= randomState << 13;
+                    randomState ^= randomState >>> 7;
+                    randomState ^= randomState << 17;
+                    yield new BigDecimal((double) (randomState >>> 11) / (double) (1L << 53));
+                }
                 case "GETJCLSYMBOL" -> java.util.Objects.requireNonNullElse(context.jobAttribute(
                         "JCLSYMBOL:" + display(arguments.get(0)).strip().toUpperCase(Locale.ROOT)), "");
                 case "ISJCLSYMBOL" -> context.jobAttribute(
@@ -4508,6 +4567,9 @@ public final class PliRuntime {
             }
             return fixedBinary31(1);
         }
+
+        /** RANDOM の状態 (Zeus の初期値と同じ)。 */
+        private long randomState = 0x2545_F491_4F6C_DD1DL;
 
         /** STACKADDR が返す、活性化ごとの番地。 */
         private final Map<Object, PointerValue> stackAddresses = new java.util.WeakHashMap<>();
@@ -5407,6 +5469,9 @@ public final class PliRuntime {
             if (value instanceof PliSyntax.WideString wide) {
                 return wide.text().getBytes(java.nio.charset.StandardCharsets.UTF_16BE);
             }
+            if (value instanceof PointerValue pointer) {
+                return java.nio.ByteBuffer.allocate(4).putInt(pointer.address()).array();
+            }
             if (value instanceof PliGraphic graphic) return graphic.bytes();
             if (value instanceof MixedCharacters mixed) return mixed.bytes();
             return context.codePage().encode(display(value));
@@ -5871,6 +5936,19 @@ public final class PliRuntime {
         private Object size(PliSyntax.Function function, Env env) {
             if (function.arguments().size() != 1) {
                 throw new PliExecutionException("SIZE requires one data reference");
+            }
+            // LABEL の変数は値を持たないが、記憶域の大きさは 8 byte (入口の変数と同じ。
+            // LRM は決めておらず、Zeus と同じにした)
+            if (function.arguments().get(0) instanceof PliSyntax.Reference reference
+                    && env.find(reference.name()) != null
+                    && "LABEL".equals(env.find(reference.name()).unsupported)) {
+                return fixedBinary31(8);
+            }
+            // ファイルの変数は 4 byte (ファイルを指す番地。Zeus と同じ)
+            if (function.arguments().get(0) instanceof PliSyntax.Reference reference
+                    && env.find(reference.name()) == null
+                    && program.files().containsKey(reference.name().toUpperCase(Locale.ROOT))) {
+                return fixedBinary31(4);
             }
             // SIZE は FIXED BIN(31) を返す。配列なら全体、要素なら要素の大きさ
             return FixedValue.binary(BigDecimal.valueOf(
@@ -6554,6 +6632,11 @@ public final class PliRuntime {
                 throw new PliExecutionException("extended FLOAT is not supported yet: " + name);
             }
             byte[] bytes = new byte[view.length()];
+            if (value.scale() > 0 && !Double.isInfinite(value.doubleValue())) {
+                // 小数の 10 進の値は、最も近い double を通して 2 進にする (Zeus と同じ。
+                // 長形式の 0.1 は X'401999999999999A' になる)。実機と突き合わせていない
+                value = new BigDecimal(value.doubleValue());
+            }
             if (value.signum() != 0) {
                 int digits = (view.length() - 1) * 2;
                 BigDecimal a = value.abs();
