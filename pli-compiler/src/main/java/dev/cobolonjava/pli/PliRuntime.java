@@ -93,6 +93,8 @@ public final class PliRuntime {
         final int code;
         final String source;
         final Runnable resume;
+        /** 条件が起きた手続きの名。最初に処置しようとした手続きで決まる。 */
+        String procedure;
 
         Condition(String name, String qualifier, int code, String source) {
             this(name, qualifier, code, source, null);
@@ -619,6 +621,8 @@ public final class PliRuntime {
         /** いま処置している条件の名と、CONDITION の名 (ONCONDID、ONCONDCOND)。 */
         private String onConditionName;
         private String onConditionQualifier;
+        /** 条件が起きた手続きの名 (ONPROCEDURE、ONLOC)。 */
+        private String onProcedureName;
         /** on-unit が ONSOURCE / ONCHAR に入れた直し。正常に戻れば変換をやり直す。 */
         private String repairedSource;
 
@@ -659,6 +663,9 @@ public final class PliRuntime {
                     String savedSource = onSource;
                     String savedName = onConditionName;
                     String savedQualifier = onConditionQualifier;
+                    String savedProcedure = onProcedureName;
+                    if (condition.procedure == null) condition.procedure = currentProcedure();
+                    onProcedureName = condition.procedure;
                     onCode = condition.code;
                     onSource = condition.source;
                     onConditionName = condition.name;
@@ -671,6 +678,7 @@ public final class PliRuntime {
                         onSource = savedSource;
                         onConditionName = savedName;
                         onConditionQualifier = savedQualifier;
+                        onProcedureName = savedProcedure;
                     }
                     if (!condition.name.equals("CONVERSION") || repairedSource == null
                             || attempt > 16) {
@@ -1589,11 +1597,14 @@ public final class PliRuntime {
                 if (put.edit()) {
                     edit(put, env, file::text);
                 } else {
+                    int count = 0;
                     for (PliSyntax.Expr expression : put.values()) {
                         for (Object item : items(expression, env)) {
                             file.text(" " + listed(item));
+                            count++;
                         }
                     }
+                    file.count(count);
                 }
                 return;
             }
@@ -2088,6 +2099,19 @@ public final class PliRuntime {
                     }
                     // NEW の領域の扱いは PLIFREE と同じ。
                 }
+                // 記憶域を埋める・写す (LRM "PLIFILL", "PLIMOVE", "PLIOVER")。PLIOVER は重なりを
+                // 考えて写す。PLIMOVE は重ならないことを前提にしてよいが、同じ写し方にする
+                case "PLIFILL" -> {
+                    List<Object> a = call.arguments().stream().map(e -> value(e, env)).toList();
+                    int n = number(a.get(2)).intValue();
+                    byte[] fill = new byte[n];
+                    java.util.Arrays.fill(fill, characterBytes(a.get(1))[0]);
+                    memoryWrite(a.get(0), fill);
+                }
+                case "PLIMOVE", "PLIOVER" -> {
+                    List<Object> a = call.arguments().stream().map(e -> value(e, env)).toList();
+                    memoryWrite(a.get(0), memoryRead(a.get(1), number(a.get(2)).intValue()));
+                }
                 case "PLITRAN11" -> translateBuffer(call, env, 1, 1);
                 case "PLITRAN12" -> translateBuffer(call, env, 1, 2);
                 case "PLITRAN21" -> translateBuffer(call, env, 2, 1);
@@ -2272,7 +2296,8 @@ public final class PliRuntime {
             String key = ddName.equals(name) ? name : name + "@" + ddName;
             // RECSIZE を書いた FILE は、その形のレコードである。書いていなければ
             // 割り当てた側 (DD) の形に任せる。V 形式の RECSIZE は 4 byte の RDW を含む
-            if (info != null && info.print()) {
+            // PRINT でない STREAM の出力も、行を組み立てて書く道は同じである (制御文字は付けない)
+            if (info != null && (info.print() || (info.stream() && info.output()))) {
                 printFile(operation, info, key, ddName, env);
                 return;
             }
@@ -2376,14 +2401,15 @@ public final class PliRuntime {
             String name = operation.file().toUpperCase(Locale.ROOT);
             switch (operation.action()) {
                 case OPEN -> {
+                    int control = info.print() ? 1 : 0;
                     int lineSize = operation.lineSize() != null
                             ? number(value(operation.lineSize(), env)).intValue()
-                            : info.recordSize() > 1 ? info.recordSize() - 1 : PrintFile.LINESIZE;
+                            : info.recordSize() > 1 ? info.recordSize() - control : PrintFile.LINESIZE;
                     int pageSize = operation.pageSize() != null
                             ? number(value(operation.pageSize(), env)).intValue()
                             : PrintFile.PAGESIZE;
-                    int recordLength = info.recordSize() > 0 ? info.recordSize() : lineSize + 1;
-                    if (lineSize + 1 > recordLength) {
+                    int recordLength = info.recordSize() > 0 ? info.recordSize() : lineSize + control;
+                    if (lineSize + control > recordLength) {
                         throw new PliExecutionException("LINESIZE(" + lineSize + ") does not fit"
                                 + " RECSIZE(" + recordLength + ") of " + name);
                     }
@@ -2392,7 +2418,7 @@ public final class PliRuntime {
                             dev.cobolonjava.runtime.file.RecordFormat.FIXED, recordLength);
                     checkOpenStatus(name, dataSet.open(OpenMode.OUTPUT, false));
                     printFiles.put(name, new UserPrintFile(dataSet, context.codePage(), lineSize,
-                            pageSize, recordLength, () -> endPage(name, env)));
+                            pageSize, recordLength, () -> endPage(name, env), info.print()));
                 }
                 case CLOSE -> {
                     UserPrintFile file = printFiles.remove(name);
@@ -2892,6 +2918,18 @@ public final class PliRuntime {
                     }
                     return new PointerValue(address(Storage.allocate(Math.max(1, length)).whole()));
                 }
+                case "COUNT" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        String file = function.arguments().get(0) instanceof PliSyntax.Reference r
+                                ? r.name().toUpperCase(Locale.ROOT) : "";
+                        UserPrintFile stream = printFiles.get(file);
+                        if (stream == null) {
+                            throw new PliExecutionException("COUNT needs an open STREAM output file"
+                                    + " yet: " + file);
+                        }
+                        return fixedBinary31(stream.count());
+                    }
+                }
                 case "LINENO", "PAGENO" -> {
                     String file = function.arguments().get(0) instanceof PliSyntax.Reference r
                             ? r.name().toUpperCase(Locale.ROOT) : "";
@@ -3000,6 +3038,37 @@ public final class PliRuntime {
                         return attributeFunction(name, function.arguments(), env);
                     }
                 }
+                case "POLY" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return polynomial(function.arguments(), env);
+                    }
+                }
+                case "VALID" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return valid(dataReference(function.arguments().get(0), env, name));
+                    }
+                }
+                // いま動いている手続きの名と、主手続き (LRM "PROCEDURENAME", "MAINNAME", "ISMAIN")
+                case "PROCEDURENAME", "PROCNAME" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return currentProcedure();
+                    }
+                }
+                case "MAINNAME" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return program.name().toUpperCase(Locale.ROOT);
+                    }
+                }
+                case "ISMAIN" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return scope.isEmpty();
+                    }
+                }
+                case "SOURCEFILE" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return program.name().toUpperCase(Locale.ROOT) + ".PLI";
+                    }
+                }
                 case "POINTERDIFF" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         return pointerDifference(function.arguments(), env);
@@ -3053,7 +3122,9 @@ public final class PliRuntime {
                                                         .intValue() + 1), 31, 0)))))
                         : substring(arguments);
                 case "DATETIME" -> ZonedDateTime.now(context.clock()).format(DATETIME);
-                case "PACKAGENAME" -> program.packageName() == null ? "" : program.packageName();
+                // PACKAGE が無ければ、いちばん外の手続きの名である (LRM "PACKAGENAME")
+                case "PACKAGENAME" -> program.packageName() == null
+                        ? program.name().toUpperCase(Locale.ROOT) : program.packageName();
                 case "MICROSECS" -> {
                     if (!arguments.isEmpty()) {
                         throw new PliExecutionException("MICROSECS with a date argument is not supported yet");
@@ -3466,6 +3537,66 @@ public final class PliRuntime {
                             .getDayOfWeek();
                     yield fixedBinary31(week.getValue() % 7 + 1);
                 }
+                // 型を変える関数 (LRM "FIXEDBIN", "FIXEDDEC", "FLOATBIN", "FLOATDEC")。精度を
+                // 省けば値はそのまま、精度だけを書けば小数部は切り捨てる
+                case "FIXEDBIN", "FIXEDDEC" -> {
+                    BigDecimal x = number(arguments.get(0));
+                    boolean binary = name.equals("FIXEDBIN");
+                    if (arguments.size() == 1) {
+                        yield binary ? FixedValue.binary(x, 31, Math.max(0, x.scale()))
+                                : FixedValue.decimal(x, 15, Math.max(0, x.scale()));
+                    }
+                    int p = number(arguments.get(1)).intValue();
+                    int q = arguments.size() > 2 ? number(arguments.get(2)).intValue() : 0;
+                    BigDecimal value = x.setScale(Math.max(q, 0), java.math.RoundingMode.DOWN);
+                    yield binary ? FixedValue.binary(value, p, q) : FixedValue.decimal(value, p, q);
+                }
+                case "FLOATBIN", "FLOATDEC" -> number(arguments.get(0));
+                case "SIGNED", "UNSIGNED" -> FixedValue.binary(number(arguments.get(0)).setScale(0,
+                        java.math.RoundingMode.DOWN), arguments.size() > 1
+                                ? number(arguments.get(1)).intValue() : 31, 0);
+                // 割り切れないときは余りの 1 桁を左に置く (LRM "CENTERRIGHT")
+                case "CENTERRIGHT", "CENTRERIGHT" -> {
+                    String text = display(arguments.get(0));
+                    int width = number(arguments.get(1)).intValue();
+                    String pad = arguments.size() > 2 ? display(arguments.get(2)) : " ";
+                    if (text.length() >= width) yield text.substring(0, width);
+                    int right = (width - text.length()) / 2;
+                    yield pad.repeat(width - text.length() - right) + text + pad.repeat(right);
+                }
+                case "HEXIMAGE8" -> new PliSyntax.HexString(java.util.HexFormat.of().withUpperCase()
+                        .formatHex(memoryRead(arguments.get(0), number(arguments.get(1)).intValue()))
+                        .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                case "WHIGH", "WLOW" -> new PliSyntax.WideString(String.valueOf(
+                        name.equals("WHIGH") ? '\uFFFF' : '\u0000')
+                        .repeat(Math.max(0, number(arguments.get(0)).intValue())));
+                // SUBTO(x, i, j): i から j まで。j を省けば末尾まで (LRM "SUBTO")
+                case "SUBTO" -> {
+                    String text = display(arguments.get(0));
+                    int from = number(arguments.get(1)).intValue();
+                    int to = arguments.size() > 2 ? number(arguments.get(2)).intValue() : text.length();
+                    if (from < 1 || from > text.length() + 1 || to > text.length()) {
+                        throw new Condition("STRINGRANGE", null, 350, null);
+                    }
+                    yield to < from ? "" : text.substring(from - 1, to);
+                }
+                case "GETENV" -> {
+                    String key = display(arguments.get(0)).strip();
+                    String set = ENVIRONMENT.get(key);
+                    yield set != null ? set : java.util.Objects.requireNonNullElse(System.getenv(key), "");
+                }
+                // 実行単位の環境変数を書く。JVM の環境変数は変えられないので、この処理系の表に置く
+                case "PUTENV" -> {
+                    String entry = display(arguments.get(0));
+                    int equals = entry.indexOf('=');
+                    if (equals <= 0) yield false;
+                    ENVIRONMENT.put(entry.substring(0, equals).strip(), entry.substring(equals + 1));
+                    yield true;
+                }
+                case "UUID4" -> java.util.UUID.randomUUID().toString().toUpperCase(Locale.ROOT);
+                case "ONPROCEDURE", "ONLOC" -> onProcedureName == null ? "" : onProcedureName;
+                case "ONFILE" -> onConditionQualifier == null || onConditionName == null
+                        || onConditionName.equals("CONDITION") ? "" : onConditionQualifier;
                 case "BETWEENEXCLUSIVE", "BETWEENLEFTEXCLUSIVE", "BETWEENRIGHTEXCLUSIVE" -> {
                     int low = compare(arguments.get(0), arguments.get(1));
                     int high = compare(arguments.get(0), arguments.get(2));
@@ -3654,13 +3785,71 @@ public final class PliRuntime {
                 // 要る長さを、短ければ -1 を返す (LRM "MEMCOLLAPSE" ほか)
                 case "MEMCOLLAPSE", "MEMSQUEEZE", "MEMREPLACE", "WSREPLACE", "WSCOLLAPSE",
                      "HEXENCODE", "HEXENCODE8", "HEXDECODE", "HEXDECODE8", "BASE64ENCODE",
-                     "BASE64ENCODE8", "BASE64DECODE", "BASE64DECODE8" -> {
+                     "BASE64ENCODE8", "BASE64DECODE", "BASE64DECODE8", "WSREPLACE16", "WSCOLLAPSE16",
+                     "BASE64ENCODE16", "BASE64DECODE16" -> {
                     byte[] source = memoryRead(arguments.get(2), number(arguments.get(3)).intValue());
                     byte[] result = bufferFunction(name, source, arguments);
                     yield bufferResult(arguments.get(0), number(arguments.get(1)).intValue(), result);
                 }
                 default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
             };
+        }
+
+        /** PUTENV で置いた環境変数。実行単位をまたいで残る (プロセスの環境と同じ)。 */
+        private static final Map<String, String> ENVIRONMENT = new java.util.concurrent.ConcurrentHashMap<>();
+
+        private String currentProcedure() {
+            return scope.isEmpty() ? program.name().toUpperCase(Locale.ROOT)
+                    : scope.substring(scope.lastIndexOf('/') + 1);
+        }
+
+        /** POLY(a, x): a の要素を係数とする x の多項式 (LRM "POLY")。添字の下限によらず先頭から。 */
+        private Object polynomial(List<PliSyntax.Expr> arguments, Env env) {
+            Var array = dataReference(arguments.get(0), env, "POLY");
+            if (array.dimensions == null) {
+                throw new PliExecutionException("POLY needs an array: " + array.name);
+            }
+            BigDecimal x = number(value(arguments.get(1), env));
+            BigDecimal sum = BigDecimal.ZERO;
+            BigDecimal power = BigDecimal.ONE;
+            for (Var element : array.elements) {
+                sum = sum.add(number(element.read(context)).multiply(power));
+                power = power.multiply(x);
+            }
+            return sum;
+        }
+
+        /** VALID(x): 記憶域が型に合う値を持つか (LRM "VALID")。PICTURE と FIXED DEC を見る。 */
+        private Object valid(Var variable) {
+            try {
+                switch (variable.type) {
+                    case DECIMAL -> {
+                        // 桁は 0〜9、右端の半バイトは符号 (A〜F) でなければならない
+                        byte[] packed = variable.view.toByteArray();
+                        for (int i = 0; i < packed.length; i++) {
+                            int high = (packed[i] >> 4) & 0x0F;
+                            int low = packed[i] & 0x0F;
+                            boolean last = i == packed.length - 1;
+                            if (high > 9 || (last ? low < 10 : low > 9)) {
+                                return false;
+                            }
+                        }
+                    }
+                    case PICTURE -> {
+                        String text = context.codePage().decode(variable.view.toByteArray());
+                        new NumericPicture(text, variable.precision, variable.scale,
+                                variable.picture).fixed();
+                    }
+                    default -> throw new PliExecutionException("VALID supports FIXED DECIMAL and"
+                            + " numeric PICTURE yet: " + variable.name);
+                }
+                return true;
+            } catch (PliExecutionException unsupported) {
+                if (unsupported.getMessage().startsWith("VALID supports")) throw unsupported;
+                return false;
+            } catch (RuntimeException invalid) {
+                return false;
+            }
         }
 
         /** 書き先へ結果を書き、書いた長さを返す。番地が 0 なら要る長さ、短ければ -1。 */
@@ -3705,6 +3894,17 @@ public final class PliRuntime {
                     }
                     yield out.toByteArray();
                 }
+                // UTF-16 の空白類 (水平タブ・改行・垂直タブ・書式送り・復帰・NEL) を空白にする
+                case "WSREPLACE16", "WSCOLLAPSE16" -> {
+                    String text = new String(source, java.nio.charset.StandardCharsets.UTF_16BE)
+                            .replaceAll("[\\t\\n\\u000B\\f\\r\\u0085]", " ");
+                    if (name.equals("WSCOLLAPSE16")) text = strip(squeeze(text, " "), " ");
+                    yield text.getBytes(java.nio.charset.StandardCharsets.UTF_16BE);
+                }
+                case "BASE64ENCODE16" -> java.util.Base64.getEncoder().encodeToString(source)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_16BE);
+                case "BASE64DECODE16" -> java.util.Base64.getDecoder().decode(
+                        new String(source, java.nio.charset.StandardCharsets.UTF_16BE));
                 case "WSREPLACE", "WSCOLLAPSE" -> {
                     // 空白類 (水平タブ・改行・復帰・書式送り・垂直タブ・NL) を空白にする
                     byte[] replaced = source.clone();
@@ -4236,6 +4436,9 @@ public final class PliRuntime {
             }
             if (value instanceof WideCharacter wide) {
                 return new byte[] {(byte) (wide.unit() >>> 8), (byte) wide.unit()};
+            }
+            if (value instanceof PliSyntax.WideString wide) {
+                return wide.text().getBytes(java.nio.charset.StandardCharsets.UTF_16BE);
             }
             if (value instanceof PliGraphic graphic) return graphic.bytes();
             if (value instanceof MixedCharacters mixed) return mixed.bytes();
@@ -5057,6 +5260,7 @@ public final class PliRuntime {
             // 数の PICTURE を文字にすると、字の形そのものになる
             if (value instanceof NumericPicture picture) return picture.text();
             if (value instanceof WideCharacter wide) return Character.toString(wide.unit());
+            if (value instanceof PliSyntax.WideString wide) return wide.text();
             if (value instanceof PliGraphic graphic) return graphic.characters();
             if (value instanceof MixedCharacters mixed) return mixed.page().decode(mixed.bytes());
             // ビット列から文字への変換は '1' と '0' になる

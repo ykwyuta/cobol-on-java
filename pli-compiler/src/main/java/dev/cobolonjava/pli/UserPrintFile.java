@@ -31,15 +31,33 @@ final class UserPrintFile {
     private boolean endPageRaised;
     private final StringBuilder current = new StringBuilder();
     private char control = '1';
+    /** PRINT のファイルなら真。偽なら (PRINT でない STREAM の出力) 制御文字を付けず、頁も持たない。 */
+    private final boolean print;
+    /** 直前の GET / PUT で送った項目の数 (LRM "COUNT")。 */
+    private int count;
 
     UserPrintFile(DataSet dataSet, CodePage codePage, int lineSize, int pageSize,
                   int recordLength, BooleanSupplier endPage) {
+        this(dataSet, codePage, lineSize, pageSize, recordLength, endPage, true);
+    }
+
+    UserPrintFile(DataSet dataSet, CodePage codePage, int lineSize, int pageSize,
+                  int recordLength, BooleanSupplier endPage, boolean print) {
+        this.print = print;
         this.dataSet = dataSet;
         this.codePage = codePage;
         this.lineSize = lineSize;
         this.pageSize = pageSize;
         this.recordLength = recordLength;
         this.endPage = endPage;
+    }
+
+    int count() {
+        return count;
+    }
+
+    void count(int items) {
+        count = items;
     }
 
     int lineNumber() {
@@ -107,7 +125,7 @@ final class UserPrintFile {
 
     private void newline() {
         flush();
-        if (line + 1 > pageSize && !endPageRaised) {
+        if (print && line + 1 > pageSize && !endPageRaised) {
             endPageRaised = true;
             if (!endPage.getAsBoolean()) {
                 page();
@@ -121,7 +139,7 @@ final class UserPrintFile {
     private void flush() {
         byte[] record = new byte[recordLength];
         java.util.Arrays.fill(record, codePage.space());
-        byte[] text = codePage.encode(control + current.toString());
+        byte[] text = codePage.encode(print ? control + current.toString() : current.toString());
         System.arraycopy(text, 0, record, 0, Math.min(text.length, record.length));
         String status = dataSet.write(record);
         if (!status.startsWith("0")) {

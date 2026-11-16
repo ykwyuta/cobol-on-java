@@ -609,7 +609,7 @@ final class PliSyntax {
      *                   including the 4-byte prefix)
      */
     record FileInfo(boolean output, int recordSize, boolean variable, boolean keyed,
-                    int keyLength, int keyLocation, boolean print) {
+                    int keyLength, int keyLocation, boolean print, boolean stream) {
     }
 
     record Procedure(String name, List<String> parameters, List<Stmt> body) {
@@ -944,6 +944,10 @@ final class PliSyntax {
     record HexString(byte[] bytes) {
     }
 
+    /** WIDECHAR の値 (UTF-16)。{@code '...'WX} の定数と WHIGH / WLOW が作る。 */
+    record WideString(String text) {
+    }
+
     /** {@code '...'X} の値。16 進の字が偶数個でなければ誤りである。 */
     private static HexString hexLiteral(Token token) {
         String digits = token.text().replace("_", "");
@@ -1016,6 +1020,18 @@ final class PliSyntax {
         private void comment() {
             int startLine = line;
             int startColumn = column;
+            if (source.startsWith(PliPreprocessor.LINE_MARK, at)) {
+                // 前処理が %INCLUDE のあとに置いた行番号の印
+                int end = source.indexOf("*/", at);
+                if (end > 0) {
+                    String number = source.substring(at + PliPreprocessor.LINE_MARK.length(), end).strip();
+                    if (number.matches("[0-9]+")) {
+                        while (at < end + 2) advance(source.charAt(at));
+                        line = Integer.parseInt(number);
+                        return;
+                    }
+                }
+            }
             advance('/');
             advance('*');
             while (at < source.length() && !(source.charAt(at) == '*' && peek(1) == '/')) {
@@ -1847,7 +1863,8 @@ final class PliSyntax {
                         part.stream().anyMatch(token -> token.is("OUTPUT")), size,
                         part.stream().anyMatch(token -> token.is("V") || token.is("VB")),
                         keyed, keyLength, keyLocation,
-                        part.stream().anyMatch(token -> token.is("PRINT"))));
+                        part.stream().anyMatch(token -> token.is("PRINT")),
+                        part.stream().anyMatch(token -> token.is("STREAM"))));
             }
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
@@ -2868,7 +2885,14 @@ final class PliSyntax {
                 return new Literal(FixedValue.constant(number.text()));
             }
             if (check(Kind.IDENT)) {
+                Token first = peek();
                 String name = qualifiedName();
+                if (name.equals("SOURCELINE") && check("(") && check(1, ")")) {
+                    // 書いた行は翻訳のときに決まる (LRM "SOURCELINE")
+                    next();
+                    next();
+                    return new Literal(FixedValue.constant(Integer.toString(first.line())));
+                }
                 if (check("(")) {
                     Expr call = new Function(name, arguments());
                     while (check("(")) {
@@ -2906,6 +2930,15 @@ final class PliSyntax {
             }
             if (match("X")) {
                 return hexLiteral(literal);
+            }
+            if (match("WX")) {
+                // UTF-16 の 16 進 (LRM "WIDECHAR constants")
+                return new WideString(new String(hexLiteral(literal).bytes(),
+                        java.nio.charset.StandardCharsets.UTF_16BE));
+            }
+            if (match("UX")) {
+                // UTF-8 の 16 進 (LRM "UCHAR constants")。値は字の並びとして持つ
+                return new String(hexLiteral(literal).bytes(), java.nio.charset.StandardCharsets.UTF_8);
             }
             return literal.text();
         }

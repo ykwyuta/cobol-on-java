@@ -65,6 +65,9 @@ public final class PliPreprocessor {
                             line, 1, "include member not found: " + member));
                     replacement = "";
                 }
+                // 差し込んだ行の数だけ後ろの行番号がずれる。差し込んだあとに「ここは元の何行目か」
+                // の印を置き、字句解析がそこから数え直す (SOURCELINE と診断の行を原文の行にする)
+                replacement = replacement + LINE_MARK + logicalLine(current, matcher.end()) + "*/";
                 matcher.appendReplacement(expanded, Matcher.quoteReplacement(replacement));
             } while (matcher.find());
             matcher.appendTail(expanded);
@@ -73,6 +76,24 @@ public final class PliPreprocessor {
         diagnostics.add(new Diagnostic(Diagnostic.Severity.ERROR, fileName, 1, 1,
                 "include nesting exceeds 32 levels"));
         return new Result(current, List.copyOf(diagnostics));
+    }
+
+    /** 行番号の印。字句解析 (PliSyntax) がこの注記を読んで行を数え直す。 */
+    static final String LINE_MARK = "/*#LINE ";
+
+    /** 印で数え直したときの、その位置の行番号。 */
+    private static int logicalLine(String source, int offset) {
+        int line = 1;
+        for (int i = 0; i < offset; i++) {
+            if (source.charAt(i) == '\n') {
+                line++;
+            } else if (source.startsWith(LINE_MARK, i)) {
+                int end = source.indexOf("*/", i);
+                line = Integer.parseInt(source.substring(i + LINE_MARK.length(), end).strip());
+                i = end + 1;
+            }
+        }
+        return line;
     }
 
     private static int lineOf(String source, int offset) {
