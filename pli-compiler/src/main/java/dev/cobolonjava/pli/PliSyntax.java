@@ -578,6 +578,16 @@ final class PliSyntax {
                 i += 2;
                 continue;
             }
+            if (token.is("TYPE") && i + 3 < statement.size() && statement.get(i + 1).is("(")
+                    && handles.containsKey(statement.get(i + 2).text()) && statement.get(i + 3).is(")")) {
+                // TYPE(h): 型の値を指す HANDLE が指す構造 (LRM "TYPE built-in function" と擬似変数)
+                Token h = statement.get(i + 2);
+                out.add(h);
+                out.add(new Token(Kind.SYMBOL, "->", h.line(), h.column()));
+                out.add(new Token(Kind.IDENT, "#" + handles.get(h.text()), h.line(), h.column()));
+                i += 3;
+                continue;
+            }
             if (token.is("NEW") && i + 5 < statement.size() && statement.get(i + 1).is("(")
                     && statement.get(i + 2).is(":") && statement.get(i + 4).is(":")
                     && statement.get(i + 5).is(")")
@@ -627,6 +637,30 @@ final class PliSyntax {
                                                 Map<String, Map<String, Integer>> ordinals,
                                                 Map<String, String> ordinalVariables) {
         int at = indexAtDepth0(part, "TYPE");
+        int nameAt = levelOf(part) > 0 ? 1 : 0;
+        if (at > nameAt && nameAt < part.size() && part.get(nameAt).is("(")) {
+            // DCL (A, B) TYPE T: 名前ごとに型を展開する
+            int depth = 0;
+            int close = nameAt;
+            for (int k = nameAt; k < part.size(); k++) {
+                if (part.get(k).is("(")) depth++;
+                if (part.get(k).is(")") && --depth == 0) {
+                    close = k;
+                    break;
+                }
+            }
+            if (part.subList(nameAt + 1, close).stream().allMatch(t -> t.kind() == Kind.IDENT || t.is(","))) {
+                List<List<Token>> expanded = new ArrayList<>();
+                for (Token name : part.subList(nameAt + 1, close)) {
+                    if (name.kind() != Kind.IDENT) continue;
+                    List<Token> single = new ArrayList<>(part.subList(0, nameAt));
+                    single.add(name);
+                    single.addAll(part.subList(close + 1, part.size()));
+                    expanded.addAll(expandType(single, structures, aliases, ordinals, ordinalVariables));
+                }
+                return expanded;
+            }
+        }
         if (at < 0) {
             int ordinal = indexAtDepth0(part, "ORDINAL");
             if (ordinal >= 0 && ordinal + 1 < part.size()

@@ -1546,6 +1546,20 @@ public final class PliRuntime {
 
         private void assign(PliSyntax.Assign assignment, Env env) {
             if (assignment.target().contains("->")) {
+                byte[] structure = structureBytes(assignment.value(), env);
+                if (structure != null) {
+                    // 構造から locator で修飾した構造へは記憶域を写す (TYPE(h) = ...)
+                    located(assignment.target(), env, rest -> {
+                        Var target = env.require(rest);
+                        if (target.type != PliSyntax.Type.GROUP) {
+                            throw new PliExecutionException("a structure can be assigned only to a"
+                                    + " structure: " + assignment.target());
+                        }
+                        storeStructure(structure, target);
+                        return null;
+                    });
+                    return;
+                }
                 // 右辺は locator を入れ替える前に評価する。Q->A = NODE.A + 1 の NODE.A は
                 // 今の P が指すものである
                 Object value = value(assignment.value(), env);
@@ -1634,6 +1648,14 @@ public final class PliRuntime {
                 }
                 return;
             }
+            if (target.type == PliSyntax.Type.GROUP && assignment.value() instanceof PliSyntax.Reference r
+                    && r.name().contains("->")) {
+                byte[] structure = structureBytes(assignment.value(), env);
+                if (structure != null) {
+                    storeStructure(structure, target);
+                    return;
+                }
+            }
             if (assignment.value() instanceof PliSyntax.Reference reference
                     && env.contains(reference.name())) {
                 Var source = env.require(reference.name());
@@ -1658,6 +1680,35 @@ public final class PliRuntime {
                 return;
             }
             target.write(value, context);
+        }
+
+        /**
+         * 右辺が構造 (名前か、locator で修飾した構造) なら、その記憶域のバイト。そうでなければ null。
+         */
+        private byte[] structureBytes(PliSyntax.Expr expression, Env env) {
+            if (!(expression instanceof PliSyntax.Reference reference)) {
+                return null;
+            }
+            if (env.contains(reference.name())) {
+                Var source = env.require(reference.name());
+                return source.type == PliSyntax.Type.GROUP ? source.view.toByteArray() : null;
+            }
+            if (!reference.name().contains("->")) {
+                return null;
+            }
+            return located(reference.name(), env, rest -> {
+                Var source = env.find(rest);
+                return source != null && source.type == PliSyntax.Type.GROUP
+                        ? source.view.toByteArray() : null;
+            });
+        }
+
+        /** 構造の記憶域へバイトを写す。短ければ残りを空白で埋める。 */
+        private void storeStructure(byte[] bytes, Var target) {
+            DataView view = target.view;
+            for (int i = 0; i < view.length(); i++) {
+                view.set(i, i < bytes.length ? bytes[i] : context.codePage().space());
+            }
         }
 
         /** 構造の要素を宣言の順に、入れ子を開いて並べる。 */
