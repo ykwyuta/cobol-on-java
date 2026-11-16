@@ -95,6 +95,15 @@ public final class PliRuntime {
         final Runnable resume;
         /** 条件が起きた手続きの名。最初に処置しようとした手続きで決まる。 */
         String procedure;
+        /** VSAM の入出力の誤りなら、R15 と理由コードを xxxxyyyy の形にした値 (ONSUBCODE2)。 */
+        int subcode2;
+
+        /** VSAM の要求が R15 と理由コードを返した KEY 条件。 */
+        static Condition key(String file, int code, int reason) {
+            Condition condition = new Condition("KEY", file, code, null);
+            condition.subcode2 = 8 << 16 | reason;
+            return condition;
+        }
 
         Condition(String name, String qualifier, int code, String source) {
             this(name, qualifier, code, source, null);
@@ -623,6 +632,8 @@ public final class PliRuntime {
         private String onConditionQualifier;
         /** 条件が起きた手続きの名 (ONPROCEDURE、ONLOC)。 */
         private String onProcedureName;
+        /** 入出力の誤りの R15 と理由コード (ONSUBCODE2)。誤りでなければ 0。 */
+        private int onSubcode2;
         /** on-unit が ONSOURCE / ONCHAR に入れた直し。正常に戻れば変換をやり直す。 */
         private String repairedSource;
 
@@ -664,6 +675,8 @@ public final class PliRuntime {
                     String savedName = onConditionName;
                     String savedQualifier = onConditionQualifier;
                     String savedProcedure = onProcedureName;
+                    int savedSubcode2 = onSubcode2;
+                    onSubcode2 = condition.subcode2;
                     if (condition.procedure == null) condition.procedure = currentProcedure();
                     onProcedureName = condition.procedure;
                     onCode = condition.code;
@@ -679,6 +692,7 @@ public final class PliRuntime {
                         onConditionName = savedName;
                         onConditionQualifier = savedQualifier;
                         onProcedureName = savedProcedure;
+                        onSubcode2 = savedSubcode2;
                     }
                     if (!condition.name.equals("CONVERSION") || repairedSource == null
                             || attempt > 16) {
@@ -882,7 +896,14 @@ public final class PliRuntime {
             } else if (statement instanceof PliSyntax.Stop) {
                 throw StopSignal.INSTANCE;
             } else if (statement instanceof PliSyntax.Block block) {
-                execute(block.body(), env);
+                // BEGIN ブロックは自分の活性化を持つ (STACKADDR が別の番地を返す)
+                Object saved = blockActivation;
+                blockActivation = new Object();
+                try {
+                    execute(block.body(), env);
+                } finally {
+                    blockActivation = saved;
+                }
             } else if (statement instanceof PliSyntax.Group group) {
                 try {
                     execute(group.body(), env);
@@ -1962,6 +1983,8 @@ public final class PliRuntime {
                 }
             }
             returned = null;
+            Object savedBlock = blockActivation;
+            blockActivation = null;
             String outerScope = scope;
             scope = outerScope + "/" + procedure.name().toUpperCase(Locale.ROOT);
             activations.computeIfAbsent(procedure.name(), k -> new java.util.ArrayDeque<>())
@@ -1973,6 +1996,7 @@ public final class PliRuntime {
                 // 内部プロシージャから呼出元へ戻る。
             } finally {
                 scope = outerScope;
+                blockActivation = savedBlock;
                 activations.get(procedure.name()).pop();
             }
             Object result = returned;
@@ -2530,7 +2554,8 @@ public final class PliRuntime {
                     byte[] record = new byte[info.recordSize()];
                     String status = dataSet.readKey(0, key, record);
                     if ("23".equals(status)) {
-                        throw new Condition("KEY", file, 51, null);
+                        // レコードが見つからない: R15 = 8、理由 X'10' (DFSMS Macro Instructions, Table 17)
+                        throw Condition.key(file, 51, 0x10);
                     }
                     checkFileStatus(operation.file(), status, false);
                     copy(dev.cobolonjava.runtime.storage.Storage.wrap(record).whole(),
@@ -2545,6 +2570,12 @@ public final class PliRuntime {
                     if (key != null && !java.util.Arrays.equals(key, java.util.Arrays.copyOfRange(
                             record, info.keyLocation() - 1,
                             info.keyLocation() - 1 + info.keyLength()))) {
+                        // REWRITE は KEY でレコードを探してから書く。無ければ鍵の違いより先に
+                        // KEY 条件である (R15 = 8、理由 X'10')
+                        if (operation.action() == PliSyntax.FileAction.REWRITE
+                                && "23".equals(dataSet.readKey(0, key, new byte[info.recordSize()]))) {
+                            throw Condition.key(file, 51, 0x10);
+                        }
                         // 鍵がレコードの中にある (KEYLOC) とき、KEYFROM / KEY はその鍵と同じで
                         // なければならない。違うときの扱いは確かめていないので断る
                         throw new PliExecutionException("the KEY of " + operation.action()
@@ -2553,17 +2584,20 @@ public final class PliRuntime {
                     boolean write = operation.action() == PliSyntax.FileAction.WRITE;
                     String status = write ? dataSet.writeKey(record) : dataSet.rewriteKey(record);
                     if (write && "22".equals(status)) {
-                        throw new Condition("KEY", file, 52, null);
+                        // キーの重複: R15 = 8、理由 X'08'
+                        throw Condition.key(file, 52, 0x08);
                     }
                     if (!write && "23".equals(status)) {
-                        throw new Condition("KEY", file, 51, null);
+                        // レコードが見つからない: R15 = 8、理由 X'10' (DFSMS Macro Instructions, Table 17)
+                        throw Condition.key(file, 51, 0x10);
                     }
                     checkFileStatus(operation.file(), status, false);
                 }
                 case DELETE -> {
                     String status = dataSet.deleteKey(key);
                     if ("23".equals(status)) {
-                        throw new Condition("KEY", file, 51, null);
+                        // レコードが見つからない: R15 = 8、理由 X'10' (DFSMS Macro Instructions, Table 17)
+                        throw Condition.key(file, 51, 0x10);
                     }
                     checkFileStatus(operation.file(), status, false);
                 }
@@ -3070,6 +3104,23 @@ public final class PliRuntime {
                             case "ISFINITE" -> kind != PliFloat.Kind.INFINITE && kind != PliFloat.Kind.NAN;
                             default -> kind == PliFloat.Kind.NORMAL;
                         };
+                    }
+                }
+                // この活性化 (手続きか BEGIN ブロック) の記憶域の番地 (LRM "STACKADDR")。
+                // DSA の中身は持たないので、活性化ごとに小さな記憶域を取ってその番地を返す
+                case "STACKADDR" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return stackAddresses.computeIfAbsent(blockActivation != null ? blockActivation : env,
+                                key -> new PointerValue(address(Storage.allocate(8).whole())));
+                    }
+                }
+                // LE の共通アンカー域 (CAA) の番地 (LRM "GTCA")。実行単位で 1 つ
+                case "GTCA" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        if (commonAnchor == null) {
+                            commonAnchor = new PointerValue(address(Storage.allocate(8).whole()));
+                        }
+                        return commonAnchor;
                     }
                 }
                 case "REGEX" -> {
@@ -3625,10 +3676,26 @@ public final class PliRuntime {
                     yield true;
                 }
                 case "UUID4" -> java.util.UUID.randomUUID().toString().toUpperCase(Locale.ROOT);
+                case "ONSUBCODE2" -> fixedBinary31(onSubcode2);
                 case "ONPROCEDURE", "ONLOC" -> onProcedureName == null ? "" : onProcedureName;
                 case "ONFILE" -> onConditionQualifier == null || onConditionName == null
                         || onConditionName.equals("CONDITION") ? "" : onConditionQualifier;
                 // ジョブが EXPORT した JCL の記号 (LRM "GETJCLSYMBOL", "ISJCLSYMBOL")
+                // 4 バイトの語の 1 の補数の和 (繰り上がりを足し戻す)。足りない最後の語は 0 で
+                // 埋める (LRM "CHECKSUM")
+                case "CHECKSUM" -> {
+                    byte[] bytes = memoryRead(arguments.get(0), number(arguments.get(1)).intValue());
+                    long sum = 0;
+                    for (int at = 0; at < bytes.length; at += 4) {
+                        long word = 0;
+                        for (int k = 0; k < 4; k++) {
+                            word = word << 8 | (at + k < bytes.length ? bytes[at + k] & 0xFF : 0);
+                        }
+                        sum += word;
+                        if (sum > 0xFFFFFFFFL) sum = (sum & 0xFFFFFFFFL) + 1;
+                    }
+                    yield FixedValue.binary(BigDecimal.valueOf(sum), 32, 0);
+                }
                 case "GETJCLSYMBOL" -> java.util.Objects.requireNonNullElse(context.jobAttribute(
                         "JCLSYMBOL:" + display(arguments.get(0)).strip().toUpperCase(Locale.ROOT)), "");
                 case "ISJCLSYMBOL" -> context.jobAttribute(
@@ -3889,6 +3956,13 @@ public final class PliRuntime {
             }
             return fixedBinary31(1);
         }
+
+        /** STACKADDR が返す、活性化ごとの番地。 */
+        private final Map<Object, PointerValue> stackAddresses = new java.util.WeakHashMap<>();
+        /** いま動いている BEGIN ブロックの活性化の印。手続きの中では null。 */
+        private Object blockActivation;
+        /** GTCA が返す番地。 */
+        private PointerValue commonAnchor;
 
         /** PUTENV で置いた環境変数。実行単位をまたいで残る (プロセスの環境と同じ)。 */
         private static final Map<String, String> ENVIRONMENT = new java.util.concurrent.ConcurrentHashMap<>();
