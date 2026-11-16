@@ -3038,6 +3038,12 @@ public final class PliRuntime {
                         return attributeFunction(name, function.arguments(), env);
                     }
                 }
+                case "PLISTCK", "PLISTCKE", "PLISTCKF", "PLISTCKLOCAL", "PLISTCKUTC", "PLISTCKELOCAL",
+                     "PLISTCKEUTC", "PLISTCKP", "PLISTCKPLOCAL", "PLISTCKPUTC" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return storeClock(name, function.arguments(), env);
+                    }
+                }
                 case "POLY" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         return polynomial(function.arguments(), env);
@@ -3125,15 +3131,7 @@ public final class PliRuntime {
                 // PACKAGE が無ければ、いちばん外の手続きの名である (LRM "PACKAGENAME")
                 case "PACKAGENAME" -> program.packageName() == null
                         ? program.name().toUpperCase(Locale.ROOT) : program.packageName();
-                case "MICROSECS" -> {
-                    if (!arguments.isEmpty()) {
-                        throw new PliExecutionException("MICROSECS with a date argument is not supported yet");
-                    }
-                    ZonedDateTime now = ZonedDateTime.now(context.clock());
-                    long value = (now.toLocalDate().toEpochDay() - LILIAN_ORIGIN) * 86_400_000_000L
-                            + now.toLocalTime().toNanoOfDay() / 1000;
-                    yield FixedValue.binary(BigDecimal.valueOf(value), 63, 0);
-                }
+                case "MICROSECS" -> dateBuiltin(name, arguments);
                 case "CHAR", "CHARACTER" -> display(arguments.get(0));
                 // STORAGE / STG は SIZE の別名である (LRM "STORAGE")。上で済ませている
                 // 文字列の長さ。固定長の CHAR(n) なら n、VARYING なら今の長さ (LRM "LENGTH")
@@ -3454,13 +3452,13 @@ public final class PliRuntime {
                         BigDecimal.valueOf(hexExponent(number(arguments.getFirst()))), 31, 0);
                 case "SCALE" -> number(arguments.getFirst())
                         .multiply(Var.power16(number(arguments.get(1)).intValueExact()));
+                case "DAYSTOMICROSECS", "MICROSECSTODAYS", "MICROSECS", "MICROSECSTODATE", "SECS",
+                     "MAXDATE", "MINDATE", "STCKTODATE", "STCKETODATE", "JULIANTOSMF", "SMFTOJULIAN",
+                     "TIMESTAMP", "UTCDATETIME", "UTCSECS", "UTCMICROSECS" -> dateBuiltin(name, arguments);
                 case "SECSTODATE" -> secondsToDate(number(arguments.getFirst()),
                         arguments.size() > 1 ? display(arguments.get(1)) : "YYYYMMDDHHMISS999");
                 // DAYS(日付, 型) は 1582 年 10 月 15 日を 1 とする日の番号 (Lilian) である
-                case "DAYS" -> FixedValue.binary(BigDecimal.valueOf(
-                        lilian(display(arguments.get(0)), display(arguments.get(1)))), 31, 0);
-                case "DAYSTODATE" -> dateOf(number(arguments.get(0)).longValue(),
-                        display(arguments.get(1)));
+                case "DAYS", "DAYSTODATE" -> dateBuiltin(name, arguments);
                 case "BOOL" -> {
                     String x = bitText(arguments.get(0));
                     String y = bitText(arguments.get(1));
@@ -4387,6 +4385,180 @@ public final class PliRuntime {
             }
             if (suppressLeadingZeros && text.length() < 8) text.append(" ".repeat(8 - text.length()));
             return text.toString();
+        }
+
+
+        private static final String TIMESTAMP_PATTERN = "YYYY-MM-DD-HH.MI.SS.999999";
+        private static final String SECONDS_PATTERN = "YYYYMMDDHHMISS999";
+        private static final long MICROS_PER_DAY = 86_400_000_000L;
+        /** 窓を書かなければ 1950 年から 100 年とする (翻訳オプション WINDOW の既定)。 */
+        private static final int DEFAULT_WINDOW = 1950;
+
+        private static String pattern(List<Object> arguments, int at, String fallback) {
+            return arguments.size() > at ? display(arguments.get(at)).stripTrailing() : fallback;
+        }
+
+        private static int window(List<Object> arguments, int at) {
+            return arguments.size() > at ? number(arguments.get(at)).intValue() : DEFAULT_WINDOW;
+        }
+
+        /**
+         * 型 (LRM Table 65) で書いた日時を、Lilian の起点 (1582 年 10 月 14 日 0 時) からの
+         * マイクロ秒にする。YY は窓 w からの 100 年に入る年にする。
+         */
+        private static long lilianMicros(String text, String pattern, int window) {
+            var matcher = SECONDS_DATE_TOKENS.matcher(pattern);
+            int at = 0;
+            int year = 1582;
+            int month = 1;
+            int day = 1;
+            int dayOfYear = -1;
+            int hour = 0;
+            int minute = 0;
+            int second = 0;
+            int micros = 0;
+            try {
+                while (matcher.find()) {
+                    String token = matcher.group();
+                    int width = switch (token) {
+                        case "YYYY" -> 4;
+                        case "999999" -> 6;
+                        case "MMM", "Mmm", "DDD", "999" -> 3;
+                        case "YY", "MM", "DD", "HH", "MI", "SS" -> 2;
+                        case "ZY", "ZM", "ZD" -> throw new PliExecutionException(
+                                "the pattern element " + token + " cannot be read yet: " + pattern);
+                        default -> 1;
+                    };
+                    String part = text.substring(at, at + width);
+                    at += width;
+                    switch (token) {
+                        case "YYYY" -> year = Integer.parseInt(part);
+                        case "YY" -> {
+                            year = window - window % 100 + Integer.parseInt(part);
+                            if (year < window) year += 100;
+                        }
+                        case "MMM", "Mmm" -> month = java.time.Month.from(
+                                java.time.format.DateTimeFormatter.ofPattern("MMM", Locale.ENGLISH)
+                                        .parse(part.charAt(0) + part.substring(1).toLowerCase(Locale.ROOT)))
+                                .getValue();
+                        case "MM" -> month = Integer.parseInt(part);
+                        case "DDD" -> dayOfYear = Integer.parseInt(part);
+                        case "DD" -> day = Integer.parseInt(part);
+                        case "HH" -> hour = Integer.parseInt(part);
+                        case "MI" -> minute = Integer.parseInt(part);
+                        case "SS" -> second = Integer.parseInt(part);
+                        case "999999" -> micros = Integer.parseInt(part);
+                        case "999" -> micros = Integer.parseInt(part) * 1000;
+                        default -> { }
+                    }
+                }
+                java.time.LocalDate date = dayOfYear > 0 ? java.time.LocalDate.ofYearDay(year, dayOfYear)
+                        : java.time.LocalDate.of(year, month, day);
+                long days = date.toEpochDay() - LILIAN_ORIGIN;
+                return days * MICROS_PER_DAY
+                        + ((hour * 60L + minute) * 60 + second) * 1_000_000L + micros;
+            } catch (PliExecutionException unsupported) {
+                throw unsupported;
+            } catch (RuntimeException invalid) {
+                throw new PliExecutionException("'" + text + "' is not a date of the pattern "
+                        + pattern);
+            }
+        }
+
+        /** Lilian のマイクロ秒を型で書く。 */
+        private static String microsToDate(long micros, String pattern) {
+            return secondsToDate(BigDecimal.valueOf(micros).movePointLeft(6), pattern);
+        }
+
+        private long nowMicros(boolean utc) {
+            java.time.LocalDateTime now = utc
+                    ? java.time.LocalDateTime.ofInstant(context.clock().instant(), java.time.ZoneOffset.UTC)
+                    : java.time.LocalDateTime.now(context.clock());
+            return (now.toLocalDate().toEpochDay() - LILIAN_ORIGIN) * MICROS_PER_DAY
+                    + now.toLocalTime().toNanoOfDay() / 1000;
+        }
+
+        /** STCK の値 (1900 年 1 月 1 日からの 2 の -12 乗マイクロ秒) を Lilian のマイクロ秒にする。 */
+        private static long stckToMicros(long tod) {
+            return (tod >>> 12) + (java.time.LocalDate.of(1900, 1, 1).toEpochDay() - LILIAN_ORIGIN)
+                    * MICROS_PER_DAY;
+        }
+
+        private static long microsToStck(long micros) {
+            return (micros - (java.time.LocalDate.of(1900, 1, 1).toEpochDay() - LILIAN_ORIGIN)
+                    * MICROS_PER_DAY) << 12;
+        }
+
+        /** 日付と時刻の関数 (LRM "DAYS", "SECS", "MICROSECS" ほか)。 */
+        private Object dateBuiltin(String name, List<Object> arguments) {
+            return switch (name) {
+                case "DAYS" -> fixedBinary31((int) Math.floorDiv(arguments.isEmpty() ? nowMicros(false)
+                        : lilianMicros(display(arguments.get(0)), pattern(arguments, 1, SECONDS_PATTERN),
+                                window(arguments, 2)), MICROS_PER_DAY));
+                case "DAYSTODATE" -> microsToDate(number(arguments.get(0)).longValue() * MICROS_PER_DAY,
+                        pattern(arguments, 1, SECONDS_PATTERN));
+                case "SECS" -> BigDecimal.valueOf(arguments.isEmpty() ? nowMicros(false)
+                        : lilianMicros(display(arguments.get(0)), pattern(arguments, 1, SECONDS_PATTERN),
+                                window(arguments, 2))).movePointLeft(6);
+                case "MICROSECS" -> FixedValue.binary(BigDecimal.valueOf(arguments.isEmpty()
+                        ? nowMicros(false) : lilianMicros(display(arguments.get(0)),
+                                pattern(arguments, 1, TIMESTAMP_PATTERN), window(arguments, 2))), 63, 0);
+                case "MICROSECSTODATE" -> microsToDate(number(arguments.get(0)).longValue(),
+                        pattern(arguments, 1, TIMESTAMP_PATTERN));
+                case "DAYSTOMICROSECS" -> FixedValue.binary(BigDecimal.valueOf(
+                        number(arguments.get(0)).longValue() * MICROS_PER_DAY), 63, 0);
+                case "MICROSECSTODAYS" -> fixedBinary31((int) Math.floorDiv(
+                        number(arguments.get(0)).longValue(), MICROS_PER_DAY));
+                // NONULLDATE のいちばん早い日は Lilian の 0 日 (1582 年 10 月 14 日)
+                case "MAXDATE" -> microsToDate(lilianMicros("99991231235959999999",
+                        "YYYYMMDDHHMISS999999", DEFAULT_WINDOW), pattern(arguments, 0, TIMESTAMP_PATTERN));
+                case "MINDATE" -> microsToDate(0, pattern(arguments, 0, TIMESTAMP_PATTERN));
+                case "STCKTODATE" -> microsToDate(stckToMicros(number(arguments.get(0)).toBigInteger()
+                        .longValue()), pattern(arguments, 1, TIMESTAMP_PATTERN));
+                case "STCKETODATE" -> {
+                    byte[] bytes = characterBytes(arguments.get(0));
+                    long tod = java.nio.ByteBuffer.wrap(bytes, 1, 8).getLong();
+                    yield microsToDate(stckToMicros(tod), pattern(arguments, 1, TIMESTAMP_PATTERN));
+                }
+                // SMF の日付は X'0cyydddF' (c は 20xx なら 1)
+                case "JULIANTOSMF" -> {
+                    String julian = display(arguments.get(0));
+                    int year = Integer.parseInt(julian.substring(0, 4));
+                    String digits = String.format("0%d%02d%sF", (year - 1900) / 100, year % 100,
+                            julian.substring(4, 7));
+                    yield new PliSyntax.HexString(java.util.HexFormat.of().parseHex(digits));
+                }
+                case "SMFTOJULIAN" -> {
+                    String digits = java.util.HexFormat.of().withUpperCase()
+                            .formatHex(characterBytes(arguments.get(0)));
+                    int year = 1900 + Character.digit(digits.charAt(1), 10) * 100
+                            + Integer.parseInt(digits.substring(2, 4));
+                    yield String.format("%04d", year) + digits.substring(4, 7);
+                }
+                case "TIMESTAMP" -> microsToDate(nowMicros(false), TIMESTAMP_PATTERN);
+                case "UTCDATETIME" -> microsToDate(nowMicros(true), SECONDS_PATTERN);
+                case "UTCSECS" -> BigDecimal.valueOf(nowMicros(true)).movePointLeft(6);
+                case "UTCMICROSECS" -> FixedValue.binary(BigDecimal.valueOf(nowMicros(true)), 63, 0);
+                default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
+            };
+        }
+
+        /**
+         * PLISTCK の族。引数へ時計の値を入れ、条件コード 0 を返す。E の付くものは 16 バイトの
+         * 拡張形式 (頭の 1 バイトは時代の番号で 0)。LOCAL は地方時、ほかは UTC である。
+         */
+        private Object storeClock(String name, List<PliSyntax.Expr> arguments, Env env) {
+            Var target = dataReference(arguments.get(0), env, name);
+            long tod = microsToStck(nowMicros(!name.contains("LOCAL")));
+            byte[] bytes = new byte[target.view.length()];
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(bytes);
+            if (name.startsWith("PLISTCKE")) {
+                buffer.put((byte) 0).putLong(tod);
+            } else {
+                buffer.putLong(tod);
+            }
+            target.view.setBytes(bytes);
+            return fixedBinary31(0);
         }
 
         private static final java.util.regex.Pattern SECONDS_DATE_TOKENS =

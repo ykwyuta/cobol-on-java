@@ -1692,9 +1692,11 @@ final class PliSyntax {
                 throw new ParseFailure(part.get(0), "FIXED DECIMAL precision " + info.precision
                         + " is out of range (1 to 31)");
             }
-            if (info.type == Type.BINARY && (info.precision < 1 || info.precision > 63)) {
+            // UNSIGNED は符号のビットを持たないので 64 まで書ける (LRM "SIGNED and UNSIGNED")
+            int binaryLimit = part.stream().anyMatch(t -> t.is("UNSIGNED")) ? 64 : 63;
+            if (info.type == Type.BINARY && (info.precision < 1 || info.precision > binaryLimit)) {
                 throw new ParseFailure(part.get(0), "FIXED BINARY precision " + info.precision
-                        + " is out of range (1 to 63)");
+                        + " is out of range (1 to " + binaryLimit + ")");
             }
         }
 
