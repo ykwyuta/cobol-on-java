@@ -24,7 +24,17 @@ final class PliSyntax {
     private static final ThreadLocal<Map<String, List<Token>>> FORMATS =
             ThreadLocal.withInitial(java.util.HashMap::new);
 
+    /** 文から、その文の頭の行 (ONLINE が返す)。parse のたびに新しい表にする。 */
+    private static final ThreadLocal<Map<Stmt, Integer>> STATEMENT_LINES =
+            ThreadLocal.withInitial(java.util.IdentityHashMap::new);
+
+    /** 直前の parse が読んだ文の行。 */
+    static Map<Stmt, Integer> statementLines() {
+        return STATEMENT_LINES.get();
+    }
+
     static ParseResult parse(String fileName, String source) {
+        STATEMENT_LINES.set(new java.util.IdentityHashMap<>());
         DFP.set(PliOptions.fromSource(source).dfp());
         INDICATORS.get().clear();
         FORMATS.get().clear();
@@ -1689,6 +1699,13 @@ final class PliSyntax {
         }
 
         private Stmt statement() {
+            int line = peek().line();
+            Stmt statement = statementBody();
+            STATEMENT_LINES.get().putIfAbsent(statement, line);
+            return statement;
+        }
+
+        private Stmt statementBody() {
             if (check("%") && (check(1, "PAGE") || check(1, "SKIP") || check(1, "PRINT")
                     || check(1, "NOPRINT") || check(1, "PUSH") || check(1, "POP"))) {
                 // 翻訳の listing だけを整える指示で、実行には何も起こさない (LRM "%PAGE directive" ほか)
@@ -1928,6 +1945,9 @@ final class PliSyntax {
             if (match("RESIGNAL")) {
                 expect(";");
                 return new Call("#RESIGNAL", List.of());
+            }
+            if (match("ASSERT")) {
+                return assertStatement();
             }
             if (match("REVERT") || match("SIGNAL")) {
                 boolean revert = previous().is("REVERT");
@@ -3202,7 +3222,7 @@ final class PliSyntax {
                 "FIXEDOVERFLOW", "FOFL", "CONDITION", "COND", "ERROR",
                 "OVERFLOW", "UNDERFLOW", "STRINGSIZE", "STRINGRANGE", "SUBSCRIPTRANGE",
                 "UNDEFINEDFILE", "CONFORMANCE", "ATTENTION", "AREA", "INVALIDOP",
-                "STORAGE", "NAME");
+                "STORAGE", "NAME", "ASSERTION", "ANYCONDITION", "FINISH");
 
         private String conditionName() {
             Token name = expect(Kind.IDENT, "condition name");
@@ -3217,6 +3237,36 @@ final class PliSyntax {
                 case "COND" -> "CONDITION";
                 default -> upper;
             };
+        }
+
+        /**
+         * {@code ASSERT TRUE(x) | FALSE(x) | COMPARE(a, b[, op]) | UNREACHABLE [TEXT(t)];}
+         * (LRM "ASSERT statement")。#ASSERT の呼び出しにする。引数の最後は TEXT の式で、
+         * 書いていなければ * である。
+         */
+        private Stmt assertStatement() {
+            Token kind = expect(Kind.IDENT, "TRUE, FALSE, COMPARE or UNREACHABLE");
+            String upper = kind.text().toUpperCase(java.util.Locale.ROOT);
+            List<Expr> arguments = new ArrayList<>();
+            arguments.add(new Literal(upper));
+            switch (upper) {
+                case "TRUE", "FALSE" -> arguments.add(parenthesizedExpression());
+                case "COMPARE" -> {
+                    List<Expr> compared = arguments();
+                    if (compared.size() < 2 || compared.size() > 3) {
+                        throw fail(kind, "ASSERT COMPARE takes two or three arguments");
+                    }
+                    arguments.addAll(compared);
+                    if (compared.size() == 2) {
+                        arguments.add(new Literal("EQ"));
+                    }
+                }
+                case "UNREACHABLE" -> { }
+                default -> throw fail(kind, "ASSERT " + kind.text() + " is not supported");
+            }
+            arguments.add(match("TEXT") ? parenthesizedExpression() : new Literal(Asterisk.STAR));
+            expect(";");
+            return new Call("#ASSERT", List.copyOf(arguments));
         }
 
         private String qualifier() {

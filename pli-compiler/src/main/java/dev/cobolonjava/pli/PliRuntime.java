@@ -101,6 +101,8 @@ public final class PliRuntime {
         Object original;
         /** 条件が起きた文の、手続きの中の番号 (ONOFFSET)。 */
         int offset;
+        /** 条件が起きた文の行 (ONLINE)。 */
+        int line;
 
         /** VSAM の要求が R15 と理由コードを返した KEY 条件。 */
         static Condition key(String file, int code, int reason) {
@@ -128,6 +130,14 @@ public final class PliRuntime {
             this.source = source;
             this.resume = resume;
         }
+    }
+
+    /** SUBSCRIPTRANGE を起こした添字と、その次元の上下限 (ONSUBSCRIPT、ONLBOUND、ONHBOUND)。 */
+    private record SubscriptOutOfRange(int subscript, int low, int high) {
+    }
+
+    /** ASSERTION を起こした ASSERT 文の TEXT と比べた値 (ONTEXT、ONACTUAL ほか)。 */
+    private record Assertion(String text, String actual, String expected, String operator) {
     }
 
     /** KEY 条件を起こした鍵 (ONKEY)。 */
@@ -170,6 +180,13 @@ public final class PliRuntime {
         private FixedValue.Arithmetic arithmetic;
         private boolean conformanceEnabled;
         private int sqlSequence;
+
+        /** 文の行。翻訳したときの表 (ONLINE が引く)。 */
+        private final Map<PliSyntax.Stmt, Integer> lines = PliSyntax.statementLines();
+        /** いま動いている文の行。 */
+        private int currentLine;
+        /** いま処置している条件の行 (ONLINE)。 */
+        private int onLine;
 
         Executor(PliSyntax.Program program, ProgramContext context, DataView[] arguments,
                  ClassLoader loader, PliOptions options) {
@@ -730,7 +747,13 @@ public final class PliRuntime {
                         .push(main);
                 try {
                     declareAll(program.body(), main);
-                    execute(program.body(), main);
+                    try {
+                        execute(program.body(), main);
+                    } catch (ReturnSignal returned) {
+                        // 主手続きの RETURN も正常終了である
+                    }
+                    // 実行単位が正常に終わるとき FINISH を起こす (LRM "FINISH condition")
+                    finish(main);
                 } finally {
                     activations.get(program.name()).pop();
                 }
@@ -796,15 +819,33 @@ public final class PliRuntime {
          * on-unit が無ければ既定の処置である。CONDITION は何もせずに続け、ほかは止める。
          */
         private void execute(PliSyntax.Stmt statement, Env env) {
+            Integer line = lines.get(statement);
+            int savedLine = currentLine;
+            if (line != null) currentLine = line;
+            try {
+                executeWithConditions(statement, env);
+            } finally {
+                currentLine = savedLine;
+            }
+        }
+
+        private void executeWithConditions(PliSyntax.Stmt statement, Env env) {
             for (int attempt = 0; ; attempt++) {
                 try {
                     executeStatement(statement, env);
                     return;
                 } catch (Condition condition) {
+                    if (condition.line == 0) condition.line = currentLine;
                     Env.Handler handler = env.handler(conditionKey(condition.name,
                             condition.qualifier));
+                    if (handler == null && !condition.name.equals("FINISH")) {
+                        // その条件の on-unit が無ければ ANYCONDITION の on-unit が受ける。
+                        // FINISH は受けない (LRM "ANYCONDITION condition")
+                        handler = env.handler(conditionKey("ANYCONDITION", null));
+                    }
                     if (handler == null || handler.system()) {
-                        if (condition.name.equals("CONDITION")) {
+                        // CONDITION と FINISH の既定の処置は何もしないことである
+                        if (condition.name.equals("CONDITION") || condition.name.equals("FINISH")) {
                             return;
                         }
                         if (condition.name.equals("UNDERFLOW") && condition.resume != null) {
@@ -830,6 +871,8 @@ public final class PliRuntime {
                     Object savedOriginal = onOriginal;
                     onOriginal = condition.original;
                     int savedOffset = onOffset;
+                    int savedOnLine = onLine;
+                    onLine = condition.line;
                     if (condition.offset == 0) condition.offset = Math.max(1, statementOrdinal);
                     onOffset = condition.offset;
                     if (condition.procedure == null) condition.procedure = currentProcedure();
@@ -864,6 +907,7 @@ public final class PliRuntime {
                         onSubcode2 = savedSubcode2;
                         onOriginal = savedOriginal;
                         onOffset = savedOffset;
+                        onLine = savedOnLine;
                     }
                     if (!condition.name.equals("CONVERSION") || repairedSource == null
                             || attempt > 16) {
@@ -882,6 +926,24 @@ public final class PliRuntime {
                     }
                     REPAIRED.get().put(condition.source, repairedSource);
                 }
+            }
+        }
+
+        /** FINISH の on-unit があれば動かす。ONCODE は 4 (Zeus と同じ。実機と突き合わせていない)。 */
+        private void finish(Env env) {
+            Env.Handler handler = env.handler(conditionKey("FINISH", null));
+            if (handler == null || handler.system()) {
+                return;
+            }
+            int savedCode = onCode;
+            String savedName = onConditionName;
+            onCode = 4;
+            onConditionName = "FINISH";
+            try {
+                execute(handler.statements(), new Env(handler.established(), context));
+            } finally {
+                onCode = savedCode;
+                onConditionName = savedName;
             }
         }
 
@@ -1012,6 +1074,10 @@ public final class PliRuntime {
                             case "ERROR" -> 9;
                             case "CONFORMANCE" -> 550;
                             case "ATTENTION" -> 400;
+                            // Messages and Codes の番号 (Zeus と同じ。実機と突き合わせていない)
+                            case "ASSERTION" -> 430;
+                            case "FINISH" -> 4;
+                            case "INVALIDOP" -> 290;
                             default -> 0;
                         }, null);
             } else if (statement instanceof PliSyntax.Prefixed prefixed) {
@@ -1067,6 +1133,7 @@ public final class PliRuntime {
                     }
                 }
             } else if (statement instanceof PliSyntax.Stop) {
+                finish(env);
                 throw StopSignal.INSTANCE;
             } else if (statement instanceof PliSyntax.Block block) {
                 // BEGIN ブロックは自分の活性化を持つ (STACKADDR が別の番地を返す)。ブロックの中で
@@ -2511,6 +2578,65 @@ public final class PliRuntime {
             return new PointerValue(address(list));
         }
 
+        /**
+         * ASSERT 文 (LRM "ASSERT statement")。翻訳オプション ASSERT(CONDITION) のとき、
+         * 成り立たなければ ASSERTION 条件を起こす。ONCODE は TRUE と FALSE が 431 (TEXT が
+         * あれば 432)、UNREACHABLE が 433 (434)、COMPARE が 435 (436) である (Messages and
+         * Codes。Zeus と同じにした。実機と突き合わせていない)。既定の ASSERT(ENTRY) は
+         * PLIASSRT を呼ぶ。それはまだ持たない。
+         */
+        private void assertStatement(List<PliSyntax.Expr> arguments, Env env) {
+            if (!options.assertCondition()) {
+                throw new PliExecutionException("ASSERT under ASSERT(ENTRY) (a call to PLIASSRT)"
+                        + " is not supported yet; use *PROCESS ASSERT(CONDITION)");
+            }
+            String kind = (String) ((PliSyntax.Literal) arguments.getFirst()).value();
+            PliSyntax.Expr textExpression = arguments.getLast();
+            boolean hasText = !(textExpression instanceof PliSyntax.Literal literal
+                    && literal.value() == PliSyntax.Asterisk.STAR);
+            String actual = "";
+            String expected = "";
+            String operator = "";
+            boolean holds;
+            int code;
+            switch (kind) {
+                case "TRUE", "FALSE" -> {
+                    holds = truth(value(arguments.get(1), env)) == kind.equals("TRUE");
+                    code = 431;
+                }
+                case "UNREACHABLE" -> {
+                    holds = false;
+                    code = 433;
+                }
+                default -> { // COMPARE
+                    Object a = value(arguments.get(1), env);
+                    Object b = value(arguments.get(2), env);
+                    operator = display(value(arguments.get(3), env)).strip().toUpperCase(Locale.ROOT);
+                    int order = compare(a, b);
+                    holds = switch (operator) {
+                        case "EQ" -> order == 0;
+                        case "NE" -> order != 0;
+                        case "LT" -> order < 0;
+                        case "LE" -> order <= 0;
+                        case "GT" -> order > 0;
+                        case "GE" -> order >= 0;
+                        default -> throw new PliExecutionException("ASSERT COMPARE operator "
+                                + operator + " is not EQ, NE, LT, LE, GT or GE");
+                    };
+                    actual = display(a);
+                    expected = display(b);
+                    code = 435;
+                }
+            }
+            if (holds) {
+                return;
+            }
+            String text = hasText ? display(value(textExpression, env)) : "";
+            Condition condition = new Condition("ASSERTION", null, code + (hasText ? 1 : 0), null);
+            condition.original = new Assertion(text, actual, expected, operator);
+            throw condition;
+        }
+
         /** 省略した (* と書いた) 引数の印。 */
         private static final Object OMITTED_ARGUMENT = new Object();
 
@@ -2632,6 +2758,10 @@ public final class PliRuntime {
                     && program.procedures().get("PLIFREE") == null) {
                 // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
                 // 解いたあとの参照が誤りであることは検出しない
+                return;
+            }
+            if (call.name().equals("#ASSERT")) {
+                assertStatement(call.arguments(), env);
                 return;
             }
             if (call.name().equals("#RESIGNAL")) {
@@ -4743,6 +4873,18 @@ public final class PliRuntime {
                 }
                 case "UUID4" -> java.util.UUID.randomUUID().toString().toUpperCase(Locale.ROOT);
                 case "ONSUBCODE2" -> fixedBinary31(onSubcode2);
+                case "ONLINE" -> fixedBinary31(onConditionName == null ? 0 : onLine);
+                case "ONSUBSCRIPT" -> fixedBinary31(onOriginal instanceof SubscriptOutOfRange r ? r.subscript() : 0);
+                case "ONLBOUND" -> fixedBinary31(onOriginal instanceof SubscriptOutOfRange r ? r.low() : 0);
+                case "ONHBOUND" -> fixedBinary31(onOriginal instanceof SubscriptOutOfRange r ? r.high() : 0);
+                case "ONAREA" -> "AREA".equals(onConditionName) && onOriginal instanceof String area
+                        ? area : "";
+                case "ONTEXT" -> onOriginal instanceof Assertion a ? a.text() : "";
+                case "ONACTUAL" -> onOriginal instanceof Assertion a ? a.actual() : "";
+                case "ONEXPECTED" -> onOriginal instanceof Assertion a ? a.expected() : "";
+                case "ONOPERATOR" -> onOriginal instanceof Assertion a ? a.operator() : "";
+                // パッケージの名。パッケージが無ければ外側の手続きの名 (LRM "ONPACKAGE")
+                case "ONPACKAGE" -> program.packageName() != null ? program.packageName() : program.name();
                 // NAME の on-unit の中なら名を誤った欄。外では空 (LRM "DATAFIELD")
                 case "DATAFIELD" -> dataField == null ? "" : dataField;
                 // KEY 条件を起こした鍵。ほかの条件の on-unit や on-unit の外では空
@@ -6647,7 +6789,9 @@ public final class PliRuntime {
                 BigDecimal value = number(value(subscripts.get(d), env));
                 int subscript = value.setScale(0, java.math.RoundingMode.DOWN).intValue();
                 if (subscript < bound.low() || subscript > bound.high()) {
-                    throw new Condition("SUBSCRIPTRANGE", null, 520, null);
+                    Condition condition = new Condition("SUBSCRIPTRANGE", null, 520, null);
+                    condition.original = new SubscriptOutOfRange(subscript, bound.low(), bound.high());
+                    throw condition;
                 }
                 index = index * bound.extent() + (subscript - bound.low());
             }

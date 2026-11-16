@@ -18,10 +18,10 @@ import java.util.regex.Pattern;
  * @param binaryHigh {@code FIXEDBIN(n,m)} の m
  */
 record PliOptions(boolean ans, int decimalLow, int decimalHigh, int binaryLow, int binaryHigh,
-                  Integer ccsid, boolean dfp) {
+                  Integer ccsid, boolean dfp, boolean assertCondition) {
 
     /** 既定: RULES(IBM)、LIMITS(FIXEDDEC(15,31) FIXEDBIN(31,63))。 */
-    static final PliOptions DEFAULT = new PliOptions(false, 15, 31, 31, 63, null, false);
+    static final PliOptions DEFAULT = new PliOptions(false, 15, 31, 31, 63, null, false, false);
 
     static final String MARKER = "/*PLI-OPTIONS ";
 
@@ -30,6 +30,8 @@ record PliOptions(boolean ans, int decimalLow, int decimalHigh, int binaryLow, i
     private static final Pattern RULES = Pattern.compile("\\bRULES\\s*\\(([^)]*)\\)");
     /** {@code FLOAT(DFP)}: FLOAT DECIMAL を 10 進の IEEE (DFP) で持つ (Programming Guide "FLOAT")。 */
     private static final Pattern FLOAT = Pattern.compile("\\bFLOAT\\s*\\(\\s*(NO)?DFP\\s*\\)");
+    /** {@code ASSERT(CONDITION)}: ASSERT 文が ASSERTION 条件を起こす (既定は ASSERT(ENTRY))。 */
+    private static final Pattern ASSERT = Pattern.compile("\\bASSERT\\s*\\(\\s*(CONDITION|ENTRY)\\s*\\)");
     private static final Pattern CODEPAGE = Pattern.compile("\\bCODEPAGE\\s*\\(\\s*(\\d+)\\s*\\)");
     private static final Pattern FIXEDDEC = Pattern.compile(
             "\\bFIXEDDEC\\s*\\(\\s*(\\d+)\\s*(?:,\\s*(\\d+)\\s*)?\\)");
@@ -74,8 +76,13 @@ record PliOptions(boolean ans, int decimalLow, int decimalHigh, int binaryLow, i
         while (floating.find()) {
             decimalFloat = floating.group(1) == null;
         }
+        boolean assertion = assertCondition;
+        Matcher asserting = ASSERT.matcher(text);
+        while (asserting.find()) {
+            assertion = asserting.group(1).equals("CONDITION");
+        }
         return new PliOptions(rulesAns, decimal[0], decimal[1], binary[0], binary[1], page,
-                decimalFloat);
+                decimalFloat, assertion);
     }
 
     private static int[] limits(Matcher matcher, int low, int high, int small, int large,

@@ -141,13 +141,25 @@ class ControlStatementTest {
     @DisplayName("値を持つ RETURN、知らない ON・EXEC・文は、実行まで待たずに翻訳で断る")
     void unsupportedStatementsAreRefusedAtCompileTime() {
         assertTrue(rejection("RETURN(5);").contains("RETURN with a value"));
-        // ON ERROR は以前ここで断っていた。条件の処置を持ったので、持っていない FINISH を例にする
-        assertTrue(rejection("ON FINISH BEGIN; END;").contains("ON FINISH"));
+        // ON ERROR と ON FINISH は以前ここで断っていた。持っていない TRANSMIT を例にする
+        assertTrue(rejection("ON TRANSMIT BEGIN; END;").contains("ON TRANSMIT"));
         assertTrue(rejection("EXEC CICS RETURN;").contains("EXEC CICS"));
         assertTrue(rejection("""
                 DCL A CHAR(3);
                 GET LIST(A);
                 """).contains("statement GET"));
+    }
+
+    @Test
+    @DisplayName("FINISH は STOP と主手続きの終わりで起き、SIGNAL FINISH の既定の処置は何もしない")
+    void finishRunsAtTheEndOfTheProgram() throws Exception {
+        assertEquals("BEFORE,FIN 4", run("""
+                SIGNAL FINISH;
+                PUT SKIP LIST('BEFORE');
+                ON FINISH PUT SKIP LIST('FIN', ONCODE());
+                STOP;
+                PUT SKIP LIST('NOT HERE');
+                """).replaceAll(" +", " "));
     }
 
     @Test
