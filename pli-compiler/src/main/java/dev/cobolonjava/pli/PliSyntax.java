@@ -726,14 +726,19 @@ final class PliSyntax {
                 List<Bound> dimensions, List<InitItem> initialItems, boolean unsigned,
                 String storage, Defined defined, String unsupported, String picture,
                 boolean complex, boolean union, ValueSet valueSet, String byteOrder,
-                String floatFormat) {
+                String floatFormat, Set<String> flags) {
 
         Decl(String name, int level, Type type, int precision, int scale,
              Expr initial, String basedOn, Boolean aligned, boolean varying,
              List<Bound> dimensions, List<InitItem> initialItems) {
             this(name, level, type, precision, scale, initial, basedOn, aligned, varying,
                     dimensions, initialItems, false, null, null, null, null, false, false, null,
-                    null, null);
+                    null, null, Set.of());
+        }
+
+        /** 書かれた属性 (VARYINGZ、BYVALUE、OPTIONAL) を持つか。 */
+        boolean has(String flag) {
+            return flags.contains(flag);
         }
 
         /** 10 進の IEEE (DFP) で持つ FLOAT か。 */
@@ -749,7 +754,7 @@ final class PliSyntax {
         Decl withDimensions(List<Bound> bounds) {
             return new Decl(name, level, type, precision, scale, initial, basedOn, aligned,
                     varying, List.copyOf(bounds), initialItems, unsigned, storage, defined,
-                    unsupported, picture, complex, union, valueSet, byteOrder, floatFormat);
+                    unsupported, picture, complex, union, valueSet, byteOrder, floatFormat, flags);
         }
 
         /** 配列の要素の数。配列でなければ 1。 */
@@ -2011,7 +2016,7 @@ final class PliSyntax {
                     info.type == Type.PICTURE ? pictureSpecification(part) : null,
                     part.stream().anyMatch(t -> t.is("COMPLEX") || t.is("CPLX")),
                     part.stream().anyMatch(t -> t.is("UNION") || t.is("CELL")), valueSet(part),
-                    byteOrder(part), floatFormat(part, info));
+                    byteOrder(part), floatFormat(part, info), flags(part));
         }
 
         private ValueSet valueSet(List<Token> declaration) {
@@ -2195,6 +2200,17 @@ final class PliSyntax {
                 }
             }
             return false;
+        }
+
+        /** 宣言の形と引数の渡し方を変える属性 (VARYINGZ、BYVALUE、OPTIONAL)。 */
+        private static Set<String> flags(List<Token> part) {
+            Set<String> flags = new java.util.HashSet<>();
+            for (Token token : part) {
+                if (token.is("VARYINGZ") || token.is("VARZ")) flags.add("VARYINGZ");
+                if (token.is("BYVALUE")) flags.add("BYVALUE");
+                if (token.is("OPTIONAL")) flags.add("OPTIONAL");
+            }
+            return Set.copyOf(flags);
         }
 
         /**

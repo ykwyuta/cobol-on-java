@@ -1419,6 +1419,7 @@ public final class PliRuntime {
             Var variable = new Var(declaration.name(), declaration.type(),
                     declaration.precision(), declaration.scale(), view);
             variable.varying = declaration.varying();
+            variable.varyingz = declaration.has("VARYINGZ");
             variable.unsigned = declaration.unsigned();
             variable.littleEndian = "LITTLE".equals(declaration.byteOrder());
             variable.floatFormat = declaration.floatFormat();
@@ -2036,7 +2037,11 @@ public final class PliRuntime {
             for (int i = 0; i < arguments.size(); i++) {
                 String name = procedure.parameters().get(i).toUpperCase(Locale.ROOT);
                 PliSyntax.Expr argument = arguments.get(i);
-                if (argument instanceof PliSyntax.Reference reference
+                if (argument instanceof PliSyntax.Literal literal
+                        && literal.value() == PliSyntax.Asterisk.STAR) {
+                    // 引数を * と書けば省略である (OPTIONAL の仮引数。LRM "OMITTED")
+                    local.arguments.put(name, OMITTED_ARGUMENT);
+                } else if (argument instanceof PliSyntax.Reference reference
                         && env.contains(reference.name())) {
                     Var variable = env.require(reference.name());
                     local.alias(name, variable);
@@ -2067,8 +2072,26 @@ public final class PliRuntime {
             return result;
         }
 
+        /** 省略した (* と書いた) 引数の印。 */
+        private static final Object OMITTED_ARGUMENT = new Object();
+
         /** 内部手続きのパラメーターを、渡された引数に結ぶ。 */
         private void bindParameter(PliSyntax.Decl declaration, Object argument, Env env) {
+            if (argument == OMITTED_ARGUMENT) {
+                if (!declaration.has("OPTIONAL")) {
+                    throw new PliExecutionException("the argument of " + declaration.name()
+                            + " was omitted, but the parameter is not OPTIONAL");
+                }
+                Var omitted = new Var(declaration.name(), declaration.type(), declaration.precision(),
+                        declaration.scale(), Storage.allocate(Math.max(1, byteLength(declaration))).whole());
+                omitted.omitted = true;
+                env.alias(declaration.name(), omitted);
+                return;
+            }
+            if (declaration.has("BYVALUE") && argument instanceof Var source) {
+                // BYVALUE: 手続きは値の写しを受け、代入は呼んだ側へ戻らない
+                argument = source.read(context);
+            }
             if (!declaration.dimensions().isEmpty() || declaration.level() > 0) {
                 if (argument instanceof Var) {
                     return; // 配列と構造は、渡された変数そのものを使う (alias 済み)
@@ -3196,6 +3219,13 @@ public final class PliRuntime {
                 case "REGEX" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         return regex(function.arguments(), env);
+                    }
+                }
+                // OPTIONAL の仮引数が渡されたか (LRM "PRESENT", "OMITTED")
+                case "PRESENT", "OMITTED" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        Var parameter = dataReference(function.arguments().get(0), env, name);
+                        return name.equals("PRESENT") != parameter.omitted;
                     }
                 }
                 case "POLY" -> {
@@ -6067,6 +6097,10 @@ public final class PliRuntime {
         boolean unsigned;
         /** LITTLEENDIAN なら真。2 進の整数と VARYING の長さを逆のバイト順で置く。 */
         boolean littleEndian;
+        /** {@code CHAR(n) VARYINGZ} なら真。値の終わりに X'00' を置き、記憶域は n+1 byte。 */
+        boolean varyingz;
+        /** OPTIONAL の仮引数で、引数が * (省略) だったなら真。 */
+        boolean omitted;
         /** FLOAT の形式 ("IEEE"、"DFP"、"HEXADEC"、null は HEXADEC)。 */
         String floatFormat;
 
@@ -6149,6 +6183,13 @@ public final class PliRuntime {
                 // 頭の半語が今の長さ (LRM Table 39)。宣言の長さを超える値は壊れた記憶域である
                 int length = currentLength();
                 return context.codePage().decode(view.subView(2, length).toByteArray());
+            }
+            if (type == PliSyntax.Type.CHAR && varyingz) {
+                // 最初の X'00' までが値である (LRM "VARYINGZ")
+                byte[] bytes = view.toByteArray();
+                int length = 0;
+                while (length < Math.min(precision, bytes.length) && bytes[length] != 0) length++;
+                return context.codePage().decode(java.util.Arrays.copyOf(bytes, length));
             }
             if (type == PliSyntax.Type.WIDECHAR) {
                 // 長さは UTF-16 の単位の数である
@@ -6289,7 +6330,7 @@ public final class PliRuntime {
 
         /** 文字として入る字の数。VARYING なら宣言の最大の長さ。 */
         int capacity() {
-            if (varying || type == PliSyntax.Type.UCHAR) return precision;
+            if (varying || varyingz || type == PliSyntax.Type.UCHAR) return precision;
             if (type == PliSyntax.Type.WIDECHAR || type == PliSyntax.Type.GRAPHIC) return view.length() / 2;
             return view.length();
         }
@@ -6413,6 +6454,14 @@ public final class PliRuntime {
                 byte[] bytes = java.nio.ByteBuffer.allocate(4)
                         .putInt(Executor.number(value).intValue()).array();
                 for (int i = 0; i < 4; i++) view.set(i, bytes[i]);
+                return;
+            }
+            if (type == PliSyntax.Type.CHAR && varyingz) {
+                byte[] encoded = value instanceof PliSyntax.HexString hex ? hex.bytes()
+                        : context.codePage().encode(Executor.display(value));
+                int length = Math.min(encoded.length, precision);
+                for (int i = 0; i < length; i++) view.set(i, encoded[i]);
+                view.set(length, (byte) 0);
                 return;
             }
             if (type == PliSyntax.Type.CHAR && varying) {

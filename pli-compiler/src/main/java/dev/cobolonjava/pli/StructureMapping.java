@@ -232,7 +232,9 @@ final class StructureMapping {
     private static int realLength(PliSyntax.Decl decl) {
         return switch (decl.type()) {
             // VARYING は今の長さを持つ半語が前に付く
-            case CHAR -> Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0);
+            // VARYINGZ は終わりの X'00' の 1 byte だけ長い
+            case CHAR -> Math.max(1, decl.precision()) + (decl.varying() ? 2 : 0)
+                    + (decl.has("VARYINGZ") ? 1 : 0);
             // 記憶域は編集した字の像の長さである (挿入の字、符号、通貨記号も字を取る)。
             // 以前は数字の位置の数にしており、9 と V だけの PICTURE でしか合わなかった
             case PICTURE -> decl.picture() != null ? PliPicture.parse(decl.picture()).length
