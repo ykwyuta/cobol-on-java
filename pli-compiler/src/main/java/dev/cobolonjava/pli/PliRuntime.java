@@ -616,6 +616,9 @@ public final class PliRuntime {
         /** いま処置している条件の ONCODE と ONSOURCE / ONCHAR。 */
         private int onCode;
         private String onSource;
+        /** いま処置している条件の名と、CONDITION の名 (ONCONDID、ONCONDCOND)。 */
+        private String onConditionName;
+        private String onConditionQualifier;
         /** on-unit が ONSOURCE / ONCHAR に入れた直し。正常に戻れば変換をやり直す。 */
         private String repairedSource;
 
@@ -654,14 +657,20 @@ public final class PliRuntime {
                     }
                     int savedCode = onCode;
                     String savedSource = onSource;
+                    String savedName = onConditionName;
+                    String savedQualifier = onConditionQualifier;
                     onCode = condition.code;
                     onSource = condition.source;
+                    onConditionName = condition.name;
+                    onConditionQualifier = condition.qualifier;
                     repairedSource = null;
                     try {
                         execute(handler.statements(), new Env(handler.established(), context));
                     } finally {
                         onCode = savedCode;
                         onSource = savedSource;
+                        onConditionName = savedName;
+                        onConditionQualifier = savedQualifier;
                     }
                     if (!condition.name.equals("CONVERSION") || repairedSource == null
                             || attempt > 16) {
@@ -2967,6 +2976,35 @@ public final class PliRuntime {
                     }
                     return total;
                 }
+                case "PROD", "ALL", "ANY" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return arrayReduction(name, function.arguments(), env);
+                    }
+                }
+                case "HUGE", "TINY", "EPSILON", "MAXEXP", "MINEXP", "RADIX" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return floatModel(name, function.arguments(), env);
+                    }
+                }
+                // 選んだほうだけを評価する (LRM "IFTHENELSE")
+                case "IFTHENELSE" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return truth(value(function.arguments().get(0), env))
+                                ? value(function.arguments().get(1), env)
+                                : value(function.arguments().get(2), env);
+                    }
+                }
+                case "MAXVAL", "MINVAL", "PLACES", "PRECVAL", "SCALEVAL", "SUCC", "PRED",
+                     "LOCATION" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return attributeFunction(name, function.arguments(), env);
+                    }
+                }
+                case "POINTERDIFF" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return pointerDifference(function.arguments(), env);
+                    }
+                }
                 case "MAXLENGTH" -> {
                     Var target = dataReference(function.arguments().get(0), env, "MAXLENGTH");
                     return FixedValue.binary(BigDecimal.valueOf(target.capacity()), 31, 0);
@@ -3000,9 +3038,20 @@ public final class PliRuntime {
             if (sha.matches()) {
                 return sha(sha, arguments);
             }
-            return switch (name) {
+            // バイトで決まる結果 (COLLATE、UNHEX など) は、'..'X の定数と同じく実行時の
+            // コードページで文字に直す。代入や UNSPEC で同じコードページへ戻すので、バイトは保たれる
+            Object builtin = switch (name) {
                 case "TRIM" -> display(arguments.get(0)).strip();
-                case "SUBSTR" -> substring(arguments);
+                // バイトの値 (COLLATE、'..'X) はバイトのまま切る。文字にしてから切ると
+                // コードページの往復で長さが変わりうる
+                case "SUBSTR" -> arguments.get(0) instanceof PliSyntax.HexString hex
+                        ? new PliSyntax.HexString(context.codePage().encode(substring(List.of(
+                                context.codePage().decode(hex.bytes()), arguments.get(1),
+                                arguments.size() > 2 ? arguments.get(2)
+                                        : FixedValue.binary(BigDecimal.valueOf(
+                                                hex.bytes().length - number(arguments.get(1))
+                                                        .intValue() + 1), 31, 0)))))
+                        : substring(arguments);
                 case "DATETIME" -> ZonedDateTime.now(context.clock()).format(DATETIME);
                 case "PACKAGENAME" -> program.packageName() == null ? "" : program.packageName();
                 case "MICROSECS" -> {
@@ -3051,6 +3100,8 @@ public final class PliRuntime {
                         .repeat(Math.max(0, number(arguments.get(1)).intValue()) + 1);
                 default -> moreBuiltins(name, arguments);
             };
+            return builtin instanceof PliSyntax.HexString hex
+                    ? context.codePage().decode(hex.bytes()) : builtin;
         }
 
         /**
@@ -3215,13 +3266,25 @@ public final class PliRuntime {
                 // 浮動小数点の関数。結果は FLOAT であり、16 桁で返す。実機の HFP の桁とは
                 // 突き合わせていない
                 case "SIN", "COS", "TAN", "ATAN", "LOG", "LOG10", "EXP", "SINH", "COSH",
-                     "TANH", "ASIN", "ACOS" -> {
+                     "TANH", "ASIN", "ACOS", "ATAND", "SIND", "COSD", "TAND", "ATANH", "LOG2" -> {
                     double x = number(arguments.get(0)).doubleValue();
                     double r = switch (name) {
                         case "SIN" -> Math.sin(x);
                         case "COS" -> Math.cos(x);
                         case "TAN" -> Math.tan(x);
-                        case "ATAN" -> Math.atan(x);
+                        // ATAN(y, x) は y/x の逆正接を、象限を見て返す (LRM "ATAN")
+                        case "ATAN" -> arguments.size() > 1
+                                ? Math.atan2(x, number(arguments.get(1)).doubleValue())
+                                : Math.atan(x);
+                        // D の付くものは度で受けて度で返す (LRM "SIND", "ATAND")
+                        case "ATAND" -> Math.toDegrees(arguments.size() > 1
+                                ? Math.atan2(x, number(arguments.get(1)).doubleValue())
+                                : Math.atan(x));
+                        case "SIND" -> Math.sin(Math.toRadians(x));
+                        case "COSD" -> Math.cos(Math.toRadians(x));
+                        case "TAND" -> Math.tan(Math.toRadians(x));
+                        case "ATANH" -> 0.5 * Math.log((1 + x) / (1 - x));
+                        case "LOG2" -> Math.log(x) / Math.log(2);
                         case "LOG" -> Math.log(x);
                         case "LOG10" -> Math.log10(x);
                         case "EXP" -> Math.exp(x);
@@ -3340,8 +3403,613 @@ public final class PliRuntime {
                     }
                     yield new PliSyntax.BitString(out.toString());
                 }
+                default -> extraBuiltins(name, arguments);
+            };
+        }
+
+        /**
+         * 組み込み関数のさらに続き (ZPVS の PM109A 以降で使うもの)。意味は Enterprise PL/I
+         * Language Reference の各頁に従い、Zeus の {@code vm/bif.rs} を見て並べた。
+         * 実機とは突き合わせていない。
+         */
+        private Object extraBuiltins(String name, List<Object> arguments) {
+            return switch (name) {
+                // 整数の操作は FIXED BIN(31) の 32 ビットで行う (LRM "IAND", "ISLL")
+                case "IAND", "IOR", "IEOR" -> {
+                    long acc = number(arguments.get(0)).longValue();
+                    for (Object next : arguments.subList(1, arguments.size())) {
+                        long x = number(next).longValue();
+                        acc = name.equals("IAND") ? acc & x : name.equals("IOR") ? acc | x : acc ^ x;
+                    }
+                    yield fixedBinary31((int) acc);
+                }
+                case "INOT" -> fixedBinary31(~number(arguments.get(0)).intValue());
+                case "ISLL", "ISRL" -> {
+                    int x = number(arguments.get(0)).intValue();
+                    int n = Math.max(0, Math.min(32, number(arguments.get(1)).intValue()));
+                    int r = n >= 32 ? 0 : name.equals("ISLL") ? x << n : x >>> n;
+                    yield fixedBinary31(r);
+                }
+                case "RAISE2" -> {
+                    int n = number(arguments.get(0)).intValue();
+                    yield FixedValue.binary(BigDecimal.valueOf(n < 0 || n > 62 ? 0 : 1L << n), 63, 0);
+                }
+                // 位置 n (省けば末尾) から先頭へ向かって探す (LRM "SEARCHR", "VERIFYR")
+                case "SEARCHR", "VERIFYR" -> {
+                    String text = display(arguments.get(0));
+                    String set = display(arguments.get(1));
+                    int start = arguments.size() > 2 ? number(arguments.get(2)).intValue() : text.length();
+                    int at = 0;
+                    for (int i = Math.min(start, text.length()) - 1; i >= 0; i--) {
+                        boolean member = set.indexOf(text.charAt(i)) >= 0;
+                        if (member == name.equals("SEARCHR")) {
+                            at = i + 1;
+                            break;
+                        }
+                    }
+                    yield fixedBinary31(at);
+                }
+                // CHARVAL と BYTE はコードページの 1 バイトの字 (LRM "CHARVAL", "BYTE")
+                case "CHARVAL", "BYTE" -> context.codePage().decode(
+                        new byte[] {(byte) Math.max(0, Math.min(255, number(arguments.get(0)).intValue()))});
+                case "VALIDDATE" -> new PliSyntax.BitString(validDate(display(arguments.get(0)),
+                        arguments.size() > 1 ? display(arguments.get(1)) : "YYYYMMDD") ? "1" : "0");
+                case "DAYSTOSECS" -> number(arguments.get(0)).multiply(BigDecimal.valueOf(86_400));
+                case "SECSTODAYS" -> fixedBinary31(number(arguments.get(0))
+                        .divide(BigDecimal.valueOf(86_400), 0, java.math.RoundingMode.FLOOR).intValue());
+                // 曜日。日曜が 1 である (LRM "WEEKDAY")。引数は Lilian の日の番号
+                case "WEEKDAY" -> {
+                    long day = arguments.isEmpty()
+                            ? ZonedDateTime.now(context.clock()).toLocalDate().toEpochDay() - LILIAN_ORIGIN
+                            : number(arguments.get(0)).longValue();
+                    java.time.DayOfWeek week = java.time.LocalDate.ofEpochDay(day + LILIAN_ORIGIN)
+                            .getDayOfWeek();
+                    yield fixedBinary31(week.getValue() % 7 + 1);
+                }
+                case "BETWEENEXCLUSIVE", "BETWEENLEFTEXCLUSIVE", "BETWEENRIGHTEXCLUSIVE" -> {
+                    int low = compare(arguments.get(0), arguments.get(1));
+                    int high = compare(arguments.get(0), arguments.get(2));
+                    boolean left = name.equals("BETWEENRIGHTEXCLUSIVE") ? low >= 0 : low > 0;
+                    boolean right = name.equals("BETWEENLEFTEXCLUSIVE") ? high <= 0 : high < 0;
+                    yield left && right;
+                }
+                case "INLIST" -> {
+                    boolean found = false;
+                    for (Object candidate : arguments.subList(1, arguments.size())) {
+                        found |= compare(arguments.get(0), candidate) == 0;
+                    }
+                    yield found;
+                }
+                case "ICLZ" -> fixedBinary31(Integer.numberOfLeadingZeros(number(arguments.get(0)).intValue()));
+                case "ICTZ" -> fixedBinary31(Integer.numberOfTrailingZeros(number(arguments.get(0)).intValue()));
+                case "IRLL" -> fixedBinary31(Integer.rotateLeft(number(arguments.get(0)).intValue(),
+                        number(arguments.get(1)).intValue()));
+                case "IRRL" -> fixedBinary31(Integer.rotateRight(number(arguments.get(0)).intValue(),
+                        number(arguments.get(1)).intValue()));
+                // 算術右シフト (LRM "LOWER2")。負の数は -∞ の向きに丸まる
+                case "LOWER2" -> fixedBinary31(number(arguments.get(0)).intValue()
+                        >> Math.max(0, Math.min(31, number(arguments.get(1)).intValue())));
+                // バイトごとの 1 のビットの数 (LRM "POPCNT")
+                case "POPCNT" -> {
+                    int x = number(arguments.get(0)).intValue();
+                    int r = 0;
+                    for (int k = 0; k < 4; k++) {
+                        r |= Integer.bitCount((x >>> (8 * k)) & 0xFF) << (8 * k);
+                    }
+                    yield fixedBinary31(r);
+                }
+                // 32 ビットの記憶域を符号つき / 符号なしで読み直す (LRM "ISIGNED", "IUNSIGNED")
+                case "ISIGNED" -> fixedBinary31((int) number(arguments.get(0)).longValue());
+                case "IUNSIGNED" -> FixedValue.binary(BigDecimal.valueOf(
+                        number(arguments.get(0)).intValue() & 0xFFFFFFFFL), 32, 0);
+                case "ROUNDAWAYFROMZERO", "ROUNDTOEVEN" -> number(arguments.get(0)).setScale(
+                        arguments.size() > 1 ? number(arguments.get(1)).intValue() : 0,
+                        name.equals("ROUNDTOEVEN") ? java.math.RoundingMode.HALF_EVEN
+                                : java.math.RoundingMode.HALF_UP);
+                // 2 桁の年に世紀を補う。窓 w からの 100 年に入る年にする (LRM "Y4DATE")
+                case "Y4DATE", "Y4JULIAN", "Y4YEAR" -> {
+                    String text = display(arguments.get(0));
+                    int window = arguments.size() > 1 ? number(arguments.get(1)).intValue()
+                            : java.time.Year.now(context.clock()).getValue() - 50;
+                    int yy = Integer.parseInt(text.substring(0, 2));
+                    int year = window - window % 100 + yy;
+                    if (year < window) year += 100;
+                    yield String.format("%04d", year) + text.substring(2);
+                }
+                // x の字が z の k 番目なら、y の 2k-1 と 2k の 2 字に置き換える (LRM "REPLACEBY2")
+                case "REPLACEBY2" -> {
+                    String text = display(arguments.get(0));
+                    String to = display(arguments.get(1));
+                    String from = display(arguments.get(2));
+                    StringBuilder out = new StringBuilder();
+                    for (char c : text.toCharArray()) {
+                        int k = from.indexOf(c);
+                        out.append(k < 0 ? String.valueOf(c) : to.substring(2 * k, 2 * k + 2));
+                    }
+                    yield out.toString();
+                }
+                // 記憶域の 16 進の像。区切りの字は 4 バイトごとに入れる (LRM "HEXIMAGE")
+                case "HEXIMAGE" -> {
+                    byte[] bytes = memoryRead(arguments.get(0), number(arguments.get(1)).intValue());
+                    String separator = arguments.size() > 2 ? display(arguments.get(2)) : "";
+                    StringBuilder out = new StringBuilder();
+                    for (int i = 0; i < bytes.length; i++) {
+                        if (i > 0 && i % 4 == 0) out.append(separator);
+                        out.append(String.format("%02X", bytes[i] & 0xFF));
+                    }
+                    yield out.toString();
+                }
+                case "COMPARE" -> {
+                    int n = number(arguments.get(2)).intValue();
+                    yield fixedBinary31(Integer.signum(java.util.Arrays.compareUnsigned(
+                            memoryRead(arguments.get(0), n), memoryRead(arguments.get(1), n))));
+                }
+                // 最初に違うバイトの位置 (1 から)。同じなら 0 (LRM "WHEREDIFF")
+                case "WHEREDIFF" -> {
+                    int n = number(arguments.get(2)).intValue();
+                    int at = java.util.Arrays.mismatch(memoryRead(arguments.get(0), n),
+                            memoryRead(arguments.get(1), n));
+                    yield fixedBinary31(at + 1);
+                }
+                case "ERF", "ERFC", "GAMMA", "LOGGAMMA" -> {
+                    double x = number(arguments.get(0)).doubleValue();
+                    double r = switch (name) {
+                        case "ERF" -> erf(x);
+                        case "ERFC" -> 1 - erf(x);
+                        case "GAMMA" -> Math.exp(logGamma(x)) * (x < 0 && Math.floor(-x) % 2 == 0 ? -1 : 1);
+                        default -> logGamma(x);
+                    };
+                    yield new BigDecimal(r, java.math.MathContext.DECIMAL64);
+                }
+                case "ONCONDID" -> fixedBinary31(onConditionName == null ? 0 : conditionId(onConditionName));
+                case "ONCONDCOND" -> onConditionName == null || !onConditionName.equals("CONDITION")
+                        ? "" : onConditionQualifier;
+                // 文字列の関数 (LRM "COLLAPSE", "SQUEEZE")
+                case "COLLAPSE", "SQUEEZE" -> {
+                    String text = display(arguments.get(0));
+                    String set = arguments.size() > 1 ? display(arguments.get(1)) : " ";
+                    String squeezed = squeeze(text, set);
+                    yield name.equals("COLLAPSE") ? strip(squeezed, set) : squeezed;
+                }
+                case "INDEXR" -> {
+                    String text = display(arguments.get(0));
+                    String part = display(arguments.get(1));
+                    int from = arguments.size() > 2 ? number(arguments.get(2)).intValue() : text.length();
+                    yield fixedBinary31(part.isEmpty() ? 0 : text.lastIndexOf(part, from - 1) + 1);
+                }
+                // REPLACE(x, y, z[, i[, n]]): i から、最大 n 回 (省けば 1、0 なら全部) (LRM "REPLACE")
+                case "REPLACE" -> {
+                    String text = display(arguments.get(0));
+                    String from = display(arguments.get(1));
+                    String to = display(arguments.get(2));
+                    int start = arguments.size() > 3 ? number(arguments.get(3)).intValue() - 1 : 0;
+                    int limit = arguments.size() > 4 ? number(arguments.get(4)).intValue() : 1;
+                    StringBuilder out = new StringBuilder(text.substring(0, Math.min(start, text.length())));
+                    int at = start;
+                    int done = 0;
+                    while (at < text.length()) {
+                        if (!from.isEmpty() && (limit == 0 || done < limit) && text.startsWith(from, at)) {
+                            out.append(to);
+                            at += from.length();
+                            done++;
+                        } else {
+                            out.append(text.charAt(at++));
+                        }
+                    }
+                    yield out.toString();
+                }
+                // y の字を落とす。n より前の字は残す (LRM "SCRUBOUT")
+                case "SCRUBOUT" -> {
+                    String text = display(arguments.get(0));
+                    String set = display(arguments.get(1));
+                    int from = arguments.size() > 2 ? number(arguments.get(2)).intValue() - 1 : 0;
+                    StringBuilder out = new StringBuilder();
+                    for (int i = 0; i < text.length(); i++) {
+                        if (i < from || set.indexOf(text.charAt(i)) < 0) out.append(text.charAt(i));
+                    }
+                    yield out.toString();
+                }
+                case "UNHEX" -> {
+                    String text = display(arguments.get(0));
+                    if (arguments.size() > 1) {
+                        for (char c : display(arguments.get(1)).toCharArray()) {
+                            text = text.replace(String.valueOf(c), "");
+                        }
+                    }
+                    yield new PliSyntax.HexString(java.util.HexFormat.of().parseHex(text));
+                }
+                case "HEX8" -> new PliSyntax.HexString(java.util.HexFormat.of().withUpperCase()
+                        .formatHex(characterBytes(arguments.get(0)))
+                        .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                case "MEMINDEX" -> {
+                    byte[] buffer = memoryRead(arguments.get(0), number(arguments.get(1)).intValue());
+                    byte[] part = characterBytes(arguments.get(2));
+                    int at = 0;
+                    for (int i = 0; part.length > 0 && i + part.length <= buffer.length; i++) {
+                        if (java.util.Arrays.equals(buffer, i, i + part.length, part, 0, part.length)) {
+                            at = i + 1;
+                            break;
+                        }
+                    }
+                    yield fixedBinary31(at);
+                }
+                case "MEMSEARCH", "MEMSEARCHR", "MEMVERIFY", "MEMVERIFYR" -> {
+                    byte[] buffer = memoryRead(arguments.get(0), number(arguments.get(1)).intValue());
+                    byte[] set = characterBytes(arguments.get(2));
+                    boolean search = name.startsWith("MEMSEARCH");
+                    boolean reverse = name.endsWith("R");
+                    int at = 0;
+                    for (int k = 0; k < buffer.length; k++) {
+                        int i = reverse ? buffer.length - 1 - k : k;
+                        boolean member = false;
+                        for (byte b : set) member |= b == buffer[i];
+                        if (member == search) {
+                            at = i + 1;
+                            break;
+                        }
+                    }
+                    yield fixedBinary31(at);
+                }
+                // 書き先と元を番地と長さで受ける関数。書いた長さを返す。書き先の番地が 0 なら
+                // 要る長さを、短ければ -1 を返す (LRM "MEMCOLLAPSE" ほか)
+                case "MEMCOLLAPSE", "MEMSQUEEZE", "MEMREPLACE", "WSREPLACE", "WSCOLLAPSE",
+                     "HEXENCODE", "HEXENCODE8", "HEXDECODE", "HEXDECODE8", "BASE64ENCODE",
+                     "BASE64ENCODE8", "BASE64DECODE", "BASE64DECODE8" -> {
+                    byte[] source = memoryRead(arguments.get(2), number(arguments.get(3)).intValue());
+                    byte[] result = bufferFunction(name, source, arguments);
+                    yield bufferResult(arguments.get(0), number(arguments.get(1)).intValue(), result);
+                }
                 default -> throw new PliExecutionException("PL/I built-in is not supported: " + name);
             };
+        }
+
+        /** 書き先へ結果を書き、書いた長さを返す。番地が 0 なら要る長さ、短ければ -1。 */
+        private Object bufferResult(Object target, int capacity, byte[] result) {
+            if (target instanceof PointerValue pointer && pointer.address() == 0) {
+                return FixedValue.binary(BigDecimal.valueOf(result.length), 63, 0);
+            }
+            if (result.length > capacity) {
+                return FixedValue.binary(BigDecimal.valueOf(-1), 63, 0);
+            }
+            memoryWrite(target, result);
+            return FixedValue.binary(BigDecimal.valueOf(result.length), 63, 0);
+        }
+
+        private byte[] bufferFunction(String name, byte[] source, List<Object> arguments) {
+            var page = context.codePage();
+            java.nio.charset.Charset ascii = java.nio.charset.StandardCharsets.US_ASCII;
+            return switch (name) {
+                case "MEMCOLLAPSE", "MEMSQUEEZE" -> {
+                    String set = display(arguments.get(4));
+                    String squeezed = squeeze(page.decode(source), set);
+                    yield page.encode(name.equals("MEMCOLLAPSE") ? strip(squeezed, set) : squeezed);
+                }
+                case "MEMREPLACE" -> {
+                    byte[] from = memoryRead(arguments.get(4), number(arguments.get(5)).intValue());
+                    byte[] to = memoryRead(arguments.get(6), number(arguments.get(7)).intValue());
+                    int start = arguments.size() > 8 ? number(arguments.get(8)).intValue() - 1 : 0;
+                    int limit = arguments.size() > 9 ? number(arguments.get(9)).intValue() : 1;
+                    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                    out.write(source, 0, Math.min(start, source.length));
+                    int done = 0;
+                    for (int at = start; at < source.length; ) {
+                        if (from.length > 0 && (limit == 0 || done < limit)
+                                && at + from.length <= source.length
+                                && java.util.Arrays.equals(source, at, at + from.length, from, 0, from.length)) {
+                            out.writeBytes(to);
+                            at += from.length;
+                            done++;
+                        } else {
+                            out.write(source[at++]);
+                        }
+                    }
+                    yield out.toByteArray();
+                }
+                case "WSREPLACE", "WSCOLLAPSE" -> {
+                    // 空白類 (水平タブ・改行・復帰・書式送り・垂直タブ・NL) を空白にする
+                    byte[] replaced = source.clone();
+                    byte[] whitespace = {0x05, 0x0B, 0x0C, 0x0D, 0x15, 0x25};
+                    for (int i = 0; i < replaced.length; i++) {
+                        for (byte w : whitespace) {
+                            if (replaced[i] == w) replaced[i] = page.space();
+                        }
+                    }
+                    yield name.equals("WSREPLACE") ? replaced
+                            : page.encode(strip(squeeze(page.decode(replaced), " "), " "));
+                }
+                case "HEXENCODE", "HEXENCODE8" -> {
+                    String hex = java.util.HexFormat.of().withUpperCase().formatHex(source);
+                    yield name.endsWith("8") ? hex.getBytes(ascii) : page.encode(hex);
+                }
+                case "HEXDECODE", "HEXDECODE8" -> java.util.HexFormat.of().parseHex(
+                        name.endsWith("8") ? new String(source, ascii) : page.decode(source));
+                case "BASE64ENCODE", "BASE64ENCODE8" -> {
+                    String text = java.util.Base64.getEncoder().encodeToString(source);
+                    yield name.endsWith("8") ? text.getBytes(ascii) : page.encode(text);
+                }
+                default -> java.util.Base64.getDecoder().decode(
+                        name.endsWith("8") ? new String(source, ascii) : page.decode(source));
+            };
+        }
+
+        /** set の字の並びを 1 字にまとめる。 */
+        private static String squeeze(String text, String set) {
+            StringBuilder out = new StringBuilder();
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (set.indexOf(c) >= 0 && i > 0 && set.indexOf(text.charAt(i - 1)) >= 0) continue;
+                out.append(c);
+            }
+            return out.toString();
+        }
+
+        /** 両端の set の字を落とす。 */
+        private static String strip(String text, String set) {
+            int from = 0;
+            int to = text.length();
+            while (from < to && set.indexOf(text.charAt(from)) >= 0) from++;
+            while (to > from && set.indexOf(text.charAt(to - 1)) >= 0) to--;
+            return text.substring(from, to);
+        }
+
+        /** 文字の値のバイト。'..'X ならそのバイト、そうでなければコードページの字。 */
+        private byte[] characterBytes(Object value) {
+            if (value instanceof PliSyntax.HexString hex) return hex.bytes();
+            if (value instanceof MixedCharacters mixed) return mixed.bytes();
+            return context.codePage().encode(display(value));
+        }
+
+        /** POINTER が指す記憶域の n バイト。 */
+        private byte[] memoryRead(Object pointer, int length) {
+            AddressSpace.Location at = locatePointer(pointer, length);
+            return java.util.Arrays.copyOfRange(at.storage().array(), at.offset(), at.offset() + length);
+        }
+
+        private void memoryWrite(Object pointer, byte[] bytes) {
+            AddressSpace.Location at = locatePointer(pointer, bytes.length);
+            System.arraycopy(bytes, 0, at.storage().array(), at.offset(), bytes.length);
+        }
+
+        private AddressSpace.Location locatePointer(Object pointer, int length) {
+            if (!(pointer instanceof PointerValue p)) {
+                throw new PliExecutionException("a POINTER is required: " + pointer);
+            }
+            AddressSpace.Location at = AddressSpace.of(context).locate(p.address());
+            if (at == null || length < 0 || at.offset() + length > at.storage().size()) {
+                throw new PliExecutionException("the POINTER does not address " + length
+                        + " bytes of storage; addresses outside a storage are not modelled (P-150)");
+            }
+            return at;
+        }
+
+        /** 誤差関数。級数で求める (|x| が小さいとき) か、1 - 連分数の erfc で求める。 */
+        private static double erf(double x) {
+            double a = Math.abs(x);
+            double result;
+            if (a < 3) {
+                double term = a;
+                double sum = a;
+                for (int n = 1; n < 200 && Math.abs(term) > 1e-20; n++) {
+                    term *= -a * a / n;
+                    sum += term / (2 * n + 1);
+                }
+                result = 2 / Math.sqrt(Math.PI) * sum;
+            } else {
+                // Lentz の連分数で erfc を求める
+                double f = a;
+                double c = a;
+                double d = 0;
+                for (int k = 1; k < 200; k++) {
+                    double an = k / 2.0;
+                    d = a + an * d;
+                    d = d == 0 ? 1e-300 : d;
+                    c = a + an / c;
+                    c = c == 0 ? 1e-300 : c;
+                    d = 1 / d;
+                    double delta = c * d;
+                    f *= delta;
+                    if (Math.abs(delta - 1) < 1e-16) break;
+                }
+                result = 1 - Math.exp(-a * a) / Math.sqrt(Math.PI) / f;
+            }
+            return x < 0 ? -result : result;
+        }
+
+        /** ガンマ関数の絶対値の対数 (Lanczos の近似、g = 7)。 */
+        private static double logGamma(double x) {
+            if (x < 0.5) {
+                return Math.log(Math.PI / Math.abs(Math.sin(Math.PI * x))) - logGamma(1 - x);
+            }
+            double[] g = {0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+                    771.32342877765313, -176.61502916214059, 12.507343278686905,
+                    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7};
+            double y = x - 1;
+            double a = g[0];
+            double t = y + 7.5;
+            for (int i = 1; i < 9; i++) a += g[i] / (y + i);
+            return 0.5 * Math.log(2 * Math.PI) + (y + 0.5) * Math.log(t) - t + Math.log(a);
+        }
+
+        /** ONCONDID の値 (LRM "ONCONDID")。番号は Zeus と同じにした。 */
+        private static int conditionId(String condition) {
+            return switch (condition) {
+                case "AREA" -> 1;
+                case "ATTENTION" -> 2;
+                case "CONDITION" -> 3;
+                case "CONVERSION" -> 4;
+                case "ENDFILE" -> 5;
+                case "ENDPAGE" -> 6;
+                case "ERROR" -> 7;
+                case "FINISH" -> 8;
+                case "FIXEDOVERFLOW" -> 9;
+                case "INVALIDOP" -> 10;
+                case "KEY" -> 11;
+                case "NAME" -> 12;
+                case "OVERFLOW" -> 13;
+                case "RECORD" -> 14;
+                case "SIZE" -> 15;
+                case "STORAGE" -> 16;
+                case "STRINGRANGE" -> 17;
+                case "STRINGSIZE" -> 18;
+                case "SUBSCRIPTRANGE" -> 19;
+                case "TRANSMIT" -> 20;
+                case "UNDEFINEDFILE" -> 21;
+                case "UNDERFLOW" -> 22;
+                case "ZERODIVIDE" -> 23;
+                case "ASSERTION" -> 24;
+                default -> 0;
+            };
+        }
+
+        /**
+         * 変数の属性から決まる値 (LRM "MAXVAL", "MINVAL", "PLACES", "PRECVAL", "SCALEVAL",
+         * "SUCC", "PRED", "LOCATION")。
+         */
+        private Object attributeFunction(String name, List<PliSyntax.Expr> arguments, Env env) {
+            Var variable = dataReference(arguments.get(0), env, name);
+            boolean floating = variable.type == PliSyntax.Type.FLOAT;
+            int digits = !floating ? 0 : variable.scale == 1
+                    ? (variable.precision <= 21 ? 6 : variable.precision <= 53 ? 14 : 28)
+                    : (variable.precision <= 6 ? 6 : variable.precision <= 16 ? 14 : 28);
+            BigDecimal sixteen = BigDecimal.valueOf(16);
+            return switch (name) {
+                case "MAXVAL", "MINVAL" -> {
+                    boolean max = name.equals("MAXVAL");
+                    if (variable.type == PliSyntax.Type.BINARY) {
+                        BigDecimal two = BigDecimal.valueOf(2);
+                        int p = variable.precision;
+                        yield FixedValue.binary(variable.unsigned
+                                ? (max ? two.pow(p).subtract(BigDecimal.ONE) : BigDecimal.ZERO)
+                                : (max ? two.pow(p).subtract(BigDecimal.ONE) : two.pow(p).negate()),
+                                63, 0);
+                    }
+                    if (variable.type == PliSyntax.Type.DECIMAL) {
+                        BigDecimal limit = BigDecimal.TEN.pow(variable.precision).subtract(BigDecimal.ONE)
+                                .movePointLeft(variable.scale);
+                        yield FixedValue.decimal(max ? limit : limit.negate(), variable.precision,
+                                variable.scale);
+                    }
+                    throw new PliExecutionException(name + " needs a FIXED variable: " + variable.name);
+                }
+                case "PLACES" -> fixedBinary31(digits);
+                case "PRECVAL" -> fixedBinary31(variable.precision);
+                case "SCALEVAL" -> fixedBinary31(floating ? 0 : variable.scale);
+                case "SUCC", "PRED" -> {
+                    BigDecimal x = number(variable.read(context));
+                    if (!floating || x.signum() == 0) {
+                        throw new PliExecutionException(name + " of zero or a non-FLOAT value is not"
+                                + " supported yet: " + variable.name);
+                    }
+                    BigDecimal a = x.abs();
+                    int e = 0;
+                    while (a.compareTo(Var.power16(e)) >= 0) e++;
+                    while (a.compareTo(Var.power16(e - 1)) < 0) e--;
+                    boolean away = name.equals("SUCC") == (x.signum() > 0);
+                    BigDecimal ulp = Var.power16(e - digits);
+                    if (!away && a.compareTo(Var.power16(e - 1)) == 0) {
+                        ulp = Var.power16(e - 1 - digits);
+                    }
+                    BigDecimal result = away ? a.add(ulp) : a.subtract(ulp);
+                    yield x.signum() < 0 ? result.negate() : result;
+                }
+                default -> fixedBinary31(variable.view.offset());
+            };
+        }
+
+        /** 日付がその型で正しいか。YYYY・YY・MM・DD・DDD を読む。 */
+        private static boolean validDate(String text, String pattern) {
+            if (text.length() != pattern.length()) {
+                return false;
+            }
+            try {
+                int y = pattern.indexOf("YYYY");
+                int year = y >= 0 ? Integer.parseInt(text.substring(y, y + 4)) : 2000;
+                int ddd = pattern.indexOf("DDD");
+                if (ddd >= 0) {
+                    int day = Integer.parseInt(text.substring(ddd, ddd + 3));
+                    return day >= 1 && day <= java.time.Year.of(year).length();
+                }
+                int m = pattern.indexOf("MM");
+                int d = pattern.indexOf("DD");
+                java.time.LocalDate.of(year, m >= 0 ? Integer.parseInt(text.substring(m, m + 2)) : 1,
+                        d >= 0 ? Integer.parseInt(text.substring(d, d + 2)) : 1);
+                return true;
+            } catch (RuntimeException invalid) {
+                return false;
+            }
+        }
+
+        /** PROD・ALL・ANY。配列の要素の積、ビット列の論理積・論理和 (LRM "PROD", "ALL", "ANY")。 */
+        private Object arrayReduction(String name, List<PliSyntax.Expr> arguments, Env env) {
+            Var array = dataReference(arguments.get(0), env, name);
+            if (array.dimensions == null) {
+                throw new PliExecutionException(name + " needs an array: " + array.name);
+            }
+            if (name.equals("PROD")) {
+                Object product = null;
+                for (Var element : array.elements) {
+                    Object value = element.read(context);
+                    product = product == null ? value : arithmetic("*", product, value,
+                            new FixedValue.Arithmetic(options, false, false));
+                }
+                return product;
+            }
+            String result = null;
+            for (Var element : array.elements) {
+                String bits = bitText(element.read(context));
+                if (result == null) {
+                    result = bits;
+                    continue;
+                }
+                boolean all = name.equals("ALL");
+                result = bitText(bitwise(result, bits, (x, y) -> all
+                        ? (x == '1' && y == '1' ? '1' : '0')
+                        : (x == '1' || y == '1' ? '1' : '0')));
+            }
+            return new PliSyntax.BitString(result == null ? "" : result);
+        }
+
+        /**
+         * 16 進浮動小数点の模型 (LRM "HUGE", "TINY", "EPSILON", "MAXEXP", "MINEXP", "RADIX")。
+         * 基数 16、指数 -64〜63、小数部は短形式 6 桁・長形式 14 桁・拡張 28 桁の 16 進である。
+         */
+        private Object floatModel(String name, List<PliSyntax.Expr> arguments, Env env) {
+            int digits = 14;
+            if (!arguments.isEmpty() && arguments.get(0) instanceof PliSyntax.Reference reference
+                    && env.contains(reference.name())) {
+                Var variable = env.require(reference.name());
+                if (variable.type == PliSyntax.Type.FLOAT) {
+                    boolean binary = variable.scale == 1;
+                    int p = variable.precision;
+                    digits = binary ? (p <= 21 ? 6 : p <= 53 ? 14 : 28) : (p <= 6 ? 6 : p <= 16 ? 14 : 28);
+                }
+            }
+            BigDecimal sixteen = BigDecimal.valueOf(16);
+            return switch (name) {
+                case "HUGE" -> BigDecimal.ONE.subtract(BigDecimal.ONE.divide(sixteen.pow(digits)))
+                        .multiply(sixteen.pow(63));
+                case "TINY" -> BigDecimal.ONE.divide(sixteen.pow(65));
+                case "EPSILON" -> BigDecimal.ONE.divide(sixteen.pow(digits - 1));
+                case "MAXEXP" -> fixedBinary31(63);
+                case "MINEXP" -> fixedBinary31(-64);
+                default -> fixedBinary31(16);
+            };
+        }
+
+        /** POINTERDIFF(p, q): 同じ記憶域の中の 2 つの位置の差 (LRM "POINTERDIFF")。 */
+        private Object pointerDifference(List<PliSyntax.Expr> arguments, Env env) {
+            Object p = value(arguments.get(0), env);
+            Object q = value(arguments.get(1), env);
+            if (!(p instanceof PointerValue left) || !(q instanceof PointerValue right)) {
+                throw new PliExecutionException("POINTERDIFF needs two pointers");
+            }
+            AddressSpace.Location a = AddressSpace.of(context).locate(left.address());
+            AddressSpace.Location b = AddressSpace.of(context).locate(right.address());
+            if (a == null || b == null || a.storage() != b.storage()) {
+                throw new PliExecutionException("POINTERDIFF needs two pointers into the same"
+                        + " storage; addresses across storages are not modelled (P-150)");
+            }
+            return fixedBinary31(a.offset() - b.offset());
         }
 
         private FixedValue codepage() {
