@@ -902,8 +902,10 @@ final class PliSyntax {
      *                   RDW を含む (Programming Guide "RECSIZE": for V-format, the maximum length
      *                   including the 4-byte prefix)
      */
+    /** @param attributes 宣言に書いたファイルの属性 (DIRECT・UPDATE・VARIABLE など。大文字) */
     record FileInfo(boolean output, int recordSize, boolean variable, boolean keyed,
-                    int keyLength, int keyLocation, boolean print, boolean stream) {
+                    int keyLength, int keyLocation, boolean print, boolean stream,
+                    Set<String> attributes) {
     }
 
     /**
@@ -1087,8 +1089,15 @@ final class PliSyntax {
      * {@code GET STRING(s) EDIT(...)(...)} と {@code GET STRING(s) LIST(...)} (LRM "GET
      * statement")。ファイルからの GET はまだ持たない。
      */
-    record Get(String string, boolean edit, List<Expr> targets, List<FormatItem> format)
-            implements Stmt {
+    /**
+     * @param file GET FILE(名) DATA(...) のファイル。GET STRING なら null
+     */
+    record Get(String string, boolean edit, List<Expr> targets, List<FormatItem> format,
+               String file) implements Stmt {
+
+        Get(String string, boolean edit, List<Expr> targets, List<FormatItem> format) {
+            this(string, edit, targets, format, null);
+        }
     }
 
     /**
@@ -1221,8 +1230,14 @@ final class PliSyntax {
      * @param title {@code OPEN ... TITLE(式)} の式。ファイルを結ぶ DD 名を開くときに決める
      *              (LRM "TITLE option")。無ければ {@code null} で、ファイルの名が DD 名になる
      */
+    /** @param keyTo READ の KEYTO(名)。読んだレコードの鍵を入れる変数。無ければ null */
     record FileOperation(FileAction action, String file, String target, Expr title,
-                         Expr key, Expr lineSize, Expr pageSize) implements Stmt {
+                         Expr key, Expr lineSize, Expr pageSize, String keyTo) implements Stmt {
+
+        FileOperation(FileAction action, String file, String target, Expr title, Expr key,
+                      Expr lineSize, Expr pageSize) {
+            this(action, file, target, title, key, lineSize, pageSize, null);
+        }
 
         FileOperation(FileAction action, String file, String target, Expr title) {
             this(action, file, target, title, null, null, null);
@@ -1712,6 +1727,18 @@ final class PliSyntax {
                 return new Release(List.copyOf(entries));
             }
             if (match("GET")) {
+                if (match("FILE")) {
+                    // GET FILE(f) DATA(名, ...) (LRM "GET statement", data-directed)
+                    expect("(");
+                    String file = qualifiedName();
+                    expect(")");
+                    if (!match("DATA")) {
+                        throw fail(peek(), "GET FILE supports only DATA yet");
+                    }
+                    List<Expr> targets = check("(") ? arguments() : List.of();
+                    expect(";");
+                    return new Get(null, false, targets, List.of(), file);
+                }
                 if (!check("STRING")) {
                     throw fail(previous(), "statement GET without STRING is not supported yet");
                 }
@@ -2262,7 +2289,8 @@ final class PliSyntax {
                         part.stream().anyMatch(token -> token.is("V") || token.is("VB")),
                         keyed, keyLength, keyLocation,
                         part.stream().anyMatch(token -> token.is("PRINT")),
-                        part.stream().anyMatch(token -> token.is("STREAM"))));
+                        part.stream().anyMatch(token -> token.is("STREAM")),
+                        fileAttributes(part)));
             }
             if (!dimensions.isEmpty() && info.type == Type.GROUP) {
                 // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
@@ -2503,6 +2531,23 @@ final class PliSyntax {
         }
 
         /** 宣言の形と引数の渡し方を変える属性 (VARYINGZ、BYVALUE、OPTIONAL)。 */
+        /** ファイルの宣言の属性。ENV(TYPE(U)) は "TYPE(U)" として入れる。 */
+        private static Set<String> fileAttributes(List<Token> part) {
+            Set<String> attributes = new java.util.HashSet<>();
+            for (int i = 0; i < part.size(); i++) {
+                Token token = part.get(i);
+                if (token.kind() != Kind.IDENT) continue;
+                if (token.is("TYPE") && i + 3 < part.size() && part.get(i + 1).is("(")
+                        && part.get(i + 3).is(")")) {
+                    attributes.add("TYPE(" + part.get(i + 2).text().toUpperCase(Locale.ROOT) + ")");
+                    i += 3;
+                    continue;
+                }
+                attributes.add(token.text().toUpperCase(Locale.ROOT));
+            }
+            return Set.copyOf(attributes);
+        }
+
         private static Set<String> flags(List<Token> part) {
             Set<String> flags = new java.util.HashSet<>();
             for (Token token : part) {
@@ -3157,7 +3202,7 @@ final class PliSyntax {
                 "FIXEDOVERFLOW", "FOFL", "CONDITION", "COND", "ERROR",
                 "OVERFLOW", "UNDERFLOW", "STRINGSIZE", "STRINGRANGE", "SUBSCRIPTRANGE",
                 "UNDEFINEDFILE", "CONFORMANCE", "ATTENTION", "AREA", "INVALIDOP",
-                "STORAGE");
+                "STORAGE", "NAME");
 
         private String conditionName() {
             Token name = expect(Kind.IDENT, "condition name");
@@ -3239,10 +3284,19 @@ final class PliSyntax {
                 expect(")");
             }
             Expr key = null;
-            if (action == FileAction.WRITE ? match("KEYFROM")
-                    : (action != FileAction.OPEN && action != FileAction.CLOSE && match("KEY"))) {
-                key = parenthesizedExpression();
-            } else if (action == FileAction.DELETE) {
+            String keyTo = null;
+            // KEY と KEYTO はどちらが先でもよい (LRM "READ statement")
+            for (int i = 0; i < 2; i++) {
+                if (key == null && (action == FileAction.WRITE ? match("KEYFROM")
+                        : (action != FileAction.OPEN && action != FileAction.CLOSE && match("KEY")))) {
+                    key = parenthesizedExpression();
+                } else if (keyTo == null && action == FileAction.READ && match("KEYTO")) {
+                    expect("(");
+                    keyTo = qualifiedName();
+                    expect(")");
+                }
+            }
+            if (key == null && action == FileAction.DELETE) {
                 throw fail(peek(), "DELETE needs KEY(...) yet");
             }
             Expr title = null;
@@ -3250,7 +3304,7 @@ final class PliSyntax {
             Expr pageSize = null;
             if (action == FileAction.OPEN) {
                 // 向きと TITLE を読む。LINESIZE や PAGESIZE は断る (黙って捨てると行の形が変わる)
-                while (!check(";")) {
+                while (!check(";") && !check(",")) {
                     if (match("OUTPUT") || match("INPUT") || match("UPDATE")) {
                         target = previous().text().toUpperCase(java.util.Locale.ROOT);
                     } else if (match("TITLE") && title == null) {
@@ -3265,8 +3319,18 @@ final class PliSyntax {
                     }
                 }
             }
+            FileOperation operation = new FileOperation(action, file, target, title, key,
+                    lineSize, pageSize, keyTo);
+            if ((action == FileAction.OPEN || action == FileAction.CLOSE) && match(",")) {
+                // OPEN FILE(A), FILE(B) ...; は 1 つずつ開くのと同じ (LRM "OPEN statement")
+                List<Stmt> all = new ArrayList<>(List.of(operation));
+                Stmt rest = fileOperation(action);
+                if (rest instanceof Group group) all.addAll(group.body());
+                else all.add(rest);
+                return new Group(null, List.copyOf(all));
+            }
             expect(";");
-            return new FileOperation(action, file, target, title, key, lineSize, pageSize);
+            return operation;
         }
 
         private Expr parenthesizedExpression() {

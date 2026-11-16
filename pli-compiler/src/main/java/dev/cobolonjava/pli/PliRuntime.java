@@ -109,6 +109,13 @@ public final class PliRuntime {
             return condition;
         }
 
+        /** 鍵の付いた KEY 条件。鍵は ONKEY が返す。 */
+        static Condition key(String file, int code, int reason, String key) {
+            Condition condition = key(file, code, reason);
+            condition.original = new OnKey(key);
+            return condition;
+        }
+
         Condition(String name, String qualifier, int code, String source) {
             this(name, qualifier, code, source, null);
         }
@@ -121,6 +128,10 @@ public final class PliRuntime {
             this.source = source;
             this.resume = resume;
         }
+    }
+
+    /** KEY 条件を起こした鍵 (ONKEY)。 */
+    private record OnKey(String key) {
     }
 
     /** RESIGNAL 文。on-unit を抜けて、前の on-unit へ条件を渡す。 */
@@ -965,6 +976,8 @@ public final class PliRuntime {
                     Ops.cancel(context, module);
                     releaseStatics(context, module);
                 }
+            } else if (statement instanceof PliSyntax.Get get && get.file() != null) {
+                getData(get, env);
             } else if (statement instanceof PliSyntax.Get get) {
                 getString(get, env);
             } else if (statement instanceof PliSyntax.Select select) {
@@ -1687,6 +1700,20 @@ public final class PliRuntime {
         }
 
         private void assign(PliSyntax.Assign assignment, Env env) {
+            if (!env.contains(assignment.target())
+                    && program.files().containsKey(assignment.target().toUpperCase(Locale.ROOT))) {
+                // FILE VARIABLE への代入 (LRM "FILE attribute" の VARIABLE)
+                Object file = assignment.value() instanceof PliSyntax.Reference reference
+                        && program.files().containsKey(reference.name().toUpperCase(Locale.ROOT))
+                        ? new FileValue(fileName(reference, "assignment"))
+                        : value(assignment.value(), env);
+                if (!(file instanceof FileValue fileValue)) {
+                    throw new PliExecutionException("a FILE VARIABLE takes a file: "
+                            + assignment.target());
+                }
+                fileVariables.put(assignment.target().toUpperCase(Locale.ROOT), fileValue.name());
+                return;
+            }
             if (assignment.target().contains("->")) {
                 byte[] structure = structureBytes(assignment.value(), env);
                 if (structure != null) {
@@ -2031,6 +2058,125 @@ public final class PliRuntime {
          * 空白か ',' で区切った項目を順に受け取る (LRM "Edit-directed input", "List-directed
          * input")。項目の字は代入の規則で受け取る側の型へ変換する。
          */
+        /** STREAM の入力ファイルの、まだ読んでいない字。ファイル名ごと。閉じれば捨てる。 */
+        private final Map<String, StringBuilder> streamInputs = new HashMap<>();
+        /** NAME の on-unit の中の DATAFIELD。 */
+        private String dataField;
+
+        /** STREAM の入力ファイルから、空白でない字が来るまでレコードを足して読む。 */
+        private boolean fillStream(String file, StringBuilder buffer, Env env) {
+            PliSyntax.FileInfo info = program.files().get(file);
+            String ddName = titles.getOrDefault(file, file);
+            String key = ddName.equals(file) ? file : file + "@" + ddName;
+            DataSet dataSet = info != null && info.recordSize() > 0
+                    ? context.file(key, ddName, dev.cobolonjava.runtime.file.Organization.SEQUENTIAL,
+                            info.variable() ? dev.cobolonjava.runtime.file.RecordFormat.VARIABLE
+                                    : dev.cobolonjava.runtime.file.RecordFormat.FIXED,
+                            info.variable() ? info.recordSize() - 4 : info.recordSize())
+                    : context.file(key, ddName);
+            byte[] record = new byte[info != null && info.recordSize() > 0 ? info.recordSize() : 80];
+            java.util.Arrays.fill(record, context.codePage().space());
+            String status = dataSet.read(record);
+            if ("10".equals(status)) {
+                return false;
+            }
+            checkFileStatus(file, status, false);
+            buffer.append(context.codePage().decode(record));
+            return true;
+        }
+
+        /**
+         * {@code GET FILE(f) DATA(名, ...)} (LRM "Data-directed data specification")。
+         * 入力は {@code 名=値} の並びで、';' で終わる。並びに無い名は NAME 条件を起こし、
+         * on-unit から戻れば次の名へ進む。on-unit が無ければ黙って次へ進む (LRM の既定の処置は
+         * 注記を出して続けることである。注記はまだ出さない)。
+         */
+        private void getData(PliSyntax.Get get, Env env) {
+            String file = get.file().toUpperCase(Locale.ROOT);
+            StringBuilder buffer = streamInputs.computeIfAbsent(file, k -> new StringBuilder());
+            Map<String, Var> wanted = new java.util.LinkedHashMap<>();
+            for (PliSyntax.Expr target : get.targets()) {
+                if (!(target instanceof PliSyntax.Reference reference)) {
+                    throw new PliExecutionException("GET DATA takes names: " + target);
+                }
+                wanted.put(reference.name().toUpperCase(Locale.ROOT), dataReference(target, env, "GET"));
+            }
+            while (true) {
+                // 空白と ',' を飛ばし、次の欄を読む
+                int at = 0;
+                while (true) {
+                    while (at < buffer.length() && (buffer.charAt(at) == ' ' || buffer.charAt(at) == ',')) at++;
+                    if (at < buffer.length()) break;
+                    buffer.setLength(0);
+                    at = 0;
+                    if (!fillStream(file, buffer, env)) {
+                        throw new Condition("ENDFILE", file, 70, null);
+                    }
+                }
+                if (buffer.charAt(at) == ';') {
+                    buffer.delete(0, at + 1);
+                    return;
+                }
+                int end = at;
+                boolean quoted = false;
+                while (end < buffer.length()) {
+                    char c = buffer.charAt(end);
+                    if (c == '\'') quoted = !quoted;
+                    else if (!quoted && (c == ' ' || c == ',' || c == ';')) break;
+                    end++;
+                }
+                String field = buffer.substring(at, end);
+                buffer.delete(0, end);
+                int equals = field.indexOf('=');
+                String name = (equals < 0 ? field : field.substring(0, equals)).strip()
+                        .toUpperCase(Locale.ROOT);
+                Var target = equals < 0 ? null : wanted.get(name);
+                if (target == null) {
+                    nameCondition(file, field, env);
+                    continue;
+                }
+                String text = field.substring(equals + 1).strip();
+                Object value;
+                if (text.startsWith("'") && text.endsWith("'") && text.length() >= 2) {
+                    value = text.substring(1, text.length() - 1).replace("''", "'");
+                } else {
+                    try {
+                        BigDecimal number = new BigDecimal(text);
+                        value = FixedValue.decimal(number, Math.max(1, number.precision()),
+                                Math.max(0, number.scale()));
+                    } catch (NumberFormatException bad) {
+                        throw new Condition("CONVERSION", file, 600, text);
+                    }
+                }
+                target.write(value, context);
+            }
+        }
+
+        /** NAME 条件を起こす。on-unit から戻れば GET を続ける。 */
+        private void nameCondition(String file, String field, Env env) {
+            Env.Handler handler = env.handler(conditionKey("NAME", file));
+            if (handler == null || handler.system()) {
+                return;
+            }
+            int savedCode = onCode;
+            String savedName = onConditionName;
+            String savedQualifier = onConditionQualifier;
+            String savedField = dataField;
+            // ONCODE は Zeus と同じ 10 にした。実機と突き合わせていない
+            onCode = 10;
+            onConditionName = "NAME";
+            onConditionQualifier = file;
+            dataField = field;
+            try {
+                execute(handler.statements(), new Env(handler.established(), context));
+            } finally {
+                onCode = savedCode;
+                onConditionName = savedName;
+                onConditionQualifier = savedQualifier;
+                dataField = savedField;
+            }
+        }
+
         private void getString(PliSyntax.Get get, Env env) {
             String source = display(env.require(get.string()).read(context));
             List<Var> targets = new ArrayList<>();
@@ -2923,7 +3069,221 @@ public final class PliRuntime {
             }
         }
 
+        /** 開いているファイルの名から、開いた向き (INPUT・OUTPUT・UPDATE)。 */
+        private final Map<String, String> openFiles = new HashMap<>();
+        /** FILE VARIABLE の名から、いま指しているファイルの名。 */
+        private final Map<String, String> fileVariables = new HashMap<>();
+        private int fileTokens;
+        /** 開いているファイルの名から、FILEID の値。 */
+        private final Map<String, Integer> fileIds = new HashMap<>();
+
+        /** ファイルの値。FILENEW が作る。 */
+        private record FileValue(String name) {
+        }
+
+        private String fileName(PliSyntax.Expr expression, String user) {
+            if (!(expression instanceof PliSyntax.Reference reference)) {
+                throw new PliExecutionException(user + " requires a file reference");
+            }
+            String name = reference.name().toUpperCase(Locale.ROOT);
+            return fileVariables.getOrDefault(name, name);
+        }
+
+        private PliSyntax.FileInfo fileInfo(String name) {
+            PliSyntax.FileInfo info = program.files().get(name.replaceFirst("#NEW#\\d+$", ""));
+            if (info == null) {
+                throw new PliExecutionException("not a file: " + name);
+            }
+            return info;
+        }
+
+        /**
+         * ファイルを調べる関数 (LRM "FILEOPEN", "FILEID", "FILENEW", "FILEDDTEST",
+         * "FILEDDINT", "FILEDDWORD")。開いていないファイルの FILEID と FILEDD* は ERROR
+         * (ONCODE 1010) を起こす (番号は Zeus と同じ。実機と突き合わせていない)。
+         */
+        private Object fileFunction(String function, List<PliSyntax.Expr> arguments, Env env) {
+            String name = fileName(arguments.get(0), function);
+            if (function.equals("FILEOPEN")) {
+                return openFiles.containsKey(name);
+            }
+            if (List.of("FILEREAD", "FILEWRITE", "FILESEEK", "FILETELL").contains(function)) {
+                return byteStream(function, name, arguments, env);
+            }
+            if (function.equals("FILENEW")) {
+                fileInfo(name);
+                return new FileValue(name.replaceFirst("#NEW#\\d+$", "") + "#NEW#" + (++fileTokens));
+            }
+            if (!openFiles.containsKey(name)) {
+                throw new Condition("ERROR", null, 1010, null);
+            }
+            if (function.equals("FILEID")) {
+                return fixedBinary31(fileIds.get(name));
+            }
+            PliSyntax.FileInfo info = fileInfo(name);
+            String item = display(value(arguments.get(1), env)).strip().toUpperCase(Locale.ROOT);
+            boolean stream = info.stream() || info.print();
+            return switch (function) {
+                case "FILEDDWORD" -> switch (item) {
+                    case "TYPE" -> stream ? "STREAM" : "RECORD";
+                    case "ACCESS" -> info.attributes().contains("DIRECT") ? "DIRECT" : "SEQUENTIAL";
+                    case "ACTION" -> openFiles.get(name);
+                    // 文字のコードはこの処理系では EBCDIC だけである
+                    case "CHARSET" -> "EBCDIC";
+                    default -> throw new PliExecutionException("FILEDDWORD " + item
+                            + " is not supported yet");
+                };
+                case "FILEDDINT" -> switch (item) {
+                    case "RECSIZE" -> fixedBinary31(info.recordSize());
+                    case "KEYLENGTH", "KEYLEN" -> fixedBinary31(info.keyLength());
+                    case "KEYLOC" -> fixedBinary31(info.keyLocation());
+                    default -> throw new PliExecutionException("FILEDDINT " + item
+                            + " is not supported yet");
+                };
+                default -> fixedBinary31(switch (item) { // FILEDDTEST
+                    case "PRINT" -> info.print();
+                    case "STREAM" -> stream;
+                    case "RECORD" -> !stream;
+                    case "KEYED" -> info.keyed();
+                    case "DIRECT" -> info.attributes().contains("DIRECT");
+                    case "SEQUENTIAL" -> !info.attributes().contains("DIRECT");
+                    case "INPUT", "OUTPUT", "UPDATE" -> item.equals(openFiles.get(name));
+                    default -> throw new PliExecutionException("FILEDDTEST " + item
+                            + " is not supported yet");
+                } ? 1 : 0);
+            };
+        }
+
+        /** 開いている TYPE(U) のファイル。中身と、いまの位置。 */
+        private static final class ByteStream {
+            final java.nio.file.Path path;
+            final boolean output;
+            java.io.ByteArrayOutputStream written;
+            byte[] content;
+            int position;
+
+            ByteStream(java.nio.file.Path path, boolean output) {
+                this.path = path;
+                this.output = output;
+            }
+        }
+
+        private final Map<String, ByteStream> byteStreams = new HashMap<>();
+
+        /**
+         * TYPE(U) のファイルを開く・閉じる。レコードを持たないバイトの並びであり、FILEREAD・
+         * FILEWRITE・FILESEEK・FILETELL で読み書きする (LRM "FILEREAD" ほか)。出力は閉じるときに
+         * まとめて書く。
+         */
+        private void byteStreamFile(PliSyntax.FileOperation operation, String name, String ddName) {
+            switch (operation.action()) {
+                case OPEN -> {
+                    boolean output = "OUTPUT".equals(openFiles.get(name));
+                    ByteStream stream = new ByteStream(context.pathOf(ddName), output);
+                    try {
+                        if (output) {
+                            stream.content = new byte[0];
+                        } else {
+                            stream.content = java.nio.file.Files.exists(stream.path)
+                                    ? java.nio.file.Files.readAllBytes(stream.path) : new byte[0];
+                        }
+                    } catch (java.io.IOException failure) {
+                        throw new PliExecutionException("cannot open " + name + ": " + failure.getMessage());
+                    }
+                    byteStreams.put(name, stream);
+                }
+                case CLOSE -> {
+                    ByteStream stream = byteStreams.remove(name);
+                    if (stream != null && stream.output) {
+                        try {
+                            java.nio.file.Files.write(stream.path, stream.content);
+                        } catch (java.io.IOException failure) {
+                            throw new PliExecutionException("cannot write " + name + ": "
+                                    + failure.getMessage());
+                        }
+                    }
+                }
+                default -> throw new PliExecutionException(operation.action() + " of the TYPE(U)"
+                        + " file " + name + " is not supported; use FILEREAD and FILEWRITE");
+            }
+        }
+
+        private Object byteStream(String function, String name, List<PliSyntax.Expr> arguments,
+                                  Env env) {
+            if (!openFiles.containsKey(name)) {
+                throw new Condition("ERROR", null, 1010, null);
+            }
+            ByteStream stream = byteStreams.get(name);
+            if (stream == null) {
+                throw new PliExecutionException(function + " needs a TYPE(U) file: " + name);
+            }
+            switch (function) {
+                case "FILETELL" -> {
+                    return fixedBinary31(stream.position);
+                }
+                case "FILESEEK" -> {
+                    // 起点は -1 がファイルの頭、0 がいまの位置、1 がファイルの終わり
+                    int offset = number(value(arguments.get(1), env)).intValue();
+                    int origin = number(value(arguments.get(2), env)).intValue();
+                    int base = origin < 0 ? 0 : origin == 0 ? stream.position : stream.content.length;
+                    int target = base + offset;
+                    if (target < 0) {
+                        return fixedBinary31(-1);
+                    }
+                    stream.position = target;
+                    return fixedBinary31(0);
+                }
+                default -> {
+                    Object pointer = value(arguments.get(1), env);
+                    int length = number(value(arguments.get(2), env)).intValue();
+                    if (!(pointer instanceof PointerValue p)) {
+                        throw new PliExecutionException(function + " requires a POINTER");
+                    }
+                    AddressSpace.Location location = AddressSpace.of(context).locate(p.address());
+                    if (location == null) {
+                        throw new PliExecutionException(function + ": the POINTER does not address"
+                                + " storage");
+                    }
+                    byte[] memory = location.storage().array();
+                    int at = location.offset();
+                    if (function.equals("FILEWRITE")) {
+                        if (!stream.output) {
+                            throw new PliExecutionException("FILEWRITE to a file opened for INPUT: " + name);
+                        }
+                        int end = stream.position + length;
+                        if (end > stream.content.length) {
+                            stream.content = java.util.Arrays.copyOf(stream.content, end);
+                        }
+                        System.arraycopy(memory, at, stream.content, stream.position, length);
+                        stream.position = end;
+                        return fixedBinary31(length);
+                    }
+                    int count = Math.max(0, Math.min(length, stream.content.length - stream.position));
+                    System.arraycopy(stream.content, stream.position, memory, at, count);
+                    stream.position += count;
+                    return fixedBinary31(count);
+                }
+            }
+        }
+
         private void file(PliSyntax.FileOperation operation, Env env) {
+            String opened = operation.file().toUpperCase(Locale.ROOT);
+            if (fileVariables.containsKey(opened) || opened.contains("#NEW#")) {
+                throw new PliExecutionException("I/O through a FILE VARIABLE is not supported yet: "
+                        + operation.file());
+            }
+            if (operation.action() == PliSyntax.FileAction.OPEN) {
+                PliSyntax.FileInfo declared = program.files().get(opened);
+                openFiles.put(opened, operation.target() != null ? operation.target()
+                        : declared != null && declared.output() ? "OUTPUT"
+                        : declared != null && declared.attributes().contains("UPDATE") ? "UPDATE"
+                        : "INPUT");
+                fileIds.put(opened, 0x00010000 + (++fileTokens) * 16);
+            } else if (operation.action() == PliSyntax.FileAction.CLOSE) {
+                openFiles.remove(opened);
+                fileIds.remove(opened);
+                streamInputs.remove(opened);
+            }
             PliSyntax.FileInfo info = program.files().get(
                     operation.file().toUpperCase(Locale.ROOT));
             String name = operation.file().toUpperCase(Locale.ROOT);
@@ -2936,10 +3296,19 @@ public final class PliRuntime {
             }
             String ddName = titles.getOrDefault(name, name);
             String key = ddName.equals(name) ? name : name + "@" + ddName;
+            if (info != null && info.attributes().contains("TYPE(U)")) {
+                byteStreamFile(operation, name, ddName);
+                return;
+            }
             // RECSIZE を書いた FILE は、その形のレコードである。書いていなければ
             // 割り当てた側 (DD) の形に任せる。V 形式の RECSIZE は 4 byte の RDW を含む
             // PRINT でない STREAM の出力も、行を組み立てて書く道は同じである (制御文字は付けない)
-            if (info != null && (info.print() || (info.stream() && info.output()))) {
+            // 宣言に OUTPUT が無くても、OPEN ... OUTPUT で開いた STREAM は出力である
+            boolean streamOutput = info != null && info.stream() && (info.output()
+                    || (operation.action() == PliSyntax.FileAction.OPEN
+                            && "OUTPUT".equals(operation.target()))
+                    || (operation.action() == PliSyntax.FileAction.CLOSE && printFiles.containsKey(name)));
+            if (info != null && (info.print() || streamOutput)) {
                 printFile(operation, info, key, ddName, env);
                 return;
             }
@@ -3155,20 +3524,38 @@ public final class PliRuntime {
                 }
                 case CLOSE -> checkFileStatus(operation.file(), dataSet.close(), false);
                 case READ -> {
-                    if (key == null) {
-                        throw new PliExecutionException("sequential READ of a KEYED file is not"
-                                + " supported yet: " + operation.file());
-                    }
                     Var target = env.require(operation.target());
                     byte[] record = new byte[info.recordSize()];
-                    String status = dataSet.readKey(0, key, record);
-                    if ("23".equals(status)) {
-                        // レコードが見つからない: R15 = 8、理由 X'10' (DFSMS Macro Instructions, Table 17)
-                        throw Condition.key(file, 51, 0x10);
+                    if (key == null) {
+                        // 鍵の順に次のレコードを読む。KEY で読んだあとはその次である
+                        // (LRM "Keyed access", SEQUENTIAL)
+                        String status = dataSet.read(record);
+                        if ("10".equals(status)) {
+                            List<PliSyntax.Stmt> handler = env.endFile(operation.file());
+                            if (handler == null) {
+                                throw new PliExecutionException("end of file without ON ENDFILE: "
+                                        + operation.file());
+                            }
+                            execute(handler, env);
+                            return;
+                        }
+                        checkFileStatus(operation.file(), status, false);
+                    } else {
+                        String status = dataSet.readKey(0, key, record);
+                        if ("23".equals(status)) {
+                            // レコードが見つからない: R15 = 8、理由 X'10' (DFSMS Macro Instructions, Table 17)
+                            throw Condition.key(file, 51, 0x10, context.codePage().decode(key));
+                        }
+                        checkFileStatus(operation.file(), status, false);
                     }
-                    checkFileStatus(operation.file(), status, false);
                     copy(dev.cobolonjava.runtime.storage.Storage.wrap(record).whole(),
                             target.view, context.codePage().space());
+                    if (operation.keyTo() != null) {
+                        // KEYTO: レコードの鍵 (KEYLOC から KEYLENGTH byte) を文字で入れる
+                        env.require(operation.keyTo()).write(context.codePage().decode(
+                                java.util.Arrays.copyOfRange(record, info.keyLocation() - 1,
+                                        info.keyLocation() - 1 + info.keyLength())), context);
+                    }
                 }
                 case WRITE, REWRITE -> {
                     Var source = env.require(operation.target());
@@ -3463,6 +3850,19 @@ public final class PliRuntime {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         int size = number(size(function, env)).intValue();
                         return fixedBinary31((size + 3) / 4 * 4);
+                    }
+                }
+                // 主鍵は重ならないので、次のレコードが同じ鍵を持つことは無い。開いていない
+                // ファイルも '0'B である (LRM "SAMEKEY")。副索引はまだ持たない
+                case "SAMEKEY" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return Boolean.FALSE;
+                    }
+                }
+                case "FILEOPEN", "FILEID", "FILENEW", "FILEDDTEST", "FILEDDINT", "FILEDDWORD",
+                     "FILEREAD", "FILEWRITE", "FILESEEK", "FILETELL" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return fileFunction(name, function.arguments(), env);
                     }
                 }
                 case "VARGLIST" -> {
@@ -4343,6 +4743,11 @@ public final class PliRuntime {
                 }
                 case "UUID4" -> java.util.UUID.randomUUID().toString().toUpperCase(Locale.ROOT);
                 case "ONSUBCODE2" -> fixedBinary31(onSubcode2);
+                // NAME の on-unit の中なら名を誤った欄。外では空 (LRM "DATAFIELD")
+                case "DATAFIELD" -> dataField == null ? "" : dataField;
+                // KEY 条件を起こした鍵。ほかの条件の on-unit や on-unit の外では空
+                // (LRM "ONKEY")
+                case "ONKEY" -> onOriginal instanceof OnKey onKey ? onKey.key() : "";
                 case "ONPROCEDURE", "ONLOC" -> onProcedureName == null ? "" : onProcedureName;
                 case "ONFILE" -> onConditionQualifier == null || onConditionName == null
                         || onConditionName.equals("CONDITION") ? "" : onConditionQualifier;

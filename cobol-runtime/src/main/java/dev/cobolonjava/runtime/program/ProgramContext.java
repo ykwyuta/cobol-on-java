@@ -414,6 +414,11 @@ public final class ProgramContext {
         return known != null ? known : SequentialDataSet.at(catalog.resolve(ddName));
     }
 
+    /** DD 名が指すファイルの場所。レコードの形を持たないファイル (PL/I の TYPE(U)) が使う。 */
+    public Path pathOf(String ddName) {
+        return catalog.resolve(ddName);
+    }
+
     /** 宣言にレコード属性のないファイルを、DD の属性で用意して後続の入出力へ引き継ぐ。 */
     public DataSet openUndeclaredFile(String name, String ddName) {
         return files.computeIfAbsent(name,
