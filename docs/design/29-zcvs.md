@@ -769,3 +769,35 @@ QUALIFY のブロック、TYPE(h) と locator で修飾した構造の代入を�
 | PM110A | FORMAT の書式項目 |
 | PM129A〜PM132A | PLISRTx・PLIPARSE・PLIDUMP・PLICKPT |
 | PS109A | ATTACH・WAIT・DETACH・EXIT (スレッド) |
+
+### ZPVS を 131 から 147 へ (2026-11-16、Zeus 308d2f5)
+
+| スイート | 前回 | 今回 | Zeus 308d2f5 |
+| --- | ---: | ---: | ---: |
+| ZPVS (PL/I) | 131 / 147 | 147 / 147 | 147 / 147 |
+| ZCVS (COBOL) | 189 / 189 | 189 / 189 | 189 / 189 |
+| ZHVS (HLASM) | 168 / 168 | 168 / 168 | 168 / 168 |
+
+上の表の 16 本に要るものを足した。Zeus `308d2f5` の 3 つのスイートは、これですべて通る。
+通ることは実機と同じことの裏付けではない。
+
+- 記憶域と手続き: 記憶域の関数 (ALLOCATE・ALLOCNEXT・AVAILABLEAREA・CHECKSTG ほか) と
+  ON AREA、PLISRTA〜D・PLIPARSE・PLIDUMP・PLICKPT、LIST の仮引数と VARGLIST・VARGSIZE、
+  locator を書かない BASED (隠れた POINTER に読み替える)
+- 制御: 反復 DO の WHILE / UNTIL、遠隔の FORMAT (R(名))、RESIGNAL、ASSERT と ASSERTION
+  (ASSERT(CONDITION) のとき)、ANYCONDITION、FINISH (STOP と主手続きの終わりで起きる)、
+  ONLINE (構文解析で文の行を覚える)、ONSUBSCRIPT・ONLBOUND・ONHBOUND・ONAREA
+- ファイル: KEYED の順の READ と KEYTO・ONKEY・SAMEKEY、FILEOPEN ほかファイルを調べる
+  関数と FILE VARIABLE、TYPE(U) のバイトの並び (FILEREAD・FILESEEK ほか)、
+  GET FILE DATA と NAME 条件・DATAFIELD
+- 構造: 構造の配列と小構造の配列 (要素を交互に並べる)、DIMACROSS と BY DIMACROSS、
+  修飾の途中の添字 (ZA(1).B を ZA.B(1) へ)、OFFSET の LOCATES (LOCVAL・LOCNEWSPACE・
+  LOCNEWVALUE・LOCSTG) (P-200)
+- スレッド: ATTACH は付けたスレッドをその場で終わりまで動かす (P-199)。WAIT・DETACH・
+  CANCEL THREAD、EXIT、TASK と THREADID
+
+見つかったこと: 4 つのテストが「断ること」を固定していた (COMPLEX FLOAT、反復 DO の
+WHILE、ON FINISH、構造の配列)。どれも持ったので、振る舞いを確かめるテストに替えた。
+仮引数の無い主手続きが、実行時オプションだけの PARM (POSIX(ON)/) を引数として受けて
+止まっていた。ONCODE の番号 (ASSERTION の 430〜436、FINISH の 4、ファイルの 1010、
+NAME の 10) は Zeus と同じにしたもので、実機と突き合わせていない。

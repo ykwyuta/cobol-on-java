@@ -490,7 +490,9 @@ class ProgramBuildTest {
             var pliSource = recompiled.loadClass("cobol.generated.HELLO")
                     .getDeclaredField("PLI_SOURCE");
             assertTrue(pliSource.trySetAccessible());
-            assertEquals(pli.replace("%INCLUDE BODY;", include), pliSource.get(null));
+            // 差し込んだ後ろに、元の行番号の印 (PliPreprocessor.LINE_MARK) が付く
+            assertEquals(pli.replace("%INCLUDE BODY;", include + "/*#LINE 2*/"),
+                    pliSource.get(null));
             assertArrayEquals(loadProgram(binary, "BUMP").initialStorage(),
                     loadProgram(recompiled, "BUMP").initialStorage());
             CobolProgram binarySecond = loadProgram(binary, "SECOND");
