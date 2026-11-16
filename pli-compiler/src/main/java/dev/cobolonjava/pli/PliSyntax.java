@@ -56,8 +56,8 @@ final class PliSyntax {
                     }
                 }
             }
-            return new Parser(fileName, implicitLocators(expandTypes(qualify(
-                    repeatableDeclarations(scanned))))).parse();
+            return new Parser(fileName, moveSubscripts(implicitLocators(dimAcross(expandTypes(
+                    qualify(repeatableDeclarations(scanned))))))).parse();
         } catch (ParseFailure failure) {
             return new ParseResult(null, List.of(new Diagnostic(Diagnostic.Severity.ERROR,
                     fileName, failure.token.line(), failure.token.column(), failure.getMessage())));
@@ -398,6 +398,171 @@ final class PliSyntax {
             }
         }
         return List.of(part);
+    }
+
+    /**
+     * {@code DIMACROSS} (LRM "DIMACROSS attribute")。構造の次元を、その直下の要素ひとつずつの
+     * 次元にする。要素はそれぞれ 1 つの続いた配列になる (要素を交互に並べる構造の配列とは違う)。
+     * 構造には {@code DIMACROSS} の印だけを残す (LBOUNDACROSS などが要素の次元を引く)。
+     * 小構造を要素に持つものはまだ持たない。
+     */
+    private static List<Token> dimAcross(List<Token> tokens) {
+        if (tokens.stream().noneMatch(t -> t.kind() == Kind.IDENT && t.is("DIMACROSS"))) {
+            return tokens;
+        }
+        List<Token> out = new ArrayList<>();
+        int start = 0;
+        int depth = 0;
+        for (int i = 0; i < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.is("(")) depth++;
+            else if (t.is(")")) depth--;
+            else if ((t.is(";") && depth <= 0) || t.kind() == Kind.EOF) {
+                List<Token> statement = tokens.subList(start, i + 1);
+                int k = keywordAt(statement);
+                if (t.is(";") && k >= 0 && (statement.get(k).is("DCL") || statement.get(k).is("DECLARE"))
+                        && statement.stream().anyMatch(x -> x.is("DIMACROSS"))) {
+                    out.addAll(statement.subList(0, k + 1));
+                    List<List<Token>> parts = dimAcrossParts(parts(statement, k));
+                    for (int p = 0; p < parts.size(); p++) {
+                        if (p > 0) out.add(new Token(Kind.SYMBOL, ",", t.line(), 0));
+                        out.addAll(parts.get(p));
+                    }
+                    out.add(t);
+                } else {
+                    out.addAll(statement);
+                }
+                start = i + 1;
+                depth = 0;
+            }
+        }
+        out.addAll(tokens.subList(start, tokens.size()));
+        return out;
+    }
+
+    /**
+     * 修飾の途中に書いた添字を後ろへ集める。{@code ZA(1).B} は {@code ZA.B(1)} と同じである
+     * (LRM "Subscripted qualified names": 添字は名の並びのどこに書いてもよく、左から順に次元へ当たる)。
+     */
+    private static List<Token> moveSubscripts(List<Token> tokens) {
+        List<Token> out = new ArrayList<>();
+        for (int i = 0; i < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            boolean start = t.kind() == Kind.IDENT && i + 1 < tokens.size() && tokens.get(i + 1).is("(")
+                    && (i == 0 || !(tokens.get(i - 1).is(".") || tokens.get(i - 1).is("->")));
+            int close = start ? closing(tokens, i + 1) : -1;
+            if (close < 0 || close + 2 >= tokens.size() || !tokens.get(close + 1).is(".")
+                    || tokens.get(close + 2).kind() != Kind.IDENT) {
+                out.add(t);
+                continue;
+            }
+            List<Token> names = new ArrayList<>(List.of(t));
+            List<Token> subscripts = new ArrayList<>(tokens.subList(i + 2, close));
+            int at = close + 1;
+            while (at + 1 < tokens.size() && tokens.get(at).is(".")
+                    && tokens.get(at + 1).kind() == Kind.IDENT) {
+                names.add(tokens.get(at));
+                names.add(tokens.get(at + 1));
+                at += 2;
+                if (at < tokens.size() && tokens.get(at).is("(")) {
+                    int end = closing(tokens, at);
+                    if (end < 0) break;
+                    subscripts.add(new Token(Kind.SYMBOL, ",", t.line(), t.column()));
+                    subscripts.addAll(tokens.subList(at + 1, end));
+                    at = end + 1;
+                }
+            }
+            out.addAll(names);
+            out.add(new Token(Kind.SYMBOL, "(", t.line(), t.column()));
+            out.addAll(subscripts);
+            out.add(new Token(Kind.SYMBOL, ")", t.line(), t.column()));
+            i = at - 1;
+        }
+        return out;
+    }
+
+    /** {@code open} の '(' に対応する ')' の位置。無ければ -1。 */
+    private static int closing(List<Token> tokens, int open) {
+        int depth = 0;
+        for (int k = open; k < tokens.size(); k++) {
+            if (tokens.get(k).is("(")) depth++;
+            else if (tokens.get(k).is(")") && --depth == 0) return k;
+            else if (tokens.get(k).is(";")) return -1;
+        }
+        return -1;
+    }
+
+    private static int level(List<Token> part) {
+        return !part.isEmpty() && part.get(0).kind() == Kind.NUMBER
+                ? Integer.parseInt(part.get(0).text()) : 1;
+    }
+
+    private static List<List<Token>> dimAcrossParts(List<List<Token>> parts) {
+        List<List<Token>> out = new ArrayList<>();
+        for (int p = 0; p < parts.size(); p++) {
+            List<Token> part = parts.get(p);
+            int across = -1;
+            for (int i = 0; i < part.size(); i++) {
+                if (part.get(i).is("DIMACROSS")) across = i;
+            }
+            if (across < 0 || part.size() < 2 || part.get(0).kind() != Kind.NUMBER) {
+                out.add(part);
+                continue;
+            }
+            Token at = part.get(across);
+            int level = level(part);
+            // 次元は DIMACROSS(...) に書くか、名の後ろに書く
+            List<Token> bounds = null;
+            List<Token> root = new ArrayList<>(part.subList(0, 2));
+            int i = 2;
+            if (i < part.size() && part.get(i).is("(")) {
+                int close = Parser.findClosing(part, i);
+                bounds = new ArrayList<>(part.subList(i + 1, close));
+                i = close + 1;
+            }
+            for (; i < part.size(); i++) {
+                if (i == across) {
+                    if (i + 1 < part.size() && part.get(i + 1).is("(")) {
+                        int close = Parser.findClosing(part, i + 1);
+                        bounds = new ArrayList<>(part.subList(i + 2, close));
+                        i = close;
+                    }
+                    root.add(at);
+                    continue;
+                }
+                root.add(part.get(i));
+            }
+            if (bounds == null) {
+                throw new ParseFailure(at, "DIMACROSS needs dimensions: " + part.get(1).text());
+            }
+            out.add(root);
+            int q = p + 1;
+            int childLevel = q < parts.size() ? level(parts.get(q)) : level + 1;
+            for (; q < parts.size() && level(parts.get(q)) > level; q++) {
+                List<Token> member = parts.get(q);
+                if (level(member) != childLevel
+                        || (q + 1 < parts.size() && level(parts.get(q + 1)) > childLevel)) {
+                    throw new ParseFailure(member.get(0), "DIMACROSS with substructures is not"
+                            + " supported yet: " + part.get(1).text());
+                }
+                List<Token> rewritten = new ArrayList<>(member.subList(0, 2));
+                rewritten.add(new Token(Kind.SYMBOL, "(", at.line(), at.column()));
+                rewritten.addAll(bounds);
+                int rest = 2;
+                if (member.size() > 2 && member.get(2).is("(")) {
+                    // 要素がもともと配列なら、DIMACROSS の次元が先に来る
+                    int close = Parser.findClosing(member, 2);
+                    rewritten.add(new Token(Kind.SYMBOL, ",", at.line(), at.column()));
+                    rewritten.addAll(member.subList(3, close));
+                    rest = close + 1;
+                }
+                rewritten.add(new Token(Kind.SYMBOL, ")", at.line(), at.column()));
+                rewritten.addAll(member.subList(rest, member.size()));
+                out.add(rewritten);
+            }
+            p = q - 1;
+        }
+        return out;
     }
 
     /** 文の頭の名札を飛ばしたところ。無ければ -1。 */
@@ -2025,7 +2190,18 @@ final class PliSyntax {
                 List<Expr> subscripts = check("(") ? arguments() : List.of();
                 if (match("=")) {
                     Expr value = expression();
-                    if (match(",")) {
+                    if (match(",") && check("BY") && check(1, "DIMACROSS")) {
+                        // 構造 = 構造, BY DIMACROSS(添字); (LRM "BY DIMACROSS")
+                        next();
+                        next();
+                        Expr index = parenthesizedExpression();
+                        expect(";");
+                        if (!subscripts.isEmpty() || !(value instanceof Reference source)) {
+                            throw fail(previous(), "BY DIMACROSS needs structure names on both sides");
+                        }
+                        return new Call("#ACROSS", List.of(new Reference(target), source, index));
+                    }
+                    if (previous().is(",")) {
                         expect("BY");
                         expect("NAME");
                         expect(";");
@@ -2312,9 +2488,8 @@ final class PliSyntax {
                         part.stream().anyMatch(token -> token.is("STREAM")),
                         fileAttributes(part)));
             }
-            if (!dimensions.isEmpty() && info.type == Type.GROUP) {
-                // 構造の配列は、要素と要素の間の詰め物の規則を確かめていないので断る。
-                // 要素がスカラーの配列 (2 A(5) FIXED BIN) は持つ
+            if (!dimensions.isEmpty() && info.type == Type.GROUP && level > 1) {
+                // 小構造の配列はまだ持たない。いちばん外の構造の配列は持つ (要素を交互に並べる)
                 throw new ParseFailure(part.get(0), "arrays of structures are not supported yet: "
                         + name);
             }
@@ -2575,6 +2750,7 @@ final class PliSyntax {
                 if (token.is("BYVALUE")) flags.add("BYVALUE");
                 if (token.is("OPTIONAL")) flags.add("OPTIONAL");
                 if (token.is("LIST")) flags.add("LIST");
+                if (token.is("DIMACROSS")) flags.add("DIMACROSS");
             }
             return Set.copyOf(flags);
         }

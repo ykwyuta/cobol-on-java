@@ -1254,6 +1254,10 @@ public final class PliRuntime {
          */
         private void declareGroup(List<PliSyntax.Decl> tree, Env env) {
             PliSyntax.Decl root = tree.get(0);
+            if (!root.dimensions().isEmpty() && !root.has("DIMACROSS")) {
+                declareStructureArray(tree, env);
+                return;
+            }
             if (tree.stream().anyMatch(decl -> decl.defined() != null)) {
                 throw new PliExecutionException("DEFINED structures are not supported yet: "
                         + root.name());
@@ -1300,6 +1304,91 @@ public final class PliRuntime {
             // 以前は文字の要素を空白で埋めており、IMS から渡された DB PCB の DBD 名と PROCOPT を消していた
             boolean based = root.basedOn() != null;
             declareMembers(shape, 0, shape.size(), env, group, area, mapping, root.name(), based);
+        }
+
+        /**
+         * 構造の配列 (LRM "Arrays of structures")。構造 1 つ分を配置し、それを要素の間隔で
+         * 並べる。要素の名は、構造の次元を頭に足した配列になり、記憶域の中で交互に並ぶ
+         * ({@code ZA(1).B, ZA(1).C, ZA(2).B ...})。間隔は構造の大きさを、要素の境界合わせの
+         * いちばん大きいものの倍数に切り上げたもの (LRM の配置の規則から読んだ。実機と
+         * 突き合わせていない)。
+         */
+        private void declareStructureArray(List<PliSyntax.Decl> tree, Env env) {
+            PliSyntax.Decl root = tree.get(0);
+            if (root.basedOn() != null || parameters.containsKey(root.name().toUpperCase(Locale.ROOT))
+                    || hasRefer(tree) || tree.stream().anyMatch(decl -> decl.defined() != null)) {
+                throw new PliExecutionException("BASED, DEFINED, REFER or parameter arrays of"
+                        + " structures are not supported yet: " + root.name());
+            }
+            List<PliSyntax.Decl> one = new ArrayList<>(tree);
+            one.set(0, root.withDimensions(List.of()));
+            StructureMapping.Result mapping;
+            try {
+                mapping = StructureMapping.map(one);
+            } catch (IllegalArgumentException unsupported) {
+                throw new PliExecutionException(unsupported.getMessage());
+            }
+            int alignment = 1;
+            for (int i = 1; i < one.size(); i++) {
+                if (one.get(i).type() == PliSyntax.Type.GROUP) {
+                    throw new PliExecutionException("substructures in an array of structures are"
+                            + " not supported yet: " + root.name() + "." + one.get(i).name());
+                }
+                if (!StructureMapping.unaligned(one, i)) {
+                    alignment = Math.max(alignment, StructureMapping.alignment(one.get(i)));
+                }
+            }
+            int stride = (mapping.size() + alignment - 1) / alignment * alignment;
+            int count = root.count();
+            DataView area = Storage.allocate(Math.max(1, stride * count)).whole();
+            Var group = new Var(root.name(), PliSyntax.Type.GROUP, stride * count, 0, area);
+            group.littleEndian = "LITTLE".equals(root.byteOrder());
+            env.put(group);
+            for (int i = 1; i < one.size(); i++) {
+                PliSyntax.Decl child = one.get(i);
+                boolean unaligned = StructureMapping.unaligned(one, i);
+                Var variable = new Var(child.name(), child.type(), child.precision(), child.scale(),
+                        area, 0);
+                variable.varying = child.varying();
+                variable.unsigned = child.unsigned();
+                variable.littleEndian = child.byteOrder() == null ? group.littleEndian
+                        : child.byteOrder().equals("LITTLE");
+                variable.floatFormat = child.floatFormat();
+                variable.picture = pictureOf(child);
+                variable.valueSet = child.valueSet();
+                variable.complex = child.complex();
+                List<PliSyntax.Bound> bounds = new ArrayList<>(root.dimensions());
+                bounds.addAll(child.dimensions());
+                variable.dimensions = List.copyOf(bounds);
+                int own = Math.max(1, child.count());
+                int ownStride = StructureMapping.strideBits(child, unaligned);
+                int bits = StructureMapping.elementBits(child, unaligned);
+                for (int r = 0; r < count; r++) {
+                    for (int k = 0; k < own; k++) {
+                        int at = r * stride * 8 + mapping.bitOffsets()[i] + k * ownStride;
+                        Var element = new Var(child.name(), child.type(), child.precision(),
+                                child.scale(), area.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
+                        element.varying = child.varying();
+                        element.littleEndian = variable.littleEndian;
+                        element.floatFormat = child.floatFormat();
+                        element.picture = pictureOf(child);
+                        element.valueSet = child.valueSet();
+                        element.complex = child.complex();
+                        element.unsigned = child.unsigned();
+                        variable.elements.add(element);
+                    }
+                }
+                env.put(variable);
+                env.alias(root.name() + "." + child.name(), variable);
+                group.members.add(variable);
+                if (child.dimensions().isEmpty()) {
+                    for (Var element : variable.elements) {
+                        initialize(element, child.initial(), env);
+                    }
+                } else {
+                    initializeElements(variable, child.initialItems(), env);
+                }
+            }
         }
 
         private static boolean hasRefer(List<PliSyntax.Decl> tree) {
@@ -2637,6 +2726,28 @@ public final class PliRuntime {
             throw condition;
         }
 
+        /**
+         * {@code 構造 = 構造, BY DIMACROSS(i);} (LRM "BY DIMACROSS")。DIMACROSS の側の要素は
+         * 添字 i の要素を、そうでない側は要素そのものを、並びの順に対にして代入する。
+         */
+        private void assignAcross(List<PliSyntax.Expr> arguments, Env env) {
+            Var target = dataReference(arguments.get(0), env, "BY DIMACROSS");
+            Var source = dataReference(arguments.get(1), env, "BY DIMACROSS");
+            PliSyntax.Expr index = new PliSyntax.Literal(number(value(arguments.get(2), env)));
+            if (target.type != PliSyntax.Type.GROUP || source.type != PliSyntax.Type.GROUP
+                    || target.members.size() != source.members.size()) {
+                throw new PliExecutionException("BY DIMACROSS needs two structures with the same"
+                        + " number of members: " + target.name + ", " + source.name);
+            }
+            for (int m = 0; m < target.members.size(); m++) {
+                Var from = source.members.get(m);
+                Var to = target.members.get(m);
+                Object value = (from.dimensions != null ? element(from, List.of(index), env) : from)
+                        .read(context);
+                (to.dimensions != null ? element(to, List.of(index), env) : to).write(value, context);
+            }
+        }
+
         /** 省略した (* と書いた) 引数の印。 */
         private static final Object OMITTED_ARGUMENT = new Object();
 
@@ -2758,6 +2869,10 @@ public final class PliRuntime {
                     && program.procedures().get("PLIFREE") == null) {
                 // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
                 // 解いたあとの参照が誤りであることは検出しない
+                return;
+            }
+            if (call.name().equals("#ACROSS")) {
+                assignAcross(call.arguments(), env);
                 return;
             }
             if (call.name().equals("#ASSERT")) {
@@ -3993,6 +4108,20 @@ public final class PliRuntime {
                      "FILEREAD", "FILEWRITE", "FILESEEK", "FILETELL" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         return fileFunction(name, function.arguments(), env);
+                    }
+                }
+                // DIMACROSS の構造の次元 (LRM "LBOUNDACROSS", "HBOUNDACROSS")。要素はどれも
+                // 同じ次元を頭に持つので、最初の要素の 1 つ目の次元である
+                case "LBOUNDACROSS", "HBOUNDACROSS" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        Var structure = dataReference(function.arguments().get(0), env, name);
+                        if (structure.type != PliSyntax.Type.GROUP || structure.members.isEmpty()
+                                || structure.members.get(0).dimensions == null) {
+                            throw new PliExecutionException(name + " requires a DIMACROSS structure: "
+                                    + structure.name);
+                        }
+                        PliSyntax.Bound bound = structure.members.get(0).dimensions.get(0);
+                        return fixedBinary31(name.startsWith("L") ? bound.low() : bound.high());
                     }
                 }
                 case "VARGLIST" -> {

@@ -185,9 +185,27 @@ class ArrayTest {
     }
 
     @Test
+    @DisplayName("構造の配列は要素を交互に並べ、DIMACROSS の構造は要素ごとに続いた配列を持つ")
+    void structureArraysInterleaveTheirMembers() throws Exception {
+        assertEquals("AxBy ABxz 2 3 Bz", main("""
+                DCL 1 S(2), 2 A CHAR(1), 2 B CHAR(1);
+                DCL SS CHAR(4) BASED(ADDR(S));
+                DCL 1 T DIMACROSS(2:3), 2 A CHAR(1), 2 B CHAR(1);
+                DCL TT CHAR(4) BASED(ADDR(T));
+                DCL 1 U, 2 A CHAR(1), 2 B CHAR(1);
+                S(1).A = 'A'; S.A(2) = 'B'; S(1).B = 'x'; S.B(2) = 'y';
+                T.A(2) = 'A'; T.A(3) = 'B'; T.B(2) = 'x'; T.B(3) = 'y';
+                U.A = 'B'; U.B = 'z';
+                T = U, BY DIMACROSS(3);
+                PUT EDIT(SS, ' ', TT, ' ', LBOUNDACROSS(T), ' ', HBOUNDACROSS(T), ' ',
+                         T.A(3) || T.B(3))(A, A, A, A, F(1), A, F(1), A, A);
+                """).strip());
+    }
+
+    @Test
     @DisplayName("まだ持たない配列は、次元を黙って捨てずに断る")
     void unsupportedArraysAreRefused() {
-        assertTrue(rejection("DCL 1 S(3), 2 A CHAR(1);").contains("arrays of structures"));
+        // いちばん外の構造の配列は持つ (structureArraysInterleaveTheirMembers)。小構造の配列はまだ断る
         assertTrue(rejection("DCL 1 S, 2 R(3), 3 A CHAR(1);").contains("arrays of structures"));
         assertTrue(rejection("DCL C(*) CHAR(1);").contains("bounds"));
         RuntimeException expression = assertThrows(RuntimeException.class, () -> main("""
