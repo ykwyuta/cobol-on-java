@@ -28,6 +28,18 @@ final class PliSyntax {
     private static final ThreadLocal<Map<Stmt, Integer>> STATEMENT_LINES =
             ThreadLocal.withInitial(java.util.IdentityHashMap::new);
 
+    /** OFFSET の LOCATES (LRM "LOCATES attribute")。area は OFFSET(名) の名で、無ければ null。 */
+    record Located(String area, Decl type) {
+    }
+
+    /** 名から、その OFFSET の LOCATES。parse のたびに新しい表にする。 */
+    private static final ThreadLocal<Map<String, Located>> LOCATED =
+            ThreadLocal.withInitial(java.util.HashMap::new);
+
+    static Map<String, Located> locatedTypes() {
+        return LOCATED.get();
+    }
+
     /** 直前の parse が読んだ文の行。 */
     static Map<Stmt, Integer> statementLines() {
         return STATEMENT_LINES.get();
@@ -35,6 +47,7 @@ final class PliSyntax {
 
     static ParseResult parse(String fileName, String source) {
         STATEMENT_LINES.set(new java.util.IdentityHashMap<>());
+        LOCATED.set(new java.util.HashMap<>());
         DFP.set(PliOptions.fromSource(source).dfp());
         INDICATORS.get().clear();
         FORMATS.get().clear();
@@ -448,29 +461,45 @@ final class PliSyntax {
         List<Token> out = new ArrayList<>();
         for (int i = 0; i < tokens.size(); i++) {
             Token t = tokens.get(i);
-            boolean start = t.kind() == Kind.IDENT && i + 1 < tokens.size() && tokens.get(i + 1).is("(")
+            boolean start = t.kind() == Kind.IDENT
                     && (i == 0 || !(tokens.get(i - 1).is(".") || tokens.get(i - 1).is("->")));
-            int close = start ? closing(tokens, i + 1) : -1;
-            if (close < 0 || close + 2 >= tokens.size() || !tokens.get(close + 1).is(".")
-                    || tokens.get(close + 2).kind() != Kind.IDENT) {
+            if (!start) {
                 out.add(t);
                 continue;
             }
+            // 名の並び A(...).B.C(...) を読む。途中に添字があれば並べ直す
             List<Token> names = new ArrayList<>(List.of(t));
-            List<Token> subscripts = new ArrayList<>(tokens.subList(i + 2, close));
-            int at = close + 1;
-            while (at + 1 < tokens.size() && tokens.get(at).is(".")
-                    && tokens.get(at + 1).kind() == Kind.IDENT) {
-                names.add(tokens.get(at));
-                names.add(tokens.get(at + 1));
-                at += 2;
+            List<Token> subscripts = new ArrayList<>();
+            boolean interleaved = false;
+            int at = i + 1;
+            while (true) {
                 if (at < tokens.size() && tokens.get(at).is("(")) {
                     int end = closing(tokens, at);
                     if (end < 0) break;
-                    subscripts.add(new Token(Kind.SYMBOL, ",", t.line(), t.column()));
+                    if (!subscripts.isEmpty()) {
+                        subscripts.add(new Token(Kind.SYMBOL, ",", t.line(), t.column()));
+                    }
                     subscripts.addAll(tokens.subList(at + 1, end));
                     at = end + 1;
+                    if (at + 1 < tokens.size() && tokens.get(at).is(".")
+                            && tokens.get(at + 1).kind() == Kind.IDENT) {
+                        interleaved = true;
+                    } else {
+                        break;
+                    }
                 }
+                if (at + 1 < tokens.size() && tokens.get(at).is(".")
+                        && tokens.get(at + 1).kind() == Kind.IDENT) {
+                    names.add(tokens.get(at));
+                    names.add(tokens.get(at + 1));
+                    at += 2;
+                } else {
+                    break;
+                }
+            }
+            if (!interleaved) {
+                out.add(t);
+                continue;
             }
             out.addAll(names);
             out.add(new Token(Kind.SYMBOL, "(", t.line(), t.column()));
@@ -2482,11 +2511,34 @@ final class PliSyntax {
             }
         }
 
+        /** OFFSET(area) LOCATES(型) を読み、LOCATED に置く。 */
+        private void located(String name, List<Token> part) {
+            String area = null;
+            List<Token> type = null;
+            for (int i = 0; i + 1 < part.size(); i++) {
+                if (part.get(i).is("OFFSET") && part.get(i + 1).is("(") && i + 3 < part.size()
+                        && part.get(i + 3).is(")")) {
+                    area = part.get(i + 2).text().toUpperCase(Locale.ROOT);
+                }
+                if (part.get(i).is("LOCATES") && part.get(i + 1).is("(")) {
+                    type = new ArrayList<>(part.subList(i + 2, findClosing(part, i + 1)));
+                }
+            }
+            if (type != null) {
+                TypeInfo info = typeInfo(type, 0, null, 0, 0);
+                Decl located = declaration(name + "#LOCATES", 0, info, type, List.of());
+                LOCATED.get().put(name.toUpperCase(Locale.ROOT), new Located(area, located));
+            }
+        }
+
         private Decl declaration(String name, int level, TypeInfo info, List<Token> part,
                                  List<Bound> dimensions) {
             generic(name, part);
             boolean floatByDefault = defaultFloat;
             defaultFloat = false;
+            if (info.type == Type.OFFSET) {
+                located(name, part);
+            }
             checkAttributes(part, info);
             if (info.type == Type.FILE) {
                 int size = 0;
@@ -2520,11 +2572,7 @@ final class PliSyntax {
                         part.stream().anyMatch(token -> token.is("STREAM")),
                         fileAttributes(part)));
             }
-            if (!dimensions.isEmpty() && info.type == Type.GROUP && level > 1) {
-                // 小構造の配列はまだ持たない。いちばん外の構造の配列は持つ (要素を交互に並べる)
-                throw new ParseFailure(part.get(0), "arrays of structures are not supported yet: "
-                        + name);
-            }
+            // 構造の配列は持つ (要素を交互に並べる)。小構造の配列の中の小構造は実行で断る
             // UNSIGNED の FIXED BINARY は符号ビットを持たず、記憶域は p ≦ 8 で 1 byte、
             // ≦ 16 で半語、≦ 32 で全語である (LRM "SIGNED and UNSIGNED attributes")
             boolean unsigned = info.type == Type.BINARY

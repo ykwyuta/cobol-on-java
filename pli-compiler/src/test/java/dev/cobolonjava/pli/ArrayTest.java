@@ -203,10 +203,21 @@ class ArrayTest {
     }
 
     @Test
+    @DisplayName("小構造の配列の要素は、小構造の間隔ずつずれて交互に並ぶ")
+    void minorStructureArraysInterleave() throws Exception {
+        assertEquals("#AxByCz# 6", main("""
+                DCL 1 S, 2 H CHAR(1) INIT('#'), 2 R(3), 3 A CHAR(1), 3 B CHAR(1), 2 T CHAR(1) INIT('#');
+                DCL SS CHAR(8) BASED(ADDR(S));
+                R(1).A = 'A'; R.A(2) = 'B'; S.R(3).A = 'C';
+                R.B(1) = 'x'; R(2).B = 'y'; R.B(3) = 'z';
+                PUT EDIT(SS, ' ', STG(S) - 2)(A, A, F(1));
+                """).strip());
+    }
+
+    @Test
     @DisplayName("まだ持たない配列は、次元を黙って捨てずに断る")
     void unsupportedArraysAreRefused() {
-        // いちばん外の構造の配列は持つ (structureArraysInterleaveTheirMembers)。小構造の配列はまだ断る
-        assertTrue(rejection("DCL 1 S, 2 R(3), 3 A CHAR(1);").contains("arrays of structures"));
+        // 構造の配列と小構造の配列は持つ (structureArraysInterleaveTheirMembers)
         assertTrue(rejection("DCL C(*) CHAR(1);").contains("bounds"));
         RuntimeException expression = assertThrows(RuntimeException.class, () -> main("""
                 DCL A(2) FIXED BIN(15);

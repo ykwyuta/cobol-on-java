@@ -32,7 +32,12 @@ final class StructureMapping {
      * @param bitOffsets 構造の頭からの位置 (ビット)
      * @param bitLengths 長さ (ビット)
      */
-    record Result(int size, int[] bitOffsets, int[] bitLengths) {
+    record Result(int size, int[] bitOffsets, int[] bitLengths, Map<Integer, Integer> strides) {
+
+        /** 小構造の配列なら、要素の間隔 (ビット)。配列でなければ 0。 */
+        int strideBits(int index) {
+            return strides.getOrDefault(index, 0);
+        }
 
         /** 要素を含む最初の byte。 */
         int byteOffset(int index) {
@@ -63,7 +68,8 @@ final class StructureMapping {
      * @throws IllegalArgumentException この処理系がまだ配置を表せない要素があるとき
      */
     static Result map(List<PliSyntax.Decl> tree) {
-        Unit unit = unit(tree, 0, tree.size(), null);
+        Map<Integer, Integer> strides = new HashMap<>();
+        Unit unit = unit(tree, 0, tree.size(), null, strides);
         // 変数は byte の境界から始まる。対をまとめる手順で、先頭の UNALIGNED のビット列が後ろの
         // byte の境界の要素の方へずれていれば、最初の byte の頭のビットは空きになる。
         // 手順をそのまま当てはめた結果で、実機と突き合わせていない (P-185)
@@ -73,15 +79,16 @@ final class StructureMapping {
         for (int i = 0; i < tree.size(); i++) {
             offsets[i] = unit.offsets().getOrDefault(i, 0) + lead;
         }
-        lengths(tree, unit, offsets, lengths, lead);
-        return new Result((lead + unit.length() + 7) / 8, offsets, lengths);
+        lengths(tree, unit, offsets, lengths, lead, strides);
+        return new Result((lead + unit.length() + 7) / 8, offsets, lengths, Map.copyOf(strides));
     }
 
     /**
      * @param inherited 外の構造から受け継いだ {@code ALIGNED} (真) / {@code UNALIGNED} (偽)。
      *                  どこにも書かれていなければ {@code null} で、要素の型の既定になる
      */
-    private static Unit unit(List<PliSyntax.Decl> tree, int index, int end, Boolean inherited) {
+    private static Unit unit(List<PliSyntax.Decl> tree, int index, int end, Boolean inherited,
+                             Map<Integer, Integer> strides) {
         PliSyntax.Decl decl = tree.get(index);
         Boolean effective = decl.aligned() != null ? decl.aligned() : inherited;
         if (decl.type() != PliSyntax.Type.GROUP) {
@@ -96,7 +103,7 @@ final class StructureMapping {
         for (int i = index + 1; i < end;) {
             int childEnd = i + 1;
             while (childEnd < end && tree.get(childEnd).level() > tree.get(i).level()) childEnd++;
-            Unit member = unit(tree, i, childEnd, effective);
+            Unit member = unit(tree, i, childEnd, effective, strides);
             if (decl.union()) {
                 // UNION の基点から各メンバーを独立に配置する。内部の境界合わせは構造と同じ。
                 int lead = member.start() % member.alignment();
@@ -119,6 +126,16 @@ final class StructureMapping {
         }
         Map<Integer, Integer> offsets = new HashMap<>(combined.offsets());
         offsets.put(index, 0);
+        int count = decl.count();
+        if (index > 0 && count > 1) {
+            // 小構造の配列。要素 1 つを配置し、境界合わせの倍数に切り上げた間隔で並べる
+            // (LRM の配列の配置の規則から読んだ。実機と突き合わせていない)
+            int stride = (combined.length() + combined.alignment() - 1) / combined.alignment()
+                    * combined.alignment();
+            strides.put(index, stride);
+            return new Unit(combined.start(), stride * (count - 1) + combined.length(),
+                    combined.alignment(), offsets);
+        }
         return new Unit(combined.start(), combined.length(), combined.alignment(), offsets);
     }
 
@@ -196,7 +213,7 @@ final class StructureMapping {
 
     /** 要素の長さ。小構造は、配置で決まった最初の要素の頭から最後の要素の終わりまで。 */
     private static void lengths(List<PliSyntax.Decl> tree, Unit root, int[] offsets,
-                                int[] lengths, int lead) {
+                                int[] lengths, int lead, Map<Integer, Integer> strides) {
         for (int i = 0; i < tree.size(); i++) {
             PliSyntax.Decl decl = tree.get(i);
             if (decl.type() != PliSyntax.Type.GROUP) {
@@ -215,6 +232,9 @@ final class StructureMapping {
             }
             offsets[i] = i == 0 ? 0 : first;
             lengths[i] = last - offsets[i];
+            if (strides.containsKey(i)) {
+                lengths[i] += strides.get(i) * (decl.count() - 1);
+            }
         }
     }
 

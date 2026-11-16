@@ -181,6 +181,9 @@ public final class PliRuntime {
         private boolean conformanceEnabled;
         private int sqlSequence;
 
+        /** OFFSET の名から、その LOCATES。 */
+        private final Map<String, PliSyntax.Located> locatedTypes = PliSyntax.locatedTypes();
+
         /** 文の行。翻訳したときの表 (ONLINE が引く)。 */
         private final Map<PliSyntax.Stmt, Integer> lines = PliSyntax.statementLines();
         /** いま動いている文の行。 */
@@ -1399,6 +1402,200 @@ public final class PliRuntime {
             }
         }
 
+        /**
+         * 小構造の配列の要素を宣言する。要素の i 番目は、小構造の頭から同じ位置に、小構造の
+         * 間隔ずつずれて並ぶ。小構造の中の小構造はまだ持たない。
+         */
+        private void declareArrayedMembers(List<PliSyntax.Decl> tree, int index, int end, Env env,
+                                           Var group, DataView area, StructureMapping.Result mapping,
+                                           String prefix, boolean based) {
+            PliSyntax.Decl structure = tree.get(index);
+            int stride = mapping.strideBits(index);
+            int count = structure.count();
+            for (int i = index + 1; i < end; i++) {
+                PliSyntax.Decl child = tree.get(i);
+                if (child.type() == PliSyntax.Type.GROUP) {
+                    throw new PliExecutionException("substructures in an array of structures are"
+                            + " not supported yet: " + structure.name() + "." + child.name());
+                }
+                boolean unaligned = StructureMapping.unaligned(tree, i);
+                Var variable = new Var(child.name(), child.type(), child.precision(), child.scale(),
+                        area, 0);
+                variable.varying = child.varying();
+                variable.unsigned = child.unsigned();
+                variable.littleEndian = child.byteOrder() == null ? group.littleEndian
+                        : child.byteOrder().equals("LITTLE");
+                variable.floatFormat = child.floatFormat();
+                variable.picture = pictureOf(child);
+                variable.valueSet = child.valueSet();
+                variable.complex = child.complex();
+                List<PliSyntax.Bound> bounds = new ArrayList<>(structure.dimensions());
+                bounds.addAll(child.dimensions());
+                variable.dimensions = List.copyOf(bounds);
+                int own = Math.max(1, child.count());
+                int ownStride = StructureMapping.strideBits(child, unaligned);
+                int bits = StructureMapping.elementBits(child, unaligned);
+                for (int r = 0; r < count; r++) {
+                    for (int k = 0; k < own; k++) {
+                        int at = mapping.bitOffsets()[i] + r * stride + k * ownStride;
+                        Var element = new Var(child.name(), child.type(), child.precision(),
+                                child.scale(), area.subView(at / 8, (at % 8 + bits + 7) / 8), at % 8);
+                        element.varying = child.varying();
+                        element.littleEndian = variable.littleEndian;
+                        element.floatFormat = child.floatFormat();
+                        element.picture = pictureOf(child);
+                        element.valueSet = child.valueSet();
+                        element.complex = child.complex();
+                        element.unsigned = child.unsigned();
+                        variable.elements.add(element);
+                    }
+                }
+                env.put(variable);
+                env.alias(structure.name() + "." + child.name(), variable);
+                env.alias(prefix + "." + child.name(), variable);
+                group.members.add(variable);
+                if (based) {
+                    continue;
+                }
+                if (child.dimensions().isEmpty()) {
+                    for (Var element : variable.elements) {
+                        initialize(element, child.initial(), env);
+                    }
+                } else {
+                    initializeElements(variable, child.initialItems(), env);
+                }
+            }
+        }
+
+        /** OFFSET の LOCATES が指す値の変数。OFFSET が値を持たなければ止める。 */
+        private Var locatedValue(Var offset, Var area) {
+            PliSyntax.Located located = locatedTypes.get(offset.name.toUpperCase(Locale.ROOT));
+            int at = number(offset.read(context)).intValue();
+            if (at < AREA_HEADER || at >= area.view.length()) {
+                throw new PliExecutionException("LOCVAL of " + offset.name + ", which has no value"
+                        + " in the AREA " + area.name);
+            }
+            return typedVar(located.type(), area.view.subView(at, byteLength(located.type())));
+        }
+
+        private Var typedVar(PliSyntax.Decl type, DataView view) {
+            Var value = new Var(type.name(), type.type(), type.precision(), type.scale(), view);
+            value.varying = type.varying();
+            value.unsigned = type.unsigned();
+            value.floatFormat = type.floatFormat();
+            value.picture = pictureOf(type);
+            value.complex = type.complex();
+            return value;
+        }
+
+        /** LOCATES の OFFSET の変数と、その AREA (引数で書くか、宣言の OFFSET(名))。 */
+        private Var locatesOffset(PliSyntax.Expr expression, Env env, String user) {
+            Var offset = dataReference(expression, env, user);
+            if (offset.type != PliSyntax.Type.OFFSET
+                    || !locatedTypes.containsKey(offset.name.toUpperCase(Locale.ROOT))) {
+                throw new PliExecutionException(user + " requires an OFFSET with LOCATES: " + offset.name);
+            }
+            return offset;
+        }
+
+        private Var locatesArea(Var offset, PliSyntax.Expr explicit, Env env, String user) {
+            if (explicit != null) {
+                return dataReference(explicit, env, user);
+            }
+            String area = locatedTypes.get(offset.name.toUpperCase(Locale.ROOT)).area();
+            if (area == null) {
+                throw new PliExecutionException(user + ": " + offset.name + " is declared without"
+                        + " an AREA, so the AREA must be given");
+            }
+            return env.require(area);
+        }
+
+        /** LOCNEWSPACE: AREA に LOCATES の型の場所を取り、OFFSET に入れる。 */
+        private void locNewSpace(Var offset, Var area) {
+            int size = byteLength(locatedTypes.get(offset.name.toUpperCase(Locale.ROOT)).type());
+            int at = (area.areaUsed() + 7) / 8 * 8;
+            if (at + Math.max(1, size) > area.view.length()) {
+                throw areaCondition(area.name);
+            }
+            area.areaUse(at + Math.max(1, size));
+            for (int i = 0; i < size; i++) area.view.set(at + i, (byte) 0);
+            offset.write(FixedValue.binary(BigDecimal.valueOf(at), 31, 0), context);
+        }
+
+        /**
+         * LOCATES の関数と組み込みの手続き (LRM "LOCVAL", "LOCNEWSPACE", "LOCNEWVALUE",
+         * "LOCSTG")。
+         */
+        private Object locatesFunction(String name, List<PliSyntax.Expr> arguments, Env env) {
+            switch (name) {
+                case "LOCVAL" -> {
+                    Var offset = locatesOffset(arguments.get(0), env, name);
+                    Var area = locatesArea(offset, arguments.size() > 1 ? arguments.get(1) : null, env, name);
+                    return locatedValue(offset, area).read(context);
+                }
+                case "LOCNEWSPACE" -> {
+                    Var offset = locatesOffset(arguments.get(0), env, name);
+                    locNewSpace(offset, locatesArea(offset, arguments.size() > 1 ? arguments.get(1) : null,
+                            env, name));
+                    return offset.read(context);
+                }
+                case "LOCNEWVALUE" -> {
+                    Object value = value(arguments.get(0), env);
+                    Var offset = locatesOffset(arguments.get(1), env, name);
+                    Var area = locatesArea(offset, arguments.size() > 2 ? arguments.get(2) : null, env, name);
+                    locNewSpace(offset, area);
+                    locatedValue(offset, area).write(value, context);
+                    return offset.read(context);
+                }
+                default -> { // LOCSTG
+                    return fixedBinary31(locatedStorage(arguments.get(0), env));
+                }
+            }
+        }
+
+        /**
+         * LOCSTG: LOCATES の型の大きさの和。構造なら要素の和、配列なら要素の数だけ。小構造の
+         * 配列の要素 (ORDERINFO(2)) は、その 1 つ分である。
+         */
+        private int locatedStorage(PliSyntax.Expr expression, Env env) {
+            String name = expression instanceof PliSyntax.Function function ? function.name()
+                    : expression instanceof PliSyntax.Reference reference ? reference.name() : null;
+            Var variable = name == null ? null : env.find(name);
+            if (variable == null) {
+                throw new PliExecutionException("LOCSTG requires a data reference");
+            }
+            boolean one = expression instanceof PliSyntax.Function;
+            return locatedStorage(variable, one);
+        }
+
+        private int locatedStorage(Var variable, boolean one) {
+            if (variable.type == PliSyntax.Type.GROUP) {
+                int sum = 0;
+                for (Var member : variable.members) {
+                    sum += locatedStorage(member, one);
+                }
+                return sum;
+            }
+            PliSyntax.Located located = locatedTypes.get(variable.name.toUpperCase(Locale.ROOT));
+            if (variable.type != PliSyntax.Type.OFFSET || located == null) {
+                throw new PliExecutionException("LOCSTG of " + variable.name + ", which is not an"
+                        + " OFFSET with LOCATES, is not supported yet");
+            }
+            int count = one || variable.dimensions == null ? 1 : variable.elements.size();
+            return byteLength(located.type()) * count;
+        }
+
+        /** 式の値が OFFSET か (OFFSET の変数、その要素、OFFSET を返す関数)。 */
+        private boolean offsetValued(PliSyntax.Expr expression, Env env) {
+            String name = expression instanceof PliSyntax.Function function ? function.name()
+                    : expression instanceof PliSyntax.Reference reference ? reference.name() : null;
+            if (name == null) return false;
+            Var variable = env.find(name);
+            if (variable != null) return variable.type == PliSyntax.Type.OFFSET;
+            return List.of("OFFSET", "NULLO", "SYSNULL", "NULL", "LOCNEWSPACE", "LOCNEWVALUE")
+                    .contains(name.toUpperCase(Locale.ROOT));
+        }
+
         private static boolean hasRefer(List<PliSyntax.Decl> tree) {
             return tree.stream().anyMatch(decl -> decl.dimensions().stream()
                     .anyMatch(bound -> bound.refer() != null));
@@ -1502,7 +1699,13 @@ public final class PliRuntime {
                     env.alias(prefix + "." + child.name(), variable);
                 }
                 group.members.add(variable);
-                if (!child.dimensions().isEmpty()) {
+                if (child.type() == PliSyntax.Type.GROUP && !child.dimensions().isEmpty()) {
+                    // 小構造の配列。中の要素は、小構造の次元を頭に持つ配列になる
+                    declareArrayedMembers(tree, i, childEnd, env, variable, area, mapping,
+                            prefix + "." + child.name(), based);
+                    i = childEnd;
+                    continue;
+                } else if (!child.dimensions().isEmpty()) {
                     // 構造の中の配列。要素の間隔は構造の外の配列と同じ規則である
                     declareElements(variable, child, StructureMapping.unaligned(tree, i),
                             mapping.bitShift(i));
@@ -1864,6 +2067,31 @@ public final class PliRuntime {
         }
 
         private void assign(PliSyntax.Assign assignment, Env env) {
+            if (assignment.target().equals("LOCVAL") && !env.contains("LOCVAL")
+                    && !assignment.subscripts().isEmpty()) {
+                // 擬似変数 LOCVAL(o[, area]) = 値
+                Var offset = locatesOffset(assignment.subscripts().get(0), env, "LOCVAL");
+                Var area = locatesArea(offset, assignment.subscripts().size() > 1
+                        ? assignment.subscripts().get(1) : null, env, "LOCVAL");
+                Object value = value(assignment.value(), env);
+                locatedValue(offset, area).write(value, context);
+                return;
+            }
+            if (!locatedTypes.isEmpty()
+                    && locatedTypes.containsKey(assignment.target().toUpperCase(Locale.ROOT))
+                    && !offsetValued(assignment.value(), env)) {
+                // LOCATES の OFFSET へ OFFSET でない値を代入すると、新しい場所を取って値を置く
+                // (LRM "LOCATES attribute"。LOCNEWVALUE と同じ)
+                Var offset = assignment.subscripts().isEmpty() ? env.require(assignment.target())
+                        : element(env.require(assignment.target()), assignment.subscripts(), env);
+                if (offset.type == PliSyntax.Type.OFFSET) {
+                    Object value = value(assignment.value(), env);
+                    Var area = locatesArea(offset, null, env, "assignment");
+                    locNewSpace(offset, area);
+                    locatedValue(offset, area).write(value, context);
+                    return;
+                }
+            }
             if (!env.contains(assignment.target())
                     && program.files().containsKey(assignment.target().toUpperCase(Locale.ROOT))) {
                 // FILE VARIABLE への代入 (LRM "FILE attribute" の VARIABLE)
@@ -2920,6 +3148,11 @@ public final class PliRuntime {
                     && program.procedures().get("PLIFREE") == null) {
                 // NEW で取った記憶域を解く。記憶域は Java の GC が取り戻すので、何もしない。
                 // 解いたあとの参照が誤りであることは検出しない
+                return;
+            }
+            if ((call.name().equals("LOCNEWSPACE") || call.name().equals("LOCNEWVALUE"))
+                    && !env.contains(call.name())) {
+                locatesFunction(call.name(), call.arguments(), env);
                 return;
             }
             if (call.name().equals("#ATTACH")) {
@@ -4179,6 +4412,11 @@ public final class PliRuntime {
                 }
                 // DIMACROSS の構造の次元 (LRM "LBOUNDACROSS", "HBOUNDACROSS")。要素はどれも
                 // 同じ次元を頭に持つので、最初の要素の 1 つ目の次元である
+                case "LOCVAL", "LOCNEWSPACE", "LOCNEWVALUE", "LOCSTG" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return locatesFunction(name, function.arguments(), env);
+                    }
+                }
                 case "LBOUNDACROSS", "HBOUNDACROSS" -> {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         Var structure = dataReference(function.arguments().get(0), env, name);
