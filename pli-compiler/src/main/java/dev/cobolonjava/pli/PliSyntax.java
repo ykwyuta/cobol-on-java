@@ -24,12 +24,116 @@ final class PliSyntax {
         DFP.set(PliOptions.fromSource(source).dfp());
         INDICATORS.get().clear();
         try {
-            return new Parser(fileName, expandTypes(repeatableDeclarations(
-                    new Lexer(fileName, source).scan()))).parse();
+            return new Parser(fileName, expandTypes(qualify(repeatableDeclarations(
+                    new Lexer(fileName, source).scan())))).parse();
         } catch (ParseFailure failure) {
             return new ParseResult(null, List.of(new Diagnostic(Diagnostic.Severity.ERROR,
                     fileName, failure.token.line(), failure.token.column(), failure.getMessage())));
         }
+    }
+
+    /**
+     * {@code 名: QUALIFY; ... END 名;} (LRM "QUALIFY statement")。ブロックの中で定義した型・
+     * ORDINAL の要素・宣言した名は、ブロックの名で修飾して参照する ({@code PAINT.COLOR})。
+     * 中で定義した名を {@code PAINT#COLOR} という 1 つの名にし、外の {@code PAINT.COLOR} と
+     * いう修飾の並びもその名に読み替える。ブロックの中から修飾せずに参照する書き方はまだ持たない。
+     */
+    private static List<Token> qualify(List<Token> tokens) {
+        boolean any = false;
+        for (int i = 0; i + 2 < tokens.size(); i++) {
+            any |= tokens.get(i + 1).is(":") && tokens.get(i + 2).is("QUALIFY");
+        }
+        if (!any) {
+            return tokens;
+        }
+        List<Token> out = new ArrayList<>();
+        java.util.ArrayDeque<String> prefixes = new java.util.ArrayDeque<>();
+        java.util.Set<String> qualified = new java.util.HashSet<>();
+        int i = 0;
+        while (i < tokens.size()) {
+            Token t = tokens.get(i);
+            if (t.kind() == Kind.IDENT && i + 3 < tokens.size() && tokens.get(i + 1).is(":")
+                    && tokens.get(i + 2).is("QUALIFY") && tokens.get(i + 3).is(";")) {
+                String prefix = (prefixes.isEmpty() ? "" : prefixes.peek() + "#") + t.text();
+                prefixes.push(prefix);
+                i += 4;
+                continue;
+            }
+            if (!prefixes.isEmpty() && t.is("END") && i + 2 < tokens.size()
+                    && tokens.get(i + 1).kind() == Kind.IDENT && tokens.get(i + 2).is(";")
+                    && prefixes.peek().endsWith(tokens.get(i + 1).text())) {
+                prefixes.pop();
+                i += 3;
+                continue;
+            }
+            if (!prefixes.isEmpty() && (t.is("DEFINE") || t.is("DCL") || t.is("DECLARE"))) {
+                // 文の終わりまでで、定義する名を修飾する
+                int end = i;
+                while (end < tokens.size() && !tokens.get(end).is(";")) end++;
+                List<Token> statement = new ArrayList<>(tokens.subList(i, Math.min(end + 1, tokens.size())));
+                String prefix = prefixes.peek();
+                java.util.function.IntConsumer rename = k -> {
+                    Token name = statement.get(k);
+                    qualified.add(prefix + "#" + name.text());
+                    statement.set(k, new Token(Kind.IDENT, prefix + "#" + name.text(), name.line(),
+                            name.column()));
+                };
+                if (t.is("DEFINE") && statement.size() > 2) {
+                    rename.accept(2);
+                    if (statement.get(1).is("ORDINAL") && statement.size() > 3 && statement.get(3).is("(")) {
+                        int depth = 0;
+                        boolean expectName = true;
+                        for (int k = 3; k < statement.size(); k++) {
+                            Token u = statement.get(k);
+                            if (u.is("(")) {
+                                depth++;
+                                continue;
+                            }
+                            if (u.is(")") && --depth == 0) break;
+                            if (depth == 1 && u.is(",")) {
+                                expectName = true;
+                            } else if (depth == 1 && expectName && u.kind() == Kind.IDENT) {
+                                rename.accept(k);
+                                expectName = false;
+                            }
+                        }
+                    }
+                } else if (statement.size() > 1 && statement.get(1).kind() == Kind.IDENT) {
+                    rename.accept(1);
+                }
+                out.addAll(statement);
+                i = end + 1;
+                continue;
+            }
+            out.add(t);
+            i++;
+        }
+        // 修飾の並び A.B.C を、修飾した名 A#B#C へ読み替える (長いほうから)
+        List<Token> result = new ArrayList<>();
+        for (int k = 0; k < out.size(); k++) {
+            Token t = out.get(k);
+            if (t.kind() == Kind.IDENT) {
+                String name = t.text();
+                int best = -1;
+                String bestName = null;
+                int j = k;
+                while (j + 2 < out.size() && out.get(j + 1).is(".") && out.get(j + 2).kind() == Kind.IDENT) {
+                    name = name + "#" + out.get(j + 2).text();
+                    j += 2;
+                    if (qualified.contains(name)) {
+                        best = j;
+                        bestName = name;
+                    }
+                }
+                if (best >= 0) {
+                    result.add(new Token(Kind.IDENT, bestName, t.line(), t.column()));
+                    k = best;
+                    continue;
+                }
+            }
+            result.add(t);
+        }
+        return result;
     }
 
     /**
@@ -382,7 +486,9 @@ final class PliSyntax {
             StringBuilder table = new StringBuilder();
             for (Map.Entry<String, Integer> member : ordinals.get(type).entrySet()) {
                 if (!table.isEmpty()) table.append(',');
-                table.append(member.getKey()).append('=').append(member.getValue());
+                // QUALIFY で修飾した要素は、修飾を外した名で見せる
+                String shown = member.getKey().substring(member.getKey().lastIndexOf('#') + 1);
+                table.append(shown).append('=').append(member.getValue());
             }
             out.add(close, new Token(Kind.STRING, table.toString(), t.line(), t.column()));
             out.add(close, new Token(Kind.SYMBOL, ",", t.line(), t.column()));
