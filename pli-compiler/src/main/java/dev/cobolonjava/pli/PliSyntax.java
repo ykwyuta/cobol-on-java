@@ -1964,7 +1964,9 @@ final class PliSyntax {
             String storage = part.stream().anyMatch(t -> t.is("CONTROLLED") || t.is("CTL"))
                     ? "CONTROLLED" : part.stream().anyMatch(t -> t.is("BASED")) ? "BASED"
                     // EXTERNAL と RESERVED は実行単位で 1 つの変数である (STATIC でもある)
-                    : level <= 1 && part.stream().anyMatch(t -> t.is("EXTERNAL") || t.is("EXT")
+                    // (入口とファイルは変数ではないので含めない)
+                    : level <= 1 && info.type != Type.ENTRY && info.type != Type.FILE
+                            && part.stream().anyMatch(t -> t.is("EXTERNAL") || t.is("EXT")
                             || t.is("RESERVED")) ? "EXTERNAL"
                     : part.stream().anyMatch(t -> t.is("STATIC")) ? "STATIC" : null;
             if (dimensions.contains(Bound.STAR) && !"CONTROLLED".equals(storage)
