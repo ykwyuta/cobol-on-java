@@ -368,12 +368,12 @@ public final class PliRuntime {
                 }
                 areaOffset = (area.areaUsed() + 7) / 8 * 8;
                 if (areaOffset + Math.max(1, length) > area.view.length()) {
-                    throw new Condition("AREA", null, 360, null);
+                    throw areaCondition(area.name);
                 }
                 area.areaUse(areaOffset + Math.max(1, length));
                 storage = area.view.subView(areaOffset, Math.max(1, length));
             } else {
-                storage = Storage.allocate(Math.max(1, length)).whole();
+                storage = heapAllocate(Math.max(1, length));
             }
             if (shape != chunk) {
                 // ALLOCATE は REFER の対象に、宣言の式で決めた上限を入れる (LRM "REFER option")
@@ -429,7 +429,86 @@ public final class PliRuntime {
                 throw new PliExecutionException(name + " is not BASED or CONTROLLED");
             }
             // BASED の記憶域は Java の記憶域であり、取り戻すのは GC である。解いたあとの参照が
-            // 誤りであることは検出しない
+            // 誤りであることは検出しない。割り当ての表からは外す (UNALLOCATED が見る)
+            String locator = chunk.get(0).basedOn();
+            if (locator != null && env.find(locator) != null
+                    && env.find(locator).read(context) instanceof PointerValue pointer) {
+                heap.remove(pointer.address());
+            }
+        }
+
+        /** AREA の不足 (ONCODE 360)。on-unit は修飾なしで引き、AREA の名は ONAREA が返す。 */
+        private static Condition areaCondition(String area) {
+            Condition condition = new Condition("AREA", null, 360, null);
+            condition.original = area;
+            return condition;
+        }
+
+        /** ヒープに取った記憶域。番地ごとに、大きさと後ろの見張りを持つ記憶域。 */
+        private final Map<Integer, DataView> heap = new HashMap<>();
+        private static final int GUARD = 8;
+
+        /**
+         * ヒープに取る。後ろに X'FF' の見張りを 8 byte 置き、CHECKSTG がそれを確かめる
+         * (LRM "CHECKSTG"、翻訳オプション CHECK(STORAGE)。Zeus と同じ)。
+         */
+        private DataView heapAllocate(int length) {
+            Storage storage = Storage.allocate(length + GUARD);
+            for (int i = 0; i < GUARD; i++) storage.array()[length + i] = (byte) 0xFF;
+            DataView view = storage.view(0, length);
+            heap.put(address(view), view);
+            return view;
+        }
+
+        private boolean guardIntact(DataView view) {
+            byte[] bytes = view.storage().array();
+            for (int i = 0; i < GUARD; i++) {
+                if (bytes[view.offset() + view.length() + i] != (byte) 0xFF) return false;
+            }
+            return true;
+        }
+
+        /** AREA の残り。使った分は 8 byte の倍数に切り上げて数える (LRM "AVAILABLEAREA")。 */
+        private static int availableArea(Var area) {
+            return Math.max(0, area.view.length() - (area.areaUsed() + 7) / 8 * 8);
+        }
+
+        /** 記憶域の関数 (LRM "ALLOCATE built-in function" ほか)。 */
+        private Object storageFunction(String name, List<PliSyntax.Expr> arguments, Env env) {
+            return switch (name) {
+                case "AVAILABLEAREA" -> fixedBinary31(availableArea(dataReference(arguments.get(0), env, name)));
+                case "ALLOCATE", "ALLOC31", "ALLOCNEXT" -> {
+                    int length = number(value(arguments.get(0), env)).intValue();
+                    if (arguments.size() < 2) {
+                        yield new PointerValue(address(heapAllocate(Math.max(1, length))));
+                    }
+                    Var area = dataReference(arguments.get(1), env, name);
+                    int offset = (area.areaUsed() + 7) / 8 * 8;
+                    if (offset + Math.max(1, length) > area.view.length()) {
+                        if (name.equals("ALLOCNEXT")) {
+                            // 入らなければ SYSNULL を返し、条件は起こさない
+                            yield new PointerValue(0);
+                        }
+                        throw areaCondition(area.name);
+                    }
+                    area.areaUse(offset + Math.max(1, length));
+                    yield new PointerValue(address(area.view.subView(offset, Math.max(1, length))));
+                }
+                case "ALLOCSIZE", "UNALLOCATED" -> {
+                    Object pointer = value(arguments.get(0), env);
+                    DataView view = pointer instanceof PointerValue p ? heap.get(p.address()) : null;
+                    yield name.equals("ALLOCSIZE") ? fixedBinary31(view == null ? 0 : view.length())
+                            : (Object) (view == null);
+                }
+                default -> { // CHECKSTG
+                    if (arguments.isEmpty()) {
+                        yield heap.values().stream().allMatch(this::guardIntact);
+                    }
+                    Object pointer = value(arguments.get(0), env);
+                    DataView view = pointer instanceof PointerValue p ? heap.get(p.address()) : null;
+                    yield view != null && guardIntact(view);
+                }
+            };
         }
 
         /**
@@ -459,6 +538,15 @@ public final class PliRuntime {
          * BASED の変数が重なる記憶域。{@code BASED(P)} なら P の値の番号が指す場所、{@code BASED(ADDR(X))}
          * なら X の記憶域 (前処理で X の名だけが残る)。
          */
+        /** POINTER が指す記憶域に、length byte が入るか。POINTER でなければ真。 */
+        private boolean basedFits(String name, int length, Env env) {
+            Var base = env.find(name);
+            if (base == null || base.type != PliSyntax.Type.POINTER) return true;
+            if (!(base.read(context) instanceof PointerValue pointer)) return true;
+            AddressSpace.Location location = AddressSpace.of(context).locate(pointer.address());
+            return location == null || location.offset() + length <= location.storage().size();
+        }
+
         private DataView basedView(String name, int length, Env env) {
             Var base = env.require(name);
             if (base.type != PliSyntax.Type.POINTER) {
@@ -1382,7 +1470,10 @@ public final class PliRuntime {
             if (declaration.type() == PliSyntax.Type.POINTER && parameter) {
                 return; // 入口引数の POINTER は、渡された記憶域の番号をもう持っている
             }
-            if (declaration.basedOn() != null && nullPointer(declaration.basedOn(), env)) {
+            if (declaration.basedOn() != null && (nullPointer(declaration.basedOn(), env)
+                    || !basedFits(declaration.basedOn(), byteLength(declaration), env))) {
+                // ヌルか、指す記憶域が短い。参照したときに止める (POINTER を別の記憶域へ
+                // 向け直しただけでは、重ねる変数を使ったことにならない)
                 unbound(List.of(declaration), declaration.basedOn(), env);
                 remember(declaration.basedOn(),
                         () -> declareScalar(declaration, env, area, offset, alias));
@@ -3551,6 +3642,12 @@ public final class PliRuntime {
                     if (!env.contains(name) && !program.procedures().containsKey(name)) {
                         Var structure = dataReference(function.arguments().get(0), env, name);
                         return fixedBinary31(structure.members.size());
+                    }
+                }
+                case "AVAILABLEAREA", "ALLOCATE", "ALLOC31", "ALLOCNEXT", "ALLOCSIZE", "UNALLOCATED",
+                     "CHECKSTG" -> {
+                    if (!env.contains(name) && !program.procedures().containsKey(name)) {
+                        return storageFunction(name, function.arguments(), env);
                     }
                 }
                 case "POLY" -> {

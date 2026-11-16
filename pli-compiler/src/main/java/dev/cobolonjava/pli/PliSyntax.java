@@ -3007,7 +3007,8 @@ final class PliSyntax {
                 "ENDFILE", "ENDPAGE", "KEY", "CONVERSION", "CONV", "ZERODIVIDE", "ZDIV", "SIZE",
                 "FIXEDOVERFLOW", "FOFL", "CONDITION", "COND", "ERROR",
                 "OVERFLOW", "UNDERFLOW", "STRINGSIZE", "STRINGRANGE", "SUBSCRIPTRANGE",
-                "UNDEFINEDFILE", "CONFORMANCE", "ATTENTION");
+                "UNDEFINEDFILE", "CONFORMANCE", "ATTENTION", "AREA", "INVALIDOP",
+                "STORAGE");
 
         private String conditionName() {
             Token name = expect(Kind.IDENT, "condition name");
